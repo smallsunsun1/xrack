@@ -1,13 +1,14 @@
-"""Generate C++ with the ANTLR jar using only a Java runtime toolchain."""
+"""Generate the Rust ANTLR parser using the JDK from the Bazel toolchain."""
 
-def _antlr_cpp_impl(ctx):
+def _antlr_rust_impl(ctx):
     runtime = ctx.toolchains["@bazel_tools//tools/jdk:runtime_toolchain_type"].java_runtime
     args = ctx.actions.args()
     args.add_all([
         "-jar",
         ctx.file._jar.path,
-        "-Dlanguage=Cpp",
-        "-no-listener",
+        "-Dlanguage=Rust",
+        # The 0.6.0 Rust target references the listener trait in its parser.
+        "-listener",
         "-no-visitor",
         "-Xexact-output-dir",
         "-o",
@@ -20,17 +21,23 @@ def _antlr_cpp_impl(ctx):
         inputs = [ctx.file._jar, ctx.file.src],
         tools = [runtime.files],
         outputs = ctx.outputs.outs,
-        mnemonic = "Antlr4Cpp",
-        progress_message = "Generating ANTLR4 C++ parser from " + ctx.file.src.short_path,
+        mnemonic = "Antlr4Rust",
+        progress_message = "Generating ANTLR4 Rust parser from " + ctx.file.src.short_path,
     )
-    return [DefaultInfo(files = depset(ctx.outputs.outs))]
+    ctx.actions.write(
+        ctx.outputs.crate_root,
+        "pub mod xracklexer;\npub mod xracklistener;\npub mod xrackparser;\n",
+    )
+    files = depset(ctx.outputs.outs + [ctx.outputs.crate_root])
+    return [DefaultInfo(files = files), OutputGroupInfo(rust_generated_srcs = files)]
 
-antlr_cpp = rule(
-    implementation = _antlr_cpp_impl,
+antlr_rust = rule(
+    implementation = _antlr_rust_impl,
     attrs = {
         "src": attr.label(allow_single_file = [".g4"], mandatory = True),
         "outs": attr.output_list(mandatory = True),
-        "_jar": attr.label(default = "@antlr4_tool//file", allow_single_file = True),
+        "crate_root": attr.output(mandatory = True),
+        "_jar": attr.label(default = "@antlr4_rust_tool//file", allow_single_file = True),
     },
     toolchains = ["@bazel_tools//tools/jdk:runtime_toolchain_type"],
 )

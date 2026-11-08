@@ -1,0 +1,150 @@
+[
+  [
+    "",
+    [
+      {
+        "span": {
+          "line": 1,
+          "column": 1
+        },
+        "message": "mismatched input '<EOF>' expecting {'import', 'export', 'struct', 'component'}"
+      }
+    ]
+  ],
+  [
+    "component App inherits Window { title: \"中🌱\"; @ }",
+    [
+      {
+        "span": {
+          "line": 1,
+          "column": 46
+        },
+        "message": "token recognition error at: '@ '"
+      }
+    ]
+  ],
+  [
+    "component App inherits Window { width: ; }",
+    [
+      {
+        "span": {
+          "line": 1,
+          "column": 40
+        },
+        "message": "mismatched input ';' expecting {'from', 'as', 'struct', 'duration', 'ms', '[', 'pure', '(', '+', '-', '!', 'true', 'false', '@image-url', '@linear-gradient', '@radial-gradient', 'circle', 'deg', 'root', 'self', 'int', 'float', 'bool', 'string', 'length', 'color', 'brush', 'image', 'ImageFit', 'LayoutAlignment', 'CrossAxisAlignment', 'Orientation', 'DialInputMode', 'ScrollBarPolicy', 'TextWrap', 'DialogRole', 'DrawerEdge', 'SelectionTarget', COLOR, NUMBER, STRING, IDENT}"
+      }
+    ]
+  ],
+  [
+    "component App inherits Window {} trailing",
+    [
+      {
+        "span": {
+          "line": 1,
+          "column": 34
+        },
+        "message": "extraneous input 'trailing' expecting {<EOF>, 'export', 'struct', 'component'}"
+      }
+    ]
+  ],
+  [
+    "component App inherits Window { title: \"broken; }",
+    [
+      {
+        "span": {
+          "line": 1,
+          "column": 40
+        },
+        "message": "token recognition error at: '\"broken; }'"
+      },
+      {
+        "span": {
+          "line": 1,
+          "column": 50
+        },
+        "message": "mismatched input '<EOF>' expecting {'from', 'as', 'struct', 'duration', 'ms', '[', 'pure', '(', '+', '-', '!', 'true', 'false', '@image-url', '@linear-gradient', '@radial-gradient', 'circle', 'deg', 'root', 'self', 'int', 'float', 'bool', 'string', 'length', 'color', 'brush', 'image', 'ImageFit', 'LayoutAlignment', 'CrossAxisAlignment', 'Orientation', 'DialInputMode', 'ScrollBarPolicy', 'TextWrap', 'DialogRole', 'DrawerEdge', 'SelectionTarget', COLOR, NUMBER, STRING, IDENT}"
+      }
+    ]
+  ],
+  [
+    "component App inherits Window { width: 1 2; height: ; }",
+    [
+      {
+        "span": {
+          "line": 1,
+          "column": 42
+        },
+        "message": "extraneous input '2' expecting ';'"
+      },
+      {
+        "span": {
+          "line": 1,
+          "column": 53
+        },
+        "message": "mismatched input ';' expecting {'from', 'as', 'struct', 'duration', 'ms', '[', 'pure', '(', '+', '-', '!', 'true', 'false', '@image-url', '@linear-gradient', '@radial-gradient', 'circle', 'deg', 'root', 'self', 'int', 'float', 'bool', 'string', 'length', 'color', 'brush', 'image', 'ImageFit', 'LayoutAlignment', 'CrossAxisAlignment', 'Orientation', 'DialInputMode', 'ScrollBarPolicy', 'TextWrap', 'DialogRole', 'DrawerEdge', 'SelectionTarget', COLOR, NUMBER, STRING, IDENT}"
+      }
+    ]
+  ],
+  [
+    "component App inherits Window {\r\n    width: ;\r\n}",
+    [
+      {
+        "span": {
+          "line": 2,
+          "column": 12
+        },
+        "message": "mismatched input ';' expecting {'from', 'as', 'struct', 'duration', 'ms', '[', 'pure', '(', '+', '-', '!', 'true', 'false', '@image-url', '@linear-gradient', '@radial-gradient', 'circle', 'deg', 'root', 'self', 'int', 'float', 'bool', 'string', 'length', 'color', 'brush', 'image', 'ImageFit', 'LayoutAlignment', 'CrossAxisAlignment', 'Orientation', 'DialInputMode', 'ScrollBarPolicy', 'TextWrap', 'DialogRole', 'DrawerEdge', 'SelectionTarget', COLOR, NUMBER, STRING, IDENT}"
+      }
+    ]
+  ],
+  [
+    "﻿component App inherits Window { width: ; }",
+    [
+      {
+        "span": {
+          "line": 1,
+          "column": 40
+        },
+        "message": "mismatched input ';' expecting {'from', 'as', 'struct', 'duration', 'ms', '[', 'pure', '(', '+', '-', '!', 'true', 'false', '@image-url', '@linear-gradient', '@radial-gradient', 'circle', 'deg', 'root', 'self', 'int', 'float', 'bool', 'string', 'length', 'color', 'brush', 'image', 'ImageFit', 'LayoutAlignment', 'CrossAxisAlignment', 'Orientation', 'DialInputMode', 'ScrollBarPolicy', 'TextWrap', 'DialogRole', 'DrawerEdge', 'SelectionTarget', COLOR, NUMBER, STRING, IDENT}"
+      }
+    ]
+  ],
+  [
+    "component App inherits Window { @ width: ; height: ; }",
+    [
+      {
+        "span": {
+          "line": 1,
+          "column": 33
+        },
+        "message": "token recognition error at: '@ '"
+      },
+      {
+        "span": {
+          "line": 1,
+          "column": 42
+        },
+        "message": "extraneous input ';' expecting {'from', 'as', 'struct', 'duration', 'ms', '[', 'pure', '(', '+', '-', '!', 'true', 'false', '@image-url', '@linear-gradient', '@radial-gradient', 'circle', 'deg', 'root', 'self', 'int', 'float', 'bool', 'string', 'length', 'color', 'brush', 'image', 'ImageFit', 'LayoutAlignment', 'CrossAxisAlignment', 'Orientation', 'DialInputMode', 'ScrollBarPolicy', 'TextWrap', 'DialogRole', 'DrawerEdge', 'SelectionTarget', COLOR, NUMBER, STRING, IDENT}"
+      },
+      {
+        "span": {
+          "line": 1,
+          "column": 50
+        },
+        "message": "extraneous input ':' expecting ';'"
+      }
+    ]
+  ],
+  [
+    "import { Alias from \"widgets.xr\"; component App inherits Window {}",
+    [
+      {
+        "span": {
+          "line": 1,
+          "column": 16
+        },
+        "message": "mismatched input 'from' expecting {',', '}'}"
+      }
+    ]
+  ]
+]

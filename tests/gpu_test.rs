@@ -1,19 +1,19 @@
 use async_ui::AsyncDemo;
 pub mod ui_driver;
-use controls_ui::ControlsDemo;
+use controls_ui::{CalendarDemo, ControlsDemo, DecimalSpinDemo};
 use counter_ui::Counter;
 use delegates_ui::DelegatesDemo;
 use dialog_ui::DialogDemo;
 use form_ui::FormDemo;
-use layout_ui::LayoutDemo;
+use layout_ui::{FlowDemo, LayoutDemo};
 use list_ui::ListDemo;
 use media_ui::MediaDemo;
 use menu_ui::MenuDemo;
-use navigation_ui::{NavigationDemo, StackDemo};
+use navigation_ui::{NavigationDemo, StackDemo, TabBarDemo};
 use notes_ui::NotesDemo;
 use painting_ui::Gallery;
 use records_ui::RecordTableDemo;
-use selection_ui::SelectionDemo;
+use selection_ui::{EditableChoiceDemo, SelectionDemo};
 use split_ui::SplitDemo;
 use table_ui::TableDemo;
 use tooltip_ui::TooltipDemo;
@@ -24,6 +24,67 @@ use xrack_layout::{
     RangeInput, Size, SliderGeometry, SliderKey, SpinGeometry, TextAreaMotion, TextEdit,
     TextPosition, font_size,
 };
+
+#[test]
+fn decimal_spin_box_paints_its_configured_decimal_separator() {
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))
+    .unwrap();
+    let mut ui = DecimalSpinDemo::new();
+    let input = Interaction::default();
+    let before = renderer
+        .snapshot(&ui.render(), 480, 306, 1.0, &input)
+        .unwrap();
+    ui.set_use_comma(false);
+    let after = renderer
+        .snapshot(&ui.render(), 480, 306, 1.0, &input)
+        .unwrap();
+    let area = SpinGeometry::new(before.layout.at_path(&[1]).unwrap().bounds).text;
+    assert!((area.y as u32..(area.y + area.height) as u32).any(|y| {
+        (area.x as u32..(area.x + area.width) as u32)
+            .any(|x| before.pixel(x, y) != after.pixel(x, y))
+    }));
+    assert_eq!(ui.get_level(), 0.2);
+}
+
+#[test]
+fn calendar_draws_the_selected_leap_day_using_its_hit_geometry() {
+    use xrack_layout::CalendarGeometry;
+    use xrack_runtime::{CalendarAction, Date};
+
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))
+    .unwrap();
+    let mut ui = CalendarDemo::new();
+    let input = Interaction::default();
+    let scene = ui.render();
+    let before = renderer.snapshot(&scene, 440, 460, 1.0, &input).unwrap();
+    let geometry = CalendarGeometry::new(
+        scene.at_path(&[1]).unwrap(),
+        before.layout.children[1].bounds,
+    );
+    let pixel = |date| {
+        let bounds = geometry
+            .action_bounds(CalendarAction::Select(date))
+            .unwrap();
+        (bounds.x as u32 + 8, bounds.y as u32 + 8)
+    };
+    let (previous_x, previous_y) = pixel(ui.get_selected());
+    let leap_day = Date::new(2024, 2, 29).unwrap();
+    let (x, y) = pixel(leap_day);
+    let selected = before.pixel(previous_x, previous_y).unwrap();
+    assert_ne!(selected, before.pixel(x, y).unwrap());
+    ui.set_selected(leap_day);
+    let after = renderer
+        .snapshot(&ui.render(), 440, 460, 1.0, &input)
+        .unwrap();
+    assert_eq!(after.pixel(x, y), Some(selected));
+    assert_ne!(after.pixel(previous_x, previous_y), Some(selected));
+}
 
 #[test]
 fn list_view_only_builds_visible_rows_and_selects_absolute_indices() {
@@ -135,6 +196,118 @@ use xrack_runtime::{
 };
 
 #[test]
+fn flow_layout_rewraps_the_command_bar_and_keeps_hit_targets_in_sync() {
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))
+    .unwrap();
+    let mut demo = FlowDemo::new();
+    let scene = demo.render_shared();
+    let mut input = Interaction::default();
+    let wide = renderer.snapshot(&scene, 570, 260, 1.0, &input).unwrap();
+    let compact = renderer.snapshot(&scene, 360, 260, 1.0, &input).unwrap();
+    let button = [0, 1, 2];
+    let wide_export = wide.layout.at_path(&button).unwrap().bounds;
+    let wrapped_export = compact.layout.at_path(&button).unwrap().bounds;
+    let first = compact.layout.at_path(&[0, 1, 0]).unwrap().bounds;
+    let wide_status = wide.layout.at_path(&[0, 2]).unwrap().bounds;
+    let compact_status = compact.layout.at_path(&[0, 2]).unwrap().bounds;
+    assert!(wrapped_export.y > wide_export.y);
+    assert_eq!(wrapped_export.x, first.x);
+    assert_eq!(compact_status.y - wide_status.y, 50.0);
+    assert!(compact_status.y > wrapped_export.y + wrapped_export.height);
+    let point = Point {
+        x: wrapped_export.x + 12.0,
+        y: wrapped_export.y + 12.0,
+    };
+    assert_eq!(
+        compact.pixel(point.x as u32, point.y as u32),
+        Some([0x51, 0x3b, 0x86, 255])
+    );
+    input.pointer_move(&scene, &compact.layout, point);
+    input.pointer_press();
+    let target = input.pointer_release_target().unwrap();
+    assert_eq!(target.path, button);
+    assert!(demo.dispatch_at(&scene, &target.path, "clicked"));
+    assert_eq!(demo.get_selected(), "已导出");
+}
+
+#[test]
+fn editable_combo_clips_completion_and_ime_preedit_to_its_entry() {
+    use xrack_layout::ComboGeometry;
+
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))
+    .unwrap();
+    let mut ui = EditableChoiceDemo::new();
+    ui.set_draft("研".into());
+    let scene = ui.render_shared();
+    let mut input = Interaction::default();
+    let layout = renderer.layout_with_input(&scene, Size::new(470.0, 278.0), &input);
+    let geometry = ComboGeometry::new(layout.at_path(&[0, 1]).unwrap().bounds);
+    input.pointer_move(
+        &scene,
+        &layout,
+        Point {
+            x: geometry.entry.x + 12.0,
+            y: geometry.entry.y + 12.0,
+        },
+    );
+    input.pointer_press();
+    input.pointer_release_target();
+    input.sync_editor(&scene);
+    let before = renderer.snapshot(&scene, 470, 278, 1.0, &input).unwrap();
+    let painted = renderer.take_painted_combo_completion().unwrap();
+    assert_eq!(painted.suffix(), "发");
+    input
+        .editor
+        .as_mut()
+        .unwrap()
+        .set_preedit("中文预览".into(), Some((6, 6)));
+    let composing = renderer.snapshot(&scene, 470, 278, 1.0, &input).unwrap();
+    assert!(renderer.take_painted_combo_completion().is_none());
+    let changed_pixels = |rect: xrack_layout::Rect, frame: &xrack_renderer_femtovg::Snapshot| {
+        let left = rect.x as u32;
+        let right = (rect.x + rect.width) as u32;
+        let top = rect.y as u32;
+        let bottom = (rect.y + rect.height) as u32;
+        (top..bottom)
+            .flat_map(|y| (left..right).map(move |x| (x, y)))
+            .filter(|&(x, y)| before.pixel(x, y) != frame.pixel(x, y))
+            .count()
+    };
+    assert!(changed_pixels(geometry.entry, &composing) > 0);
+    assert_eq!(changed_pixels(geometry.trigger, &composing), 0);
+
+    input
+        .editor
+        .as_mut()
+        .unwrap()
+        .set_preedit(String::new(), None);
+    input.set_painted_combo_completion(Some(painted));
+    assert!(input.dismiss_combo_completion(&scene));
+    let dismissed = renderer.snapshot(&scene, 470, 278, 1.0, &input).unwrap();
+    assert!(changed_pixels(geometry.entry, &dismissed) > 0);
+    assert_eq!(changed_pixels(geometry.trigger, &dismissed), 0);
+
+    let long = "研".repeat(25);
+    ui.set_draft(long.clone());
+    ui.bind_model_workspaces(xrack_runtime::VecModel::from(vec![format!("{long}发")]));
+    input.editor = Some(TextEdit::at_end(&long));
+    let scene = ui.render_shared();
+    assert!(
+        input
+            .combo_completion(scene.at_path(&[0, 1]).unwrap(), &[0, 1])
+            .is_some()
+    );
+    renderer.snapshot(&scene, 220, 278, 1.0, &input).unwrap();
+    assert!(renderer.take_painted_combo_completion().is_none());
+}
+
+#[test]
 fn cascaded_menu_panels_render_and_stay_inside_the_viewport() {
     let mut renderer = pollster::block_on(Renderer::new(
         wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
@@ -187,6 +360,32 @@ fn cascaded_menu_panels_render_and_stay_inside_the_viewport() {
         before.pixel(sample.0, sample.1),
         checked.pixel(sample.0, sample.1)
     );
+    let has_icon = |frame: &xrack_renderer_femtovg::Snapshot, rect: xrack_layout::Rect| {
+        let x = rect.x as u32..(rect.x + rect.width) as u32;
+        let y = rect.y as u32..(rect.y + rect.height) as u32;
+        y.flat_map(|y| x.clone().map(move |x| (x, y)))
+            .filter(|&(x, y)| frame.pixel(x, y) == Some([0xff, 0xb4, 0x54, 255]))
+            .count()
+            > 4
+    };
+    assert!(has_icon(&checked, grid));
+    ui.click("view-menu");
+    let panels = ui.menus();
+    let panel = &panels[0];
+    assert_eq!(panel.rows[0].icon, ui.node("grid-button").image("icon"));
+    assert_eq!(panel.rows[0].checked, Some(true));
+    let icon = panel.icon_bounds(0);
+    let menu_frame = renderer
+        .snapshot(ui.scene(), 620, 366, 1.0, ui.input())
+        .unwrap();
+    assert!(has_icon(&menu_frame, icon));
+    ui.menu_key(MenuKey::Escape);
+    let narrow = renderer
+        .snapshot(ui.scene(), 220, 366, 1.0, ui.input())
+        .unwrap();
+    let bar = narrow.layout.at_path(&[0, 2]).unwrap();
+    assert!(bar.children[2].bounds.y > bar.children[0].bounds.y);
+    assert!(bar.bounds.height > checked.layout.at_path(&[0, 2]).unwrap().bounds.height);
     if let Ok(path) = std::env::var("TEST_UNDECLARED_OUTPUTS_DIR") {
         frame
             .save_png(std::path::Path::new(&path).join("menu-demo.png"))
@@ -1554,6 +1753,39 @@ fn groups_keep_exclusive_selection_and_lazy_pages() {
             .save_png(std::path::Path::new(&path).join("navigation-demo.png"))
             .unwrap();
     }
+}
+
+#[test]
+fn tab_bar_clips_overflow_and_paints_selection_after_a_bound_index_change() {
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))
+    .unwrap();
+    let mut ui = TabBarDemo::new();
+    let input = Interaction::default();
+    let before = renderer
+        .snapshot(&ui.render(), 536, 318, 1.0, &input)
+        .unwrap();
+    let selected = before.pixel(38, 61);
+    assert_ne!(selected, before.pixel(164, 61));
+    assert_eq!(before.pixel(513, 65), before.pixel(519, 65));
+
+    ui.set_page(5);
+    let after = renderer
+        .snapshot(&ui.render(), 536, 318, 1.0, &input)
+        .unwrap();
+    let bar = after.layout.at_path(&[1]).unwrap();
+    assert!(
+        bar.scroll_on(xrack_runtime::Orientation::Horizontal)
+            .unwrap()
+            .offset
+            > 0.0
+    );
+    let last = bar.children[5].bounds;
+    assert_eq!(last.intersect(bar.bounds), last);
+    assert_eq!(after.pixel(last.x as u32 + 14, 61), selected);
+    assert_eq!(after.pixel(513, 65), after.pixel(519, 65));
 }
 
 #[test]

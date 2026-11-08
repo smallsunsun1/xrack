@@ -43,7 +43,14 @@ static bool isExpression(Operation &op) {
              StringifyOp, BinaryOp, SelectOp, SolidBrushOp, GradientStopOp,
              LinearGradientOp, RadialGradientOp, ImageUrlOp, ArrayOp, CallOp,
              ToRatioOp, MakeRecordOp, DefaultRecordOp, RecordArrayOp,
-             GetFieldOp>(op);
+             GetFieldOp, MakeDateOp, DateFieldOp>(op);
+}
+
+LogicalResult DateFieldOp::verify() {
+  auto field = getValue();
+  return field == "year" || field == "month" || field == "day"
+             ? success()
+             : emitOpError("requires year, month, or day");
 }
 
 static bool isVirtualView(llvm::StringRef kind) {
@@ -77,7 +84,7 @@ static LogicalResult verifyStackRoute(Operation *op, ElementOp view,
 }
 
 static bool isTypedRowEditor(llvm::StringRef kind) {
-  return kind == "SpinBox" || kind == "Slider" || kind == "Dial" ||
+  return kind == "SpinBox" || kind == "DoubleSpinBox" || kind == "Slider" || kind == "Dial" ||
          kind == "CheckBox" || kind == "Switch";
 }
 
@@ -168,6 +175,7 @@ LogicalResult ElementOp::verify() {
         auto type = bind.getInput().getType();
         if (!((name == "text" || name == "shortcut") &&
               isa<StringType>(type)) &&
+            !(name == "icon" && isa<ImageType>(type)) &&
             !((name == "enabled" || name == "checked" || name == "checkable") &&
               isa<BoolType>(type)))
           return child.emitOpError("invalid Action property or type");
@@ -189,9 +197,11 @@ LogicalResult ElementOp::verify() {
   }
   auto refs = body.getOps<ActionRefOp>();
   const bool linkedAction = !refs.empty();
-  if (linkedAction && ((kind != "Button" && kind != "MenuItem") ||
-                       !llvm::hasSingleElement(refs)))
-    return emitOpError("requires one Action reference on a Button or MenuItem");
+  if (linkedAction &&
+      ((kind != "Button" && kind != "ToolButton" && kind != "MenuItem") ||
+       !llvm::hasSingleElement(refs)))
+    return emitOpError(
+        "requires one Action reference on a Button, ToolButton or MenuItem");
   if (linkedAction)
     for (auto ancestor = *this; ancestor;
          ancestor = ancestor->getParentOfType<ElementOp>())
@@ -245,11 +255,13 @@ LogicalResult ElementOp::verify() {
   if ((kind == "RadioButton" &&
        (!parent || parent.getKind() != "RadioGroup")) ||
       (kind == "Tab" && (!parent || parent.getKind() != "TabWidget")) ||
+      (kind == "TabButton" && (!parent || parent.getKind() != "TabBar")) ||
       (kind == "SwipePage" && (!parent || parent.getKind() != "SwipeView")) ||
       (kind == "StackPage" && (!parent || parent.getKind() != "StackView")))
     return emitOpError("requires a matching selection container");
   llvm::StringRef childKind = kind == "RadioGroup"  ? "RadioButton"
                               : kind == "TabWidget" ? "Tab"
+                              : kind == "TabBar"   ? "TabButton"
                               : kind == "SwipeView" ? "SwipePage"
                               : kind == "StackView" ? "StackPage"
                                                     : "";
@@ -265,6 +277,8 @@ LogicalResult ElementOp::verify() {
   std::optional<unsigned> cells;
   llvm::StringSet<> intervalEndpoints;
   ReadOp intervalTarget;
+  ReadOp comboTextTarget;
+  ReadOp calendarTarget;
   for (Operation &child : body) {
     if (auto element = dyn_cast<ElementOp>(child);
         element && element.getKind() == "Action")
@@ -316,7 +330,8 @@ LogicalResult ElementOp::verify() {
         return child.emitOpError("invalid menu child");
       if (childType == "Menu")
         ++contextMenus;
-      if ((interval || kind == "Dial" || kind == "PageIndicator") &&
+      if ((interval || kind == "Dial" || kind == "PageIndicator" ||
+           kind == "Calendar") &&
           childType != "Tooltip")
         return child.emitOpError() << kind << " only accepts Tooltip children";
     }
@@ -347,13 +362,71 @@ LogicalResult ElementOp::verify() {
         }
       }
     }
+    if (kind == "Calendar")
+      if (auto link = dyn_cast<ControlLinkOp>(child))
+        if (auto read = link.getInput().getDefiningOp<ReadOp>()) {
+          if (calendarTarget && calendarTarget.getValue() == read.getValue() &&
+              calendarTarget.getOwner().value_or("root") ==
+                  read.getOwner().value_or("root"))
+            return child.emitOpError("Calendar date and display-month require "
+                                     "distinct writable properties");
+          calendarTarget = read;
+        }
     if (kind == "TextEdit" || kind == "TextArea")
       if (auto bind = dyn_cast<BindOp>(child);
           bind && bind.getName() == "wrap" &&
           !isa<TextWrapType>(bind.getInput().getType()))
         return child.emitOpError("wrap requires a TextWrap value");
+    if (kind == "ComboBox")
+      if (auto link = dyn_cast<ControlLinkOp>(child);
+          link &&
+          (link.getName() == "edit-text" || link.getName() == "current-value"))
+        if (auto read = link.getInput().getDefiningOp<ReadOp>()) {
+          if (comboTextTarget &&
+              comboTextTarget.getValue() == read.getValue() &&
+              comboTextTarget.getOwner().value_or("root") ==
+                  read.getOwner().value_or("root"))
+            return child.emitOpError("ComboBox edit-text and current-value "
+                                     "require distinct writable properties");
+          comboTextTarget = read;
+        }
     if (auto bind = dyn_cast<BindOp>(child)) {
       auto name = bind.getName();
+      if ((name == "accessible-name" || name == "accessible-description") &&
+          !isa<StringType>(bind.getInput().getType()))
+        return child.emitOpError("accessibility labels require strings");
+      if (kind == "FlowLayout" || kind == "ToolBar") {
+        auto type = bind.getInput().getType();
+        if ((name == "orientation" && !isa<OrientationType>(type)) ||
+            (name == "alignment" && !isa<LayoutAlignmentType>(type)) ||
+            (kind == "ToolBar" && name == "wrap" && !isa<BoolType>(type)) ||
+            (name == "cross-axis-alignment" &&
+             !isa<CrossAxisAlignmentType>(type)) ||
+            ((name == "spacing" || name == "horizontal-spacing" ||
+              name == "vertical-spacing" || name == "padding" ||
+              name == "padding-left" || name == "padding-right" ||
+              name == "padding-top" || name == "padding-bottom") &&
+             !isa<LengthType>(type)))
+          return child.emitOpError()
+                 << "incorrect " << kind << " property type";
+      }
+      if ((kind == "Button" || kind == "ToolButton" || kind == "MenuItem") &&
+          name == "icon" && !isa<ImageType>(bind.getInput().getType()))
+        return child.emitOpError("icon requires an image");
+      if (kind == "Button" || kind == "ToolButton") {
+        auto type = bind.getInput().getType();
+        if ((name == "icon-only" && !isa<BoolType>(type)) ||
+            (name == "icon-size" && !isa<LengthType>(type)))
+          return child.emitOpError("incorrect button icon property type");
+      }
+      if (kind == "ComboBox") {
+        auto type = bind.getInput().getType();
+        if (((name == "editable" || name == "auto-complete") &&
+             !isa<BoolType>(type)) ||
+            ((name == "edit-text" || name == "placeholder-text") &&
+             !isa<StringType>(type)))
+          return child.emitOpError("incorrect editable ComboBox property type");
+      }
       if (linkedAction) {
         if (name == "checked" || name == "checkable" || name == "shortcut")
           return child.emitOpError("property belongs to the linked Action");
@@ -392,6 +465,26 @@ LogicalResult ElementOp::verify() {
             (name == "orientation" && !isa<OrientationType>(type)))
           return child.emitOpError("incorrect PageIndicator property type");
       }
+      if (kind == "DoubleSpinBox") {
+        auto type = bind.getInput().getType();
+        if (((name == "value" || name == "minimum" || name == "maximum" ||
+              name == "step-size") && !isa<FloatType>(type)) ||
+            (name == "decimals" && !isa<IntType>(type)) ||
+            (name == "decimal-separator" && !isa<StringType>(type)) ||
+            ((name == "editable" || name == "read-only" || name == "wrap" ||
+              name == "enabled") && !isa<BoolType>(type)))
+          return child.emitOpError("incorrect DoubleSpinBox property type");
+      }
+      if (kind == "Calendar") {
+        auto type = bind.getInput().getType();
+        if (((name == "date" || name == "display-month" ||
+              name == "minimum-date" || name == "maximum-date") &&
+             !isa<DateType>(type)) ||
+            (name == "week-start" && !isa<IntType>(type)) ||
+            (name == "enabled" && !isa<BoolType>(type)) ||
+            (name == "weekday-labels" && !isa<StringListType>(type)))
+          return child.emitOpError("incorrect Calendar property type");
+      }
       if ((kind == "SwipeView" || kind == "SwipePage") &&
           (((name == "enabled" || name == "visible" || name == "interactive") &&
             !isa<BoolType>(bind.getInput().getType())) ||
@@ -404,8 +497,8 @@ LogicalResult ElementOp::verify() {
           name == "horizontal-scroll-bar-policy") {
         const bool scrollable =
             name == "vertical-scroll-bar-policy"
-                ? isVirtualView(kind) || kind == "ScrollView"
-                : table || kind == "ScrollView";
+                ? isVirtualView(kind) || kind == "ScrollView" || kind == "TabBar"
+                : table || kind == "ScrollView" || kind == "TabBar";
         if (!scrollable || !isa<ScrollBarPolicyType>(bind.getInput().getType()))
           return child.emitOpError(
               "requires a ScrollBarPolicy on a scrollable axis");
@@ -414,6 +507,15 @@ LogicalResult ElementOp::verify() {
           (kind != "ScrollView" ||
            !isa<LengthType, PercentType>(bind.getInput().getType())))
         return child.emitOpError("requires a ScrollView content length");
+      if (kind == "TabBar" || kind == "TabButton") {
+        auto type = bind.getInput().getType();
+        if (((name == "enabled" || name == "visible") && !isa<BoolType>(type)) ||
+            (name == "text" && !isa<StringType>(type)) ||
+            (name == "current-index" && !isa<IntType>(type)) ||
+            (name == "orientation" && !isa<OrientationType>(type)) ||
+            (name == "spacing" && !isa<LengthType>(type)))
+          return child.emitOpError("incorrect tab bar or button property type");
+      }
       if (kind == "Dial") {
         auto name = bind.getName();
         auto type = bind.getInput().getType();
@@ -518,10 +620,11 @@ LogicalResult ElementOp::verify() {
     }
     if (((kind == "Tab" || kind == "SwipePage" || kind == "StackPage") &&
          isa<ShowIfOp, RepeatOp>(child)) ||
-        (kind == "RadioButton" && isa<ShowIfOp>(child)))
+        ((kind == "RadioButton" || kind == "TabButton") && isa<ShowIfOp>(child)))
       return child.emitOpError("selection options must be static");
-    if (kind == "RadioButton" && isa<ElementOp, InstanceOp>(child))
-      return child.emitOpError("RadioButton cannot contain child elements");
+    if ((kind == "RadioButton" || kind == "TabButton") &&
+        isa<ElementOp, InstanceOp>(child))
+      return child.emitOpError() << kind << " cannot contain child elements";
     if (isa<PropertyOp>(child) && (root || getKey().value_or(getId()).empty()))
       return child.emitOpError("requires a keyed non-root element");
     if (!isa<BindOp, ActionRefOp, AnimateOp, ShowIfOp, RepeatOp, ControlLinkOp,
@@ -531,7 +634,8 @@ LogicalResult ElementOp::verify() {
       return child.emitOpError("is not valid in an element body");
   }
   if (repeated && options != 1)
-    return emitOpError("a repeated RadioButton must be the only option");
+    return emitOpError() << "a repeated " << childKind
+                         << " must be the only option";
   if (kind == "ListView" && listChildren != 1)
     return emitOpError("ListView requires exactly one for element");
   if (tree && listChildren != 1)
@@ -601,18 +705,25 @@ LogicalResult ControlLinkOp::verify() {
        (kind == "RangeSlider" &&
         (getName() == "lower-value" || getName() == "upper-value"))) &&
       isa<FloatType>(type);
-  const bool spin =
-      kind == "SpinBox" && getName() == "value" && isa<IntType>(type);
+  const bool spin = getName() == "value" &&
+                    ((kind == "SpinBox" && isa<IntType>(type)) ||
+                     (kind == "DoubleSpinBox" && isa<FloatType>(type)));
   const bool valueChoice = kind == "ComboBox" || kind == "RadioGroup";
   const bool choice =
-      ((valueChoice || kind == "TabWidget" || kind == "SwipeView" ||
+      ((valueChoice || kind == "TabWidget" || kind == "TabBar" || kind == "SwipeView" ||
         kind == "PageIndicator" || kind == "ListView") &&
        getName() == "current-index" && isa<IntType>(type)) ||
       (valueChoice && getName() == "current-value" && isa<StringType>(type)) ||
       (kind == "TreeView" && getName() == "current-key" &&
        isa<IntType>(type)) ||
       (kind == "TableView" && getName() == "current-row" && isa<IntType>(type));
-  if ((!text && !checked && !range && !spin && !choice && !opened) ||
+  const bool comboText =
+      kind == "ComboBox" && getName() == "edit-text" && isa<StringType>(type);
+  const bool calendar =
+      kind == "Calendar" && (getName() == "date" || getName() == "display-month") &&
+      isa<DateType>(type);
+  if ((!text && !checked && !range && !spin && !choice && !opened &&
+       !comboText && !calendar) ||
       !getInput().getDefiningOp<ReadOp>())
     return emitOpError(
         "requires a writable property reference for the control");
@@ -667,8 +778,9 @@ static ReadOp editableRowModel(RowLinkOp link) {
   const auto type = link.getInput().getType();
   const bool text = kind == (table ? "TableCell" : "TreeCell") &&
                     link.getName() == "text" && isa<StringType>(type);
-  const bool spin =
-      kind == "SpinBox" && link.getName() == "value" && isa<IntType>(type);
+  const bool spin = link.getName() == "value" &&
+                    ((kind == "SpinBox" && isa<IntType>(type)) ||
+                     (kind == "DoubleSpinBox" && isa<FloatType>(type)));
   const bool slider = (kind == "Slider" || kind == "Dial") &&
                       link.getName() == "value" && isa<FloatType>(type);
   const bool toggle = (kind == "CheckBox" || kind == "Switch") &&
@@ -793,21 +905,26 @@ static LogicalResult verifyCallback(Operation *op, Region &body,
         return handler.emitOpError("StackView requires changed(string, int)");
     }
     const bool scalarRange = kind == "Slider" || kind == "Dial";
-    const bool indexView = kind == "TabWidget" || kind == "SwipeView" ||
+    const bool calendar = kind == "Calendar";
+    const bool spin = kind == "SpinBox" || kind == "DoubleSpinBox";
+    const bool indexView = kind == "TabWidget" || kind == "TabBar" || kind == "SwipeView" ||
                            kind == "PageIndicator" || kind == "ListView";
-    if (scalarRange || kind == "SpinBox" || kind == "ComboBox" || table ||
-        kind == "RadioGroup" || indexView || multiline || tree) {
+    if (scalarRange || spin || kind == "ComboBox" || table ||
+        kind == "RadioGroup" || indexView || multiline || tree || calendar) {
       auto *arg = args->size() == 1 ? args->front().getAsObject() : nullptr;
       auto name = handler.getName();
-      auto type = scalarRange ? "float"
+      auto type = calendar ? "Date" : (scalarRange || kind == "DoubleSpinBox") ? "float"
                   : (kind == "SpinBox" || indexView || table || tree)
                       ? "int"
                       : "string";
       const bool known =
-          scalarRange ? name == "changed" || name == "released"
-          : (kind == "SpinBox" || multiline) ? name == "edited"
-          : indexView                        ? name == "changed"
-          : tree ? name == "changed" || name == "expanded" ||
+          calendar ? name == "changed" || name == "month-changed"
+          : scalarRange ? name == "changed" || name == "released"
+          : (spin || multiline) ? name == "edited"
+          : kind == "ComboBox"
+              ? name == "selected" || name == "edited" || name == "accepted"
+          : indexView ? name == "changed"
+          : tree      ? name == "changed" || name == "expanded" ||
                        name == "collapsed" || name == "selection-changed"
           : table
               ? name == "current-row-changed" || name == "selection-changed" ||
@@ -1247,7 +1364,7 @@ static bool recordScalarType(llvm::StringRef type) {
       .Cases({"int", "float", "bool", "string", "length", "color", "brush",
               "image", "ImageFit", "LayoutAlignment", "CrossAxisAlignment",
               "Orientation", "DialInputMode", "ScrollBarPolicy", "TextWrap",
-              "DialogRole", "DrawerEdge", "SelectionTarget"},
+              "DialogRole", "DrawerEdge", "SelectionTarget", "Date"},
              true)
       .Default(false);
 }

@@ -13,6 +13,198 @@ use std::{
 use xrack_runtime::Value;
 
 #[test]
+fn accessibility_scrolls_the_requested_container_without_moving_its_parent() {
+    use xrack_layout::{TextMeasurer, layout};
+    use xrack_runtime::Length;
+
+    struct Measure;
+    impl TextMeasurer for Measure {
+        fn measure(&mut self, _: &str, _: f32, _: f32) -> Size {
+            Size::new(30.0, 16.0)
+        }
+    }
+    struct View;
+    impl Component for View {
+        fn render(&self) -> Node {
+            let mut outer = Node::new("ScrollView", Some("outer"));
+            outer
+                .properties
+                .insert("content-height", Length(500.0).into());
+            let mut inner = Node::new("ScrollView", Some("inner"));
+            inner.properties.insert("width", Length(160.0).into());
+            inner.properties.insert("height", Length(90.0).into());
+            inner
+                .properties
+                .insert("content-width", Length(400.0).into());
+            inner
+                .properties
+                .insert("content-height", Length(420.0).into());
+            inner
+                .properties
+                .insert("accessible-name", "Workspace".to_owned().into());
+            outer.children.push(inner);
+            outer
+        }
+        fn dispatch(&mut self, _: &str, _: &str) -> bool {
+            false
+        }
+    }
+    let mut app = Application::new(
+        View,
+        LocalExecutor::new(|| {}),
+        Inbox::<()>::new(|| {}),
+        |_: &mut View, _| {},
+    );
+    let viewport = Size::new(220.0, 120.0);
+    let frame = Rc::new(layout(&app.scene, viewport, &mut Measure));
+    app.layout = Some(frame.clone());
+    let mut projection = Projection::default();
+    let update = projection
+        .update(&app.scene, &frame, &app.input, 2.0, None)
+        .unwrap();
+    let (target_node, item) = update
+        .nodes
+        .iter()
+        .find(|(_, item)| item.label() == Some("Workspace"))
+        .unwrap();
+    assert_eq!(item.role(), accesskit::Role::ScrollView);
+    assert_eq!(item.scroll_y_max(), Some(660.0));
+    assert_eq!(item.scroll_x_max(), Some(480.0));
+    assert!(item.supports_action(AccessibleAction::ScrollDown));
+    assert!(!item.supports_action(AccessibleAction::ScrollUp));
+    let scaled_offset = accessibility::requested_scroll(
+        AccessibleAction::SetScrollOffset,
+        Some(&ActionData::SetScrollOffset(accesskit::Point::new(
+            120.0, 200.0,
+        ))),
+        app.scene.at_path(&[0]).unwrap(),
+        frame.at_path(&[0]).unwrap(),
+        2.0,
+    );
+    assert_eq!(scaled_offset, [Some(60.0), Some(100.0)]);
+    let route = projection.route(*target_node).unwrap();
+    app.accessibility_action(
+        route.clone(),
+        ActionRequest {
+            action: AccessibleAction::ScrollDown,
+            target_tree: TreeId::ROOT,
+            target_node: *target_node,
+            data: Some(ActionData::ScrollUnit(accesskit::ScrollUnit::Page)),
+        },
+    );
+    assert_eq!(app.input.scroll_offsets().get(&[0][..]), Some(&90.0));
+    assert!(!app.input.scroll_offsets().contains_key(&[][..]));
+    app.accessibility_action(
+        route,
+        ActionRequest {
+            action: AccessibleAction::SetScrollOffset,
+            target_tree: TreeId::ROOT,
+            target_node: *target_node,
+            data: Some(ActionData::SetScrollOffset(accesskit::Point::new(
+                60.0, 999.0,
+            ))),
+        },
+    );
+    assert_eq!(
+        app.input.horizontal_scroll_offsets().get(&[0][..]),
+        Some(&60.0)
+    );
+    assert_eq!(app.input.scroll_offsets().get(&[0][..]), Some(&330.0));
+    assert!(!app.input.scroll_offsets().contains_key(&[][..]));
+}
+
+#[test]
+fn accessibility_dispatches_clicks_and_edits_and_rejects_a_stale_path() {
+    use accesskit::NodeId;
+    use xrack_layout::{TextMeasurer, layout};
+    use xrack_runtime::Length;
+
+    struct Measure;
+    impl TextMeasurer for Measure {
+        fn measure(&mut self, _: &str, _: f32, _: f32) -> Size {
+            Size::new(30.0, 16.0)
+        }
+    }
+    #[derive(Default)]
+    struct View {
+        clicks: usize,
+        text: String,
+    }
+    impl Component for View {
+        fn render(&self) -> Node {
+            let mut root = Node::new("Window", None);
+            let mut button = Node::new("Button", Some("save"));
+            button.properties.insert("text", "Save".to_owned().into());
+            let mut editor = Node::new("LineEdit", Some("editor"));
+            editor.properties.insert("y", Length(50.0).into());
+            editor.properties.insert("text", self.text.clone().into());
+            root.children = vec![button, editor];
+            root
+        }
+        fn dispatch(&mut self, id: &str, event: &str) -> bool {
+            assert_eq!((id, event), ("save", "clicked"));
+            self.clicks += 1;
+            true
+        }
+        fn edit_at(&mut self, _: &Node, path: &[usize], value: String) -> bool {
+            assert_eq!(path, &[1]);
+            self.text = value;
+            true
+        }
+    }
+    let mut app = Application::new(
+        View::default(),
+        LocalExecutor::new(|| {}),
+        Inbox::<()>::new(|| {}),
+        |_: &mut View, _| {},
+    );
+    let viewport = Size::new(220.0, 120.0);
+    let frame = Rc::new(layout(&app.scene, viewport, &mut Measure));
+    app.layout = Some(frame.clone());
+    let mut projection = Projection::default();
+    let update = projection
+        .update(&app.scene, &frame, &app.input, 1.0, None)
+        .unwrap();
+    let id = |role| {
+        update
+            .nodes
+            .iter()
+            .find(|(_, node)| node.role() == role)
+            .unwrap()
+            .0
+    };
+    let click = id(accesskit::Role::Button);
+    let edit = id(accesskit::Role::TextInput);
+    let request = |target_node: NodeId, action, data| ActionRequest {
+        action,
+        target_tree: TreeId::ROOT,
+        target_node,
+        data,
+    };
+    let route = projection.route(click).unwrap();
+    app.accessibility_action(route.clone(), request(click, AccessibleAction::Click, None));
+    assert_eq!(app.component.clicks, 1);
+    app.accessibility_action(
+        projection.route(edit).unwrap(),
+        request(
+            edit,
+            AccessibleAction::SetValue,
+            Some(ActionData::Value("工作区".into())),
+        ),
+    );
+    assert_eq!(app.component.text, "工作区");
+    assert_eq!(
+        app.input.focused.as_ref().and_then(|target| target.id),
+        Some("editor")
+    );
+
+    Rc::make_mut(&mut app.scene).children[0].id = Some("recycled");
+    app.layout = Some(Rc::new(layout(&app.scene, viewport, &mut Measure)));
+    app.accessibility_action(route, request(click, AccessibleAction::Click, None));
+    assert_eq!(app.component.clicks, 1);
+}
+
+#[test]
 fn native_touch_adapter_activates_taps_and_keeps_pans_out_of_click_dispatch() {
     use xrack_layout::{TextMeasurer, layout_with_input};
     use xrack_runtime::Length;

@@ -1,17 +1,36 @@
-load("@rules_rust//rust:defs.bzl", "rust_library")
-load("@crates//:defs.bzl", "aliases", "all_crate_deps")
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
 
 rust_library(
     name = "xrack_parser",
-    srcs = glob(["src/*.rs"]),
-    aliases = aliases(),
+    srcs = [
+        "src/antlr.rs",
+        "src/lib.rs",
+    ],
     crate_name = "xrack_parser",
     crate_root = "src/lib.rs",
     edition = "2024",
-    link_deps = ["//parser:frontend"],
+    rustc_flags = ["--cfg=xrack_bazel"],
     version = "0.1.0",
     visibility = ["//visibility:public"],
     deps = [
         "//crates/xrack-syntax:xrack_syntax",
-    ] + all_crate_deps(normal = True),
+        "//grammar:xrack_antlr_rust",
+        "@crates//:antlr4rust",
+    ],
+)
+
+rust_test(
+    name = "parser_test",
+    size = "small",
+    srcs = ["tests/parser_test.rs"],
+    compile_data = [
+        "tests/fixtures/diagnostics.json",
+        "tests/fixtures/syntax.ast.json",
+        "tests/fixtures/syntax.xr",
+    ],
+    edition = "2024",
+    deps = [
+        ":xrack_parser",
+        "@crates//:serde_json",
+    ],
 )

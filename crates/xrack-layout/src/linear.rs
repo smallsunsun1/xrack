@@ -1,8 +1,9 @@
 use crate::{
-    Rect, Size, TextMeasurer, dialog_title_height, dimension, font_size, participates_in_flow,
+    ButtonContent, Rect, Size, TextMeasurer, dialog_title_height, dimension, flow, font_size,
+    participates_in_flow,
 };
 use xrack_runtime::{
-    CrossAxisAlignment, LayoutAlignment, Node, Orientation, Value, button_text, is_modal_overlay,
+    CrossAxisAlignment, LayoutAlignment, Node, Orientation, Value, is_modal_overlay,
     is_multiline_text_input, is_text_input, is_toggle,
 };
 
@@ -22,7 +23,12 @@ impl Axis {
     }
 
     pub(crate) fn for_node(node: &Node) -> Option<Self> {
-        if node.kind == "RadioGroup" {
+        if node.kind == "ToolBar" {
+            (!flow::wraps(node)).then(|| match node.orientation() {
+                Orientation::Horizontal => Self::Horizontal,
+                Orientation::Vertical => Self::Vertical,
+            })
+        } else if node.kind == "RadioGroup" {
             if !node.properties.contains_key("orientation")
                 || node.orientation() == Orientation::Vertical
             {
@@ -35,7 +41,7 @@ impl Axis {
         }
     }
 
-    fn other(self) -> Self {
+    pub(crate) fn other(self) -> Self {
         match self {
             Self::Horizontal => Self::Vertical,
             Self::Vertical => Self::Horizontal,
@@ -145,6 +151,7 @@ pub(crate) fn intrinsic_item(kind: &str) -> bool {
         kind,
         "Text"
             | "Button"
+            | "ToolButton"
             | "DialogButton"
             | "Menu"
             | "Image"
@@ -154,6 +161,7 @@ pub(crate) fn intrinsic_item(kind: &str) -> bool {
             | "RangeSlider"
             | "ProgressIndicator"
             | "SpinBox"
+            | "DoubleSpinBox"
             | "ComboBox"
     ) || kind == "RadioButton"
         || is_toggle(kind)
@@ -173,10 +181,10 @@ pub(crate) struct Padding {
 
 impl Padding {
     pub(crate) fn read(node: &Node) -> Self {
-        let uniform = dimension(node, "padding").unwrap_or(if is_modal_overlay(node.kind) {
-            16.0
-        } else {
-            0.0
+        let uniform = dimension(node, "padding").unwrap_or(match node.kind {
+            "ToolBar" => 6.0,
+            kind if is_modal_overlay(kind) => 16.0,
+            _ => 0.0,
         });
         let side = |name| dimension(node, name).unwrap_or(uniform);
         Self {
@@ -228,6 +236,17 @@ pub(crate) fn measure(node: &Node, available: Size, text: &mut impl TextMeasurer
     measure_with_width(node, available, None, text)
 }
 
+pub(crate) fn measurement_width(node: &Node, reference: Size) -> f32 {
+    node.relative_length("width", reference.width)
+        .map(|value| value.max(0.0))
+        .unwrap_or_else(|| {
+            reference.width.min(
+                node.relative_length("max-width", reference.width)
+                    .map_or(f32::INFINITY, |value| value.max(0.0)),
+            )
+        })
+}
+
 pub(crate) fn measure_with_width(
     node: &Node,
     reference: Size,
@@ -239,13 +258,7 @@ pub(crate) fn measure_with_width(
             .map(|value| value.max(0.0))
     };
     let available = Size::new(
-        assigned_width
-            .or_else(|| relative_width("width"))
-            .unwrap_or_else(|| {
-                reference
-                    .width
-                    .min(relative_width("max-width").unwrap_or(f32::INFINITY))
-            }),
+        assigned_width.unwrap_or_else(|| measurement_width(node, reference)),
         node.relative_length("height", reference.height)
             .map(|value| value.max(0.0))
             .unwrap_or(reference.height),
@@ -259,14 +272,21 @@ pub(crate) fn measure_with_width(
         let mut cross = AxisInfo::flexible(0.0);
         cross.stretch = f32::INFINITY;
         let mut count = 0usize;
-        for child in node
+        let children = node
             .children
             .iter()
-            .filter(|child| linear_child(node, child))
-        {
+            .filter(|child| linear_child(node, child));
+        let has_flow = matches!(axis, Axis::Horizontal) && children.clone().any(flow::wraps);
+        let alignment = layout_alignment(node);
+        let legacy = legacy_box(node.kind);
+        let mut line_infos = Vec::new();
+        for child in children.clone() {
             let metrics = measure(child, inner, text);
             let child_main = metrics.along(axis);
             let child_cross = metrics.along(axis.other());
+            if has_flow {
+                line_infos.push(main_info(child, axis, alignment, legacy, child_main));
+            }
             main.min += child_main.min;
             main.preferred += child_main.preferred;
             main.max += child_main.max;
@@ -288,7 +308,27 @@ pub(crate) fn measure_with_width(
         cross.min += cross_extra;
         cross.preferred += cross_extra;
         cross.max += cross_extra;
-        if layout_alignment(node) != LayoutAlignment::Stretch {
+        if has_flow {
+            // A flow may wrap more lines after its siblings take their widths.
+            let (widths, _, _) = fit_line(
+                line_infos.into_iter(),
+                inner.width,
+                spacing(node),
+                alignment,
+            );
+            let flow_height = children
+                .zip(widths)
+                .filter(|(child, _)| flow::wraps(child))
+                .map(|(child, width)| {
+                    measure_with_width(child, inner, Some(width), text)
+                        .y
+                        .preferred
+                })
+                .fold(0.0_f32, f32::max);
+            cross.preferred = cross.preferred.max(flow_height + cross_extra);
+            cross.max = cross.max.max(flow_height + cross_extra);
+        }
+        if alignment != LayoutAlignment::Stretch {
             main.max = f32::INFINITY;
         }
         if count == 0 {
@@ -297,7 +337,11 @@ pub(crate) fn measure_with_width(
         if node.kind == "MenuBar" {
             cross = AxisInfo::fixed(cross.preferred.max(32.0));
         }
-        if legacy_box(node.kind) {
+        if node.kind == "ToolBar" {
+            cross.max = cross.preferred.max(cross.min);
+            cross.stretch = 0.0;
+        }
+        if legacy {
             main.max = f32::INFINITY;
             cross.max = f32::INFINITY;
             main.stretch = 1.0;
@@ -307,6 +351,8 @@ pub(crate) fn measure_with_width(
             Axis::Horizontal => Metrics { x: main, y: cross },
             Axis::Vertical => Metrics { x: cross, y: main },
         }
+    } else if flow::wraps(node) {
+        crate::flow::measure(node, available, text)
     } else if node.kind == "GridLayout" {
         crate::grid::measure(node, available, text)
     } else {
@@ -324,8 +370,12 @@ pub(crate) fn measure_with_width(
             "Slider" | "RangeSlider" => Size::new(160.0, 28.0),
             "Dial" => Size::new(96.0, 96.0),
             "SpinBox" => Size::new(116.0, 34.0),
+            "DoubleSpinBox" => Size::new(148.0, 34.0),
             "ComboBox" => Size::new(156.0, 34.0),
+            "Calendar" => Size::new(294.0, 300.0),
             "TabWidget" | "SwipeView" | "StackView" => Size::new(240.0, 136.0),
+            "TabBar" if node.orientation() == Orientation::Vertical => Size::new(132.0, 144.0),
+            "TabBar" => Size::new(240.0, 38.0),
             "PageIndicator" => crate::PageIndicatorGeometry::preferred_size(node),
             "ListView" | "TreeView" => Size::new(180.0, 144.0),
             "TableView" => Size::new(280.0, 178.0),
@@ -350,16 +400,28 @@ pub(crate) fn measure_with_width(
                 );
                 Size::new(label.width + decoration, label.height.max(26.0))
             }
-            "Button" | "DialogButton" => {
-                let padding = dimension(node, "padding").unwrap_or(10.0);
-                let content = text.measure(
-                    button_text(node),
-                    font_size(node),
-                    (available.width - 2.0 * padding).max(0.0),
-                );
+            "Button" | "ToolButton" | "DialogButton" => {
+                let button = ButtonContent::new(node);
+                let icon = button.icon.map_or(0.0, |(_, size)| size);
+                let chrome = 2.0 * button.padding;
+                let decoration = icon + button.gap();
+                let label = if button.label.is_empty() {
+                    Size::default()
+                } else {
+                    text.measure(
+                        button.label,
+                        font_size(node),
+                        (available.width - chrome - decoration).max(0.0),
+                    )
+                };
+                let min = if node.kind == "ToolButton" {
+                    Size::new(34.0, 34.0)
+                } else {
+                    Size::new(64.0, 40.0)
+                };
                 Size::new(
-                    (content.width + 2.0 * padding).max(64.0),
-                    (content.height + 2.0 * padding).max(40.0),
+                    (label.width + decoration + chrome).max(min.width),
+                    (label.height.max(icon) + chrome).max(min.height),
                 )
             }
             "Image" => {
@@ -381,7 +443,10 @@ pub(crate) fn measure_with_width(
             _ => Size::default(),
         };
         let info = |preferred| AxisInfo {
-            min: if matches!(node.kind, "Text" | "Button" | "DialogButton" | "Menu") {
+            min: if matches!(
+                node.kind,
+                "Text" | "Button" | "ToolButton" | "DialogButton" | "Menu"
+            ) {
                 preferred
             } else {
                 0.0
@@ -400,22 +465,26 @@ pub(crate) fn measure_with_width(
     }
 }
 
-fn layout_alignment(node: &Node) -> LayoutAlignment {
+pub(crate) fn layout_alignment(node: &Node) -> LayoutAlignment {
     match node.properties.get("alignment") {
         Some(Value::LayoutAlignment(value)) => *value,
-        _ if node.kind == "MenuBar" => LayoutAlignment::Start,
+        _ if matches!(node.kind, "MenuBar" | "FlowLayout" | "ToolBar") => LayoutAlignment::Start,
         _ => LayoutAlignment::Stretch,
     }
 }
 
-fn cross_alignment(node: &Node, property: &str) -> CrossAxisAlignment {
+pub(crate) fn cross_alignment(node: &Node, property: &str) -> CrossAxisAlignment {
     match node.properties.get(property) {
         Some(Value::CrossAxisAlignment(value)) => *value,
         _ => CrossAxisAlignment::Auto,
     }
 }
 
-fn cross_geometry(info: AxisInfo, alignment: CrossAxisAlignment, available: f32) -> (f32, f32) {
+pub(crate) fn cross_geometry(
+    info: AxisInfo,
+    alignment: CrossAxisAlignment,
+    available: f32,
+) -> (f32, f32) {
     match alignment {
         CrossAxisAlignment::Auto | CrossAxisAlignment::Stretch => (0.0, info.clamp(available)),
         CrossAxisAlignment::Start => (0.0, info.preferred),
@@ -430,7 +499,55 @@ struct Item {
     main: AxisInfo,
     cross: AxisInfo,
     cross_alignment: CrossAxisAlignment,
-    size: f32,
+}
+
+fn main_info(
+    child: &Node,
+    axis: Axis,
+    alignment: LayoutAlignment,
+    legacy: bool,
+    info: AxisInfo,
+) -> AxisInfo {
+    if legacy
+        && alignment == LayoutAlignment::Stretch
+        && !axis
+            .properties()
+            .iter()
+            .any(|name| child.properties.contains_key(name))
+    {
+        if intrinsic_item(child.kind) {
+            AxisInfo::fixed(info.preferred)
+        } else {
+            AxisInfo::flexible(0.0)
+        }
+    } else {
+        info
+    }
+}
+
+pub(crate) fn fit_line(
+    infos: impl ExactSizeIterator<Item = AxisInfo> + Clone,
+    available: f32,
+    gap: f32,
+    alignment: LayoutAlignment,
+) -> (Vec<f32>, f32, f32) {
+    let count = infos.len() as f32;
+    let preferred = infos.clone().map(|item| item.preferred).sum::<f32>();
+    let slack = available - preferred;
+    let free = slack - gap * (count - 1.0);
+    if alignment == LayoutAlignment::Stretch || free <= 0.0 {
+        return (fit_axis(infos, available - gap * (count - 1.0)), 0.0, gap);
+    }
+    let (offset, spacing) = match alignment {
+        LayoutAlignment::Stretch | LayoutAlignment::Start => (0.0, gap),
+        LayoutAlignment::Center => (free * 0.5, gap),
+        LayoutAlignment::End => (free, gap),
+        LayoutAlignment::SpaceBetween if count > 1.0 => (0.0, slack / (count - 1.0)),
+        LayoutAlignment::SpaceBetween => (0.0, gap),
+        LayoutAlignment::SpaceAround => (slack / (2.0 * count), slack / count),
+        LayoutAlignment::SpaceEvenly => (slack / (count + 1.0), slack / (count + 1.0)),
+    };
+    (infos.map(|item| item.preferred).collect(), offset, spacing)
 }
 
 pub(crate) fn fit_axis(infos: impl IntoIterator<Item = AxisInfo>, available: f32) -> Vec<f32> {
@@ -509,7 +626,6 @@ pub(crate) fn children(
     let alignment = layout_alignment(node);
     let default_cross = cross_alignment(node, "cross-axis-alignment");
     let legacy = legacy_box(node.kind);
-    let main_properties = axis.properties();
     let cross_properties = axis.other().properties();
 
     let mut items = Vec::new();
@@ -537,25 +653,12 @@ pub(crate) fn children(
                 main = measure_with_width(child, available, Some(width), text).along(axis);
             }
         }
-        if legacy
-            && alignment == LayoutAlignment::Stretch
-            && !main_properties
-                .iter()
-                .any(|name| child.properties.contains_key(name))
-        {
-            main = if intrinsic_item(child.kind) {
-                AxisInfo::fixed(main.preferred)
-            } else {
-                AxisInfo::flexible(0.0)
-            };
-        }
         items.push(Item {
             index,
             order: child.int("layout-order").unwrap_or(0),
-            main,
+            main: main_info(child, axis, alignment, legacy, main),
             cross,
             cross_alignment,
-            size: main.preferred,
         });
     }
     items.sort_by_key(|item| item.order);
@@ -564,58 +667,42 @@ pub(crate) fn children(
         return result;
     }
 
-    let count = items.len() as f32;
-    let preferred = items.iter().map(|item| item.size).sum::<f32>();
-    let free = main_available - preferred - gap * (count - 1.0);
-    let (mut cursor, spacing) = if alignment == LayoutAlignment::Stretch || free <= 0.0 {
-        let sizes = fit_axis(
-            items.iter().map(|item| item.main),
-            main_available - gap * (count - 1.0),
-        );
-        for (item, size) in items.iter_mut().zip(sizes) {
-            item.size = size;
-        }
-        (0.0, gap)
-    } else {
-        let slack = main_available - preferred;
-        match alignment {
-            LayoutAlignment::Stretch | LayoutAlignment::Start => (0.0, gap),
-            LayoutAlignment::Center => (free * 0.5, gap),
-            LayoutAlignment::End => (free, gap),
-            LayoutAlignment::SpaceBetween if items.len() > 1 => (0.0, slack / (count - 1.0)),
-            LayoutAlignment::SpaceBetween => (0.0, gap),
-            LayoutAlignment::SpaceAround => (slack / (2.0 * count), slack / count),
-            LayoutAlignment::SpaceEvenly => (slack / (count + 1.0), slack / (count + 1.0)),
-        }
-    };
-    for item in items {
+    let (sizes, mut cursor, spacing) = fit_line(
+        items.iter().map(|item| item.main),
+        main_available,
+        gap,
+        alignment,
+    );
+    for (item, size) in items.into_iter().zip(sizes) {
         let child = &node.children[item.index];
+        let reflows = flow::wraps(child) && size != measurement_width(child, available);
         let cross = if matches!(axis, Axis::Horizontal)
-            && !matches!(
-                item.cross_alignment,
-                CrossAxisAlignment::Stretch | CrossAxisAlignment::Auto
-            ) {
-            measure_with_width(child, available, Some(item.size), text).along(axis.other())
+            && (reflows
+                || !matches!(
+                    item.cross_alignment,
+                    CrossAxisAlignment::Stretch | CrossAxisAlignment::Auto
+                )) {
+            measure_with_width(child, available, Some(size), text).along(axis.other())
         } else {
             item.cross
         };
         let (offset, extent) = cross_geometry(cross, item.cross_alignment, cross_available);
-        let mut rect = axis.rect(inner, cursor, offset, item.size, extent);
+        let mut rect = axis.rect(inner, cursor, offset, size, extent);
         if legacy {
             rect.x += child.length("x").unwrap_or(0.0);
             rect.y += child.length("y").unwrap_or(0.0);
         }
         result[item.index] = rect;
-        cursor += item.size + spacing;
+        cursor += size + spacing;
     }
     result
 }
 
-fn spacing(node: &Node) -> f32 {
-    dimension(node, "spacing").unwrap_or(if is_modal_overlay(node.kind) {
-        8.0
-    } else {
-        0.0
+pub(crate) fn spacing(node: &Node) -> f32 {
+    dimension(node, "spacing").unwrap_or(match node.kind {
+        "ToolBar" => 6.0,
+        kind if is_modal_overlay(kind) => 8.0,
+        _ => 0.0,
     })
 }
 

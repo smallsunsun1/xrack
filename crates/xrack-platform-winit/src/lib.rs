@@ -1,4 +1,6 @@
 //! Native desktop host. The event loop sleeps until input, resize, or OS redraw.
+mod accessibility;
+mod accessibility_text;
 mod clipboard;
 mod frame;
 mod local_task;
@@ -7,6 +9,8 @@ mod queue;
 #[cfg(test)]
 mod tests;
 
+use accessibility::{Projection, Route};
+use accesskit::{Action as AccessibleAction, ActionData, ActionRequest, TreeId};
 use clipboard::{
     ClipboardPort, ClipboardValue, EditContext, Operation as ClipboardOperation,
     Reply as ClipboardReply,
@@ -29,32 +33,36 @@ use winit::{
         DeviceId, ElementState, Ime, KeyEvent, MouseButton, MouseScrollDelta, Touch, TouchPhase,
         WindowEvent,
     },
-    event_loop::{ActiveEventLoop, ControlFlow, EventLoop},
+    event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy},
     keyboard::{Key, ModifiersState, NamedKey},
     window::{CursorIcon, Window, WindowId},
 };
 use xrack_layout::{
-    ActivationKey, ChoiceKey, ControlInput, EditAction, EditSource, Interaction, LayoutNode,
-    MenuKey, MenuShortcut, NavigationKey, Point, RangeInput, Rect, ScrollGestureKind, ShortcutKey,
-    ShortcutModifiers, Size, SpinGeometry, SplitResize, StackTransitions, TableSelectionKey,
-    Target, TextAreaMotion, font_size,
+    ActivationKey, ChoiceKey, ComboGeometry, ControlInput, EditAction, EditSource, Interaction,
+    LayoutNode, MenuKey, MenuShortcut, NavigationKey, Point, RangeInput, Rect, ScrollGestureKind,
+    ShortcutKey, ShortcutModifiers, Size, SpinGeometry, SplitResize, StackTransitions,
+    TableSelectionKey, Target, TextAreaMotion, font_size,
 };
 use xrack_renderer_femtovg::Renderer;
 use xrack_runtime::{
-    Component, ControlAction, Node, Orientation, RowSelection, SceneTransition, SpinAction,
-    is_multiline_text_input, spin_editable,
+    Component, ControlAction, Node, Orientation, RangeAction, RowSelection, SceneTransition,
+    SpinAction, SpinDecimal, combo_editable, decimal_separator, is_multiline_text_input,
+    is_spin_box, spin_editable, text_input_value,
 };
 
 struct WindowState {
     surface: wgpu::Surface<'static>,
     renderer: Renderer,
     config: wgpu::SurfaceConfiguration,
+    accessibility: accesskit_winit::Adapter,
+    projection: Projection,
+    accessibility_active: bool,
     window: Arc<Window>,
     frame: FrameCache,
 }
 
 impl WindowState {
-    fn new(window: Arc<Window>) -> Result<Self, String> {
+    fn new(window: Arc<Window>, accessibility: accesskit_winit::Adapter) -> Result<Self, String> {
         let instance = wgpu::Instance::new(
             wgpu::InstanceDescriptor::new_with_display_handle_from_env(Box::new(window.clone())),
         );
@@ -81,6 +89,9 @@ impl WindowState {
             surface,
             renderer,
             config,
+            accessibility,
+            projection: Projection::default(),
+            accessibility_active: false,
             window,
             frame: FrameCache::default(),
         })
@@ -115,6 +126,13 @@ enum UserEvent {
     PollTasks,
     ApplyMessages,
     Clipboard(ClipboardReply),
+    Accessibility(accesskit_winit::Event),
+}
+
+impl From<accesskit_winit::Event> for UserEvent {
+    fn from(event: accesskit_winit::Event) -> Self {
+        Self::Accessibility(event)
+    }
 }
 
 enum ClipboardShortcut {
@@ -147,6 +165,7 @@ struct Application<C, M, R> {
     reduce: R,
     clipboard: Option<ClipboardPort>,
     pending_clipboard: Option<(u64, EditContext)>,
+    accessibility_proxy: Option<EventLoopProxy<UserEvent>>,
 }
 
 fn text_area_item<'a>(
@@ -182,6 +201,7 @@ impl<C: Component, M, R: FnMut(&mut C, M)> Application<C, M, R> {
             reduce,
             clipboard: None,
             pending_clipboard: None,
+            accessibility_proxy: None,
         }
     }
 
@@ -200,9 +220,310 @@ impl<C: Component, M, R: FnMut(&mut C, M)> Application<C, M, R> {
                 self.finish_clipboard(reply);
                 false
             }
+            UserEvent::Accessibility(event) => {
+                self.accessibility_event(event);
+                false
+            }
         };
         if processed {
             self.refresh_after_update(false);
+        }
+    }
+
+    fn update_accessibility(&mut self) {
+        let (Some(state), Some(layout)) = (&mut self.state, &self.layout) else {
+            return;
+        };
+        if state.accessibility_active
+            && let Some(update) = state.projection.update(
+                &self.scene,
+                layout,
+                &self.input,
+                state.window.scale_factor(),
+                Some(&state.renderer.text),
+            )
+        {
+            state.accessibility.update_if_active(|| update);
+        }
+    }
+
+    fn accessibility_event(&mut self, event: accesskit_winit::Event) {
+        use accesskit_winit::WindowEvent as AccessEvent;
+        let Some(state) = self
+            .state
+            .as_mut()
+            .filter(|state| state.window.id() == event.window_id)
+        else {
+            return;
+        };
+        match event.window_event {
+            AccessEvent::InitialTreeRequested => {
+                state.accessibility_active = true;
+                state.projection.clear();
+                self.update_accessibility();
+            }
+            AccessEvent::AccessibilityDeactivated => {
+                state.accessibility_active = false;
+                state.projection.clear();
+            }
+            AccessEvent::ActionRequested(request) if request.target_tree == TreeId::ROOT => {
+                if let Some(route) = state.projection.route(request.target_node) {
+                    self.accessibility_action(route, request);
+                }
+            }
+            AccessEvent::ActionRequested(_) => {}
+        }
+    }
+
+    fn accessibility_action(&mut self, route: Route, request: ActionRequest) {
+        let Some(layout) = &self.layout else {
+            return;
+        };
+        let target = match &route {
+            Route::Element { target, .. }
+            | Route::Choice { target, .. }
+            | Route::Calendar { target, .. } => target,
+            Route::MenuEntry { trigger, entry } => {
+                let activate = match request.action {
+                    AccessibleAction::Focus => false,
+                    AccessibleAction::Click => true,
+                    AccessibleAction::Expand if entry.kind == "Menu" => true,
+                    _ => return,
+                };
+                if let Some(action) = self.input.accessibility_menu_entry(
+                    &self.scene,
+                    layout,
+                    trigger,
+                    entry,
+                    activate,
+                ) {
+                    self.apply_control(action);
+                } else {
+                    self.update_editor();
+                }
+                return;
+            }
+            Route::MenuPanel { trigger, path } => {
+                if request.action == AccessibleAction::Collapse {
+                    self.input
+                        .accessibility_close_menu(&self.scene, layout, trigger, path);
+                    self.update_editor();
+                }
+                return;
+            }
+        };
+        if self
+            .input
+            .accessibility_target(&self.scene, layout, &target.path)
+            .as_ref()
+            != Some(target)
+        {
+            return;
+        }
+        let Some(node) = self.scene.at_path(&target.path) else {
+            return;
+        };
+        if self.input.menu_open() && node.kind != "Menu" {
+            return;
+        }
+        match route {
+            Route::Calendar { target, action } => {
+                if request.action == AccessibleAction::Click
+                    && node.kind == "Calendar"
+                    && let Some(item) = layout.at_path(&target.path)
+                    && xrack_layout::CalendarGeometry::new(node, item.bounds)
+                        .action_bounds(action)
+                        .is_some_and(|rect| {
+                            let rect = rect.intersect(item.clip);
+                            rect.width > 0.0 && rect.height > 0.0
+                        })
+                {
+                    self.input.accessibility_focus(target.clone());
+                    self.apply_control(ControlInput {
+                        path: target.path,
+                        action: ControlAction::Calendar(action),
+                    });
+                }
+            }
+            Route::Choice {
+                target,
+                index,
+                value,
+            } => {
+                if request.action == AccessibleAction::Click
+                    && self.input.choice_is_open_for(&target.path)
+                    && let Some(menu) = self.input.choice_menu(&self.scene, layout)
+                    && let Some(offset) = index.checked_sub(menu.first)
+                    && menu.rows.get(offset) == Some(&value)
+                {
+                    self.input.dismiss_choice();
+                    self.input.editor = None;
+                    self.apply_control(ControlInput {
+                        path: target.path,
+                        action: ControlAction::Select(index),
+                    });
+                }
+            }
+            Route::Element { target, kind } if kind == node.kind => match request.action {
+                AccessibleAction::Focus => {
+                    self.input.accessibility_focus(target);
+                    self.update_editor();
+                }
+                AccessibleAction::Click if accessibility::supports_click(kind) => {
+                    self.input.accessibility_focus(target.clone());
+                    if kind == "ComboBox" {
+                        if self.input.choice_is_open_for(&target.path) {
+                            self.input.dismiss_choice();
+                        } else {
+                            self.input.open_choice(&self.scene, layout, target);
+                        }
+                        self.update_editor();
+                    } else {
+                        self.activate(Some(target));
+                    }
+                }
+                AccessibleAction::SetValue if accessibility::supports_text_value(node) => {
+                    if let Some(ActionData::Value(value)) = request.data {
+                        self.input.accessibility_focus(target);
+                        self.input.edit_text(
+                            &mut self.component,
+                            &self.scene,
+                            EditAction::SelectAll,
+                            EditSource::Atomic,
+                            Instant::now(),
+                        );
+                        let action = if value.is_empty() {
+                            EditAction::Backspace
+                        } else {
+                            EditAction::Insert(&value)
+                        };
+                        self.edit_text_from(action, EditSource::Atomic);
+                    }
+                }
+                AccessibleAction::SetTextSelection
+                    if target.focusable
+                        && accessibility_text::supports_ranges(node)
+                        && self
+                            .input
+                            .editor
+                            .as_ref()
+                            .is_none_or(|edit| edit.preedit.is_empty()) =>
+                {
+                    let value = text_input_value(node);
+                    if let Some(ActionData::SetTextSelection(selection)) = request.data
+                        && let Some((anchor, focus)) = self.state.as_ref().and_then(|state| {
+                            state
+                                .projection
+                                .text_selection(request.target_node, selection, value)
+                        })
+                    {
+                        self.pending_clipboard = None;
+                        self.input.accessibility_focus(target);
+                        self.input.break_text_edit_group();
+                        self.input
+                            .editor
+                            .get_or_insert_with(|| xrack_layout::TextEdit::at_end(value))
+                            .set_selection(value, anchor, focus);
+                        self.update_editor();
+                    }
+                }
+                AccessibleAction::SetValue
+                    if node.kind == "DoubleSpinBox" && spin_editable(node) =>
+                {
+                    let value = match request.data {
+                        Some(ActionData::NumericValue(value)) => SpinDecimal::new(value),
+                        Some(ActionData::Value(text)) => {
+                            SpinDecimal::parse(&text, decimal_separator(node))
+                        }
+                        _ => None,
+                    };
+                    if let Some(value) = value {
+                        self.input.accessibility_focus(target.clone());
+                        self.apply_control(ControlInput {
+                            path: target.path,
+                            action: ControlAction::Spin(SpinAction::CommitDecimal(value)),
+                        });
+                    }
+                }
+                AccessibleAction::ShowContextMenu
+                    if target.focusable
+                        && accessibility::supports_context_menu(
+                            &self.scene,
+                            layout,
+                            &self.input,
+                            &target.path,
+                        ) =>
+                {
+                    self.input.accessibility_focus(target);
+                    self.input.open_context_menu(&self.scene, layout, true);
+                    self.update_editor();
+                }
+                AccessibleAction::Increment | AccessibleAction::Decrement
+                    if matches!(kind, "Slider" | "Dial" | "RangeThumb") =>
+                {
+                    self.adjust_range(RangeInput {
+                        path: target.path,
+                        action: if request.action == AccessibleAction::Increment {
+                            RangeAction::Increase
+                        } else {
+                            RangeAction::Decrease
+                        },
+                    });
+                }
+                AccessibleAction::Increment | AccessibleAction::Decrement
+                    if is_spin_box(kind) && !node.boolean("read-only", false) =>
+                {
+                    self.apply_control(ControlInput {
+                        path: target.path,
+                        action: ControlAction::Spin(
+                            if request.action == AccessibleAction::Increment {
+                                SpinAction::Increase
+                            } else {
+                                SpinAction::Decrease
+                            },
+                        ),
+                    });
+                }
+                AccessibleAction::ScrollUp
+                | AccessibleAction::ScrollDown
+                | AccessibleAction::ScrollLeft
+                | AccessibleAction::ScrollRight
+                | AccessibleAction::SetScrollOffset => {
+                    let Some(item) = layout.at_path(&target.path) else {
+                        return;
+                    };
+                    let scale = self
+                        .state
+                        .as_ref()
+                        .map_or(1.0, |state| state.window.scale_factor());
+                    let offsets = accessibility::requested_scroll(
+                        request.action,
+                        request.data.as_ref(),
+                        node,
+                        item,
+                        scale,
+                    );
+                    let mut moved = false;
+                    for (axis, offset) in [Orientation::Horizontal, Orientation::Vertical]
+                        .into_iter()
+                        .zip(offsets)
+                    {
+                        if let Some(offset) = offset {
+                            moved |= self.input.accessibility_scroll_to(
+                                layout,
+                                &target.path,
+                                axis,
+                                offset,
+                            );
+                        }
+                    }
+                    if moved {
+                        self.relayout_with_caret(false);
+                    }
+                }
+                _ => {}
+            },
+            _ => {}
         }
     }
 
@@ -301,6 +622,12 @@ impl<C: Component, M, R: FnMut(&mut C, M)> Application<C, M, R> {
             return;
         }
         if let (Some(target), Some(layout)) = (target.as_ref(), self.layout.as_ref())
+            && let Some(action) = self.input.calendar_activate(&self.scene, layout, target)
+        {
+            self.apply_control(action);
+            return;
+        }
+        if let (Some(target), Some(layout)) = (target.as_ref(), self.layout.as_ref())
             && let Some(action) = self.input.dialog_button(&self.scene, layout, target)
         {
             self.apply_control(action);
@@ -324,7 +651,9 @@ impl<C: Component, M, R: FnMut(&mut C, M)> Application<C, M, R> {
             return;
         }
         if let (Some(target), Some(layout)) = (target.as_ref(), self.layout.as_ref())
-            && self.input.open_choice(&self.scene, layout, target.clone())
+            && self
+                .input
+                .open_choice_at_pointer(&self.scene, layout, target.clone())
         {
             self.update_editor();
             return;
@@ -442,8 +771,10 @@ impl<C: Component, M, R: FnMut(&mut C, M)> Application<C, M, R> {
                 .as_ref()
                 .and_then(|layout| layout.at_path(&target.path))
         {
-            let bounds = if node.kind == "SpinBox" {
+            let bounds = if is_spin_box(node.kind) {
                 SpinGeometry::new(layout.bounds).text
+            } else if combo_editable(node) {
+                ComboGeometry::new(layout.bounds).entry
             } else {
                 layout.bounds
             };
@@ -501,7 +832,7 @@ impl<C: Component, M, R: FnMut(&mut C, M)> Application<C, M, R> {
         let Some(node) = self
             .scene
             .interactive_at_path(&target.path)
-            .filter(|node| self.input.is_text_editor(node, target))
+            .filter(|node| self.input.is_text_editor(node, target) || spin_editable(node))
         else {
             return;
         };
@@ -515,12 +846,24 @@ impl<C: Component, M, R: FnMut(&mut C, M)> Application<C, M, R> {
         let Some(state) = &self.state else {
             return;
         };
-        let value = if matches!(node.kind, "TableCell" | "TreeCell") {
+        let value = if is_spin_box(node.kind) || matches!(node.kind, "TableCell" | "TreeCell") {
             Cow::Owned(self.input.editor_value(node).into_owned())
         } else {
-            Cow::Borrowed(node.text("text").unwrap_or(""))
+            Cow::Borrowed(text_input_value(node))
         };
         let text = value.as_ref();
+        let bounds = if is_spin_box(node.kind) {
+            SpinGeometry::new(item.bounds).text
+        } else if combo_editable(node) {
+            ComboGeometry::new(item.bounds).entry
+        } else {
+            item.bounds
+        };
+        if (is_spin_box(node.kind) || combo_editable(node))
+            && !bounds.contains(self.input.pointer_press_origin().unwrap_or(point))
+        {
+            return;
+        }
         let position = if is_multiline_text_input(node.kind) {
             let geometry = state
                 .renderer
@@ -533,7 +876,7 @@ impl<C: Component, M, R: FnMut(&mut C, M)> Application<C, M, R> {
         } else {
             state.renderer.text.single_line_hit_with_text(
                 node,
-                item.bounds,
+                bounds,
                 point,
                 self.input.editor.as_ref(),
                 text,
@@ -622,10 +965,13 @@ impl<C: Component, M, R: FnMut(&mut C, M)> Application<C, M, R> {
         else {
             return;
         };
-        if node.kind == "SpinBox" {
+        if is_spin_box(node.kind) {
             self.input.edit_spin(node, action);
             self.update_editor();
             return;
+        }
+        if combo_editable(node) {
+            self.input.dismiss_choice();
         }
         if self.input.edit_text(
             &mut self.component,
@@ -746,7 +1092,7 @@ impl<C: Component, M, R: FnMut(&mut C, M)> Application<C, M, R> {
         else {
             return false;
         };
-        let spin = node.kind == "SpinBox";
+        let spin = is_spin_box(node.kind);
         if event.state != ElementState::Pressed
             || self
                 .input
@@ -754,6 +1100,18 @@ impl<C: Component, M, R: FnMut(&mut C, M)> Application<C, M, R> {
                 .as_ref()
                 .is_some_and(|edit| !edit.preedit.is_empty())
         {
+            return true;
+        }
+        if combo_editable(node)
+            && event.logical_key == Key::Named(NamedKey::ArrowRight)
+            && self.modifiers.is_empty()
+            && !event.repeat
+            && self
+                .input
+                .accept_combo_completion(&mut self.component, &self.scene, Instant::now())
+        {
+            self.pending_clipboard = None;
+            self.refresh_scene();
             return true;
         }
         let shift = self.modifiers.shift_key();
@@ -838,7 +1196,7 @@ impl<C: Component, M, R: FnMut(&mut C, M)> Application<C, M, R> {
         } else if self
             .scene
             .at_path(&input.path)
-            .is_some_and(|node| node.list.is_some())
+            .is_some_and(|node| node.list.is_some() || node.kind == "TabBar")
         {
             self.relayout();
         } else {
@@ -935,7 +1293,7 @@ impl<C: Component, M, R: FnMut(&mut C, M)> Application<C, M, R> {
         let Some(node) = self
             .scene
             .interactive_at_path(&target.path)
-            .filter(|node| node.kind == "SpinBox")
+            .filter(|node| is_spin_box(node.kind))
         else {
             return false;
         };
@@ -1093,18 +1451,65 @@ impl<C: Component, M, R: FnMut(&mut C, M)> Application<C, M, R> {
 
     fn choice_key(&mut self, event: &KeyEvent) -> bool {
         let open = self.input.choice_open();
+        let editing = self
+            .input
+            .focused
+            .as_ref()
+            .and_then(|target| self.scene.at_path(&target.path))
+            .is_some_and(combo_editable);
         if event.state != ElementState::Pressed {
             return open;
         }
+        if editing
+            && self
+                .input
+                .editor
+                .as_ref()
+                .is_some_and(|edit| !edit.preedit.is_empty())
+        {
+            return false;
+        }
+        if !open
+            && event.logical_key == Key::Named(NamedKey::Escape)
+            && self.input.dismiss_combo_completion(&self.scene)
+        {
+            self.update_editor();
+            return true;
+        }
         let key = match event.logical_key {
+            Key::Named(NamedKey::F4) if !event.repeat => ChoiceKey::Open,
+            Key::Named(NamedKey::ArrowDown) if self.modifiers.alt_key() => {
+                if event.repeat {
+                    return open;
+                }
+                ChoiceKey::Open
+            }
             Key::Named(NamedKey::ArrowUp) => ChoiceKey::Up,
             Key::Named(NamedKey::ArrowDown) => ChoiceKey::Down,
             Key::Named(NamedKey::Home) => ChoiceKey::Home,
             Key::Named(NamedKey::End) => ChoiceKey::End,
             Key::Named(NamedKey::PageUp) => ChoiceKey::PageUp,
             Key::Named(NamedKey::PageDown) => ChoiceKey::PageDown,
-            Key::Named(NamedKey::Enter | NamedKey::Space) => ChoiceKey::Accept,
+            Key::Named(NamedKey::Enter) => ChoiceKey::Accept,
+            Key::Named(NamedKey::Space) if !editing => ChoiceKey::Accept,
             Key::Named(NamedKey::Escape) => ChoiceKey::Escape,
+            _ if open
+                && editing
+                && (event.text.is_some()
+                    || matches!(
+                        event.logical_key,
+                        Key::Named(
+                            NamedKey::Backspace
+                                | NamedKey::Delete
+                                | NamedKey::ArrowLeft
+                                | NamedKey::ArrowRight
+                        )
+                    )) =>
+            {
+                self.input.dismiss_choice();
+                self.update_editor();
+                return false;
+            }
             _ => return open,
         };
         if let Some(input) = self
@@ -1112,9 +1517,11 @@ impl<C: Component, M, R: FnMut(&mut C, M)> Application<C, M, R> {
             .as_ref()
             .and_then(|layout| self.input.choice_key(&self.scene, layout, key))
         {
-            self.apply_control(input);
+            if !event.repeat || input.action != ControlAction::AcceptComboText {
+                self.apply_control(input);
+            }
             true
-        } else if open {
+        } else if open || self.input.choice_open() {
             self.update_editor();
             true
         } else {
@@ -1181,6 +1588,7 @@ impl<C: Component, M, R: FnMut(&mut C, M)> Application<C, M, R> {
                     })
                     .or_else(|| self.input.group_key(&self.scene, layout, key))
                     .or_else(|| self.input.page_indicator_key(&self.scene, layout, key))
+                    .or_else(|| self.input.calendar_key(&self.scene, layout, key))
                     .or_else(|| self.input.swipe_key(&self.scene, layout, key))
             })
         {
@@ -1365,7 +1773,7 @@ impl<C: Component, M, R: FnMut(&mut C, M)> Application<C, M, R> {
         } else if let Some(input) = self
             .layout
             .as_ref()
-            .and_then(|layout| self.input.page_marker_release(&self.scene, layout))
+            .and_then(|layout| self.input.control_part_release(&self.scene, layout))
         {
             self.apply_control(input);
         } else if let Some(input) = self.input.table_header_release(
@@ -1564,6 +1972,9 @@ impl<C: Component, M, R: FnMut(&mut C, M)> Application<C, M, R> {
         }
         state.window.pre_present_notify();
         state.renderer.queue.present(frame);
+        let completion = state.renderer.take_painted_combo_completion();
+        self.input
+            .set_painted_combo_completion(completion.filter(|_| state.window.has_focus()));
         if state.renderer.needs_redraw()
             || self.input.scroll_motion_active()
             || self.stack_transitions.is_active()
@@ -1595,7 +2006,7 @@ impl<C: Component, M, R: FnMut(&mut C, M)> ApplicationHandler<UserEvent> for App
         }
         let attrs = Window::default_attributes()
             .with_title(self.base_scene.text("title").unwrap_or("XRack"))
-            .with_visible(self.base_scene.boolean("visible", true))
+            .with_visible(false)
             .with_inner_size(LogicalSize::new(
                 self.base_scene
                     .length("width")
@@ -1610,9 +2021,20 @@ impl<C: Component, M, R: FnMut(&mut C, M)> ApplicationHandler<UserEvent> for App
             .create_window(attrs)
             .map(Arc::new)
             .map_err(|e| e.to_string())
-            .and_then(WindowState::new)
-        {
+            .and_then(|window| {
+                let proxy = self
+                    .accessibility_proxy
+                    .as_ref()
+                    .expect("window event proxy")
+                    .clone();
+                let adapter =
+                    accesskit_winit::Adapter::with_event_loop_proxy(event_loop, &window, proxy);
+                WindowState::new(window, adapter)
+            }) {
             Ok(state) => {
+                state
+                    .window
+                    .set_visible(self.base_scene.boolean("visible", true));
                 self.state = Some(state);
                 self.relayout();
             }
@@ -1632,6 +2054,7 @@ impl<C: Component, M, R: FnMut(&mut C, M)> ApplicationHandler<UserEvent> for App
         self.state = None;
     }
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        self.update_accessibility();
         let deadline = if let Some(state) = &self.state
             && state.window.has_focus()
             && let Some(layout) = &self.layout
@@ -1650,9 +2073,10 @@ impl<C: Component, M, R: FnMut(&mut C, M)> ApplicationHandler<UserEvent> for App
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
-        if !self.state.as_ref().is_some_and(|s| s.window.id() == id) {
+        let Some(state) = self.state.as_mut().filter(|state| state.window.id() == id) else {
             return;
-        }
+        };
+        state.accessibility.process_event(&state.window, &event);
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
             WindowEvent::Resized(_) | WindowEvent::ScaleFactorChanged { .. } => {
@@ -1881,11 +2305,14 @@ impl<C: Component, M, R: FnMut(&mut C, M)> ApplicationHandler<UserEvent> for App
                     }
                     self.input.dismiss_choice();
                     self.input.dismiss_menu();
-                    if let Some(layout) = &self.layout {
+                    if self.layout.as_ref().is_some_and(|layout| {
                         self.input
-                            .focus_next(&self.scene, layout, self.modifiers.shift_key());
+                            .focus_next(&self.scene, layout, self.modifiers.shift_key())
+                    }) {
+                        self.relayout();
+                    } else {
+                        self.update_editor();
                     }
-                    self.update_editor();
                 } else if !self.context_menu_key(&event)
                     && (is_synthetic || !self.menu_shortcut(&event))
                     && !self.menu_key(&event)
@@ -1920,6 +2347,9 @@ impl<C: Component, M, R: FnMut(&mut C, M)> ApplicationHandler<UserEvent> for App
             }
             WindowEvent::Ime(Ime::Preedit(value, cursor)) if !self.input.menu_open() => {
                 self.pending_clipboard = None;
+                if !value.is_empty() && self.input.editor.is_some() {
+                    self.input.dismiss_choice();
+                }
                 if let Some(editor) = &mut self.input.editor {
                     editor.set_preedit(value, cursor);
                 }
@@ -1933,6 +2363,7 @@ impl<C: Component, M, R: FnMut(&mut C, M)> ApplicationHandler<UserEvent> for App
             }
             WindowEvent::Focused(focused) => {
                 if !focused {
+                    self.input.set_painted_combo_completion(None);
                     self.cancel_direct_scroll();
                     self.dismiss_tooltip();
                     self.pending_clipboard = None;
@@ -1950,6 +2381,7 @@ impl<C: Component, M, R: FnMut(&mut C, M)> ApplicationHandler<UserEvent> for App
             }
             WindowEvent::Occluded(occluded) => {
                 if occluded {
+                    self.input.set_painted_combo_completion(None);
                     self.cancel_direct_scroll();
                 } else {
                     self.state.as_ref().unwrap().window.request_redraw();
@@ -1987,11 +2419,13 @@ where
         let _ = task_proxy.send_event(UserEvent::PollTasks);
     });
     let _scope = tasks.enter();
+    let inbox_proxy = proxy.clone();
     let inbox = Inbox::new(move || {
-        let _ = proxy.send_event(UserEvent::ApplyMessages);
+        let _ = inbox_proxy.send_event(UserEvent::ApplyMessages);
     });
     let reduce = setup(&mut component, inbox.sender());
     let mut app = Application::new(component, tasks, inbox, reduce);
+    app.accessibility_proxy = Some(proxy);
     app.clipboard = Some(clipboard);
     let result = event_loop.run_app(&mut app);
     app.close_async();

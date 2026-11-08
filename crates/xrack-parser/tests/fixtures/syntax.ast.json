@@ -1,0 +1,826 @@
+{
+  "imports": [
+    {
+      "path": "\"widgets.xr\"",
+      "names": [
+        {
+          "name": "Base",
+          "alias": null
+        },
+        {
+          "name": "Named",
+          "alias": "Other"
+        }
+      ],
+      "span": {
+        "line": 1,
+        "column": 9
+      }
+    }
+  ],
+  "records": [
+    {
+      "name": "Data",
+      "exported": true,
+      "fields": [
+        {
+          "name": "name",
+          "ty": "string",
+          "span": {
+            "line": 2,
+            "column": 22
+          }
+        },
+        {
+          "name": "weight",
+          "ty": "float",
+          "span": {
+            "line": 2,
+            "column": 36
+          }
+        }
+      ],
+      "span": {
+        "line": 2,
+        "column": 1
+      }
+    }
+  ],
+  "components": [
+    {
+      "name": "App",
+      "base": "Window",
+      "exported": true,
+      "members": [
+        {
+          "Property": {
+            "name": "entries",
+            "ty": "[Data]",
+            "visibility": "in-out",
+            "value": {
+              "kind": {
+                "Array": [
+                  {
+                    "kind": {
+                      "Record": {
+                        "name": "Data",
+                        "fields": [
+                          {
+                            "name": "name",
+                            "value": {
+                              "kind": {
+                                "Literal": {
+                                  "value": "\"你好\\u263A\"",
+                                  "ty": "string"
+                                }
+                              },
+                              "span": {
+                                "line": 4,
+                                "column": 53
+                              }
+                            }
+                          },
+                          {
+                            "name": "weight",
+                            "value": {
+                              "kind": {
+                                "Literal": {
+                                  "value": "2.5e-2",
+                                  "ty": "float"
+                                }
+                              },
+                              "span": {
+                                "line": 4,
+                                "column": 73
+                              }
+                            }
+                          }
+                        ]
+                      }
+                    },
+                    "span": {
+                      "line": 4,
+                      "column": 40
+                    }
+                  }
+                ]
+              },
+              "span": {
+                "line": 4,
+                "column": 39
+              }
+            },
+            "span": {
+              "line": 4,
+              "column": 5
+            }
+          }
+        },
+        {
+          "Property": {
+            "name": "value",
+            "ty": "int",
+            "visibility": "private",
+            "value": {
+              "kind": {
+                "Binary": {
+                  "op": "-",
+                  "left": {
+                    "kind": {
+                      "Binary": {
+                        "op": "+",
+                        "left": {
+                          "kind": {
+                            "Literal": {
+                              "value": "1",
+                              "ty": "int"
+                            }
+                          },
+                          "span": {
+                            "line": 5,
+                            "column": 27
+                          }
+                        },
+                        "right": {
+                          "kind": {
+                            "Binary": {
+                              "op": "*",
+                              "left": {
+                                "kind": {
+                                  "Literal": {
+                                    "value": "2",
+                                    "ty": "int"
+                                  }
+                                },
+                                "span": {
+                                  "line": 5,
+                                  "column": 31
+                                }
+                              },
+                              "right": {
+                                "kind": {
+                                  "Literal": {
+                                    "value": "3",
+                                    "ty": "int"
+                                  }
+                                },
+                                "span": {
+                                  "line": 5,
+                                  "column": 35
+                                }
+                              }
+                            }
+                          },
+                          "span": {
+                            "line": 5,
+                            "column": 31
+                          }
+                        }
+                      }
+                    },
+                    "span": {
+                      "line": 5,
+                      "column": 27
+                    }
+                  },
+                  "right": {
+                    "kind": {
+                      "Unary": {
+                        "op": "-",
+                        "value": {
+                          "kind": {
+                            "Literal": {
+                              "value": "4",
+                              "ty": "int"
+                            }
+                          },
+                          "span": {
+                            "line": 5,
+                            "column": 40
+                          }
+                        }
+                      }
+                    },
+                    "span": {
+                      "line": 5,
+                      "column": 39
+                    }
+                  }
+                }
+              },
+              "span": {
+                "line": 5,
+                "column": 27
+              }
+            },
+            "span": {
+              "line": 5,
+              "column": 5
+            }
+          }
+        },
+        {
+          "Property": {
+            "name": "ok",
+            "ty": "bool",
+            "visibility": "private",
+            "value": {
+              "kind": {
+                "Binary": {
+                  "op": "||",
+                  "left": {
+                    "kind": {
+                      "Binary": {
+                        "op": "&&",
+                        "left": {
+                          "kind": {
+                            "Unary": {
+                              "op": "!",
+                              "value": {
+                                "kind": {
+                                  "Binary": {
+                                    "op": "<=",
+                                    "left": {
+                                      "kind": {
+                                        "Reference": "value"
+                                      },
+                                      "span": {
+                                        "line": 6,
+                                        "column": 27
+                                      }
+                                    },
+                                    "right": {
+                                      "kind": {
+                                        "Literal": {
+                                          "value": "0",
+                                          "ty": "int"
+                                        }
+                                      },
+                                      "span": {
+                                        "line": 6,
+                                        "column": 36
+                                      }
+                                    }
+                                  }
+                                },
+                                "span": {
+                                  "line": 6,
+                                  "column": 27
+                                }
+                              }
+                            }
+                          },
+                          "span": {
+                            "line": 6,
+                            "column": 25
+                          }
+                        },
+                        "right": {
+                          "kind": {
+                            "Literal": {
+                              "value": "true",
+                              "ty": "bool"
+                            }
+                          },
+                          "span": {
+                            "line": 6,
+                            "column": 42
+                          }
+                        }
+                      }
+                    },
+                    "span": {
+                      "line": 6,
+                      "column": 25
+                    }
+                  },
+                  "right": {
+                    "kind": {
+                      "Literal": {
+                        "value": "false",
+                        "ty": "bool"
+                      }
+                    },
+                    "span": {
+                      "line": 6,
+                      "column": 50
+                    }
+                  }
+                }
+              },
+              "span": {
+                "line": 6,
+                "column": 25
+              }
+            },
+            "span": {
+              "line": 6,
+              "column": 5
+            }
+          }
+        },
+        {
+          "Callback": {
+            "name": "format",
+            "parameters": [
+              {
+                "name": "",
+                "ty": "string"
+              },
+              {
+                "name": "value",
+                "ty": "int"
+              }
+            ],
+            "span": {
+              "line": 7,
+              "column": 5
+            },
+            "return_type": "string",
+            "pure": true
+          }
+        },
+        {
+          "Callback": {
+            "name": "done",
+            "parameters": [],
+            "span": {
+              "line": 8,
+              "column": 5
+            }
+          }
+        },
+        {
+          "Handler": {
+            "name": "format",
+            "parameters": [
+              "name",
+              "number"
+            ],
+            "statements": [],
+            "span": {
+              "line": 9,
+              "column": 5
+            },
+            "result": {
+              "kind": {
+                "Conditional": {
+                  "condition": {
+                    "kind": {
+                      "Reference": "ok"
+                    },
+                    "span": {
+                      "line": 9,
+                      "column": 31
+                    }
+                  },
+                  "yes": {
+                    "kind": {
+                      "Binary": {
+                        "op": "+",
+                        "left": {
+                          "kind": {
+                            "Reference": "name"
+                          },
+                          "span": {
+                            "line": 9,
+                            "column": 36
+                          }
+                        },
+                        "right": {
+                          "kind": {
+                            "Reference": "number"
+                          },
+                          "span": {
+                            "line": 9,
+                            "column": 43
+                          }
+                        }
+                      }
+                    },
+                    "span": {
+                      "line": 9,
+                      "column": 36
+                    }
+                  },
+                  "no": {
+                    "kind": {
+                      "Literal": {
+                        "value": "\"🌱\"",
+                        "ty": "string"
+                      }
+                    },
+                    "span": {
+                      "line": 9,
+                      "column": 52
+                    }
+                  }
+                }
+              },
+              "span": {
+                "line": 9,
+                "column": 31
+              }
+            }
+          }
+        },
+        {
+          "Binding": {
+            "name": "binding",
+            "value": {
+              "kind": {
+                "Call": {
+                  "callee": "format",
+                  "arguments": [
+                    {
+                      "kind": {
+                        "Reference": "root.name"
+                      },
+                      "span": {
+                        "line": 10,
+                        "column": 21
+                      }
+                    },
+                    {
+                      "kind": {
+                        "Reference": "value"
+                      },
+                      "span": {
+                        "line": 10,
+                        "column": 32
+                      }
+                    }
+                  ],
+                  "span": {
+                    "line": 10,
+                    "column": 14
+                  }
+                }
+              },
+              "span": {
+                "line": 10,
+                "column": 14
+              }
+            },
+            "span": {
+              "line": 10,
+              "column": 5
+            }
+          }
+        },
+        {
+          "Handler": {
+            "name": "clicked",
+            "parameters": [],
+            "statements": [
+              {
+                "target": "root.value",
+                "op": "-=",
+                "value": {
+                  "kind": {
+                    "Literal": {
+                      "value": "1",
+                      "ty": "int"
+                    }
+                  },
+                  "span": {
+                    "line": 11,
+                    "column": 32
+                  }
+                },
+                "span": {
+                  "line": 11,
+                  "column": 18
+                }
+              },
+              {
+                "callee": "done",
+                "arguments": [],
+                "span": {
+                  "line": 11,
+                  "column": 35
+                }
+              }
+            ],
+            "span": {
+              "line": 11,
+              "column": 5
+            }
+          }
+        },
+        {
+          "Animation": {
+            "property": "width",
+            "duration_ms": "200",
+            "span": {
+              "line": 12,
+              "column": 5
+            }
+          }
+        },
+        {
+          "Element": {
+            "id": "button",
+            "ty": "Button",
+            "members": [
+              {
+                "Binding": {
+                  "name": "width",
+                  "value": {
+                    "kind": {
+                      "Literal": {
+                        "value": "50",
+                        "ty": "percent"
+                      }
+                    },
+                    "span": {
+                      "line": 13,
+                      "column": 39
+                    }
+                  },
+                  "span": {
+                    "line": 13,
+                    "column": 32
+                  }
+                }
+              },
+              {
+                "Binding": {
+                  "name": "height",
+                  "value": {
+                    "kind": {
+                      "Literal": {
+                        "value": "24",
+                        "ty": "length"
+                      }
+                    },
+                    "span": {
+                      "line": 13,
+                      "column": 52
+                    }
+                  },
+                  "span": {
+                    "line": 13,
+                    "column": 44
+                  }
+                }
+              }
+            ],
+            "span": {
+              "line": 13,
+              "column": 5
+            },
+            "condition": {
+              "kind": {
+                "Reference": "ok"
+              },
+              "span": {
+                "line": 13,
+                "column": 8
+              }
+            }
+          }
+        },
+        {
+          "Element": {
+            "id": null,
+            "ty": "Text",
+            "members": [
+              {
+                "Binding": {
+                  "name": "text",
+                  "value": {
+                    "kind": {
+                      "Reference": "item.name"
+                    },
+                    "span": {
+                      "line": 14,
+                      "column": 47
+                    }
+                  },
+                  "span": {
+                    "line": 14,
+                    "column": 41
+                  }
+                }
+              }
+            ],
+            "span": {
+              "line": 14,
+              "column": 5
+            },
+            "repeat": {
+              "item": "item",
+              "index": "index",
+              "model": {
+                "kind": {
+                  "Reference": "entries"
+                },
+                "span": {
+                  "line": 14,
+                  "column": 24
+                }
+              }
+            }
+          }
+        },
+        {
+          "Element": {
+            "id": null,
+            "ty": "Rectangle",
+            "members": [
+              {
+                "Binding": {
+                  "name": "background",
+                  "value": {
+                    "kind": {
+                      "LinearGradient": {
+                        "angle": "-90",
+                        "stops": [
+                          {
+                            "color": {
+                              "kind": {
+                                "Literal": {
+                                  "value": "#fff",
+                                  "ty": "color"
+                                }
+                              },
+                              "span": {
+                                "line": 16,
+                                "column": 46
+                              }
+                            },
+                            "position": null,
+                            "span": {
+                              "line": 16,
+                              "column": 46
+                            }
+                          },
+                          {
+                            "color": {
+                              "kind": {
+                                "Literal": {
+                                  "value": "#000",
+                                  "ty": "color"
+                                }
+                              },
+                              "span": {
+                                "line": 16,
+                                "column": 52
+                              }
+                            },
+                            "position": "80",
+                            "span": {
+                              "line": 16,
+                              "column": 52
+                            }
+                          }
+                        ]
+                      }
+                    },
+                    "span": {
+                      "line": 16,
+                      "column": 21
+                    }
+                  },
+                  "span": {
+                    "line": 16,
+                    "column": 9
+                  }
+                }
+              },
+              {
+                "Binding": {
+                  "name": "other",
+                  "value": {
+                    "kind": {
+                      "RadialGradient": {
+                        "stops": [
+                          {
+                            "color": {
+                              "kind": {
+                                "Literal": {
+                                  "value": "#f008",
+                                  "ty": "color"
+                                }
+                              },
+                              "span": {
+                                "line": 17,
+                                "column": 41
+                              }
+                            },
+                            "position": null,
+                            "span": {
+                              "line": 17,
+                              "column": 41
+                            }
+                          },
+                          {
+                            "color": {
+                              "kind": {
+                                "Literal": {
+                                  "value": "#222",
+                                  "ty": "color"
+                                }
+                              },
+                              "span": {
+                                "line": 17,
+                                "column": 48
+                              }
+                            },
+                            "position": "100",
+                            "span": {
+                              "line": 17,
+                              "column": 48
+                            }
+                          }
+                        ]
+                      }
+                    },
+                    "span": {
+                      "line": 17,
+                      "column": 16
+                    }
+                  },
+                  "span": {
+                    "line": 17,
+                    "column": 9
+                  }
+                }
+              }
+            ],
+            "span": {
+              "line": 15,
+              "column": 5
+            }
+          }
+        },
+        {
+          "Element": {
+            "id": null,
+            "ty": "Image",
+            "members": [
+              {
+                "Binding": {
+                  "name": "source",
+                  "value": {
+                    "kind": {
+                      "ImageUrl": "\"path.svg\""
+                    },
+                    "span": {
+                      "line": 19,
+                      "column": 21
+                    }
+                  },
+                  "span": {
+                    "line": 19,
+                    "column": 13
+                  }
+                }
+              }
+            ],
+            "span": {
+              "line": 19,
+              "column": 5
+            }
+          }
+        },
+        {
+          "Element": {
+            "id": null,
+            "ty": "LineEdit",
+            "members": [
+              {
+                "Binding": {
+                  "name": "text",
+                  "value": {
+                    "kind": {
+                      "Reference": "root.name"
+                    },
+                    "span": {
+                      "line": 20,
+                      "column": 25
+                    }
+                  },
+                  "span": {
+                    "line": 20,
+                    "column": 16
+                  },
+                  "two_way": true
+                }
+              }
+            ],
+            "span": {
+              "line": 20,
+              "column": 5
+            }
+          }
+        }
+      ],
+      "span": {
+        "line": 3,
+        "column": 1
+      }
+    }
+  ]
+}

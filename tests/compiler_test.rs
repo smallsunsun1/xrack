@@ -23,6 +23,206 @@ fn compiler_errors_retain_source_diagnostics() {
     assert!(diagnostics[0].message.contains("type mismatch"));
 }
 
+#[test]
+fn decimal_spin_box_uses_float_links_and_typed_precision() {
+    let source = r#"
+        export component App inherits Window {
+            in-out property <float> amount: 0.5;
+            out property <float> last: 0.0;
+            amount-field := DoubleSpinBox {
+                value <=> root.amount;
+                decimals: 2;
+                step-size: 0.05;
+                edited(value) => { root.last = value; }
+            }
+        }
+    "#;
+    let compiled = compile(source, "decimal-spin.xr").unwrap();
+    assert!(compiled.mlir.contains("xr.control_link"));
+    assert!(
+        compiled
+            .rust
+            .to_string()
+            .contains("decimal_spin_value_after")
+    );
+    let raw = lower(source, "decimal-spin.xr");
+    assert!(
+        mlir::process(&raw.replace("name = \"decimals\"", "name = \"maximum\""))
+            .unwrap_err()
+            .contains("incorrect DoubleSpinBox property type")
+    );
+    let wrong = source.replace("<float> amount: 0.5", "<int> amount: 1");
+    assert!(
+        compile(&wrong, "decimal-spin.xr")
+            .err()
+            .unwrap()
+            .contains("two-way binding requires a writable float property")
+    );
+    assert!(
+        compile(
+            "export component Amount inherits DoubleSpinBox { edited(value) => {} }",
+            "decimal-root.xr",
+        )
+        .is_ok()
+    );
+}
+
+#[test]
+fn calendar_lowers_date_values_and_rejects_invalid_schema_and_aliases() {
+    let source = r#"
+        export component App inherits Window {
+            in-out property <Date> selection: Date { year: 2024, month: 2, day: 29 };
+            in-out property <Date> month: Date { year: 2024, month: 2, day: 1 };
+            out property <int> picked: 0;
+            picker := Calendar {
+                date <=> root.selection;
+                display-month <=> root.month;
+                changed(value) => { root.picked = value.day; }
+            }
+        }
+    "#;
+    let result = compile(source, "calendar.xr").unwrap();
+    assert!(result.mlir.contains("!xr.date"));
+    assert!(result.mlir.contains("xr.make_date"));
+    assert!(result.mlir.contains("xr.date_field"));
+    assert!(result.mlir.contains("xr.control_link"));
+    assert!(result.rust.to_string().contains("xrack_runtime :: Date"));
+    let raw = lower(source, "calendar.xr");
+    assert!(
+        mlir::process(&raw.replace("value = \"day\"", "value = \"hours\""))
+            .unwrap_err()
+            .contains("requires year, month, or day")
+    );
+    assert!(
+        compile(&source.replace("value.day", "value.hours"), "calendar.xr")
+            .err()
+            .unwrap()
+            .contains("Date has no field")
+    );
+    assert!(
+        compile(
+            &source.replace(
+                "display-month <=> root.month",
+                "display-month <=> root.selection"
+            ),
+            "calendar.xr"
+        )
+        .err()
+        .unwrap()
+        .contains("require distinct writable properties")
+    );
+}
+
+#[test]
+fn flow_layout_spacing_and_orientation_are_typed() {
+    let source = r#"
+        component App inherits Window {
+            FlowLayout {
+                orientation: vertical;
+                horizontal-spacing: 12px;
+                alignment: space-evenly;
+                cross-axis-alignment: center;
+                Text { text: "Item"; }
+            }
+        }
+    "#;
+    let raw = lower(source, "flow.xr");
+    assert!(mlir::process(&raw).is_ok());
+    let wrong_type = raw.replace("name = \"orientation\"", "name = \"vertical-spacing\"");
+    assert!(
+        mlir::process(&wrong_type)
+            .unwrap_err()
+            .contains("incorrect FlowLayout property type")
+    );
+    let wrong_source = source.replace("12px", "true");
+    assert!(
+        compile(&wrong_source, "flow.xr")
+            .err()
+            .unwrap()
+            .contains("type mismatch")
+    );
+}
+
+#[test]
+fn toolbar_accepts_typed_icons_and_action_references() {
+    let source = r#"
+        component App inherits Window {
+            property <image> marker;
+            grid := Action { icon: root.marker; text: "Grid"; }
+            ToolBar {
+                orientation: vertical;
+                wrap: true;
+                grid-button := ToolButton { action: grid; icon-only: true; icon-size: 20px; }
+            }
+        }
+    "#;
+    assert!(compile(source, "toolbar.xr").is_ok());
+    let raw = lower(source, "toolbar.xr");
+    let invalid_icon = raw.replace("name = \"icon-size\"", "name = \"icon\"");
+    assert!(
+        mlir::process(&invalid_icon)
+            .unwrap_err()
+            .contains("icon requires an image")
+    );
+    let invalid_wrap = source.replace("wrap: true", "wrap: 10px");
+    assert!(
+        compile(&invalid_wrap, "toolbar.xr")
+            .err()
+            .unwrap()
+            .contains("type mismatch")
+    );
+}
+
+#[test]
+fn editable_combo_box_validates_text_types_and_keeps_links_independent() {
+    let source = r#"
+        component App inherits Window {
+            in-out property <string> draft;
+            in-out property <string> chosen;
+            choices := ComboBox {
+                editable: true;
+                auto-complete: true;
+                edit-text <=> root.draft;
+                current-value <=> root.chosen;
+                accepted(text) => {}
+                edited(text) => {}
+            }
+        }
+    "#;
+    assert!(compile(source, "combo.xr").is_ok());
+    let alias = source.replace(
+        "current-value <=> root.chosen",
+        "current-value <=> root.draft",
+    );
+    assert!(
+        compile(&alias, "combo.xr")
+            .err()
+            .unwrap()
+            .contains("distinct writable properties")
+    );
+    let raw = lower(source, "combo.xr");
+    assert!(raw.contains("name = \"auto-complete\""));
+    let native_alias = raw.replace("value = \"chosen\"", "value = \"draft\"");
+    assert!(
+        mlir::process(&native_alias)
+            .unwrap_err()
+            .contains("distinct writable properties")
+    );
+    let wrong_type = raw.replace("name = \"editable\"", "name = \"placeholder-text\"");
+    assert!(
+        mlir::process(&wrong_type)
+            .unwrap_err()
+            .contains("incorrect editable ComboBox property type")
+    );
+    let invalid_completion = source.replace("auto-complete: true", "auto-complete: 1");
+    assert!(
+        compile(&invalid_completion, "combo.xr")
+            .err()
+            .unwrap()
+            .contains("type mismatch")
+    );
+}
+
 fn lower(source: &str, filename: &str) -> String {
     mlir::lower(&parse(source).unwrap(), filename).unwrap()
 }
@@ -1019,6 +1219,19 @@ fn selection_groups_enforce_child_structure() {
             "matching selection container",
         ),
         ("TabWidget { Button {} }", "requires static Tab children"),
+        (
+            "TabButton { text: \"outside\"; }",
+            "matching selection container",
+        ),
+        ("TabBar { Tab {} }", "requires static TabButton children"),
+        (
+            "TabBar { TabButton { Rectangle {} } }",
+            "TabButton cannot contain child elements",
+        ),
+        (
+            "TabBar { TabButton {} for option in [\"a\"] : TabButton { text: option; } }",
+            "repeated TabButton must be the only option",
+        ),
         (
             "RadioGroup { if true : RadioButton {} }",
             "requires static RadioButton children",

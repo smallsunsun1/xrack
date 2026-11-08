@@ -197,6 +197,15 @@ impl<T: PartialEq> Property<T> {
 }
 
 impl<T: Clone> Property<T> {
+    /// Observe an explicit override while leaving the default to the caller.
+    pub fn explicit_value(&self) -> Option<T> {
+        self.dependency.track();
+        match &*self.value.borrow() {
+            Stored::Explicit(value) => Some(value.clone()),
+            _ => None,
+        }
+    }
+
     pub fn get(&self, default: impl FnOnce() -> T) -> T {
         assert!(
             !self.dependency.evaluating.get(),

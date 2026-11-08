@@ -159,3 +159,124 @@ export component ControlsDemo inherits Window {
         }
     }
 }
+
+export component CalendarDemo inherits Window {
+    title: "XRack · 日期选择";
+    width: 440px;
+    height: 460px;
+    background: #162034;
+
+    in-out property <Date> selected: Date { year: 2024, month: 2, day: 28 };
+    in-out property <Date> month: Date { year: 2024, month: 2, day: 1 };
+    in-out property <bool> picker-open: false;
+    in-out property <Date> draft;
+    private property <Date> draft-month;
+    private property <Date> earliest: Date { year: 2024, month: 2, day: 5 };
+    private property <Date> latest: Date { year: 2024, month: 4, day: 15 };
+    private property <[string]> weekdays: ["一", "二", "三", "四", "五", "六", "日"];
+    out property <int> date-changes: 0;
+    out property <int> month-changes: 0;
+    out property <int> picked-day: 0;
+
+    Text {
+        x: 22px; y: 14px;
+        text: "选中日期 · " + root.selected;
+        color: #edf3ff; font-size: 22px;
+    }
+    calendar := Calendar {
+        x: 22px; y: 54px; width: 396px; height: 322px;
+        accessible-name: "行程日期";
+        date <=> root.selected;
+        display-month <=> root.month;
+        minimum-date: root.earliest;
+        maximum-date: root.latest;
+        weekday-labels: root.weekdays;
+        changed(day) => { root.date-changes += 1; root.picked-day = day.day; }
+        month-changed(month) => { root.month-changes += 1; }
+    }
+    open-picker := Button {
+        x: 22px; y: 390px; width: 174px; height: 44px;
+        text: "在弹层中选择…";
+        clicked => {
+            root.draft = root.selected;
+            root.draft-month = root.selected;
+            root.picker-open = true;
+        }
+    }
+    picker := Dialog {
+        title: "选择行程日期";
+        width: 408px; height: 404px;
+        open <=> root.picker-open;
+        accepted => { root.selected = root.draft; root.month = root.draft; }
+        picker-calendar := Calendar {
+            height: 284px;
+            accessible-name: "待确认日期";
+            date <=> root.draft;
+            display-month <=> root.draft-month;
+            minimum-date: root.earliest;
+            maximum-date: root.latest;
+            weekday-labels: root.weekdays;
+        }
+        HorizontalLayout {
+            alignment: end;
+            spacing: 8px;
+            cancel-picker := DialogButton { text: "取消"; role: reject; }
+            confirm-picker := DialogButton { text: "应用日期"; role: accept; }
+        }
+    }
+}
+
+export struct DecimalPrice {
+    label: string,
+    price: float,
+}
+
+export component DecimalSpinDemo inherits Window {
+    title: "XRack · 小数输入";
+    width: 480px; height: 306px;
+    background: #162034;
+    in-out property <float> level: 0.2;
+    in-out property <bool> use-comma: true;
+    in-out property <bool> locked: false;
+    in-out property <[DecimalPrice]> prices: [
+        DecimalPrice { label: "分析任务", price: 12.5 },
+        DecimalPrice { label: "渲染任务", price: 18.75 },
+    ];
+    out property <int> edits: 0;
+
+    Text { x: 24px; y: 18px; text: "小数步进 · 数值 " + root.level; font-size: 22px; }
+    gain := DoubleSpinBox {
+        x: 24px; y: 57px; width: 148px; height: 40px;
+        accessible-name: "增益";
+        minimum: -2; maximum: 2; step-size: 0.1; decimals: 2; wrap: true;
+        decimal-separator: root.use-comma ? "," : ".";
+        value <=> root.level;
+        read-only: root.locked;
+        edited(value) => { root.edits += 1; }
+    }
+    comma-toggle := Switch {
+        x: 188px; y: 57px; width: 138px; height: 40px;
+        text: "逗号小数点";
+        checked <=> root.use-comma;
+    }
+    lock-toggle := CheckBox {
+        x: 344px; y: 57px; width: 112px; height: 40px;
+        text: "锁定";
+        checked <=> root.locked;
+    }
+    Text { x: 24px; y: 117px; text: "可编辑记录 · 单价"; font-size: 17px; color: #acc0db; }
+    pricing := TableView {
+        x: 24px; y: 145px; width: 432px; height: 134px; row-height: 42px;
+        TableColumn { title: "项目"; min-width: 220px; }
+        TableColumn { title: "单价"; width: 148px; }
+        for row in root.prices : TableRow {
+            TableCell { text <=> row.label; }
+            DoubleSpinBox {
+                value <=> row.price;
+                minimum: 0; maximum: 99; step-size: 0.25; decimals: 2;
+                decimal-separator: root.use-comma ? "," : ".";
+                accessible-name: "单价 · " + row.label;
+            }
+        }
+    }
+}

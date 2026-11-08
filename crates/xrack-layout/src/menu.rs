@@ -1,5 +1,5 @@
 use crate::{LayoutNode, MenuShortcut, Point, Rect, Target, input::valid};
-use xrack_runtime::{ActionKey, Node, is_modal_overlay};
+use xrack_runtime::{ActionKey, Image, Node, is_modal_overlay};
 
 const ROW_HEIGHT: f32 = 28.0;
 const MAX_VISIBLE_ROWS: usize = 14;
@@ -18,6 +18,7 @@ pub enum MenuKey {
 
 pub struct MenuRow<'a> {
     pub label: &'a str,
+    pub icon: Option<Image>,
     pub shortcut: Option<String>,
     pub enabled: bool,
     pub separator: bool,
@@ -31,9 +32,47 @@ pub struct MenuPanel<'a> {
     pub bounds: Rect,
     pub rows: Vec<MenuRow<'a>>,
     pub highlighted: Option<usize>,
+    icon_column: bool,
+    path: Vec<usize>,
+}
+
+/// Identity of a displayed menu row, including the label used to guard late actions.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MenuEntry {
+    pub path: Vec<usize>,
+    pub label: String,
+    pub kind: &'static str,
 }
 
 impl MenuPanel<'_> {
+    pub fn path(&self) -> &[usize] {
+        &self.path
+    }
+
+    pub fn row_index(&self, slot: usize) -> usize {
+        self.rows[slot].index
+    }
+
+    pub fn entry(&self, slot: usize) -> MenuEntry {
+        let row = &self.rows[slot];
+        let mut path = self.path.clone();
+        path.push(row.index);
+        MenuEntry {
+            path,
+            label: row.label.to_owned(),
+            kind: row.kind,
+        }
+    }
+
+    pub fn label_offset(&self) -> f32 {
+        if self.icon_column { 48.0 } else { 26.0 }
+    }
+
+    pub fn icon_bounds(&self, slot: usize) -> Rect {
+        let row = self.row_bounds(slot);
+        let size = 16.0_f32.min(row.height).min((row.width - 26.0).max(0.0));
+        Rect::new(row.x + 24.0, row.y + (row.height - size) * 0.5, size, size)
+    }
     pub fn row_highlighted(&self, slot: usize) -> bool {
         self.highlighted == Some(self.rows[slot].index)
     }
@@ -102,6 +141,10 @@ fn shortcut(row: &Node) -> Option<MenuShortcut> {
     row.text("shortcut")?.parse().ok()
 }
 
+fn icon(row: &Node) -> Option<Image> {
+    row.image("icon").filter(|image| !image.size().contains(&0))
+}
+
 struct ShortcutSearch {
     key: MenuShortcut,
     found: Option<(Option<ActionKey>, Vec<usize>)>,
@@ -140,7 +183,10 @@ impl ShortcutSearch {
         if !layout.visible || !layout.enabled || visible.width <= 0.0 || visible.height <= 0.0 {
             return true;
         }
-        if node.kind == "Button" && node.action.is_some() && !self.candidate(node, path) {
+        if matches!(node.kind, "Button" | "ToolButton")
+            && node.action.is_some()
+            && !self.candidate(node, path)
+        {
             return false;
         }
         node.children
@@ -284,6 +330,7 @@ impl MenuPopup {
             }
             let visible = Self::visible_count(viewport, count);
             let first = level.first.min(count - visible);
+            let icon_column = rows(menu).any(|(_, row)| icon(row).is_some());
             let width = rows(menu)
                 .map(|(_, row)| {
                     let shortcut_width =
@@ -293,6 +340,7 @@ impl MenuPopup {
                         .map(|ch| if ch.is_ascii() { 8.0 } else { 16.0 })
                         .sum::<f32>()
                         + 54.0
+                        + if icon_column { 22.0 } else { 0.0 }
                         + shortcut_width
                 })
                 .fold(174.0, f32::max)
@@ -307,6 +355,8 @@ impl MenuPopup {
             let panel = MenuPanel {
                 bounds,
                 highlighted: level.highlight,
+                icon_column,
+                path: level.path.clone(),
                 rows: rows(menu)
                     .skip(first)
                     .take(visible)
@@ -314,6 +364,7 @@ impl MenuPopup {
                         index,
                         kind: row.kind,
                         label: label(row),
+                        icon: icon(row),
                         shortcut: shortcut(row).map(|key| key.to_string()),
                         enabled: enabled(row),
                         separator: row.kind == "MenuSeparator",
@@ -458,6 +509,56 @@ impl MenuPopup {
             }
             _ => None,
         }
+    }
+
+    pub fn accessibility_entry(
+        &mut self,
+        scene: &Node,
+        layout: &LayoutNode,
+        trigger: &Target,
+        entry: &MenuEntry,
+        activate: bool,
+    ) -> Option<Vec<usize>> {
+        if &self.trigger != trigger {
+            return None;
+        }
+        let (&index, parent) = entry.path.split_last()?;
+        let depth = self.panels(scene, layout).iter().position(|panel| {
+            panel.path == parent
+                && panel.rows.iter().any(|row| {
+                    row.enabled
+                        && row.index == index
+                        && row.label == entry.label
+                        && row.kind == entry.kind
+                })
+        })?;
+        self.pressed = None;
+        self.levels.truncate(depth + 1);
+        self.levels[depth].highlight = Some(index);
+        if activate {
+            self.activate(scene, layout, depth, index)
+        } else {
+            None
+        }
+    }
+
+    pub fn accessibility_close(
+        &mut self,
+        scene: &Node,
+        layout: &LayoutNode,
+        trigger: &Target,
+        path: &[usize],
+    ) -> Option<bool> {
+        if &self.trigger != trigger {
+            return None;
+        }
+        let depth = self
+            .panels(scene, layout)
+            .iter()
+            .position(|panel| panel.path == path)?;
+        self.pressed = None;
+        self.levels.truncate(depth);
+        Some(depth == 0)
     }
 
     pub fn enter_submenu(&mut self, scene: &Node, layout: &LayoutNode) -> bool {

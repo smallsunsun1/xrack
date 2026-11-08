@@ -4,6 +4,7 @@ load("//bazel:xrack.bzl", "xr_ui_library")
 xr_ui_library(
     name = "menu_ui",
     src = "menu.xr",
+    assets = ["assets/grid.svg"],
     visibility = ["//tests:__pkg__"],
 )
 

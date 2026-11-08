@@ -79,3 +79,48 @@ export component SelectionDemo inherits Window {
         color: #a7b6ce;
     }
 }
+
+export component EditableChoiceDemo inherits Window {
+    in-out property <[string]> workspaces: ["总部", "设计", "研发", "研发预览"];
+    in-out property <int> active: 0;
+    in-out property <string> active-value: "总部";
+    in-out property <string> draft: "总部";
+    out property <string> last-accepted: "";
+    out property <int> edits: 0;
+    out property <int> accepts: 0;
+    out property <int> selections: 0;
+
+    title: "XRack · 可编辑下拉框";
+    width: 470px;
+    height: 278px;
+    background: #101725;
+
+    VerticalLayout {
+        padding: 20px;
+        spacing: 10px;
+        alignment: start;
+        Text { text: "输入名称 · → 补全 · Enter 提交"; font-size: 22px; color: #e7efff; }
+        linked := ComboBox {
+            editable: true;
+            auto-complete: true;
+            height: 38px;
+            model: root.workspaces;
+            current-index <=> root.active;
+            edit-text <=> root.draft;
+            placeholder-text: "选择或输入名称";
+            edited(value) => { root.edits += 1; }
+            selected(value) => { root.selections += 1; }
+            accepted(value) => { root.last-accepted = value; root.accepts += 1; }
+        }
+        Text { text: "跟随已选项，也可单独编辑"; color: #a7b6ce; }
+        automatic := ComboBox {
+            editable: true;
+            auto-complete: true;
+            height: 38px;
+            model: root.workspaces;
+            current-value <=> root.active-value;
+            placeholder-text: "尚未选择";
+        }
+        Text { text: "最近提交 · " + root.last-accepted; color: #acc0db; }
+    }
+}

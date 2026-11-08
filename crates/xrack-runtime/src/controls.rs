@@ -1,4 +1,4 @@
-use crate::Node;
+use crate::{DecimalSpinRange, Node, SpinDecimal};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Identity shared by all presentations of one component instance's Action.
@@ -24,12 +24,21 @@ pub enum SpinAction {
     Minimum,
     Maximum,
     Commit(i64),
-    CommitIfCurrent { original: i64, value: i64 },
+    CommitIfCurrent {
+        original: i64,
+        value: i64,
+    },
+    CommitDecimal(SpinDecimal),
+    CommitDecimalIfCurrent {
+        original: Option<SpinDecimal>,
+        value: SpinDecimal,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ControlAction {
     Spin(SpinAction),
+    Calendar(crate::CalendarAction),
     Select(usize),
     TableSelection(crate::TableSelectionAction),
     Tree(crate::TreeAction),
@@ -38,6 +47,9 @@ pub enum ControlAction {
     StackBack { revision: u64 },
     ActivateMenuItem,
     ActivateAction,
+    AcceptComboText,
+    SubmitSearch,
+    ClearSearch,
     SortColumn(usize),
     ResizeColumn { column: usize, width: u32 },
 }
@@ -85,7 +97,7 @@ pub enum DialogRole {
 }
 
 pub fn is_button(kind: &str) -> bool {
-    matches!(kind, "Button" | "DialogButton")
+    matches!(kind, "Button" | "ToolButton" | "DialogButton")
 }
 
 pub fn button_text(node: &Node) -> &str {
@@ -154,6 +166,9 @@ impl SpinRange {
                 value
             }
             SpinAction::CommitIfCurrent { .. } => return None,
+            SpinAction::CommitDecimal(_) | SpinAction::CommitDecimalIfCurrent { .. } => {
+                return None;
+            }
         }
         .clamp(self.min, self.max);
         (next != self.value).then_some(next)
@@ -172,8 +187,20 @@ pub fn spin_value_after(node: &Node, action: SpinAction) -> Option<i64> {
     SpinRange::from_node(node).apply(action)
 }
 
+pub fn is_spin_box(kind: &str) -> bool {
+    matches!(kind, "SpinBox" | "DoubleSpinBox")
+}
+
 pub fn spin_editable(node: &Node) -> bool {
-    node.kind == "SpinBox" && node.boolean("editable", true) && !node.boolean("read-only", false)
+    is_spin_box(node.kind) && node.boolean("editable", true) && !node.boolean("read-only", false)
+}
+
+pub fn spin_text(node: &Node) -> String {
+    if node.kind == "DoubleSpinBox" {
+        DecimalSpinRange::from_node(node).display()
+    } else {
+        SpinRange::from_node(node).value().to_string()
+    }
 }
 
 pub fn combo_index(node: &Node) -> Option<usize> {
@@ -184,6 +211,37 @@ pub fn combo_index(node: &Node) -> Option<usize> {
         let index = usize::try_from(node.int("current-index").unwrap_or(0)).ok()?;
         (index < model.len()).then_some(index)
     }
+}
+
+pub fn combo_editable(node: &Node) -> bool {
+    node.kind == "ComboBox" && node.boolean("editable", false)
+}
+
+pub fn text_input_value(node: &Node) -> &str {
+    if combo_editable(node) {
+        node.text("edit-text")
+            .or_else(|| combo_index(node).map(|index| node.strings("model")[index].as_str()))
+            .unwrap_or("")
+    } else {
+        node.text("text").unwrap_or("")
+    }
+}
+
+/// Suggestions can be tagged with the query that produced them.
+pub fn search_suggestions(node: &Node) -> &[String] {
+    let text = text_input_value(node);
+    if node.kind != "SearchField" || node.boolean("read-only", false) || text.is_empty()
+        || node.text("suggestions-for").is_some_and(|query| query != text)
+    {
+        &[]
+    } else {
+        node.strings("suggestions")
+    }
+}
+
+pub fn search_suggestion(node: &Node, index: usize) -> Option<&str> {
+    let value = search_suggestions(node).get(index)?;
+    (!value.is_empty() && !value.chars().any(char::is_control)).then_some(value.as_str())
 }
 
 pub fn page_indicator_count(node: &Node) -> usize {
@@ -200,6 +258,7 @@ pub fn group_item(node: &Node, index: usize) -> Option<&Node> {
     let expected = match node.kind {
         "RadioGroup" => "RadioButton",
         "TabWidget" => "Tab",
+        "TabBar" => "TabButton",
         "SwipeView" => "SwipePage",
         _ => return None,
     };
@@ -209,7 +268,7 @@ pub fn group_item(node: &Node, index: usize) -> Option<&Node> {
 }
 
 pub fn group_index(node: &Node) -> Option<usize> {
-    if node.kind == "SwipeView" {
+    if matches!(node.kind, "SwipeView" | "TabBar") {
         return resolve_swipe_index(
             node.int("current-index"),
             (0..node.children.len()).map(|index| group_item(node, index).is_some()),

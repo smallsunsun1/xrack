@@ -1,0 +1,27 @@
+load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_test")
+
+rust_binary(
+    name = "xrack-lsp",
+    srcs = [
+        "src/analysis.rs",
+        "src/catalog.rs",
+        "src/completion.rs",
+        "src/completion/imports.rs",
+        "src/editor_tokens.rs",
+        "src/main.rs",
+        "src/protocol.rs",
+        "src/tests.rs",
+    ],
+    edition = "2024",
+    deps = [
+        "//crates/xrack-ir:xrack_ir",
+        "//crates/xrack-parser:xrack_parser",
+        "@crates//:serde_json",
+    ],
+)
+
+rust_test(
+    name = "xrack_lsp_test",
+    size = "small",
+    crate = ":xrack-lsp",
+)

@@ -1,11 +1,54 @@
 use crate::{LayoutNode, Point, Rect, Target, input::valid};
-use xrack_runtime::{Node, combo_index};
+use unicode_segmentation::UnicodeSegmentation;
+use xrack_runtime::{Node, combo_editable, combo_index};
 
 const ROW_HEIGHT: f32 = 28.0;
 const MAX_ROWS: usize = 8;
 
+/// The exact candidate and draft boundary displayed for one focused control.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ComboCompletion {
+    pub(crate) target: Target,
+    pub(crate) value: String,
+    pub(crate) draft_len: usize,
+}
+
+impl ComboCompletion {
+    pub fn suffix(&self) -> &str {
+        &self.value[self.draft_len..]
+    }
+}
+
+pub(crate) fn completion_value<'a>(model: &'a [String], draft: &str) -> Option<&'a str> {
+    if draft.is_empty() || model.iter().any(|value| value == draft) {
+        return None;
+    }
+    model.iter().find_map(|value| {
+        let suffix = value.strip_prefix(draft)?;
+        (suffix.chars().all(|ch| !ch.is_control())
+            && value
+                .grapheme_indices(true)
+                .any(|(index, _)| index == draft.len()))
+        .then_some(value.as_str())
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::completion_value;
+
+    #[test]
+    fn completion_skips_partial_graphemes_and_single_line_control_characters() {
+        let model = ["e\u{301}lan", "edit\n", "editor"].map(str::to_owned);
+        assert_eq!(completion_value(&model, "e"), Some("editor"));
+        let model = ["editor", "e"].map(str::to_owned);
+        assert_eq!(completion_value(&model, "e"), None);
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ChoiceKey {
+    Open,
     Up,
     Down,
     Home,
@@ -14,6 +57,22 @@ pub enum ChoiceKey {
     PageDown,
     Accept,
     Escape,
+}
+
+pub struct ComboGeometry {
+    pub entry: Rect,
+    pub trigger: Rect,
+}
+
+impl ComboGeometry {
+    pub fn new(bounds: Rect) -> Self {
+        let trigger = bounds.width.min(28.0);
+        let entry = bounds.width - trigger;
+        Self {
+            entry: Rect::new(bounds.x, bounds.y, entry, bounds.height),
+            trigger: Rect::new(bounds.x + entry, bounds.y, trigger, bounds.height),
+        }
+    }
 }
 
 pub struct ChoiceMenu<'a> {
@@ -94,7 +153,20 @@ impl ChoicePopup {
             press: None,
         };
         let node = popup.node(scene, layout)?;
-        popup.highlight = combo_index(node).unwrap_or(0);
+        let model = node.strings("model");
+        let current = combo_index(node);
+        popup.highlight = node
+            .text("edit-text")
+            .filter(|draft| combo_editable(node) && !draft.is_empty())
+            .filter(|draft| current.is_none_or(|index| model[index] != *draft))
+            .and_then(|draft| {
+                model
+                    .iter()
+                    .position(|item| item == draft)
+                    .or_else(|| model.iter().position(|item| item.starts_with(draft)))
+            })
+            .or(current)
+            .unwrap_or(0);
         popup.reconcile(scene, layout).then_some(popup)
     }
 

@@ -1,4 +1,4 @@
-//! Compiler orchestration: ANTLR4 C++ → AST → XR dialect → Rust.
+//! Compiler orchestration: ANTLR4 → AST → XR dialect → Rust.
 use proc_macro2::TokenStream;
 use std::path::PathBuf;
 

@@ -1,6 +1,9 @@
 //! Logical-pixel layout shared by software rendering and input hit testing.
+mod button;
+mod calendar;
 mod choice;
 mod edit;
+mod flow;
 mod geometry;
 mod grid;
 mod history;
@@ -21,7 +24,9 @@ mod table;
 mod text_area;
 mod tooltip;
 mod tree;
-pub use choice::{ChoiceKey, ChoiceMenu};
+pub use button::ButtonContent;
+pub use calendar::{CalendarDay, CalendarGeometry};
+pub use choice::{ChoiceKey, ChoiceMenu, ComboCompletion, ComboGeometry};
 pub use edit::{EditAction, TextEdit, TextPosition};
 pub use geometry::{Point, Rect, Size};
 pub use history::EditSource;
@@ -29,12 +34,13 @@ pub use input::{
     ActivationKey, ControlInput, Interaction, NavigationKey, RangeInput, SliderKey, SplitResize,
     TableSelectionKey, Target,
 };
-pub use menu::{MenuKey, MenuPanel, MenuRow};
+pub use menu::{MenuEntry, MenuKey, MenuPanel, MenuRow};
 pub use modal::{dialog_title_height, drawer_grip};
 pub use page_indicator::{PageIndicatorGeometry, PageMarker};
 pub use range::{DialGeometry, SliderGeometry};
 pub use scroll_bar::ScrollBarGeometry;
 pub use scroll_gesture::{ScrollGestureEnd, ScrollGestureKind};
+pub use selection::TAB_LABEL_SIZE;
 pub use shortcut::{MenuShortcut, ShortcutKey, ShortcutModifiers};
 pub use spin::SpinGeometry;
 pub use split::{SplitGeometry, SplitHandle};
@@ -139,8 +145,10 @@ fn participates_in_flow(node: &Node) -> bool {
 }
 
 pub fn is_layout(kind: &str) -> bool {
-    matches!(kind, "GridLayout" | "Row" | "RadioGroup" | "SplitView")
-        || linear::Axis::for_layout(kind).is_some()
+    matches!(
+        kind,
+        "GridLayout" | "FlowLayout" | "ToolBar" | "Row" | "RadioGroup" | "SplitView"
+    ) || linear::Axis::for_layout(kind).is_some()
 }
 
 /// Root dimensions come from the actual viewport; DSL dimensions size the initial window.
@@ -163,13 +171,7 @@ pub fn layout_with_input(
     text: &mut impl TextMeasurer,
     input: &Interaction,
 ) -> LayoutNode {
-    layout_with_offsets(
-        scene,
-        viewport,
-        text,
-        input.scroll_offsets(),
-        Some(input.horizontal_scroll_offsets()),
-    )
+    layout_with_offsets(scene, viewport, text, input.scroll_offsets(), Some(input))
 }
 
 fn layout_with_offsets(
@@ -177,13 +179,13 @@ fn layout_with_offsets(
     viewport: Size,
     text: &mut impl TextMeasurer,
     offsets: &BTreeMap<Vec<usize>, f32>,
-    horizontal_offsets: Option<&BTreeMap<Vec<usize>, f32>>,
+    input: Option<&Interaction>,
 ) -> LayoutNode {
     let bounds = Rect::new(0.0, 0.0, viewport.width.max(0.0), viewport.height.max(0.0));
     let mut layout = LayoutContext {
         text,
         offsets,
-        horizontal_offsets,
+        input,
         path: Vec::new(),
         viewport: bounds,
     }
@@ -217,7 +219,7 @@ pub fn prepare_scene_with_input(
         viewport,
         text,
         input.scroll_offsets(),
-        Some(input.horizontal_scroll_offsets()),
+        Some(input),
     )
 }
 
@@ -227,19 +229,19 @@ fn prepare_scene_with_offsets(
     viewport: Size,
     text: &mut impl TextMeasurer,
     offsets: &BTreeMap<Vec<usize>, f32>,
-    horizontal_offsets: Option<&BTreeMap<Vec<usize>, f32>>,
+    input: Option<&Interaction>,
 ) -> (Rc<Node>, LayoutNode) {
     fn has_lists(node: &Node) -> bool {
         node.list.is_some() || node.children.iter().any(has_lists)
     }
 
-    let mut layout = layout_with_offsets(&scene, viewport, text, offsets, horizontal_offsets);
+    let mut layout = layout_with_offsets(&scene, viewport, text, offsets, input);
     if has_lists(&scene) {
         let viewport = Rect::new(0.0, 0.0, viewport.width.max(0.0), viewport.height.max(0.0));
         LayoutContext {
             text,
             offsets,
-            horizontal_offsets,
+            input,
             path: Vec::new(),
             viewport,
         }
@@ -252,21 +254,22 @@ fn prepare_scene_with_offsets(
 struct LayoutContext<'a, T> {
     text: &'a mut T,
     offsets: &'a BTreeMap<Vec<usize>, f32>,
-    horizontal_offsets: Option<&'a BTreeMap<Vec<usize>, f32>>,
+    input: Option<&'a Interaction>,
     path: Vec<usize>,
     viewport: Rect,
 }
 
 impl<T: TextMeasurer> LayoutContext<'_, T> {
     fn requested_scroll(&self, orientation: Orientation) -> f32 {
+        self.scroll_request(orientation).unwrap_or_default()
+    }
+
+    fn scroll_request(&self, orientation: Orientation) -> Option<f32> {
         let offsets = match orientation {
-            Orientation::Horizontal => self.horizontal_offsets,
+            Orientation::Horizontal => self.input.map(Interaction::horizontal_scroll_offsets),
             Orientation::Vertical => Some(self.offsets),
         };
-        offsets
-            .and_then(|offsets| offsets.get(&self.path))
-            .copied()
-            .unwrap_or_default()
+        offsets.and_then(|offsets| offsets.get(&self.path)).copied()
     }
 
     fn populate_lists(
@@ -552,6 +555,31 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
                 .collect()
         } else if node.kind == "GridLayout" {
             grid::children(node, bounds, self.text)
+        } else if node.kind == "TabBar" {
+            let orientation = node.orientation();
+            let requested = self.scroll_request(orientation);
+            let reveal = requested.is_none()
+                || self
+                    .input
+                    .is_some_and(|input| input.tab_selection_changed(node, &self.path));
+            let (rects, axis) = selection::tab_bar(
+                node,
+                bounds,
+                self.text,
+                requested.unwrap_or_default(),
+                reveal,
+            );
+            match orientation {
+                Orientation::Horizontal => horizontal_scroll = Some(axis),
+                Orientation::Vertical => scroll = Some(axis),
+            }
+            rects
+                .into_iter()
+                .map(|bounds| grid::Placement {
+                    bounds,
+                    row_children: None,
+                })
+                .collect()
         } else if node.kind == "ScrollView" {
             let (rects, x, y) = self.scroll_view_children(node, bounds);
             horizontal_scroll = Some(x);
@@ -571,6 +599,8 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
             content.height -= title;
             let rects = if let Some(placements) = row_children {
                 placements
+            } else if flow::wraps(node) {
+                flow::children(node, content, self.text)
             } else if let Some(axis) = linear::Axis::for_node(node) {
                 linear::children(node, axis, content, self.text)
             } else {
@@ -709,7 +739,8 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
 }
 
 fn absolute_width(node: &Node, info: linear::AxisInfo, available: f32) -> f32 {
-    if matches!(node.kind, "Button" | "DialogButton" | "Image")
+    if xrack_runtime::is_button(node.kind)
+        || node.kind == "Image"
         || node.properties.contains_key("preferred-width")
     {
         info.preferred

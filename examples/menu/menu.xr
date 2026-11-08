@@ -14,6 +14,7 @@ export component MenuDemo inherits Window {
 
     grid-command := Action {
         text: "显示网格";
+        icon: @image-url("assets/grid.svg");
         shortcut: "Primary+G";
         enabled: root.grid-enabled;
         checkable: true;
@@ -58,11 +59,17 @@ export component MenuDemo inherits Window {
                 MenuItem { text: "重置视图"; activated() => { root.show-grid = false; root.command = "已重置视图"; } }
             }
         }
-        HorizontalLayout {
+        ToolBar {
             spacing: 8px;
-            grid-button := Button { action: grid-command; }
-            dialog-button := Button { text: "对话框"; clicked() => { root.dialog-open = true; } }
-            background-button := Button { text: "背景计数 · " + root.background-clicks; clicked() => { root.background-clicks += 1; } }
+            wrap: true;
+            grid-button := ToolButton {
+                action: grid-command;
+                icon-only: true;
+                accessible-name: "显示网格";
+                Tooltip { text: "显示网格 · Primary+G"; }
+            }
+            dialog-button := ToolButton { text: "对话框"; clicked() => { root.dialog-open = true; } }
+            background-button := ToolButton { text: "背景计数 · " + root.background-clicks; clicked() => { root.background-clicks += 1; } }
         }
         status := Text { text: root.command; color: #acc0db; }
         inspector := Dialog {

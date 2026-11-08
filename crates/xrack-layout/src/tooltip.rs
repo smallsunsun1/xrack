@@ -343,7 +343,7 @@ pub fn layout_tooltip(
     let mut context = LayoutContext {
         text,
         offsets: &BTreeMap::new(),
-        horizontal_offsets: None,
+        input: None,
         path: Vec::new(),
         viewport,
     };

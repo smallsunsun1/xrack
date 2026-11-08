@@ -1,0 +1,40 @@
+{
+  "name": "xrack",
+  "displayName": "XRack",
+  "description": "Syntax highlighting, completions, diagnostics and component outline for .xr files",
+  "version": "0.3.0",
+  "publisher": "xrack",
+  "engines": { "vscode": "^1.82.0" },
+  "categories": ["Programming Languages"],
+  "activationEvents": ["onLanguage:xrack"],
+  "main": "./extension.js",
+  "capabilities": { "untrustedWorkspaces": { "supported": false } },
+  "contributes": {
+    "languages": [
+      {
+        "id": "xrack",
+        "aliases": ["XRack"],
+        "extensions": [".xr"],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "xrack",
+        "scopeName": "source.xrack",
+        "path": "./syntaxes/xrack.tmLanguage.json"
+      }
+    ],
+    "configuration": {
+      "title": "XRack",
+      "properties": {
+        "xrack.server.path": {
+          "type": "string",
+          "default": "",
+          "description": "Path to the xrack-lsp executable, absolute or relative to the workspace. If empty, use the bundled server, the workspace Bazel build, or xrack-lsp on PATH."
+        }
+      }
+    }
+  },
+  "dependencies": { "vscode-languageclient": "9.0.1" }
+}

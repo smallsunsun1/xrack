@@ -15,13 +15,13 @@ use std::{
 };
 pub use text::TextSystem;
 use xrack_layout::{
-    Interaction, LayoutNode, Rect, Size, SpinGeometry, StackTransitions, TreeRowGeometry,
-    dialog_title_height, font_size,
+    ButtonContent, ComboCompletion, Interaction, LayoutNode, Rect, Size, SpinGeometry,
+    StackTransitions, TreeRowGeometry, dialog_title_height, font_size,
 };
 use xrack_runtime::{
     Brush, Color as UiColor, Component, GradientStop, ImageFit, Node, Value, button_text,
-    group_index, is_button, is_modal_overlay, is_multiline_text_input, is_text_input, is_toggle,
-    spin_editable,
+    combo_editable, group_index, is_button, is_modal_overlay, is_multiline_text_input, is_spin_box,
+    is_text_input, is_toggle, spin_editable, spin_text, text_input_value,
 };
 
 #[derive(Clone, Copy)]
@@ -119,6 +119,7 @@ pub struct Renderer {
     clock: Instant,
     phase: f32,
     needs_redraw: bool,
+    painted_combo_completion: Option<ComboCompletion>,
     pub text: TextSystem,
     pub theme: Theme,
 }
@@ -169,6 +170,7 @@ impl Renderer {
             clock: Instant::now(),
             phase: 0.0,
             needs_redraw: false,
+            painted_combo_completion: None,
             text,
             theme: Theme::default(),
         })
@@ -200,6 +202,10 @@ impl Renderer {
     /// An animated element was visible in the last frame.
     pub fn needs_redraw(&self) -> bool {
         self.needs_redraw
+    }
+
+    pub fn take_painted_combo_completion(&mut self) -> Option<ComboCompletion> {
+        self.painted_combo_completion.take()
     }
 
     /// Draw into a caller-owned render attachment, in logical pixels at the given scale.
@@ -291,6 +297,7 @@ impl Renderer {
     ) -> Result<(), String> {
         let PaintFrame { input, scale, .. } = frame;
         self.needs_redraw = false;
+        self.painted_combo_completion = None;
         self.phase = (self.clock.elapsed().as_secs_f64() / 1.4).fract() as f32;
         let size = target.size();
         self.canvas.set_size(size.width, size.height, scale);
@@ -321,7 +328,14 @@ impl Renderer {
             controls::menu(&mut self.canvas, &self.text, self.theme, menu)?;
         }
         for panel in input.menu_panels(scene, layout) {
-            controls::menu_panel(&mut self.canvas, &self.text, self.theme, panel)?;
+            controls::menu_panel(
+                &mut self.canvas,
+                &self.text,
+                self.theme,
+                panel,
+                &mut self.images,
+                scale,
+            )?;
         }
         if let Some(popup) = input.tooltip_popup(scene, layout) {
             let viewport = Rect::new(
@@ -407,11 +421,14 @@ impl Renderer {
         }
         let is_button = is_button(node.kind);
         let is_cell = matches!(node.kind, "TableCell" | "TreeCell");
-        let is_input = is_text_input(node.kind) || is_cell && input.table_cell_editing(path);
+        let editable_combo = combo_editable(node);
+        let is_input =
+            is_text_input(node.kind) || editable_combo || is_cell && input.table_cell_editing(path);
         let boxed = is_input
             || matches!(
                 node.kind,
                 "SpinBox"
+                    | "DoubleSpinBox"
                     | "ComboBox"
                     | "ListView"
                     | "TableView"
@@ -419,6 +436,8 @@ impl Renderer {
                     | "Dialog"
                     | "Drawer"
                     | "MenuBar"
+                    | "ToolBar"
+                    | "Calendar"
             );
         let checked =
             is_button && node.boolean("checkable", false) && node.boolean("checked", false);
@@ -436,8 +455,13 @@ impl Renderer {
             } else {
                 0.0
             } - if checked { 0.28 } else { 0.0 };
-            brush_paint(node, "background", bounds, shade)
-                .or_else(|| Some(Paint::color(color(tint(self.theme.button, shade)))))
+            brush_paint(node, "background", bounds, shade).or_else(|| {
+                (node.kind != "ToolButton"
+                    || checked
+                    || input.is_hovered(path)
+                    || input.is_pressed(path))
+                .then(|| Paint::color(color(tint(self.theme.button, shade))))
+            })
         };
         let radii = corner_radii(node, bounds);
         if let Some(background) = background {
@@ -513,29 +537,48 @@ impl Renderer {
         }
         if node.kind == "RadioGroup" {
             controls::group_title(&mut self.canvas, &self.text, self.theme, node, bounds)?;
-        } else if node.kind == "TabWidget" {
+        } else if matches!(node.kind, "TabWidget" | "TabBar") {
             let selected = group_index(node);
+            let standalone = node.kind == "TabBar";
             for (index, (tab, page)) in node.children.iter().zip(&layout.children).enumerate() {
-                if let Some(header) = page.tab_header {
-                    path.push(index);
-                    let result = controls::tab(
-                        &mut self.canvas,
-                        &self.text,
-                        self.theme,
-                        header,
-                        tab.text("title").unwrap_or(""),
-                        controls::TabAppearance {
-                            selected: selected == Some(index),
-                            enabled: page.enabled,
-                            focused: input.is_focused(path),
-                        },
-                    );
-                    path.pop();
-                    result?;
+                let Some(header) = page
+                    .tab_header
+                    .or_else(|| (standalone && page.visible).then_some(page.bounds))
+                else {
+                    continue;
+                };
+                let clip = header.intersect(layout.clip).intersect(bounds);
+                if clip.width <= 0.0 || clip.height <= 0.0 {
+                    continue;
                 }
+                path.push(index);
+                let result = controls::tab(
+                    &mut self.canvas,
+                    &self.text,
+                    self.theme,
+                    header,
+                    tab.text(if standalone { "text" } else { "title" })
+                        .unwrap_or(""),
+                    controls::TabAppearance {
+                        selected: selected == Some(index),
+                        enabled: page.enabled,
+                        focused: input.is_focused(path),
+                    },
+                );
+                path.pop();
+                result?;
             }
         }
-        if node.kind == "Slider" {
+        if node.kind == "Calendar" {
+            controls::calendar(
+                &mut self.canvas,
+                &self.text,
+                self.theme,
+                node,
+                &xrack_layout::CalendarGeometry::new(node, bounds),
+                layout.enabled,
+            )?;
+        } else if node.kind == "Slider" {
             range::slider(
                 &mut self.canvas,
                 self.theme,
@@ -603,7 +646,7 @@ impl Renderer {
                 bounds,
                 layout.enabled,
             )?;
-        } else if node.kind == "ComboBox" {
+        } else if node.kind == "ComboBox" && !editable_combo {
             controls::combo(
                 &mut self.canvas,
                 &self.text,
@@ -613,8 +656,22 @@ impl Renderer {
                 layout.enabled,
                 input.choice_is_open_for(path),
             )?;
-        } else if is_input || is_cell || node.kind == "SpinBox" {
-            let (area, value) = if node.kind == "SpinBox" {
+        } else if is_input || is_cell || is_spin_box(node.kind) {
+            let (area, value) = if editable_combo {
+                controls::combo(
+                    &mut self.canvas,
+                    &self.text,
+                    self.theme,
+                    node,
+                    bounds,
+                    layout.enabled,
+                    input.choice_is_open_for(path),
+                )?;
+                (
+                    xrack_layout::ComboGeometry::new(bounds).entry,
+                    std::borrow::Cow::Borrowed(text_input_value(node)),
+                )
+            } else if is_spin_box(node.kind) {
                 let geometry = SpinGeometry::new(bounds);
                 controls::spin_buttons(
                     &mut self.canvas,
@@ -625,11 +682,7 @@ impl Renderer {
                 let value = if input.is_focused(path) {
                     input.editor_value(node)
                 } else {
-                    std::borrow::Cow::Owned(
-                        xrack_runtime::SpinRange::from_node(node)
-                            .value()
-                            .to_string(),
-                    )
+                    std::borrow::Cow::Owned(spin_text(node))
                 };
                 (geometry.text, value)
             } else if is_cell && is_input {
@@ -644,60 +697,117 @@ impl Renderer {
                 .editor
                 .as_ref()
                 .filter(|_| input.is_focused(path) && (is_input || spin_editable(node)));
-            let draw = if is_multiline_text_input(node.kind) {
-                entry::draw_area
+            let completion = if editable_combo && layout.enabled {
+                input.combo_completion(node, path)
             } else {
-                entry::draw
+                None
             };
-            draw(
+            let entry = entry::EntryText {
+                value: &value,
+                editor,
+                scroll: input.text_scroll(path),
+                completion: completion
+                    .as_ref()
+                    .map(|candidate| (candidate.suffix(), layout.clip)),
+            };
+            if is_multiline_text_input(node.kind) {
+                entry::draw_area(
+                    &mut self.canvas,
+                    &self.text,
+                    self.theme,
+                    node,
+                    area,
+                    entry,
+                    layout.enabled,
+                )?;
+            } else if entry::draw(
                 &mut self.canvas,
                 &self.text,
                 self.theme,
                 node,
                 area,
-                entry::EntryText {
-                    value: &value,
-                    editor,
-                    scroll: input.text_scroll(path),
-                },
+                entry,
                 layout.enabled,
-            )?;
+            )? {
+                self.painted_combo_completion = completion;
+            }
         } else if node.kind == "Text" || is_button {
-            let text = button_text(node);
+            let button = is_button.then(|| ButtonContent::new(node));
+            let text = button
+                .as_ref()
+                .map_or_else(|| button_text(node), |button| button.label);
             let text_color = if !layout.enabled {
                 self.theme.disabled_text
             } else {
                 node.color("color").unwrap_or(self.theme.text)
             };
-            let area = if is_button {
-                bounds.inset(node.length("padding").unwrap_or(10.0).max(0.0))
-            } else {
-                bounds
-            };
+            let area = button
+                .as_ref()
+                .map_or(bounds, |button| bounds.inset(button.padding));
+            let icon = button
+                .as_ref()
+                .and_then(|button| button.icon)
+                .map(|(image, size)| (image, size.min(area.width).min(area.height)))
+                .filter(|&(_, size)| size > 0.0);
+            let gap = button
+                .as_ref()
+                .filter(|_| icon.is_some())
+                .map_or(0.0, ButtonContent::gap);
+            let icon_width = icon.map_or(0.0, |(_, size)| size + gap);
+            let label_width = (area.width - icon_width).max(0.0);
             let paint = self
                 .text
                 .paint(font_size(node), color(text_color), is_button);
-            let lines = self.text.lines(text, &paint, area.width);
+            let lines = self.text.lines(text, &paint, label_width);
             let line_height = font_size(node) * 1.4;
             let y = if is_button {
                 bounds.y + ((bounds.height - line_height * lines.len() as f32) * 0.5).max(0.0)
             } else {
                 bounds.y
             };
-            let x = if is_button {
+            let mut label_left = area.x;
+            let x = if let Some((image, size)) = icon {
+                let label = lines
+                    .iter()
+                    .map(|range| self.text.advance(&text[range.clone()], font_size(node)))
+                    .fold(0.0_f32, f32::max)
+                    .min(label_width);
+                let left = area.x + (area.width - icon_width - label).max(0.0) * 0.5;
+                let rect = Rect::new(left, area.y + (area.height - size) * 0.5, size, size);
+                self.images
+                    .draw_icon(&mut self.canvas, image, rect, scale, layout.enabled)?;
+                label_left = left + icon_width;
+                label_left + label * 0.5
+            } else if is_button {
                 area.x + area.width * 0.5
             } else {
                 area.x
             };
-            for (i, range) in lines.iter().enumerate() {
-                let y = y + i as f32 * line_height;
-                if y >= bounds.y + bounds.height {
-                    break;
-                }
-                self.canvas
-                    .fill_text(x, y, &text[range.clone()], &paint)
-                    .map_err(|e| format!("text drawing failed: {e}"))?;
+            if icon.is_some() {
+                self.canvas.save();
+                self.canvas.intersect_scissor(
+                    label_left,
+                    bounds.y,
+                    (area.x + area.width - label_left).max(0.0),
+                    bounds.height,
+                );
             }
+            let result = (|| {
+                for (i, range) in lines.iter().enumerate() {
+                    let y = y + i as f32 * line_height;
+                    if y >= bounds.y + bounds.height {
+                        break;
+                    }
+                    self.canvas
+                        .fill_text(x, y, &text[range.clone()], &paint)
+                        .map_err(|e| format!("text drawing failed: {e}"))?;
+                }
+                Ok::<(), String>(())
+            })();
+            if icon.is_some() {
+                self.canvas.restore();
+            }
+            result?;
         }
         let table = layout.table.as_deref();
         if let (Some(header), Some(table)) = (&node.table_header, table) {

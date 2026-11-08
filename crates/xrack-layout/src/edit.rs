@@ -21,6 +21,7 @@ pub struct TextPosition {
 #[derive(Clone, Copy, Debug)]
 pub enum EditAction<'a> {
     Insert(&'a str),
+    ReplaceAll(&'a str),
     Backspace,
     Delete,
     Left(bool),
@@ -72,6 +73,10 @@ impl TextEdit {
         boundary(text, self.caret)
     }
 
+    pub fn anchor(&self, text: &str) -> usize {
+        boundary(text, self.anchor)
+    }
+
     pub fn position(&self, text: &str) -> TextPosition {
         TextPosition {
             offset: self.caret(text),
@@ -89,6 +94,11 @@ impl TextEdit {
         }
     }
 
+    pub fn set_selection(&mut self, text: &str, anchor: usize, focus: TextPosition) {
+        self.place_caret(text, focus, false);
+        self.anchor = boundary(text, anchor);
+    }
+
     pub(crate) fn preferred_x(&self) -> Option<f32> {
         self.preferred_x
     }
@@ -99,20 +109,19 @@ impl TextEdit {
 
     pub fn selection(&self, text: &str) -> Range<usize> {
         let caret = self.caret(text);
-        let anchor = boundary(text, self.anchor);
+        let anchor = self.anchor(text);
         caret.min(anchor)..caret.max(anchor)
     }
 
     pub(crate) fn selection_state(&self, text: &str) -> SelectionState {
         SelectionState {
             caret: self.position(text),
-            anchor: boundary(text, self.anchor),
+            anchor: self.anchor(text),
         }
     }
 
     pub(crate) fn restore_selection(&mut self, text: &str, state: SelectionState) {
-        self.place_caret(text, state.caret, false);
-        self.anchor = boundary(text, state.anchor);
+        self.set_selection(text, state.anchor, state.caret);
     }
 
     pub fn set_preedit(&mut self, value: String, cursor: Option<(usize, usize)>) {
@@ -198,7 +207,7 @@ impl TextEdit {
             EditAction::Backspace if selection.is_empty() => (left()..caret, String::new()),
             EditAction::Delete if selection.is_empty() => (caret..right(), String::new()),
             EditAction::Backspace | EditAction::Delete => (selection, String::new()),
-            EditAction::Insert(value) => {
+            EditAction::Insert(value) | EditAction::ReplaceAll(value) => {
                 let normalized;
                 let value = if multiline {
                     normalized = value.replace("\r\n", "\n").replace('\r', "\n");
@@ -210,10 +219,14 @@ impl TextEdit {
                     .chars()
                     .filter(|ch| !ch.is_control() || (multiline && *ch == '\n'))
                     .collect::<String>();
-                if filtered.is_empty() {
-                    return None;
+                if matches!(action, EditAction::ReplaceAll(_)) {
+                    (0..text.len(), filtered)
+                } else {
+                    if filtered.is_empty() {
+                        return None;
+                    }
+                    (selection, filtered)
                 }
-                (selection, filtered)
             }
         };
         if range.is_empty() && replacement.is_empty() {

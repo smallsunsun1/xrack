@@ -118,3 +118,45 @@ export component LayoutDemo inherits Window {
         }
     }
 }
+
+export component FlowDemo inherits Window {
+    out property <string> selected: "请选择命令";
+
+    title: "XRack · 换行布局";
+    width: 570px;
+    height: 260px;
+    background: #101725;
+
+    VerticalLayout {
+        padding: 20px;
+        spacing: 14px;
+        alignment: start;
+
+        Text { text: "缩小窗口，观察按钮换行"; font-size: 22px; color: #edf3ff; }
+        commands := FlowLayout {
+            horizontal-spacing: 8px;
+            vertical-spacing: 12px;
+            cross-axis-alignment: center;
+
+            open := Button {
+                text: "打开文件";
+                width: 140px; height: 38px;
+                background: #314b80;
+                clicked() => { root.selected = "已打开"; }
+            }
+            save := Button {
+                text: "保存草稿";
+                width: 145px; height: 44px;
+                background: #14665c;
+                clicked() => { root.selected = "已保存"; }
+            }
+            export-button := Button {
+                text: "导出预览";
+                width: 158px; height: 38px;
+                background: #513b86;
+                clicked() => { root.selected = "已导出"; }
+            }
+        }
+        status := Text { text: root.selected; color: #acc0db; }
+    }
+}

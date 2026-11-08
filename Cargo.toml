@@ -9,6 +9,7 @@ license = "MIT OR Apache-2.0"
 rust-version = "1.99.1"
 
 [workspace.dependencies]
+antlr4rust = "=0.6.0"
 clap = { version = "4.6", features = ["derive"] }
 proc-macro2 = "1.0"
 quote = "1.0"

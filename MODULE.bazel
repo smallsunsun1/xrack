@@ -5,7 +5,6 @@ bazel_dep(name = "rules_rust", version = "0.75.0")
 bazel_dep(name = "rules_rust_bindgen", version = "0.75.0")
 bazel_dep(name = "rules_cc", version = "0.2.27")
 bazel_dep(name = "rules_java", version = "9.3.0")
-bazel_dep(name = "antlr4-cpp-runtime", version = "4.13.2.bcr.2")
 
 # MLIR is built from the LLVM module's source repository. No system LLVM discovery.
 llvm = use_extension("@llvm//extensions:llvm.bzl", "llvm")
@@ -42,8 +41,8 @@ use_repo(crate, "crates")
 
 http_file = use_repo_rule("@bazel_tools//tools/build_defs/repo:http.bzl", "http_file")
 http_file(
-    name = "antlr4_tool",
-    urls = ["https://www.antlr.org/download/antlr-4.13.2-complete.jar"],
-    downloaded_file_path = "antlr4.jar",
-    sha256 = "eae2dfa119a64327444672aff63e9ec35a20180dc5b8090b7a6ab85125df4d76",
+    name = "antlr4_rust_tool",
+    urls = ["https://github.com/antlr4rust/antlr4/releases/download/v0.6.0/antlr4-4.13.3-SNAPSHOT-complete.jar"],
+    downloaded_file_path = "antlr4-4.13.3-SNAPSHOT-complete.jar",
+    sha256 = "391e77311794f7c8fed2bc6d291f54b04725e37456d79e1981edfd3fc919b677",
 )

@@ -52,6 +52,7 @@ fn ty(t: &Type) -> TokenStream {
         Type::DialogRole => quote!(::xrack_runtime::DialogRole),
         Type::DrawerEdge => quote!(::xrack_runtime::DrawerEdge),
         Type::SelectionTarget => quote!(::xrack_runtime::SelectionTarget),
+        Type::Date => quote!(::xrack_runtime::Date),
         Type::LayoutAlignment => quote!(::xrack_runtime::LayoutAlignment),
         Type::CrossAxisAlignment => quote!(::xrack_runtime::CrossAxisAlignment),
         Type::GradientStop => quote!(::xrack_runtime::GradientStop),
@@ -168,6 +169,7 @@ fn literal(value: &str, ty: Type) -> Result<TokenStream, String> {
         Type::Brush
         | Type::GradientStop
         | Type::Image
+        | Type::Date
         | Type::StringList
         | Type::Record(_)
         | Type::RecordList(_) => {
@@ -251,6 +253,18 @@ fn text_item(element: OperationRef<'_>) -> bool {
     element.attribute("kind").is_some_and(is_text_input)
 }
 
+fn combo_editor(element: OperationRef<'_>) -> bool {
+    element.attr("kind") == Ok("ComboBox")
+        && (children(element, "xr.bind")
+            .any(|binding| matches!(binding.attr("name"), Ok("editable" | "edit-text")))
+            || control_link(element, "edit-text").is_some())
+}
+
+fn default_combo_edit_text(element: OperationRef<'_>) -> bool {
+    control_link(element, "edit-text").is_none()
+        && !children(element, "xr.bind").any(|binding| binding.attr("name") == Ok("edit-text"))
+}
+
 fn controlled_property(element: OperationRef<'_>) -> Option<(&'static str, Type)> {
     if children(element, "xr.row_link").next().is_some() || action_ref(element).is_some() {
         None
@@ -262,7 +276,10 @@ fn controlled_property(element: OperationRef<'_>) -> Option<(&'static str, Type)
         Some(("checked", Type::Bool))
     } else if matches!(element.attr("kind"), Ok("Dialog" | "Drawer")) {
         Some(("open", Type::Bool))
-    } else if matches!(element.attr("kind"), Ok("Slider" | "Dial")) {
+    } else if matches!(
+        element.attr("kind"),
+        Ok("Slider" | "Dial" | "DoubleSpinBox")
+    ) {
         Some(("value", Type::Float))
     } else if element.attr("kind") == Ok("SpinBox") {
         Some(("value", Type::Int))
@@ -272,9 +289,11 @@ fn controlled_property(element: OperationRef<'_>) -> Option<(&'static str, Type)
         Some(("current-key", Type::Int))
     } else if element.attr("kind") == Ok("PageIndicator") {
         Some(("current-index", Type::Int))
+    } else if element.attr("kind") == Ok("Calendar") {
+        Some(("date", Type::Date))
     } else if matches!(
         element.attr("kind"),
-        Ok("ComboBox" | "RadioGroup" | "TabWidget" | "SwipeView" | "ListView")
+        Ok("ComboBox" | "RadioGroup" | "TabWidget" | "TabBar" | "SwipeView" | "ListView")
     ) {
         if element.children().any(|binding| {
             matches!(binding.name(), "xr.bind" | "xr.control_link")
@@ -295,6 +314,16 @@ fn controlled_properties(element: OperationRef<'_>) -> impl Iterator<Item = (&'s
             Some(("lower-value", Type::Float)),
             Some(("upper-value", Type::Float)),
         ]
+    } else if element.attr("kind") == Ok("Calendar") {
+        [
+            controlled_property(element),
+            Some(("display-month", Type::Date)),
+        ]
+    } else if combo_editor(element) {
+        [
+            controlled_property(element),
+            Some(("edit-text", Type::String)),
+        ]
     } else {
         [controlled_property(element), None]
     };
@@ -312,12 +341,15 @@ fn typed_events(element: OperationRef<'_>) -> bool {
             | "Dial"
             | "RangeSlider"
             | "SpinBox"
+            | "DoubleSpinBox"
             | "ComboBox"
             | "RadioGroup"
             | "TabWidget"
+            | "TabBar"
             | "SwipeView"
             | "StackView"
             | "PageIndicator"
+            | "Calendar"
             | "ListView"
             | "TableView"
             | "SplitView"
@@ -616,8 +648,8 @@ impl<'a> Generator<'a> {
             match binding.name() {
                 "xr.show_if" | "xr.layout_bind" => {}
                 "xr.bind" if element.name() == "xr.element" => {
-                    if controlled_property(element)
-                        .is_some_and(|(name, _)| binding.attr("name") == Ok(name))
+                    if controlled_properties(element)
+                        .any(|(name, _)| binding.attr("name") == Ok(name))
                     {
                         continue;
                     }
@@ -723,7 +755,11 @@ impl<'a> Generator<'a> {
                 let names = fields.iter().map(|field| ident(&field.name));
                 quote!(#name { #(#names: #values),* })
             }
-            "xr.get_field" => {
+            "xr.make_date" => {
+                let (year, month, day) = (arg(0)?, arg(1)?, arg(2)?);
+                quote!(::xrack_runtime::Date { year: #year, month: #month, day: #day })
+            }
+            "xr.get_field" | "xr.date_field" => {
                 let record = arg(0)?;
                 let field = ident(value);
                 quote!((#record).#field)
@@ -1157,9 +1193,15 @@ impl<'a> Generator<'a> {
                             let next = !expected;
                         },
                         Type::Float => quote! {
-                            let ::xrack_runtime::RoutedEvent::Range(action) = action else { return Some(false); };
                             let expected = cell.number("value")?;
-                            let Some(next) = ::xrack_runtime::SliderRange::from_node(cell).apply(*action) else { return Some(false); };
+                            let next = match action {
+                                ::xrack_runtime::RoutedEvent::Range(action) if cell.kind != "DoubleSpinBox" =>
+                                    ::xrack_runtime::SliderRange::from_node(cell).apply(*action),
+                                ::xrack_runtime::RoutedEvent::Control(::xrack_runtime::ControlAction::Spin(action)) =>
+                                    ::xrack_runtime::decimal_spin_value_after(cell, *action),
+                                _ => None,
+                            };
+                            let Some(next) = next else { return Some(false); };
                         },
                         _ => return Err("unsupported row editor field type".into()),
                     };
@@ -1250,6 +1292,10 @@ impl<'a> Generator<'a> {
             .find(|binding| binding.attr("name") == Ok(name))
         {
             Some(binding) => self.expr(self.operand(binding, 0)?)?,
+            None if ty == Type::Date && name == "display-month" => {
+                self.control_value(element, "date", Type::Date)?
+            }
+            None if ty == Type::Date => quote!(::xrack_runtime::Date::default()),
             None if ty == Type::Bool => quote!(false),
             None if ty == Type::Float => {
                 let bound = if name == "upper-value" {
@@ -1375,6 +1421,15 @@ impl<'a> Generator<'a> {
             });
         }
         for (property, ty) in controlled_properties(element) {
+            if property == "edit-text" && default_combo_edit_text(element) {
+                let field = control_field(element_key(element)?, property);
+                out.extend(quote! {
+                    if let Some(value) = self.__state.#field.explicit_value() {
+                        #name.properties.insert("edit-text", ::xrack_runtime::Value::String(value));
+                    }
+                });
+                continue;
+            }
             let value = self.control_value(element, property, ty)?;
             out.extend(quote! {
                 #name.properties.insert(#property, ::xrack_runtime::Value::from(#value));
@@ -1473,8 +1528,8 @@ impl<'a> Generator<'a> {
             });
         }
         for (index, child) in scene_children(element).enumerate() {
-            let repeated_radio =
-                kind == Some("RadioGroup") && children(child, "xr.repeat").next().is_some();
+            let repeated_option = matches!(kind, Some("RadioGroup" | "TabBar"))
+                && children(child, "xr.repeat").next().is_some();
             let child = if kind == Some("TabWidget") {
                 let index = index as i64;
                 let active = quote!(#name.int("current-index").unwrap_or(0) == #index);
@@ -1489,7 +1544,7 @@ impl<'a> Generator<'a> {
             } else {
                 self.render(child, scope, &mut content, next)?
             };
-            if repeated_radio {
+            if repeated_option {
                 content.extend(quote!(#name.children.extend(#child.children);));
             } else {
                 content.extend(quote!(#name.children.push(#child);));
@@ -1539,7 +1594,7 @@ impl<'a> Generator<'a> {
             return Ok(());
         }
         let id = element.attr("id")?;
-        if element.attr("kind") == Ok("Button")
+        if matches!(element.attr("kind"), Ok("Button" | "ToolButton"))
             && let Some(action) = action_ref(element)
         {
             let activate = action_activate_method(action);
@@ -1588,7 +1643,11 @@ impl<'a> Generator<'a> {
             );
             return Ok(());
         }
-        if element.attr("kind").is_ok_and(is_multiline_text_input) {
+        if combo_editor(element) {
+            let set = self.set_control_property(element, "edit-text", &quote!(text.clone()))?;
+            let edited = self.typed_event(element, "edited", &quote!(text))?;
+            out.extend(quote!([#(#path),*] => { #set #edited true },));
+        } else if element.attr("kind").is_ok_and(is_multiline_text_input) {
             let has_handler =
                 children(element, "xr.handler").any(|handler| handler.attr("name") == Ok("edited"));
             let value = if has_handler {
@@ -1726,7 +1785,7 @@ impl<'a> Generator<'a> {
             return Ok(());
         }
         match element.attr("kind")? {
-            kind @ ("MenuItem" | "Button") if action_ref(element).is_some() => {
+            kind @ ("MenuItem" | "Button" | "ToolButton") if action_ref(element).is_some() => {
                 let activate = action_activate_method(action_ref(element).unwrap());
                 let expected = if kind == "MenuItem" {
                     quote!(ActivateMenuItem)
@@ -1795,13 +1854,31 @@ impl<'a> Generator<'a> {
                     },
                 });
             }
-            "SpinBox" => {
+            kind @ ("SpinBox" | "DoubleSpinBox") => {
+                let (apply, guard) = if kind == "DoubleSpinBox" {
+                    let current = self.control_value(element, "value", Type::Float)?;
+                    (
+                        quote!(::xrack_runtime::decimal_spin_value_after),
+                        quote! {
+                            if let ::xrack_runtime::SpinAction::CommitDecimalIfCurrent { original, .. } = action
+                                && original != ::xrack_runtime::SpinDecimal::new(#current) {
+                                return false;
+                            }
+                        },
+                    )
+                } else {
+                    (
+                        quote!(::xrack_runtime::spin_value_after),
+                        TokenStream::new(),
+                    )
+                };
                 let set = self.set_control(element, &quote!(__xr_value))?;
                 let edited = self.typed_event(element, "edited", &quote!(__xr_value))?;
                 out.extend(quote! {
                     [#(#path),*] => {
                         let ::xrack_runtime::ControlAction::Spin(action) = action else { return false; };
-                        let Some(__xr_value) = ::xrack_runtime::spin_value_after(node, action) else { return false; };
+                        #guard
+                        let Some(__xr_value) = #apply(node, action) else { return false; };
                         #set
                         #edited
                         true
@@ -1951,7 +2028,7 @@ impl<'a> Generator<'a> {
                     },
                 });
             }
-            "RadioGroup" | "TabWidget" | "SwipeView" => {
+            "RadioGroup" | "TabWidget" | "TabBar" | "SwipeView" => {
                 let radio = element.attr("kind")? == "RadioGroup";
                 let mode = controlled_property(element).map(|(property, _)| property);
                 let value = if mode == Some("current-value") {
@@ -1977,6 +2054,33 @@ impl<'a> Generator<'a> {
                     },
                 });
             }
+            "Calendar" => {
+                let set_date = self.set_control_property(element, "date", &quote!(__xr_date))?;
+                let set_month =
+                    self.set_control_property(element, "display-month", &quote!(__xr_month))?;
+                let date_changed = self.typed_event(element, "changed", &quote!(__xr_date))?;
+                let month_changed =
+                    self.typed_event(element, "month-changed", &quote!(__xr_month))?;
+                out.extend(quote! {
+                    [#(#path),*] => {
+                        use ::xrack_runtime::CalendarAction;
+                        let ::xrack_runtime::ControlAction::Calendar(action) = action else { return false; };
+                        let calendar = ::xrack_runtime::CalendarState::from_node(node);
+                        let (__xr_date, __xr_month) = match action {
+                            CalendarAction::Select(date) if calendar.allows(date) => (Some(date), date.first_of_month()),
+                            CalendarAction::Browse(month) if calendar.allows_month(month) => (None, month),
+                            _ => return false,
+                        };
+                        let date_changed = __xr_date.is_some_and(|date| node.date("date") != Some(date));
+                        let month_changed = __xr_month != calendar.month;
+                        if let Some(__xr_date) = __xr_date.filter(|_| date_changed) { #set_date }
+                        if month_changed { #set_month }
+                        if let Some(__xr_date) = __xr_date.filter(|_| date_changed) { #date_changed }
+                        if month_changed { #month_changed }
+                        date_changed || month_changed
+                    },
+                });
+            }
             "ComboBox" => {
                 let mode = controlled_property(element).map(|(property, _)| property);
                 let value = if mode == Some("current-value") {
@@ -1987,11 +2091,61 @@ impl<'a> Generator<'a> {
                 let set = self.set_control(element, &value)?;
                 let selected =
                     self.typed_event(element, "selected", &quote!(__xr_choice.clone()))?;
+                let (select_text, accept_text) = if combo_editor(element) {
+                    let default = default_combo_edit_text(element);
+                    let field = control_field(element_key(element)?, "edit-text");
+                    let select_text = if default {
+                        quote!(self.__state.#field.reset();)
+                    } else {
+                        self.set_control_property(
+                            element,
+                            "edit-text",
+                            &quote!(__xr_choice.clone()),
+                        )?
+                    };
+                    let keep_custom_text = if default {
+                        quote! {
+                            if __xr_match.is_some() {
+                                self.__state.#field.reset();
+                            } else {
+                                self.__state.#field.set_if_changed(__xr_text.clone());
+                            }
+                        }
+                    } else {
+                        TokenStream::new()
+                    };
+                    let accepted =
+                        self.typed_event(element, "accepted", &quote!(__xr_text.clone()))?;
+                    let value = if mode == Some("current-value") {
+                        quote!(__xr_text.clone())
+                    } else {
+                        quote!(__xr_match.map_or(-1, |index| index as ::core::primitive::i64))
+                    };
+                    let accept_selection = self.set_control(element, &value)?;
+                    (
+                        quote! { if ::xrack_runtime::combo_editable(node) { #select_text } },
+                        quote! {
+                            if action == ::xrack_runtime::ControlAction::AcceptComboText {
+                                if !::xrack_runtime::combo_editable(node) { return false; }
+                                let __xr_text = ::xrack_runtime::text_input_value(node).to_owned();
+                                let __xr_match = node.strings("model").iter().position(|item| *item == __xr_text);
+                                #accept_selection
+                                #keep_custom_text
+                                #accepted
+                                return true;
+                            }
+                        },
+                    )
+                } else {
+                    (TokenStream::new(), TokenStream::new())
+                };
                 out.extend(quote! {
                     [#(#path),*] => {
+                        #accept_text
                         let ::xrack_runtime::ControlAction::Select(index) = action else { return false; };
                         let Some(__xr_choice) = node.strings("model").get(index) else { return false; };
                         #set
+                        #select_text
                         #selected
                         true
                     },
@@ -2202,7 +2356,7 @@ impl<'a> Generator<'a> {
             let toggle = self.set_control(action, &quote!(!(#checked)))?;
             let activated = self.typed_event_values(action, "activated", &[])?;
             let mut labels = TokenStream::new();
-            for name in ["text", "shortcut"] {
+            for name in ["text", "shortcut", "icon"] {
                 if let Some(value) = binding(name)? {
                     labels.extend(quote!(node.properties.insert(#name, ::xrack_runtime::Value::from(#value));));
                 }
@@ -2626,9 +2780,9 @@ impl<'a> Generator<'a> {
                     text: ::std::string::String,
                 ) -> ::core::primitive::bool {
                     if scene.interactive_at_path(path).is_some_and(|node| {
-                        ::xrack_runtime::is_text_input(node.kind)
+                        (::xrack_runtime::is_text_input(node.kind) || ::xrack_runtime::combo_editable(node))
                             && !node.boolean("read-only", false)
-                            && node.text("text") != ::core::option::Option::Some(text.as_str())
+                            && ::xrack_runtime::text_input_value(node) != text
                     }) {
                         self.__route_delegate(scene, path, &::xrack_runtime::RoutedEvent::Edit(&text))
                             .unwrap_or_else(|| self.__edit_path(path, text))

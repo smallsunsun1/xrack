@@ -47,6 +47,23 @@ pub(crate) struct Images {
 }
 
 impl Images {
+    pub(crate) fn draw_icon(
+        &mut self,
+        canvas: &mut Canvas<WGPURenderer>,
+        image: Image,
+        bounds: Rect,
+        scale: f32,
+        enabled: bool,
+    ) -> Result<(), String> {
+        canvas.save();
+        if !enabled {
+            canvas.set_global_alpha(0.45);
+        }
+        let result = self.draw(canvas, image, bounds, ImageFit::Contain, scale);
+        canvas.restore();
+        result
+    }
+
     pub(crate) fn begin_frame(&mut self) {
         for texture in self.textures.values_mut() {
             texture.used = false;

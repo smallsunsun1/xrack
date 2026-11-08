@@ -8,6 +8,7 @@ pub(crate) struct EntryText<'a> {
     pub value: &'a str,
     pub editor: Option<&'a TextEdit>,
     pub scroll: Point,
+    pub completion: Option<(&'a str, Rect)>,
 }
 
 struct DisplayText<'a> {
@@ -119,7 +120,7 @@ pub(crate) fn draw(
     bounds: Rect,
     text: EntryText<'_>,
     enabled: bool,
-) -> Result<(), String> {
+) -> Result<bool, String> {
     let DisplayText {
         content,
         selection,
@@ -129,7 +130,7 @@ pub(crate) fn draw(
     } = display_text(node, text.value, text.editor);
     let area = bounds.inset(node.length("padding").unwrap_or(6.0).max(0.0));
     if area.width <= 0.0 || area.height <= 0.0 {
-        return Ok(());
+        return Ok(false);
     }
     let size = font_size(node);
     let height = size * 1.4;
@@ -187,7 +188,29 @@ pub(crate) fn draw(
     canvas
         .fill_text(x, y, &content, &paint)
         .map_err(|error| format!("text input drawing failed: {error}"))?;
-    Ok(())
+    if let Some((suffix, clip)) = text.completion {
+        let start = x + width_at(content.len()) + 2.0;
+        let clip = clip.intersect(Rect::new(area.x, bounds.y, area.width, bounds.height));
+        let width = text_system.advance(suffix, size);
+        if width > 0.0
+            && clip.contains(Point {
+                x: start,
+                y: y + height * 0.5,
+            })
+            && clip.x + clip.width - start >= width.min(8.0)
+        {
+            canvas
+                .fill_text(
+                    start,
+                    y,
+                    suffix,
+                    &text_system.paint(size, color(theme.disabled_text), false),
+                )
+                .map_err(|error| format!("completion drawing failed: {error}"))?;
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 fn fill_rect(canvas: &mut Canvas<WGPURenderer>, rect: Rect, tint: Color) {

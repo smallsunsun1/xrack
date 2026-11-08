@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Export first-party C/C++ compile actions (including generated ANTLR sources)."""
+"""Export first-party C/C++ compile actions for the MLIR bridge and dialect."""
 
 import json
 import os
@@ -8,7 +8,7 @@ import subprocess
 
 
 ROOT = Path(__file__).resolve().parents[1]
-NATIVE = ["//native/...", "//grammar/...", "//parser/...", "//mlir/..."]
+MLIR_TARGETS = "//mlir/..."
 SUFFIXES = {".c", ".cc", ".cpp", ".cxx", ".C", ".m", ".mm"}
 
 
@@ -50,10 +50,10 @@ def macos_driver(args, action, execution_root):
 
 
 def main():
-    # Materialize ANTLR/TableGen outputs and third-party headers before indexing.
-    subprocess.run(["bazel", "build", *NATIVE], cwd=ROOT, check=True)
+    # Materialize TableGen outputs and third-party headers before indexing.
+    subprocess.run(["bazel", "build", MLIR_TARGETS], cwd=ROOT, check=True)
     execution_root = Path(bazel("info", "execution_root").strip())
-    query = 'mnemonic("CppCompile", ' + " + ".join(NATIVE) + ")"
+    query = f'mnemonic("CppCompile", {MLIR_TARGETS})'
     graph = json.loads(bazel("aquery", query, "--output=jsonproto", "--include_param_files"))
     commands = {}
     for action in graph.get("actions", []):

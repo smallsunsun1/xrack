@@ -6,12 +6,15 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+accesskit = "=0.25.2"
+accesskit_winit = "=0.34.2"
 xrack-runtime.workspace = true
 xrack-layout.workspace = true
 xrack-renderer-femtovg.workspace = true
 winit.workspace = true
 wgpu.workspace = true
 pollster.workspace = true
+unicode-segmentation.workspace = true
 arboard = { version = "=3.7.0", default-features = false, features = ["wayland-data-control"] }
 
 [dev-dependencies]

@@ -1,27 +1,23 @@
-load("@rules_cc//cc:cc_library.bzl", "cc_library")
-load(":antlr.bzl", "antlr_cpp")
+load("@rules_rust//rust:defs.bzl", "rust_library")
+load(":antlr.bzl", "antlr_rust")
 
-antlr_cpp(
-    name = "generate",
+antlr_rust(
+    name = "generate_rust",
     src = "Xrack.g4",
+    crate_root = "generated/rust/lib.rs",
     outs = [
-        "generated/XrackLexer.cpp",
-        "generated/XrackLexer.h",
-        "generated/XrackParser.cpp",
-        "generated/XrackParser.h",
+        "generated/rust/xracklexer.rs",
+        "generated/rust/xracklistener.rs",
+        "generated/rust/xrackparser.rs",
     ],
 )
 
-cc_library(
-    name = "xrack_antlr_generated",
-    srcs = [
-        "generated/XrackLexer.cpp",
-        "generated/XrackParser.cpp",
-    ],
-    hdrs = [
-        "generated/XrackLexer.h",
-        "generated/XrackParser.h",
-    ],
-    visibility = ["//visibility:public"],
-    deps = ["@antlr4-cpp-runtime//:antlr4-cpp-runtime"],
+rust_library(
+    name = "xrack_antlr_rust",
+    srcs = [":generate_rust"],
+    crate_root = "generated/rust/lib.rs",
+    edition = "2024",
+    tags = ["no-clippy", "no-rustfmt"],
+    visibility = ["//crates/xrack-parser:__pkg__"],
+    deps = ["@crates//:antlr4rust"],
 )

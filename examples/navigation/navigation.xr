@@ -230,3 +230,46 @@ export component StackDemo inherits Window {
         }
     }
 }
+
+export component TabBarDemo inherits Window {
+    in-out property <int> page: 0;
+    in-out property <int> filter: 0;
+    in-out property <[string]> filters: ["全部", "最近更新", "收藏"];
+    out property <int> changes: 0;
+
+    title: "XRack · 独立标签栏";
+    width: 536px; height: 318px;
+    background: #141e2f;
+
+    Text { x: 24px; y: 14px; text: "独立标签栏 · 滚动或按 Home / End"; color: #e7efff; font-size: 22px; }
+    pages-bar := TabBar {
+        x: 24px; y: 54px; width: 488px; height: 44px;
+        accessible-name: "工作区页面";
+        spacing: 4px;
+        current-index <=> root.page;
+        changed(index) => { root.changes += 1; }
+        overview-tab := TabButton { text: "概览"; width: 120px; }
+        hidden-tab := TabButton { text: "隐藏页"; width: 120px; visible: false; }
+        disabled-tab := TabButton { text: "待开放"; width: 120px; enabled: false; }
+        reports-tab := TabButton { text: "报表"; width: 120px; }
+        history-tab := TabButton { text: "历史"; width: 120px; }
+        preferences-tab := TabButton { text: "偏好设置"; width: 164px; }
+    }
+    workspace := SwipeView {
+        x: 24px; y: 108px; width: 488px; height: 118px;
+        current-index <=> root.page;
+        SwipePage { Text { x: 12px; y: 20px; text: "概览 · 标签栏与页面共享一个页索引"; color: #e7efff; } }
+        SwipePage { visible: false; }
+        SwipePage { enabled: false; }
+        SwipePage { Text { x: 12px; y: 20px; text: "报表"; color: #e7efff; } }
+        SwipePage { Text { x: 12px; y: 20px; text: "历史"; color: #e7efff; } }
+        SwipePage { Text { x: 12px; y: 20px; text: "偏好设置 · 中键拖动可切回上一页"; color: #e7efff; } }
+    }
+    Text { x: 24px; y: 221px; text: "模型生成的标签 · 第 " + (root.filter + 1) + " 项"; color: #acc0db; }
+    filters-bar := TabBar {
+        x: 24px; y: 252px; width: 488px; height: 38px;
+        accessible-name: "筛选条件";
+        current-index <=> root.filter;
+        for label in root.filters : TabButton { text: label; }
+    }
+}

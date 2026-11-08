@@ -3,7 +3,7 @@
 use std::{rc::Rc, time::Instant};
 use xrack_layout::{
     ChoiceKey, EditAction, EditSource, Interaction, LayoutNode, MenuKey, MenuPanel, MenuShortcut,
-    Point, Size, TextMeasurer, prepare_scene,
+    NavigationKey, Point, Size, TextMeasurer, prepare_scene_with_input,
 };
 use xrack_runtime::{Component, Node};
 
@@ -19,12 +19,12 @@ pub struct UiDriver<C, T> {
 impl<C: Component, T: TextMeasurer> UiDriver<C, T> {
     pub fn new(component: C, mut text: T, viewport: Size) -> Self {
         let mut input = Interaction::default();
-        let (scene, layout) = prepare_scene(
+        let (scene, layout) = prepare_scene_with_input(
             &component,
             component.render_shared(),
             viewport,
             &mut text,
-            input.scroll_offsets(),
+            &input,
         );
         input.reconcile(&scene, &layout);
         Self {
@@ -38,12 +38,12 @@ impl<C: Component, T: TextMeasurer> UiDriver<C, T> {
     }
 
     fn refresh(&mut self) {
-        (self.scene, self.layout) = prepare_scene(
+        (self.scene, self.layout) = prepare_scene_with_input(
             &self.component,
             self.component.render_shared(),
             self.viewport,
             &mut self.text,
-            self.input.scroll_offsets(),
+            &self.input,
         );
         self.input.reconcile(&self.scene, &self.layout);
     }
@@ -146,7 +146,7 @@ impl<C: Component, T: TextMeasurer> UiDriver<C, T> {
             // Opening the header changes only the interaction state.
         } else if self
             .input
-            .open_choice(&self.scene, &self.layout, target.clone())
+            .open_choice_at_pointer(&self.scene, &self.layout, target.clone())
         {
             // Choice popups are input state and do not mutate the component on open.
         } else {
@@ -157,7 +157,20 @@ impl<C: Component, T: TextMeasurer> UiDriver<C, T> {
     }
 
     pub fn tab(&mut self) {
-        self.input.focus_next(&self.scene, &self.layout, false);
+        if self.input.focus_next(&self.scene, &self.layout, false) {
+            self.refresh();
+        }
+    }
+
+    pub fn group_key(&mut self, key: NavigationKey) -> bool {
+        let Some(action) = self.input.group_key(&self.scene, &self.layout, key) else {
+            return false;
+        };
+        let changed = self
+            .component
+            .control_at(&self.scene, &action.path, action.action);
+        self.refresh();
+        changed
     }
 
     pub fn back(&mut self) -> bool {

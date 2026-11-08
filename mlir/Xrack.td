@@ -38,11 +38,12 @@ def XR_TextWrap : XR_Type<"TextWrap", "textwrap">;
 def XR_DialogRole : XR_Type<"DialogRole", "dialogrole">;
 def XR_DrawerEdge : XR_Type<"DrawerEdge", "draweredge">;
 def XR_SelectionTarget : XR_Type<"SelectionTarget", "selectiontarget">;
+def XR_Date : XR_Type<"Date", "date">;
 def XR_GradientStop : XR_Type<"GradientStop", "gradientstop">;
 def XR_Value : AnyTypeOf<[XR_Int, XR_Float, XR_Bool, XR_String, XR_StringList, XR_Record, XR_RecordList, XR_Length, XR_Percent, XR_Color,
                          XR_Brush, XR_Image, XR_ImageFit, XR_LayoutAlignment, XR_CrossAxisAlignment,
-                         XR_Orientation, XR_DialInputMode, XR_ScrollBarPolicy, XR_TextWrap, XR_DialogRole, XR_DrawerEdge, XR_SelectionTarget]>;
-def XR_Stringifiable : AnyTypeOf<[XR_Int, XR_Float, XR_Bool]>;
+                         XR_Orientation, XR_DialInputMode, XR_ScrollBarPolicy, XR_TextWrap, XR_DialogRole, XR_DrawerEdge, XR_SelectionTarget, XR_Date]>;
+def XR_Stringifiable : AnyTypeOf<[XR_Int, XR_Float, XR_Bool, XR_Date]>;
 
 class XR_Op<string mnemonic, list<Trait> traits = []> : Op<Xrack_Dialect, mnemonic, traits>;
 
@@ -98,7 +99,7 @@ def XR_RepeatOp : XR_Op<"repeat", [ParentOneOf<["ElementOp", "InstanceOp"]>]> {
                        StrAttr:$item, StrAttr:$index);
 }
 def XR_ControlLinkOp : XR_Op<"control_link", [HasParent<"ElementOp">]> {
-  let arguments = (ins AnyTypeOf<[XR_String, XR_Bool, XR_Float, XR_Int]>:$input, StrAttr:$name);
+  let arguments = (ins AnyTypeOf<[XR_String, XR_Bool, XR_Float, XR_Int, XR_Date]>:$input, StrAttr:$name);
   let hasVerifier = 1;
 }
 def XR_RowLinkOp : XR_Op<"row_link", [HasParent<"ElementOp">]> {
@@ -140,6 +141,10 @@ def XR_RecordArrayOp : XR_ExpressionOp<"record_array", (ins Variadic<XR_Record>:
 def XR_MakeRecordOp : XR_ExpressionOp<"make_record", (ins Variadic<XR_Value>:$fields), XR_Record, [Pure]>;
 def XR_DefaultRecordOp : XR_ExpressionOp<"default_record", (ins), XR_Record, [Pure]>;
 def XR_GetFieldOp : XR_ExpressionOp<"get_field", (ins XR_Record:$input), XR_Value, [Pure]>;
+def XR_MakeDateOp : XR_ExpressionOp<"make_date", (ins XR_Int:$year, XR_Int:$month, XR_Int:$day), XR_Date, [Pure]>;
+def XR_DateFieldOp : XR_ExpressionOp<"date_field", (ins XR_Date:$input), XR_Int, [Pure]> {
+  let hasVerifier = 1;
+}
 def XR_ReadOp : XR_ExpressionOp<"read", (ins OptionalAttr<StrAttr>:$owner)>;
 def XR_StackReadOp : XR_ExpressionOp<"stack_read", (ins StrAttr:$owner), AnyTypeOf<[XR_String, XR_Int, XR_Bool]>> {
   let hasVerifier = 1;

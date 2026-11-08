@@ -125,12 +125,23 @@ pub enum Type {
     DialogRole,
     DrawerEdge,
     SelectionTarget,
+    Date,
     /// Internal type for a color and its normalized position in a gradient.
     #[doc(hidden)]
     GradientStop,
 }
 
 impl Type {
+    /// Interpret a type name from the source grammar, including unresolved records.
+    pub fn from_source(spelling: &str) -> Self {
+        Self::parse(spelling).unwrap_or_else(|| {
+            match spelling.strip_prefix('[').and_then(|s| s.strip_suffix(']')) {
+                Some(name) => Self::RecordList(name.into()),
+                None => Self::Record(spelling.into()),
+            }
+        })
+    }
+
     pub fn name(&self) -> Cow<'static, str> {
         Cow::Borrowed(match self {
             Self::Int => "int",
@@ -155,6 +166,7 @@ impl Type {
             Self::DialogRole => "dialogrole",
             Self::DrawerEdge => "draweredge",
             Self::SelectionTarget => "selectiontarget",
+            Self::Date => "date",
             Self::GradientStop => "gradientstop",
         })
     }
@@ -180,6 +192,7 @@ impl Type {
             "dialogrole" | "DialogRole" => Self::DialogRole,
             "draweredge" | "DrawerEdge" => Self::DrawerEdge,
             "selectiontarget" | "SelectionTarget" => Self::SelectionTarget,
+            "date" | "Date" => Self::Date,
             "gradientstop" => Self::GradientStop,
             _ => {
                 if let Some(name) = s
@@ -244,6 +257,7 @@ impl Serialize for Type {
             Self::DialogRole => serializer.serialize_str("DialogRole"),
             Self::DrawerEdge => serializer.serialize_str("DrawerEdge"),
             Self::SelectionTarget => serializer.serialize_str("SelectionTarget"),
+            Self::Date => serializer.serialize_str("Date"),
             _ => serializer.serialize_str(&self.name()),
         }
     }
@@ -252,12 +266,7 @@ impl Serialize for Type {
 impl<'de> Deserialize<'de> for Type {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let spelling = String::deserialize(deserializer)?;
-        Ok(Self::parse(&spelling).unwrap_or_else(|| {
-            match spelling.strip_prefix('[').and_then(|s| s.strip_suffix(']')) {
-                Some(name) => Self::RecordList(name.into()),
-                None => Self::Record(spelling.into()),
-            }
-        }))
+        Ok(Self::from_source(&spelling))
     }
 }
 

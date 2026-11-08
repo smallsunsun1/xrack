@@ -1,6 +1,6 @@
 # XRack
 
-类似 Slint 的声明式 UI 编译器原型，使用 **ANTLR4 C++ runtime + MLIR + Rust**，以 **Bazel** 为正式构建入口。
+类似 Slint 的声明式 UI 编译器原型，使用 **ANTLR4 Rust runtime + MLIR + Rust**，以 **Bazel** 为正式构建入口。
 
 生成的组件可以直接运行在 winit 窗口中。布局和输入处理使用逻辑像素，FemtoVG 通过 wgpu 绘制背景、圆角、边框、文本、图像和矢量路径。组件通过 `Node` 场景树和 `Component` 接口与平台解耦。
 
@@ -50,18 +50,20 @@ bazel run //:xrackc -- --check examples/counter/counter.xr
 
 MLIR 通过 `llvm` module **0.8.26** 导出的 `@llvm-project` 构建，LLVM 版本固定为 **23.1.2**。不探测 `llvm-config`、Homebrew LLVM 或系统 MLIR，不使用 Melior 的系统链接方式。
 
-ANTLR generator 和 C++ runtime 均为 **4.13.2**。Bazel 在 `.g4` 变化时重新生成 C++ 源码。generator 使用 Bazel Java 工具链，最终编译器通过 C ABI 静态链接 C++ runtime，运行时不需要 Java。
+Bazel 使用配套的 Rust 目标生成器和 `antlr4rust 0.6.0` runtime。`.g4` 变化后，Bazel 通过 JDK 重新生成 Rust lexer、parser 和 listener。JDK 只用于生成源码。
 
-Cargo workspace 为依赖管理和可选 Rust 静态检查提供支持。`.cargo/config.toml` 将构建产物放到 `.tools/cargo-build/`。静态检查读取 Bazel 生成的同一份 MLIR C bindings。
+Cargo workspace 为依赖管理和可选 Rust 静态检查提供支持。`.cargo/config.toml` 将构建产物放到 `.tools/cargo-build/`。静态检查读取 Bazel 生成的 Rust parser 和 MLIR C bindings。
 
 ```sh
-bazel build //mlir:c_bindings_out_dir
-OUT_DIR="$(pwd)/bazel-bin/mlir/c_bindings_out_dir" cargo check --workspace --locked
+bazel build //grammar:generate_rust //mlir:c_bindings_out_dir
+export XRACK_ANTLR_DIR="$(pwd)/bazel-bin/grammar/generated/rust"
+export OUT_DIR="$(pwd)/bazel-bin/mlir/c_bindings_out_dir"
+cargo check --workspace --locked
 cargo fmt --all --check
-OUT_DIR="$(pwd)/bazel-bin/mlir/c_bindings_out_dir" cargo clippy --workspace --all-targets --no-deps -- -D warnings
+cargo clippy --workspace --all-targets --no-deps --locked -- -D warnings
 ```
 
-包含 native bridge 的可执行文件和测试通过 Bazel 构建；单独 `cargo build` / `cargo test` 不负责生成或链接 native 依赖。
+依赖 MLIR 原生库的可执行文件和测试通过 Bazel 构建。Cargo 可用于运行独立的 parser 测试，执行 `cargo test -p xrack-parser --locked` 前先按上文生成 Rust parser 并设置 `XRACK_ANTLR_DIR`。
 
 ## VS Code
 
@@ -73,7 +75,7 @@ bazel run //:rust_project -- //... //tests:gpu_test
 
 Rust Analyzer 读取 Bazel 的 crate 图、标准库源码、生成的 Rust 文件和过程宏。项目图包含本机路径，由 Git 忽略。更改 `BUILD.bazel`、依赖或工具链后重新生成；如果编辑器仍显示旧图，运行 **Rust Analyzer: Reload Workspace**。
 
-C++ 使用 clangd。运行 **Bazel: Generate compile_commands.json** 或 `python3 tools/compile_commands.py`，从 Bazel 的编译动作导出项目内 C++ 源码的参数。脚本会先生成 ANTLR 与 TableGen 文件，并保留 Bazel 的头文件路径、宏、C++20 和 macOS SDK 参数。数据库包含本机路径，由 Git 忽略。
+C++ 使用 clangd。运行 **Bazel: Generate compile_commands.json** 或 `python3 tools/compile_commands.py`，从 Bazel 的编译动作导出 MLIR 桥接和方言源码的参数。脚本会先生成 TableGen 文件，并保留 Bazel 的头文件路径、宏、C++20 和 macOS SDK 参数。数据库包含本机路径，由 Git 忽略。
 
 本工作区从 `PATH` 选择 clangd。macOS 上请使用与当前 Xcode / SDK 兼容的 clangd，可用 `clangd --version` 检查。过旧的 clangd 可能无法解析 SDK 的 libc++ 头文件，即使 Bazel 构建正常也会出现连带诊断。更改 clangd 路径后，重启 VS Code 的 clangd 服务即可重新诊断。
 
@@ -92,7 +94,7 @@ C++ 使用 clangd。运行 **Bazel: Generate compile_commands.json** 或 `python
 | Crate | 责任 |
 | --- | --- |
 | `xrack-syntax` | AST、类型、源码位置与诊断 |
-| `xrack-parser` | 安全封装 ANTLR4 C++ parser 的 C ABI，返回拥有所有权的 Rust AST |
+| `xrack-parser` | 将 ANTLR4 生成的 Rust 规则上下文转换成拥有所有权的 AST |
 | `xrack-ir` | 前端符号解析、类型检查、循环绑定检测与 HIR 调试视图 |
 | `xrack-mlir` | 将语义分析后的 AST 成员降到 `xr`，运行 MLIR pass 并提供借用原生模块的只读视图 |
 | `xrack-codegen` | 读取优化后的 MLIR 操作与 SSA use-def，用 `quote!` 生成 Rust token stream |
@@ -103,7 +105,7 @@ C++ 使用 clangd。运行 **Bazel: Generate compile_commands.json** 或 `python
 | `xrack-renderer-femtovg` | 字体发现与回退、文字测量、FemtoVG 绘制、wgpu 纹理与 PNG 读回 |
 | `xrack-platform-winit` | 原生窗口、输入事件、DPI、交换链和按需重绘 |
 
-Native 实现在 `parser/` 和 `mlir/`。ANTLR C ABI 返回的 buffer 由 parser 释放。MLIR 模块及其 context 由 `xrack-mlir` 管理，操作和 SSA 值引用只在模块存活期间有效。
+MLIR 的 native 实现在 `mlir/`。模块及其 context 由 `xrack-mlir` 管理，操作和 SSA 值引用只在模块存活期间有效。
 
 ## 语言示例
 
@@ -139,6 +141,8 @@ export component Counter inherits Window {
 `HorizontalLayout` 和 `VerticalLayout` 支持四边 `padding-*`、`spacing`、`min-*`、`preferred-*`、`max-*`、双轴伸缩与对齐。组件实例可以在使用处声明这些尺寸约束和子项属性，实例上的绑定通过 `xr.layout_bind` 进入场景树。主轴对齐支持 `stretch`、`start`、`center`、`end`、`space-between`、`space-around` 和 `space-evenly`。交叉轴可用 `cross-axis-self-alignment` 覆盖单个子项。`layout-order` 改变视觉位置，键盘焦点按声明顺序移动。
 
 `GridLayout` 支持 `Row`、`row`、`col`、`rowspan`、`colspan` 和分轴间距。尺寸绑定可使用相对父容器内容区域的百分比，例如 `width: 50%;`。`animate width { duration: 220ms; }` 可对相同类型的视觉属性值做线性过渡。
+
+`FlowLayout` 按子项的首选尺寸自动换行，设置 `orientation: vertical;` 可改为纵向排列并换列。每一行或列独立应用 `alignment` 和 `cross-axis-alignment`，子项仍可使用尺寸约束、`layout-order` 和 `cross-axis-self-alignment`。用 `horizontal-spacing` 和 `vertical-spacing` 分别控制两个方向的间距，默认沿用 `spacing`。隐藏和零尺寸子项不参与排布。运行 `bazel run //examples/layout:layout -- --flow` 后调整窗口宽度，可观察按钮换行和下方状态文本的位置变化。
 
 `TextInput` 和 `LineEdit` 提供单行键盘编辑、选区、IME 预编辑和提交。`text <=> root.query;` 与 `checked <=> root.flag;` 分别把文本输入和复选框与可写属性相连。条件子元素用 `if condition : Element { ... }` 表达，隐藏时保留组件的内部状态。重复元素用 `for item[index] in root.items : Text { ... }` 表达，接受整数计数、`[string]` 和命名记录列表，以匿名、无状态的显示模板生成纵向列表。
 
@@ -180,11 +184,23 @@ export component Counter inherits Window {
 
 `SpinBox` 的 `value` 是可双向绑定的整数。它支持 `minimum`、`maximum`、`step-size`、`wrap` 和 `read-only`。方向键和步进按钮立即提交，直接输入的数字在 Enter 或移开焦点时提交，Escape 丢弃草稿。交互改值触发 `edited(int)`。
 
+`DoubleSpinBox` 使用相同的交互，`value` 和步进范围使用 `float`，改值触发 `edited(float)`。`decimals` 指定 0–15 位小数，默认 2 位，步进与提交都按此精度舍入。`decimal-separator` 可设为 `"."` 或 `","`，显示和输入使用同一分隔符。编辑期间外部更新数值会使旧草稿失效。在表格和树视图里可双向绑定可写记录的浮点字段，提交时保留同一行其他字段的更新。运行 `bazel run //examples/controls:controls -- --decimal-spin` 体验。
+
 `ComboBox` 从 `[string]` 模型选择一项，可绑定 `current-index` 或 `current-value`，用户选择时触发 `selected(string)`。按值绑定取首个匹配项。弹层在窗口顶层绘制，只绘制当前可见行，支持滚轮、方向键、Home、End、PageUp、PageDown、Enter 与 Escape。点击弹层之外会关闭弹层并消费本次点击。
+
+`editable: true;` 让 `ComboBox` 的文字区域支持输入、IME、剪贴板和撤销。草稿可用 `edit-text <=> root.draft;` 双向绑定，修改时触发 `edited(string)`。点击箭头或按 F4 可打开列表，列表优先定位到与草稿精确匹配或具有相同前缀的项。关闭列表后按 Enter 提交草稿并触发 `accepted(string)`。精确匹配时更新选项，自定义文本以 `current-index: -1` 表示或写入 `current-value`。运行 `bazel run //examples/selection:selection -- --editable-combo` 体验。
+
+`auto-complete: true;` 可在编辑区显示模型中首个前缀匹配项的后缀。光标位于草稿末尾、没有选区且 IME 未预编辑时才显示。已有精确匹配时保留当前文字。按右方向键插入可见后缀并形成一笔可撤销的编辑，按 Escape 收起提示。模型变化会使过期候选失效。按 Enter 仍提交草稿，Tab 仍切换焦点。
 
 `RadioGroup` 接收静态 `RadioButton`，也可以用一个 `for` 生成所有选项。通过组的 `current-index` 或 `current-value` 双向绑定选择，按钮的选中状态由组推导。组支持横竖排列、方向键导航和 `selected(string)`。
 
 `TabWidget` 接收静态 `Tab` 子元素，可双向绑定 `current-index`，并通过 `orientation` 切换顶部或左侧标签栏。非活动页面保留组件状态，只有活动页构建内容场景。方向键跳过禁用项，Tab 键把每组选项视为一个焦点停靠点。
+
+`TabBar` 独立排列 `TabButton`，可与 `SwipeView` 双向绑定同一个 `current-index`。标签可逐项声明，也可用一个 `for` 从模型生成。横排默认按文字测量宽度，可用 `width` 固定某项。竖排使用 `height`。超出视口时可用滚动条、触摸或沿排列方向滚动浏览。方向键和 Home / End 跳过隐藏或禁用项，绑定变化后会把新的选中项滚入视口。隐藏的标签保留声明索引。运行 `bazel run //examples/navigation:navigation -- --tab-bar` 体验。
+
+`Calendar` 的 `date` 和 `display-month` 使用 `Date { year: 2024, month: 2, day: 29 }`，可分别双向绑定。点击日期或按方向键选择，Home / End 跳到该月可用的首尾日期。翻月按钮和 Page Up / Page Down 更新显示月份并触发 `month-changed(month)`。选中日期变化时触发 `changed(date)`。
+
+日历使用公历，年份范围为 1–9999，`minimum-date` 和 `maximum-date` 可进一步限制选择。默认日期是 `1970-01-01`，应用可传入当天或业务日期。`week-start` 按周一为 1 到周日为 7 编号，`weekday-labels` 接收从周一起排列的自定义星期名。运行 `bazel run //examples/controls:controls -- --calendar` 可体验内联日历，以及通过 `Dialog` 组合的日期弹层。弹层用独立草稿，确认时才提交。
 
 `SplitView` 把直接子元素排成横向或纵向面板，支持嵌套。面板沿分栏方向使用 `min-width`、`preferred-width`、`max-width` 或对应的高度属性。拖动分隔线只调整相邻的可见面板，并在当前实例中保存比例。用 Tab 聚焦分隔线后，可用方向键步进，Home 和 End 到达两个边界。`handle-size` 和 `handle-color` 设置分隔线，`resized()` 在比例更新后触发。隐藏面板不占空间，再显示时会恢复其比例。
 
@@ -194,7 +210,9 @@ export component Counter inherits Window {
 
 菜单栏快捷键在当前窗口或最上层模态区域内生效。打开右键菜单时，只处理该菜单内的快捷键。隐藏和禁用项不参与匹配，同一作用域内的重复组合键不会触发命令。文本编辑保留选择、剪贴板和撤销重做快捷键。运行 `bazel run //examples/menu:menu` 可体验。
 
-在组件根部声明命名的 `Action` 后，`Button` 和 `MenuItem` 可以通过 `action: command-id;` 共享命令。命令集中声明 `text`、`shortcut`、`enabled`、`checkable`、`checked` 和 `activated()`。可勾选命令先切换 `checked` 再执行回调，也可用 `checked <=> root.some-flag;` 关联组件属性。控件可以覆盖显示文本或额外限制自身的 `enabled`。同一命令的多个控件共用一个快捷键，按钮单独展示时也可以触发命令。每个组件实例独立持有命令状态。
+在组件根部声明命名的 `Action` 后，`Button`、`ToolButton` 和 `MenuItem` 可以通过 `action: command-id;` 共享命令。命令集中声明 `text`、`icon`、`shortcut`、`enabled`、`checkable`、`checked` 和 `activated()`。可勾选命令先切换 `checked` 再执行回调，也可用 `checked <=> root.some-flag;` 关联组件属性。控件可以覆盖显示文本和图标，也可额外限制自身的 `enabled`。同一命令的多个控件共用一个快捷键，按钮单独展示时也可以触发命令。每个组件实例独立持有命令状态。
+
+`ToolBar` 默认横向排列子项，可用 `orientation: vertical;` 改为纵排。设置 `wrap: true;` 后可随可用空间换行或换列。工具按钮支持独立的 `clicked()`，也可绑定命令以同步勾选状态。`Button` 和 `ToolButton` 可用 `icon-size` 和 `icon-only` 控制图标显示。纯图标模式在没有图标时回退到文字。`icon` 使用已声明的 PNG 或 SVG 资源。运行 `bazel run //examples/menu:menu` 可体验共享图标和工具栏换行。
 
 在控件或视觉元素内声明 `Tooltip { text: "操作说明"; }`，可在悬停或通过 Tab 聚焦后显示提示。每个元素可附加一个 `Tooltip`，内容可用纯文本或单个自定义布局。`delay` 默认 600 毫秒，`timeout` 默认持续到离开、失焦或发生输入。提示浮在窗口内，靠近边缘时会避让，点击会穿过浮层。菜单和模态作用域会限制提示显示。
 
@@ -291,7 +309,7 @@ xr_ui_library(
 ## MLIR 阶段
 
 ```text
-.xr → ANTLR4 C++ parse tree → AST JSON → Rust AST
+.xr → ANTLR4 Rust 解析树 → Rust AST
     → 语义分析 → TableGen builders → xr dialect（UI IR）
     → MLIR verify + XR schema checks
     → xr-fold-constants → canonicalize → CSE → verify
@@ -299,7 +317,7 @@ xr_ui_library(
     → xrackc 输出 Rust 源码
 ```
 
-`parser/bridge.cc` 调用 ANTLR 的 `document()`，遍历解析树并编码 `document` 和 `diagnostics`。Rust 的 `xrack-parser` 通过 C ABI 读取 JSON 缓冲区，用 Serde 反序列化成 `xrack-syntax` 定义的 `ast::Document`，再调用 C++ 的释放函数。`--emit ast` 可以查看单文件的 AST，编译入口还会解析导入并合并文档。
+`xrack-parser` 调用生成的 `document()`，从类型化的规则上下文直接构造 `xrack-syntax` 定义的 `ast::Document`。它收集词法和语法诊断，并保留一基行列号。`--emit ast` 可以查看单文件的 AST，编译入口还会解析导入并合并文档。
 
 `xr` 方言是编译主链路的 UI IR。语义分析验证 AST 成员并交给原生 MLIR builder。`xr.instance` 以符号引用指定组件，`xr.read` 和 `xr.assign` 携带解析后的属性所属元素或实例。MLIR 会核对引用目标、属性类型和访问权限。表达式使用 SSA operand/result 和 `!xr.int` 等类型，源码位置保留为 MLIR location。Rust 后端通过 MLIR C API 查找 operand 的定义，在 getter、绑定或赋值的使用位置生成表达式，以保留惰性求值、短路和回调中的读写顺序。`--emit hir` 提供前端调试视图。
 
@@ -311,14 +329,20 @@ Bazel 使用 `rules_rust_bindgen` 和同一份 LLVM 23 的 clang/libclang 生成
 
 ## 测试
 
+`bazel test //crates/xrack-parser:parser_test` 对照迁移时从 C++ 前端采集的完整 AST 和诊断快照。用例覆盖表达式、Unicode、BOM、CRLF 和错误恢复。JSON 快照只用于回归测试。
+
 `bazel test //tests:mlir_pass_test` 对同一原生模块断言优化前后的 SSA 和操作结构。用例覆盖常量折叠、CSE、动态分支及跨赋值的读取顺序。
 
 `bazel test //tests:ui_interaction_test` 用控件 ID 驱动点击、键盘导航和文本输入，在确定性的布局下验证计数器、模态对话框与选择控件。该目标可在无 GPU 的 CI 中运行。`bazel test //tests:gpu_test` 额外使用原生图形适配器验证离屏像素和绘制路径。
 
 ## 首版边界
 
-当前的功能缺口包括通用双向属性链接、嵌套记录和自定义单元格编辑器、回调别名和子元素上的自定义回调、换行布局、读取布局结果、完整的状态与过渡语法、标准控件库和原生无障碍树。双向文字的精确光标定位尚待实现。文件扩展名约定为 `.xr`，语法取 Slint 风格子集。
+当前的功能缺口包括通用双向属性链接、嵌套记录和自定义单元格编辑器、回调别名和子元素上的自定义回调、读取布局结果、完整的状态与过渡语法和标准控件库。双向文字的精确光标定位尚待实现。文件扩展名约定为 `.xr`，语法取 Slint 风格子集。
+
+桌面宿主通过 AccessKit 发布可见控件、当前焦点和活动模态窗口的无障碍树。`accessible-name` 和 `accessible-description` 可补充控件语义，例如纯图标按钮的名称。当前支持聚焦、点击、文本值替换和数值步进。`ComboBox` 和菜单公开弹层内的可见选项，子菜单会跟随当前展开层级。滚动容器公开偏移和范围，可按项、按页或指定偏移滚动。
+
+单行和多行文本框及可编辑 `ComboBox` 公开已提交的文本、光标和选区。辅助技术可读取文本范围并设置选区，操作沿用编辑器的 Unicode 字素边界与视觉换行。常规可见的从左到右文本行同时提供字符坐标。IME 预编辑期间保留已提交的文本，选区操作在预编辑结束后恢复。
 
 `xrack-layout` 计算线性布局、绝对坐标和祖先裁剪。隐藏元素不占布局空间。鼠标点击需要在同一目标内按下和释放，禁用或被裁剪的控件不会触发点击。winit 将鼠标、Tab / Shift+Tab 和 Enter / Space 事件交给该状态机。绑定变化、窗口缩放和 DPI 变化会触发重绘。
 
-原生 GPU 路径目前在 macOS / Metal 验证。离屏 GPU 测试需要适用的图形适配器和支持中文的系统字体，需显式运行。单行文本输入已接入 IME 预编辑和提交，多窗口与原生无障碍树尚待实现。
+原生 GPU 路径目前在 macOS / Metal 验证。离屏 GPU 测试需要适用的图形适配器和支持中文的系统字体，需显式运行。单行文本输入已接入 IME 预编辑和提交。多窗口尚待实现。

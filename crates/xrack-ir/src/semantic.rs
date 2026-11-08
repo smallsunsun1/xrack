@@ -42,6 +42,7 @@ pub fn builtin_property(kind: &str, name: &str) -> Option<Type> {
     if kind == "Action" {
         return match name {
             "text" | "shortcut" => Some(Type::String),
+            "icon" => Some(Type::Image),
             "enabled" | "checkable" | "checked" => Some(Type::Bool),
             _ => None,
         };
@@ -55,13 +56,18 @@ pub fn builtin_property(kind: &str, name: &str) -> Option<Type> {
         return Some(ty);
     }
     Some(match name {
+        "accessible-name" | "accessible-description" => Type::String,
         "background"
             if matches!(
                 kind,
                 "Window"
                     | "Rectangle"
                     | "Button"
+                    | "ToolButton"
                     | "DialogButton"
+                    | "ToolBar"
+                    | "TabBar"
+                    | "Calendar"
                     | "Dialog"
                     | "Drawer"
                     | "ListView"
@@ -88,8 +94,10 @@ pub fn builtin_property(kind: &str, name: &str) -> Option<Type> {
                 kind,
                 "Text"
                     | "Button"
+                    | "ToolButton"
                     | "DialogButton"
                     | "MenuItem"
+                    | "TabButton"
                     | "TableCell"
                     | "TreeCell"
                     | "Tooltip"
@@ -104,6 +112,7 @@ pub fn builtin_property(kind: &str, name: &str) -> Option<Type> {
                 kind,
                 "Text"
                     | "Button"
+                    | "ToolButton"
                     | "DialogButton"
                     | "Dialog"
                     | "Drawer"
@@ -112,7 +121,7 @@ pub fn builtin_property(kind: &str, name: &str) -> Option<Type> {
                     | "Tooltip"
             ) || toggle(kind)
                 || text_input(kind)
-                || matches!(kind, "SpinBox" | "ComboBox")
+                || matches!(kind, "SpinBox" | "DoubleSpinBox" | "ComboBox")
                 || matches!(kind, "RadioButton" | "PageIndicator") =>
         {
             Type::Color
@@ -123,6 +132,7 @@ pub fn builtin_property(kind: &str, name: &str) -> Option<Type> {
                 kind,
                 "Text"
                     | "Button"
+                    | "ToolButton"
                     | "DialogButton"
                     | "Dialog"
                     | "Drawer"
@@ -131,8 +141,8 @@ pub fn builtin_property(kind: &str, name: &str) -> Option<Type> {
                     | "Tooltip"
             ) || toggle(kind)
                 || text_input(kind)
-                || matches!(kind, "SpinBox" | "ComboBox")
-                || kind == "RadioButton" =>
+                || matches!(kind, "SpinBox" | "DoubleSpinBox" | "ComboBox")
+                || matches!(kind, "RadioButton" | "Calendar") =>
         {
             Type::Length
         }
@@ -140,6 +150,7 @@ pub fn builtin_property(kind: &str, name: &str) -> Option<Type> {
             if matches!(
                 kind,
                 "Button"
+                    | "ToolButton"
                     | "DialogButton"
                     | "Dialog"
                     | "Drawer"
@@ -148,13 +159,17 @@ pub fn builtin_property(kind: &str, name: &str) -> Option<Type> {
                     | "Dial"
                     | "RangeSlider"
                     | "SpinBox"
+                    | "DoubleSpinBox"
                     | "ComboBox"
                     | "RadioGroup"
                     | "RadioButton"
                     | "TabWidget"
                     | "Tab"
+                    | "TabBar"
+                    | "TabButton"
                     | "SwipeView"
                     | "PageIndicator"
+                    | "Calendar"
                     | "SwipePage"
                     | "StackView"
                     | "StackPage"
@@ -163,6 +178,7 @@ pub fn builtin_property(kind: &str, name: &str) -> Option<Type> {
                     | "TableCell"
                     | "TreeCell"
                     | "MenuBar"
+                    | "ToolBar"
                     | "Menu"
                     | "MenuItem"
                     | "ContextMenuArea"
@@ -198,9 +214,12 @@ pub fn builtin_property(kind: &str, name: &str) -> Option<Type> {
                     | "RangeSlider"
                     | "RadioGroup"
                     | "TabWidget"
+                    | "TabBar"
                     | "SwipeView"
                     | "PageIndicator"
                     | "SplitView"
+                    | "FlowLayout"
+                    | "ToolBar"
             ) =>
         {
             Type::Orientation
@@ -209,18 +228,27 @@ pub fn builtin_property(kind: &str, name: &str) -> Option<Type> {
         "handle-color" if kind == "SplitView" => Type::Color,
         "delay" | "timeout" if kind == "Tooltip" => Type::Int,
         "value" | "minimum" | "maximum" | "step-size" if kind == "SpinBox" => Type::Int,
-        "editable" | "wrap" if kind == "SpinBox" => Type::Bool,
+        "editable" if matches!(kind, "SpinBox" | "DoubleSpinBox" | "ComboBox") => Type::Bool,
+        "value" | "minimum" | "maximum" | "step-size" if kind == "DoubleSpinBox" => Type::Float,
+        "decimals" if kind == "DoubleSpinBox" => Type::Int,
+        "decimal-separator" if kind == "DoubleSpinBox" => Type::String,
+        "wrap" if matches!(kind, "SpinBox" | "DoubleSpinBox") => Type::Bool,
         "wrap" if matches!(kind, "TextEdit" | "TextArea") => Type::TextWrap,
         "model" if kind == "ComboBox" => Type::StringList,
         "current-index"
             if matches!(
                 kind,
-                "ComboBox" | "RadioGroup" | "TabWidget" | "SwipeView" | "ListView"
+                "ComboBox" | "RadioGroup" | "TabWidget" | "TabBar" | "SwipeView" | "ListView"
             ) =>
         {
             Type::Int
         }
         "current-index" | "count" if kind == "PageIndicator" => Type::Int,
+        "date" | "display-month" | "minimum-date" | "maximum-date" if kind == "Calendar" => {
+            Type::Date
+        }
+        "week-start" if kind == "Calendar" => Type::Int,
+        "weekday-labels" if kind == "Calendar" => Type::StringList,
         "interactive" if matches!(kind, "SwipeView" | "PageIndicator") => Type::Bool,
         "initial-page" if kind == "StackView" => Type::String,
         "transition-duration" if kind == "StackView" => Type::Int,
@@ -238,8 +266,17 @@ pub fn builtin_property(kind: &str, name: &str) -> Option<Type> {
         "current-value" if matches!(kind, "ComboBox" | "RadioGroup") => Type::String,
         "progress" if kind == "ProgressIndicator" => Type::Float,
         "indeterminate" if kind == "ProgressIndicator" => Type::Bool,
-        "placeholder-text" if text_input(kind) => Type::String,
-        "read-only" if text_input(kind) || matches!(kind, "SpinBox" | "TableCell" | "TreeCell") => {
+        "edit-text" if kind == "ComboBox" => Type::String,
+        "icon" if matches!(kind, "Button" | "ToolButton" | "MenuItem") => Type::Image,
+        "icon-size" if matches!(kind, "Button" | "ToolButton") => Type::Length,
+        "icon-only" if matches!(kind, "Button" | "ToolButton") => Type::Bool,
+        "wrap" if kind == "ToolBar" => Type::Bool,
+        "auto-complete" if kind == "ComboBox" => Type::Bool,
+        "placeholder-text" if text_input(kind) || kind == "ComboBox" => Type::String,
+        "read-only"
+            if text_input(kind)
+                || matches!(kind, "SpinBox" | "DoubleSpinBox" | "TableCell" | "TreeCell") =>
+        {
             Type::Bool
         }
         "padding" if matches!(kind, "TableCell" | "TreeCell" | "Tooltip") => Type::Length,
@@ -247,11 +284,14 @@ pub fn builtin_property(kind: &str, name: &str) -> Option<Type> {
             Type::Length
         }
         "vertical-scroll-bar-policy"
-            if matches!(kind, "ScrollView" | "ListView" | "TableView" | "TreeView") =>
+            if matches!(
+                kind,
+                "ScrollView" | "ListView" | "TableView" | "TreeView" | "TabBar"
+            ) =>
         {
             Type::ScrollBarPolicy
         }
-        "horizontal-scroll-bar-policy" if matches!(kind, "ScrollView" | "TableView") => {
+        "horizontal-scroll-bar-policy" if matches!(kind, "ScrollView" | "TableView" | "TabBar") => {
             Type::ScrollBarPolicy
         }
         "spacing" | "padding" | "padding-left" | "padding-right" | "padding-top"
@@ -261,14 +301,23 @@ pub fn builtin_property(kind: &str, name: &str) -> Option<Type> {
         {
             Type::Length
         }
-        "horizontal-spacing" | "vertical-spacing" if kind == "GridLayout" => Type::Length,
-        "padding" if matches!(kind, "Button" | "DialogButton") || text_input(kind) => Type::Length,
+        "spacing" if kind == "TabBar" => Type::Length,
+        "horizontal-spacing" | "vertical-spacing"
+            if matches!(kind, "GridLayout" | "FlowLayout" | "ToolBar") =>
+        {
+            Type::Length
+        }
+        "padding"
+            if matches!(kind, "Button" | "ToolButton" | "DialogButton") || text_input(kind) =>
+        {
+            Type::Length
+        }
         "alignment" if linear_layout(kind) => Type::LayoutAlignment,
         "cross-axis-alignment" if linear_layout(kind) => Type::CrossAxisAlignment,
         "border-radius" | "border-width"
             if matches!(
                 kind,
-                "Rectangle" | "Button" | "DialogButton" | "Dialog" | "Drawer"
+                "Rectangle" | "Button" | "ToolButton" | "DialogButton" | "Dialog" | "Drawer"
             ) || text_input(kind) =>
         {
             Type::Length
@@ -279,7 +328,7 @@ pub fn builtin_property(kind: &str, name: &str) -> Option<Type> {
         | "border-bottom-left-radius"
             if matches!(
                 kind,
-                "Rectangle" | "Button" | "DialogButton" | "Dialog" | "Drawer"
+                "Rectangle" | "Button" | "ToolButton" | "DialogButton" | "Dialog" | "Drawer"
             ) || text_input(kind) =>
         {
             Type::Length
@@ -287,7 +336,7 @@ pub fn builtin_property(kind: &str, name: &str) -> Option<Type> {
         "border-color"
             if matches!(
                 kind,
-                "Rectangle" | "Button" | "DialogButton" | "Dialog" | "Drawer"
+                "Rectangle" | "Button" | "ToolButton" | "DialogButton" | "Dialog" | "Drawer"
             ) || text_input(kind) =>
         {
             Type::Brush
@@ -305,7 +354,7 @@ pub fn builtin_property(kind: &str, name: &str) -> Option<Type> {
     })
 }
 
-fn layout_item_property(name: &str) -> Option<Type> {
+pub fn layout_item_property(name: &str) -> Option<Type> {
     Some(match name {
         "width" | "height" | "x" | "y" | "min-width" | "min-height" | "preferred-width"
         | "preferred-height" | "max-width" | "max-height" => Type::Length,
@@ -320,7 +369,12 @@ fn layout_item_property(name: &str) -> Option<Type> {
 fn linear_layout(kind: &str) -> bool {
     matches!(
         kind,
-        "VerticalBox" | "HorizontalBox" | "VerticalLayout" | "HorizontalLayout"
+        "VerticalBox"
+            | "HorizontalBox"
+            | "VerticalLayout"
+            | "HorizontalLayout"
+            | "FlowLayout"
+            | "ToolBar"
     )
 }
 
@@ -334,6 +388,7 @@ pub fn is_builtin(s: &str) -> bool {
                 | "Text"
                 | "Button"
                 | "Action"
+                | "ToolButton"
                 | "DialogButton"
                 | "Dialog"
                 | "Drawer"
@@ -365,13 +420,17 @@ pub fn is_builtin(s: &str) -> bool {
                 | "RangeSlider"
                 | "ProgressIndicator"
                 | "SpinBox"
+                | "DoubleSpinBox"
                 | "ComboBox"
                 | "RadioGroup"
                 | "RadioButton"
                 | "TabWidget"
                 | "Tab"
+                | "TabBar"
+                | "TabButton"
                 | "SwipeView"
                 | "PageIndicator"
+                | "Calendar"
                 | "SwipePage"
                 | "StackView"
                 | "StackPage"
@@ -401,11 +460,12 @@ fn control_event(kind: &str, event: &str) -> bool {
         || toggle(kind) && event == "toggled"
         || matches!(kind, "Slider" | "RangeSlider" | "Dial")
             && matches!(event, "changed" | "released")
-        || kind == "SpinBox" && event == "edited"
+        || matches!(kind, "SpinBox" | "DoubleSpinBox") && event == "edited"
         || matches!(kind, "ComboBox" | "RadioGroup") && event == "selected"
+        || kind == "ComboBox" && matches!(event, "edited" | "accepted")
         || matches!(
             kind,
-            "TabWidget" | "SwipeView" | "PageIndicator" | "ListView"
+            "TabWidget" | "TabBar" | "SwipeView" | "PageIndicator" | "ListView"
         ) && event == "changed"
         || kind == "TableView"
             && matches!(
@@ -415,7 +475,14 @@ fn control_event(kind: &str, event: &str) -> bool {
         || kind == "Dialog" && matches!(event, "accepted" | "rejected")
         || kind == "Drawer" && matches!(event, "opened" | "closed")
         || kind == "StackView" && event == "changed"
+        || kind == "Calendar" && matches!(event, "changed" | "month-changed")
         || matches!(kind, "MenuItem" | "Action") && event == "activated"
+}
+
+/// Whether an element kind declares an event, independently of instance constraints.
+pub fn builtin_event(kind: &str, event: &str) -> bool {
+    (matches!(kind, "Button" | "ToolButton" | "TouchArea") && event == "clicked")
+        || control_event(kind, event)
 }
 
 /// Validated members of one source component, in lowering order.
@@ -924,7 +991,8 @@ impl<'a> Scope<'a> {
                     if matches!(kind, "TableCell" | "TreeCell") {
                         return fail(e.span, format!("{kind} cannot contain child elements"));
                     }
-                    if matches!(kind, "RangeSlider" | "Dial" | "PageIndicator") && e.ty != "Tooltip"
+                    if matches!(kind, "RangeSlider" | "Dial" | "PageIndicator" | "Calendar")
+                        && e.ty != "Tooltip"
                     {
                         return fail(e.span, format!("{kind} only accepts Tooltip children"));
                     }
@@ -966,6 +1034,7 @@ impl<'a> Scope<'a> {
                     let required = match kind {
                         "RadioGroup" => Some("RadioButton"),
                         "TabWidget" => Some("Tab"),
+                        "TabBar" => Some("TabButton"),
                         "SwipeView" => Some("SwipePage"),
                         "StackView" => Some("StackPage"),
                         _ => None,
@@ -984,7 +1053,7 @@ impl<'a> Scope<'a> {
                     if kind == "StackView" && e.id.is_none() {
                         return fail(e.span, "StackPage requires a route ID");
                     }
-                    if kind == "RadioGroup"
+                    if matches!(kind, "RadioGroup" | "TabBar")
                         && e.repeat.is_some()
                         && members
                             .iter()
@@ -992,13 +1061,17 @@ impl<'a> Scope<'a> {
                             .count()
                             != 1
                     {
-                        return fail(e.span, "a repeated RadioButton must be the only option");
+                        return fail(
+                            e.span,
+                            format!("a repeated {} must be the only option", e.ty),
+                        );
                     }
-                    if kind == "RadioButton" {
-                        return fail(e.span, "RadioButton cannot contain child elements");
+                    if matches!(kind, "RadioButton" | "TabButton") {
+                        return fail(e.span, format!("{kind} cannot contain child elements"));
                     }
                     if (e.ty == "RadioButton" && kind != "RadioGroup")
                         || (e.ty == "Tab" && kind != "TabWidget")
+                        || (e.ty == "TabButton" && kind != "TabBar")
                         || (e.ty == "SwipePage" && kind != "SwipeView")
                         || (e.ty == "StackPage" && kind != "StackView")
                     {
@@ -1325,6 +1398,7 @@ fn component<'a>(
     if matches!(
         c.base.as_str(),
         "Tab"
+            | "TabButton"
             | "SwipePage"
             | "StackPage"
             | "RadioButton"
@@ -1588,7 +1662,9 @@ fn element<'a>(
     let mut handlers = BTreeSet::new();
     let mut animations = BTreeSet::new();
     let mut range_target = None;
-    let has_action = matches!(kind, "Button" | "MenuItem")
+    let mut calendar_target = None;
+    let mut combo_text_target = None;
+    let has_action = matches!(kind, "Button" | "ToolButton" | "MenuItem")
         && members
             .iter()
             .any(|member| matches!(member, Member::Binding(binding) if binding.name == "action"));
@@ -1619,7 +1695,7 @@ fn element<'a>(
                 if !bindings.insert(b.name.as_str()) {
                     return fail(b.span, format!("duplicate binding `{}`", b.name));
                 }
-                if b.name == "action" && matches!(kind, "Button" | "MenuItem") {
+                if b.name == "action" && matches!(kind, "Button" | "ToolButton" | "MenuItem") {
                     if !b.two_way
                         && let ExprKind::Reference(reference) = &b.value.kind
                         && scope
@@ -1710,14 +1786,17 @@ fn element<'a>(
                         ("TableView", "current-row") => Type::Int,
                         ("TreeView", "current-key") => Type::Int,
                         ("PageIndicator", "current-index") => Type::Int,
-                        ("Slider" | "Dial", "value") => Type::Float,
+                        ("Calendar", "date" | "display-month") => Type::Date,
+                        ("Slider" | "Dial" | "DoubleSpinBox", "value") => Type::Float,
                         ("RangeSlider", "lower-value" | "upper-value") => Type::Float,
                         ("SpinBox", "value")
                         | (
-                            "ComboBox" | "RadioGroup" | "TabWidget" | "SwipeView" | "ListView",
+                            "ComboBox" | "RadioGroup" | "TabWidget" | "TabBar" | "SwipeView"
+                            | "ListView",
                             "current-index",
                         ) => Type::Int,
                         ("ComboBox" | "RadioGroup", "current-value") => Type::String,
+                        ("ComboBox", "edit-text") => Type::String,
                         _ => {
                             return fail(
                                 b.span,
@@ -1735,6 +1814,23 @@ fn element<'a>(
                         return fail(
                             b.span,
                             "RangeSlider endpoints require distinct writable properties",
+                        );
+                    }
+                    if kind == "Calendar"
+                        && calendar_target.replace(target.clone()).as_ref() == Some(&target)
+                    {
+                        return fail(
+                            b.span,
+                            "Calendar date and display-month require distinct writable properties",
+                        );
+                    }
+                    if kind == "ComboBox"
+                        && matches!(b.name.as_str(), "current-value" | "edit-text")
+                        && combo_text_target.replace(target.clone()).as_ref() == Some(&target)
+                    {
+                        return fail(
+                            b.span,
+                            "ComboBox edit-text and current-value require distinct writable properties",
                         );
                     }
                     if ty != expected {
@@ -1826,9 +1922,7 @@ fn element<'a>(
                 if has_action {
                     return fail(h.span, "activation handler belongs to the linked Action");
                 }
-                if !(matches!(kind, "Button" | "TouchArea") && h.name == "clicked"
-                    || control_event(kind, &h.name))
-                {
+                if !builtin_event(kind, &h.name) {
                     return fail(h.span, format!("unknown event `{kind}.{}`", h.name));
                 }
                 if id.is_none()
@@ -1838,7 +1932,9 @@ fn element<'a>(
                             kind,
                             "ListView"
                                 | "SwipeView"
+                                | "TabBar"
                                 | "PageIndicator"
+                                | "Calendar"
                                 | "StackView"
                                 | "TreeView"
                                 | "TableView"
@@ -1849,6 +1945,7 @@ fn element<'a>(
                                 | "SplitView"
                                 | "RangeSlider"
                                 | "Dial"
+                                | "DoubleSpinBox"
                         ))
                 {
                     return fail(
@@ -1857,11 +1954,12 @@ fn element<'a>(
                     );
                 }
                 let parameter_types: &[Type] = match kind {
-                    "Slider" | "Dial" => &[Type::Float],
+                    "Slider" | "Dial" | "DoubleSpinBox" => &[Type::Float],
                     "RangeSlider" => &[Type::Float, Type::Float],
+                    "Calendar" => &[Type::Date],
                     "StackView" => &[Type::String, Type::Int],
-                    "SpinBox" | "TabWidget" | "SwipeView" | "PageIndicator" | "ListView"
-                    | "TableView" | "TreeView" => &[Type::Int],
+                    "SpinBox" | "TabWidget" | "TabBar" | "SwipeView" | "PageIndicator"
+                    | "ListView" | "TableView" | "TreeView" => &[Type::Int],
                     "ComboBox" | "RadioGroup" => &[Type::String],
                     "TextEdit" | "TextArea" => &[Type::String],
                     _ => &[],
@@ -1969,7 +2067,7 @@ fn element<'a>(
 fn row_editor_binding(kind: &str) -> Option<(&'static str, Type)> {
     match kind {
         "SpinBox" => Some(("value", Type::Int)),
-        "Slider" | "Dial" => Some(("value", Type::Float)),
+        "Slider" | "Dial" | "DoubleSpinBox" => Some(("value", Type::Float)),
         "CheckBox" | "Switch" => Some(("checked", Type::Bool)),
         _ => None,
     }
@@ -1995,6 +2093,7 @@ fn validate_template(
             kind,
             "Window"
                 | "Button"
+                | "ToolButton"
                 | "DialogButton"
                 | "Dialog"
                 | "Drawer"
@@ -2010,12 +2109,15 @@ fn validate_template(
                 | "Dial"
                 | "RangeSlider"
                 | "SpinBox"
+                | "DoubleSpinBox"
                 | "ComboBox"
                 | "RadioGroup"
                 | "TabWidget"
                 | "Tab"
+                | "TabBar"
                 | "SwipeView"
                 | "PageIndicator"
+                | "Calendar"
                 | "StackView"
                 | "ListView"
                 | "TreeView"
@@ -2105,6 +2207,13 @@ fn statements(h: &ast::Handler, scope: &Scope<'_>, owner: &str) -> Result<Vec<ir
 }
 
 fn default(ty: Type, span: Span) -> ir::Expr {
+    if ty == Type::Date {
+        let parts = ["1970", "1", "1"]
+            .into_iter()
+            .map(|part| ir::Expr::literal(Type::Int, part, span))
+            .collect();
+        return ir::Expr::operation("make_date", ty, parts, span);
+    }
     if ty == Type::StringList {
         return ir::Expr::operation("array", ty, vec![], span);
     }
@@ -2320,10 +2429,25 @@ fn expression(e: &ast::Expr, scope: &Scope<'_>, owner: &str) -> Result<ir::Expr>
             ir::Expr::operation(op, ty, items, span)
         }
         ExprKind::Record { name, fields } => {
-            let schema = scope.records.get(name.as_str()).ok_or_else(|| Diagnostic {
-                span,
-                message: format!("unknown record `{name}`"),
-            })?;
+            let is_date = name == "Date";
+            let schema = if is_date {
+                ["year", "month", "day"]
+                    .into_iter()
+                    .map(|field| (field, Type::Int))
+                    .collect::<Vec<_>>()
+            } else {
+                scope
+                    .records
+                    .get(name.as_str())
+                    .ok_or_else(|| Diagnostic {
+                        span,
+                        message: format!("unknown record `{name}`"),
+                    })?
+                    .fields
+                    .iter()
+                    .map(|field| (field.name.as_str(), field.ty.clone()))
+                    .collect()
+            };
             let mut values = BTreeMap::new();
             for field in fields {
                 if values.insert(field.name.as_str(), &field.value).is_some() {
@@ -2334,24 +2458,25 @@ fn expression(e: &ast::Expr, scope: &Scope<'_>, owner: &str) -> Result<ir::Expr>
                 }
             }
             let args = schema
-                .fields
-                .iter()
-                .map(|field| {
-                    let value = values
-                        .remove(field.name.as_str())
-                        .ok_or_else(|| Diagnostic {
-                            span,
-                            message: format!("missing record field `{}`", field.name),
-                        })?;
-                    expression_as(value, scope, owner, field.ty.clone())
+                .into_iter()
+                .map(|(field, ty)| {
+                    let value = values.remove(field).ok_or_else(|| Diagnostic {
+                        span,
+                        message: format!("missing record field `{field}`"),
+                    })?;
+                    expression_as(value, scope, owner, ty)
                 })
                 .collect::<Result<Vec<_>>>()?;
             if let Some((unknown, value)) = values.into_iter().next() {
                 return fail(value.span, format!("unknown record field `{unknown}`"));
             }
             ir::Expr::operation(
-                "make_record",
-                Type::Record(name.as_str().into()),
+                if is_date { "make_date" } else { "make_record" },
+                if is_date {
+                    Type::Date
+                } else {
+                    Type::Record(name.as_str().into())
+                },
                 args,
                 span,
             )
@@ -2411,25 +2536,36 @@ fn expression(e: &ast::Expr, scope: &Scope<'_>, owner: &str) -> Result<ir::Expr>
                 return Ok(ir::Expr::literal(ty, name, span));
             }
             if let Some((base, field)) = s.rsplit_once('.') {
-                let record = if let Some(Type::Record(name)) = scope.parameters.get(base) {
-                    Some(ir::Expr {
-                        op: "param".into(),
-                        value: base.into(),
-                        owner: None,
-                        ty: Type::Record(name.clone()),
-                        args: vec![],
-                        span,
-                    })
-                } else if let Ok((property, ty @ Type::Record(_))) =
-                    scope.property(owner, base, false, span)
-                {
-                    Some(ir::Expr::read(property, ty, span))
-                } else {
-                    None
-                };
-                if let Some(record) = record
-                    && let Type::Record(name) = &record.ty
-                {
+                let record =
+                    if let Some(ty @ (Type::Record(_) | Type::Date)) = scope.parameters.get(base) {
+                        Some(ir::Expr {
+                            op: "param".into(),
+                            value: base.into(),
+                            owner: None,
+                            ty: ty.clone(),
+                            args: vec![],
+                            span,
+                        })
+                    } else if let Ok((property, ty @ (Type::Record(_) | Type::Date))) =
+                        scope.property(owner, base, false, span)
+                    {
+                        Some(ir::Expr::read(property, ty, span))
+                    } else {
+                        None
+                    };
+                if let Some(record) = record {
+                    if record.ty == Type::Date {
+                        if !matches!(field, "year" | "month" | "day") {
+                            return fail(span, format!("Date has no field `{field}`"));
+                        }
+                        return Ok(ir::Expr {
+                            value: field.into(),
+                            ..ir::Expr::operation("date_field", Type::Int, vec![record], span)
+                        });
+                    }
+                    let Type::Record(name) = &record.ty else {
+                        unreachable!()
+                    };
                     let ty = scope.records[name.as_ref()]
                         .fields
                         .iter()
@@ -2535,7 +2671,7 @@ fn binary(op: &str, a: ir::Expr, b: ir::Expr, span: Span) -> Result<ir::Expr> {
         fn stringify(e: ir::Expr) -> Result<ir::Expr> {
             match e.ty {
                 Type::String => Ok(e),
-                Type::Int | Type::Float | Type::Bool => Ok(ir::Expr {
+                Type::Int | Type::Float | Type::Bool | Type::Date => Ok(ir::Expr {
                     op: "stringify".into(),
                     value: String::new(),
                     owner: None,
@@ -2545,7 +2681,7 @@ fn binary(op: &str, a: ir::Expr, b: ir::Expr, span: Span) -> Result<ir::Expr> {
                 }),
                 _ => fail(
                     e.span,
-                    "string concatenation accepts string, int, float or bool",
+                    "string concatenation accepts string, int, float, bool or Date",
                 ),
             }
         }
@@ -2562,7 +2698,9 @@ fn binary(op: &str, a: ir::Expr, b: ir::Expr, span: Span) -> Result<ir::Expr> {
     let ty = match op {
         "&&" | "||" if a.ty == Type::Bool && b.ty == Type::Bool => Type::Bool,
         "==" | "!=" if a.ty == b.ty => Type::Bool,
-        "<" | "<=" | ">" | ">=" if a.ty == b.ty && (numeric(&a.ty) || a.ty == Type::Length) => {
+        "<" | "<=" | ">" | ">="
+            if a.ty == b.ty && (numeric(&a.ty) || matches!(a.ty, Type::Length | Type::Date)) =>
+        {
             Type::Bool
         }
         "+" if a.ty == Type::String && b.ty == Type::String => Type::String,

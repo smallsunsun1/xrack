@@ -1,11 +1,12 @@
 pub mod ui_driver;
 
+use controls_ui::{CalendarDemo, DecimalPrice, DecimalSpinDemo};
 use counter_ui::Counter;
 use dialog_ui::DialogDemo;
 use menu_ui::MenuDemo;
-use navigation_ui::StackDemo;
+use navigation_ui::{StackDemo, TabBarDemo};
 use records_ui::{RecordTableDemo, StockRow};
-use selection_ui::SelectionDemo;
+use selection_ui::{EditableChoiceDemo, SelectionDemo};
 use split_ui::SplitDemo;
 use std::time::{Duration, Instant};
 use table_ui::TableDemo;
@@ -13,16 +14,476 @@ use tooltip_ui::TooltipDemo;
 use tree_ui::{TreeDemo, TreeRecord};
 use ui_driver::UiDriver;
 use xrack_layout::{
-    ActivationKey, ChoiceKey, EditAction, EditSource, Interaction, MenuKey, NavigationKey, Point,
-    Rect, Size, SliderKey, SpinGeometry, TableGeometry, TableSelectionKey, TextMeasurer,
-    TreeRowGeometry, layout_tooltip, prepare_scene, prepare_scene_with_input,
+    ActivationKey, CalendarGeometry, ChoiceKey, EditAction, EditSource, Interaction, MenuKey,
+    NavigationKey, Point, Rect, Size, SliderKey, SpinGeometry, TableGeometry, TableSelectionKey,
+    TextMeasurer, TreeRowGeometry, layout_tooltip, prepare_scene, prepare_scene_with_input,
 };
 use xrack_runtime::{
-    Component, ControlAction, Orientation, Property, RangeAction, RowSelection, SelectionTarget,
-    SpinAction, TableSelectionAction, TableSort, TreeAction, TreeSelectionAction,
+    CalendarAction, Component, ControlAction, Date, DialogRole, Orientation, Property, RangeAction,
+    RowSelection, SelectionTarget, SpinAction, TableSelectionAction, TableSort, TreeAction,
+    TreeSelectionAction,
 };
 
 struct FixedText;
+
+#[test]
+fn decimal_spin_box_uses_the_same_precision_for_clicks_drafts_and_commits() {
+    let mut ui = DecimalSpinDemo::new();
+    let mut input = Interaction::default();
+    let path = [1];
+    let prepare = |ui: &DecimalSpinDemo, input: &Interaction| {
+        prepare_scene_with_input(
+            ui,
+            ui.render_shared(),
+            Size::new(480.0, 306.0),
+            &mut FixedText,
+            input,
+        )
+    };
+    let (scene, layout) = prepare(&ui, &input);
+    let up = SpinGeometry::new(layout.at_path(&path).unwrap().bounds).up;
+    input.pointer_move(
+        &scene,
+        &layout,
+        Point {
+            x: up.x + 6.0,
+            y: up.y + 6.0,
+        },
+    );
+    input.pointer_press();
+    input.spin_press(&scene, &layout);
+    let step = input.spin_release(&scene, &layout).unwrap();
+    assert!(ui.control_at(&scene, &step.path, step.action));
+    assert_eq!(ui.get_level(), 0.3);
+
+    let (scene, _) = prepare(&ui, &input);
+    let spin = scene.at_path(&path).unwrap();
+    assert_eq!(input.editor_value(spin), "0,30");
+    input.edit_spin(spin, EditAction::SelectAll);
+    input.edit_spin(spin, EditAction::Insert("1.25"));
+    assert_eq!(input.editor_value(spin), "0,30");
+    input.edit_spin(spin, EditAction::Insert("-1,236"));
+    assert_eq!(input.editor_value(spin), "-1,236");
+    assert_eq!(ui.get_level(), 0.3);
+    let commit = input.commit_spin_draft().unwrap();
+    assert!(ui.control_at(&scene, &commit.path, commit.action));
+    assert_eq!(ui.get_level(), -1.24);
+    assert_eq!(ui.get_edits(), 2);
+
+    let (scene, _) = prepare(&ui, &input);
+    let spin = scene.at_path(&path).unwrap();
+    input.edit_spin(spin, EditAction::SelectAll);
+    input.edit_spin(spin, EditAction::Insert("1,5"));
+    let stale = input.commit_spin_draft().unwrap();
+    ui.set_level(1.1);
+    assert!(!ui.control_at(&scene, &stale.path, stale.action));
+    assert_eq!(ui.get_level(), 1.1);
+    ui.set_locked(true);
+    let (scene, _) = prepare(&ui, &input);
+    assert!(!ui.control_at(&scene, &path, ControlAction::Spin(SpinAction::Increase)));
+}
+
+#[test]
+fn decimal_record_editor_preserves_other_fields_and_rejects_a_replaced_value() {
+    let mut ui = DecimalSpinDemo::new();
+    let model = ui.model_prices();
+    let key = model.row_key(0).unwrap();
+    let path = [5, 0, 0, 1];
+    let mut input = Interaction::default();
+    let prepare = |ui: &DecimalSpinDemo, input: &Interaction| {
+        prepare_scene_with_input(
+            ui,
+            ui.render_shared(),
+            Size::new(480.0, 306.0),
+            &mut FixedText,
+            input,
+        )
+    };
+    let (scene, layout) = prepare(&ui, &input);
+    let target = input.accessibility_target(&scene, &layout, &path).unwrap();
+    input.accessibility_focus(target);
+    let spin = scene.at_path(&path).unwrap();
+    input.edit_spin(spin, EditAction::SelectAll);
+    input.edit_spin(spin, EditAction::Insert("12,75"));
+    assert!(model.set_row(
+        0,
+        DecimalPrice {
+            label: "已改名".into(),
+            price: 12.5
+        }
+    ));
+    let action = input.commit_spin_draft().unwrap();
+    assert!(ui.control_at(&scene, &action.path, action.action));
+    assert_eq!(model.row_key(0), Some(key));
+    assert_eq!(
+        model.row(0),
+        Some(DecimalPrice {
+            label: "已改名".into(),
+            price: 12.75
+        })
+    );
+
+    let (scene, _) = prepare(&ui, &input);
+    let spin = scene.at_path(&path).unwrap();
+    input.edit_spin(spin, EditAction::SelectAll);
+    input.edit_spin(spin, EditAction::Insert("12,99"));
+    assert!(model.set_row(
+        0,
+        DecimalPrice {
+            label: "已改名".into(),
+            price: 13.0
+        }
+    ));
+    let stale = input.commit_spin_draft().unwrap();
+    assert!(!ui.control_at(&scene, &stale.path, stale.action));
+    assert_eq!(model.row(0).unwrap().price, 13.0);
+}
+
+#[test]
+fn calendar_browses_without_committing_and_rejects_stale_day_presses() {
+    let mut ui = CalendarDemo::new();
+    let mut input = Interaction::default();
+    let day = |month, day| Date::new(2024, month, day).unwrap();
+    let prepare = |ui: &CalendarDemo, input: &Interaction| {
+        prepare_scene_with_input(
+            ui,
+            ui.render_shared(),
+            Size::new(440.0, 460.0),
+            &mut FixedText,
+            input,
+        )
+    };
+    let (scene, layout) = prepare(&ui, &input);
+    input.focus_next(&scene, &layout, false);
+    assert_eq!(input.focused.as_ref().unwrap().id, Some("calendar"));
+    let right = input
+        .calendar_key(&scene, &layout, NavigationKey::Right)
+        .unwrap();
+    assert!(ui.control_at(&scene, &right.path, right.action));
+    assert_eq!(ui.get_selected(), day(2, 29));
+    assert_eq!(ui.get_picked_day(), 29);
+
+    let (scene, layout) = prepare(&ui, &input);
+    let browse = input
+        .calendar_key(&scene, &layout, NavigationKey::PageDown)
+        .unwrap();
+    assert!(ui.control_at(&scene, &browse.path, browse.action));
+    assert_eq!(ui.get_month(), day(3, 1));
+    assert_eq!(ui.get_selected(), day(2, 29));
+    assert_eq!((ui.get_date_changes(), ui.get_month_changes()), (1, 1));
+    let (scene, layout) = prepare(&ui, &input);
+    let geometry = CalendarGeometry::new(scene.at_path(&[1]).unwrap(), layout.children[1].bounds);
+    let target = geometry
+        .action_bounds(CalendarAction::Select(day(3, 18)))
+        .unwrap();
+    let point = Point {
+        x: target.x + target.width * 0.5,
+        y: target.y + target.height * 0.5,
+    };
+    input.pointer_move(&scene, &layout, point);
+    input.pointer_press();
+    let click = input.control_part_release(&scene, &layout).unwrap();
+    assert!(ui.control_at(&scene, &click.path, click.action));
+    assert_eq!(ui.get_selected(), day(3, 18));
+
+    let (scene, layout) = prepare(&ui, &input);
+    input.pointer_move(&scene, &layout, point);
+    input.pointer_press();
+    ui.set_month(day(4, 1));
+    let (scene, layout) = prepare(&ui, &input);
+    assert!(input.control_part_release(&scene, &layout).is_none());
+    let outside = ControlAction::Calendar(CalendarAction::Select(day(4, 16)));
+    assert!(!ui.control_at(&scene, &[1], outside));
+    assert_eq!(ui.get_selected(), day(3, 18));
+
+    ui.set_selected(day(2, 1));
+    let (scene, _) = prepare(&ui, &input);
+    let first_allowed = ControlAction::Calendar(CalendarAction::Select(day(2, 5)));
+    assert!(ui.control_at(&scene, &[1], first_allowed));
+    assert_eq!(ui.get_selected(), day(2, 5));
+}
+
+#[test]
+fn date_picker_dialog_commits_the_draft_only_on_accept() {
+    let mut ui = CalendarDemo::new();
+    let first = ui.get_selected();
+    let draft = Date::new(2024, 3, 12).unwrap();
+    for role in [DialogRole::Reject, DialogRole::Accept] {
+        let scene = ui.render_shared();
+        assert!(ui.dispatch_at(&scene, &[2], "clicked"));
+        assert_eq!(ui.get_draft(), first);
+        let scene = ui.render_shared();
+        assert!(ui.control_at(
+            &scene,
+            &[3, 0],
+            ControlAction::Calendar(CalendarAction::Select(draft))
+        ));
+        assert_eq!(ui.get_draft(), draft);
+        assert_eq!(ui.get_selected(), first);
+        let scene = ui.render_shared();
+        assert!(ui.control_at(&scene, &[3], ControlAction::Dialog(role)));
+        assert!(!ui.get_picker_open());
+        assert_eq!(
+            ui.get_selected(),
+            if role == DialogRole::Accept {
+                draft
+            } else {
+                first
+            }
+        );
+    }
+}
+
+#[test]
+fn tab_bar_reveals_offscreen_tabs_and_shares_selection_with_swipe_view() {
+    let mut driver = UiDriver::new(TabBarDemo::new(), FixedText, Size::new(536.0, 318.0));
+    driver.tab();
+    assert_eq!(driver.focused(), Some("overview-tab"));
+    assert!(driver.group_key(NavigationKey::Right));
+    assert_eq!(driver.component().get_page(), 3);
+    assert_eq!(driver.focused(), Some("reports-tab"));
+    assert!(driver.group_key(NavigationKey::End));
+    assert_eq!(driver.component().get_page(), 5);
+    assert_eq!(driver.focused(), Some("preferences-tab"));
+    assert!(driver.can_hit("preferences-tab"));
+    assert!(
+        driver
+            .input()
+            .horizontal_scroll_offsets()
+            .values()
+            .any(|&offset| offset > 0.0)
+    );
+    let pages = &driver.node("workspace").children;
+    assert!(pages[0].children.is_empty());
+    assert!(!pages[5].children.is_empty());
+
+    assert!(driver.group_key(NavigationKey::Home));
+    assert_eq!(driver.component().get_page(), 0);
+    driver.click("reports-tab");
+    assert_eq!(driver.component().get_page(), 3);
+    assert_eq!(driver.component().get_changes(), 4);
+
+    driver.tab();
+    assert_eq!(driver.focused(), Some("workspace"));
+    driver.tab();
+    assert!(driver.group_key(NavigationKey::End));
+    assert_eq!(driver.component().get_filter(), 2);
+    assert_eq!(driver.component().get_page(), 3);
+    assert_eq!(
+        driver.node("filters-bar").children[2].text("text"),
+        Some("收藏")
+    );
+}
+
+#[test]
+fn combo_completion_accepts_only_a_current_painted_candidate_and_undoes_atomically() {
+    let mut ui = EditableChoiceDemo::new();
+    ui.set_draft("研".into());
+    let mut input = Interaction::default();
+    let viewport = Size::new(470.0, 278.0);
+    let (scene, layout) =
+        prepare_scene_with_input(&ui, ui.render_shared(), viewport, &mut FixedText, &input);
+    input.focus_next(&scene, &layout, false);
+    input.sync_editor(&scene);
+    let path = [0, 1];
+    let candidate = |scene: &xrack_runtime::Node, input: &Interaction| {
+        input.combo_completion(scene.at_path(&path).unwrap(), &path)
+    };
+    let first = candidate(&scene, &input).unwrap();
+    assert_eq!(first.suffix(), "发");
+    let now = Instant::now();
+    assert!(!input.accept_combo_completion(&mut ui, &scene, now));
+    input.set_painted_combo_completion(Some(first));
+    ui.bind_model_workspaces(xrack_runtime::VecModel::from(vec![
+        "研发预览".into(),
+        "总部".into(),
+    ]));
+    let scene = ui.render_shared();
+    assert!(!input.accept_combo_completion(&mut ui, &scene, now));
+    assert_eq!(ui.get_draft(), "研");
+    assert_eq!(ui.get_edits(), 0);
+
+    let next = candidate(&scene, &input).unwrap();
+    assert_eq!(next.suffix(), "发预览");
+    input.set_painted_combo_completion(Some(next.clone()));
+    input
+        .editor
+        .as_mut()
+        .unwrap()
+        .set_preedit("发".into(), None);
+    assert!(candidate(&scene, &input).is_none());
+    assert!(!input.accept_combo_completion(&mut ui, &scene, now));
+    input
+        .editor
+        .as_mut()
+        .unwrap()
+        .set_preedit(String::new(), None);
+
+    input.set_painted_combo_completion(Some(next.clone()));
+    assert!(input.accept_combo_completion(&mut ui, &scene, now));
+    assert_eq!(ui.get_draft(), "研发预览");
+    assert_eq!(ui.get_active(), 0);
+    assert_eq!(ui.get_edits(), 1);
+    assert_eq!(ui.get_accepts(), 0);
+    let scene = ui.render_shared();
+    assert!(candidate(&scene, &input).is_none());
+    assert!(input.replay_text_edit(&mut ui, &scene, false));
+    assert_eq!(ui.get_draft(), "研");
+
+    let scene = ui.render_shared();
+    input.set_painted_combo_completion(Some(next));
+    assert!(input.dismiss_combo_completion(&scene));
+    assert!(candidate(&scene, &input).is_none());
+    assert_eq!(ui.get_draft(), "研");
+}
+
+#[test]
+fn editable_combo_box_separates_draft_selection_and_acceptance() {
+    use xrack_layout::ComboGeometry;
+    use xrack_runtime::{combo_index, text_input_value};
+
+    let mut ui = EditableChoiceDemo::new();
+    let mut input = Interaction::default();
+    let viewport = Size::new(470.0, 278.0);
+    let render = |ui: &EditableChoiceDemo, input: &Interaction| {
+        prepare_scene_with_input(ui, ui.render_shared(), viewport, &mut FixedText, input)
+    };
+    let linked = [0, 1];
+    let automatic = [0, 3];
+    let (scene, layout) = render(&ui, &input);
+    let geometry = ComboGeometry::new(layout.at_path(&linked).unwrap().bounds);
+    let center = |rect: Rect| Point {
+        x: rect.x + rect.width * 0.5,
+        y: rect.y + rect.height * 0.5,
+    };
+
+    input.pointer_move(&scene, &layout, center(geometry.entry));
+    input.pointer_press();
+    input.pointer_move(&scene, &layout, center(geometry.trigger));
+    let target = input.pointer_release_target().unwrap();
+    assert!(!input.open_choice_at_pointer(&scene, &layout, target));
+    assert_eq!(input.focused.as_ref().unwrap().path, linked);
+    let now = Instant::now();
+    input.edit_text(
+        &mut ui,
+        &scene,
+        EditAction::SelectAll,
+        EditSource::Keyboard,
+        now,
+    );
+    assert!(input.edit_text(
+        &mut ui,
+        &scene,
+        EditAction::Insert("研发"),
+        EditSource::Keyboard,
+        now
+    ));
+    assert_eq!(ui.get_active(), 0);
+    assert_eq!(ui.get_draft(), "研发");
+    let (scene, _) = render(&ui, &input);
+    assert!(input.replay_text_edit(&mut ui, &scene, false));
+    assert_eq!(ui.get_draft(), "总部");
+    let (scene, layout) = render(&ui, &input);
+    assert!(input.replay_text_edit(&mut ui, &scene, true));
+    let (scene, _) = render(&ui, &input);
+    input
+        .editor
+        .as_mut()
+        .unwrap()
+        .set_preedit("预览".into(), None);
+    assert!(
+        input
+            .choice_key(&scene, &layout, ChoiceKey::Accept)
+            .is_none()
+    );
+    assert_eq!(ui.get_accepts(), 0);
+    assert!(input.edit_text(
+        &mut ui,
+        &scene,
+        EditAction::Insert("预览"),
+        EditSource::Atomic,
+        now
+    ));
+    let (scene, layout) = render(&ui, &input);
+    let accept = input
+        .choice_key(&scene, &layout, ChoiceKey::Accept)
+        .unwrap();
+    assert_eq!(accept.action, ControlAction::AcceptComboText);
+    assert!(ui.control_at(&scene, &accept.path, accept.action));
+    assert_eq!(ui.get_active(), 3);
+    assert_eq!(ui.get_last_accepted(), "研发预览");
+    assert_eq!(ui.get_accepts(), 1);
+    assert_eq!(ui.get_selections(), 0);
+
+    ui.set_draft("研".into());
+    let (scene, layout) = render(&ui, &input);
+    input.pointer_move(
+        &scene,
+        &layout,
+        center(ComboGeometry::new(layout.at_path(&linked).unwrap().bounds).trigger),
+    );
+    input.pointer_press();
+    let target = input.pointer_release_target().unwrap();
+    assert!(input.open_choice_at_pointer(&scene, &layout, target));
+    assert_eq!(input.choice_menu(&scene, &layout).unwrap().highlighted, 2);
+    let choose = input
+        .choice_key(&scene, &layout, ChoiceKey::Accept)
+        .unwrap();
+    assert!(ui.control_at(&scene, &choose.path, choose.action));
+    assert_eq!(ui.get_draft(), "研发");
+    assert_eq!(ui.get_active(), 2);
+    assert_eq!(ui.get_selections(), 1);
+
+    ui.set_active_value("设计".into());
+    let (scene, layout) = render(&ui, &input);
+    assert_eq!(text_input_value(scene.at_path(&automatic).unwrap()), "设计");
+    input.pointer_move(
+        &scene,
+        &layout,
+        center(ComboGeometry::new(layout.at_path(&automatic).unwrap().bounds).entry),
+    );
+    input.pointer_press();
+    input.pointer_release_target();
+    input.edit_text(
+        &mut ui,
+        &scene,
+        EditAction::SelectAll,
+        EditSource::Keyboard,
+        now,
+    );
+    assert!(input.edit_text(
+        &mut ui,
+        &scene,
+        EditAction::Insert("临时 工作区"),
+        EditSource::Atomic,
+        now
+    ));
+    ui.set_active_value("研发".into());
+    ui.bind_model_workspaces(xrack_runtime::VecModel::from(vec![
+        "研发".into(),
+        "设计".into(),
+    ]));
+    let (scene, layout) = render(&ui, &input);
+    assert_eq!(
+        text_input_value(scene.at_path(&automatic).unwrap()),
+        "临时 工作区"
+    );
+    let accept = input
+        .choice_key(&scene, &layout, ChoiceKey::Accept)
+        .unwrap();
+    assert!(ui.control_at(&scene, &accept.path, accept.action));
+    assert_eq!(ui.get_active_value(), "临时 工作区");
+    let scene = ui.render_shared();
+    assert_eq!(combo_index(scene.at_path(&automatic).unwrap()), None);
+    assert_eq!(
+        text_input_value(scene.at_path(&automatic).unwrap()),
+        "临时 工作区"
+    );
+    assert!(ui.control_at(&scene, &automatic, ControlAction::Select(0)));
+    ui.set_active_value("设计".into());
+    let scene = ui.render_shared();
+    assert_eq!(text_input_value(scene.at_path(&automatic).unwrap()), "设计");
+}
 
 impl TextMeasurer for FixedText {
     fn measure(&mut self, text: &str, font_size: f32, width: f32) -> Size {
@@ -2201,6 +2662,8 @@ fn action_shares_state_across_presentations_and_rejects_stale_activation() {
         1,
         "Action does not occupy a scene slot"
     );
+    assert_eq!(ui.node("grid-button").kind, "ToolButton");
+    assert!(ui.node("grid-button").image("icon").is_some());
     let identity = ui.node("grid-button").action.unwrap();
     assert_eq!(ui.node("grid-item").action, Some(identity));
     ui.click("grid-button");

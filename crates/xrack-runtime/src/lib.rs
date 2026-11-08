@@ -1,7 +1,9 @@
 //! Renderer-independent scene snapshots produced by generated components.
 mod animation;
+mod calendar;
 mod controls;
 mod delegate;
+mod double_spin;
 mod list;
 mod model;
 mod property;
@@ -12,14 +14,19 @@ mod stack;
 mod table_selection;
 mod tree;
 pub use animation::SceneTransition;
+pub use calendar::{CalendarAction, CalendarState, Date};
 pub use controls::{
     ActionKey, ControlAction, DialogRole, SpinAction, SpinRange, TableHeader, TableSort,
-    button_text, combo_index, group_index, group_item, is_button, is_modal_overlay,
-    page_indicator_count, page_indicator_index, resizable_table_column, resolve_swipe_index,
-    spin_editable, spin_value_after,
+    button_text, combo_editable, combo_index, group_index, group_item, is_button, is_modal_overlay,
+    is_spin_box, page_indicator_count, page_indicator_index, resizable_table_column,
+    resolve_swipe_index, search_suggestion, search_suggestions, spin_editable, spin_text,
+    spin_value_after, text_input_value,
 };
 #[doc(hidden)]
 pub use delegate::{ComponentRepeater, RowContext};
+pub use double_spin::{
+    DecimalSpinRange, SpinDecimal, decimal_separator, decimal_spin_value_after, spin_text_is_valid,
+};
 pub use list::{ListMetrics, RowKey};
 #[doc(hidden)]
 pub use list::{ListModel, RowLifetime};
@@ -285,6 +292,7 @@ pub enum Value {
     DialogRole(DialogRole),
     DrawerEdge(DrawerEdge),
     SelectionTarget(SelectionTarget),
+    Date(Date),
 }
 
 macro_rules! value_from {
@@ -321,6 +329,7 @@ value_from!(TextWrap, TextWrap);
 value_from!(DialogRole, DialogRole);
 value_from!(DrawerEdge, DrawerEdge);
 value_from!(SelectionTarget, SelectionTarget);
+value_from!(Date, Date);
 
 impl From<Brush> for Value {
     fn from(value: Brush) -> Self {
@@ -351,7 +360,7 @@ pub struct Node {
 }
 
 pub fn is_text_input(kind: &str) -> bool {
-    matches!(kind, "TextInput" | "LineEdit") || is_multiline_text_input(kind)
+    matches!(kind, "TextInput" | "LineEdit" | "SearchField") || is_multiline_text_input(kind)
 }
 
 pub fn editable_table_cell(node: &Node) -> bool {
@@ -369,6 +378,13 @@ pub fn is_toggle(kind: &str) -> bool {
 }
 
 impl Node {
+    pub fn date(&self, name: &str) -> Option<Date> {
+        match self.properties.get(name) {
+            Some(Value::Date(date)) => Some(*date),
+            _ => None,
+        }
+    }
+
     pub fn new(kind: &'static str, id: Option<&'static str>) -> Self {
         Self {
             kind,

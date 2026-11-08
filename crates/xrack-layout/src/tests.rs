@@ -24,6 +24,154 @@ fn button(id: &'static str) -> Node {
 }
 
 #[test]
+fn vertical_tab_bar_reveals_the_selected_tab_and_scrolls_on_its_axis() {
+    let mut bar = node("TabBar", "bar");
+    bar.properties
+        .insert("orientation", Value::Orientation(Orientation::Vertical));
+    bar.properties.insert("current-index", 2_i64.into());
+    for id in ["first", "middle", "last"] {
+        let mut tab = node("TabButton", id);
+        length(&mut tab, "height", 40.0);
+        bar.children.push(tab);
+    }
+    let size = Size::new(100.0, 80.0);
+    let frame = layout(&bar, size, &mut Text);
+    assert_eq!(frame.scroll.unwrap().offset, 40.0);
+    assert!(frame.horizontal_scroll.is_none());
+    assert_eq!(frame.children[2].bounds, Rect::new(0.0, 40.0, 100.0, 40.0));
+    let mut input = Interaction::default();
+    assert!(!input.focus_next(&bar, &frame, false));
+    assert_eq!(input.focused.as_ref().unwrap().id, Some("last"));
+    assert_eq!(
+        input
+            .group_key(&bar, &frame, NavigationKey::Up)
+            .unwrap()
+            .action,
+        xrack_runtime::ControlAction::Select(1)
+    );
+    assert_eq!(
+        input
+            .group_key(&bar, &frame, NavigationKey::Home)
+            .unwrap()
+            .action,
+        xrack_runtime::ControlAction::Select(0)
+    );
+    let frame = layout_with_input(&bar, size, &mut Text, &input);
+    assert_eq!(frame.scroll.unwrap().offset, 0.0);
+    assert_eq!(input.focused.unwrap().id, Some("first"));
+}
+
+#[test]
+fn a_bound_tab_change_reveals_the_selection_without_locking_manual_scroll() {
+    let mut bar = node("TabBar", "bar");
+    for id in ["first", "middle", "last"] {
+        let mut tab = node("TabButton", id);
+        length(&mut tab, "width", 80.0);
+        bar.children.push(tab);
+    }
+    let size = Size::new(160.0, 44.0);
+    let mut input = Interaction::default();
+    let frame = layout_with_input(&bar, size, &mut Text, &input);
+    assert!(input.accessibility_scroll_to(&frame, &[], Orientation::Horizontal, 80.0));
+    let frame = layout_with_input(&bar, size, &mut Text, &input);
+    input.reconcile(&bar, &frame);
+    assert_eq!(
+        frame.scroll_on(Orientation::Horizontal).unwrap().offset,
+        80.0
+    );
+    assert_eq!(frame.children[0].bounds.intersect(frame.bounds).width, 0.0);
+
+    bar.properties.insert("current-index", 1_i64.into());
+    let frame = layout_with_input(&bar, size, &mut Text, &input);
+    input.reconcile(&bar, &frame);
+    assert_eq!(
+        frame.scroll_on(Orientation::Horizontal).unwrap().offset,
+        80.0
+    );
+
+    bar.properties.insert("current-index", 0_i64.into());
+    let frame = layout_with_input(&bar, size, &mut Text, &input);
+    assert_eq!(
+        frame.scroll_on(Orientation::Horizontal).unwrap().offset,
+        0.0
+    );
+    assert_eq!(
+        frame.children[0].bounds.intersect(frame.bounds),
+        frame.children[0].bounds
+    );
+}
+
+#[test]
+fn vertical_flow_wraps_columns_and_skips_hidden_and_zero_sized_items() {
+    let mut root = node("Window", "root");
+    let mut flow = node("FlowLayout", "flow");
+    flow.properties
+        .insert("orientation", Value::Orientation(Orientation::Vertical));
+    length(&mut flow, "height", 60.0);
+    length(&mut flow, "padding", 5.0);
+    length(&mut flow, "horizontal-spacing", 12.0);
+    length(&mut flow, "vertical-spacing", 5.0);
+    let mut hidden = button("hidden");
+    boolean(&mut hidden, "visible", false);
+    let mut zero = button("zero");
+    length(&mut zero, "width", 0.0);
+    let mut first = button("first");
+    first.properties.insert("layout-order", Value::Int(-1));
+    flow.children = vec![button("second"), hidden, zero, first, button("third")];
+    root.children.push(flow);
+
+    let layout = layout(&root, Size::new(300.0, 120.0), &mut Text);
+    let flow = &layout.children[0];
+    assert_eq!(flow.bounds, Rect::new(0.0, 0.0, 182.0, 60.0));
+    assert_eq!(flow.children[3].bounds, Rect::new(5.0, 5.0, 80.0, 20.0));
+    assert_eq!(flow.children[0].bounds, Rect::new(5.0, 30.0, 80.0, 20.0));
+    assert_eq!(flow.children[4].bounds, Rect::new(97.0, 5.0, 80.0, 20.0));
+    assert!(!flow.children[1].visible);
+    assert_eq!(flow.children[2].bounds.width, 0.0);
+}
+
+#[test]
+fn flow_inside_horizontal_layout_uses_its_assigned_width() {
+    let mut root = node("Window", "root");
+    let mut row = node("HorizontalLayout", "row");
+    let mut sidebar = button("sidebar");
+    length(&mut sidebar, "width", 100.0);
+    let mut flow = node("FlowLayout", "flow");
+    length(&mut flow, "horizontal-spacing", 10.0);
+    length(&mut flow, "vertical-spacing", 5.0);
+    flow.children = vec![button("first"), button("second")];
+    row.children = vec![sidebar, flow];
+    root.children.push(row);
+
+    let layout = layout(&root, Size::new(250.0, 80.0), &mut Text);
+    let row = &layout.children[0];
+    assert_eq!(row.bounds.height, 45.0);
+    let flow = &row.children[1];
+    assert_eq!(flow.bounds, Rect::new(100.0, 0.0, 150.0, 45.0));
+    let wrapped = &flow.children[1];
+    assert_eq!(wrapped.bounds, Rect::new(100.0, 25.0, 80.0, 20.0));
+    assert_eq!(wrapped.clip.intersect(wrapped.bounds), wrapped.bounds);
+}
+
+#[test]
+fn vertical_toolbar_wraps_when_its_commands_outgrow_the_available_height() {
+    let mut bar = node("ToolBar", "bar");
+    bar.properties
+        .insert("orientation", Value::Orientation(Orientation::Vertical));
+    boolean(&mut bar, "wrap", true);
+    for id in ["first", "second", "third"] {
+        let mut tool = node("ToolButton", id);
+        length(&mut tool, "width", 30.0);
+        length(&mut tool, "height", 28.0);
+        bar.children.push(tool);
+    }
+    let layout = layout(&bar, Size::new(100.0, 80.0), &mut Text);
+    assert_eq!(layout.children[0].bounds, Rect::new(6.0, 6.0, 30.0, 28.0));
+    assert_eq!(layout.children[1].bounds, Rect::new(6.0, 40.0, 30.0, 28.0));
+    assert_eq!(layout.children[2].bounds, Rect::new(42.0, 6.0, 30.0, 28.0));
+}
+
+#[test]
 fn scroll_bar_captures_drag_and_preserves_focus_when_policy_changes() {
     use xrack_runtime::{Orientation, ScrollBarPolicy};
 

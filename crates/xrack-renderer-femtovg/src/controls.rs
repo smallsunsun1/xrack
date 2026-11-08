@@ -1,14 +1,83 @@
-use crate::{TextSystem, Theme, color};
+use crate::{TextSystem, Theme, color, image::Images};
 use femtovg::{Align, Canvas, Paint, Path, renderer::WGPURenderer};
 use xrack_layout::{
-    ChoiceMenu, MenuPanel, PageIndicatorGeometry, Rect, SpinGeometry, TableGeometry, font_size,
+    CalendarGeometry, ChoiceMenu, ComboGeometry, MenuPanel, PageIndicatorGeometry, Rect,
+    SpinGeometry, TableGeometry, font_size,
 };
-use xrack_runtime::{Color, Node, Orientation, TableHeader, combo_index};
+use xrack_runtime::{Color, Node, Orientation, TableHeader, combo_editable, combo_index};
 
 fn fill(canvas: &mut Canvas<WGPURenderer>, rect: Rect, radius: f32, tint: Color) {
     let mut path = Path::new();
     path.rounded_rect(rect.x, rect.y, rect.width, rect.height, radius);
     canvas.fill_path(&path, &Paint::color(color(tint)));
+}
+
+pub(crate) fn calendar(
+    canvas: &mut Canvas<WGPURenderer>,
+    text: &TextSystem,
+    theme: Theme,
+    node: &Node,
+    geometry: &CalendarGeometry,
+    enabled: bool,
+) -> Result<(), String> {
+    let draw = |canvas: &mut Canvas<WGPURenderer>, rect: Rect, label: &str, tint: Color| {
+        let size = font_size(node).min((rect.height * 0.56).max(1.0));
+        let paint = text.paint(size, color(tint), true);
+        canvas.save();
+        canvas.intersect_scissor(rect.x, rect.y, rect.width, rect.height);
+        let result = canvas.fill_text(
+            rect.x + rect.width * 0.5,
+            rect.y + ((rect.height - size * 1.4) * 0.5).max(0.0),
+            label,
+            &paint,
+        );
+        canvas.restore();
+        result
+            .map(|_| ())
+            .map_err(|error| format!("calendar label drawing failed: {error}"))
+    };
+    let month = geometry.state.month;
+    draw(
+        canvas,
+        geometry.title(),
+        &format!("{:04}-{:02}", month.year, month.month),
+        theme.text,
+    )?;
+    for ((rect, action), label) in geometry.navigation().into_iter().zip(["‹", "›"]) {
+        let tint = if enabled && action.is_some() {
+            theme.text
+        } else {
+            theme.disabled_text
+        };
+        draw(canvas, rect, label, tint)?;
+    }
+    for (rect, label) in geometry.weekdays(node) {
+        draw(canvas, rect, label, theme.disabled_text)?;
+    }
+    for day in geometry.days() {
+        if day.selected {
+            let inset = 2.0_f32
+                .min(day.bounds.width * 0.2)
+                .min(day.bounds.height * 0.2);
+            fill(
+                canvas,
+                day.bounds.inset(inset),
+                6.0,
+                if enabled {
+                    theme.button
+                } else {
+                    theme.disabled
+                },
+            );
+        }
+        let tint = if enabled && day.enabled && (day.in_month || day.selected) {
+            theme.text
+        } else {
+            theme.disabled_text
+        };
+        draw(canvas, day.bounds, &day.date.day.to_string(), tint)?;
+    }
+    Ok(())
 }
 
 pub(crate) fn page_indicator(
@@ -133,6 +202,8 @@ pub(crate) fn menu_panel(
     text: &TextSystem,
     theme: Theme,
     panel: MenuPanel<'_>,
+    images: &mut Images,
+    scale: f32,
 ) -> Result<(), String> {
     let bounds = panel.bounds;
     fill(canvas, bounds, 6.0, Color(0x627596ff));
@@ -161,7 +232,10 @@ pub(crate) fn menu_panel(
                 theme.disabled_text
             };
             let paint = text.paint(15.0, color(tint), false);
-            let left = rect.x + 26.0;
+            if let Some(image) = row.icon {
+                images.draw_icon(canvas, image, panel.icon_bounds(slot), scale, row.enabled)?;
+            }
+            let left = rect.x + panel.label_offset();
             let right = rect.x + rect.width - 12.0;
             let y = rect.y + (rect.height - 21.0).max(0.0) * 0.5;
             let mut label_end = right - if row.submenu { 10.0 } else { 0.0 };
@@ -406,15 +480,16 @@ pub(crate) fn combo(
     } else {
         theme.disabled_text
     };
+    let trigger = ComboGeometry::new(bounds).trigger;
     chevron(
         canvas,
-        bounds.x + bounds.width - 14.0,
+        trigger.x + trigger.width * 0.5,
         bounds.y + bounds.height * 0.5,
         4.0,
         open,
         foreground,
     );
-    let Some(index) = combo_index(node) else {
+    let Some(index) = combo_index(node).filter(|_| !combo_editable(node)) else {
         return Ok(());
     };
     let size = font_size(node);
@@ -625,7 +700,7 @@ pub(crate) fn tab(
             bounds.height,
         ),
         title,
-        14.0,
+        xrack_layout::TAB_LABEL_SIZE,
         if appearance.enabled {
             theme.text
         } else {

@@ -1,0 +1,21 @@
+/* 🌱 */ import { Base, Named as Other, } from "widgets.xr";
+export struct Data { name: string, weight: float, }
+export component App inherits Window {
+    in-out property <[Data]> entries: [Data { name: "你好\u263A", weight: 2.5e-2, },];
+    property <int> value: 1 + 2 * 3 - -4;
+    property <bool> ok: !(value <= 0) && true || false;
+    pure callback format(string, value: int,) -> string;
+    callback done;
+    format(name, number) => { ok ? name + number : "🌱" }
+    binding: format(root.name, value);
+    clicked => { root.value -= 1; done(); }
+    animate width { duration: 200ms; }
+    if ok : button := Button { width: 50%; height: 24px; }
+    for item[index] in entries : Text { text: item.name; }
+    Rectangle {
+        background: @linear-gradient(-90deg, #fff, #000 80%);
+        other: @radial-gradient(circle, #f008, #222 100%);
+    }
+    Image { source: @image-url("path.svg"); }
+    LineEdit { text <=> root.name; }
+}

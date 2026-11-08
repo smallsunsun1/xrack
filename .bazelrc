@@ -7,8 +7,7 @@ build --jobs=8
 build --disk_cache=~/.cache/bazel/xrack
 build --experimental_disk_cache_gc_max_size=30G
 build --experimental_disk_cache_gc_max_age=30d
-# Java is only the ANTLR generator's build-time runtime. Reuse the JDK that
-# runs Bazel instead of fetching an additional JDK for the generated C++ code.
+# Reuse the JDK that runs Bazel to generate the ANTLR Rust sources.
 build --java_runtime_version=local_jdk
 build --tool_java_runtime_version=local_jdk
 # LLVM's overlay enables strict Clang module layering checks, which do not
