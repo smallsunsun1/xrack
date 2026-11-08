@@ -1,0 +1,21 @@
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+
+rust_library(
+    name = "xrack_layout",
+    srcs = glob(["src/*.rs"]),
+    crate_name = "xrack_layout",
+    crate_root = "src/lib.rs",
+    edition = "2024",
+    version = "0.1.0",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//crates/xrack-runtime:xrack_runtime",
+        "@crates//:unicode-segmentation",
+    ],
+)
+
+rust_test(
+    name = "layout_test",
+    size = "small",
+    crate = ":xrack_layout",
+)

@@ -1,0 +1,18 @@
+[package]
+name = "xrack-renderer-femtovg"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+xrack-runtime.workspace = true
+xrack-layout.workspace = true
+xrack-assets.workspace = true
+femtovg.workspace = true
+wgpu.workspace = true
+fontdb.workspace = true
+pollster.workspace = true
+png.workspace = true
+imgref.workspace = true
+rgb.workspace = true

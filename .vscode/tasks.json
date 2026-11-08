@@ -1,0 +1,64 @@
+{
+  "version": "2.0.0",
+  "options": { "cwd": "${workspaceFolder}" },
+  "osx": {
+    "options": {
+      "cwd": "${workspaceFolder}",
+      "env": { "PATH": "/opt/homebrew/bin:/usr/local/bin:${env:PATH}" }
+    }
+  },
+  "tasks": [
+    {
+      "label": "Bazel: Generate rust-project.json",
+      "type": "process",
+      "command": "bazel",
+      "args": ["run", "//:rust_project", "--", "//...", "//tests:gpu_test"],
+      "problemMatcher": []
+    },
+    {
+      "label": "Bazel: Generate compile_commands.json",
+      "type": "process",
+      "command": "python3",
+      "args": ["${workspaceFolder}/tools/compile_commands.py"],
+      "problemMatcher": []
+    },
+    {
+      "label": "Bazel: Build Counter",
+      "type": "process",
+      "command": "bazel",
+      "args": ["build", "//examples/counter:counter"],
+      "group": { "kind": "build", "isDefault": true },
+      "problemMatcher": "$rustc"
+    },
+    {
+      "label": "Bazel: Build Counter (debug)",
+      "type": "process",
+      "command": "bazel",
+      "args": ["build", "-c", "dbg", "//examples/counter:counter"],
+      "problemMatcher": "$rustc"
+    },
+    {
+      "label": "Bazel: Run Counter",
+      "type": "process",
+      "command": "bazel",
+      "args": ["run", "//examples/counter:counter"],
+      "problemMatcher": "$rustc"
+    },
+    {
+      "label": "Bazel: Test workspace",
+      "type": "process",
+      "command": "bazel",
+      "args": ["test", "//..."],
+      "group": { "kind": "test", "isDefault": true },
+      "problemMatcher": "$rustc"
+    },
+    {
+      "label": "Bazel: Test native GPU",
+      "type": "process",
+      "command": "bazel",
+      "args": ["test", "//tests:gpu_test", "--test_output=all"],
+      "group": "test",
+      "problemMatcher": "$rustc"
+    }
+  ]
+}

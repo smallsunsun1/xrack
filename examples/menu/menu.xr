@@ -1,0 +1,80 @@
+export component MenuDemo inherits Window {
+    title: "XRack · 菜单";
+    width: 620px;
+    height: 366px;
+    background: #182331;
+
+    in-out property <bool> show-grid: false;
+    in-out property <bool> grid-enabled: true;
+    in-out property <bool> dialog-open: false;
+    in-out property <string> new-shortcut: "Primary+N";
+    out property <int> background-clicks: 0;
+    out property <int> grid-activations: 0;
+    out property <string> command: "请选择一条命令";
+
+    grid-command := Action {
+        text: "显示网格";
+        shortcut: "Primary+G";
+        enabled: root.grid-enabled;
+        checkable: true;
+        checked <=> root.show-grid;
+        activated() => {
+            root.grid-activations += 1;
+            root.command = root.show-grid ? "已显示网格" : "已隐藏网格";
+        }
+    }
+
+    VerticalLayout {
+        padding: 16px;
+        spacing: 10px;
+        MenuBar {
+            file-menu := Menu {
+                title: "文件";
+                MenuItem { text: "新建"; shortcut: root.new-shortcut; activated() => { root.command = "已新建"; } }
+                MenuItem { text: "导入"; shortcut: "Primary+I"; enabled: false; }
+                MenuSeparator { }
+                Menu {
+                    title: "导出为";
+                    MenuItem { text: "纯文本"; activated() => { root.command = "已导出纯文本"; } }
+                    MenuItem { text: "图像"; shortcut: "Primary+Shift+E"; activated() => { root.command = "已导出图像"; } }
+                }
+            }
+            view-menu := Menu {
+                title: "视图";
+                grid-item := MenuItem { action: grid-command; }
+            }
+        }
+        workspace := ContextMenuArea {
+            Rectangle {
+                background: #25364e;
+                border-radius: 10px;
+                Text { x: 16px; y: 16px; text: "工作区"; font-size: 22px; }
+                Text { x: 16px; y: 56px; text: "右键或 Shift+F10 打开上下文菜单"; color: #acc0db; }
+                Text { x: 16px; y: 89px; text: root.show-grid ? "网格已显示" : "网格已隐藏"; }
+            }
+            Menu {
+                MenuItem { text: "刷新"; shortcut: "Primary+R"; activated() => { root.command = "已刷新工作区"; } }
+                MenuSeparator { }
+                MenuItem { text: "重置视图"; activated() => { root.show-grid = false; root.command = "已重置视图"; } }
+            }
+        }
+        HorizontalLayout {
+            spacing: 8px;
+            grid-button := Button { action: grid-command; }
+            dialog-button := Button { text: "对话框"; clicked() => { root.dialog-open = true; } }
+            background-button := Button { text: "背景计数 · " + root.background-clicks; clicked() => { root.background-clicks += 1; } }
+        }
+        status := Text { text: root.command; color: #acc0db; }
+        inspector := Dialog {
+            open <=> root.dialog-open;
+            title: "对话框中的菜单";
+            width: 370px;
+            height: 210px;
+            inspector-area := ContextMenuArea {
+                Rectangle { background: #344866; border-radius: 6px; Text { x: 10px; y: 10px; text: "右键检查此区域"; } }
+                Menu { MenuItem { text: "检查属性"; shortcut: "Primary+R"; activated() => { root.command = "已检查属性"; } } }
+            }
+            DialogButton { text: "关闭"; role: reject; }
+        }
+    }
+}

@@ -1,0 +1,50 @@
+export component StepperDemo inherits Window {
+    in-out property <int> step: 1;
+    out property <int> left-count: left.value;
+    out property <int> right-count: right.value;
+
+    title: "XRack 双计数器";
+    width: 480px;
+    height: 230px;
+    background: #18202b;
+
+    VerticalBox {
+        padding: 16px;
+        spacing: 12px;
+        HorizontalBox {
+            spacing: 12px;
+            left := Stepper { step: root.step; }
+            right := Stepper { step: 2; }
+        }
+        summary := Text {
+            text: "父组件读数：左 " + left-count + "，右 " + right-count;
+            color: #ffffff;
+            font-size: 18px;
+        }
+        reset-left := Button {
+            text: "重置左侧";
+            clicked() => { left.count = 0; }
+        }
+    }
+}
+
+component Stepper inherits VerticalBox {
+    in property <int> step: 1;
+    in-out property <int> count: 0;
+    out property <int> value: count;
+
+    spacing: 8px;
+    Text {
+        text: "计数：" + root.count;
+        color: #ffffff;
+        font-size: 22px;
+    }
+    add := Button {
+        property <int> presses: 0;
+        text: "加 " + root.step + "（点击 " + self.presses + " 次）";
+        clicked() => {
+            self.presses += 1;
+            root.count += root.step;
+        }
+    }
+}

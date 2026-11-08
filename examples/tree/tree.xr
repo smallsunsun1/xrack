@@ -1,0 +1,64 @@
+export struct TreeRecord {
+    id: int,
+    parent-id: int,
+    label: string,
+    detail: string,
+    active: bool,
+    quota: int,
+    load: float,
+}
+
+export component TreeDemo inherits Window {
+    title: "XRack · 目录树";
+    width: 600px;
+    height: 370px;
+    background: #182331;
+
+    in-out property <[TreeRecord]> records: [
+        TreeRecord { id: 1, parent-id: -1, label: "项目", detail: "目录", active: true, quota: 10, load: 0.5 },
+        TreeRecord { id: 2, parent-id: 1, label: "源码", detail: "目录", active: true, quota: 8, load: 0.7 },
+        TreeRecord { id: 3, parent-id: 2, label: "main.rs", detail: "Rust", active: true, quota: 4, load: 0.4 },
+        TreeRecord { id: 4, parent-id: 1, label: "README.md", detail: "文档", active: true, quota: 2, load: 0.25 },
+        TreeRecord { id: 5, parent-id: -1, label: "归档", detail: "目录", active: false, quota: 5, load: 0.1 },
+        TreeRecord { id: 6, parent-id: 5, label: "笔记.txt", detail: "文本", active: false, quota: 2, load: 0.15 },
+    ];
+    in-out property <int> current: -1;
+    in-out property <bool> multiple: true;
+    out property <int> expansions: 0;
+    out property <int> collapses: 0;
+    out property <int> selected-count: 0;
+    callback sort-requested();
+
+    VerticalLayout {
+        padding: 14px;
+        spacing: 8px;
+        Text { text: "目录树 · F2 重命名，Tab 编辑当前行"; font-size: 20px; }
+        directory := TreeView {
+            current-key <=> root.current;
+            multi-select: root.multiple;
+            row-height: 34px;
+            indentation: 18px;
+            expanded(key) => { root.expansions += 1; }
+            collapsed(key) => { root.collapses += 1; }
+            selection-changed(count) => { root.selected-count = count; }
+            for record[index] in root.records : TreeRow {
+                key: record.id;
+                parent-key: record.parent-id;
+                HorizontalLayout {
+                    spacing: 8px;
+                    padding-right: 12px;
+                    cross-axis-alignment: center;
+                    TreeCell { text <=> record.label; horizontal-stretch: 1; height: 30px; }
+                    if record.detail != "" : TreeCell {
+                        text: record.detail; width: 66px; height: 30px; color: #acc0db;
+                    }
+                    CheckBox { checked <=> record.active; width: 28px; height: 30px; }
+                    SpinBox { value <=> record.quota; editable: true; minimum: 0; maximum: 99; width: 94px; height: 30px; }
+                    Slider { value <=> record.load; enabled: record.active; minimum: 0; maximum: 1; step: 0.05; width: 88px; height: 28px; }
+                }
+            }
+        }
+        sort := Button { text: "按名称重排模型"; clicked() => { root.sort-requested(); } }
+        Text { text: "已选 " + root.selected-count + " 项 · 当前节点 " + root.current; color: #b8caff; }
+    }
+}

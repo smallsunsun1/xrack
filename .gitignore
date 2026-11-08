@@ -1,0 +1,9 @@
+/.DS_Store
+/bazel-*
+/target/
+/.tools/
+/rust-project.json
+/compile_commands.json
+*.tmp
+/.cache
+/.rules_rust_analyzer

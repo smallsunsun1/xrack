@@ -1,0 +1,56 @@
+export component TableDemo inherits Window {
+    title: "XRack · TableView";
+    width: 560px;
+    height: 370px;
+    background: #182331;
+
+    in-out property <[string]> records;
+    in-out property <int> current: -1;
+    out property <int> selections: 0;
+    out property <int> selected-count: 0;
+    in property <SelectionTarget> target: rows;
+    callback sort-requested(column: int, descending: bool);
+
+    VerticalLayout {
+        padding: 16px;
+        spacing: 8px;
+        Text { text: "工作区记录"; font-size: 22px; }
+        Text {
+            text: root.target == SelectionTarget.cells ? "单元格选择 · Shift 扩展矩形选区"
+                : root.target == SelectionTarget.columns ? "列选择 · Alt+点击表头排序"
+                : "Shift 连选 · Ctrl/Cmd 增减 · 双击名称编辑";
+            color: #acc0db;
+        }
+        records-table := TableView {
+            row-height: 32px;
+            header-height: 36px;
+            resizable-columns: true;
+            multi-select: true;
+            selection-target: root.target;
+            background: #223249;
+            current-row <=> root.current;
+            current-row-changed(row) => { root.selections += 1; }
+            selection-changed(count) => { root.selected-count = count; }
+            sort-ascending(column) => { root.sort-requested(column, false); }
+            sort-descending(column) => { root.sort-requested(column, true); }
+            TableColumn { title: "名称"; min-width: 140px; max-width: 640px; }
+            TableColumn { title: "显示序号"; width: 148px; sortable: false; resizable: false; }
+            for label[index] in root.records : TableRow {
+                TableCell {
+                    background: index % 2 == 0 ? #263750 : #223249;
+                    padding: 8px;
+                    text <=> label;
+                }
+                Rectangle {
+                    background: index % 2 == 0 ? #2b3c57 : #263750;
+                    Text { x: 8px; y: 5px; text: "#" + (index + 1); color: #acc0db; }
+                }
+            }
+        }
+        Text {
+            text: "已选 " + root.selected-count + (root.target == SelectionTarget.cells ? " 个单元格"
+                : root.target == SelectionTarget.columns ? " 列" : " 行");
+            color: #b8caff;
+        }
+    }
+}

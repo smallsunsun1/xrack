@@ -1,0 +1,19 @@
+load("@rules_rust//rust:defs.bzl", "rust_binary")
+load("//bazel:xrack.bzl", "xr_ui_library")
+
+xr_ui_library(
+    name = "form_ui",
+    src = "form.xr",
+    sources = ["widgets.xr"],
+    visibility = ["//tests:__pkg__"],
+)
+
+rust_binary(
+    name = "form",
+    srcs = ["main.rs"],
+    edition = "2024",
+    deps = [
+        ":form_ui",
+        "//crates/xrack-platform-winit:xrack_platform_winit",
+    ],
+)

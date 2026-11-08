@@ -1,0 +1,18 @@
+load("@rules_rust//rust:defs.bzl", "rust_binary")
+load("//bazel:xrack.bzl", "xr_ui_library")
+
+xr_ui_library(
+    name = "list_ui",
+    src = "list.xr",
+    visibility = ["//tests:__pkg__"],
+)
+
+rust_binary(
+    name = "list",
+    srcs = ["main.rs"],
+    edition = "2024",
+    deps = [
+        ":list_ui",
+        "//crates/xrack-platform-winit:xrack_platform_winit",
+    ],
+)

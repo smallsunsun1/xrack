@@ -1,0 +1,25 @@
+load("@crates//:defs.bzl", "aliases", "all_crate_deps")
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+
+rust_library(
+    name = "xrack_platform_winit",
+    srcs = glob(["src/*.rs"]),
+    aliases = aliases(),
+    crate_name = "xrack_platform_winit",
+    crate_root = "src/lib.rs",
+    edition = "2024",
+    version = "0.1.0",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//crates/xrack-runtime:xrack_runtime",
+        "//crates/xrack-layout:xrack_layout",
+        "//crates/xrack-renderer-femtovg:xrack_renderer_femtovg",
+    ] + all_crate_deps(normal = True),
+)
+
+rust_test(
+    name = "async_test",
+    size = "small",
+    crate = ":xrack_platform_winit",
+    deps = ["@crates//:tokio"],
+)

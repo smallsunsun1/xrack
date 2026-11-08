@@ -1,0 +1,403 @@
+use crate::ffi;
+use std::{
+    ffi::c_void,
+    fmt,
+    hash::{Hash, Hasher},
+    marker::PhantomData,
+};
+use xrack_syntax::ast::Span;
+
+struct Context(ffi::MlirContext);
+
+impl Context {
+    fn new() -> Self {
+        // Diagnostics are collected synchronously on the calling thread.
+        let context = Self(unsafe { ffi::mlirContextCreateWithThreading(false) });
+        unsafe { ffi::mlirDialectHandleLoadDialect(ffi::mlirGetDialectHandle__xr__(), context.0) };
+        context
+    }
+}
+
+impl Drop for Context {
+    fn drop(&mut self) {
+        // The module is destroyed before its context.
+        unsafe { ffi::mlirContextDestroy(self.0) };
+    }
+}
+
+struct PassManager(ffi::MlirPassManager);
+
+impl Drop for PassManager {
+    fn drop(&mut self) {
+        // The manager is scoped to the call that borrows its context.
+        unsafe { ffi::mlirPassManagerDestroy(self.0) };
+    }
+}
+
+/// An owned MLIR module. Read-only handles borrow it and cannot survive a pass run.
+pub struct Module {
+    raw: ffi::MlirModule,
+    context: Context,
+}
+
+impl fmt::Debug for Module {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Module").finish_non_exhaustive()
+    }
+}
+
+impl Drop for Module {
+    fn drop(&mut self) {
+        // The module is owned by Rust. Its context remains alive here.
+        unsafe { ffi::mlirModuleDestroy(self.raw) };
+    }
+}
+
+impl Module {
+    pub(crate) fn empty() -> Self {
+        let context = Context::new();
+        let raw = unsafe { ffi::mlirModuleCreateEmpty(ffi::mlirLocationUnknownGet(context.0)) };
+        Self { raw, context }
+    }
+
+    pub(crate) fn builder_handles(&mut self) -> (ffi::MlirContext, ffi::MlirBlock) {
+        (self.context.0, unsafe { ffi::mlirModuleGetBody(self.raw) })
+    }
+
+    /// Parse and verify XR IR without running its optimization pipeline.
+    pub fn parse(source: &str) -> Result<Self, String> {
+        let context = Context::new();
+        let raw = capture_diagnostics(&context, || {
+            // The parser borrows source only for the duration of the call.
+            let raw = unsafe { ffi::mlirModuleCreateParse(context.0, string_ref(source)) };
+            if raw.ptr.is_null() {
+                return Err("failed to parse MLIR module");
+            }
+            Ok(raw)
+        })?;
+        let module = Self { raw, context };
+        module.verify()?;
+        Ok(module)
+    }
+
+    /// Verify the ODS operations and XR's module-wide constraints.
+    pub fn verify(&self) -> Result<(), String> {
+        capture_diagnostics(&self.context, || {
+            let op = unsafe { ffi::mlirModuleGetOperation(self.raw) };
+            if !unsafe { ffi::mlirOperationVerify(op) }
+                || !unsafe { ffi::xrackMlirVerifyModule(self.raw) }
+            {
+                return Err("XR module verification failed");
+            }
+            Ok(())
+        })
+    }
+
+    /// Consume the module before running mutating passes, invalidating old borrows.
+    pub fn optimize(self) -> Result<Self, String> {
+        self.verify()?;
+        capture_diagnostics(&self.context, || {
+            let manager = PassManager(unsafe { ffi::mlirPassManagerCreate(self.context.0) });
+            // The operation, manager and dialect all belong to this context.
+            unsafe {
+                ffi::mlirPassManagerEnableVerifier(manager.0, true);
+                ffi::xrackMlirAddPipeline(manager.0);
+                let result =
+                    ffi::mlirPassManagerRunOnOp(manager.0, ffi::mlirModuleGetOperation(self.raw));
+                // Mirrors mlirLogicalResultIsSuccess, a static inline C helper.
+                if result.value == 0 {
+                    return Err("XR optimization pipeline failed");
+                }
+                if !ffi::xrackMlirVerifyModule(self.raw) {
+                    return Err("optimized XR module verification failed");
+                }
+            }
+            Ok(())
+        })?;
+        Ok(self)
+    }
+
+    pub fn operations(&self) -> impl Iterator<Item = OperationRef<'_>> {
+        // The module body always exists and is owned by the module.
+        BlockRef {
+            raw: unsafe { ffi::mlirModuleGetBody(self.raw) },
+            owner: PhantomData,
+        }
+        .operations()
+    }
+
+    pub fn to_mlir(&self) -> String {
+        let mut output = Vec::new();
+        // Printing invokes the callback synchronously and does not mutate IR.
+        unsafe {
+            let flags = ffi::mlirOpPrintingFlagsCreate();
+            ffi::mlirOpPrintingFlagsEnableDebugInfo(flags, true, false);
+            ffi::mlirOperationPrintWithFlags(
+                ffi::mlirModuleGetOperation(self.raw),
+                flags,
+                Some(append_bytes),
+                data(&mut output),
+            );
+            ffi::mlirOpPrintingFlagsDestroy(flags);
+        }
+        String::from_utf8_lossy(&output).into_owned()
+    }
+}
+
+pub fn process(source: &str) -> Result<Module, String> {
+    Module::parse(source)?.optimize()
+}
+
+pub(crate) fn string_ref(text: &str) -> ffi::MlirStringRef {
+    ffi::MlirStringRef {
+        data: text.as_ptr().cast(),
+        length: text.len(),
+    }
+}
+
+// Caller supplies the lifetime of the native owner of this string.
+unsafe fn bytes<'a>(text: ffi::MlirStringRef) -> &'a [u8] {
+    if text.length == 0 {
+        return &[];
+    }
+    // A nonempty MlirStringRef points to initialized bytes owned by MLIR.
+    unsafe { std::slice::from_raw_parts(text.data.cast(), text.length) }
+}
+
+fn data(output: &mut Vec<u8>) -> *mut c_void {
+    (output as *mut Vec<u8>).cast()
+}
+
+unsafe extern "C" fn append_bytes(text: ffi::MlirStringRef, output: *mut c_void) {
+    // The caller supplies an exclusive, live buffer for this synchronous callback.
+    unsafe { &mut *output.cast::<Vec<u8>>() }.extend_from_slice(unsafe { bytes(text) });
+}
+
+unsafe extern "C" fn collect_diagnostic(
+    diag: ffi::MlirDiagnostic,
+    output: *mut c_void,
+) -> ffi::MlirLogicalResult {
+    // Printing consumes the diagnostic before the handler returns.
+    unsafe { ffi::mlirDiagnosticPrint(diag, Some(append_bytes), output) };
+    unsafe { &mut *output.cast::<Vec<u8>>() }.push(b'\n');
+    // Mirrors the inline mlirLogicalResultSuccess helper.
+    ffi::MlirLogicalResult { value: 1 }
+}
+
+fn capture_diagnostics<T>(
+    context: &Context,
+    call: impl FnOnce() -> Result<T, &'static str>,
+) -> Result<T, String> {
+    struct Attachment<'a> {
+        context: &'a Context,
+        id: ffi::MlirDiagnosticHandlerID,
+        buffer: *mut Vec<u8>,
+    }
+    impl Drop for Attachment<'_> {
+        fn drop(&mut self) {
+            // Detach before releasing the callback's user data.
+            unsafe {
+                ffi::mlirContextDetachDiagnosticHandler(self.context.0, self.id);
+                drop(Box::from_raw(self.buffer));
+            }
+        }
+    }
+    let buffer = Box::into_raw(Box::new(Vec::<u8>::new()));
+    // The attachment owns this allocation until the callback is detached.
+    let id = unsafe {
+        ffi::mlirContextAttachDiagnosticHandler(
+            context.0,
+            Some(collect_diagnostic),
+            buffer.cast(),
+            None,
+        )
+    };
+    let attachment = Attachment {
+        context,
+        id,
+        buffer,
+    };
+    call().map_err(|fallback| {
+        // The synchronous operation and all its diagnostic callbacks have returned.
+        let diagnostics = unsafe { &*attachment.buffer };
+        if diagnostics.is_empty() {
+            fallback.to_owned()
+        } else {
+            String::from_utf8_lossy(diagnostics).into_owned()
+        }
+    })
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct OperationRef<'m> {
+    raw: ffi::MlirOperation,
+    owner: PhantomData<&'m Module>,
+}
+
+impl<'m> OperationRef<'m> {
+    fn from_raw(raw: ffi::MlirOperation) -> Option<Self> {
+        (!raw.ptr.is_null()).then_some(Self {
+            raw,
+            owner: PhantomData,
+        })
+    }
+
+    pub fn name(self) -> &'m str {
+        // Registered operation identifiers are valid UTF-8 and live in the context.
+        let name = unsafe { ffi::mlirIdentifierStr(ffi::mlirOperationGetName(self.raw)) };
+        std::str::from_utf8(unsafe { bytes(name) }).expect("MLIR operation name is UTF-8")
+    }
+
+    pub fn attribute(self, name: &str) -> Option<&'m str> {
+        // String and symbol reference attributes are immutable context-owned values.
+        let attr = unsafe { ffi::mlirOperationGetAttributeByName(self.raw, string_ref(name)) };
+        if attr.ptr.is_null() {
+            return None;
+        }
+        let text = unsafe {
+            if ffi::mlirAttributeIsAString(attr) {
+                ffi::mlirStringAttrGetValue(attr)
+            } else if ffi::mlirAttributeIsAFlatSymbolRef(attr) {
+                ffi::mlirFlatSymbolRefAttrGetValue(attr)
+            } else {
+                return None;
+            }
+        };
+        std::str::from_utf8(unsafe { bytes(text) }).ok()
+    }
+
+    pub fn attr(self, name: &str) -> Result<&'m str, String> {
+        self.attribute(name)
+            .ok_or_else(|| format!("{} missing or invalid `{name}`", self.name()))
+    }
+
+    pub fn operand_count(self) -> usize {
+        unsafe { ffi::mlirOperationGetNumOperands(self.raw) as usize }
+    }
+
+    pub fn operand(self, index: usize) -> Option<ValueRef<'m>> {
+        (index < self.operand_count()).then(|| ValueRef {
+            raw: unsafe { ffi::mlirOperationGetOperand(self.raw, index as isize) },
+            owner: PhantomData,
+        })
+    }
+
+    pub fn result_count(self) -> usize {
+        unsafe { ffi::mlirOperationGetNumResults(self.raw) as usize }
+    }
+
+    pub fn result(self, index: usize) -> Option<ValueRef<'m>> {
+        (index < self.result_count()).then(|| ValueRef {
+            raw: unsafe { ffi::mlirOperationGetResult(self.raw, index as isize) },
+            owner: PhantomData,
+        })
+    }
+
+    pub fn regions(self) -> impl Iterator<Item = RegionRef<'m>> {
+        let count = unsafe { ffi::mlirOperationGetNumRegions(self.raw) };
+        (0..count).map(move |index| RegionRef {
+            raw: unsafe { ffi::mlirOperationGetRegion(self.raw, index) },
+            owner: PhantomData,
+        })
+    }
+
+    /// Visit immediate children in region, block and operation order. Use
+    /// `regions()` when the distinction between regions matters to the caller.
+    pub fn children(self) -> impl Iterator<Item = OperationRef<'m>> {
+        self.regions()
+            .flat_map(RegionRef::blocks)
+            .flat_map(BlockRef::operations)
+    }
+
+    pub fn span(self) -> Span {
+        // The location belongs to the context. Only access its coordinates for this kind.
+        unsafe {
+            let location = ffi::mlirOperationGetLocation(self.raw);
+            if ffi::mlirLocationIsAFileLineColRange(location) {
+                return Span {
+                    line: ffi::mlirLocationFileLineColRangeGetStartLine(location) as usize,
+                    column: ffi::mlirLocationFileLineColRangeGetStartColumn(location) as usize,
+                };
+            }
+        }
+        Span { line: 1, column: 1 }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct ValueRef<'m> {
+    raw: ffi::MlirValue,
+    owner: PhantomData<&'m Module>,
+}
+
+impl PartialEq for ValueRef<'_> {
+    fn eq(&self, other: &Self) -> bool {
+        self.raw.ptr == other.raw.ptr
+    }
+}
+impl Eq for ValueRef<'_> {}
+impl Hash for ValueRef<'_> {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.raw.ptr.hash(state);
+    }
+}
+
+impl<'m> ValueRef<'m> {
+    pub fn defining_operation(self) -> Option<OperationRef<'m>> {
+        // Block arguments are values too, but have no defining operation.
+        if !unsafe { ffi::mlirValueIsAOpResult(self.raw) } {
+            return None;
+        }
+        OperationRef::from_raw(unsafe { ffi::mlirOpResultGetOwner(self.raw) })
+    }
+
+    pub fn type_name(self) -> String {
+        let mut output = Vec::new();
+        // The type and callback buffer remain live until printing returns.
+        unsafe {
+            ffi::mlirTypePrint(
+                ffi::mlirValueGetType(self.raw),
+                Some(append_bytes),
+                data(&mut output),
+            )
+        };
+        String::from_utf8_lossy(&output).into_owned()
+    }
+}
+
+#[derive(Clone, Copy)]
+pub struct RegionRef<'m> {
+    raw: ffi::MlirRegion,
+    owner: PhantomData<&'m Module>,
+}
+
+impl<'m> RegionRef<'m> {
+    pub fn blocks(self) -> impl Iterator<Item = BlockRef<'m>> {
+        let first = BlockRef::from_raw(unsafe { ffi::mlirRegionGetFirstBlock(self.raw) });
+        std::iter::successors(first, |block| {
+            BlockRef::from_raw(unsafe { ffi::mlirBlockGetNextInRegion(block.raw) })
+        })
+    }
+}
+
+#[derive(Clone, Copy)]
+pub struct BlockRef<'m> {
+    raw: ffi::MlirBlock,
+    owner: PhantomData<&'m Module>,
+}
+
+impl<'m> BlockRef<'m> {
+    fn from_raw(raw: ffi::MlirBlock) -> Option<Self> {
+        (!raw.ptr.is_null()).then_some(Self {
+            raw,
+            owner: PhantomData,
+        })
+    }
+
+    pub fn operations(self) -> impl Iterator<Item = OperationRef<'m>> {
+        let first = OperationRef::from_raw(unsafe { ffi::mlirBlockGetFirstOperation(self.raw) });
+        std::iter::successors(first, |op| {
+            OperationRef::from_raw(unsafe { ffi::mlirOperationGetNextInBlock(op.raw) })
+        })
+    }
+}

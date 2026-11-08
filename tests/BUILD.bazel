@@ -1,0 +1,102 @@
+load("@rules_rust//rust:defs.bzl", "rust_test")
+load("//bazel:xrack.bzl", "xr_ui_library")
+
+# Explicit opt-in: this executes real native GPU commands and needs installed fonts.
+rust_test(
+    name = "gpu_test",
+    size = "small",
+    srcs = [
+        "gpu_test.rs",
+        "ui_driver.rs",
+    ],
+    edition = "2024",
+    tags = [
+        "local",
+        "manual",
+        "no-sandbox",
+        "requires-gpu",
+    ],
+    deps = [
+        "//crates/xrack-layout:xrack_layout",
+        "//crates/xrack-renderer-femtovg:xrack_renderer_femtovg",
+        "//crates/xrack-runtime:xrack_runtime",
+        "//examples/async_demo:async_ui",
+        "//examples/controls:controls_ui",
+        "//examples/counter:counter_ui",
+        "//examples/delegates:delegates_ui",
+        "//examples/dialog:dialog_ui",
+        "//examples/form:form_ui",
+        "//examples/layout:layout_ui",
+        "//examples/list:list_ui",
+        "//examples/media:media_ui",
+        "//examples/menu:menu_ui",
+        "//examples/navigation:navigation_ui",
+        "//examples/notes:notes_ui",
+        "//examples/painting:painting_ui",
+        "//examples/selection:selection_ui",
+        "//examples/split:split_ui",
+        "//examples/table:records_ui",
+        "//examples/table:table_ui",
+        "//examples/tooltip:tooltip_ui",
+        "//examples/tree:tree_ui",
+        "@crates//:pollster",
+        "@crates//:wgpu",
+    ],
+)
+
+rust_test(
+    name = "compiler_test",
+    srcs = ["compiler_test.rs"],
+    edition = "2024",
+    deps = [
+        "//crates/xrack-compiler:xrack_compiler",
+    ],
+)
+
+rust_test(
+    name = "mlir_pass_test",
+    size = "small",
+    srcs = ["mlir_pass_test.rs"],
+    edition = "2024",
+    deps = ["//crates/xrack-compiler:xrack_compiler"],
+)
+
+rust_test(
+    name = "ui_interaction_test",
+    size = "small",
+    srcs = [
+        "ui_driver.rs",
+        "ui_interaction_test.rs",
+    ],
+    crate_root = "ui_interaction_test.rs",
+    edition = "2024",
+    deps = [
+        "//crates/xrack-layout:xrack_layout",
+        "//crates/xrack-runtime:xrack_runtime",
+        "//examples/counter:counter_ui",
+        "//examples/dialog:dialog_ui",
+        "//examples/menu:menu_ui",
+        "//examples/navigation:navigation_ui",
+        "//examples/selection:selection_ui",
+        "//examples/split:split_ui",
+        "//examples/table:records_ui",
+        "//examples/table:table_ui",
+        "//examples/tooltip:tooltip_ui",
+        "//examples/tree:tree_ui",
+    ],
+)
+
+xr_ui_library(
+    name = "expressions_ui",
+    src = "expressions.xr",
+)
+
+rust_test(
+    name = "expressions_test",
+    srcs = ["expressions_test.rs"],
+    edition = "2024",
+    deps = [
+        ":expressions_ui",
+        "//crates/xrack-runtime:xrack_runtime",
+    ],
+)

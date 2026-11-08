@@ -1,0 +1,61 @@
+export component Gallery inherits Window {
+    in-out property <color> accent: #ff5d8f;
+    property <brush> spectrum: @linear-gradient(90deg, #5665ff 0%, #52c9f1, root.accent 100%);
+    property <brush> glow: @radial-gradient(circle, #fff5cd, #f9829b 43%, #49286e);
+
+    title: "XRack 绘制样例";
+    width: 600px;
+    height: 358px;
+    background: #101521;
+
+    Text {
+        x: 32px; y: 22px;
+        text: "XRack 绘制样例";
+        font-size: 26px;
+        color: #f2f5fa;
+    }
+    Text {
+        x: 32px; y: 60px;
+        text: "类型化画刷 · 多色标 · 独立圆角";
+        font-size: 15px;
+        color: #a9b5cd;
+    }
+
+    linear := Rectangle {
+        x: 32px; y: 100px; width: 260px; height: 156px;
+        background: root.spectrum;
+        border-radius: 18px;
+        border-top-left-radius: 48px;
+        border-bottom-right-radius: 0px;
+    }
+    radial := Rectangle {
+        x: 308px; y: 100px; width: 260px; height: 156px;
+        background: root.glow;
+        border-radius: 24px;
+    }
+
+    Text {
+        x: 32px; y: 265px;
+        text: "线性渐变";
+        font-size: 15px;
+        color: #a9b5cd;
+    }
+    Text {
+        x: 308px; y: 265px;
+        text: "径向渐变";
+        font-size: 15px;
+        color: #a9b5cd;
+    }
+
+    toggle := Button {
+        x: 32px; y: 296px; width: 536px; height: 42px;
+        background: #161e31;
+        border-width: 3px;
+        border-radius: 12px;
+        border-color: root.spectrum;
+        color: #f2f5fa;
+        font-size: 16px;
+        text: "切换线性渐变端点";
+        clicked() => { root.accent = root.accent == #ff5d8f ? #ffb859 : #ff5d8f; }
+    }
+}

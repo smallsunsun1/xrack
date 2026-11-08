@@ -1,0 +1,16 @@
+export component LabelCard inherits Rectangle {
+    in property <string> caption: "字段";
+    out property <int> activations: 0;
+    callback record;
+    record => { root.activations += 1; }
+    pure callback preview-text(string) -> string;
+    preview-text(value) => { "预览：" + value }
+    background: #273855;
+    border-radius: 9px;
+    Text {
+        x: 14px; y: 9px;
+        text: root.caption;
+        font-size: 15px;
+        color: #e4edff;
+    }
+}

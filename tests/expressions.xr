@@ -1,0 +1,116 @@
+export component Expressions inherits Rectangle {
+    in-out property <int> base-value: 3;
+    out property <int> precedence: 1 + 2 * 3;
+    out property <int> left-associative: 10 - 3 - 2;
+    out property <float> promoted: base-value + 0.5;
+    out property <float> ratio: 12px / 4px;
+    out property <length> scaled: 8px * 2;
+    out property <length> scalar-left: 2 * 1.5px;
+    out property <length> negative: -3px;
+    out property <length> combined: (8px - 2px) / 2;
+    out property <bool> comparison: base-value >= 2 && !false;
+    out property <color> foreground: #0f08;
+    out property <bool> same-color: foreground == #00ff0088;
+    out property <string> greeting: "hello " + "\u4f60\u597d\n\"UI\"";
+    out property <string> selected: comparison ? greeting : "other";
+    out property <string> numbers: "n=" + base-value + ", f=" + promoted + ", ok=" + comparison;
+    out property <int> safe-ratio: base-value == 0 ? 42 : 12 / base-value;
+    out property <bool> guarded: base-value != 0 && 12 / base-value > 0;
+    callback update(type: int);
+    update(type) => { root.base-value = type; }
+    callback step();
+    step() => { root.base-value += 1; root.base-value += root.base-value; }
+    out property <int> calls: 0;
+    out property <bool> branch-result: false;
+    callback touch() -> bool;
+    touch => { root.calls += 1; true }
+    callback run-branch(bool);
+    run-branch(run) => { root.branch-result = run && root.touch(); }
+    out property <int> branch-value: 0;
+    callback run-equal-branches();
+    run-equal-branches() => { root.branch-value = root.touch() ? 7 : 7; }
+    width: scaled;
+}
+
+// Component names must not shadow paths used by generated code.
+export component String inherits Window { out property <string> value: "ok"; }
+export component Option inherits Window { in-out property <int> value: 7; }
+export component type inherits Window { out property <float> value: 1; }
+
+export component SelectionByValue inherits Rectangle {
+    in-out property <string> selection: "beta";
+    choice := ComboBox {
+        model: ["alpha", "beta"];
+        current-value <=> root.selection;
+    }
+}
+
+export component RadioByValue inherits Rectangle {
+    in-out property <string> selection: "beta";
+    group := RadioGroup {
+        current-value <=> root.selection;
+        RadioButton { text: "alpha"; }
+        RadioButton { text: "beta"; }
+    }
+}
+
+component LazyChild inherits Rectangle {
+    in property <int> input: 0;
+    out property <int> doubled: input * 2;
+}
+
+export component LazyProperties inherits Window {
+    in-out property <bool> use-left: true;
+    in-out property <int> left: 3;
+    in-out property <int> right: 8;
+    in-out property <int> unused: 0;
+    pure callback observe(int) -> int;
+    pure callback format-value(int) -> string;
+    pure callback format-right(int) -> string;
+    in-out property <int> result: root.observe(root.use-left ? root.left : root.right);
+    out property <int> shown: child.doubled;
+    child := LazyChild { input: root.result; }
+    label := Text { text: root.format-value(root.shown); }
+    right-label := Text { text: root.format-right(root.right); }
+}
+
+export component LazyList inherits Window {
+    in-out property <[string]> items: [];
+    in-out property <bool> show-list: true;
+    in-out property <bool> use-suffix: true;
+    in-out property <string> suffix: "!";
+    in-out property <int> details: 1;
+    in-out property <int> unrelated: 0;
+    pure callback row-label(string, int, string) -> string;
+    pure callback row-index(int) -> string;
+    pure callback detail-label(string, int, int) -> string;
+
+    Text { text: "unrelated=" + root.unrelated; }
+    if root.show-list : VerticalLayout {
+        for item[index] in root.items : HorizontalLayout {
+            Text { text: root.row-label(item, index, index == 2 && root.use-suffix ? root.suffix : ""); }
+            Text { text: root.row-index(index); }
+            if index == 2 : VerticalLayout {
+                for detail in root.details : Text { text: root.detail-label(item, index, detail); }
+            }
+        }
+    }
+}
+
+component StringRows inherits ListView {
+    in property <[string]> items: [];
+    for item[index] in root.items : Text { text: index + ": " + item; }
+}
+
+export component EmbeddedList inherits Window {
+    in-out property <[string]> items: ["a", "b", "c"];
+    records := StringRows { items: root.items; }
+}
+
+export component ModelBindings inherits Window {
+    in-out property <[string]> records: ["first", "second"];
+    pure callback mirror([string]) -> [string];
+    mirror(rows) => { rows }
+    out property <[string]> mirrored: root.mirror(root.records);
+    out property <bool> equal: root.mirrored == root.records;
+}

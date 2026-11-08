@@ -1,0 +1,161 @@
+export component ControlsDemo inherits Window {
+    in-out property <float> volume: 25;
+    in-out property <float> level: 50;
+    in-out property <bool> muted: false;
+    in-out property <bool> busy: false;
+    out property <int> changes: 0;
+    out property <int> releases: 0;
+    out property <float> last-release: 0;
+    in-out property <float> lower: 20;
+    in-out property <float> upper: 75;
+    out property <int> interval-changes: 0;
+    out property <int> interval-releases: 0;
+    out property <float> released-lower: 0;
+    out property <float> released-upper: 0;
+    in-out property <float> rotation: 0;
+    in-out property <DialInputMode> linear-mode: horizontal;
+    out property <int> dial-changes: 0;
+    out property <int> dial-releases: 0;
+    out property <float> dial-last-release: 0;
+    pure callback interval-caption(float, float) -> string;
+    interval-caption(lower, upper) => { "区间 " + lower + " – " + upper }
+
+    title: "XRack 控件示例";
+    width: 540px;
+    height: 652px;
+    background: #101725;
+
+    Text {
+        x: 24px; y: 20px;
+        text: "XRack 控件示例";
+        font-size: 26px;
+        color: #f0f4ff;
+    }
+    Text {
+        x: 24px; y: 57px;
+        text: "滑块 · 开关 · 进度指示器";
+        font-size: 15px;
+        color: #a7b6ce;
+    }
+
+    Rectangle {
+        x: 24px; y: 92px; width: 316px; height: 230px;
+        background: #1d293d;
+        border-radius: 14px;
+        Text { x: 16px; y: 14px; text: "音量  " + root.volume; color: #edf3ff; }
+        volume-slider := Slider {
+            x: 16px; y: 42px; width: 284px; height: 28px;
+            minimum: 0;
+            maximum: 100;
+            step: 5;
+            enabled: !root.muted;
+            value <=> root.volume;
+            changed(value) => { root.changes += 1; }
+            released(value) => { root.releases += 1; root.last-release = value; }
+        }
+        mute-switch := Switch {
+            x: 16px; y: 76px; width: 284px; height: 30px;
+            text: "静音";
+            checked <=> root.muted;
+        }
+        Text { x: 16px; y: 120px; text: "任务进度"; font-size: 15px; color: #a7b6ce; }
+        progress-meter := ProgressIndicator {
+            x: 16px; y: 151px; width: 284px; height: 10px;
+            progress: root.volume / 100.0;
+            indeterminate: root.busy;
+        }
+        task-switch := Switch {
+            x: 16px; y: 174px; width: 284px; height: 30px;
+            text: "模拟未知进度";
+            checked <=> root.busy;
+        }
+    }
+
+    Rectangle {
+        x: 356px; y: 92px; width: 160px; height: 230px;
+        background: #1d293d;
+        border-radius: 14px;
+        Text { x: 16px; y: 14px; text: "垂直调节"; color: #edf3ff; }
+        vertical-slider := Slider {
+            x: 32px; y: 51px; width: 28px; height: 148px;
+            orientation: vertical;
+            value <=> root.level;
+            step: 10;
+        }
+        Text { x: 77px; y: 113px; text: "" + root.level; color: #a8ddff; }
+    }
+
+    Text {
+        x: 24px; y: 338px;
+        text: "变化 " + root.changes + " 次 · 结束 " + root.releases + " 次 · 结束值 " + root.last-release;
+        font-size: 14px;
+        color: #a7b6ce;
+    }
+
+    Rectangle {
+        x: 24px; y: 372px; width: 316px; height: 114px;
+        background: #1d293d;
+        border-radius: 14px;
+        Text { x: 16px; y: 16px; text: root.interval-caption(root.lower, root.upper); color: #edf3ff; }
+        interval := RangeSlider {
+            x: 16px; y: 48px; width: 284px; height: 36px;
+            lower-value <=> root.lower;
+            upper-value <=> root.upper;
+            step: 5;
+            enabled: !root.muted;
+            changed(lower, upper) => { root.interval-changes += 1; }
+            released(lower, upper) => {
+                root.interval-releases += 1;
+                root.released-lower = lower;
+                root.released-upper = upper;
+            }
+            Tooltip { text: "拖动手柄，或用 Tab 选中后按方向键"; }
+        }
+    }
+
+    Rectangle {
+        x: 356px; y: 372px; width: 160px; height: 114px;
+        background: #1d293d;
+        border-radius: 14px;
+        Text { x: 16px; y: 16px; text: "垂直区间"; color: #edf3ff; }
+        vertical-interval := RangeSlider {
+            x: 104px; y: 12px; width: 32px; height: 90px;
+            orientation: vertical;
+            lower-value: 30;
+            upper-value: 70;
+            step: 10;
+        }
+    }
+
+    Rectangle {
+        x: 24px; y: 504px; width: 492px; height: 124px;
+        background: #1d293d;
+        border-radius: 14px;
+        Text { x: 28px; y: 14px; text: "限位旋钮"; color: #edf3ff; }
+        Text { x: 204px; y: 14px; text: "循环旋钮"; color: #edf3ff; }
+        Text { x: 366px; y: 14px; text: "直线拖动"; color: #edf3ff; }
+        rotary := Dial {
+            x: 26px; y: 36px; width: 78px; height: 78px;
+            minimum: -50; maximum: 50;
+            start-angle: -135; end-angle: 135;
+            value <=> root.rotation;
+            step: 5;
+            enabled: !root.muted;
+            changed(value) => { root.dial-changes += 1; }
+            released(value) => { root.dial-releases += 1; root.dial-last-release = value; }
+            Tooltip { text: "拖动旋转，也可以用方向键调节"; }
+        }
+        phase := Dial {
+            x: 202px; y: 36px; width: 78px; height: 78px;
+            wrap: true;
+            value: 95;
+            step: 5;
+        }
+        linear := Dial {
+            x: 364px; y: 36px; width: 78px; height: 78px;
+            input-mode: root.linear-mode;
+            value: 35;
+            step: 10;
+        }
+    }
+}

@@ -1,0 +1,160 @@
+load("@rules_cc//cc:cc_library.bzl", "cc_library")
+load("@llvm-project//mlir:tblgen.bzl", "gentbl_cc_library")
+load("@rules_rust//rust:defs.bzl", "rust_library")
+load("@rules_rust_bindgen//:defs.bzl", "rust_bindgen", "rust_bindgen_toolchain")
+load("//bazel:xrack.bzl", "rust_generated_source")
+load(":bindgen.bzl", "LLVM_BUILTIN_HEADERS")
+
+rust_bindgen_toolchain(
+    name = "bindgen_impl",
+    bindgen = "@rules_rust_bindgen//3rdparty:bindgen",
+    clang = "@llvm-project//clang:clang",
+    libclang = "@llvm-project//clang:libclang",
+)
+
+toolchain(
+    name = "bindgen_toolchain",
+    toolchain = ":bindgen_impl",
+    toolchain_type = "@rules_rust_bindgen//:toolchain_type",
+)
+
+gentbl_cc_library(
+    name = "xrack_inc_gen",
+    tbl_outs = {
+        "XrackDialect.cpp.inc": [
+            "-gen-dialect-defs",
+            "-dialect=xr",
+        ],
+        "XrackDialect.h.inc": [
+            "-gen-dialect-decls",
+            "-dialect=xr",
+        ],
+        "XrackOps.cpp.inc": ["-gen-op-defs"],
+        "XrackOps.h.inc": ["-gen-op-decls"],
+        "XrackTypes.cpp.inc": [
+            "-gen-typedef-defs",
+            "-typedefs-dialect=xr",
+        ],
+        "XrackTypes.h.inc": [
+            "-gen-typedef-decls",
+            "-typedefs-dialect=xr",
+        ],
+    },
+    tblgen = "@llvm-project//mlir:mlir-tblgen",
+    td_file = "Xrack.td",
+    deps = [
+        "@llvm-project//mlir:OpBaseTdFiles",
+        "@llvm-project//mlir:SideEffectInterfacesTdFiles",
+    ],
+)
+
+cc_library(
+    name = "xrack_dialect",
+    srcs = ["xrack_dialect.cc"],
+    hdrs = ["xrack_dialect.h"],
+    deps = [
+        ":xrack_inc_gen",
+        "@llvm-project//llvm:Support",
+        "@llvm-project//mlir:IR",
+        "@llvm-project//mlir:SideEffectInterfaces",
+    ],
+)
+
+cc_library(
+    name = "xrack_passes",
+    srcs = ["xrack_passes.cc"],
+    hdrs = ["xrack_passes.h"],
+    deps = [
+        ":xrack_dialect",
+        ":xrack_passes_inc_gen",
+        "@llvm-project//llvm:Support",
+        "@llvm-project//mlir:IR",
+        "@llvm-project//mlir:Pass",
+        "@llvm-project//mlir:TransformUtils",
+        "@llvm-project//mlir:Transforms",
+    ],
+)
+
+gentbl_cc_library(
+    name = "xrack_passes_inc_gen",
+    tbl_outs = {"XrackPasses.h.inc": [
+        "-gen-pass-decls",
+        "-name=Xrack",
+    ]},
+    tblgen = "@llvm-project//mlir:mlir-tblgen",
+    td_file = "XrackPasses.td",
+    deps = ["@llvm-project//mlir:PassBaseTdFiles"],
+)
+
+cc_library(
+    name = "xrack_c_api",
+    srcs = ["bridge.cc"],
+    hdrs = ["c_api.h"],
+    deps = [
+        ":xrack_dialect",
+        ":xrack_inc_gen",
+        ":xrack_passes",
+        "@llvm-project//llvm:Support",
+        "@llvm-project//mlir:CAPIIR",
+        "@llvm-project//mlir:IR",
+        "@llvm-project//mlir:Pass",
+    ],
+)
+
+cc_library(
+    name = "bindgen_inputs",
+    hdrs = ["@llvm-project//clang:builtin_headers_files"],
+    deps = [":xrack_c_api"],
+)
+
+rust_bindgen(
+    name = "c_bindings",
+    bindgen_flags = [
+        "--allowlist-function",
+        "(mlir|xrackMlir).*",
+        "--allowlist-type",
+        "Mlir.*",
+        "--no-layout-tests",
+        "--rust-edition",
+        "2024",
+    ],
+    cc_lib = ":bindgen_inputs",
+    clang_flags = [
+        "-x",
+        "c",
+        "-std=c11",
+        "-isystem",
+        LLVM_BUILTIN_HEADERS,
+    ],
+    header = "c_api.h",
+    merge_cc_lib_objects_into_rlib = False,
+)
+
+rust_generated_source(
+    name = "c_bindings_src",
+    src = ":c_bindings.rs",
+)
+
+rust_library(
+    name = "xrack_mlir_bindings",
+    srcs = [":c_bindings_src"],
+    crate_name = "xrack_mlir_bindings",
+    crate_root = ":c_bindings.rs",
+    edition = "2024",
+    link_deps = [":c_bindings"],
+    rustc_flags = ["--allow=nonstandard_style"],
+    tags = [
+        "no-clippy",
+        "no-rustfmt",
+    ],
+    visibility = ["//crates/xrack-mlir:__pkg__"],
+)
+
+# Compatibility for the optional Cargo-only static checks in README.md.
+genrule(
+    name = "c_bindings_out_dir",
+    srcs = [":c_bindings.rs"],
+    outs = ["c_bindings_out_dir/c_bindings.rs"],
+    cmd = 'cp "$<" "$@"',
+    tags = ["manual"],
+)

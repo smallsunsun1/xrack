@@ -1,0 +1,45 @@
+export struct StockRow {
+    name: string,
+    owner: string,
+    units: int,
+    available: bool,
+    load: float,
+}
+
+export component RecordTableDemo inherits Window {
+    title: "XRack · 结构化库存表";
+    width: 760px;
+    height: 330px;
+    background: #182331;
+
+    in-out property <[StockRow]> records: [
+        StockRow { name: "交换机", owner: "网络组", units: 12, available: true, load: 0.25 },
+        StockRow { name: "工作站", owner: "设计组", units: 5, available: false, load: 0.5 },
+        StockRow { name: "路由器", owner: "网络组", units: 8, available: true, load: 0.75 },
+    ];
+    callback sort-requested(column: int, descending: bool);
+
+    VerticalLayout {
+        padding: 16px;
+        spacing: 8px;
+        Text { text: "库存 · 文本、数量、可用状态与负载"; font-size: 22px; }
+        stock := TableView {
+            row-height: 36px;
+            resizable-columns: true;
+            sort-ascending(column) => { root.sort-requested(column, false); }
+            sort-descending(column) => { root.sort-requested(column, true); }
+            TableColumn { title: "名称"; min-width: 150px; }
+            TableColumn { title: "负责人"; width: 180px; }
+            TableColumn { title: "库存"; width: 116px; }
+            TableColumn { title: "可用"; width: 88px; }
+            TableColumn { title: "负载"; width: 112px; }
+            for row[index] in root.records : TableRow {
+                TableCell { text <=> row.name; background: index % 2 == 0 ? #263750 : #223249; }
+                TableCell { text <=> row.owner; background: index % 2 == 0 ? #263750 : #223249; }
+                SpinBox { value <=> row.units; minimum: 0; maximum: 999; }
+                CheckBox { checked <=> row.available; }
+                Slider { value <=> row.load; minimum: 0; maximum: 1; step: 0.05; }
+            }
+        }
+    }
+}

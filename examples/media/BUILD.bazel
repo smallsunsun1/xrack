@@ -1,0 +1,22 @@
+load("@rules_rust//rust:defs.bzl", "rust_binary")
+load("//bazel:xrack.bzl", "xr_ui_library")
+
+xr_ui_library(
+    name = "media_ui",
+    src = "media.xr",
+    assets = [
+        "assets/landscape.png",
+        "assets/orbit.svg",
+    ],
+    visibility = ["//tests:__pkg__"],
+)
+
+rust_binary(
+    name = "media",
+    srcs = ["main.rs"],
+    edition = "2024",
+    deps = [
+        ":media_ui",
+        "//crates/xrack-platform-winit:xrack_platform_winit",
+    ],
+)

@@ -1,0 +1,37 @@
+// UI source. `root` references the component's properties.
+export component Counter inherits Window {
+    in-out property <int> count: 0;
+    out property <int> doubled: count * 2;
+    in property <string> caption: "XRack 计数器";
+    property <length> panel-width: 320px;
+
+    callback increment(step: int);
+    increment(step) => { root.count += step; }
+
+    width: panel-width;
+    height: 180px;
+    title: caption;
+    background: #18202b;
+
+    VerticalBox {
+        spacing: 12px;
+        padding: 16px;
+        label := Text {
+            text: "计数：" + root.count;
+            font-size: 20px;
+            color: #ffffff;
+        }
+        status := Text {
+            text: "加倍：" + root.doubled;
+            font-size: 14px;
+            color: #a8b7ca;
+        }
+        add := Button {
+            text: "加一";
+            background: #536dfe;
+            border-radius: 8px;
+            enabled: true;
+            clicked() => { root.count += 1; }
+        }
+    }
+}

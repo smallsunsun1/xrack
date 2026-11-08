@@ -1,0 +1,28 @@
+load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_test")
+load("//bazel:xrack.bzl", "xr_ui_library")
+
+xr_ui_library(
+    name = "stepper_ui",
+    src = "stepper.xr",
+)
+
+rust_binary(
+    name = "stepper",
+    srcs = ["main.rs"],
+    edition = "2024",
+    deps = [
+        ":stepper_ui",
+        "//crates/xrack-platform-winit:xrack_platform_winit",
+    ],
+)
+
+rust_test(
+    name = "composition_test",
+    srcs = ["composition_test.rs"],
+    edition = "2024",
+    deps = [
+        ":stepper_ui",
+        "//crates/xrack-layout:xrack_layout",
+        "//crates/xrack-runtime:xrack_runtime",
+    ],
+)

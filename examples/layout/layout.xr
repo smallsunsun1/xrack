@@ -1,0 +1,120 @@
+component Tile inherits Rectangle {
+    in property <string> caption;
+    in property <string> detail;
+    in property <color> tint: #364d76;
+
+    background: root.tint;
+    border-radius: 14px;
+
+    VerticalLayout {
+        padding: 14px;
+        spacing: 7px;
+        alignment: center;
+        Text { text: root.caption; font-size: 18px; color: #ffffff; }
+        Text { text: root.detail; font-size: 13px; color: #e2eaff; }
+    }
+}
+
+export component LayoutDemo inherits Window {
+    in-out property <bool> centered: false;
+    out property <int> canvas-activations: 0;
+
+    title: "XRack 约束布局";
+    width: 620px;
+    height: 590px;
+    background: #101725;
+
+    VerticalLayout {
+        padding: 22px;
+        padding-left: 24px;
+        padding-right: 24px;
+        spacing: 14px;
+        alignment: start;
+
+        Text { text: "XRack 约束布局"; font-size: 26px; color: #f0f4ff; }
+        Text { text: "调整窗口宽度，观察伸缩比例和最大宽度"; font-size: 15px; color: #a7b6ce; }
+
+        row := HorizontalLayout {
+            height: 144px;
+            padding-left: 8px;
+            padding-right: 12px;
+            spacing: 12px;
+            alignment: root.centered ? LayoutAlignment.center : LayoutAlignment.stretch;
+            cross-axis-alignment: center;
+
+            fixed := Tile {
+                width: 128px;
+                height: 120px;
+                caption: "固定";
+                detail: "128px";
+                tint: #314b80;
+            }
+            capped := Tile {
+                min-width: 92px;
+                preferred-width: 124px;
+                max-width: 150px;
+                horizontal-stretch: 1;
+                height: 104px;
+                cross-axis-self-alignment: end;
+                caption: "上限";
+                detail: "最大 150px";
+                tint: #513b86;
+            }
+            elastic := Tile {
+                min-width: 110px;
+                preferred-width: 140px;
+                horizontal-stretch: 2;
+                height: 120px;
+                caption: "弹性";
+                detail: "伸缩权重 2";
+                tint: #14665c;
+            }
+        }
+
+        toggle := Button {
+            height: 38px;
+            padding: 6px;
+            background: #273a5b;
+            font-size: 15px;
+            text: root.centered ? "居中 · 点击切换为伸缩" : "伸缩 · 点击切换为居中";
+            clicked() => { root.centered = !root.centered; }
+        }
+
+        Text {
+            text: "二维滚动区 · 中键拖动 · 点击次数 " + root.canvas-activations;
+            font-size: 17px;
+            color: #c5d3eb;
+        }
+        canvas := ScrollView {
+            height: 220px;
+            content-width: 880px;
+            content-height: 340px;
+            Rectangle {
+                width: 100%; height: 100%;
+                background: #1c293e;
+                upper-left := Tile {
+                    x: 18px; y: 18px; width: 240px; height: 148px;
+                    caption: "左上";
+                    detail: "拖动滚动条浏览画布";
+                }
+                upper-right := Tile {
+                    x: 552px; y: 18px; width: 300px; height: 148px;
+                    caption: "右上";
+                    detail: "横向滚动后显示";
+                    tint: #513b86;
+                }
+                lower-left := Tile {
+                    x: 18px; y: 198px; width: 240px; height: 114px;
+                    caption: "左下";
+                    detail: "纵向滚动后显示";
+                    tint: #14665c;
+                }
+                canvas-action := Button {
+                    x: 664px; y: 240px; width: 188px; height: 46px;
+                    text: "点击右下角";
+                    clicked() => { root.canvas-activations += 1; }
+                }
+            }
+        }
+    }
+}

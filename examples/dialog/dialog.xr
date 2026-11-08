@@ -1,0 +1,98 @@
+component ConfirmActions inherits HorizontalLayout {
+    spacing: 10px;
+    alignment: end;
+    cancel := DialogButton { text: "取消"; role: reject; background: #384966; }
+    save := DialogButton { text: "保存"; role: accept; }
+}
+
+export component DialogDemo inherits Window {
+    title: "XRack · 模态对话框";
+    width: 640px;
+    height: 390px;
+    background: #182331;
+
+    in-out property <bool> rename-open: false;
+    in-out property <bool> help-open: false;
+    in-out property <bool> outside-closes: true;
+    in-out property <string> draft: "项目笔记";
+    out property <string> saved: "项目笔记";
+    out property <int> accepted-count: 0;
+    out property <int> rejected-count: 0;
+    out property <int> background-clicks: 0;
+    in-out property <bool> drawer-open: false;
+    in-out property <DrawerEdge> drawer-edge: left;
+    out property <int> drawer-opens: 0;
+    out property <int> drawer-closes: 0;
+
+    VerticalLayout {
+        padding: 16px;
+        spacing: 10px;
+        Text { text: "工作区 · " + root.saved; font-size: 22px; }
+        HorizontalLayout {
+            spacing: 10px;
+            opener := Button {
+                text: "重命名…";
+                clicked() => { root.draft = root.saved; root.rename-open = true; }
+            }
+            background-action := Button {
+                text: "背景计数 · " + root.background-clicks;
+                clicked() => { root.background-clicks += 1; }
+            }
+            drawer-opener := Button {
+                text: "打开导航";
+                background: #384966;
+                clicked() => { root.drawer-open = true; }
+            }
+        }
+        ScrollView {
+            viewport-height: 640px;
+            Text { text: "滚动内容 · 弹层由窗口统一显示"; color: #acc0db; }
+            rename := Dialog {
+                open <=> root.rename-open;
+                title: "重命名工作区";
+                font-size: 19px;
+                width: 420px;
+                height: 236px;
+                background: #273751;
+                close-on-outside: root.outside-closes;
+                accepted() => { root.saved = root.draft; root.accepted-count += 1; }
+                rejected() => { root.rejected-count += 1; }
+
+                Text { text: "输入工作区的新名称。"; color: #b8caff; }
+                name-field := LineEdit { text <=> root.draft; placeholder-text: "名称"; }
+                help-opener := Button { text: "查看快捷键"; background: #384966; clicked() => { root.help-open = true; } }
+                actions := ConfirmActions { }
+                help := Dialog {
+                    open <=> root.help-open;
+                    title: "键盘操作";
+                    width: 340px;
+                    height: 170px;
+                    Text { text: "Tab 切换焦点，Escape 关闭当前弹窗。"; }
+                    DialogButton { text: "关闭帮助"; role: reject; }
+                }
+            }
+        }
+        Text { text: "确认 " + root.accepted-count + " 次 · 取消 " + root.rejected-count + " 次"; color: #acc0db; }
+        drawer := Drawer {
+            edge: root.drawer-edge;
+            open <=> root.drawer-open;
+            title: "工作区导航";
+            drag-margin: 18px;
+            background: #273751;
+            opened() => { root.drawer-opens += 1; }
+            closed() => { root.drawer-closes += 1; }
+            Text { text: "窗口边缘向内滑动打开。拖动面板内侧边缘关闭。"; color: #acc0db; }
+            drawer-rename := Button {
+                text: "重命名工作区";
+                height: 42px;
+                clicked() => { root.draft = root.saved; root.rename-open = true; }
+            }
+            drawer-close := Button {
+                text: "收起导航";
+                height: 42px;
+                background: #384966;
+                clicked() => { root.drawer-open = false; }
+            }
+        }
+    }
+}

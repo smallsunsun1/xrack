@@ -1,0 +1,62 @@
+component DetailSplit inherits SplitView {
+    out property <int> edits: 0;
+    orientation: vertical;
+    handle-color: #82a3e4;
+    resized() => { root.edits += 1; }
+    Rectangle {
+        background: #26374e;
+        min-height: 70px;
+        preferred-height: 145px;
+        Text { x: 12px; y: 12px; text: "编辑器"; }
+    }
+    Rectangle {
+        background: #293f58;
+        min-height: 56px;
+        preferred-height: 100px;
+        Text { x: 12px; y: 12px; text: "输出"; }
+    }
+}
+
+export component SplitDemo inherits Window {
+    title: "XRack · 分栏工作区";
+    width: 760px;
+    height: 420px;
+    background: #182331;
+
+    in-out property <bool> show-preview: true;
+    in-out property <bool> split-enabled: true;
+    property <int> outer-edits: 0;
+    out property <int> edits: root.outer-edits + detail.edits;
+
+    VerticalLayout {
+        padding: 14px;
+        spacing: 8px;
+        Text { text: "分栏工作区 · 拖动分隔线或用方向键调整"; font-size: 20px; }
+        preview-toggle := Button {
+            text: root.show-preview ? "隐藏预览" : "显示预览";
+            clicked() => { root.show-preview = !root.show-preview; }
+        }
+        work := SplitView {
+            enabled: root.split-enabled;
+            handle-size: 10px;
+            resized() => { root.outer-edits += 1; }
+            Rectangle {
+                background: #223249;
+                min-width: 120px;
+                preferred-width: 170px;
+                max-width: 320px;
+                Text { x: 12px; y: 12px; text: "导航"; }
+            }
+            if root.show-preview : Rectangle {
+                background: #304663;
+                min-width: 140px;
+                preferred-width: 240px;
+                Text { x: 12px; y: 12px; text: "预览"; }
+            }
+            detail := DetailSplit {
+                min-width: 150px;
+                preferred-width: 290px;
+            }
+        }
+    }
+}

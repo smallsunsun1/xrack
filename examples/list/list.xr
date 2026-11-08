@@ -1,0 +1,31 @@
+export component ListDemo inherits Window {
+    title: "XRack · ListView";
+    width: 540px;
+    height: 380px;
+    background: #182331;
+
+    in-out property <int> count: 100000;
+    in-out property <int> current: -1;
+    out property <int> selections: 0;
+    pure callback row-caption(int) -> string;
+    row-caption(row) => { "记录 " + (row + 1) }
+
+    VerticalLayout {
+        padding: 16px;
+        spacing: 8px;
+        Text { text: "虚拟列表 · " + root.count + " 条记录"; font-size: 20px; }
+        Text { text: "滚轮浏览，点击选择，Home / End 跳到首尾"; color: #acc0db; }
+        records := ListView {
+            row-height: 32px;
+            background: #223249;
+            current-index <=> root.current;
+            changed(row) => { root.selections += 1; }
+
+            for item[index] in root.count : Rectangle {
+                background: index % 2 == 0 ? #263750 : #223249;
+                Text { x: 12px; y: 6px; text: root.row-caption(item); }
+            }
+        }
+        Text { text: root.current < 0 ? "尚未选择" : "已选择第 " + (root.current + 1) + " 条记录"; color: #b8caff; }
+    }
+}

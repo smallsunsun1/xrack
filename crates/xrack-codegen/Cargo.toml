@@ -1,0 +1,15 @@
+[package]
+name = "xrack-codegen"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+proc-macro2.workspace = true
+quote.workspace = true
+serde_json.workspace = true
+xrack-syntax.workspace = true
+xrack-ir.workspace = true
+xrack-mlir.workspace = true
+xrack-runtime.workspace = true

@@ -1,0 +1,14 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "XRack: Debug Counter",
+      "type": "lldb",
+      "request": "launch",
+      "program": "${workspaceFolder}/bazel-bin/examples/counter/counter",
+      "cwd": "${workspaceFolder}",
+      "preLaunchTask": "Bazel: Build Counter (debug)",
+      "windows": { "program": "${workspaceFolder}/bazel-bin/examples/counter/counter.exe" }
+    }
+  ]
+}

@@ -1,0 +1,49 @@
+module(name = "xrack", version = "0.1.0")
+
+bazel_dep(name = "llvm", version = "0.8.26")
+bazel_dep(name = "rules_rust", version = "0.75.0")
+bazel_dep(name = "rules_rust_bindgen", version = "0.75.0")
+bazel_dep(name = "rules_cc", version = "0.2.27")
+bazel_dep(name = "rules_java", version = "9.3.0")
+bazel_dep(name = "antlr4-cpp-runtime", version = "4.13.2.bcr.2")
+
+# MLIR is built from the LLVM module's source repository. No system LLVM discovery.
+llvm = use_extension("@llvm//extensions:llvm.bzl", "llvm")
+llvm.version(llvm_version = "23.1.2")
+use_repo(llvm, "llvm-project")
+register_toolchains("//mlir:bindgen_toolchain")
+
+rust = use_extension("@rules_rust//rust:extensions.bzl", "rust")
+rust.toolchain(
+    edition = "2024",
+    versions = ["1.99.1"],
+    rustfmt_version = "1.99.1",
+    rust_analyzer_version = "1.99.1",
+)
+use_repo(rust, "rust_toolchains")
+register_toolchains("@rust_toolchains//:all")
+
+rust_host_tools = use_extension("@rules_rust//rust:extensions.bzl", "rust_host_tools")
+rust_host_tools.host_tools(
+    name = "xrack_rust_host_tools",
+    version = "1.99.1",
+    rustfmt_version = "1.99.1",
+)
+use_repo(rust_host_tools, "xrack_rust_host_tools")
+
+crate = use_extension("@rules_rust//crate_universe:extensions.bzl", "crate")
+crate.from_cargo(
+    name = "crates",
+    cargo_lockfile = "//:Cargo.lock",
+    manifests = ["//:Cargo.toml"],
+    host_tools = "@xrack_rust_host_tools",
+)
+use_repo(crate, "crates")
+
+http_file = use_repo_rule("@bazel_tools//tools/build_defs/repo:http.bzl", "http_file")
+http_file(
+    name = "antlr4_tool",
+    urls = ["https://www.antlr.org/download/antlr-4.13.2-complete.jar"],
+    downloaded_file_path = "antlr4.jar",
+    sha256 = "eae2dfa119a64327444672aff63e9ec35a20180dc5b8090b7a6ab85125df4d76",
+)

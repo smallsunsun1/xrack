@@ -1,0 +1,18 @@
+load("@rules_rust//rust:defs.bzl", "rust_binary")
+load("//bazel:xrack.bzl", "xr_ui_library")
+
+xr_ui_library(
+    name = "dialog_ui",
+    src = "dialog.xr",
+    visibility = ["//tests:__pkg__"],
+)
+
+rust_binary(
+    name = "dialog",
+    srcs = ["main.rs"],
+    edition = "2024",
+    deps = [
+        ":dialog_ui",
+        "//crates/xrack-platform-winit:xrack_platform_winit",
+    ],
+)

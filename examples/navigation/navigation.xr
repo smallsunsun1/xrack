@@ -1,0 +1,232 @@
+component CounterPanel inherits Rectangle {
+    in-out property <int> count: 0;
+
+    Text {
+        x: 16px; y: 18px;
+        text: "此页计数：" + root.count;
+        font-size: 22px;
+        color: #e7efff;
+    }
+    add := Button {
+        x: 16px; y: 66px; width: 156px; height: 38px;
+        text: "增加计数";
+        background: #314b80;
+        clicked => { root.count += 1; }
+    }
+}
+
+export component NavigationDemo inherits Window {
+    in-out property <int> page: 0;
+    in-out property <int> profile: 0;
+    in-out property <[string]> profiles: ["均衡", "高性能", "节能"];
+    in-out property <bool> vertical-tabs: false;
+    in-out property <int> swipe-page: 0;
+    in-out property <bool> vertical-swipes: false;
+    in-out property <bool> swipe-interactive: true;
+    in-out property <int> indicator-count: 3;
+    in-out property <bool> show-middle: true;
+    out property <int> changes: 0;
+    out property <int> swipe-changes: 0;
+    out property <int> indicator-changes: 0;
+    out property <string> profile-label: "均衡";
+    pure callback visit-page(int) -> string;
+    visit-page(index) => { index == 0 ? "切换标签页后，计数仍会保留" : "只有当前页内容参与求值" }
+    pure callback visit-swipe-page(int) -> string;
+    visit-swipe-page(index) => { index == 0 ? "离开再返回，计数仍保留" : "滑动或按方向键切页" }
+
+    title: "XRack 选项与标签页";
+    width: 632px; height: 598px;
+    background: #101725;
+    Text { x: 24px; y: 20px; text: "XRack 选项与标签页"; font-size: 25px; color: #f0f4ff; }
+    Text { x: 24px; y: 56px; text: "互斥选择 · 键盘导航 · 页面状态"; font-size: 15px; color: #a7b6ce; }
+
+    Rectangle {
+        x: 24px; y: 92px; width: 172px; height: 212px;
+        background: #1d293d; border-radius: 14px;
+        profiles-group := RadioGroup {
+            x: 12px; y: 14px; width: 148px; height: 143px;
+            title: "运行模式";
+            spacing: 8px;
+            current-index <=> root.profile;
+            for name in root.profiles : RadioButton { text: name; }
+            selected(value) => { root.profile-label = value; }
+        }
+    }
+    Rectangle {
+        x: 212px; y: 92px; width: 396px; height: 212px;
+        background: #1d293d; border-radius: 14px;
+        pages := TabWidget {
+            x: 10px; y: 10px; width: 376px; height: 190px;
+            current-index <=> root.page;
+            orientation: root.vertical-tabs ? Orientation.vertical : Orientation.horizontal;
+            changed(index) => { root.changes += 1; }
+            overview := Tab {
+                title: "概览";
+                counter := CounterPanel {}
+                Text { x: 16px; y: 116px; text: root.visit-page(0); font-size: 14px; color: #a7b6ce; }
+            }
+            settings := Tab {
+                title: "设置";
+                Text { x: 16px; y: 20px; text: root.visit-page(1); font-size: 15px; color: #e7efff; }
+                orient := Switch {
+                    x: 16px; y: 59px; width: 180px; height: 32px;
+                    text: "左侧标签";
+                    checked <=> root.vertical-tabs;
+                }
+            }
+            help := Tab { title: "帮助"; enabled: false; }
+        }
+    }
+    Text {
+        x: 24px; y: 320px;
+        text: "模式：" + root.profile-label + " · 标签切换 " + root.changes + " 次";
+        font-size: 14px; color: #a7b6ce;
+    }
+    Text {
+        x: 24px; y: 360px;
+        text: "滑动页面 · 中键拖动 · 第 " + (root.swipe-page + 1) + " 页";
+        font-size: 15px; color: #c5d3eb;
+    }
+    swipe-direction := Switch {
+        x: 450px; y: 351px; width: 158px; height: 32px;
+        text: "纵向切页";
+        checked <=> root.vertical-swipes;
+    }
+    Rectangle {
+        x: 24px; y: 393px; width: 584px; height: 182px;
+        background: #1d293d; border-radius: 14px;
+        swipe-view := SwipeView {
+            x: 10px; y: 10px; width: 564px; height: 130px;
+            current-index <=> root.swipe-page;
+            orientation: root.vertical-swipes ? Orientation.vertical : Orientation.horizontal;
+            interactive: root.swipe-interactive;
+            changed(index) => { root.swipe-changes += 1; }
+            SwipePage {
+                swipe-counter := CounterPanel {}
+                Text { x: 235px; y: 20px; text: root.visit-swipe-page(0); color: #acc0db; }
+                Text { x: 235px; y: 57px; text: "Tab 聚焦，方向键或 Home / End 切换"; font-size: 14px; color: #acc0db; }
+            }
+            SwipePage {
+                visible: root.show-middle;
+                Text { x: 16px; y: 12px; text: root.visit-swipe-page(1); color: #acc0db; }
+                ScrollView {
+                    x: 16px; y: 43px; width: 360px; height: 74px;
+                    content-width: 540px;
+                    Rectangle {
+                        width: 100%; height: 100%; background: #30436c; border-radius: 7px;
+                        Text { x: 14px; y: 16px; text: "先滚动页内内容"; color: #e7efff; }
+                        Text { x: 376px; y: 16px; text: "页内滚动终点"; color: #e7efff; }
+                    }
+                }
+            }
+            SwipePage {
+                Text { x: 16px; y: 20px; text: "最后一页"; font-size: 22px; color: #e7efff; }
+                Text { x: 16px; y: 62px; text: root.visit-swipe-page(2); color: #acc0db; }
+            }
+        }
+        page-indicator := PageIndicator {
+            x: 222px; y: 145px; width: 140px; height: 28px;
+            count: root.indicator-count;
+            current-index <=> root.swipe-page;
+            interactive: root.swipe-interactive;
+            changed(index) => { root.indicator-changes += 1; }
+        }
+    }
+}
+
+export component StackDemo inherits Window {
+    in-out property <string> start-route: "overview";
+    in-out property <[string]> preview-path: ["overview", "details", "review"];
+    out property <int> navigations: 0;
+    pure callback visit-route(string) -> string;
+    visit-route(route) => { "当前页面 · " + route }
+
+    title: "XRack · 页面导航栈";
+    width: 590px; height: 324px;
+    background: #101725;
+
+    VerticalLayout {
+        padding: 20px;
+        spacing: 10px;
+        Text { text: "工作区导航栈"; font-size: 24px; color: #f0f4ff; }
+        Text { text: "打开详情，再用 Alt+左方向键或返回按钮回退"; font-size: 14px; color: #acc0db; }
+        navigation := StackView {
+            initial-page: root.start-route;
+            transition-duration: 220;
+            changed(page, depth) => {
+                root.navigations += 1;
+            }
+            overview := StackPage {
+                Rectangle {
+                    background: #263750; border-radius: 12px;
+                    Text { x: 18px; y: 20px; text: root.visit-route("overview"); font-size: 20px; color: #edf3ff; }
+                    overview-next := Button {
+                        x: 18px; y: 68px; width: 160px; height: 40px;
+                        text: "打开详情";
+                        clicked() => { navigation.push("details"); }
+                    }
+                    overview-deep-link := Button {
+                        x: 192px; y: 68px; width: 160px; height: 40px;
+                        text: "直接打开预览";
+                        clicked() => { navigation.reset-to(root.preview-path); }
+                    }
+                }
+            }
+            details := StackPage {
+                Rectangle {
+                    background: #253f51; border-radius: 12px;
+                    detail-counter := CounterPanel {}
+                    Text { x: 212px; y: 20px; text: root.visit-route("details"); color: #edf3ff; }
+                    detail-next := Button {
+                        x: 212px; y: 66px; width: 134px; height: 38px;
+                        text: "打开预览";
+                        clicked() => { navigation.push("review"); }
+                    }
+                    detail-back := Button {
+                        x: 212px; y: 115px; width: 134px; height: 38px;
+                        text: "返回概览";
+                        enabled: navigation.can-go-back;
+                        clicked() => { navigation.pop(); }
+                    }
+                }
+            }
+            review := StackPage {
+                Rectangle {
+                    background: #3d355b; border-radius: 12px;
+                    Text { x: 18px; y: 20px; text: root.visit-route("review"); font-size: 20px; color: #edf3ff; }
+                    review-replace := Button {
+                        x: 18px; y: 67px; width: 170px; height: 38px;
+                        text: "用摘要替换预览";
+                        clicked() => { navigation.replace("summary"); }
+                    }
+                    review-home := Button {
+                        x: 18px; y: 116px; width: 170px; height: 38px;
+                        text: "回退到概览";
+                        clicked() => { navigation.pop-to("overview"); }
+                    }
+                }
+            }
+            summary := StackPage {
+                Rectangle {
+                    background: #2b4855; border-radius: 12px;
+                    Text { x: 18px; y: 20px; text: root.visit-route("summary"); font-size: 20px; color: #edf3ff; }
+                    summary-back := Button {
+                        x: 18px; y: 67px; width: 170px; height: 38px;
+                        text: "返回详情";
+                        enabled: navigation.can-go-back;
+                        clicked() => { navigation.pop(); }
+                    }
+                    summary-reset := Button {
+                        x: 18px; y: 116px; width: 170px; height: 38px;
+                        text: "重置到概览";
+                        clicked() => { navigation.reset("overview"); }
+                    }
+                }
+            }
+        }
+        stack-status := Text {
+            text: "栈顶 " + navigation.current-page + " · 深度 " + navigation.depth + " · 导航 " + root.navigations + " 次";
+            font-size: 14px; color: #acc0db;
+        }
+    }
+}

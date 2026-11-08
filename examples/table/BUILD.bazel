@@ -1,0 +1,35 @@
+load("@rules_rust//rust:defs.bzl", "rust_binary")
+load("//bazel:xrack.bzl", "xr_ui_library")
+
+xr_ui_library(
+    name = "records_ui",
+    src = "records.xr",
+    visibility = ["//tests:__pkg__"],
+)
+
+rust_binary(
+    name = "records",
+    srcs = ["records_main.rs"],
+    edition = "2024",
+    deps = [
+        ":records_ui",
+        "//crates/xrack-platform-winit:xrack_platform_winit",
+    ],
+)
+
+xr_ui_library(
+    name = "table_ui",
+    src = "table.xr",
+    visibility = ["//tests:__pkg__"],
+)
+
+rust_binary(
+    name = "table",
+    srcs = ["main.rs"],
+    edition = "2024",
+    deps = [
+        ":table_ui",
+        "//crates/xrack-platform-winit:xrack_platform_winit",
+        "//crates/xrack-runtime:xrack_runtime",
+    ],
+)

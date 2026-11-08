@@ -1,0 +1,38 @@
+export component NotesDemo inherits Window {
+    title: "XRack · 多行编辑";
+    width: 590px;
+    height: 376px;
+    background: #182331;
+
+    in-out property <string> note: "项目笔记\n\n这里可以混合输入中文和 English。试着拖动鼠标跨行选择文字，或用 Shift 加方向键扩展选区。\n\nEnter 插入换行。Home 和 End 移到当前显示行的起点和终点。\n\n在长文档中，滚轮浏览内容。键盘移动时，视口会跟随光标。";
+    in-out property <TextWrap> wrap-mode: TextWrap.word-wrap;
+    in-out property <bool> locked: false;
+    out property <int> edits: 0;
+    out property <string> last-edit: "";
+
+    VerticalLayout {
+        padding: 16px;
+        spacing: 8px;
+        Text { text: "多行文本编辑"; font-size: 22px; }
+        HorizontalLayout {
+            spacing: 16px;
+            wrap-choice := ComboBox {
+                model: ["按词换行", "按字换行", "不换行"];
+                selected(value) => {
+                    root.wrap-mode = value == "按字换行" ? TextWrap.char-wrap : (value == "不换行" ? TextWrap.no-wrap : TextWrap.word-wrap);
+                }
+            }
+            read-only-choice := CheckBox { text: "只读"; checked <=> root.locked; }
+        }
+        body := TextEdit {
+            text <=> root.note;
+            read-only: root.locked;
+            wrap: root.wrap-mode;
+            padding: 10px;
+            placeholder-text: "写下你的笔记…";
+            background: #223249;
+            edited(value) => { root.edits += 1; root.last-edit = value; }
+        }
+        Text { text: "编辑次数 · " + root.edits + "     Ctrl/Cmd+C、X、V · Z 撤销 · Shift+Z 重做"; color: #acc0db; }
+    }
+}

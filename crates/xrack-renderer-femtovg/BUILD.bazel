@@ -1,0 +1,18 @@
+load("@crates//:defs.bzl", "aliases", "all_crate_deps")
+load("@rules_rust//rust:defs.bzl", "rust_library")
+
+rust_library(
+    name = "xrack_renderer_femtovg",
+    srcs = glob(["src/*.rs"]),
+    aliases = aliases(),
+    crate_name = "xrack_renderer_femtovg",
+    crate_root = "src/lib.rs",
+    edition = "2024",
+    version = "0.1.0",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//crates/xrack-runtime:xrack_runtime",
+        "//crates/xrack-layout:xrack_layout",
+        "//crates/xrack-assets:xrack_assets",
+    ] + all_crate_deps(normal = True),
+)

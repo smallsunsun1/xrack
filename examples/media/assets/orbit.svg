@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120" width="120" height="120">
+  <defs>
+    <linearGradient id="tile" x1="0" y1="0" x2="1" y2="1" gradientUnits="objectBoundingBox">
+      <stop stop-color="#7154ff"/>
+      <stop offset="1" stop-color="#3856bd"/>
+    </linearGradient>
+  </defs>
+  <rect x="8" y="8" width="104" height="104" rx="27" fill="url(#tile)"/>
+  <circle cx="60" cy="60" r="25" fill="#a7a1ff"/>
+  <ellipse cx="60" cy="60" rx="41" ry="17" transform="rotate(-24 60 60)"
+           fill="none" stroke="#dbd9ff" stroke-width="3"/>
+  <circle cx="60" cy="60" r="12" fill="#ffe596"/>
+  <circle cx="93" cy="41" r="5" fill="#fff4d4"/>
+  <path d="M30 30v12m-6-6h12" stroke="#d9d1ff" stroke-width="2" stroke-linecap="round"/>
+</svg>

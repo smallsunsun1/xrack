@@ -1,0 +1,33 @@
+load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library")
+load("@crates//:defs.bzl", "aliases", "all_crate_deps")
+
+rust_library(
+    name = "xrack_compiler",
+    srcs = glob(
+        ["src/*.rs"],
+        exclude = ["src/main.rs"],
+    ),
+    aliases = aliases(),
+    crate_name = "xrack_compiler",
+    crate_root = "src/lib.rs",
+    edition = "2024",
+    version = "0.1.0",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//crates/xrack-syntax:xrack_syntax",
+        "//crates/xrack-parser:xrack_parser",
+        "//crates/xrack-ir:xrack_ir",
+        "//crates/xrack-mlir:xrack_mlir",
+        "//crates/xrack-codegen:xrack_codegen",
+        "//crates/xrack-assets:xrack_assets",
+    ] + all_crate_deps(normal = True),
+)
+
+rust_binary(
+    name = "xrackc",
+    srcs = ["src/main.rs"],
+    edition = "2024",
+    version = "0.1.0",
+    visibility = ["//visibility:public"],
+    deps = [":xrack_compiler"] + all_crate_deps(normal = True),
+)

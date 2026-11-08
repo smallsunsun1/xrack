@@ -1,0 +1,81 @@
+export component SelectionDemo inherits Window {
+    in-out property <int> quantity: 12;
+    in-out property <int> choice: 1;
+    in-out property <[string]> workspaces: ["首页", "项目", "任务", "设计", "终端", "构建", "测试", "文档", "反馈", "设置", "关于", "帮助"];
+    in-out property <bool> locked: false;
+    out property <string> selected-label: "";
+    out property <int> edit-count: 0;
+    out property <int> underlay-clicks: 0;
+
+    title: "XRack 数字输入与选择";
+    width: 560px;
+    height: 350px;
+    background: #101725;
+
+    Text {
+        x: 24px; y: 20px;
+        text: "XRack 数字输入与选择";
+        font-size: 25px;
+        color: #f0f4ff;
+    }
+    Text {
+        x: 24px; y: 56px;
+        text: "整数提交 · 范围约束 · 可滚动弹层";
+        font-size: 15px;
+        color: #a7b6ce;
+    }
+
+    Rectangle {
+        x: 24px; y: 92px; width: 248px; height: 118px;
+        background: #1d293d; border-radius: 14px;
+        Text { x: 16px; y: 12px; text: "数量"; color: #e7efff; }
+        quantity-box := SpinBox {
+            x: 16px; y: 42px; width: 216px; height: 36px;
+            minimum: -20;
+            maximum: 99;
+            step-size: 3;
+            wrap: true;
+            read-only: root.locked;
+            value <=> root.quantity;
+            edited(value) => { root.edit-count += 1; }
+        }
+        Text { x: 16px; y: 88px; text: "方向键调节 · Enter 提交"; font-size: 13px; color: #a7b6ce; }
+    }
+    Rectangle {
+        x: 288px; y: 92px; width: 248px; height: 118px;
+        background: #1d293d; border-radius: 14px;
+        Text { x: 16px; y: 12px; text: "工作区"; color: #e7efff; }
+        workspace-box := ComboBox {
+            x: 16px; y: 42px; width: 216px; height: 36px;
+            enabled: !root.locked;
+            model: root.workspaces;
+            current-index <=> root.choice;
+            selected(value) => { root.selected-label = value; }
+        }
+        Text { x: 16px; y: 88px; text: "方向键导航 · Escape 关闭"; font-size: 13px; color: #a7b6ce; }
+    }
+
+    underlay := Button {
+        x: 288px; y: 222px; width: 248px; height: 36px;
+        background: #314b80;
+        text: "底层按钮";
+        clicked => { root.underlay-clicks += 1; }
+    }
+    lock-toggle := Switch {
+        x: 24px; y: 224px; width: 248px; height: 30px;
+        text: "锁定输入";
+        checked <=> root.locked;
+    }
+    Text {
+        x: 24px; y: 281px;
+        text: "数量 " + root.quantity + " · 提交 " + root.edit-count + " 次";
+        font-size: 14px;
+        color: #a7b6ce;
+    }
+    Text {
+        x: 24px; y: 308px;
+        text: "选择：" + root.selected-label + " · 底层按钮 " + root.underlay-clicks + " 次";
+        font-size: 14px;
+        color: #a7b6ce;
+    }
+}

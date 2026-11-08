@@ -1,0 +1,99 @@
+import { LabelCard as BaseLabel } from "widgets.xr";
+
+component SearchLabel inherits BaseLabel {
+    caption: "搜索关键词";
+    background: #304777;
+}
+
+export component FormDemo inherits Window {
+    in-out property <string> query: "";
+    out property <int> edits: 0;
+    out property <int> submissions: 0;
+    out property <int> last-result: 0;
+    in-out property <[string]> suggestions: ["设计系统", "构建工具", "文本编辑", "组件组合", "GPU 绘制"];
+    in-out property <bool> show-suggestions: true;
+    callback result-length(value: int) -> int;
+    result-length(value) => { value + root.submissions }
+    callback record-submit;
+    record-submit => { root.submissions += 1; }
+
+    title: "XRack 交互表单";
+    width: 560px;
+    height: 428px;
+    background: #111927;
+
+    VerticalLayout {
+        padding: 24px;
+        spacing: 12px;
+        alignment: start;
+
+        Text { text: "XRack 交互表单"; font-size: 26px; color: #f0f4ff; }
+        Text { text: "跨文件组件 · 网格布局 · 双向绑定"; font-size: 15px; color: #a7b6ce; }
+
+        GridLayout {
+            horizontal-spacing: 12px;
+            vertical-spacing: 10px;
+            height: 98px;
+            Row {
+                label := SearchLabel { width: 132px; height: 42px; }
+                query-input := LineEdit {
+                    height: 42px;
+                    preferred-width: 280px;
+                    horizontal-stretch: 2;
+                    text <=> root.query;
+                    placeholder-text: "输入关键词，按 Enter 提交";
+                    font-size: 16px;
+                    edited() => { root.edits += 1; }
+                    accepted => {
+                        label.record();
+                        root.record-submit();
+                        root.last-result = root.result-length(label.activations);
+                    }
+                }
+            }
+            Row {
+                if root.query != "" : preview := Text {
+                    colspan: 2;
+                    height: 27px;
+                    text: label.preview-text(root.query);
+                    color: #a8ddff;
+                    font-size: 17px;
+                }
+            }
+        }
+
+        status := Text {
+            text: "编辑 " + root.edits + " 次 · 提交 " + root.submissions + " 次 · 结果 " + root.last-result;
+            color: #a7b6ce;
+            font-size: 15px;
+        }
+        Rectangle {
+            height: 8px;
+            background: #25314a;
+            border-radius: 4px;
+            meter := Rectangle {
+                width: root.query == "" ? 50% : 75%;
+                background: #58d6bf;
+                border-radius: 4px;
+                animate width { duration: 220ms; }
+            }
+        }
+        show-list := CheckBox {
+            text: "显示建议";
+            height: 27px;
+            checked <=> root.show-suggestions;
+        }
+        if root.show-suggestions : suggestions-view := ScrollView {
+            height: 84px;
+            VerticalLayout {
+                alignment: start;
+                for suggestion[index] in root.suggestions : Text {
+                    height: 26px;
+                    text: (index + 1) + "  " + suggestion;
+                    font-size: 15px;
+                    color: #c5d3eb;
+                }
+            }
+        }
+    }
+}

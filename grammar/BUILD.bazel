@@ -1,0 +1,27 @@
+load("@rules_cc//cc:cc_library.bzl", "cc_library")
+load(":antlr.bzl", "antlr_cpp")
+
+antlr_cpp(
+    name = "generate",
+    src = "Xrack.g4",
+    outs = [
+        "generated/XrackLexer.cpp",
+        "generated/XrackLexer.h",
+        "generated/XrackParser.cpp",
+        "generated/XrackParser.h",
+    ],
+)
+
+cc_library(
+    name = "xrack_antlr_generated",
+    srcs = [
+        "generated/XrackLexer.cpp",
+        "generated/XrackParser.cpp",
+    ],
+    hdrs = [
+        "generated/XrackLexer.h",
+        "generated/XrackParser.h",
+    ],
+    visibility = ["//visibility:public"],
+    deps = ["@antlr4-cpp-runtime//:antlr4-cpp-runtime"],
+)

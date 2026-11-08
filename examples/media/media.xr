@@ -1,0 +1,71 @@
+export component MediaDemo inherits Window {
+    in-out property <bool> crop: false;
+    property <image> landscape: @image-url("assets/landscape.png");
+    property <image> orbit: @image-url("assets/orbit.svg");
+
+    title: "XRack 图像与路径";
+    width: 660px;
+    height: 376px;
+    background: #101725;
+
+    Text {
+        x: 28px; y: 20px;
+        text: "XRack 图像与路径";
+        font-size: 26px;
+        color: #f0f4ff;
+    }
+    Text {
+        x: 28px; y: 58px;
+        text: "PNG 纹理 · SVG 图像 · 矢量轮廓";
+        font-size: 15px;
+        color: #a7b6ce;
+    }
+
+    Rectangle {
+        x: 28px; y: 96px; width: 190px; height: 184px;
+        background: #1d293d;
+        border-radius: 14px;
+        png-image := Image {
+            x: 10px; y: 10px; width: 170px; height: 160px;
+            source: root.landscape;
+            image-fit: root.crop ? ImageFit.cover : ImageFit.contain;
+        }
+    }
+    Rectangle {
+        x: 235px; y: 96px; width: 190px; height: 184px;
+        background: #1d293d;
+        border-radius: 14px;
+        svg-image := Image {
+            x: 10px; y: 10px; width: 170px; height: 160px;
+            source: root.orbit;
+            image-fit: contain;
+        }
+    }
+    Rectangle {
+        x: 442px; y: 96px; width: 190px; height: 184px;
+        background: #1d293d;
+        border-radius: 14px;
+        badge := Path {
+            x: 12px; y: 14px; width: 166px; height: 156px;
+            viewbox-width: 100; viewbox-height: 100;
+            commands: "M50 8 L90 31 V69 Q90 77 83 81 L57 94 Q50 98 43 94 L17 81 Q10 77 10 69 V31 Z M50 36 a14 14 0 1 0 0 28 a14 14 0 1 0 0 -28 Z";
+            fill: @linear-gradient(135deg, #39ddba, #526dff);
+            stroke: #b5f3ee;
+            stroke-width: 2px;
+        }
+    }
+
+    Text { x: 28px; y: 289px; text: "PNG / 位图"; color: #a7b6ce; font-size: 15px; }
+    Text { x: 235px; y: 289px; text: "SVG / 图像"; color: #a7b6ce; font-size: 15px; }
+    Text { x: 442px; y: 289px; text: "Path / 填充和描边"; color: #a7b6ce; font-size: 15px; }
+
+    toggle := Button {
+        x: 28px; y: 322px; width: 604px; height: 36px;
+        padding: 6px;
+        background: #314b80;
+        color: #f0f4ff;
+        font-size: 15px;
+        text: root.crop ? "PNG: cover · 点击切换" : "PNG: contain · 点击切换";
+        clicked() => { root.crop = !root.crop; }
+    }
+}

@@ -1,0 +1,48 @@
+load("//bazel:xrack.bzl", "xr_ui_library")
+load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_test")
+
+xr_ui_library(
+    name = "counter_ui",
+    src = "counter.xr",
+    visibility = ["//visibility:public"],
+)
+
+rust_binary(
+    name = "counter",
+    srcs = ["main.rs"],
+    edition = "2024",
+    deps = [
+        ":counter_ui",
+        "//crates/xrack-platform-winit:xrack_platform_winit",
+    ],
+)
+
+rust_binary(
+    name = "counter_headless",
+    srcs = ["headless.rs"],
+    edition = "2024",
+    deps = [":counter_ui"],
+)
+
+rust_binary(
+    name = "counter_snapshot",
+    srcs = ["snapshot.rs"],
+    edition = "2024",
+    deps = [
+        ":counter_ui",
+        "//crates/xrack-layout:xrack_layout",
+        "//crates/xrack-renderer-femtovg:xrack_renderer_femtovg",
+        "@crates//:pollster",
+        "@crates//:wgpu",
+    ],
+)
+
+rust_test(
+    name = "runtime_test",
+    srcs = ["runtime_test.rs"],
+    edition = "2024",
+    deps = [
+        ":counter_ui",
+        "//crates/xrack-runtime:xrack_runtime",
+    ],
+)

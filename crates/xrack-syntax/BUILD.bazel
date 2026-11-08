@@ -1,0 +1,14 @@
+load("@rules_rust//rust:defs.bzl", "rust_library")
+load("@crates//:defs.bzl", "aliases", "all_crate_deps")
+
+rust_library(
+    name = "xrack_syntax",
+    srcs = glob(["src/*.rs"]),
+    aliases = aliases(),
+    crate_name = "xrack_syntax",
+    crate_root = "src/lib.rs",
+    edition = "2024",
+    version = "0.1.0",
+    visibility = ["//visibility:public"],
+    deps = [] + all_crate_deps(normal = True),
+)

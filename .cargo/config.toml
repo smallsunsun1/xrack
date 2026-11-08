@@ -1,0 +1,3 @@
+[build]
+# Bazel owns normal builds. Keep artifacts from optional Cargo commands out of the workspace root.
+target-dir = ".tools/cargo-build"

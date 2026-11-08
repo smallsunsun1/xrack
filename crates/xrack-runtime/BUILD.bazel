@@ -1,0 +1,18 @@
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+
+rust_library(
+    name = "xrack_runtime",
+    srcs = glob(["src/*.rs"]),
+    crate_name = "xrack_runtime",
+    crate_root = "src/lib.rs",
+    edition = "2024",
+    version = "0.1.0",
+    visibility = ["//visibility:public"],
+    deps = [],
+)
+
+rust_test(
+    name = "property_test",
+    size = "small",
+    crate = ":xrack_runtime",
+)

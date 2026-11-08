@@ -1,0 +1,47 @@
+export component TooltipDemo inherits Window {
+    title: "XRack · 工具提示";
+    width: 510px;
+    height: 260px;
+    background: #182331;
+
+    in-out property <string> note: "等待后显示的操作说明";
+    in-out property <bool> dialog-open: false;
+    out property <int> actions: 0;
+
+    Text { x: 18px; y: 14px; text: "工具提示 · 鼠标悬停或用 Tab 聚焦"; font-size: 20px; }
+    action := Button {
+        x: 18px; y: 62px; width: 145px; height: 42px;
+        text: "执行操作";
+        clicked() => { root.actions += 1; }
+        Tooltip { text: root.note; delay: 500; timeout: 1500; }
+    }
+    open-dialog := Button {
+        x: 178px; y: 62px; width: 145px; height: 42px;
+        text: "打开对话框";
+        clicked() => { root.dialog-open = true; }
+    }
+    detail := Rectangle {
+        x: 330px; y: 200px; width: 162px; height: 42px;
+        background: #304663;
+        border-radius: 4px;
+        Text { x: 12px; y: 9px; text: "自定义内容"; }
+        Tooltip {
+            delay: 300;
+            width: 180px;
+            VerticalLayout {
+                spacing: 4px;
+                Text { text: "预览信息"; font-size: 17px; }
+                Text { text: "靠近底边时向上展开"; color: #acc0db; }
+            }
+        }
+    }
+    settings := Dialog {
+        open <=> root.dialog-open;
+        width: 280px;
+        title: "模态示例";
+        done := DialogButton {
+            text: "完成";
+            Tooltip { text: "关闭当前对话框"; delay: 100; }
+        }
+    }
+}
