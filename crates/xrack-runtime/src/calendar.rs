@@ -1,4 +1,7 @@
-use crate::Node;
+use crate::{
+    ControlAction, Node,
+    picker::{PickerSession, append_picker_dialog},
+};
 use std::fmt;
 
 /// A Gregorian civil date. Validation is independent of time zones and clocks.
@@ -124,7 +127,7 @@ pub enum CalendarAction {
     Browse(Date),
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CalendarState {
     pub minimum: Date,
     pub maximum: Date,
@@ -133,19 +136,53 @@ pub struct CalendarState {
     pub month: Date,
 }
 
-impl CalendarState {
-    pub fn from_node(node: &Node) -> Self {
-        let date = |key| node.date(key).filter(|date| date.valid());
-        let minimum = date("minimum-date").unwrap_or(Date::MIN);
-        let maximum = date("maximum-date").unwrap_or(Date::MAX).max(minimum);
-        let selected = date("date").unwrap_or_default().clamp(minimum, maximum);
-        let month = date("display-month")
-            .unwrap_or(selected)
-            .clamp(minimum, maximum)
-            .first_of_month();
+#[doc(hidden)]
+#[derive(Clone, Copy)]
+pub struct DateBounds {
+    minimum: Date,
+    maximum: Date,
+}
+
+impl DateBounds {
+    pub fn new(minimum: Date, maximum: Date) -> Self {
+        let minimum = if minimum.valid() { minimum } else { Date::MIN };
+        let maximum = if maximum.valid() { maximum } else { Date::MAX };
         Self {
             minimum,
-            maximum,
+            maximum: maximum.max(minimum),
+        }
+    }
+
+    fn from_node(node: &Node) -> Self {
+        Self::new(
+            node.date("minimum-date").unwrap_or(Date::MIN),
+            node.date("maximum-date").unwrap_or(Date::MAX),
+        )
+    }
+
+    fn constrain(self, date: Date) -> Date {
+        let date = if date.valid() { date } else { Date::default() };
+        date.clamp(self.minimum, self.maximum)
+    }
+}
+
+impl CalendarState {
+    pub fn from_node(node: &Node) -> Self {
+        Self::with_bounds(
+            node.date("date").unwrap_or_default(),
+            node.date("display-month"),
+            DateBounds::from_node(node),
+        )
+    }
+
+    fn with_bounds(date: Date, month: Option<Date>, bounds: DateBounds) -> Self {
+        let selected = bounds.constrain(date);
+        let month = bounds
+            .constrain(month.filter(|date| date.valid()).unwrap_or(selected))
+            .first_of_month();
+        Self {
+            minimum: bounds.minimum,
+            maximum: bounds.maximum,
             selected,
             month,
         }
@@ -183,6 +220,73 @@ impl CalendarState {
         }
         let offset = (self.month.ordinal() - (week_start.clamp(1, 7) - 1)).rem_euclid(7);
         std::array::from_fn(|index| self.month.add_days(index as i64 - offset))
+    }
+}
+
+/// Draft date and browsed month share one session without changing the committed date.
+#[doc(hidden)]
+#[derive(Default)]
+pub struct DatePopupState(PickerSession<(Date, Date)>);
+
+impl DatePopupState {
+    pub fn close(&self) {
+        self.0.close();
+    }
+
+    pub fn populate(&self, dialog: &mut Node, date: impl FnOnce() -> Date) {
+        let bounds = DateBounds::from_node(dialog);
+        let Some((date, month)) = self.0.begin(dialog, || {
+            let date = bounds.constrain(date());
+            (date, date.first_of_month())
+        }) else {
+            return;
+        };
+        let state = CalendarState::with_bounds(date, Some(month), bounds);
+        let mut calendar = Node::new("Calendar", None);
+        for key in ["week-start", "weekday-labels", "font-size"] {
+            if let Some(value) = dialog.properties.get(key) {
+                calendar.properties.insert(key, value.clone());
+            }
+        }
+        calendar.properties.insert("date", state.selected.into());
+        calendar
+            .properties
+            .insert("display-month", state.month.into());
+        calendar
+            .properties
+            .insert("minimum-date", state.minimum.into());
+        calendar
+            .properties
+            .insert("maximum-date", state.maximum.into());
+        self.0.stamp(&mut calendar);
+        append_picker_dialog(dialog, calendar);
+    }
+
+    pub fn edit(&self, bounds: DateBounds, node: &Node, action: ControlAction) -> bool {
+        let (Some((date, month)), ControlAction::Calendar(action)) = (self.0.current(node), action)
+        else {
+            return false;
+        };
+        let state = CalendarState::with_bounds(date, Some(month), bounds);
+        if node.kind != "Calendar" || CalendarState::from_node(node) != state {
+            return false;
+        }
+        let next = match action {
+            CalendarAction::Select(date) if state.allows(date) => (date, date.first_of_month()),
+            CalendarAction::Browse(month) if state.allows_month(month) => (state.selected, month),
+            _ => return false,
+        };
+        if next == (state.selected, state.month) {
+            return false;
+        }
+        self.0.set(next);
+        true
+    }
+
+    pub fn finish(&self, bounds: DateBounds, dialog: &Node) -> Option<Date> {
+        self.0
+            .finish(dialog)
+            .map(|(date, _)| bounds.constrain(date))
     }
 }
 

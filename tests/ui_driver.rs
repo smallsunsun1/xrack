@@ -96,7 +96,13 @@ impl<C: Component, T: TextMeasurer> UiDriver<C, T> {
 
     fn move_to(&mut self, path: &[usize]) {
         let item = self.layout.at_path(path).expect("target has layout");
-        let hit = item.clip.intersect(item.bounds);
+        let node = self.scene.at_path(path).expect("target has scene node");
+        let bounds = if node.group_checkable() {
+            xrack_layout::group_header(node, item.bounds)
+        } else {
+            item.bounds
+        };
+        let hit = item.clip.intersect(bounds);
         assert!(
             hit.width > 0.0 && hit.height > 0.0,
             "target is outside the viewport"
@@ -117,6 +123,14 @@ impl<C: Component, T: TextMeasurer> UiDriver<C, T> {
         if self.input.menu_press(&self.scene, &self.layout) {
             self.release_menu();
             return;
+        }
+        if let Some(close) = self.input.popup_outside_press(&self.scene, &self.layout) {
+            assert!(
+                self.component
+                    .control_at(&self.scene, &close.path, close.action)
+            );
+            self.refresh();
+            self.move_to(&path);
         }
         self.input.pointer_press();
         let target = self

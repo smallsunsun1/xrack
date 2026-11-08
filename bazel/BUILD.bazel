@@ -1,1 +1,4 @@
-exports_files(["xrack.bzl"])
+exports_files([
+    "accesskit_macos_mixed_state.patch",
+    "xrack.bzl",
+])

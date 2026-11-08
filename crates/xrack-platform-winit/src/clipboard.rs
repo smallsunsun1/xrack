@@ -1,4 +1,4 @@
-use crate::UserEvent;
+use crate::{ClipboardShortcut, UserEvent};
 use std::{
     ops::Range,
     sync::{
@@ -150,9 +150,32 @@ pub(crate) struct EditContext {
     text: String,
     selection: Range<usize>,
     caret: TextPosition,
+    password: bool,
 }
 
 impl EditContext {
+    pub(super) fn request(
+        input: &Interaction,
+        scene: &Node,
+        shortcut: &ClipboardShortcut,
+    ) -> Option<(Operation, Self)> {
+        let node = scene.interactive_at_path(&input.focused.as_ref()?.path)?;
+        if node.is_password() && !matches!(shortcut, ClipboardShortcut::Paste)
+            || node.boolean("read-only", false) && !matches!(shortcut, ClipboardShortcut::Copy)
+        {
+            return None;
+        }
+        let context = Self::capture(input, scene)?;
+        let operation = match shortcut {
+            ClipboardShortcut::Paste => Operation::Read,
+            ClipboardShortcut::Copy | ClipboardShortcut::Cut if !context.selection().is_empty() => {
+                Operation::Write(context.selection().into())
+            }
+            _ => return None,
+        };
+        Some((operation, context))
+    }
+
     pub(crate) fn capture(input: &Interaction, scene: &Node) -> Option<Self> {
         let (target, text, selection, caret) = current(input, scene)?;
         Some(Self {
@@ -160,6 +183,7 @@ impl EditContext {
             text: text.into_owned(),
             selection,
             caret,
+            password: scene.at_path(&target.path)?.is_password(),
         })
     }
 
@@ -170,6 +194,9 @@ impl EditContext {
     pub(crate) fn is_current(&self, input: &Interaction, scene: &Node) -> bool {
         current(input, scene).is_some_and(|(target, text, selection, caret)| {
             self.target == *target
+                && scene
+                    .at_path(&target.path)
+                    .is_some_and(|node| node.is_password() == self.password)
                 && self.text == text
                 && self.selection == selection
                 && self.caret == caret

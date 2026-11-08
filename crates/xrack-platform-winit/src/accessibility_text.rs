@@ -3,7 +3,8 @@ use accesskit::{Node as AccessibleNode, NodeId, Role, TextDirection, TextSelecti
 use std::ops::Range;
 use unicode_segmentation::UnicodeSegmentation;
 use xrack_layout::{
-    ComboGeometry, Interaction, Point, Rect, TextAreaLayout, TextEdit, TextPosition, font_size,
+    ComboGeometry, Interaction, PasswordMask, Point, Rect, TextAreaLayout, TextEdit, TextPosition,
+    font_size,
 };
 use xrack_renderer_femtovg::TextSystem;
 use xrack_runtime::{
@@ -53,7 +54,6 @@ struct Run {
 }
 
 pub(crate) struct TextDocument {
-    value: String,
     runs: Vec<Run>,
     path: Vec<usize>,
     scroll: Point,
@@ -62,6 +62,12 @@ pub(crate) struct TextDocument {
 impl TextDocument {
     pub fn scroll_matches(&self, input: &Interaction) -> bool {
         self.scroll == input.text_scroll(&self.path)
+    }
+
+    pub fn matches_value(&self, scene: &Node, value: &str) -> bool {
+        scene
+            .at_path(&self.path)
+            .is_some_and(|node| text_input_value(node) == value)
     }
 
     fn position(&self, position: TextPosition) -> accesskit::TextPosition {
@@ -86,9 +92,9 @@ impl TextDocument {
         }
     }
 
-    pub fn selection(&self, editor: &TextEdit) -> TextSelection {
-        let position = editor.position(&self.value);
-        let anchor = editor.anchor(&self.value);
+    pub fn selection(&self, editor: &TextEdit, value: &str) -> TextSelection {
+        let position = editor.position(value);
+        let anchor = editor.anchor(value);
         let focus = self.position(position);
         TextSelection {
             anchor: if anchor == position.offset {
@@ -112,14 +118,7 @@ impl TextDocument {
         })
     }
 
-    pub fn decode(
-        &self,
-        selection: TextSelection,
-        current_value: &str,
-    ) -> Option<(usize, TextPosition)> {
-        if self.value != current_value {
-            return None;
-        }
+    pub fn decode(&self, selection: TextSelection) -> Option<(usize, TextPosition)> {
         Some((
             self.decode_position(selection.anchor)?.offset,
             self.decode_position(selection.focus)?,
@@ -136,12 +135,24 @@ pub(crate) fn project_text(
     text_system: Option<&TextSystem>,
     mut allocate_id: impl FnMut(usize, &str) -> NodeId,
 ) -> (TextDocument, Vec<(NodeId, AccessibleNode)>) {
-    let value = text_input_value(node);
+    let source = text_input_value(node);
+    let mask = node.is_password().then(|| PasswordMask::new(source));
+    let value = mask.as_ref().map_or(source, PasswordMask::display);
+    let revealed = mask.as_ref().filter(|_| !node.password_masked());
+    let measured = |range: Range<usize>| {
+        if let Some(mask) = revealed {
+            &source[mask.source_offset(range.start)..mask.source_offset(range.end)]
+        } else {
+            &value[range]
+        }
+    };
     let editor = focused_editor(input, path);
     let scroll = input.text_scroll(path);
     let size = font_size(node);
     let rect = if combo_editable(node) {
         ComboGeometry::new(rect).entry
+    } else if node.kind == "SearchField" {
+        xrack_layout::SearchGeometry::new(rect).entry
     } else {
         rect
     };
@@ -179,7 +190,11 @@ pub(crate) fn project_text(
     } else {
         let height = size * 1.4;
         let x_scroll = editor.map_or(0.0, |editor| {
-            (advance(&value[..editor.caret(value)]) + 1.0 - viewport.width).max(0.0)
+            let caret = editor.caret(source);
+            let offset = mask
+                .as_ref()
+                .map_or(caret, |mask| mask.display_offset(caret));
+            (advance(measured(0..offset)) + 1.0 - viewport.width).max(0.0)
         });
         (
             Point {
@@ -194,7 +209,6 @@ pub(crate) fn project_text(
         .map(|(offset, _)| offset)
         .collect();
     let mut document = TextDocument {
-        value: value.into(),
         runs: Vec::new(),
         path: path.to_vec(),
         scroll,
@@ -217,7 +231,7 @@ pub(crate) fn project_text(
                     && editor.is_none_or(|editor| editor.preedit.is_empty())
             })
             .and_then(|system| {
-                let metrics = system.shape(&value[line.clone()], size).ok()?;
+                let metrics = system.shape(measured(line.clone()), size).ok()?;
                 if !metrics
                     .glyphs
                     .windows(2)
@@ -230,9 +244,9 @@ pub(crate) fn project_text(
                         .iter()
                         .map(|&offset| {
                             if offset > line.end {
-                                advance(&value[line.clone()]) + size * 0.45
+                                advance(measured(line.clone())) + size * 0.45
                             } else {
-                                advance(&value[line.start..offset])
+                                advance(measured(line.start..offset))
                             }
                         })
                         .collect::<Vec<_>>(),
@@ -296,7 +310,13 @@ pub(crate) fn project_text(
             nodes.push((id, run));
             document.runs.push(Run {
                 id,
-                offsets: offsets.to_vec(),
+                offsets: offsets
+                    .iter()
+                    .map(|&offset| {
+                        mask.as_ref()
+                            .map_or(offset, |mask| mask.source_offset(offset))
+                    })
+                    .collect(),
                 soft_wrap_end: end == count && next.is_some_and(|next| next.start == line.end),
             });
         }
@@ -328,7 +348,6 @@ mod tests {
     fn round_trips_both_visual_sides_of_a_soft_wrap() {
         let value = "你好世界";
         let document = TextDocument {
-            value: value.into(),
             runs: vec![
                 Run {
                     id: NodeId(1),
@@ -351,7 +370,7 @@ mod tests {
                 trailing,
             };
             editor.place_caret(value, position, false);
-            let native = document.selection(&editor);
+            let native = document.selection(&editor, value);
             assert_eq!(native.anchor, native.focus);
             assert_eq!(
                 native.focus,
@@ -360,7 +379,7 @@ mod tests {
                     character_index
                 }
             );
-            assert_eq!(document.decode(native, value), Some((6, position)));
+            assert_eq!(document.decode(native), Some((6, position)));
         }
     }
 
@@ -389,11 +408,8 @@ mod tests {
         assert_eq!(left.next_on_line(), Some(*last));
         assert_eq!(right.previous_on_line(), Some(*first));
         assert_eq!(right.word_starts(), &[2]);
-        let selection = document.selection(&TextEdit::at_end(&value));
+        let selection = document.selection(&TextEdit::at_end(&value), &value);
         assert_eq!(selection.focus.node, *last);
-        assert_eq!(
-            document.decode(selection, &value).unwrap().1.offset,
-            value.len()
-        );
+        assert_eq!(document.decode(selection).unwrap().1.offset, value.len());
     }
 }

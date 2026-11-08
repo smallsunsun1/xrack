@@ -1,6 +1,6 @@
 use crate::{LayoutNode, Point, Rect, Target, input::valid};
 use unicode_segmentation::UnicodeSegmentation;
-use xrack_runtime::{Node, combo_editable, combo_index};
+use xrack_runtime::{Node, combo_editable, combo_index, search_suggestion, search_suggestions};
 
 const ROW_HEIGHT: f32 = 28.0;
 const MAX_ROWS: usize = 8;
@@ -79,7 +79,7 @@ pub struct ChoiceMenu<'a> {
     pub bounds: Rect,
     pub rows: &'a [String],
     pub first: usize,
-    pub highlighted: usize,
+    pub highlighted: Option<usize>,
     pub selected: Option<usize>,
 }
 
@@ -139,34 +139,46 @@ fn geometry(anchor: Rect, viewport: Rect, len: usize) -> Option<ChoiceGeometry> 
 #[derive(Clone, Debug)]
 pub(crate) struct ChoicePopup {
     pub target: Target,
-    highlight: usize,
+    kind: &'static str,
+    highlight: Option<usize>,
+    highlighted_value: Option<String>,
     first: usize,
     press: Option<(usize, String)>,
 }
 
 impl ChoicePopup {
     pub fn open(target: Target, scene: &Node, layout: &LayoutNode) -> Option<Self> {
+        let kind = scene.at_path(&target.path)?.kind;
+        if !matches!(kind, "ComboBox" | "SearchField") {
+            return None;
+        }
         let mut popup = Self {
             target,
-            highlight: 0,
+            kind,
+            highlight: None,
+            highlighted_value: None,
             first: 0,
             press: None,
         };
         let node = popup.node(scene, layout)?;
-        let model = node.strings("model");
+        let model = choice_values(node);
+        if node.kind == "SearchField" {
+            return popup.reconcile(scene, layout).then_some(popup);
+        }
         let current = combo_index(node);
-        popup.highlight = node
-            .text("edit-text")
-            .filter(|draft| combo_editable(node) && !draft.is_empty())
-            .filter(|draft| current.is_none_or(|index| model[index] != *draft))
-            .and_then(|draft| {
-                model
-                    .iter()
-                    .position(|item| item == draft)
-                    .or_else(|| model.iter().position(|item| item.starts_with(draft)))
-            })
-            .or(current)
-            .unwrap_or(0);
+        popup.highlight = Some(
+            node.text("edit-text")
+                .filter(|draft| combo_editable(node) && !draft.is_empty())
+                .filter(|draft| current.is_none_or(|index| model[index] != *draft))
+                .and_then(|draft| {
+                    model
+                        .iter()
+                        .position(|item| item == draft)
+                        .or_else(|| model.iter().position(|item| item.starts_with(draft)))
+                })
+                .or(current)
+                .unwrap_or(0),
+        );
         popup.reconcile(scene, layout).then_some(popup)
     }
 
@@ -176,7 +188,7 @@ impl ChoicePopup {
         }
         scene
             .at_path(&self.target.path)
-            .filter(|node| node.kind == "ComboBox")
+            .filter(|node| node.kind == self.kind)
     }
 
     fn resolve<'a>(
@@ -188,20 +200,22 @@ impl ChoicePopup {
         let anchor = layout.at_path(&self.target.path)?.bounds;
         Some((
             node,
-            geometry(anchor, layout.bounds, node.strings("model").len())?,
+            geometry(anchor, layout.bounds, choice_values(node).len())?,
         ))
     }
 
     pub fn view<'a>(&self, scene: &'a Node, layout: &LayoutNode) -> Option<ChoiceMenu<'a>> {
         let (node, geo) = self.resolve(scene, layout)?;
-        let model = node.strings("model");
+        let model = choice_values(node);
         let first = self.first.min(model.len() - geo.visible);
         Some(ChoiceMenu {
             bounds: geo.bounds,
             rows: &model[first..first + geo.visible],
             first,
-            highlighted: self.highlight.min(model.len() - 1),
-            selected: combo_index(node),
+            highlighted: self.highlighted(node),
+            selected: (node.kind == "ComboBox")
+                .then(|| combo_index(node))
+                .flatten(),
         })
     }
 
@@ -209,25 +223,49 @@ impl ChoicePopup {
         let Some((node, geo)) = self.resolve(scene, layout) else {
             return false;
         };
-        let len = node.strings("model").len();
-        self.highlight = self.highlight.min(len - 1);
+        let len = choice_values(node).len();
+        self.highlight = self.highlighted(node);
         self.first = self.first.min(len - geo.visible);
-        if self.highlight < self.first {
-            self.first = self.highlight;
-        } else if self.highlight >= self.first + geo.visible {
-            self.first = self.highlight + 1 - geo.visible;
+        if let Some(highlight) = self.highlight {
+            if highlight < self.first {
+                self.first = highlight;
+            } else if highlight >= self.first + geo.visible {
+                self.first = highlight + 1 - geo.visible;
+            }
         }
         true
     }
 
-    pub fn hover(&mut self, scene: &Node, layout: &LayoutNode, point: Point) -> bool {
-        if let Some(index) = self.view(scene, layout).and_then(|menu| menu.pick(point)) {
-            let changed = self.highlight != index;
-            self.highlight = index;
-            changed
+    fn highlighted(&self, node: &Node) -> Option<usize> {
+        let index = self.highlight?;
+        if node.kind == "SearchField" {
+            (search_suggestion(node, index) == self.highlighted_value.as_deref()
+                && self.highlighted_value.is_some())
+            .then_some(index)
         } else {
-            false
+            Some(index.min(choice_values(node).len().saturating_sub(1)))
         }
+    }
+
+    fn highlight(&mut self, node: &Node, index: usize) {
+        if node.kind == "SearchField" {
+            self.highlighted_value = search_suggestion(node, index).map(str::to_owned);
+            self.highlight = self.highlighted_value.as_ref().map(|_| index);
+        } else {
+            self.highlight = Some(index);
+        }
+    }
+
+    pub fn hover(&mut self, scene: &Node, layout: &LayoutNode, point: Point) -> bool {
+        let Some(index) = self.view(scene, layout).and_then(|menu| menu.pick(point)) else {
+            return false;
+        };
+        let Some(node) = self.node(scene, layout) else {
+            return false;
+        };
+        let previous = self.highlighted(node);
+        self.highlight(node, index);
+        previous != self.highlight
     }
 
     pub fn press(&mut self, scene: &Node, layout: &LayoutNode, point: Point) -> bool {
@@ -237,9 +275,13 @@ impl ChoicePopup {
         let Some(index) = menu.pick(point) else {
             return false;
         };
-        self.press = Some((index, menu.rows[index - menu.first].clone()));
-        self.highlight = index;
-        true
+        let value = menu.rows[index - menu.first].clone();
+        let Some(node) = self.node(scene, layout) else {
+            return false;
+        };
+        self.highlight(node, index);
+        self.press = self.highlight.map(|index| (index, value));
+        self.press.is_some()
     }
 
     pub fn release(&mut self, scene: &Node, layout: &LayoutNode, point: Point) -> Option<usize> {
@@ -253,21 +295,39 @@ impl ChoicePopup {
         let Some((node, geo)) = self.resolve(scene, layout) else {
             return;
         };
-        let last = node.strings("model").len() - 1;
-        self.highlight = match key {
-            ChoiceKey::Up => self.highlight.saturating_sub(1),
-            ChoiceKey::Down => (self.highlight + 1).min(last),
+        let last = choice_values(node).len() - 1;
+        let highlight = self.highlighted(node);
+        let next = match key {
+            ChoiceKey::Up => highlight.map_or(last, |index| index.saturating_sub(1)),
+            ChoiceKey::Down => highlight.map_or(0, |index| (index + 1).min(last)),
             ChoiceKey::Home => 0,
             ChoiceKey::End => last,
-            ChoiceKey::PageUp => self.highlight.saturating_sub(geo.visible),
-            ChoiceKey::PageDown => (self.highlight + geo.visible).min(last),
-            _ => self.highlight,
+            ChoiceKey::PageUp => highlight.map_or(0, |index| index.saturating_sub(geo.visible)),
+            ChoiceKey::PageDown => highlight.map_or(0, |index| (index + geo.visible).min(last)),
+            _ => return,
         };
+        let next = if node.kind == "SearchField" {
+            let selectable = |&index: &usize| search_suggestion(node, index).is_some();
+            let lower = || (0..=next).rev().find(selectable);
+            let higher = || (next..=last).find(selectable);
+            let candidate = if matches!(key, ChoiceKey::Up | ChoiceKey::End | ChoiceKey::PageUp) {
+                lower().or_else(higher)
+            } else {
+                higher().or_else(lower)
+            };
+            let Some(index) = candidate else {
+                return;
+            };
+            index
+        } else {
+            next
+        };
+        self.highlight(node, next);
         self.reconcile(scene, layout);
     }
 
     pub fn selected(&self, scene: &Node, layout: &LayoutNode) -> Option<usize> {
-        self.view(scene, layout).map(|menu| menu.highlighted)
+        self.view(scene, layout).and_then(|menu| menu.highlighted)
     }
 
     pub fn scroll(&mut self, scene: &Node, layout: &LayoutNode, rows: isize) {
@@ -277,10 +337,21 @@ impl ChoicePopup {
         self.first = self
             .first
             .saturating_add_signed(rows)
-            .min(node.strings("model").len() - geo.visible);
-        self.highlight = self
-            .highlight
-            .clamp(self.first, self.first + geo.visible - 1);
+            .min(choice_values(node).len() - geo.visible);
+        if let Some(highlight) = self.highlighted(node) {
+            self.highlight(
+                node,
+                highlight.clamp(self.first, self.first + geo.visible - 1),
+            );
+        }
         self.press = None;
+    }
+}
+
+fn choice_values(node: &Node) -> &[String] {
+    if node.kind == "SearchField" {
+        search_suggestions(node)
+    } else {
+        node.strings("model")
     }
 }

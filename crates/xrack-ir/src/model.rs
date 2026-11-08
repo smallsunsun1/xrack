@@ -45,6 +45,22 @@ pub enum Statement {
     Assignment(Assignment),
     Invoke(CallbackCall),
     Navigate(Navigation),
+    Timer(TimerEffect),
+    Popup(PopupEffect),
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct PopupEffect {
+    pub owner: String,
+    pub open: bool,
+    pub span: Span,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct TimerEffect {
+    pub owner: String,
+    pub command: String,
+    pub span: Span,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

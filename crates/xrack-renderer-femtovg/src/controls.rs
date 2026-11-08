@@ -126,6 +126,55 @@ pub(crate) fn page_indicator(
     }
 }
 
+pub(crate) fn tumbler(
+    canvas: &mut Canvas<WGPURenderer>,
+    text: &TextSystem,
+    theme: Theme,
+    node: &Node,
+    wheel: &xrack_layout::TumblerGeometry,
+    enabled: bool,
+) -> Result<(), String> {
+    if wheel.rows.is_empty() {
+        return Ok(());
+    }
+    fill(
+        canvas,
+        wheel.center.inset(2.0),
+        6.0,
+        if enabled {
+            theme.button
+        } else {
+            theme.disabled
+        },
+    );
+    for row in &wheel.rows {
+        let size = font_size(node).min((row.bounds.height * 0.64).max(1.0));
+        let mut tint = color(if enabled {
+            node.color("color").unwrap_or(theme.text)
+        } else {
+            theme.disabled_text
+        });
+        tint.a *= (1.0 - 0.22 * row.displacement.abs()).max(0.38);
+        let paint = text.paint(size, tint, true);
+        canvas.save();
+        canvas.intersect_scissor(
+            row.bounds.x + 4.0,
+            row.bounds.y,
+            (row.bounds.width - 8.0).max(0.0),
+            row.bounds.height,
+        );
+        let result = canvas.fill_text(
+            row.bounds.x + row.bounds.width * 0.5,
+            row.bounds.y + ((row.bounds.height - size * 1.4) * 0.5).max(0.0),
+            &row.label,
+            &paint,
+        );
+        canvas.restore();
+        result.map_err(|error| format!("tumbler label drawing failed: {error}"))?;
+    }
+    Ok(())
+}
+
 pub(crate) fn split_handle(
     canvas: &mut Canvas<WGPURenderer>,
     node: &Node,
@@ -530,7 +579,7 @@ pub(crate) fn menu(
         for (offset, label) in menu.rows.iter().enumerate() {
             let row = menu.row_bounds(offset);
             let index = menu.first + offset;
-            if index == menu.highlighted {
+            if Some(index) == menu.highlighted {
                 fill(canvas, row.inset(2.0), 4.0, Color(0x435e99ff));
             } else if menu.selected == Some(index) {
                 fill(canvas, row.inset(2.0), 4.0, Color(0x35466dff));
@@ -550,7 +599,7 @@ pub(crate) fn menu(
     result
 }
 
-fn label(
+pub(crate) fn label(
     canvas: &mut Canvas<WGPURenderer>,
     text: &TextSystem,
     bounds: Rect,
@@ -573,6 +622,42 @@ fn label(
     result
         .map(|_| ())
         .map_err(|error| format!("selection label drawing failed: {error}"))
+}
+
+pub(crate) fn search_icons(
+    canvas: &mut Canvas<WGPURenderer>,
+    theme: Theme,
+    node: &Node,
+    geometry: &xrack_layout::SearchGeometry,
+    enabled: bool,
+) {
+    let mut paint = Paint::color(color(if enabled {
+        theme.text
+    } else {
+        theme.disabled_text
+    }));
+    paint.set_line_width(1.5);
+    for (rect, action) in geometry.actions(node) {
+        let x = rect.x + rect.width * 0.5;
+        let y = rect.y + rect.height * 0.5;
+        let radius = 5.0_f32.min(rect.width * 0.2).min(rect.height * 0.2);
+        if radius <= 0.0 {
+            continue;
+        }
+        let mut icon = Path::new();
+        if action == xrack_runtime::ControlAction::ClearSearch {
+            icon.move_to(x - radius, y - radius);
+            icon.line_to(x + radius, y + radius);
+            icon.move_to(x - radius, y + radius);
+            icon.line_to(x + radius, y - radius);
+        } else {
+            let lens = radius * 0.75;
+            icon.circle(x - lens * 0.35, y - lens * 0.35, lens);
+            icon.move_to(x + lens * 0.35, y + lens * 0.35);
+            icon.line_to(x + radius, y + radius);
+        }
+        canvas.stroke_path(&icon, &paint);
+    }
 }
 
 pub(crate) fn radio(

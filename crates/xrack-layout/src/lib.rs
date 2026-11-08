@@ -2,56 +2,74 @@
 mod button;
 mod calendar;
 mod choice;
+mod delay_button;
 mod edit;
 mod flow;
 mod geometry;
 mod grid;
+mod group_box;
 mod history;
 mod input;
+mod label;
 mod linear;
 mod menu;
 mod modal;
+mod page;
 mod page_indicator;
+mod password;
+mod popup;
 mod range;
 mod scroll_bar;
 mod scroll_gesture;
+mod search;
 mod selection;
 mod shortcut;
 mod spin;
 mod split;
 mod stack_transition;
+mod swipe_delegate;
 mod table;
 mod text_area;
 mod tooltip;
 mod tree;
+mod tumbler;
+mod view_cells;
 pub use button::ButtonContent;
 pub use calendar::{CalendarDay, CalendarGeometry};
 pub use choice::{ChoiceKey, ChoiceMenu, ComboCompletion, ComboGeometry};
 pub use edit::{EditAction, TextEdit, TextPosition};
 pub use geometry::{Point, Rect, Size};
+pub use group_box::group_header;
 pub use history::EditSource;
 pub use input::{
     ActivationKey, ControlInput, Interaction, NavigationKey, RangeInput, SliderKey, SplitResize,
     TableSelectionKey, Target,
 };
+pub use label::{LabelLayout, LabelLine, uses_label_layout};
 pub use menu::{MenuEntry, MenuKey, MenuPanel, MenuRow};
 pub use modal::{dialog_title_height, drawer_grip};
 pub use page_indicator::{PageIndicatorGeometry, PageMarker};
+pub use password::PasswordMask;
 pub use range::{DialGeometry, SliderGeometry};
 pub use scroll_bar::ScrollBarGeometry;
 pub use scroll_gesture::{ScrollGestureEnd, ScrollGestureKind};
+pub use search::SearchGeometry;
 pub use selection::TAB_LABEL_SIZE;
 pub use shortcut::{MenuShortcut, ShortcutKey, ShortcutModifiers};
 pub use spin::SpinGeometry;
 pub use split::{SplitGeometry, SplitHandle};
 pub use stack_transition::{StackSlide, StackTransitions};
 use std::{collections::BTreeMap, rc::Rc};
+pub use swipe_delegate::SwipeDelegateGeometry;
 pub use table::TableGeometry;
 pub use text_area::{TextAreaLayout, TextAreaMotion};
 pub use tooltip::{TooltipPopup, layout_tooltip};
 pub use tree::TreeRowGeometry;
+pub use tumbler::{TumblerGeometry, TumblerRow, TumblerScroll};
+use view_cells::ViewCells;
 use xrack_runtime::{
-    Component, ListMetrics, Node, Orientation, SelectionTarget, group_index, is_modal_overlay,
+    Component, ListMetrics, Node, Orientation, RowKey, SelectionTarget, group_index,
+    is_modal_overlay, is_window_overlay,
 };
 
 #[cfg(test)]
@@ -61,6 +79,14 @@ pub const DEFAULT_FONT_SIZE: f32 = 16.0;
 
 pub trait TextMeasurer {
     fn measure(&mut self, text: &str, font_size: f32, max_width: f32) -> Size;
+
+    fn measure_label(&mut self, node: &Node, max_width: f32) -> Size {
+        let size = font_size(node);
+        LabelLayout::new(node, Size::new(max_width, f32::INFINITY), |value| {
+            self.measure(value, size, f32::MAX).width
+        })
+        .size
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -76,6 +102,8 @@ pub struct LayoutNode {
     pub split: Option<Box<SplitGeometry>>,
     /// Header hit box of a tab, independent of the page visibility.
     pub tab_header: Option<Rect>,
+    pub tumbler: Option<Box<TumblerGeometry>>,
+    pub swipe_delegate: Option<Box<SwipeDelegateGeometry>>,
     overlays: Option<Box<modal::OverlayIndex>>,
     pub children: Vec<LayoutNode>,
 }
@@ -94,6 +122,15 @@ impl ScrollLayout {
             max_offset,
         }
     }
+
+    pub(crate) fn revealing(self, top: f32, height: f32, viewport: f32) -> Self {
+        let offset = if top < self.offset {
+            top
+        } else {
+            self.offset.max(top + height - viewport)
+        };
+        Self::new(offset, self.max_offset)
+    }
 }
 
 impl LayoutNode {
@@ -110,6 +147,13 @@ impl LayoutNode {
 
     /// Paths of visible modal overlays, in declaration order.
     pub fn dialog_paths(&self) -> &[Vec<usize>] {
+        self.overlays
+            .as_ref()
+            .map_or(&[], |overlays| overlays.modal.as_slice())
+    }
+
+    /// Paths of all open overlays, in declaration order.
+    pub fn overlay_paths(&self) -> &[Vec<usize>] {
         self.overlays
             .as_ref()
             .map_or(&[], |overlays| overlays.open.as_slice())
@@ -141,14 +185,37 @@ fn dimension(node: &Node, name: &str) -> Option<f32> {
 }
 
 fn participates_in_flow(node: &Node) -> bool {
-    !is_modal_overlay(node.kind) && !matches!(node.kind, "Menu" | "Tooltip") && node.is_visible()
+    !is_window_overlay(node.kind) && !matches!(node.kind, "Menu" | "Tooltip") && node.is_visible()
 }
 
 pub fn is_layout(kind: &str) -> bool {
     matches!(
         kind,
-        "GridLayout" | "FlowLayout" | "ToolBar" | "Row" | "RadioGroup" | "SplitView"
+        "GridLayout"
+            | "FlowLayout"
+            | "FlexboxLayout"
+            | "ToolBar"
+            | "Row"
+            | "RadioGroup"
+            | "SplitView"
     ) || linear::Axis::for_layout(kind).is_some()
+}
+
+/// Child indices in visual reading order. Paths keep their original scene indices.
+pub fn child_reading_order(node: &Node) -> impl Iterator<Item = usize> {
+    let (header, footer) = page::slots(node);
+    let (ordered, len) = if matches!(node.kind, "DialogButtonBox" | "FlexboxLayout") {
+        let mut ordered = (0..node.children.len()).collect::<Vec<_>>();
+        ordered.sort_by_key(|&index| linear::item_order(node, &node.children[index]));
+        (ordered, 0)
+    } else {
+        (Vec::new(), node.children.len())
+    };
+    ordered
+        .into_iter()
+        .chain(header)
+        .chain((0..len).filter(move |&index| Some(index) != header && Some(index) != footer))
+        .chain(footer)
 }
 
 /// Root dimensions come from the actual viewport; DSL dimensions size the initial window.
@@ -187,10 +254,12 @@ fn layout_with_offsets(
         offsets,
         input,
         path: Vec::new(),
+        row_key: None,
+        anchor: None,
         viewport: bounds,
     }
     .place(scene, bounds, bounds, true, true, None);
-    modal::index_dialogs(scene, &mut layout);
+    modal::index_overlays(scene, &mut layout);
     layout
 }
 
@@ -243,10 +312,12 @@ fn prepare_scene_with_offsets(
             offsets,
             input,
             path: Vec::new(),
+            row_key: None,
+            anchor: None,
             viewport,
         }
         .populate_lists(component, Rc::make_mut(&mut scene), &mut layout);
-        modal::index_dialogs(&scene, &mut layout);
+        modal::index_overlays(&scene, &mut layout);
     }
     (scene, layout)
 }
@@ -256,6 +327,8 @@ struct LayoutContext<'a, T> {
     offsets: &'a BTreeMap<Vec<usize>, f32>,
     input: Option<&'a Interaction>,
     path: Vec<usize>,
+    row_key: Option<RowKey>,
+    anchor: Option<Rect>,
     viewport: Rect,
 }
 
@@ -279,7 +352,6 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
         layout: &mut LayoutNode,
     ) {
         if let Some(mut list) = node.list {
-            let row_height = f64::from(ListMetrics::row_height(node));
             let viewport = layout
                 .table
                 .as_ref()
@@ -291,9 +363,7 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
             {
                 let top = f64::from(scroll.offset) + f64::from(clipped.y - viewport.y);
                 let bottom = top + f64::from(clipped.height);
-                let first = (top / row_height).floor() as usize;
-                let end = (bottom / row_height).ceil() as usize;
-                first.min(list.row_count)..end.min(list.row_count)
+                ViewCells::new(node, viewport.width).visible(top, bottom, list.row_count)
             } else {
                 0..0
             };
@@ -345,7 +415,9 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
                     };
                     row.properties
                         .insert("selected", xrack_runtime::Value::Bool(is_selected));
-                    if (tree_selection.is_some() || selection.is_some() && grid.is_none())
+                    if (node.kind == "GridView"
+                        || tree_selection.is_some()
+                        || selection.is_some() && grid.is_none())
                         && current
                     {
                         row.properties
@@ -387,13 +459,51 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
         parent_enabled: bool,
         row_children: Option<Vec<Rect>>,
     ) -> LayoutNode {
-        let visible = parent_visible && node.is_visible();
-        let (bounds, clip) = if visible && is_modal_overlay(node.kind) {
+        let outer_key = self.row_key;
+        let outer_anchor = self.anchor;
+        self.row_key = node.row_key.or(outer_key);
+        let layout = self.place_node(
+            node,
+            bounds,
+            clip,
+            parent_visible,
+            parent_enabled,
+            row_children,
+        );
+        self.row_key = outer_key;
+        self.anchor = outer_anchor;
+        layout
+    }
+
+    fn place_node(
+        &mut self,
+        node: &Node,
+        bounds: Rect,
+        clip: Rect,
+        parent_visible: bool,
+        parent_enabled: bool,
+        row_children: Option<Vec<Rect>>,
+    ) -> LayoutNode {
+        let enabled = parent_enabled && node.boolean("enabled", true);
+        let visible = parent_visible
+            && node.is_visible()
+            && (node.kind != "PopupWindow" || enabled && self.anchor.is_some())
+            && xrack_runtime::indicator_state(node) != Some(xrack_runtime::IndicatorState::Hidden);
+        let (bounds, clip) = if visible
+            && node.kind == "PopupWindow"
+            && let Some(anchor) = self.anchor
+        {
+            (
+                popup::bounds(node, anchor, self.viewport, self.text),
+                self.viewport,
+            )
+        } else if visible && is_modal_overlay(node.kind) {
             (modal::bounds(node, self.viewport, self.text), self.viewport)
         } else {
             (bounds, clip)
         };
-        let enabled = parent_enabled && node.boolean("enabled", true);
+        let clipped = bounds.intersect(clip);
+        self.anchor = (visible && clipped.width > 0.0 && clipped.height > 0.0).then_some(clipped);
         if matches!(node.kind, "Menu" | "Tooltip") {
             // Popup entries use window coordinates and are laid out by the menu presenter.
             return LayoutNode {
@@ -406,6 +516,8 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
                 table: None,
                 split: None,
                 tab_header: None,
+                tumbler: None,
+                swipe_delegate: None,
                 overlays: None,
                 children: Vec::new(),
             };
@@ -467,6 +579,8 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
                 table: None,
                 split: None,
                 tab_header: None,
+                tumbler: None,
+                swipe_delegate: None,
                 overlays: None,
                 children,
             };
@@ -480,6 +594,19 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
             (None, None)
         };
         let mut row_children = row_children;
+        let page =
+            (visible && node.kind == "Page").then(|| page::Regions::new(node, bounds, self.text));
+        let swipe_delegate = (visible && node.kind == "SwipeDelegate").then(|| {
+            let mut geometry = SwipeDelegateGeometry::new(node, bounds, self.text);
+            if enabled
+                && let Some(offset) = self.input.and_then(|input| {
+                    input.swipe_preview_offset(&self.path, node, &geometry, self.row_key)
+                })
+            {
+                geometry.set_preview(offset);
+            }
+            Box::new(geometry)
+        });
         let placements = if !visible {
             (0..node.children.len())
                 .map(|_| grid::Placement {
@@ -496,26 +623,38 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
                 })
                 .collect()
         } else if let Some(list) = node.list {
-            let height = ListMetrics::row_height(node);
-            let axis = ScrollLayout::new(
-                self.requested_scroll(Orientation::Vertical),
-                list.row_count as f32 * height - viewport.height,
+            let cells = ViewCells::new(node, viewport.width);
+            let requested = self.scroll_request(Orientation::Vertical);
+            let mut axis = ScrollLayout::new(
+                requested.unwrap_or_default(),
+                cells.extent(list.row_count) - viewport.height,
             );
+            if node.boolean(
+                "follow-current",
+                matches!(node.kind, "StandardListView" | "GridView"),
+            ) && (requested.is_none()
+                || self.input.is_some_and(|input| {
+                    input.scroll_selection_changed(node, &self.path, cells.columns)
+                }))
+                && let Some(index) = input::scroll_selection(node)
+            {
+                axis = axis.revealing(cells.top(index) as f32, cells.height, viewport.height);
+            }
             scroll = Some(axis);
             node.children
                 .iter()
                 .enumerate()
                 .map(|(slot, _)| {
-                    let y = ((list.first_row + slot) as f64 * f64::from(height)
-                        - f64::from(axis.offset)) as f32;
-                    let y = viewport.y + y;
+                    let bounds = cells.bounds(list.first_row + slot, viewport, axis.offset);
                     grid::Placement {
-                        bounds: Rect::new(viewport.x, y, viewport.width, height),
+                        bounds,
                         row_children: table.as_ref().map(|table| {
                             table
                                 .columns
                                 .iter()
-                                .map(|column| Rect::new(column.x, y, column.width, height))
+                                .map(|column| {
+                                    Rect::new(column.x, bounds.y, column.width, bounds.height)
+                                })
                                 .collect()
                         }),
                     }
@@ -561,7 +700,7 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
             let reveal = requested.is_none()
                 || self
                     .input
-                    .is_some_and(|input| input.tab_selection_changed(node, &self.path));
+                    .is_some_and(|input| input.scroll_selection_changed(node, &self.path, 1));
             let (rects, axis) = selection::tab_bar(
                 node,
                 bounds,
@@ -593,13 +732,28 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
                 .collect()
         } else {
             let mut content = bounds;
-            let title = (selection::radio_title_height(node) + dialog_title_height(node))
-                .min(bounds.height);
+            let title = (selection::radio_title_height(node)
+                + dialog_title_height(node)
+                + group_box::title_height(node))
+            .min(bounds.height);
             content.y += title;
             content.height -= title;
             let rects = if let Some(placements) = row_children {
                 placements
-            } else if flow::wraps(node) {
+            } else if let Some(geometry) = &swipe_delegate {
+                node.children
+                    .iter()
+                    .map(|child| geometry.region(child.kind).bounds)
+                    .collect()
+            } else if let Some(page) = &page {
+                node.children
+                    .iter()
+                    .map(|child| {
+                        page.band(child)
+                            .unwrap_or_else(|| self.absolute_child(child, page.body))
+                    })
+                    .collect()
+            } else if flow::uses_flow(node) {
                 flow::children(node, content, self.text)
             } else if let Some(axis) = linear::Axis::for_node(node) {
                 linear::children(node, axis, content, self.text)
@@ -622,12 +776,26 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
             .map(|(index, (child, placement))| {
                 self.path.push(index);
                 let is_handle = child.kind == "SplitHandle";
+                let clip = page.as_ref().map_or(child_clip, |page| {
+                    child_clip.intersect(page.band(child).unwrap_or(page.body))
+                });
+                let region = swipe_delegate
+                    .as_ref()
+                    .map(|geometry| geometry.region(child.kind));
+                let clip = region
+                    .as_ref()
+                    .map_or(clip, |region| clip.intersect(region.clip));
                 let mut child = self.place(
                     child,
                     placement.bounds,
-                    child_clip,
-                    visible,
-                    enabled,
+                    clip,
+                    visible
+                        && region
+                            .as_ref()
+                            .is_none_or(|_| clip.width > 0.0 && clip.height > 0.0),
+                    enabled
+                        && node.group_content_enabled()
+                        && region.is_none_or(|region| region.enabled),
                     placement.row_children,
                 );
                 if is_handle {
@@ -640,6 +808,13 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
                 child
             })
             .collect();
+        let tumbler = (visible && node.kind == "Tumbler").then(|| {
+            let wheel = xrack_runtime::Tumbler::from_node(node);
+            let offset = self
+                .input
+                .map_or(0.0, |input| input.tumbler_offset(&wheel, &self.path));
+            Box::new(TumblerGeometry::new(&wheel, bounds, offset))
+        });
         LayoutNode {
             bounds,
             clip,
@@ -650,6 +825,8 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
             table,
             split,
             tab_header: None,
+            tumbler,
+            swipe_delegate,
             overlays: None,
             children,
         }
@@ -717,24 +894,26 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
     }
 
     fn absolute_children(&mut self, node: &Node, content: Rect) -> Vec<Rect> {
-        let available = Size::new(content.width, content.height);
         node.children
             .iter()
-            .map(|child| {
-                if !participates_in_flow(child) {
-                    return Rect::new(content.x, content.y, 0.0, 0.0);
-                }
-                let metrics = linear::measure(child, available, self.text);
-                let width = absolute_width(child, metrics.x, content.width);
-                let height = absolute_height(child, metrics.y, content.height);
-                Rect::new(
-                    content.x + child.length("x").unwrap_or(0.0),
-                    content.y + child.length("y").unwrap_or(0.0),
-                    width,
-                    height,
-                )
-            })
+            .map(|child| self.absolute_child(child, content))
             .collect()
+    }
+
+    fn absolute_child(&mut self, child: &Node, content: Rect) -> Rect {
+        if !participates_in_flow(child) {
+            return Rect::new(content.x, content.y, 0.0, 0.0);
+        }
+        let available = Size::new(content.width, content.height);
+        let metrics = linear::measure(child, available, self.text);
+        let width = absolute_width(child, metrics.x, content.width);
+        let height = absolute_height(child, metrics.y, content.height);
+        Rect::new(
+            content.x + child.length("x").unwrap_or(0.0),
+            content.y + child.length("y").unwrap_or(0.0),
+            width,
+            height,
+        )
     }
 }
 

@@ -46,6 +46,46 @@ impl ListMetrics {
     }
 }
 
+#[doc(hidden)]
+pub fn standard_list_rows<T: Clone + PartialEq>(
+    model: &VecModel<T>,
+    range: Range<usize>,
+    mut label: impl FnMut(T) -> String,
+) -> Vec<Node> {
+    range
+        .filter_map(|index| {
+            let value = model.row(index)?;
+            let key = model.row_key(index)?;
+            let mut item = Node::new("StandardListItem", None);
+            item.row_key = Some(key);
+            item.properties.insert("text", label(value).into());
+            Some(item)
+        })
+        .collect()
+}
+
+#[doc(hidden)]
+pub fn standard_table_rows<T, const COLUMNS: usize>(
+    model: &VecModel<T>,
+    range: Range<usize>,
+    project: impl Fn(&T) -> [String; COLUMNS],
+) -> Vec<Node> {
+    range
+        .filter_map(|index| {
+            let key = model.row_key(index)?;
+            let cells = model.project_row(index, &project)?;
+            let mut row = Node::new("TableRow", None);
+            row.row_key = Some(key);
+            row.children.extend(cells.map(|text| {
+                let mut cell = Node::new("TableCell", None);
+                cell.properties.insert("text", text.into());
+                cell
+            }));
+            Some(row)
+        })
+        .collect()
+}
+
 pub trait ListModel {
     type Item: Clone + PartialEq;
 

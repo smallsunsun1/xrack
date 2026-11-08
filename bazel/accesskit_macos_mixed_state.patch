@@ -1,0 +1,16 @@
+--- a/src/node.rs
++++ b/src/node.rs
+@@ -343,7 +343,12 @@
+ 
+     pub(crate) fn value(&self) -> Option<Value> {
+         if let Some(toggled) = self.0.toggled() {
+-            return Some(Value::Bool(toggled != Toggled::False));
++            return Some(match toggled {
++                Toggled::False => Value::Bool(false),
++                Toggled::True => Value::Bool(true),
++                // AppKit represents NSControlStateValueMixed as -1.
++                Toggled::Mixed => Value::Number(-1.0),
++            });
+         }
+         if self.0.role() == Role::Tab {
+             // On Mac, tabs are exposed as radio buttons, and are treated as checkable.

@@ -160,3 +160,99 @@ export component FlowDemo inherits Window {
         status := Text { text: root.selected; color: #acc0db; }
     }
 }
+export component FlexDemo inherits Window {
+    title: "XRack · FlexboxLayout";
+    width: 740px; height: 390px;
+    background: #101725;
+    in-out property <FlexboxLayoutDirection> direction: row;
+    in-out property <FlexboxLayoutWrap> wrapping: wrap;
+    out property <string> status: "请选择命令";
+
+    VerticalLayout {
+        padding: 20px; spacing: 12px; alignment: start;
+        Text { text: "调整窗口宽度，观察命令伸缩和换行"; font-size: 22px; }
+        HorizontalLayout {
+            alignment: start; spacing: 8px;
+            change-direction := Button {
+                text: "换方向";
+                clicked() => { root.direction = root.direction == FlexboxLayoutDirection.row ? FlexboxLayoutDirection.row-reverse
+                    : root.direction == FlexboxLayoutDirection.row-reverse ? FlexboxLayoutDirection.column
+                    : root.direction == FlexboxLayoutDirection.column ? FlexboxLayoutDirection.column-reverse : FlexboxLayoutDirection.row; }
+            }
+            change-wrap := Button {
+                text: "换行模式";
+                clicked() => { root.wrapping = root.wrapping == FlexboxLayoutWrap.wrap ? FlexboxLayoutWrap.no-wrap
+                    : root.wrapping == FlexboxLayoutWrap.no-wrap ? FlexboxLayoutWrap.wrap-reverse : FlexboxLayoutWrap.wrap; }
+            }
+        }
+        flex-commands := FlexboxLayout {
+            height: 192px;
+            flex-direction: root.direction;
+            flex-wrap: root.wrapping;
+            alignment: stretch;
+            cross-axis-alignment: center;
+            cross-axis-line-alignment: space-between;
+            spacing-horizontal: 10px;
+            spacing-vertical: 14px;
+            flex-open := Button {
+                text: "打开文件"; preferred-width: 150px; min-width: 100px; max-width: 180px; height: 40px;
+                horizontal-stretch: 1;
+                background: #314b80;
+                clicked() => { root.status = "已打开"; }
+            }
+            flex-save := Button {
+                text: "保存草稿"; preferred-width: 160px; min-width: 100px; height: 48px;
+                horizontal-stretch: 2; layout-order: -1;
+                background: #14665c;
+                clicked() => { root.status = "已保存"; }
+            }
+            flex-export := Button {
+                text: "导出预览"; preferred-width: 180px; min-width: 120px; max-width: 220px; height: 42px;
+                horizontal-stretch: 1;
+                background: #513b86;
+                clicked() => { root.status = "已导出"; }
+            }
+            flex-options := Button {
+                text: "设置"; preferred-width: 120px; min-width: 90px; height: 40px;
+                horizontal-stretch: 0;
+                background: #384966;
+                clicked() => { root.status = "已打开设置"; }
+            }
+        }
+        Text { text: root.status; color: #acc0db; }
+    }
+}
+export component LabelsDemo inherits Window {
+    title: "XRack · 标签排版";
+    width: 520px; height: 310px;
+    background: #101725;
+    in-out property <bool> elided: true;
+
+    VerticalLayout {
+        padding: 20px; spacing: 14px; alignment: start;
+        Text { text: "缩窄窗口，查看标签排版"; font-size: 21px; }
+        Rectangle {
+            height: 52px;
+            background: #263750;
+            job-title := Label {
+                width: 100%; height: 100%; font-size: 18px;
+                text: "发布任务 👩‍💻 构建、签名并推送到测试环境，等待最后一轮验证";
+                overflow: root.elided ? TextOverflow.elide : TextOverflow.clip;
+                vertical-alignment: center;
+            }
+        }
+        Rectangle {
+            height: 90px;
+            background: #214a48;
+            description := Text {
+                width: 100%; height: 100%; font-size: 17px;
+                text: "这里的摘要最多显示两行。调整窗口宽度时，行数和截断位置一起变化。";
+                wrap: word-wrap; overflow: elide; max-lines: 2;
+                horizontal-alignment: center;
+                vertical-alignment: bottom;
+            }
+        }
+        Label { text: "مرحبا بالعالم"; horizontal-alignment: start; font-size: 18px; }
+        toggle-overflow := Button { text: "切换省略"; clicked() => { root.elided = !root.elided; } }
+    }
+}

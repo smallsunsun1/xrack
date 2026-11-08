@@ -32,18 +32,29 @@ def XR_ImageFit : XR_Type<"ImageFit", "imagefit">;
 def XR_LayoutAlignment : XR_Type<"LayoutAlignment", "layoutalignment">;
 def XR_CrossAxisAlignment : XR_Type<"CrossAxisAlignment", "crossaxisalignment">;
 def XR_Orientation : XR_Type<"Orientation", "orientation">;
+def XR_FlexboxLayoutDirection : XR_Type<"FlexboxLayoutDirection", "flexboxlayoutdirection">;
+def XR_FlexboxLayoutWrap : XR_Type<"FlexboxLayoutWrap", "flexboxlayoutwrap">;
 def XR_DialInputMode : XR_Type<"DialInputMode", "dialinputmode">;
 def XR_ScrollBarPolicy : XR_Type<"ScrollBarPolicy", "scrollbarpolicy">;
 def XR_TextWrap : XR_Type<"TextWrap", "textwrap">;
+def XR_TextHorizontalAlignment : XR_Type<"TextHorizontalAlignment", "texthorizontalalignment">;
+def XR_TextVerticalAlignment : XR_Type<"TextVerticalAlignment", "textverticalalignment">;
+def XR_TextOverflow : XR_Type<"TextOverflow", "textoverflow">;
+def XR_InputType : XR_Type<"InputMode", "inputtype">;
+def XR_CheckState : XR_Type<"CheckState", "checkstate">;
 def XR_DialogRole : XR_Type<"DialogRole", "dialogrole">;
+def XR_StandardButtonKind : XR_Type<"StandardButtonKind", "standardbuttonkind">;
+def XR_SwipeSide : XR_Type<"SwipeSide", "swipeside">;
 def XR_DrawerEdge : XR_Type<"DrawerEdge", "draweredge">;
+def XR_PopupPlacement : XR_Type<"PopupPlacement", "popupplacement">;
 def XR_SelectionTarget : XR_Type<"SelectionTarget", "selectiontarget">;
 def XR_Date : XR_Type<"Date", "date">;
+def XR_Time : XR_Type<"Time", "time">;
 def XR_GradientStop : XR_Type<"GradientStop", "gradientstop">;
 def XR_Value : AnyTypeOf<[XR_Int, XR_Float, XR_Bool, XR_String, XR_StringList, XR_Record, XR_RecordList, XR_Length, XR_Percent, XR_Color,
                          XR_Brush, XR_Image, XR_ImageFit, XR_LayoutAlignment, XR_CrossAxisAlignment,
-                         XR_Orientation, XR_DialInputMode, XR_ScrollBarPolicy, XR_TextWrap, XR_DialogRole, XR_DrawerEdge, XR_SelectionTarget, XR_Date]>;
-def XR_Stringifiable : AnyTypeOf<[XR_Int, XR_Float, XR_Bool, XR_Date]>;
+                         XR_Orientation, XR_FlexboxLayoutDirection, XR_FlexboxLayoutWrap, XR_DialInputMode, XR_ScrollBarPolicy, XR_TextWrap, XR_TextHorizontalAlignment, XR_TextVerticalAlignment, XR_TextOverflow, XR_InputType, XR_CheckState, XR_DialogRole, XR_StandardButtonKind, XR_SwipeSide, XR_DrawerEdge, XR_PopupPlacement, XR_SelectionTarget, XR_Date, XR_Time]>;
+def XR_Stringifiable : AnyTypeOf<[XR_Int, XR_Float, XR_Bool, XR_Date, XR_Time]>;
 
 class XR_Op<string mnemonic, list<Trait> traits = []> : Op<Xrack_Dialect, mnemonic, traits>;
 
@@ -99,11 +110,11 @@ def XR_RepeatOp : XR_Op<"repeat", [ParentOneOf<["ElementOp", "InstanceOp"]>]> {
                        StrAttr:$item, StrAttr:$index);
 }
 def XR_ControlLinkOp : XR_Op<"control_link", [HasParent<"ElementOp">]> {
-  let arguments = (ins AnyTypeOf<[XR_String, XR_Bool, XR_Float, XR_Int, XR_Date]>:$input, StrAttr:$name);
+  let arguments = (ins AnyTypeOf<[XR_String, XR_Bool, XR_Float, XR_Int, XR_Date, XR_Time, XR_CheckState, XR_SwipeSide]>:$input, StrAttr:$name);
   let hasVerifier = 1;
 }
 def XR_RowLinkOp : XR_Op<"row_link", [HasParent<"ElementOp">]> {
-  let arguments = (ins AnyTypeOf<[XR_String, XR_Int, XR_Bool, XR_Float]>:$input, StrAttr:$name);
+  let arguments = (ins AnyTypeOf<[XR_String, XR_Int, XR_Bool, XR_Float, XR_CheckState]>:$input, StrAttr:$name);
   let hasVerifier = 1;
 }
 def XR_LayoutBindOp : XR_Op<"layout_bind", [HasParent<"InstanceOp">]> {
@@ -121,6 +132,14 @@ def XR_InvokeOp : XR_Op<"invoke"> {
 }
 def XR_NavigateOp : XR_Op<"navigate"> {
   let arguments = (ins Variadic<AnyTypeOf<[XR_String, XR_StringList]>>:$args, StrAttr:$owner, StrAttr:$method);
+  let hasVerifier = 1;
+}
+def XR_TimerCommandOp : XR_Op<"timer_command"> {
+  let arguments = (ins StrAttr:$owner, StrAttr:$command);
+  let hasVerifier = 1;
+}
+def XR_PopupCommandOp : XR_Op<"popup_command"> {
+  let arguments = (ins StrAttr:$owner, StrAttr:$open);
   let hasVerifier = 1;
 }
 
@@ -143,6 +162,10 @@ def XR_DefaultRecordOp : XR_ExpressionOp<"default_record", (ins), XR_Record, [Pu
 def XR_GetFieldOp : XR_ExpressionOp<"get_field", (ins XR_Record:$input), XR_Value, [Pure]>;
 def XR_MakeDateOp : XR_ExpressionOp<"make_date", (ins XR_Int:$year, XR_Int:$month, XR_Int:$day), XR_Date, [Pure]>;
 def XR_DateFieldOp : XR_ExpressionOp<"date_field", (ins XR_Date:$input), XR_Int, [Pure]> {
+  let hasVerifier = 1;
+}
+def XR_MakeTimeOp : XR_ExpressionOp<"make_time", (ins XR_Int:$hour, XR_Int:$minute, XR_Int:$second), XR_Time, [Pure]>;
+def XR_TimeFieldOp : XR_ExpressionOp<"time_field", (ins XR_Time:$input), XR_Int, [Pure]> {
   let hasVerifier = 1;
 }
 def XR_ReadOp : XR_ExpressionOp<"read", (ins OptionalAttr<StrAttr>:$owner)>;

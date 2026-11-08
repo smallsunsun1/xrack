@@ -102,6 +102,251 @@ fn a_bound_tab_change_reveals_the_selection_without_locking_manual_scroll() {
 }
 
 #[test]
+fn a_nonmodal_popup_inside_a_dialog_can_receive_input_beyond_the_dialog_bounds() {
+    use xrack_runtime::PopupPlacement;
+
+    let mut window = node("Window", "root");
+    let mut dialog = node("Dialog", "dialog");
+    boolean(&mut dialog, "open", true);
+    length(&mut dialog, "width", 140.0);
+    length(&mut dialog, "height", 110.0);
+    let mut anchor = button("anchor");
+    let mut popup = node("PopupWindow", "popup");
+    boolean(&mut popup, "open", true);
+    length(&mut popup, "width", 112.0);
+    length(&mut popup, "height", 72.0);
+    popup
+        .properties
+        .insert("placement", PopupPlacement::Right.into());
+    popup.children.push(button("popup-action"));
+    anchor.children.push(popup);
+    dialog.children.push(anchor);
+    window.children.push(dialog);
+    let frame = layout(&window, Size::new(400.0, 260.0), &mut Text);
+    let button = frame.at_path(&[0, 0, 0, 0]).unwrap().bounds;
+    let point = Point {
+        x: button.x + button.width * 0.5,
+        y: button.y + button.height * 0.5,
+    };
+    assert!(!frame.children[0].bounds.contains(point));
+    let mut input = Interaction::default();
+    input.reconcile(&window, &frame);
+    input.pointer_move(&window, &frame, point);
+    assert_eq!(
+        input.hovered.as_ref().and_then(|target| target.id),
+        Some("popup-action")
+    );
+    assert!(!input.dialog_pointer_press(&frame));
+}
+
+#[test]
+fn anchored_popup_escapes_scroll_clipping_only_while_the_anchor_is_visible() {
+    let mut window = node("Window", "root");
+    let mut scroll = node("ScrollView", "scroll");
+    length(&mut scroll, "x", 20.0);
+    length(&mut scroll, "y", 20.0);
+    length(&mut scroll, "width", 200.0);
+    length(&mut scroll, "height", 100.0);
+    length(&mut scroll, "content-height", 280.0);
+    let mut anchor = button("anchor");
+    length(&mut anchor, "x", 20.0);
+    length(&mut anchor, "y", 130.0);
+    let mut popup = node("PopupWindow", "popup");
+    boolean(&mut popup, "open", true);
+    length(&mut popup, "width", 130.0);
+    length(&mut popup, "height", 60.0);
+    anchor.children.push(popup);
+    scroll.children.push(anchor);
+    window.children.push(scroll);
+    let viewport = Size::new(300.0, 200.0);
+    let closed = layout(&window, viewport, &mut Text);
+    assert!(closed.overlay_paths().is_empty());
+    let offsets = BTreeMap::from([(vec![0], 100.0)]);
+    let shown = layout_with_scroll(&window, viewport, &mut Text, &offsets);
+    assert_eq!(shown.overlay_paths(), &[vec![0, 0, 0]]);
+    assert!(shown.dialog_paths().is_empty());
+    let popup = shown.at_path(&[0, 0, 0]).unwrap();
+    assert_eq!(popup.bounds, Rect::new(40.0, 78.0, 130.0, 60.0));
+    assert_eq!(popup.clip, shown.bounds);
+}
+
+#[test]
+fn styled_label_keeps_graphemes_and_ellipsizes_the_last_fitting_line() {
+    use unicode_segmentation::UnicodeSegmentation;
+    use xrack_runtime::{TextOverflow, TextWrap};
+
+    let mut label = node("Label", "label");
+    label.properties.insert("text", "A👩‍💻BCD".to_owned().into());
+    label
+        .properties
+        .insert("overflow", TextOverflow::Elide.into());
+    length(&mut label, "font-size", 10.0);
+    let advance = |text: &str| text.graphemes(true).count() as f32 * 10.0;
+    let elided = LabelLayout::new(&label, Size::new(30.0, 20.0), advance);
+    assert_eq!(elided.lines[0].text, "A👩‍💻…");
+    assert_eq!(elided.size.width, 30.0);
+    assert!(
+        LabelLayout::new(&label, Size::new(6.0, 20.0), advance).lines[0]
+            .text
+            .is_empty()
+    );
+
+    label
+        .properties
+        .insert("text", "alpha beta gamma".to_owned().into());
+    label.properties.insert("wrap", TextWrap::WordWrap.into());
+    label.properties.insert("max-lines", 2_i64.into());
+    let layout = LabelLayout::new(&label, Size::new(50.0, 100.0), advance);
+    assert_eq!(
+        layout
+            .lines
+            .iter()
+            .map(|line| &*line.text)
+            .collect::<Vec<_>>(),
+        ["alpha", "beta…"]
+    );
+    let short = LabelLayout::new(&label, Size::new(50.0, 20.0), advance);
+    assert_eq!(short.lines[0].text, "alph…");
+}
+
+#[test]
+fn label_alignment_follows_each_paragraph_direction_and_block_height() {
+    let mut label = node("Label", "label");
+    length(&mut label, "font-size", 10.0);
+    label
+        .properties
+        .insert("text", "abc\r\nשלום".to_owned().into());
+    label.properties.insert(
+        "vertical-alignment",
+        xrack_runtime::TextVerticalAlignment::Bottom.into(),
+    );
+    let layout = LabelLayout::new(&label, Size::new(120.0, 70.0), |text| {
+        text.chars().count() as f32 * 10.0
+    });
+    assert_eq!(layout.lines[0].origin, Point { x: 0.0, y: 42.0 });
+    assert_eq!(layout.lines[1].origin, Point { x: 80.0, y: 56.0 });
+    assert_eq!(layout.size, Size::new(40.0, 28.0));
+}
+
+#[test]
+fn a_wrapped_label_is_remeasured_after_horizontal_layout_assigns_its_width() {
+    let mut root = node("Window", "root");
+    let mut row = node("HorizontalLayout", "row");
+    let mut sidebar = button("sidebar");
+    length(&mut sidebar, "width", 100.0);
+    let mut label = node("Label", "label");
+    length(&mut label, "font-size", 10.0);
+    label
+        .properties
+        .insert("text", "abcdefghijklmnopqr".to_owned().into());
+    label
+        .properties
+        .insert("wrap", xrack_runtime::TextWrap::CharWrap.into());
+    row.children.extend([sidebar, label]);
+    root.children.push(row);
+    let frame = layout(&root, Size::new(160.0, 100.0), &mut Text);
+    assert_eq!(
+        frame.children[0].children[1].bounds,
+        Rect::new(100.0, 0.0, 60.0, 42.0)
+    );
+}
+
+#[test]
+fn flexbox_grows_to_caps_and_shrinks_in_proportion_to_preferred_size() {
+    use xrack_runtime::FlexboxLayoutWrap;
+
+    let mut flex = node("FlexboxLayout", "flex");
+    flex.properties
+        .insert("flex-wrap", FlexboxLayoutWrap::NoWrap.into());
+    flex.properties
+        .insert("alignment", LayoutAlignment::Stretch.into());
+    length(&mut flex, "spacing-horizontal", 10.0);
+    for (id, preferred, min, max, stretch) in [
+        ("first", 60.0, 30.0, 75.0, 1.0),
+        ("second", 90.0, 40.0, 180.0, 2.0),
+        ("fixed-preference", 30.0, 25.0, 80.0, 0.0),
+    ] {
+        let mut item = node("Rectangle", id);
+        length(&mut item, "preferred-width", preferred);
+        length(&mut item, "min-width", min);
+        length(&mut item, "max-width", max);
+        length(&mut item, "height", 20.0);
+        item.properties
+            .insert("horizontal-stretch", Value::Float(stretch));
+        flex.children.push(item);
+    }
+    let widths = |size| {
+        layout(&flex, Size::new(size, 50.0), &mut Text)
+            .children
+            .into_iter()
+            .map(|child| child.bounds.width)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(widths(320.0), [75.0, 180.0, 30.0]);
+    assert_eq!(widths(150.0), [42.0, 63.0, 25.0]);
+    assert_eq!(widths(90.0), [30.0, 40.0, 25.0]);
+}
+
+#[test]
+fn flexbox_stretches_lines_and_honors_an_items_cross_alignment() {
+    let mut flex = node("FlexboxLayout", "flex");
+    length(&mut flex, "spacing-vertical", 10.0);
+    for id in ["first", "centered", "third"] {
+        let mut item = node("Rectangle", id);
+        length(&mut item, "width", 80.0);
+        length(&mut item, "preferred-height", 20.0);
+        flex.children.push(item);
+    }
+    flex.children[1].properties.insert(
+        "cross-axis-self-alignment",
+        CrossAxisAlignment::Center.into(),
+    );
+    let frame = layout(&flex, Size::new(180.0, 120.0), &mut Text);
+    assert_eq!(frame.children[0].bounds, Rect::new(0.0, 0.0, 80.0, 55.0));
+    assert_eq!(frame.children[1].bounds, Rect::new(80.0, 17.5, 80.0, 20.0));
+    assert_eq!(frame.children[2].bounds, Rect::new(0.0, 65.0, 80.0, 55.0));
+}
+
+#[test]
+fn reversed_flex_lines_place_items_from_the_logical_start_and_keep_focus_order() {
+    use xrack_runtime::{FlexboxLayoutDirection, FlexboxLayoutWrap};
+
+    let mut flex = node("FlexboxLayout", "flex");
+    flex.properties
+        .insert("flex-direction", FlexboxLayoutDirection::RowReverse.into());
+    flex.properties
+        .insert("flex-wrap", FlexboxLayoutWrap::WrapReverse.into());
+    flex.properties.insert(
+        "cross-axis-line-alignment",
+        LayoutAlignment::SpaceBetween.into(),
+    );
+    length(&mut flex, "padding", 10.0);
+    length(&mut flex, "spacing-horizontal", 8.0);
+    length(&mut flex, "spacing-vertical", 6.0);
+    let mut first = button("logical-first");
+    first.properties.insert("layout-order", (-1_i64).into());
+    flex.children = vec![button("second"), first, button("third")];
+    let frame = layout(&flex, Size::new(190.0, 120.0), &mut Text);
+    assert_eq!(frame.children[1].bounds, Rect::new(100.0, 90.0, 80.0, 20.0));
+    assert_eq!(frame.children[0].bounds, Rect::new(12.0, 90.0, 80.0, 20.0));
+    assert_eq!(frame.children[2].bounds, Rect::new(100.0, 10.0, 80.0, 20.0));
+    let mut input = Interaction::default();
+    input.focus_next(&flex, &frame, false);
+    assert_eq!(input.focused.as_ref().unwrap().id, Some("logical-first"));
+    input.focus_next(&flex, &frame, false);
+    assert_eq!(input.focused.as_ref().unwrap().id, Some("second"));
+
+    flex.properties.insert(
+        "flex-direction",
+        FlexboxLayoutDirection::ColumnReverse.into(),
+    );
+    let frame = layout(&flex, Size::new(190.0, 74.0), &mut Text);
+    assert_eq!(frame.children[1].bounds, Rect::new(100.0, 44.0, 80.0, 20.0));
+    assert_eq!(frame.children[0].bounds, Rect::new(100.0, 18.0, 80.0, 20.0));
+    assert_eq!(frame.children[2].bounds, Rect::new(10.0, 44.0, 80.0, 20.0));
+}
+
+#[test]
 fn vertical_flow_wraps_columns_and_skips_hidden_and_zero_sized_items() {
     let mut root = node("Window", "root");
     let mut flow = node("FlowLayout", "flow");

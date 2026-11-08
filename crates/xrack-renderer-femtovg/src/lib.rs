@@ -19,9 +19,9 @@ use xrack_layout::{
     StackTransitions, TreeRowGeometry, dialog_title_height, font_size,
 };
 use xrack_runtime::{
-    Brush, Color as UiColor, Component, GradientStop, ImageFit, Node, Value, button_text,
-    combo_editable, group_index, is_button, is_modal_overlay, is_multiline_text_input, is_spin_box,
-    is_text_input, is_toggle, spin_editable, spin_text, text_input_value,
+    Brush, Color as UiColor, Component, GradientStop, ImageFit, Node, StandardButtonKind, Value,
+    button_text, combo_editable, group_index, is_button, is_multiline_text_input, is_spin_box,
+    is_text_input, is_toggle, is_window_overlay, spin_editable, spin_text, text_input_value,
 };
 
 #[derive(Clone, Copy)]
@@ -39,6 +39,7 @@ struct PaintFrame<'a> {
     input: &'a Interaction,
     scale: f32,
     transitions: Option<&'a StackTransitions>,
+    indicator_phase: Option<f32>,
 }
 impl Default for Theme {
     fn default() -> Self {
@@ -109,6 +110,11 @@ fn brush_paint(node: &Node, name: &str, bounds: Rect, shade: f32) -> Option<Pain
     })
 }
 
+fn indicator_phase(elapsed: Duration) -> f32 {
+    const PERIOD_NS: u128 = 1_400_000_000;
+    (elapsed.as_nanos() % PERIOD_NS) as f32 / PERIOD_NS as f32
+}
+
 pub struct Renderer {
     pub instance: wgpu::Instance,
     pub adapter: wgpu::Adapter,
@@ -117,7 +123,6 @@ pub struct Renderer {
     canvas: Canvas<WGPURenderer>,
     images: image::Images,
     clock: Instant,
-    phase: f32,
     needs_redraw: bool,
     painted_combo_completion: Option<ComboCompletion>,
     pub text: TextSystem,
@@ -168,7 +173,6 @@ impl Renderer {
             canvas,
             images: image::Images::default(),
             clock: Instant::now(),
-            phase: 0.0,
             needs_redraw: false,
             painted_combo_completion: None,
             text,
@@ -236,6 +240,7 @@ impl Renderer {
                 input,
                 scale,
                 transitions: None,
+                indicator_phase: Some(indicator_phase(self.clock.elapsed())),
             },
         )?;
         Ok(layout)
@@ -284,6 +289,7 @@ impl Renderer {
                 input,
                 scale,
                 transitions: Some(transitions),
+                indicator_phase: Some(indicator_phase(self.clock.elapsed())),
             },
         )
     }
@@ -298,7 +304,6 @@ impl Renderer {
         let PaintFrame { input, scale, .. } = frame;
         self.needs_redraw = false;
         self.painted_combo_completion = None;
-        self.phase = (self.clock.elapsed().as_secs_f64() / 1.4).fract() as f32;
         let size = target.size();
         self.canvas.set_size(size.width, size.height, scale);
         self.canvas.reset();
@@ -306,22 +311,27 @@ impl Renderer {
             .clear_rect(0, 0, size.width, size.height, color(self.theme.window));
         self.canvas.scale(scale, scale);
         self.images.begin_frame();
-        if !is_modal_overlay(scene.kind) {
+        if !is_window_overlay(scene.kind) {
             self.paint(scene, layout, &mut Vec::new(), frame, false)?;
         }
-        for path in input.dialog_layers(layout) {
+        for path in input.overlay_layers(layout) {
             let (Some(node), Some(item)) = (scene.at_path(path), layout.at_path(path)) else {
                 continue;
             };
-            let mut backdrop = Path::new();
-            backdrop.rect(
-                0.0,
-                0.0,
-                size.width as f32 / scale,
-                size.height as f32 / scale,
-            );
-            self.canvas
-                .fill_path(&backdrop, &Paint::color(Color::rgba(8, 13, 21, 168)));
+            if !node.is_modal() && !input.allows_popup(layout, path) {
+                continue;
+            }
+            if node.boolean("dim", node.is_modal()) {
+                let mut backdrop = Path::new();
+                backdrop.rect(
+                    0.0,
+                    0.0,
+                    size.width as f32 / scale,
+                    size.height as f32 / scale,
+                );
+                self.canvas
+                    .fill_path(&backdrop, &Paint::color(Color::rgba(8, 13, 21, 168)));
+            }
             self.paint(node, item, &mut path.to_vec(), frame, false)?;
         }
         if let Some(menu) = input.choice_menu(scene, layout) {
@@ -353,6 +363,7 @@ impl Renderer {
                     input: &Interaction::default(),
                     scale,
                     transitions: None,
+                    indicator_phase: frame.indicator_phase,
                 },
                 false,
             )?;
@@ -395,8 +406,11 @@ impl Renderer {
             input,
             scale,
             transitions,
+            indicator_phase,
         } = frame;
         let bounds = layout.bounds;
+        let group_header =
+            (node.kind == "GroupBox").then(|| xrack_layout::group_header(node, bounds));
         if node.kind == "SplitHandle" {
             controls::split_handle(
                 &mut self.canvas,
@@ -431,16 +445,22 @@ impl Renderer {
                     | "DoubleSpinBox"
                     | "ComboBox"
                     | "ListView"
+                    | "GridView"
+                    | "StandardListView"
                     | "TableView"
                     | "TreeView"
                     | "Dialog"
+                    | "PopupWindow"
+                    | "GroupBox"
                     | "Drawer"
                     | "MenuBar"
                     | "ToolBar"
                     | "Calendar"
+                    | "Tumbler"
             );
-        let checked =
-            is_button && node.boolean("checkable", false) && node.boolean("checked", false);
+        let checked = is_button
+            && (node.kind == "DelayButton" || node.boolean("checkable", false))
+            && node.boolean("checked", false);
         let background = if !is_button {
             brush_paint(node, "background", bounds, 0.0)
                 .or_else(|| boxed.then(|| Paint::color(color(UiColor(0x27354dff)))))
@@ -456,11 +476,16 @@ impl Renderer {
                 0.0
             } - if checked { 0.28 } else { 0.0 };
             brush_paint(node, "background", bounds, shade).or_else(|| {
+                let base = match node.standard_button_kind() {
+                    Some(StandardButtonKind::Discard) => UiColor(0xa63843ff),
+                    Some(_) if !node.boolean("primary", false) => UiColor(0x384966ff),
+                    _ => self.theme.button,
+                };
                 (node.kind != "ToolButton"
                     || checked
                     || input.is_hovered(path)
                     || input.is_pressed(path))
-                .then(|| Paint::color(color(tint(self.theme.button, shade))))
+                .then(|| Paint::color(color(tint(base, shade))))
             })
         };
         let radii = corner_radii(node, bounds);
@@ -468,6 +493,25 @@ impl Renderer {
             let mut path = Path::new();
             append_rect(&mut path, bounds, radii);
             self.canvas.fill_path(&path, &background);
+        }
+        if node.kind == "DelayButton" {
+            let (fraction, pending) = input.delay_progress(path).unwrap_or((0.0, false));
+            let fraction = if checked { 1.0 } else { fraction };
+            if fraction > 0.0 && layout.enabled {
+                self.canvas.save();
+                self.canvas.intersect_scissor(
+                    bounds.x,
+                    bounds.y,
+                    bounds.width * fraction,
+                    bounds.height,
+                );
+                let mut path = Path::new();
+                append_rect(&mut path, bounds, radii);
+                let tint = node.color("progress-color").unwrap_or(UiColor(0x366483ff));
+                self.canvas.fill_path(&path, &Paint::color(color(tint)));
+                self.canvas.restore();
+            }
+            self.needs_redraw |= pending && layout.enabled;
         }
         if dialog_title_height(node) > 0.0 {
             let paint = self.text.paint(
@@ -484,9 +528,44 @@ impl Renderer {
                 )
                 .map_err(|error| format!("dialog title drawing failed: {error}"))?;
         }
+        if let Some(header) =
+            group_header.filter(|header| header.width > 0.0 && header.height > 0.0)
+        {
+            self.canvas.save();
+            self.canvas
+                .intersect_scissor(header.x, header.y, header.width, header.height);
+            let result = if node.group_checkable() {
+                entry::toggle(
+                    &mut self.canvas,
+                    &self.text,
+                    self.theme,
+                    node,
+                    header,
+                    layout.enabled,
+                )
+            } else {
+                let size = font_size(node);
+                let foreground = if layout.enabled {
+                    node.color("color").unwrap_or(self.theme.text)
+                } else {
+                    self.theme.disabled_text
+                };
+                self.canvas
+                    .fill_text(
+                        header.x,
+                        header.y + ((header.height - size * 1.4) * 0.5).max(0.0),
+                        node.text("title").unwrap_or(""),
+                        &self.text.paint(size, color(foreground), false),
+                    )
+                    .map(|_| ())
+                    .map_err(|error| format!("group title drawing failed: {error}"))
+            };
+            self.canvas.restore();
+            result?;
+        }
         let border = node
             .length("border-width")
-            .unwrap_or(0.0)
+            .unwrap_or(if group_header.is_some() { 1.0 } else { 0.0 })
             .max(0.0)
             .min(bounds.width.min(bounds.height));
         if border > 0.0 {
@@ -515,10 +594,11 @@ impl Renderer {
             let mut paint = Paint::color(color(self.theme.focus));
             paint.set_line_width(2.0);
             let mut path = Path::new();
+            let focus = group_header.unwrap_or(bounds);
             append_rect(
                 &mut path,
-                bounds.inset(2.0),
-                radii.map(|r| (r - 2.0).max(0.0)),
+                focus.inset(2.0),
+                corner_radii(node, focus).map(|r| (r - 2.0).max(0.0)),
             );
             self.canvas.stroke_path(&path, &paint);
         }
@@ -569,7 +649,16 @@ impl Renderer {
                 result?;
             }
         }
-        if node.kind == "Calendar" {
+        if let Some(wheel) = &layout.tumbler {
+            controls::tumbler(
+                &mut self.canvas,
+                &self.text,
+                self.theme,
+                node,
+                wheel,
+                layout.enabled,
+            )?;
+        } else if node.kind == "Calendar" {
             controls::calendar(
                 &mut self.canvas,
                 &self.text,
@@ -625,9 +714,36 @@ impl Renderer {
                     |index| input.page_marker_hovered(path, index),
                 );
             }
-        } else if node.kind == "ProgressIndicator" {
-            range::progress(&mut self.canvas, self.theme, node, bounds, self.phase);
-            self.needs_redraw |= node.boolean("indeterminate", false);
+        } else if let Some(indicator) = xrack_runtime::indicator_state(node) {
+            let phase =
+                indicator_phase.filter(|_| layout.enabled && node.boolean("animated", true));
+            self.needs_redraw |= range::indicator(
+                &mut self.canvas,
+                self.theme,
+                node,
+                bounds,
+                indicator,
+                phase,
+                layout.enabled,
+            );
+        } else if node.kind == "StandardListItem" {
+            controls::label(
+                &mut self.canvas,
+                &self.text,
+                Rect::new(
+                    bounds.x + 12.0,
+                    bounds.y,
+                    (bounds.width - 24.0).max(0.0),
+                    bounds.height,
+                ),
+                node.text("text").unwrap_or("").lines().next().unwrap_or(""),
+                font_size(node),
+                if layout.enabled {
+                    self.theme.text
+                } else {
+                    self.theme.disabled_text
+                },
+            )?;
         } else if node.kind == "RadioButton" {
             controls::radio(
                 &mut self.canvas,
@@ -669,6 +785,19 @@ impl Renderer {
                 )?;
                 (
                     xrack_layout::ComboGeometry::new(bounds).entry,
+                    std::borrow::Cow::Borrowed(text_input_value(node)),
+                )
+            } else if node.kind == "SearchField" {
+                let geometry = xrack_layout::SearchGeometry::new(bounds);
+                controls::search_icons(
+                    &mut self.canvas,
+                    self.theme,
+                    node,
+                    &geometry,
+                    layout.enabled,
+                );
+                (
+                    geometry.entry,
                     std::borrow::Cow::Borrowed(text_input_value(node)),
                 )
             } else if is_spin_box(node.kind) {
@@ -730,6 +859,28 @@ impl Renderer {
                 layout.enabled,
             )? {
                 self.painted_combo_completion = completion;
+            }
+        } else if xrack_layout::uses_label_layout(node) {
+            let tint = if layout.enabled {
+                node.color("color").unwrap_or(self.theme.text)
+            } else {
+                self.theme.disabled_text
+            };
+            let paint = self.text.paint(font_size(node), color(tint), false);
+            let label = self
+                .text
+                .label_layout(node, Size::new(bounds.width, bounds.height));
+            for line in label.lines {
+                if !line.text.is_empty() {
+                    self.canvas
+                        .fill_text(
+                            bounds.x + line.origin.x,
+                            bounds.y + line.origin.y,
+                            &*line.text,
+                            &paint,
+                        )
+                        .map_err(|error| format!("text drawing failed: {error}"))?;
+                }
             }
         } else if node.kind == "Text" || is_button {
             let button = is_button.then(|| ButtonContent::new(node));
@@ -839,6 +990,7 @@ impl Renderer {
                 input: &frozen_input,
                 scale,
                 transitions: None,
+                indicator_phase: None,
             };
             for (page, page_layout, offset, visible) in slide.outgoing() {
                 self.canvas.save();
@@ -855,7 +1007,7 @@ impl Renderer {
             }
         }
         for (i, (node, layout)) in node.children.iter().zip(&layout.children).enumerate() {
-            if is_modal_overlay(node.kind) {
+            if is_window_overlay(node.kind) {
                 continue;
             }
             path.push(i);
@@ -871,6 +1023,32 @@ impl Renderer {
             };
             path.pop();
             result?;
+        }
+        if let Some((rect, _)) = layout
+            .swipe_delegate
+            .as_deref()
+            .and_then(xrack_layout::SwipeDelegateGeometry::toggle)
+        {
+            let mut dots = Path::new();
+            let center = (rect.x + rect.width * 0.5, rect.y + rect.height * 0.5);
+            for x in [-5.0, 0.0, 5.0] {
+                dots.circle(center.0 + x, center.1, 1.3);
+            }
+            self.canvas.fill_path(
+                &dots,
+                &Paint::color(color(if layout.enabled {
+                    self.theme.text
+                } else {
+                    self.theme.disabled_text
+                })),
+            );
+        }
+        if node.kind == "SwipeDelegate" && input.is_focused(path) && layout.enabled {
+            let mut outline = Path::new();
+            append_rect(&mut outline, bounds.inset(2.0), [0.0; 4]);
+            let mut paint = Paint::color(color(self.theme.focus));
+            paint.set_line_width(2.0);
+            self.canvas.stroke_path(&outline, &paint);
         }
         if let Some(grip) = xrack_layout::drawer_grip(node, bounds) {
             let mut path = Path::new();
@@ -948,6 +1126,50 @@ impl Renderer {
         input: &Interaction,
         transitions: &StackTransitions,
     ) -> Result<Snapshot, String> {
+        self.snapshot_frame(
+            scene,
+            width,
+            height,
+            PaintFrame {
+                input,
+                scale,
+                transitions: Some(transitions),
+                indicator_phase: Some(indicator_phase(self.clock.elapsed())),
+            },
+        )
+    }
+
+    /// Sample the indicator animation at a specified elapsed time.
+    pub fn snapshot_at(
+        &mut self,
+        scene: &Node,
+        width: u32,
+        height: u32,
+        scale: f32,
+        input: &Interaction,
+        elapsed: Duration,
+    ) -> Result<Snapshot, String> {
+        self.snapshot_frame(
+            scene,
+            width,
+            height,
+            PaintFrame {
+                input,
+                scale,
+                transitions: None,
+                indicator_phase: Some(indicator_phase(elapsed)),
+            },
+        )
+    }
+
+    fn snapshot_frame(
+        &mut self,
+        scene: &Node,
+        width: u32,
+        height: u32,
+        frame: PaintFrame<'_>,
+    ) -> Result<Snapshot, String> {
+        let scale = frame.scale;
         validate_extent(
             width,
             height,
@@ -971,18 +1193,9 @@ impl Renderer {
         let layout = self.layout_with_input(
             scene,
             Size::new(width as f32 / scale, height as f32 / scale),
-            input,
+            frame.input,
         );
-        self.paint_frame(
-            scene,
-            &layout,
-            &texture,
-            PaintFrame {
-                input,
-                scale,
-                transitions: Some(transitions),
-            },
-        )?;
+        self.paint_frame(scene, &layout, &texture, frame)?;
         let stride = (width * 4).div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT)
             * wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
         let buffer = self.device.create_buffer(&wgpu::BufferDescriptor {

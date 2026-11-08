@@ -273,3 +273,53 @@ export component TabBarDemo inherits Window {
         for label in root.filters : TabButton { text: label; }
     }
 }
+export component PageDemo inherits Window {
+    width: 360px; height: 240px;
+    title: "页面布局";
+    in-out property <bool> show-header: true;
+    out property <int> saves: 0;
+
+    settings := Page {
+        title: "工作区设置";
+        background: #141d2a;
+        padding: 12px; spacing: 6px;
+
+        page-footer := PageFooter {
+            height: 44px;
+            background: #253f51;
+            HorizontalLayout {
+                padding: 5px; spacing: 12px;
+                cross-axis-alignment: center;
+                save := Button {
+                    text: "保存"; width: 96px; height: 34px;
+                    clicked() => { root.saves = root.saves + 1; }
+                }
+                Text { text: "已保存 " + root.saves + " 次"; color: #ffffff; }
+            }
+        }
+
+        settings-scroll := ScrollView {
+            width: 100%; height: 100%;
+            content-height: 420px;
+            Rectangle {
+                width: 100%; height: 420px;
+                background: #386055;
+                option := CheckBox { x: 10px; y: 10px; text: "同步设置"; }
+                Text { x: 10px; y: 380px; text: "滚动到末尾"; color: #ffffff; }
+            }
+        }
+
+        page-header := PageHeader {
+            visible: root.show-header;
+            background: #253249;
+            ToolBar {
+                background: #253249;
+                header-action := ToolButton {
+                    text: "收起页眉";
+                    clicked() => { root.show-header = false; }
+                }
+                Text { text: "工作区设置"; color: #ffffff; }
+            }
+        }
+    }
+}

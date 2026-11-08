@@ -279,18 +279,24 @@ impl<T> VecModel<T> {
     }
 }
 
-impl<T: Clone> VecModel<T> {
-    pub fn row(&self, index: usize) -> Option<T> {
+impl<T> VecModel<T> {
+    pub(crate) fn project_row<R>(&self, index: usize, project: impl FnOnce(&T) -> R) -> Option<R> {
         let rows = self.0.rows.borrow();
         if let Some(entry) = rows.get(index) {
             if ChangeSignal::is_tracking() {
                 self.0.row_signals.borrow_mut().track(index);
             }
-            Some(entry.value.clone())
+            Some(project(&entry.value))
         } else {
             self.0.count.track();
             None
         }
+    }
+}
+
+impl<T: Clone> VecModel<T> {
+    pub fn row(&self, index: usize) -> Option<T> {
+        self.project_row(index, T::clone)
     }
 
     pub fn snapshot(&self) -> Vec<T> {

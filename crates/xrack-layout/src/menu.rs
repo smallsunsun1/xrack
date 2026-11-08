@@ -1,5 +1,5 @@
 use crate::{LayoutNode, MenuShortcut, Point, Rect, Target, input::valid};
-use xrack_runtime::{ActionKey, Image, Node, is_modal_overlay};
+use xrack_runtime::{ActionKey, Image, Node, is_window_overlay};
 
 const ROW_HEIGHT: f32 = 28.0;
 const MAX_VISIBLE_ROWS: usize = 14;
@@ -194,7 +194,7 @@ impl ShortcutSearch {
             .zip(&layout.children)
             .enumerate()
             .all(|(index, (child, item))| {
-                if is_modal_overlay(child.kind) {
+                if is_window_overlay(child.kind) {
                     return true;
                 }
                 path.push(index);

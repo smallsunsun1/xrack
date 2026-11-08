@@ -219,12 +219,13 @@ impl TextEdit {
                     .chars()
                     .filter(|ch| !ch.is_control() || (multiline && *ch == '\n'))
                     .collect::<String>();
-                if matches!(action, EditAction::ReplaceAll(_)) {
+                let replace_all = matches!(action, EditAction::ReplaceAll(_));
+                if filtered.is_empty() && !(replace_all && value.is_empty()) {
+                    return None;
+                }
+                if replace_all {
                     (0..text.len(), filtered)
                 } else {
-                    if filtered.is_empty() {
-                        return None;
-                    }
                     (selection, filtered)
                 }
             }

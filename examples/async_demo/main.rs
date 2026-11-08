@@ -10,6 +10,7 @@ enum Message {
     Search(String),
     Loaded {
         request: u64,
+        query: String,
         rows: Vec<String>,
     },
     UpdateRow {
@@ -80,7 +81,11 @@ fn setup(
                 let rows = (1..=12)
                     .map(|index| format!("{query} · 结果 {index}"))
                     .collect();
-                if let Err(error) = sender.try_send(Message::Loaded { request, rows }) {
+                if let Err(error) = sender.try_send(Message::Loaded {
+                    request,
+                    query: query.clone(),
+                    rows,
+                }) {
                     eprintln!("could not deliver search results: {error}");
                     return;
                 }
@@ -94,12 +99,18 @@ fn setup(
                 }
             });
         }
-        Message::Loaded { request, rows } if request == current_request => {
+        Message::Loaded {
+            request,
+            query,
+            rows,
+        } if request == current_request && query == ui.get_query() => {
             println!(
                 "search {request} committed {} results on the UI thread",
                 rows.len()
             );
+            ui.set_suggestions(rows.iter().take(8).cloned().collect());
             ui.set_results(rows);
+            ui.set_result_query(query);
             ui.set_loading(false);
         }
         Message::UpdateRow {
@@ -107,7 +118,8 @@ fn setup(
             index,
             text,
         } if request == current_request => {
-            if ui.model_results().set_row(index, text) {
+            if ui.model_results().set_row(index, text.clone()) {
+                ui.model_suggestions().set_row(index, text);
                 println!("search {request} updated row {index} on the UI thread");
             }
         }

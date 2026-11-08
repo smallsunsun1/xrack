@@ -61,8 +61,16 @@ impl<Model: ListModel, State, Ui> Default for ComponentRepeater<Model, State, Ui
 }
 
 impl<Model: ListModel, State: Default, Ui> ComponentRepeater<Model, State, Ui> {
+    pub fn with_model<R>(
+        &self,
+        model: impl FnOnce() -> Model,
+        read: impl FnOnce(&Model) -> R,
+    ) -> R {
+        read(&self.model.get(|| Rc::new(model())))
+    }
+
     pub fn row_count(&self, model: impl FnOnce() -> Model) -> usize {
-        self.model.get(|| Rc::new(model())).row_count()
+        self.with_model(model, ListModel::row_count)
     }
 
     pub fn render_range(

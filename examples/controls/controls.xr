@@ -169,14 +169,14 @@ export component CalendarDemo inherits Window {
     in-out property <Date> selected: Date { year: 2024, month: 2, day: 28 };
     in-out property <Date> month: Date { year: 2024, month: 2, day: 1 };
     in-out property <bool> picker-open: false;
-    in-out property <Date> draft;
-    private property <Date> draft-month;
     private property <Date> earliest: Date { year: 2024, month: 2, day: 5 };
-    private property <Date> latest: Date { year: 2024, month: 4, day: 15 };
+    in-out property <Date> latest: Date { year: 2024, month: 4, day: 15 };
     private property <[string]> weekdays: ["一", "二", "三", "四", "五", "六", "日"];
     out property <int> date-changes: 0;
     out property <int> month-changes: 0;
     out property <int> picked-day: 0;
+    out property <int> accepts: 0;
+    out property <int> cancels: 0;
 
     Text {
         x: 22px; y: 14px;
@@ -197,32 +197,20 @@ export component CalendarDemo inherits Window {
     open-picker := Button {
         x: 22px; y: 390px; width: 174px; height: 44px;
         text: "在弹层中选择…";
-        clicked => {
-            root.draft = root.selected;
-            root.draft-month = root.selected;
-            root.picker-open = true;
-        }
+        clicked => { root.picker-open = true; }
     }
-    picker := Dialog {
+    picker := DatePickerPopup {
         title: "选择行程日期";
         width: 408px; height: 404px;
         open <=> root.picker-open;
-        accepted => { root.selected = root.draft; root.month = root.draft; }
-        picker-calendar := Calendar {
-            height: 284px;
-            accessible-name: "待确认日期";
-            date <=> root.draft;
-            display-month <=> root.draft-month;
-            minimum-date: root.earliest;
-            maximum-date: root.latest;
-            weekday-labels: root.weekdays;
-        }
-        HorizontalLayout {
-            alignment: end;
-            spacing: 8px;
-            cancel-picker := DialogButton { text: "取消"; role: reject; }
-            confirm-picker := DialogButton { text: "应用日期"; role: accept; }
-        }
+        date <=> root.selected;
+        minimum-date: root.earliest;
+        maximum-date: root.latest;
+        weekday-labels: root.weekdays;
+        cancel-text: "取消";
+        accept-text: "应用日期";
+        accepted(date) => { root.month = date; root.accepts += 1; }
+        canceled => { root.cancels += 1; }
     }
 }
 
@@ -277,6 +265,348 @@ export component DecimalSpinDemo inherits Window {
                 decimal-separator: root.use-comma ? "," : ".";
                 accessible-name: "单价 · " + row.label;
             }
+        }
+    }
+}
+
+export component TumblerDemo inherits Window {
+    title: "XRack · 滚轮选择";
+    width: 388px;
+    height: 324px;
+    background: #162034;
+
+    in-out property <[string]> hours: [
+        "00", "01", "02", "03", "04", "05", "06", "07", "08", "09", "10", "11",
+        "12", "13", "14", "15", "16", "17", "18", "19", "20", "21", "22", "23"
+    ];
+    in-out property <int> hour: 8;
+    in-out property <int> minute: 30;
+    in-out property <bool> cycle: true;
+    out property <int> changes: 0;
+
+    Text { x: 24px; y: 16px; text: "拖动或滚动选择时间"; color: #edf3ff; font-size: 22px; }
+    hour-wheel := Tumbler {
+        x: 48px; y: 60px; width: 118px; height: 170px;
+        accessible-name: "小时";
+        model: root.hours;
+        current-index <=> root.hour;
+        visible-item-count: 5;
+        wrap: root.cycle;
+        changed(index) => { root.changes += 1; }
+    }
+    minute-wheel := Tumbler {
+        x: 216px; y: 60px; width: 118px; height: 170px;
+        accessible-name: "分钟";
+        count: 60;
+        current-index <=> root.minute;
+        visible-item-count: 5;
+        wrap: root.cycle;
+        changed(index) => { root.changes += 1; }
+    }
+    Text {
+        x: 24px; y: 250px;
+        text: "当前索引 " + root.hour + " : " + root.minute + " · 提交 " + root.changes + " 次";
+        color: #acc0db;
+    }
+    cycle-toggle := CheckBox {
+        x: 24px; y: 281px; width: 158px; height: 32px;
+        text: "循环滚动";
+        checked <=> root.cycle;
+    }
+}
+
+export component DelayDemo inherits Window {
+    title: "XRack · 长按确认";
+    width: 400px;
+    height: 214px;
+    background: #162034;
+
+    in-out property <bool> confirmed: false;
+    in-out property <bool> allow-confirm: true;
+    in-out property <int> hold-time: 800;
+    out property <int> activations: 0;
+
+    Text { x: 24px; y: 16px; text: "按住确认，松开前可取消"; color: #edf3ff; font-size: 20px; }
+    confirm := DelayButton {
+        x: 24px; y: 59px; width: 232px; height: 48px;
+        text: root.confirmed ? "已确认 · 点击复位" : "按住确认";
+        accessible-name: "确认";
+        enabled: root.allow-confirm;
+        delay: root.hold-time;
+        checked <=> root.confirmed;
+        progress-color: #366483;
+        activated => { root.activations += 1; }
+    }
+    enable-toggle := CheckBox {
+        x: 24px; y: 120px; width: 155px; height: 34px;
+        text: "允许确认";
+        checked <=> root.allow-confirm;
+    }
+    Text { x: 24px; y: 174px; text: "确认次数 " + root.activations; color: #acc0db; }
+}
+
+export struct ReviewRow {
+    title: string,
+    state: CheckState,
+}
+
+export component CheckStateDemo inherits Window {
+    title: "XRack · 三态复选";
+    width: 452px;
+    height: 350px;
+    background: #162034;
+
+    in-out property <bool> first: true;
+    in-out property <bool> second: false;
+    in-out property <CheckState> cycle-state;
+    private property <CheckState> summary:
+        root.first && root.second ? CheckState.checked :
+        (root.first || root.second ? CheckState.partially-checked : CheckState.unchecked);
+    out property <int> proposals: 0;
+    out property <int> cycle-edits: 0;
+    out property <int> first-edits: 0;
+    out property <CheckState> last-first-state;
+    in-out property <[ReviewRow]> reviews: [
+        ReviewRow { title: "渲染检查", state: CheckState.partially-checked },
+        ReviewRow { title: "输入检查", state: CheckState.unchecked },
+    ];
+
+    Text { x: 24px; y: 16px; text: "部分选择 · 三态循环"; color: #edf3ff; font-size: 22px; }
+    master := CheckBox {
+        x: 24px; y: 57px; width: 240px; height: 34px;
+        text: "全选";
+        check-state: root.summary;
+        check-state-changed(state) => {
+            root.proposals += 1;
+            root.first = state == CheckState.checked;
+            root.second = state == CheckState.checked;
+        }
+    }
+    first-item := CheckBox {
+        x: 46px; y: 94px; width: 190px; height: 30px;
+        text: "图形测试";
+        checked <=> root.first;
+        toggled() => { root.first-edits += 1; }
+        check-state-changed(state) => { root.last-first-state = state; }
+    }
+    second-item := CheckBox {
+        x: 46px; y: 128px; width: 190px; height: 30px;
+        text: "交互测试";
+        checked <=> root.second;
+    }
+    cycle := CheckBox {
+        x: 24px; y: 166px; width: 188px; height: 34px;
+        text: "三态循环";
+        tristate: true;
+        check-state <=> root.cycle-state;
+        check-state-changed(state) => { root.cycle-edits += 1; }
+    }
+    review-table := TableView {
+        x: 24px; y: 213px; width: 404px; height: 116px; row-height: 38px;
+        TableColumn { title: "检查项目"; min-width: 182px; }
+        TableColumn { title: "状态"; width: 144px; }
+        for row in root.reviews : TableRow {
+            TableCell { text <=> row.title; }
+            CheckBox { tristate: true; check-state <=> row.state; text: "完成"; }
+        }
+    }
+}
+
+export component GroupBoxDemo inherits Window {
+    title: "XRack · 表单分组";
+    width: 470px;
+    height: 376px;
+    background: #162034;
+
+    in-out property <bool> active: true;
+    in-out property <string> address: "notify@example.invalid";
+    in-out property <bool> preview-open: false;
+    in-out property <bool> audit: true;
+    out property <int> group-changes: 0;
+    out property <bool> last-active: true;
+
+    open-preview := Action {
+        text: "查看预览";
+        shortcut: "Primary+Shift+P";
+        activated => { root.preview-open = true; }
+    }
+    Text { x: 22px; y: 15px; text: "表单分组"; color: #edf3ff; font-size: 22px; }
+    delivery := GroupBox {
+        x: 22px; y: 55px; width: 426px; height: 168px;
+        title: "邮件通知";
+        checkable: true;
+        checked <=> root.active;
+        content-padding: 12px;
+        toggled(active) => { root.group-changes += 1; root.last-active = active; }
+
+        address-field := LineEdit {
+            accessible-name: "通知地址";
+            text <=> root.address;
+            placeholder-text: "输入通知地址";
+        }
+        preview := Button { action: open-preview; }
+        details := Dialog {
+            title: "通知预览";
+            open <=> root.preview-open;
+            width: 356px;
+            height: 164px;
+            Text { text: "发送到 " + root.address; }
+            close-preview := DialogButton { text: "关闭"; role: reject; }
+        }
+    }
+    preferences := GroupBox {
+        x: 22px; y: 234px; width: 426px; height: 91px;
+        title: "常规";
+        content-padding: 9px;
+        audit-toggle := CheckBox { text: "保留操作记录"; checked <=> root.audit; }
+    }
+    Text {
+        x: 22px; y: 340px;
+        text: "分组切换 " + root.group-changes + " 次";
+        color: #acc0db;
+    }
+}
+
+export component IndicatorsDemo inherits Window {
+    title: "XRack · 进度与忙碌";
+    width: 452px;
+    height: 286px;
+    background: #162034;
+
+    in-out property <bool> running: true;
+    in-out property <bool> animated: true;
+    in-out property <float> amount: 0.65;
+
+    Text { x: 24px; y: 14px; text: "进度与忙碌状态"; font-size: 22px; color: #edf3ff; }
+    busy := BusyIndicator {
+        x: 36px; y: 59px; width: 54px; height: 54px;
+        accessible-name: "后台任务";
+        running: root.running;
+        animated: root.animated;
+    }
+    progress-ring := Spinner {
+        x: 176px; y: 59px; width: 54px; height: 54px;
+        accessible-name: "下载进度";
+        progress: root.amount;
+        color: #70d4ae;
+        track-color: #293c54;
+    }
+    hybrid-ring := Spinner {
+        x: 316px; y: 59px; width: 54px; height: 54px;
+        accessible-name: "同步进度";
+        progress: root.amount;
+        indeterminate: root.running;
+        animated: root.animated;
+        stroke-width: 5px;
+    }
+    Text { x: 35px; y: 124px; text: "后台任务"; color: #b8caff; }
+    Text { x: 175px; y: 124px; text: "下载进度"; color: #b8caff; }
+    Text { x: 315px; y: 124px; text: "同步进度"; color: #b8caff; }
+    activity-bar := ProgressIndicator {
+        x: 24px; y: 160px; width: 404px; height: 9px;
+        accessible-name: "任务进度条";
+        progress: root.amount;
+        indeterminate: root.running;
+        animated: root.animated;
+    }
+    progress-control := Slider {
+        x: 24px; y: 186px; width: 404px; height: 30px;
+        minimum: 0;
+        maximum: 1;
+        step: 0.05;
+        value <=> root.amount;
+    }
+    running-toggle := CheckBox {
+        x: 24px; y: 234px; width: 160px; height: 34px;
+        text: "后台任务运行";
+        checked <=> root.running;
+    }
+    animation-toggle := CheckBox {
+        x: 205px; y: 234px; width: 170px; height: 34px;
+        text: "启用加载动画";
+        checked <=> root.animated;
+    }
+}
+export component TimeDemo inherits Window {
+    title: "XRack · 时间选择";
+    width: 520px; height: 372px;
+    background: #162034;
+
+    in-out property <Time> selected: Time { hour: 23, minute: 58, second: 41 };
+    in-out property <bool> use-24: true;
+    in-out property <bool> seconds: false;
+    in-out property <bool> picker-open: false;
+    in-out property <bool> inline-enabled: true;
+    out property <int> changes: 0;
+    out property <int> accepts: 0;
+    out property <int> cancels: 0;
+    out property <int> accepted-minute: -1;
+
+    Text { x: 24px; y: 18px; text: "已保存 · " + root.selected; font-size: 24px; }
+    inline-time := TimePicker {
+        x: 24px; y: 64px; width: 472px; height: 170px;
+        time <=> root.selected;
+        use-24-hour-format: root.use-24;
+        show-seconds: root.seconds;
+        enabled: root.inline-enabled;
+        changed(time) => { root.changes += 1; }
+    }
+    open-time := Button {
+        x: 24px; y: 254px; width: 180px; height: 44px;
+        text: "在弹层中选择…";
+        clicked => { root.picker-open = true; }
+    }
+    use24 := CheckBox { x: 228px; y: 262px; text: "24 小时制"; checked <=> root.use-24; }
+    seconds-toggle := CheckBox { x: 360px; y: 262px; text: "显示秒"; checked <=> root.seconds; }
+    popup-time := TimePickerPopup {
+        title: "调整时间";
+        open <=> root.picker-open;
+        time <=> root.selected;
+        use-24-hour-format: root.use-24;
+        show-seconds: root.seconds;
+        accept-text: "应用时间";
+        cancel-text: "取消";
+        accepted(time) => { root.accepts += 1; root.accepted-minute = time.minute; }
+        canceled => { root.cancels += 1; }
+    }
+}
+export component TimerDemo inherits Window {
+    title: "XRack · 声明式计时器";
+    width: 460px; height: 240px;
+    background: #162034;
+
+    in-out property <int> remaining: 4;
+    in-out property <int> interval-ms: 250;
+    in-out property <bool> ticking: true;
+    in-out property <bool> pulse-pending: false;
+    out property <int> pulses: 0;
+
+    countdown := Timer {
+        interval: root.interval-ms;
+        running <=> root.ticking;
+        repeat: true;
+        triggered() => {
+            root.remaining = root.remaining > 0 ? root.remaining - 1 : 0;
+            root.ticking = root.remaining > 0;
+        }
+    }
+    pulse := Timer {
+        interval: 120;
+        running <=> root.pulse-pending;
+        triggered() => { root.pulses += 1; }
+    }
+
+    VerticalLayout {
+        padding: 20px; spacing: 12px; alignment: start;
+        Text { text: "倒计时 " + root.remaining; font-size: 26px; }
+        ProgressIndicator { progress: root.remaining / 4.0; }
+        Text { text: "单次触发 " + root.pulses + " 次"; }
+        HorizontalLayout {
+            spacing: 8px;
+            restart-countdown := Button { text: "重新计时"; clicked() => { root.remaining = 4; countdown.restart(); } }
+            pause-countdown := Button { text: "暂停"; clicked() => { countdown.stop(); } }
+            resume-countdown := Button { text: "继续"; clicked() => { countdown.start(); } }
+            start-pulse := Button { text: "单次触发"; clicked() => { pulse.restart(); } }
         }
     }
 }

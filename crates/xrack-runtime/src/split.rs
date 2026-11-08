@@ -1,4 +1,4 @@
-use crate::{Node, Value, is_modal_overlay};
+use crate::{Node, Value, is_window_overlay};
 use std::sync::Arc;
 
 impl Node {
@@ -15,7 +15,7 @@ impl Node {
             .enumerate()
             .filter(|(_, pane)| {
                 pane.is_visible()
-                    && !is_modal_overlay(pane.kind)
+                    && !is_window_overlay(pane.kind)
                     && !matches!(pane.kind, "Menu" | "Tooltip")
             })
     }

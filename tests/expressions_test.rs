@@ -1,11 +1,36 @@
 use expressions_ui::{
     EmbeddedList, Expressions, LazyList, LazyProperties, ModelBindings, RadioByValue,
-    SelectionByValue,
+    SelectionByValue, SharedVisuals,
 };
 use std::{cell::Cell, rc::Rc};
 use xrack_runtime::{
     Color, Component, ControlAction, Length, Value, VecModel, combo_index, group_index,
 };
+
+#[test]
+fn shared_visual_bindings_invalidate_and_keep_repeat_rows_independent() {
+    let mut ui = SharedVisuals::new();
+    let check = |ui: &SharedVisuals, count: &str, expected_rows: [&str; 2]| {
+        let scene = ui.render_shared();
+        for id in ["first", "second"] {
+            assert_eq!(scene.find(id).unwrap().text("text"), Some(count));
+        }
+        for (index, expected) in expected_rows.into_iter().enumerate() {
+            let row = scene.at_path(&[2, index]).unwrap();
+            assert_eq!(row.children.len(), 2);
+            assert!(
+                row.children
+                    .iter()
+                    .all(|node| node.text("text") == Some(expected))
+            );
+        }
+    };
+    check(&ui, "Count 0", ["Row A", "Row B"]);
+    ui.set_count(3);
+    check(&ui, "Count 3", ["Row A", "Row B"]);
+    ui.set_items(vec!["C".into(), "D".into()]);
+    check(&ui, "Count 3", ["Row C", "Row D"]);
+}
 
 #[test]
 fn string_model_preserves_snapshot_and_callback_api() {

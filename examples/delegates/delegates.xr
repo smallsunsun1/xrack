@@ -50,3 +50,55 @@ export component DelegatesDemo inherits Window {
         }
     }
 }
+component MailRow inherits SwipeDelegate {
+    in property <string> subject;
+    property <SwipeSide> revealed: closed;
+    property <bool> archived: false;
+    property <bool> pinned: false;
+    property <int> clicks: 0;
+    open-side <=> root.revealed;
+    accessible-name: root.subject;
+    clicked() => { root.clicks += 1; }
+
+    SwipeLeft {
+        width: 96px;
+        background: #304966;
+        pin-mail := Button {
+            text: "置顶"; width: 96px;
+            clicked() => { root.pinned = !root.pinned; root.revealed = closed; }
+        }
+    }
+    SwipeContent {
+        background: #263750;
+        padding-left: 14px;
+        cross-axis-alignment: center;
+        Text {
+            text: root.subject + (root.archived ? " · 已归档" : root.pinned ? " · 已置顶" : "") + " · 点击 " + root.clicks;
+        }
+    }
+    SwipeRight {
+        width: 96px;
+        background: #355b50;
+        archive := Button {
+            text: "归档"; width: 96px; background: #355b50;
+            clicked() => { root.archived = true; root.revealed = closed; }
+        }
+    }
+}
+
+export component SwipeDemo inherits Window {
+    title: "XRack · 可滑动列表项";
+    width: 560px; height: 370px;
+    background: #182331;
+    in-out property <[string]> messages;
+
+    VerticalLayout {
+        padding: 16px; spacing: 8px;
+        Text { text: "邮件 · 横向拖动露出操作"; font-size: 22px; }
+        Text { text: "也可聚焦后按左右方向键，Esc 收起"; color: #acc0db; }
+        mail := ListView {
+            row-height: 48px;
+            for subject in root.messages : MailRow { subject: subject; }
+        }
+    }
+}

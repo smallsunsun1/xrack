@@ -22,24 +22,20 @@ pub struct TextAreaLayout {
     pub max_scroll: Point,
 }
 
-fn boundaries(text: &str) -> Vec<usize> {
+pub(crate) fn grapheme_boundaries(text: &str) -> Vec<usize> {
     text.grapheme_indices(true)
         .map(|(byte, _)| byte)
         .chain(std::iter::once(text.len()))
         .collect()
 }
 
-fn fit_characters(
-    text: &str,
-    breaks: &[usize],
+pub(crate) fn fitting_prefix(
     start: usize,
-    width: f32,
-    advance: &impl Fn(&str) -> f32,
+    last: usize,
+    mut fits: impl FnMut(usize) -> bool,
 ) -> usize {
-    let mut fit = start + 1;
-    let last = breaks.len() - 1;
-    let mut probe = (fit + 1).min(last);
-    let fits = |index| advance(&text[breaks[start]..breaks[index]]) <= width;
+    let mut fit = start;
+    let mut probe = (start + 1).min(last);
     while probe > fit && fits(probe) {
         fit = probe;
         probe = (start + (fit - start).saturating_mul(2)).min(last);
@@ -53,6 +49,20 @@ fn fit_characters(
         }
     }
     fit
+}
+
+pub(crate) fn paragraphs(text: &str) -> impl Iterator<Item = Range<usize>> {
+    let mut separators = text.match_indices(['\r', '\n']).peekable();
+    let mut start = Some(0);
+    std::iter::from_fn(move || {
+        let begin = start.take()?;
+        let Some((end, separator)) = separators.next() else {
+            return Some(begin..text.len());
+        };
+        let crlf = separator == "\r" && separators.next_if_eq(&(end + 1, "\n")).is_some();
+        start = Some(end + if crlf { 2 } else { 1 });
+        Some(begin..end)
+    })
 }
 
 impl TextAreaLayout {
@@ -71,13 +81,14 @@ impl TextAreaLayout {
                 lines.push(range);
                 return;
             }
-            let breaks = boundaries(content);
+            let breaks = grapheme_boundaries(content);
             let mut start = 0;
             while start < breaks.len() - 1 {
                 let next = match wrap {
-                    TextWrap::CharWrap => {
-                        fit_characters(content, &breaks, start, area.width, &advance)
-                    }
+                    TextWrap::CharWrap => fitting_prefix(start, breaks.len() - 1, |index| {
+                        advance(&content[breaks[start]..breaks[index]]) <= area.width
+                    })
+                    .max(start + 1),
                     TextWrap::WordWrap => {
                         let end =
                             breaks[start].saturating_add(word_break(&content[breaks[start]..]));
@@ -92,16 +103,9 @@ impl TextAreaLayout {
                 start = next;
             }
         };
-        let mut start = 0;
-        let mut newlines = text.match_indices(['\r', '\n']).peekable();
-        while let Some((byte, separator)) = newlines.next() {
-            paragraph(start..byte);
-            start = byte + 1;
-            if separator == "\r" && newlines.next_if_eq(&(start, "\n")).is_some() {
-                start += 1;
-            }
+        for range in paragraphs(text) {
+            paragraph(range);
         }
-        paragraph(start..text.len());
         let width = lines
             .iter()
             .map(|line| advance(&text[line.clone()]))
@@ -184,7 +188,7 @@ impl TextAreaLayout {
     ) -> TextPosition {
         let range = &self.lines[line];
         let content = &text[range.clone()];
-        let breaks = boundaries(content);
+        let breaks = grapheme_boundaries(content);
         let after = breaks.partition_point(|&byte| advance(&content[..byte]) < x);
         let right = breaks[after.min(breaks.len() - 1)];
         let left = breaks[after.saturating_sub(1).min(breaks.len() - 1)];

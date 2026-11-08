@@ -3754,6 +3754,7 @@ dependencies = [
 name = "xrack-layout"
 version = "0.1.0"
 dependencies = [
+ "unicode-bidi",
  "unicode-segmentation",
  "xrack-runtime",
 ]
@@ -3821,6 +3822,9 @@ dependencies = [
 [[package]]
 name = "xrack-runtime"
 version = "0.1.0"
+dependencies = [
+ "unicode-segmentation",
+]
 
 [[package]]
 name = "xrack-syntax"

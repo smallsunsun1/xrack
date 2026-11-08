@@ -40,10 +40,15 @@ pub enum ControlAction {
     Spin(SpinAction),
     Calendar(crate::CalendarAction),
     Select(usize),
+    PickTumbler { index: usize, row: crate::RowKey },
     TableSelection(crate::TableSelectionAction),
     Tree(crate::TreeAction),
     Dialog(DialogRole),
+    DialogCommand(DialogCommand),
     Drawer(bool),
+    Popup(bool),
+    SwipeDelegate(SwipeSide),
+    DelayButton(bool),
     StackBack { revision: u64 },
     ActivateMenuItem,
     ActivateAction,
@@ -56,6 +61,20 @@ pub enum ControlAction {
 
 pub fn is_modal_overlay(kind: &str) -> bool {
     matches!(kind, "Dialog" | "Drawer")
+}
+
+pub fn is_window_overlay(kind: &str) -> bool {
+    is_modal_overlay(kind) || kind == "PopupWindow"
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum PopupPlacement {
+    #[default]
+    Below,
+    Above,
+    Left,
+    Right,
+    Offset,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -96,17 +115,132 @@ pub enum DialogRole {
     Reject,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SwipeSide {
+    #[default]
+    Closed,
+    Left,
+    Right,
+}
+
+impl SwipeSide {
+    pub fn panel(self) -> Option<&'static str> {
+        match self {
+            Self::Closed => None,
+            Self::Left => Some("SwipeLeft"),
+            Self::Right => Some("SwipeRight"),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DialogCommand {
+    Apply,
+    Reset,
+    Help,
+    Discard,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum StandardButtonKind {
+    #[default]
+    Ok,
+    Open,
+    Save,
+    SaveAll,
+    Cancel,
+    Close,
+    Apply,
+    Reset,
+    RestoreDefaults,
+    Help,
+    Yes,
+    YesToAll,
+    No,
+    NoToAll,
+    Abort,
+    Retry,
+    Ignore,
+    Discard,
+}
+
+impl StandardButtonKind {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Ok => "OK",
+            Self::Open => "Open",
+            Self::Save => "Save",
+            Self::SaveAll => "Save All",
+            Self::Cancel => "Cancel",
+            Self::Close => "Close",
+            Self::Apply => "Apply",
+            Self::Reset => "Reset",
+            Self::RestoreDefaults => "Restore Defaults",
+            Self::Help => "Help",
+            Self::Yes => "Yes",
+            Self::YesToAll => "Yes to All",
+            Self::No => "No",
+            Self::NoToAll => "No to All",
+            Self::Abort => "Abort",
+            Self::Retry => "Retry",
+            Self::Ignore => "Ignore",
+            Self::Discard => "Discard",
+        }
+    }
+
+    fn dialog_action(self) -> ControlAction {
+        match self {
+            Self::Ok
+            | Self::Open
+            | Self::Save
+            | Self::SaveAll
+            | Self::Yes
+            | Self::YesToAll
+            | Self::Retry
+            | Self::Ignore => ControlAction::Dialog(DialogRole::Accept),
+            Self::Cancel | Self::Close | Self::No | Self::NoToAll | Self::Abort => {
+                ControlAction::Dialog(DialogRole::Reject)
+            }
+            Self::Apply => ControlAction::DialogCommand(DialogCommand::Apply),
+            Self::Reset | Self::RestoreDefaults => {
+                ControlAction::DialogCommand(DialogCommand::Reset)
+            }
+            Self::Help => ControlAction::DialogCommand(DialogCommand::Help),
+            Self::Discard => ControlAction::DialogCommand(DialogCommand::Discard),
+        }
+    }
+}
+
+pub fn dialog_button_action(node: &Node) -> Option<ControlAction> {
+    if node.kind == "DialogButton" {
+        return Some(ControlAction::Dialog(node.dialog_role()));
+    }
+    node.standard_button_kind()
+        .map(StandardButtonKind::dialog_action)
+}
+
 pub fn is_button(kind: &str) -> bool {
-    matches!(kind, "Button" | "ToolButton" | "DialogButton")
+    matches!(
+        kind,
+        "Button" | "ToolButton" | "DialogButton" | "DelayButton"
+    )
+}
+
+pub fn delay_millis(node: &Node) -> u64 {
+    node.int("delay").unwrap_or(3_000).clamp(0, 60_000) as u64
 }
 
 pub fn button_text(node: &Node) -> &str {
-    node.text("text")
-        .unwrap_or_else(|| match (node.kind, node.dialog_role()) {
+    node.text("text").unwrap_or_else(|| {
+        if let Some(kind) = node.standard_button_kind() {
+            return kind.label();
+        }
+        match (node.kind, node.dialog_role()) {
             ("DialogButton", DialogRole::Accept) => "OK",
             ("DialogButton", DialogRole::Reject) => "Cancel",
             _ => "",
-        })
+        }
+    })
 }
 
 pub struct SpinRange {
@@ -230,8 +364,12 @@ pub fn text_input_value(node: &Node) -> &str {
 /// Suggestions can be tagged with the query that produced them.
 pub fn search_suggestions(node: &Node) -> &[String] {
     let text = text_input_value(node);
-    if node.kind != "SearchField" || node.boolean("read-only", false) || text.is_empty()
-        || node.text("suggestions-for").is_some_and(|query| query != text)
+    if node.kind != "SearchField"
+        || node.boolean("read-only", false)
+        || text.is_empty()
+        || node
+            .text("suggestions-for")
+            .is_some_and(|query| query != text)
     {
         &[]
     } else {

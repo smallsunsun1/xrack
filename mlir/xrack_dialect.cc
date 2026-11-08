@@ -43,7 +43,7 @@ static bool isExpression(Operation &op) {
              StringifyOp, BinaryOp, SelectOp, SolidBrushOp, GradientStopOp,
              LinearGradientOp, RadialGradientOp, ImageUrlOp, ArrayOp, CallOp,
              ToRatioOp, MakeRecordOp, DefaultRecordOp, RecordArrayOp,
-             GetFieldOp, MakeDateOp, DateFieldOp>(op);
+             GetFieldOp, MakeDateOp, DateFieldOp, MakeTimeOp, TimeFieldOp>(op);
 }
 
 LogicalResult DateFieldOp::verify() {
@@ -53,12 +53,40 @@ LogicalResult DateFieldOp::verify() {
              : emitOpError("requires year, month, or day");
 }
 
-static bool isVirtualView(llvm::StringRef kind) {
-  return kind == "ListView" || kind == "TableView" || kind == "TreeView";
+LogicalResult TimeFieldOp::verify() {
+  auto field = getValue();
+  return field == "hour" || field == "minute" || field == "second"
+             ? success()
+             : emitOpError("requires hour, minute, or second");
 }
 
-static bool isModalOverlay(llvm::StringRef kind) {
-  return kind == "Dialog" || kind == "Drawer";
+static bool usesListTemplate(llvm::StringRef kind) {
+  return kind == "ListView" || kind == "GridView";
+}
+
+static bool isSwipeSlot(llvm::StringRef kind) {
+  return kind == "SwipeContent" || kind == "SwipeLeft" || kind == "SwipeRight";
+}
+
+static bool isTableView(llvm::StringRef kind) {
+  return kind == "TableView" || kind == "StandardTableView";
+}
+
+static bool isVirtualView(llvm::StringRef kind) {
+  return usesListTemplate(kind) || kind == "StandardListView" ||
+         isTableView(kind) || kind == "TreeView";
+}
+
+static bool isTimePicker(llvm::StringRef kind) {
+  return kind == "TimePicker" || kind == "TimePickerPopup";
+}
+
+static bool isPickerPopup(llvm::StringRef kind) {
+  return kind == "TimePickerPopup" || kind == "DatePickerPopup";
+}
+
+static bool isWindowOverlay(llvm::StringRef kind) {
+  return kind == "Dialog" || kind == "Drawer" || kind == "PopupWindow" || isPickerPopup(kind);
 }
 
 static LogicalResult verifyStackRoute(Operation *op, ElementOp view,
@@ -136,7 +164,7 @@ static bool validTreeRoles(ElementOp row) {
 }
 
 static bool forbiddenInTooltip(llvm::StringRef kind) {
-  return isVirtualView(kind) || kind == "Tooltip" || isModalOverlay(kind) ||
+  return isVirtualView(kind) || kind == "Tooltip" || isWindowOverlay(kind) ||
          kind == "Menu" || kind == "MenuBar";
 }
 
@@ -163,6 +191,33 @@ LogicalResult ElementOp::verify() {
   auto parent = dyn_cast<ElementOp>((*this)->getParentOp());
   auto parentKind = parent ? parent.getKind() : llvm::StringRef{};
   auto &body = getBody().front();
+  if (kind == "Timer") {
+    if (!parent || !isa<ComponentOp>(parent->getParentOp()) || getId().empty())
+      return emitOpError("Timer requires a named static declaration at the component root");
+    llvm::StringSet<> properties;
+    bool handled = false;
+    for (Operation &child : body) {
+      if (auto bind = dyn_cast<BindOp>(child)) {
+        auto name = bind.getName();
+        auto type = bind.getInput().getType();
+        if (!((name == "interval" && isa<IntType>(type)) ||
+              ((name == "running" || name == "repeat" || name == "triggered-on-start") && isa<BoolType>(type))))
+          return child.emitOpError("incorrect Timer property type or name");
+        if (!properties.insert(name).second)
+          return child.emitOpError("duplicate Timer property");
+      } else if (auto link = dyn_cast<ControlLinkOp>(child)) {
+        if (link.getName() != "running" || !properties.insert("running").second)
+          return child.emitOpError("Timer requires a single running binding");
+      } else if (auto handler = dyn_cast<HandlerOp>(child)) {
+        if (handler.getName() != "triggered" || handled)
+          return child.emitOpError("Timer accepts one triggered() handler");
+        handled = true;
+      } else if (!isa<EndOp>(child) && !isExpression(child)) {
+        return child.emitOpError("Timer only accepts property bindings and triggered()");
+      }
+    }
+    return success();
+  }
   if (kind == "Action") {
     if (!parent || !isa<ComponentOp>(parent->getParentOp()) || getId().empty())
       return emitOpError(
@@ -211,6 +266,13 @@ LogicalResult ElementOp::verify() {
             "Action presentations require a stable element path");
   if (kind == "Tooltip" && (root || parentKind == "Tooltip"))
     return emitOpError("Tooltip requires a visual owner");
+  if (kind == "PopupWindow" && root)
+    return emitOpError("PopupWindow requires a visual owner");
+  const bool pageSlot = kind == "PageHeader" || kind == "PageFooter";
+  if (pageSlot && (root || parentKind != "Page"))
+    return emitOpError() << kind << " requires a direct Page parent";
+  if (isSwipeSlot(kind) && parentKind != "SwipeDelegate")
+    return emitOpError("swipe slots require a direct SwipeDelegate parent");
   if (forbiddenInTooltip(kind))
     for (auto ancestor = parent; ancestor;
          ancestor = ancestor->getParentOfType<ElementOp>())
@@ -220,15 +282,16 @@ LogicalResult ElementOp::verify() {
        parentKind != "ContextMenuArea") ||
       ((kind == "MenuItem" || kind == "MenuSeparator") && parentKind != "Menu"))
     return emitOpError("requires a menu container");
-  const bool table = kind == "TableView";
+  const bool table = isTableView(kind);
+  const bool standardTable = kind == "StandardTableView";
   const bool tree = kind == "TreeView";
   const bool interval = kind == "RangeSlider";
   const bool textCell = kind == "TableCell" || kind == "TreeCell";
   if (kind == "TreeRow" && (parentKind != "TreeView" || !validTreeRoles(*this)))
     return emitOpError("TreeRow requires integer key and parent-key fields of "
                        "a repeated record model");
-  if ((kind == "TableRow" || kind == "TableColumn") &&
-      parentKind != "TableView")
+  if ((kind == "TableRow" && parentKind != "TableView") ||
+      (kind == "TableColumn" && !isTableView(parentKind)))
     return emitOpError("requires a TableView parent");
   if (kind == "TableCell" && parentKind != "TableRow")
     return emitOpError("requires a TableRow parent");
@@ -274,25 +337,57 @@ LogicalResult ElementOp::verify() {
   bool tooltipText = false;
   unsigned cellTextBindings = 0;
   unsigned columns = 0;
+  unsigned tableModels = 0;
+  unsigned columnFields = 0;
   std::optional<unsigned> cells;
   llvm::StringSet<> intervalEndpoints;
+  llvm::StringSet<> pageSlots;
+  llvm::StringSet<> swipeSlots;
   ReadOp intervalTarget;
   ReadOp comboTextTarget;
   ReadOp calendarTarget;
+  bool checkboxBoolean = false;
+  bool checkboxState = false;
   for (Operation &child : body) {
+    if (kind == "CheckBox" && isa<BindOp, ControlLinkOp, RowLinkOp>(child))
+      if (auto attr = child.getAttrOfType<StringAttr>("name")) {
+        auto name = attr.getValue();
+        checkboxBoolean |= name == "checked";
+        checkboxState |= name == "check-state" || name == "tristate";
+        if (checkboxBoolean && checkboxState)
+          return child.emitOpError("CheckBox accepts checked or check-state/tristate");
+      }
     if (auto element = dyn_cast<ElementOp>(child);
-        element && element.getKind() == "Action")
+        element && (element.getKind() == "Action" || element.getKind() == "Timer"))
       continue;
     if (linkedAction && isa<HandlerOp, ControlLinkOp>(child))
       return child.emitOpError(
           "activation and checked state belong to the linked Action");
     if (isa<ElementOp, InstanceOp>(child)) {
+      if (kind == "StandardListView")
+        return child.emitOpError("StandardListView cannot contain child elements");
       if (kind == "SplitView" && !child.getRegion(0).empty() &&
           !child.getRegion(0).front().getOps<RepeatOp>().empty())
         return child.emitOpError(
             "SplitView panes require stable child positions");
       auto element = dyn_cast<ElementOp>(child);
       auto childType = element ? element.getKind() : llvm::StringRef{};
+      if (kind == "SwipeDelegate") {
+        if (!isSwipeSlot(childType) || !element.getBody().front().getOps<RepeatOp>().empty() ||
+            !element.getBody().front().getOps<ShowIfOp>().empty())
+          return child.emitOpError("SwipeDelegate requires static swipe slots");
+        if (!swipeSlots.insert(childType).second)
+          return child.emitOpError() << "duplicate " << childType << " slot";
+      }
+      if (kind == "DialogButtonBox" &&
+          ((childType != "Button" && childType != "DialogButton" && childType != "StandardButton") ||
+           !element.getBody().front().getOps<RepeatOp>().empty()))
+        return child.emitOpError("DialogButtonBox requires direct button children without repetition");
+      if (kind == "TimePicker" || isPickerPopup(kind))
+        return child.emitOpError() << kind << " uses built-in picker children";
+      if ((childType == "PageHeader" || childType == "PageFooter") &&
+          !pageSlots.insert(childType).second)
+        return child.emitOpError() << "Page accepts only one " << childType;
       if (childType == "Tooltip")
         ++tooltips;
       if (tree) {
@@ -304,8 +399,12 @@ LogicalResult ElementOp::verify() {
         ++tooltipChildren;
       if (table) {
         if (childType == "TableColumn") {
+          auto &columnBody = element.getBody().front();
+          if (standardTable && (!columnBody.getOps<RepeatOp>().empty() ||
+                                !columnBody.getOps<ShowIfOp>().empty()))
+            return child.emitOpError("StandardTableView requires static columns");
           ++columns;
-        } else if (childType == "TableRow" && !cells &&
+        } else if (!standardTable && childType == "TableRow" && !cells &&
                    !element.getBody().empty()) {
           auto &body = element.getBody().front();
           cells = llvm::count_if(body, [](Operation &op) {
@@ -316,6 +415,8 @@ LogicalResult ElementOp::verify() {
             return child.emitOpError(
                 "TableRow requires one repeat and no condition");
         } else {
+          if (standardTable)
+            return child.emitOpError("StandardTableView accepts static TableColumn children");
           return child.emitOpError("TableView requires static TableColumn "
                                    "children and one repeated TableRow");
         }
@@ -331,7 +432,8 @@ LogicalResult ElementOp::verify() {
       if (childType == "Menu")
         ++contextMenus;
       if ((interval || kind == "Dial" || kind == "PageIndicator" ||
-           kind == "Calendar") &&
+           kind == "Calendar" || kind == "Tumbler" || kind == "Spinner" ||
+           kind == "BusyIndicator") &&
           childType != "Tooltip")
         return child.emitOpError() << kind << " only accepts Tooltip children";
     }
@@ -377,6 +479,21 @@ LogicalResult ElementOp::verify() {
           bind && bind.getName() == "wrap" &&
           !isa<TextWrapType>(bind.getInput().getType()))
         return child.emitOpError("wrap requires a TextWrap value");
+    if (auto bind = dyn_cast<BindOp>(child)) {
+      auto name = bind.getName();
+      auto type = bind.getInput().getType();
+      bool singleLine = kind == "TextInput" || kind == "LineEdit";
+      if ((name == "input-type" && (!singleLine || !isa<InputModeType>(type))) ||
+          (name == "password-visible" && (!singleLine || !isa<BoolType>(type))))
+        return child.emitOpError("incorrect password input property or type");
+      if (name == "maximum-length" &&
+          ((!singleLine && kind != "TextEdit" && kind != "TextArea") ||
+           !isa<IntType>(type)))
+        return child.emitOpError("maximum-length requires an integer on a text editor");
+      if (name == "decimal-separator" &&
+          ((!singleLine && kind != "DoubleSpinBox") || !isa<StringType>(type)))
+        return child.emitOpError("decimal-separator requires a string on a decimal editor");
+    }
     if (kind == "ComboBox")
       if (auto link = dyn_cast<ControlLinkOp>(child);
           link &&
@@ -392,17 +509,50 @@ LogicalResult ElementOp::verify() {
         }
     if (auto bind = dyn_cast<BindOp>(child)) {
       auto name = bind.getName();
+      if (kind == "ProgressIndicator" || kind == "Spinner" ||
+          kind == "BusyIndicator") {
+        auto type = bind.getInput().getType();
+        if ((name == "progress" &&
+             (kind == "BusyIndicator" || !isa<FloatType>(type))) ||
+            (name == "indeterminate" &&
+             (kind == "BusyIndicator" || !isa<BoolType>(type))) ||
+            (name == "running" &&
+             (kind != "BusyIndicator" || !isa<BoolType>(type))) ||
+            ((name == "animated" || name == "enabled") && !isa<BoolType>(type)) ||
+            ((name == "track-color" || name == "color") && !isa<ColorType>(type)) ||
+            (name == "stroke-width" &&
+             (kind == "ProgressIndicator" || !isa<LengthType>(type))))
+          return child.emitOpError("incorrect activity indicator property type");
+      }
+      if ((name == "check-state" || name == "tristate") &&
+          (kind != "CheckBox" ||
+           (name == "check-state" && !isa<CheckStateType>(bind.getInput().getType())) ||
+           (name == "tristate" && !isa<BoolType>(bind.getInput().getType()))))
+        return child.emitOpError("incorrect CheckBox property or type");
       if ((name == "accessible-name" || name == "accessible-description") &&
           !isa<StringType>(bind.getInput().getType()))
         return child.emitOpError("accessibility labels require strings");
-      if (kind == "FlowLayout" || kind == "ToolBar") {
+      if (kind == "Text" || kind == "Label") {
+        auto type = bind.getInput().getType();
+        if ((name == "wrap" && !isa<TextWrapType>(type)) ||
+            (name == "overflow" && !isa<TextOverflowType>(type)) ||
+            (name == "max-lines" && !isa<IntType>(type)) ||
+            (name == "horizontal-alignment" && !isa<TextHorizontalAlignmentType>(type)) ||
+            (name == "vertical-alignment" && !isa<TextVerticalAlignmentType>(type)))
+          return child.emitOpError("incorrect text layout property type");
+      }
+      if (kind == "FlowLayout" || kind == "ToolBar" || kind == "FlexboxLayout") {
         auto type = bind.getInput().getType();
         if ((name == "orientation" && !isa<OrientationType>(type)) ||
             (name == "alignment" && !isa<LayoutAlignmentType>(type)) ||
             (kind == "ToolBar" && name == "wrap" && !isa<BoolType>(type)) ||
+            (name == "flex-direction" && !isa<FlexboxLayoutDirectionType>(type)) ||
+            (name == "flex-wrap" && !isa<FlexboxLayoutWrapType>(type)) ||
+            (name == "cross-axis-line-alignment" && !isa<LayoutAlignmentType>(type)) ||
             (name == "cross-axis-alignment" &&
              !isa<CrossAxisAlignmentType>(type)) ||
             ((name == "spacing" || name == "horizontal-spacing" ||
+              name == "spacing-horizontal" || name == "spacing-vertical" ||
               name == "vertical-spacing" || name == "padding" ||
               name == "padding-left" || name == "padding-right" ||
               name == "padding-top" || name == "padding-bottom") &&
@@ -410,14 +560,68 @@ LogicalResult ElementOp::verify() {
           return child.emitOpError()
                  << "incorrect " << kind << " property type";
       }
-      if ((kind == "Button" || kind == "ToolButton" || kind == "MenuItem") &&
+      if ((kind == "Button" || kind == "ToolButton" || kind == "DelayButton" || kind == "MenuItem") &&
           name == "icon" && !isa<ImageType>(bind.getInput().getType()))
         return child.emitOpError("icon requires an image");
-      if (kind == "Button" || kind == "ToolButton") {
+      if (kind == "Button" || kind == "ToolButton" || kind == "DelayButton") {
         auto type = bind.getInput().getType();
         if ((name == "icon-only" && !isa<BoolType>(type)) ||
             (name == "icon-size" && !isa<LengthType>(type)))
           return child.emitOpError("incorrect button icon property type");
+      }
+      if (kind == "GroupBox") {
+        auto type = bind.getInput().getType();
+        if ((name == "title" && !isa<StringType>(type)) ||
+            (name == "content-padding" && !isa<LengthType>(type)) ||
+            ((name == "enabled" || name == "checked" || name == "checkable") &&
+             !isa<BoolType>(type)))
+          return child.emitOpError("incorrect GroupBox property type");
+      }
+      if (kind == "StandardListView") {
+        auto type = bind.getInput().getType();
+        if ((name == "model" && !isa<StringListType, RecordListType>(type)) ||
+            (name == "text-role" && (!isa<StringType>(type) ||
+             !bind.getInput().getDefiningOp<LiteralOp>())) ||
+            (name == "follow-current" && !isa<BoolType>(type)) ||
+            (name == "row-height" && !isa<LengthType>(type)) ||
+            (name == "current-index" && !isa<IntType>(type)))
+          return child.emitOpError("incorrect StandardListView property type");
+      }
+      if (kind == "GridView") {
+        auto type = bind.getInput().getType();
+        if (((name == "cell-width" || name == "cell-height" || name == "spacing") &&
+             !isa<LengthType>(type)) ||
+            ((name == "follow-current" || name == "enabled") && !isa<BoolType>(type)) ||
+            (name == "current-index" && !isa<IntType>(type)))
+          return child.emitOpError("incorrect GridView property type");
+      }
+      if (kind == "DelayButton") {
+        auto type = bind.getInput().getType();
+        if ((name == "delay" && !isa<IntType>(type)) ||
+            (name == "progress-color" && !isa<ColorType>(type)) ||
+            ((name == "enabled" || name == "checked") && !isa<BoolType>(type)))
+          return child.emitOpError("incorrect DelayButton property type");
+      }
+      if (kind == "Tumbler") {
+        auto type = bind.getInput().getType();
+        if ((name == "model" && !isa<StringListType>(type)) ||
+            ((name == "current-index" || name == "count" || name == "visible-item-count") && !isa<IntType>(type)) ||
+            ((name == "wrap" || name == "enabled") && !isa<BoolType>(type)))
+          return child.emitOpError("incorrect Tumbler property type");
+        if ((name == "count" || name == "model") &&
+            llvm::any_of(body.getOps<BindOp>(), [&](BindOp other) {
+              return other.getName() == (name == "model" ? "count" : "model");
+            }))
+          return child.emitOpError("Tumbler accepts either model or count");
+      }
+      if (kind == "SearchField") {
+        auto type = bind.getInput().getType();
+        if (((name == "text" || name == "placeholder-text" ||
+              name == "suggestions-for") && !isa<StringType>(type)) ||
+            (name == "suggestions" && !isa<StringListType>(type)) ||
+            ((name == "live" || name == "read-only" || name == "enabled") &&
+             !isa<BoolType>(type)))
+          return child.emitOpError("incorrect SearchField property type");
       }
       if (kind == "ComboBox") {
         auto type = bind.getInput().getType();
@@ -470,12 +674,11 @@ LogicalResult ElementOp::verify() {
         if (((name == "value" || name == "minimum" || name == "maximum" ||
               name == "step-size") && !isa<FloatType>(type)) ||
             (name == "decimals" && !isa<IntType>(type)) ||
-            (name == "decimal-separator" && !isa<StringType>(type)) ||
             ((name == "editable" || name == "read-only" || name == "wrap" ||
               name == "enabled") && !isa<BoolType>(type)))
           return child.emitOpError("incorrect DoubleSpinBox property type");
       }
-      if (kind == "Calendar") {
+      if (kind == "Calendar" || kind == "DatePickerPopup") {
         auto type = bind.getInput().getType();
         if (((name == "date" || name == "display-month" ||
               name == "minimum-date" || name == "maximum-date") &&
@@ -484,7 +687,20 @@ LogicalResult ElementOp::verify() {
             (name == "enabled" && !isa<BoolType>(type)) ||
             (name == "weekday-labels" && !isa<StringListType>(type)))
           return child.emitOpError("incorrect Calendar property type");
+        if (kind == "DatePickerPopup" && name == "display-month")
+          return child.emitOpError("DatePickerPopup manages its display month");
       }
+      if (isTimePicker(kind)) {
+        auto type = bind.getInput().getType();
+        if ((name == "time" && !isa<TimeType>(type)) ||
+            ((name == "use-24-hour-format" || name == "show-seconds" ||
+              name == "enabled") && !isa<BoolType>(type)))
+          return child.emitOpError("incorrect time picker property type");
+      }
+      if ((kind == "TimePicker" || isPickerPopup(kind)) &&
+          (name == "accept-text" || name == "cancel-text" || name == "title") &&
+          (!isPickerPopup(kind) || !isa<StringType>(bind.getInput().getType())))
+        return child.emitOpError("incorrect picker label property type");
       if ((kind == "SwipeView" || kind == "SwipePage") &&
           (((name == "enabled" || name == "visible" || name == "interactive") &&
             !isa<BoolType>(bind.getInput().getType())) ||
@@ -515,6 +731,17 @@ LogicalResult ElementOp::verify() {
             (name == "orientation" && !isa<OrientationType>(type)) ||
             (name == "spacing" && !isa<LengthType>(type)))
           return child.emitOpError("incorrect tab bar or button property type");
+      }
+      if (kind == "Page" || pageSlot) {
+        auto type = bind.getInput().getType();
+        if ((name == "title" && (pageSlot || !isa<StringType>(type))) ||
+            (name == "background" && !isa<BrushType>(type)) ||
+            ((name == "enabled" || name == "visible") && !isa<BoolType>(type)) ||
+            ((name == "spacing" || name == "padding" ||
+              name == "padding-left" || name == "padding-right" ||
+              name == "padding-top" || name == "padding-bottom") &&
+             !isa<LengthType>(type)))
+          return child.emitOpError("incorrect page property type");
       }
       if (kind == "Dial") {
         auto name = bind.getName();
@@ -551,6 +778,22 @@ LogicalResult ElementOp::verify() {
           !isa<SelectionTargetType>(bind.getInput().getType()))
         return child.emitOpError(
             "selection-target requires a SelectionTarget value");
+      if (standardTable && name == "model") {
+        if (!isa<RecordListType>(bind.getInput().getType()))
+          return child.emitOpError("StandardTableView model requires a record list");
+        ++tableModels;
+      }
+      if (standardTable && name == "follow-current" && !isa<BoolType>(bind.getInput().getType()))
+        return child.emitOpError("follow-current requires a bool value");
+      if (standardTable && name == "current-row" && !isa<IntType>(bind.getInput().getType()))
+        return child.emitOpError("current-row requires an int value");
+      if (kind == "TableColumn" && name == "field") {
+        if (parentKind != "StandardTableView" ||
+            !isa<StringType>(bind.getInput().getType()) ||
+            !bind.getInput().getDefiningOp<LiteralOp>())
+          return child.emitOpError("field requires a constant string on a StandardTableView column");
+        ++columnFields;
+      }
       if (textCell && bind.getName() == "text") {
         if (!isa<StringType>(bind.getInput().getType()))
           return child.emitOpError("cell text requires a string value");
@@ -569,11 +812,31 @@ LogicalResult ElementOp::verify() {
       if (kind == "DialogButton" && bind.getName() == "role" &&
           !isa<DialogRoleType>(bind.getInput().getType()))
         return child.emitOpError("role requires a DialogRole value");
-      if (isModalOverlay(kind) &&
+      if (kind == "StandardButton" && name == "kind" &&
+          !isa<StandardButtonKindType>(bind.getInput().getType()))
+        return child.emitOpError("kind requires a StandardButtonKind value");
+      if ((kind == "StandardButton" || kind == "DialogButton") && name == "primary" &&
+          !isa<BoolType>(bind.getInput().getType()))
+        return child.emitOpError("primary requires a bool value");
+      if (kind == "DialogButtonBox" && (name == "enabled" || name == "wrap") &&
+          !isa<BoolType>(bind.getInput().getType()))
+        return child.emitOpError("button box state requires a bool value");
+      if (kind == "SwipeDelegate" &&
+          ((name == "open-side" && !isa<SwipeSideType>(bind.getInput().getType())) ||
+           (name == "enabled" && !isa<BoolType>(bind.getInput().getType()))))
+        return child.emitOpError("incorrect SwipeDelegate property type");
+      if (isWindowOverlay(kind) &&
           (bind.getName() == "open" || bind.getName() == "close-on-escape" ||
            bind.getName() == "close-on-outside") &&
           !isa<BoolType>(bind.getInput().getType()))
         return child.emitOpError("dialog state requires a bool value");
+      if (kind == "PopupWindow") {
+        auto type = bind.getInput().getType();
+        if ((name == "placement" && !isa<PopupPlacementType>(type)) ||
+            (name == "anchor-gap" && !isa<LengthType>(type)) ||
+            ((name == "modal" || name == "focus" || name == "dim" || name == "enabled") && !isa<BoolType>(type)))
+          return child.emitOpError("incorrect PopupWindow property type");
+      }
       if (kind == "Drawer" &&
           ((name == "edge" &&
             !isa<DrawerEdgeType>(bind.getInput().getType())) ||
@@ -595,16 +858,22 @@ LogicalResult ElementOp::verify() {
       return child.emitOpError("SplitView cannot be a repeated template");
     if (kind == "Tooltip" && isa<RepeatOp>(child))
       return child.emitOpError("Tooltip cannot be a repeated child");
+    if (kind == "PopupWindow" && isa<RepeatOp>(child))
+      return child.emitOpError("PopupWindow cannot be a repeated template");
+    if (pageSlot && isa<RepeatOp>(child))
+      return child.emitOpError() << kind << " cannot be repeated";
     if (isVirtualView(kind) && isa<RepeatOp>(child))
       return child.emitOpError("virtual views cannot be repeated templates");
     if (kind == "SwipeView" && isa<RepeatOp>(child))
       return child.emitOpError("SwipeView cannot be a repeated template");
+    if (kind == "SwipeDelegate" && isa<RepeatOp>(child))
+      return child.emitOpError("SwipeDelegate cannot be a repeated template");
     if (kind == "StackView" && isa<RepeatOp>(child))
       return child.emitOpError("StackView cannot be a repeated template");
-    if (kind == "ListView" && isa<ElementOp, InstanceOp>(child)) {
+    if (usesListTemplate(kind) && isa<ElementOp, InstanceOp>(child)) {
       auto &body = child.getRegion(0);
       if (body.empty() || body.front().getOps<RepeatOp>().empty())
-        return child.emitOpError("ListView requires a repeated element");
+        return child.emitOpError() << kind << " requires a repeated element";
       ++listChildren;
     }
     if (!childKind.empty() && isa<ElementOp, InstanceOp>(child)) {
@@ -636,13 +905,19 @@ LogicalResult ElementOp::verify() {
   if (repeated && options != 1)
     return emitOpError() << "a repeated " << childKind
                          << " must be the only option";
-  if (kind == "ListView" && listChildren != 1)
-    return emitOpError("ListView requires exactly one for element");
+  if (usesListTemplate(kind) && listChildren != 1)
+    return emitOpError() << kind << " requires exactly one for element";
   if (tree && listChildren != 1)
     return emitOpError("TreeView requires exactly one repeated TreeRow");
   if (kind == "StackView" && options == 0)
     return emitOpError("StackView requires at least one named StackPage");
-  if (table && (columns == 0 || cells != columns))
+  if (kind == "SwipeDelegate" && (swipeSlots.size() < 2 || !swipeSlots.contains("SwipeContent")))
+    return emitOpError("SwipeDelegate requires SwipeContent and at least one action slot");
+  if (standardTable && (columns == 0 || tableModels != 1))
+    return emitOpError("StandardTableView requires one record model and at least one TableColumn");
+  if (kind == "TableColumn" && parentKind == "StandardTableView" && columnFields != 1)
+    return emitOpError("StandardTableView column requires exactly one field");
+  if (kind == "TableView" && (columns == 0 || cells != columns))
     return emitOpError("TableView requires columns and one cell per column in "
                        "the repeated TableRow");
   if (kind == "ContextMenuArea" && contextMenus != 1)
@@ -668,9 +943,9 @@ LogicalResult InstanceOp::verify() {
         return child.emitOpError("duplicate instance binding ") << name;
     } else if (isa<RepeatOp>(child)) {
       auto parent = cast<ElementOp>((*this)->getParentOp());
-      if (repeated || parent.getKind() != "ListView" || !getId().empty())
+      if (repeated || !usesListTemplate(parent.getKind()) || !getId().empty())
         return child.emitOpError(
-            "repeated instances require an anonymous ListView template");
+            "repeated instances require an anonymous ListView template or an anonymous GridView template");
       repeated = true;
     } else if (!isa<EndOp, ShowIfOp>(child) && !isExpression(child)) {
       return child.emitOpError("is not valid in an instance body");
@@ -693,13 +968,15 @@ LogicalResult ControlLinkOp::verify() {
   auto kind = element.getKind();
   auto type = getInput().getType();
   const bool text = (kind == "TextInput" || kind == "LineEdit" ||
-                     kind == "TextEdit" || kind == "TextArea") &&
+                     kind == "SearchField" || kind == "TextEdit" || kind == "TextArea") &&
                     getName() == "text" && isa<StringType>(type);
   const bool checked = (kind == "CheckBox" || kind == "Switch" ||
-                        kind == "MenuItem" || kind == "Action") &&
+                        kind == "MenuItem" || kind == "Action" || kind == "DelayButton" ||
+                        kind == "GroupBox") &&
                        getName() == "checked" && isa<BoolType>(type);
+  const bool checkState = kind == "CheckBox" && getName() == "check-state" && isa<CheckStateType>(type);
   const bool opened =
-      isModalOverlay(kind) && getName() == "open" && isa<BoolType>(type);
+      isWindowOverlay(kind) && getName() == "open" && isa<BoolType>(type);
   const bool range =
       (((kind == "Slider" || kind == "Dial") && getName() == "value") ||
        (kind == "RangeSlider" &&
@@ -711,19 +988,24 @@ LogicalResult ControlLinkOp::verify() {
   const bool valueChoice = kind == "ComboBox" || kind == "RadioGroup";
   const bool choice =
       ((valueChoice || kind == "TabWidget" || kind == "TabBar" || kind == "SwipeView" ||
-        kind == "PageIndicator" || kind == "ListView") &&
+        kind == "PageIndicator" || usesListTemplate(kind) || kind == "StandardListView" ||
+        kind == "Tumbler") &&
        getName() == "current-index" && isa<IntType>(type)) ||
       (valueChoice && getName() == "current-value" && isa<StringType>(type)) ||
       (kind == "TreeView" && getName() == "current-key" &&
        isa<IntType>(type)) ||
-      (kind == "TableView" && getName() == "current-row" && isa<IntType>(type));
+      (isTableView(kind) && getName() == "current-row" && isa<IntType>(type));
   const bool comboText =
       kind == "ComboBox" && getName() == "edit-text" && isa<StringType>(type);
   const bool calendar =
-      kind == "Calendar" && (getName() == "date" || getName() == "display-month") &&
+      (((kind == "Calendar" || kind == "DatePickerPopup") && getName() == "date") ||
+       (kind == "Calendar" && getName() == "display-month")) &&
       isa<DateType>(type);
-  if ((!text && !checked && !range && !spin && !choice && !opened &&
-       !comboText && !calendar) ||
+  const bool time = isTimePicker(kind) && getName() == "time" && isa<TimeType>(type);
+  const bool swipeSide = kind == "SwipeDelegate" && getName() == "open-side" && isa<SwipeSideType>(type);
+  const bool running = kind == "Timer" && getName() == "running" && isa<BoolType>(type);
+  if ((!text && !checked && !checkState && !range && !spin && !choice && !opened &&
+       !comboText && !calendar && !time && !swipeSide && !running) ||
       !getInput().getDefiningOp<ReadOp>())
     return emitOpError(
         "requires a writable property reference for the control");
@@ -747,6 +1029,31 @@ LogicalResult NavigateOp::verify() {
       (page && !isa<StringType>(args.front().getType())) ||
       (path && !isa<StringListType>(args.front().getType())))
     return emitOpError("invalid StackView navigation method or arguments");
+  return success();
+}
+
+LogicalResult TimerCommandOp::verify() {
+  auto *parent = (*this)->getParentOp();
+  if (!isa_and_nonnull<HandlerOp, CallbackOp>(parent))
+    return emitOpError("requires a handler or callback parent");
+  if (auto callback = dyn_cast<CallbackOp>(parent);
+      callback && callback.getPure().value_or("false") == "true")
+    return emitOpError("timer commands are not allowed in a pure callback");
+  auto command = getCommand();
+  if (command != "start" && command != "stop" && command != "restart")
+    return emitOpError("requires start, stop, or restart");
+  return success();
+}
+
+LogicalResult PopupCommandOp::verify() {
+  auto *parent = (*this)->getParentOp();
+  if (!isa_and_nonnull<HandlerOp, CallbackOp>(parent))
+    return emitOpError("requires a handler or callback parent");
+  if (auto callback = dyn_cast<CallbackOp>(parent);
+      callback && callback.getPure().value_or("false") == "true")
+    return emitOpError("popup commands are not allowed in a pure callback");
+  if (getOpen() != "true" && getOpen() != "false")
+    return emitOpError("requires a boolean open value");
   return success();
 }
 
@@ -785,7 +1092,8 @@ static ReadOp editableRowModel(RowLinkOp link) {
                       link.getName() == "value" && isa<FloatType>(type);
   const bool toggle = (kind == "CheckBox" || kind == "Switch") &&
                       link.getName() == "checked" && isa<BoolType>(type);
-  if ((!text && !spin && !slider && !toggle) || row.getBody().empty() || !item)
+  const bool checkState = kind == "CheckBox" && link.getName() == "check-state" && isa<CheckStateType>(type);
+  if ((!text && !spin && !slider && !toggle && !checkState) || row.getBody().empty() || !item)
     return {};
   auto repeats = row.getBody().front().getOps<RepeatOp>();
   if (!llvm::hasSingleElement(repeats))
@@ -867,24 +1175,42 @@ static LogicalResult verifyCallback(Operation *op, Region &body,
   if (auto handler = dyn_cast<HandlerOp>(op)) {
     auto element = cast<ElementOp>(op->getParentOp());
     auto kind = element.getKind();
+    if (kind == "Timer" && (handler.getName() != "triggered" || !args->empty()))
+      return handler.emitOpError("Timer requires triggered() without parameters");
     if (kind == "SplitView" &&
         (!args->empty() || handler.getName() != "resized"))
       return handler.emitOpError(
           "SplitView requires resized() without parameters");
     if (kind == "Dialog" &&
         (!args->empty() ||
-         (handler.getName() != "accepted" && handler.getName() != "rejected")))
+         !llvm::StringSwitch<bool>(handler.getName())
+              .Cases({"accepted", "rejected", "applied", "reset", "help-requested", "discarded"}, true)
+              .Default(false)))
       return handler.emitOpError(
-          "dialog requires accepted() or rejected() without parameters");
-    if (kind == "Drawer" && (!args->empty() || (handler.getName() != "opened" &&
+          "requires a dialog event without parameters");
+    if ((kind == "Drawer" || kind == "PopupWindow") && (!args->empty() || (handler.getName() != "opened" &&
                                                 handler.getName() != "closed")))
       return handler.emitOpError(
           "Drawer requires opened() or closed() without parameters");
-    if ((kind == "MenuItem" || kind == "Action") &&
+    if ((kind == "MenuItem" || kind == "Action" || kind == "DelayButton") &&
         (!args->empty() || handler.getName() != "activated"))
       return handler.emitOpError("requires activated() without parameters");
+    if (kind == "GroupBox") {
+      auto *arg = args->size() == 1 ? args->front().getAsObject() : nullptr;
+      if (handler.getName() != "toggled" || !arg ||
+          arg->getString("ty") != "bool" || !arg->getString("name"))
+        return handler.emitOpError("GroupBox requires toggled(bool)");
+    }
+    if (kind == "CheckBox") {
+      auto name = handler.getName();
+      auto *arg = args->size() == 1 ? args->front().getAsObject() : nullptr;
+      if (!(name == "toggled" && args->empty()) &&
+          !(name == "check-state-changed" && arg &&
+            arg->getString("ty") == "CheckState" && arg->getString("name")))
+        return handler.emitOpError("CheckBox requires toggled() or check-state-changed(CheckState)");
+    }
     const bool multiline = kind == "TextEdit" || kind == "TextArea";
-    const bool table = kind == "TableView";
+    const bool table = isTableView(kind);
     const bool tree = kind == "TreeView";
     if (kind == "RangeSlider") {
       auto valid = [](const llvm::json::Value &value) {
@@ -904,13 +1230,30 @@ static LogicalResult verifyCallback(Operation *op, Region &body,
           !depth->getString("name"))
         return handler.emitOpError("StackView requires changed(string, int)");
     }
+    if (kind == "SwipeDelegate") {
+      auto *arg = args->size() == 1 ? args->front().getAsObject() : nullptr;
+      if (!(handler.getName() == "clicked" && args->empty()) &&
+          !(handler.getName() == "changed" && arg && arg->getString("ty") == "SwipeSide" && arg->getString("name")))
+        return handler.emitOpError("SwipeDelegate requires clicked() or changed(SwipeSide)");
+    }
+    if (kind == "TimePicker" || isPickerPopup(kind)) {
+      auto name = handler.getName();
+      auto *arg = args->size() == 1 ? args->front().getAsObject() : nullptr;
+      auto type = kind == "DatePickerPopup" ? "Date" : "Time";
+      if (!(isPickerPopup(kind) && name == "canceled" && args->empty()) &&
+          !((kind == "TimePicker" ? name == "changed" : name == "accepted") &&
+            arg && arg->getString("ty") == type && arg->getString("name")))
+        return handler.emitOpError("invalid picker event or signature");
+    }
     const bool scalarRange = kind == "Slider" || kind == "Dial";
     const bool calendar = kind == "Calendar";
+    const bool search = kind == "SearchField";
     const bool spin = kind == "SpinBox" || kind == "DoubleSpinBox";
     const bool indexView = kind == "TabWidget" || kind == "TabBar" || kind == "SwipeView" ||
-                           kind == "PageIndicator" || kind == "ListView";
+                           kind == "PageIndicator" || usesListTemplate(kind) ||
+                           kind == "StandardListView" || kind == "Tumbler";
     if (scalarRange || spin || kind == "ComboBox" || table ||
-        kind == "RadioGroup" || indexView || multiline || tree || calendar) {
+        kind == "RadioGroup" || indexView || multiline || tree || calendar || search) {
       auto *arg = args->size() == 1 ? args->front().getAsObject() : nullptr;
       auto name = handler.getName();
       auto type = calendar ? "Date" : (scalarRange || kind == "DoubleSpinBox") ? "float"
@@ -919,6 +1262,7 @@ static LogicalResult verifyCallback(Operation *op, Region &body,
                       : "string";
       const bool known =
           calendar ? name == "changed" || name == "month-changed"
+          : search ? name == "accepted" || name == "edited" || name == "selected" || name == "search-triggered"
           : scalarRange ? name == "changed" || name == "released"
           : (spin || multiline) ? name == "edited"
           : kind == "ComboBox"
@@ -939,7 +1283,7 @@ static LogicalResult verifyCallback(Operation *op, Region &body,
   for (Operation &child : body.front()) {
     if (isa<ReturnOp>(child) && !isa_and_nonnull<EndOp>(child.getNextNode()))
       return child.emitOpError("must be immediately before xr.end");
-    if (!isa<AssignOp, InvokeOp, NavigateOp, ReturnOp, EndOp>(child) &&
+    if (!isa<AssignOp, InvokeOp, NavigateOp, TimerCommandOp, PopupCommandOp, ReturnOp, EndOp>(child) &&
         !isExpression(child))
       return child.emitOpError("is not valid in a callback or event handler");
   }
@@ -986,6 +1330,11 @@ LogicalResult LiteralOp::verify() {
             spelling == "start" || spelling == "end" || spelling == "center";
   } else if (isa<OrientationType>(type)) {
     valid = spelling == "horizontal" || spelling == "vertical";
+  } else if (isa<FlexboxLayoutDirectionType>(type)) {
+    valid = spelling == "row" || spelling == "row-reverse" ||
+            spelling == "column" || spelling == "column-reverse";
+  } else if (isa<FlexboxLayoutWrapType>(type)) {
+    valid = spelling == "wrap" || spelling == "no-wrap" || spelling == "wrap-reverse";
   } else if (isa<DialInputModeType>(type)) {
     valid = spelling == "circular" || spelling == "horizontal" ||
             spelling == "vertical";
@@ -995,11 +1344,36 @@ LogicalResult LiteralOp::verify() {
   } else if (isa<TextWrapType>(type)) {
     valid = spelling == "word-wrap" || spelling == "no-wrap" ||
             spelling == "char-wrap";
+  } else if (isa<TextHorizontalAlignmentType>(type)) {
+    valid = spelling == "start" || spelling == "end" || spelling == "left" ||
+            spelling == "center" || spelling == "right";
+  } else if (isa<TextVerticalAlignmentType>(type)) {
+    valid = spelling == "top" || spelling == "center" || spelling == "bottom";
+  } else if (isa<TextOverflowType>(type)) {
+    valid = spelling == "clip" || spelling == "elide";
+  } else if (isa<InputModeType>(type)) {
+    valid = spelling == "text" || spelling == "password" || spelling == "number" ||
+            spelling == "decimal" || spelling == "search";
+  } else if (isa<CheckStateType>(type)) {
+    valid = spelling == "unchecked" || spelling == "partially-checked" ||
+            spelling == "checked";
   } else if (isa<DialogRoleType>(type)) {
     valid = spelling == "accept" || spelling == "reject";
+  } else if (isa<SwipeSideType>(type)) {
+    valid = spelling == "closed" || spelling == "left" || spelling == "right";
+  } else if (isa<StandardButtonKindType>(type)) {
+    valid = llvm::StringSwitch<bool>(spelling)
+                .Cases({"ok", "open", "save", "save-all", "cancel", "close",
+                        "apply", "reset", "restore-defaults", "help", "yes",
+                        "yes-to-all", "no", "no-to-all", "abort", "retry",
+                        "ignore", "discard"}, true)
+                .Default(false);
   } else if (isa<DrawerEdgeType>(type)) {
     valid = spelling == "left" || spelling == "right" || spelling == "top" ||
             spelling == "bottom";
+  } else if (isa<PopupPlacementType>(type)) {
+    valid = spelling == "below" || spelling == "above" || spelling == "left" ||
+            spelling == "right" || spelling == "offset";
   } else if (isa<SelectionTargetType>(type)) {
     valid = spelling == "rows" || spelling == "cells" || spelling == "columns";
   } else if (isa<StringType>(type)) {
@@ -1260,6 +1634,14 @@ static LogicalResult verifyReferences(ComponentOp component,
           result = verifyStackRoute(op, view, argument);
         }
       }
+    } else if (auto command = dyn_cast<TimerCommandOp>(op)) {
+      auto timer = dyn_cast_or_null<ElementOp>(owners.lookup(command.getOwner()));
+      if (!timer || timer.getKind() != "Timer")
+        result = op->emitOpError("requires a Timer owner in the same component");
+    } else if (auto command = dyn_cast<PopupCommandOp>(op)) {
+      auto popup = dyn_cast_or_null<ElementOp>(owners.lookup(command.getOwner()));
+      if (!popup || popup.getKind() != "PopupWindow")
+        result = op->emitOpError("requires a PopupWindow owner in the same component");
     } else if (auto link = dyn_cast<ControlLinkOp>(op)) {
       auto read = link.getInput().getDefiningOp<ReadOp>();
       if (!read)
@@ -1331,7 +1713,7 @@ static LogicalResult verifyInstanceTree(ComponentOp component,
       llvm::DenseSet<Operation *> visited;
       if (containsElement(child, components, visited, isVirtualView)) {
         instance.emitOpError(
-            "ListView delegates cannot contain another ListView");
+            "virtual view delegates cannot contain another ListView or other virtual view");
         return WalkResult::interrupt();
       }
     }
@@ -1363,8 +1745,9 @@ static bool recordScalarType(llvm::StringRef type) {
   return llvm::StringSwitch<bool>(type)
       .Cases({"int", "float", "bool", "string", "length", "color", "brush",
               "image", "ImageFit", "LayoutAlignment", "CrossAxisAlignment",
-              "Orientation", "DialInputMode", "ScrollBarPolicy", "TextWrap",
-              "DialogRole", "DrawerEdge", "SelectionTarget", "Date"},
+              "Orientation", "FlexboxLayoutDirection", "FlexboxLayoutWrap", "DialInputMode", "ScrollBarPolicy", "TextWrap",
+              "TextHorizontalAlignment", "TextVerticalAlignment", "TextOverflow", "InputType",
+              "DialogRole", "StandardButtonKind", "SwipeSide", "DrawerEdge", "PopupPlacement", "SelectionTarget", "Date", "Time", "CheckState"},
              true)
       .Default(false);
 }
@@ -1400,6 +1783,54 @@ static LogicalResult indexRecord(RecordDeclOp record, Records &records) {
   return success();
 }
 
+static LogicalResult verifyStandardTable(ElementOp table, const Records &records) {
+  auto &body = table.getBody().front();
+  auto bindings = body.getOps<BindOp>();
+  auto model = llvm::find_if(bindings, [](BindOp bind) {
+    return bind.getName() == "model";
+  });
+  if (model == bindings.end())
+    return table.emitOpError("missing record model");
+  auto record = dyn_cast<RecordListType>((*model).getInput().getType());
+  if (!record)
+    return (*model).emitOpError("requires a record list");
+  auto schema = records.find(record.getName());
+  if (schema == records.end())
+    return (*model).emitOpError("unknown record type ") << record.getName();
+  for (auto column : body.getOps<ElementOp>()) {
+    if (column.getKind() != "TableColumn")
+      continue;
+    auto columnBindings = column.getBody().front().getOps<BindOp>();
+    auto role = llvm::find_if(columnBindings, [](BindOp bind) {
+      return bind.getName() == "field";
+    });
+    if (role == columnBindings.end())
+      return column.emitOpError("missing record field");
+    auto field = *role;
+    auto literal = field.getInput().getDefiningOp<LiteralOp>();
+    if (!literal)
+      return field.emitOpError("field requires a constant string");
+    auto parsed = llvm::json::parse(literal.getValue());
+    if (!parsed) {
+      llvm::consumeError(parsed.takeError());
+      return field.emitOpError("field requires a constant string");
+    }
+    auto name = parsed->getAsString();
+    if (!name)
+      return field.emitOpError("field requires a constant string");
+    auto definition = llvm::find_if(schema->second, [&](const auto &entry) {
+      return entry.first == *name;
+    });
+    if (definition == schema->second.end())
+      return field.emitOpError("record has no field ") << *name;
+    if (!llvm::StringSwitch<bool>(definition->second)
+             .Cases({"string", "int", "float", "bool", "Date", "Time"}, true)
+             .Default(false))
+      return field.emitOpError("field requires a string, int, float, bool, Date or Time field");
+  }
+  return success();
+}
+
 static LogicalResult verifyRecords(ModuleOp module, const Records &records) {
   auto verified = module.walk([&](Operation *op) -> WalkResult {
     for (auto type : op->getResultTypes()) {
@@ -1415,7 +1846,53 @@ static LogicalResult verifyRecords(ModuleOp module, const Records &records) {
         return WalkResult::interrupt();
       }
     }
-    if (auto callback = dyn_cast<CallbackOp>(op)) {
+    if (auto element = dyn_cast<ElementOp>(op);
+        element && element.getKind() == "StandardTableView" &&
+        failed(verifyStandardTable(element, records)))
+      return WalkResult::interrupt();
+    if (auto element = dyn_cast<ElementOp>(op);
+        element && element.getKind() == "StandardListView") {
+      BindOp model;
+      BindOp role;
+      for (auto bind : element.getBody().front().getOps<BindOp>()) {
+        if (bind.getName() == "model")
+          model = bind;
+        else if (bind.getName() == "text-role")
+          role = bind;
+      }
+      auto record = model ? dyn_cast<RecordListType>(model.getInput().getType()) : RecordListType();
+      if (role && !record) {
+        role.emitOpError("StandardListView text-role requires a record model");
+        return WalkResult::interrupt();
+      }
+      if (record) {
+        std::string field = "text";
+        if (role) {
+          auto literal = role.getInput().getDefiningOp<LiteralOp>();
+          if (!literal) {
+            role.emitOpError("StandardListView text-role requires a constant string");
+            return WalkResult::interrupt();
+          }
+          auto parsed = llvm::json::parse(literal.getValue());
+          if (!parsed) {
+            llvm::consumeError(parsed.takeError());
+            return WalkResult::interrupt();
+          }
+          auto label = parsed->getAsString();
+          if (!label)
+            return WalkResult::interrupt();
+          field = label->str();
+        }
+        auto schema = records.find(record.getName());
+        if (schema == records.end() ||
+            !llvm::any_of(schema->second, [&](const auto &entry) {
+              return entry.first == field && entry.second == "string";
+            })) {
+          model.emitOpError("StandardListView model requires a string field named ") << field;
+          return WalkResult::interrupt();
+        }
+      }
+    } else if (auto callback = dyn_cast<CallbackOp>(op)) {
       auto parsed = llvm::json::parse(callback.getParameters());
       if (!parsed) {
         llvm::consumeError(parsed.takeError());

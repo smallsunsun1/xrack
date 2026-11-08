@@ -31,6 +31,13 @@ rust_host_tools.host_tools(
 use_repo(rust_host_tools, "xrack_rust_host_tools")
 
 crate = use_extension("@rules_rust//crate_universe:extensions.bzl", "crate")
+# Preserve the native AppKit mixed value for tri-state check boxes.
+crate.annotation(
+    crate = "accesskit_macos",
+    version = "0.27.2",
+    patch_args = ["-p1"],
+    patches = ["//bazel:accesskit_macos_mixed_state.patch"],
+)
 crate.from_cargo(
     name = "crates",
     cargo_lockfile = "//:Cargo.lock",

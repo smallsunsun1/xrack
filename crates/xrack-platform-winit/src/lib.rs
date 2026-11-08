@@ -11,10 +11,7 @@ mod tests;
 
 use accessibility::{Projection, Route};
 use accesskit::{Action as AccessibleAction, ActionData, ActionRequest, TreeId};
-use clipboard::{
-    ClipboardPort, ClipboardValue, EditContext, Operation as ClipboardOperation,
-    Reply as ClipboardReply,
-};
+use clipboard::{ClipboardPort, ClipboardValue, EditContext, Reply as ClipboardReply};
 use frame::FrameCache;
 use local_task::LocalExecutor;
 pub use local_task::{LocalTask, SpawnLocalError, TaskCancelled, spawn_local};
@@ -35,19 +32,19 @@ use winit::{
     },
     event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy},
     keyboard::{Key, ModifiersState, NamedKey},
-    window::{CursorIcon, Window, WindowId},
+    window::{CursorIcon, ImePurpose, Window, WindowId},
 };
 use xrack_layout::{
     ActivationKey, ChoiceKey, ComboGeometry, ControlInput, EditAction, EditSource, Interaction,
     LayoutNode, MenuKey, MenuShortcut, NavigationKey, Point, RangeInput, Rect, ScrollGestureKind,
     ShortcutKey, ShortcutModifiers, Size, SpinGeometry, SplitResize, StackTransitions,
-    TableSelectionKey, Target, TextAreaMotion, font_size,
+    TableSelectionKey, Target, TextAreaMotion, TumblerScroll, font_size,
 };
 use xrack_renderer_femtovg::Renderer;
 use xrack_runtime::{
     Component, ControlAction, Node, Orientation, RangeAction, RowSelection, SceneTransition,
-    SpinAction, SpinDecimal, combo_editable, decimal_separator, is_multiline_text_input,
-    is_spin_box, spin_editable, text_input_value,
+    SpinAction, SpinDecimal, TimerQueue, TimerRegistration, combo_editable, decimal_separator,
+    is_multiline_text_input, is_spin_box, spin_editable, text_input_value,
 };
 
 struct WindowState {
@@ -57,6 +54,7 @@ struct WindowState {
     accessibility: accesskit_winit::Adapter,
     projection: Projection,
     accessibility_active: bool,
+    ime_purpose: ImePurpose,
     window: Arc<Window>,
     frame: FrameCache,
 }
@@ -92,6 +90,7 @@ impl WindowState {
             accessibility,
             projection: Projection::default(),
             accessibility_active: false,
+            ime_purpose: ImePurpose::Normal,
             window,
             frame: FrameCache::default(),
         })
@@ -145,6 +144,7 @@ enum ClipboardShortcut {
 enum ScrollContact {
     Touch(DeviceId, u64),
     MousePan(Point),
+    MouseControl(Point),
 }
 
 struct Application<C, M, R> {
@@ -153,6 +153,7 @@ struct Application<C, M, R> {
     scene: Rc<Node>,
     transition: SceneTransition,
     transition_start: Instant,
+    timers: TimerQueue,
     stack_transitions: StackTransitions,
     layout: Option<Rc<LayoutNode>>,
     input: Interaction,
@@ -189,6 +190,7 @@ impl<C: Component, M, R: FnMut(&mut C, M)> Application<C, M, R> {
             scene,
             transition: SceneTransition::default(),
             transition_start: Instant::now(),
+            timers: TimerQueue::default(),
             stack_transitions: StackTransitions::default(),
             layout: None,
             input: Interaction::default(),
@@ -282,7 +284,7 @@ impl<C: Component, M, R: FnMut(&mut C, M)> Application<C, M, R> {
         let target = match &route {
             Route::Element { target, .. }
             | Route::Choice { target, .. }
-            | Route::Calendar { target, .. } => target,
+            | Route::ControlPart { target, .. } => target,
             Route::MenuEntry { trigger, entry } => {
                 let activate = match request.action {
                     AccessibleAction::Focus => false,
@@ -327,21 +329,57 @@ impl<C: Component, M, R: FnMut(&mut C, M)> Application<C, M, R> {
             return;
         }
         match route {
-            Route::Calendar { target, action } => {
+            Route::ControlPart { target, action } => {
                 if request.action == AccessibleAction::Click
-                    && node.kind == "Calendar"
                     && let Some(item) = layout.at_path(&target.path)
-                    && xrack_layout::CalendarGeometry::new(node, item.bounds)
-                        .action_bounds(action)
-                        .is_some_and(|rect| {
-                            let rect = rect.intersect(item.clip);
-                            rect.width > 0.0 && rect.height > 0.0
-                        })
+                    && match action {
+                        ControlAction::Calendar(action) if node.kind == "Calendar" => {
+                            xrack_layout::CalendarGeometry::new(node, item.bounds)
+                                .action_bounds(action)
+                        }
+                        ControlAction::PickTumbler { .. } if node.kind == "Tumbler" => {
+                            item.tumbler.as_ref().and_then(|wheel| {
+                                wheel
+                                    .rows
+                                    .iter()
+                                    .find(|entry| entry.action() == action)
+                                    .map(|entry| entry.bounds.intersect(item.bounds))
+                            })
+                        }
+                        ControlAction::SortColumn(index) if node.kind == "TableView" => node
+                            .table_header
+                            .as_ref()
+                            .and_then(|header| header.next_sort(index))
+                            .and(item.table.as_ref())
+                            .and_then(|table| {
+                                table
+                                    .columns
+                                    .get(index)
+                                    .map(|column| column.intersect(table.header))
+                            }),
+                        ControlAction::SubmitSearch | ControlAction::ClearSearch
+                            if node.kind == "SearchField" =>
+                        {
+                            xrack_layout::SearchGeometry::new(item.bounds)
+                                .actions(node)
+                                .find_map(|(rect, candidate)| (candidate == action).then_some(rect))
+                        }
+                        ControlAction::SwipeDelegate(_) if node.kind == "SwipeDelegate" => item
+                            .swipe_delegate
+                            .as_deref()
+                            .and_then(xrack_layout::SwipeDelegateGeometry::toggle)
+                            .and_then(|(rect, candidate)| (candidate == action).then_some(rect)),
+                        _ => None,
+                    }
+                    .is_some_and(|rect| {
+                        let rect = rect.intersect(item.clip);
+                        rect.width > 0.0 && rect.height > 0.0
+                    })
                 {
                     self.input.accessibility_focus(target.clone());
                     self.apply_control(ControlInput {
                         path: target.path,
-                        action: ControlAction::Calendar(action),
+                        action,
                     });
                 }
             }
@@ -357,20 +395,68 @@ impl<C: Component, M, R: FnMut(&mut C, M)> Application<C, M, R> {
                     && menu.rows.get(offset) == Some(&value)
                 {
                     self.input.dismiss_choice();
-                    self.input.editor = None;
+                    if node.kind != "SearchField" {
+                        self.input.editor = None;
+                    }
                     self.apply_control(ControlInput {
                         path: target.path,
                         action: ControlAction::Select(index),
                     });
                 }
             }
-            Route::Element { target, kind } if kind == node.kind => match request.action {
+            Route::Element {
+                target,
+                kind,
+                standard_kind,
+            } if kind == node.kind && standard_kind == node.standard_button_kind() => match request
+                .action
+            {
                 AccessibleAction::Focus => {
                     self.input.accessibility_focus(target);
                     self.update_editor();
                 }
+                AccessibleAction::Expand | AccessibleAction::Collapse
+                    if kind == "SwipeDelegate" =>
+                {
+                    let expand = request.action == AccessibleAction::Expand;
+                    if let Some(action) = self.input.swipe_delegate_accessibility(
+                        &self.scene,
+                        layout,
+                        &target,
+                        expand,
+                    ) {
+                        self.input.accessibility_focus(target);
+                        self.apply_control(action);
+                    }
+                }
+                AccessibleAction::Click if kind == "DelayButton" => {
+                    if let Some(action) = self.input.accessibility_delay_click(
+                        &self.scene,
+                        layout,
+                        target,
+                        Instant::now(),
+                    ) {
+                        self.apply_control(action);
+                    } else {
+                        self.update_editor();
+                    }
+                }
                 AccessibleAction::Click if accessibility::supports_click(kind) => {
-                    self.input.accessibility_focus(target.clone());
+                    let focus = target
+                        .path
+                        .split_last()
+                        .filter(|(_, parent)| {
+                            kind == "ListRow"
+                                && self
+                                    .scene
+                                    .at_path(parent)
+                                    .is_some_and(|node| node.kind == "GridView")
+                        })
+                        .and_then(|(_, parent)| {
+                            self.input.accessibility_target(&self.scene, layout, parent)
+                        })
+                        .unwrap_or_else(|| target.clone());
+                    self.input.accessibility_focus(focus);
                     if kind == "ComboBox" {
                         if self.input.choice_is_open_for(&target.path) {
                             self.input.dismiss_choice();
@@ -385,19 +471,7 @@ impl<C: Component, M, R: FnMut(&mut C, M)> Application<C, M, R> {
                 AccessibleAction::SetValue if accessibility::supports_text_value(node) => {
                     if let Some(ActionData::Value(value)) = request.data {
                         self.input.accessibility_focus(target);
-                        self.input.edit_text(
-                            &mut self.component,
-                            &self.scene,
-                            EditAction::SelectAll,
-                            EditSource::Atomic,
-                            Instant::now(),
-                        );
-                        let action = if value.is_empty() {
-                            EditAction::Backspace
-                        } else {
-                            EditAction::Insert(&value)
-                        };
-                        self.edit_text_from(action, EditSource::Atomic);
+                        self.edit_text_from(EditAction::ReplaceAll(&value), EditSource::Atomic);
                     }
                 }
                 AccessibleAction::SetTextSelection
@@ -469,6 +543,20 @@ impl<C: Component, M, R: FnMut(&mut C, M)> Application<C, M, R> {
                             RangeAction::Decrease
                         },
                     });
+                }
+                AccessibleAction::Increment | AccessibleAction::Decrement if kind == "Tumbler" => {
+                    let wheel = xrack_runtime::Tumbler::from_node(node);
+                    let delta = if request.action == AccessibleAction::Increment {
+                        1
+                    } else {
+                        -1
+                    };
+                    if let Some(action) = wheel.step(delta).and_then(|index| wheel.select(index)) {
+                        self.apply_control(ControlInput {
+                            path: target.path,
+                            action,
+                        });
+                    }
                 }
                 AccessibleAction::Increment | AccessibleAction::Decrement
                     if is_spin_box(kind) && !node.boolean("read-only", false) =>
@@ -570,6 +658,7 @@ impl<C: Component, M, R: FnMut(&mut C, M)> Application<C, M, R> {
         self.input.reconcile(&scene, &layout);
         self.scene = scene;
         self.layout = Some(layout);
+        self.sync_timers(Instant::now());
         true
     }
 
@@ -612,6 +701,18 @@ impl<C: Component, M, R: FnMut(&mut C, M)> Application<C, M, R> {
         visible
     }
     fn activate(&mut self, target: Option<Target>) {
+        if let Some(target) = &target
+            && let Some(node) = self.scene.interactive_at_path(&target.path)
+            && node.kind == "DelayButton"
+        {
+            if node.boolean("checked", false) {
+                self.apply_control(ControlInput {
+                    path: target.path.clone(),
+                    action: ControlAction::DelayButton(false),
+                });
+            }
+            return;
+        }
         if let (Some(target), Some(layout)) = (target.as_ref(), self.layout.as_ref())
             && self
                 .input
@@ -674,7 +775,6 @@ impl<C: Component, M, R: FnMut(&mut C, M)> Application<C, M, R> {
             return false;
         };
         if event.logical_key != Key::Named(NamedKey::Escape)
-            || layout.dialog_paths().is_empty()
             || self
                 .input
                 .editor
@@ -685,7 +785,18 @@ impl<C: Component, M, R: FnMut(&mut C, M)> Application<C, M, R> {
         }
         if event.state == ElementState::Pressed
             && !event.repeat
-            && let Some(action) = self.input.dialog_escape(&self.scene, layout)
+            && let Some(action) = self.input.dismiss_focused_swipe(&self.scene, layout)
+        {
+            self.apply_control(action);
+            return true;
+        }
+        let action = self.input.dialog_escape(&self.scene, layout);
+        if layout.dialog_paths().is_empty() && action.is_none() {
+            return false;
+        }
+        if event.state == ElementState::Pressed
+            && !event.repeat
+            && let Some(action) = action
         {
             self.apply_control(action);
         }
@@ -750,7 +861,7 @@ impl<C: Component, M, R: FnMut(&mut C, M)> Application<C, M, R> {
 
     fn refresh_editor(&mut self, follow_caret: bool) {
         self.input.sync_editor(&self.scene);
-        let Some(state) = &self.state else {
+        let Some(state) = &mut self.state else {
             return;
         };
         let focused = self.input.focused.clone();
@@ -759,6 +870,15 @@ impl<C: Component, M, R: FnMut(&mut C, M)> Application<C, M, R> {
                 .at_path(&target.path)
                 .filter(|node| self.input.is_text_editor(node, target) || spin_editable(node))
         });
+        let purpose = if field.is_some_and(Node::is_password) {
+            ImePurpose::Password
+        } else {
+            ImePurpose::Normal
+        };
+        if state.ime_purpose != purpose {
+            state.window.set_ime_purpose(purpose);
+            state.ime_purpose = purpose;
+        }
         state.window.set_ime_allowed(
             field.is_some_and(|node| !node.boolean("read-only", false))
                 && state.window.has_focus()
@@ -775,6 +895,8 @@ impl<C: Component, M, R: FnMut(&mut C, M)> Application<C, M, R> {
                 SpinGeometry::new(layout.bounds).text
             } else if combo_editable(node) {
                 ComboGeometry::new(layout.bounds).entry
+            } else if node.kind == "SearchField" {
+                xrack_layout::SearchGeometry::new(layout.bounds).entry
             } else {
                 layout.bounds
             };
@@ -805,18 +927,12 @@ impl<C: Component, M, R: FnMut(&mut C, M)> Application<C, M, R> {
                 return;
             }
             let text = self.input.editor_value(node);
-            let caret = self
-                .input
-                .editor
-                .as_ref()
-                .map_or(0, |edit| edit.caret(&text));
-            let advance = state
-                .renderer
-                .text
-                .shape(&text[..caret], font_size(node))
-                .map_or(0.0, |metrics| metrics.width());
-            let padding = node.length("padding").unwrap_or(6.0).max(0.0);
-            let x = bounds.x + (padding + advance).min(bounds.width);
+            let x = state.renderer.text.single_line_caret_x(
+                node,
+                bounds,
+                &text,
+                self.input.editor.as_ref(),
+            );
             state.window.set_ime_cursor_area(
                 LogicalPosition::new(x, bounds.y),
                 LogicalSize::new(1.0, bounds.height.max(1.0)),
@@ -856,10 +972,12 @@ impl<C: Component, M, R: FnMut(&mut C, M)> Application<C, M, R> {
             SpinGeometry::new(item.bounds).text
         } else if combo_editable(node) {
             ComboGeometry::new(item.bounds).entry
+        } else if node.kind == "SearchField" {
+            xrack_layout::SearchGeometry::new(item.bounds).entry
         } else {
             item.bounds
         };
-        if (is_spin_box(node.kind) || combo_editable(node))
+        if (is_spin_box(node.kind) || combo_editable(node) || node.kind == "SearchField")
             && !bounds.contains(self.input.pointer_press_origin().unwrap_or(point))
         {
             return;
@@ -989,24 +1107,9 @@ impl<C: Component, M, R: FnMut(&mut C, M)> Application<C, M, R> {
     fn request_clipboard(&mut self, shortcut: ClipboardShortcut) {
         self.pending_clipboard = None;
         self.input.break_text_edit_group();
-        let Some(target) = &self.input.focused else {
+        let Some((operation, context)) = EditContext::request(&self.input, &self.scene, &shortcut)
+        else {
             return;
-        };
-        let Some(node) = self.scene.interactive_at_path(&target.path) else {
-            return;
-        };
-        if node.boolean("read-only", false) && !matches!(shortcut, ClipboardShortcut::Copy) {
-            return;
-        }
-        let Some(context) = EditContext::capture(&self.input, &self.scene) else {
-            return;
-        };
-        let operation = match shortcut {
-            ClipboardShortcut::Paste => ClipboardOperation::Read,
-            ClipboardShortcut::Copy | ClipboardShortcut::Cut if !context.selection().is_empty() => {
-                ClipboardOperation::Write(context.selection().into())
-            }
-            _ => return,
         };
         let Some(clipboard) = &mut self.clipboard else {
             return;
@@ -1160,7 +1263,12 @@ impl<C: Component, M, R: FnMut(&mut C, M)> Application<C, M, R> {
             }
             Key::Named(NamedKey::Enter) if multiline => Some(EditAction::Insert("\n")),
             Key::Named(NamedKey::Enter) => {
-                if !event.repeat {
+                if !event.repeat
+                    && self
+                        .scene
+                        .at_path(&target.path)
+                        .is_some_and(Node::accepts_text_submission)
+                {
                     if self
                         .component
                         .dispatch_at(&self.scene, &target.path, "accepted")
@@ -1188,10 +1296,33 @@ impl<C: Component, M, R: FnMut(&mut C, M)> Application<C, M, R> {
         if matches!(input.action, ControlAction::Spin(_)) {
             self.input.discard_spin_draft();
         }
-        if self
-            .component
-            .control_at(&self.scene, &input.path, input.action)
-        {
+        let search = self
+            .scene
+            .at_path(&input.path)
+            .is_some_and(|node| node.kind == "SearchField");
+        let changed = match input.action {
+            ControlAction::Select(index) if search => {
+                self.pending_clipboard = None;
+                self.input.select_search_suggestion(
+                    &mut self.component,
+                    &self.scene,
+                    index,
+                    Instant::now(),
+                )
+            }
+            ControlAction::ClearSearch if search => {
+                self.pending_clipboard = None;
+                self.input.edit_text(
+                    &mut self.component,
+                    &self.scene,
+                    EditAction::ReplaceAll(""),
+                    EditSource::Atomic,
+                    Instant::now(),
+                )
+            }
+            action => self.component.control_at(&self.scene, &input.path, action),
+        };
+        if changed {
             self.refresh_scene();
         } else if self
             .scene
@@ -1451,12 +1582,13 @@ impl<C: Component, M, R: FnMut(&mut C, M)> Application<C, M, R> {
 
     fn choice_key(&mut self, event: &KeyEvent) -> bool {
         let open = self.input.choice_open();
-        let editing = self
+        let focused = self
             .input
             .focused
             .as_ref()
-            .and_then(|target| self.scene.at_path(&target.path))
-            .is_some_and(combo_editable);
+            .and_then(|target| self.scene.at_path(&target.path));
+        let search = focused.is_some_and(|node| node.kind == "SearchField");
+        let editing = search || focused.is_some_and(combo_editable);
         if event.state != ElementState::Pressed {
             return open;
         }
@@ -1475,6 +1607,22 @@ impl<C: Component, M, R: FnMut(&mut C, M)> Application<C, M, R> {
         {
             self.update_editor();
             return true;
+        }
+        if search
+            && matches!(
+                event.logical_key,
+                Key::Named(NamedKey::Home | NamedKey::End)
+            )
+            && (self.modifiers.shift_key()
+                || self.modifiers.control_key()
+                || self.modifiers.super_key()
+                || self
+                    .layout
+                    .as_ref()
+                    .and_then(|layout| self.input.choice_menu(&self.scene, layout))
+                    .is_none_or(|menu| menu.highlighted.is_none()))
+        {
+            return false;
         }
         let key = match event.logical_key {
             Key::Named(NamedKey::F4) if !event.repeat => ChoiceKey::Open,
@@ -1506,18 +1654,25 @@ impl<C: Component, M, R: FnMut(&mut C, M)> Application<C, M, R> {
                         )
                     )) =>
             {
-                self.input.dismiss_choice();
-                self.update_editor();
+                if !search {
+                    self.input.dismiss_choice();
+                    self.update_editor();
+                }
                 return false;
             }
-            _ => return open,
+            _ => return open && !search,
         };
         if let Some(input) = self
             .layout
             .as_ref()
             .and_then(|layout| self.input.choice_key(&self.scene, layout, key))
         {
-            if !event.repeat || input.action != ControlAction::AcceptComboText {
+            if !event.repeat
+                || !matches!(
+                    input.action,
+                    ControlAction::AcceptComboText | ControlAction::SubmitSearch
+                )
+            {
                 self.apply_control(input);
             }
             true
@@ -1589,6 +1744,8 @@ impl<C: Component, M, R: FnMut(&mut C, M)> Application<C, M, R> {
                     .or_else(|| self.input.group_key(&self.scene, layout, key))
                     .or_else(|| self.input.page_indicator_key(&self.scene, layout, key))
                     .or_else(|| self.input.calendar_key(&self.scene, layout, key))
+                    .or_else(|| self.input.tumbler_key(&self.scene, layout, key))
+                    .or_else(|| self.input.swipe_delegate_key(&self.scene, layout, key))
                     .or_else(|| self.input.swipe_key(&self.scene, layout, key))
             })
         {
@@ -1689,6 +1846,13 @@ impl<C: Component, M, R: FnMut(&mut C, M)> Application<C, M, R> {
             if self.input.pointer_on_stack_slide() {
                 return;
             }
+            if let Some(action) = self
+                .layout
+                .as_ref()
+                .and_then(|layout| self.input.popup_outside_press(&self.scene, layout))
+            {
+                self.apply_control(action);
+            }
             if let Some(moved) = self
                 .layout
                 .as_ref()
@@ -1717,6 +1881,8 @@ impl<C: Component, M, R: FnMut(&mut C, M)> Application<C, M, R> {
                 self.place_text_caret(point, self.modifiers.shift_key());
             }
             if let Some(layout) = &self.layout {
+                self.input
+                    .begin_pointer_delay(&self.scene, layout, Instant::now());
                 self.input.split_press(&self.scene, layout);
                 self.input.spin_press(&self.scene, layout);
             }
@@ -1804,6 +1970,7 @@ impl<C: Component, M, R: FnMut(&mut C, M)> Application<C, M, R> {
         let kind = match contact {
             ScrollContact::Touch(..) => ScrollGestureKind::Touch,
             ScrollContact::MousePan(_) => ScrollGestureKind::MousePan,
+            ScrollContact::MouseControl(_) => ScrollGestureKind::MouseControl,
         };
         if self.layout.as_ref().is_some_and(|layout| {
             self.input
@@ -1839,7 +2006,11 @@ impl<C: Component, M, R: FnMut(&mut C, M)> Application<C, M, R> {
         if let Some(control) = outcome.control {
             self.apply_control(control);
         }
-        if (outcome.tap || matches!(contact, Some(ScrollContact::MousePan(_))))
+        if (outcome.tap
+            || matches!(
+                contact,
+                Some(ScrollContact::MousePan(_) | ScrollContact::MouseControl(_))
+            ))
             && let Some(layout) = &self.layout
         {
             self.input.pointer_move(&self.scene, layout, point);
@@ -1854,7 +2025,11 @@ impl<C: Component, M, R: FnMut(&mut C, M)> Application<C, M, R> {
 
     fn cancel_direct_scroll(&mut self) {
         self.scroll_contact = None;
+        let preview = self.input.tumbler_preview().is_some() || self.input.has_swipe_preview();
         self.input.cancel_scroll_gesture();
+        if preview {
+            self.relayout_with_caret(false);
+        }
     }
 
     fn touch_event(&mut self, touch: Touch) {
@@ -1900,7 +2075,57 @@ impl<C: Component, M, R: FnMut(&mut C, M)> Application<C, M, R> {
         }
     }
 
+    fn tick_delay(&mut self, now: Instant) {
+        let pending = self.input.delay_deadline().is_some();
+        if let Some(action) = self
+            .layout
+            .as_ref()
+            .and_then(|layout| self.input.advance_delay(&self.scene, layout, now))
+        {
+            self.apply_control(action);
+        } else if pending
+            && self.input.delay_deadline().is_none()
+            && let Some(state) = &self.state
+        {
+            state.window.request_redraw();
+        }
+    }
+
+    fn sync_timers(&mut self, now: Instant) {
+        fn collect<'a>(
+            node: &'a Node,
+            layout: &LayoutNode,
+            active: &mut Vec<&'a TimerRegistration>,
+        ) {
+            if !layout.visible {
+                return;
+            }
+            active.extend(&node.timers);
+            for (child, item) in node.children.iter().zip(&layout.children) {
+                collect(child, item, active);
+            }
+        }
+        let mut active = Vec::new();
+        if let Some(layout) = &self.layout {
+            collect(&self.scene, layout, &mut active);
+        }
+        self.timers.sync(now, active);
+    }
+
+    fn tick_timers(&mut self, now: Instant) {
+        for _ in 0..64 {
+            let Some(delivery) = self.timers.next_due(now) else {
+                break;
+            };
+            if delivery.fire() {
+                // A callback may stop another due timer or remove its owning subtree.
+                self.refresh_after_update(false);
+            }
+        }
+    }
+
     fn redraw(&mut self) -> Result<(), String> {
+        self.tick_delay(Instant::now());
         let animating = self.transition.running(Duration::ZERO);
         let elapsed = self.transition_start.elapsed();
         if self.layout.as_ref().is_some_and(|layout| {
@@ -2051,24 +2276,33 @@ impl<C: Component, M, R: FnMut(&mut C, M)> ApplicationHandler<UserEvent> for App
         self.input.cancel_press();
         self.input.pointer_leave();
         self.layout = None;
+        self.timers = TimerQueue::default();
         self.state = None;
     }
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        let now = Instant::now();
+        self.tick_delay(now);
+        self.tick_timers(now);
         self.update_accessibility();
         let deadline = if let Some(state) = &self.state
             && state.window.has_focus()
             && let Some(layout) = &self.layout
         {
-            if self
-                .input
-                .update_tooltip(&self.scene, layout, Instant::now())
-            {
+            if self.input.update_tooltip(&self.scene, layout, now) {
                 state.window.request_redraw();
             }
             self.input.tooltip_deadline()
         } else {
             None
         };
+        let deadline = [
+            deadline,
+            self.input.delay_deadline(),
+            self.timers.deadline(),
+        ]
+        .into_iter()
+        .flatten()
+        .min();
         event_loop.set_control_flow(deadline.map_or(ControlFlow::Wait, ControlFlow::WaitUntil));
     }
 
@@ -2098,8 +2332,14 @@ impl<C: Component, M, R: FnMut(&mut C, M)> ApplicationHandler<UserEvent> for App
                 let point = Point { x: p.x, y: p.y };
                 match self.scroll_contact {
                     Some(ScrollContact::Touch(..)) => return,
-                    Some(ScrollContact::MousePan(_)) => {
-                        self.scroll_contact = Some(ScrollContact::MousePan(point));
+                    Some(ScrollContact::MousePan(_) | ScrollContact::MouseControl(_)) => {
+                        self.scroll_contact = self.scroll_contact.map(|contact| {
+                            if matches!(contact, ScrollContact::MousePan(_)) {
+                                ScrollContact::MousePan(point)
+                            } else {
+                                ScrollContact::MouseControl(point)
+                            }
+                        });
                         self.move_direct_scroll(point, Instant::now());
                         return;
                     }
@@ -2170,8 +2410,12 @@ impl<C: Component, M, R: FnMut(&mut C, M)> ApplicationHandler<UserEvent> for App
                     return;
                 }
                 self.cancel_direct_scroll();
+                if self.input.cancel_delay() {
+                    self.update_editor();
+                }
                 self.dismiss_tooltip();
                 let scale = self.state.as_ref().unwrap().window.scale_factor();
+                let lines = matches!(delta, MouseScrollDelta::LineDelta(..));
                 let delta = match delta {
                     MouseScrollDelta::LineDelta(x, y) => Point {
                         x: -x * 28.0,
@@ -2193,6 +2437,23 @@ impl<C: Component, M, R: FnMut(&mut C, M)> ApplicationHandler<UserEvent> for App
                 }) {
                     self.update_editor();
                 } else if !self.input.pointer_on_stack_slide() {
+                    if !self.modifiers.shift_key()
+                        && delta.y.abs() > delta.x.abs()
+                        && let Some(layout) = &self.layout
+                    {
+                        let distance = if lines { delta.y / 28.0 } else { delta.y };
+                        match self
+                            .input
+                            .tumbler_scroll(&self.scene, layout, distance, lines)
+                        {
+                            TumblerScroll::Select(action) => {
+                                self.apply_control(action);
+                                return;
+                            }
+                            TumblerScroll::Pending => return,
+                            TumblerScroll::Unhandled => {}
+                        }
+                    }
                     let remaining = self.scroll_text_area(delta);
                     if self.layout.as_ref().is_some_and(|layout| {
                         self.input.scroll_wheel(
@@ -2259,18 +2520,42 @@ impl<C: Component, M, R: FnMut(&mut C, M)> ApplicationHandler<UserEvent> for App
                 button: MouseButton::Left,
                 state,
                 ..
-            } => {
-                if !matches!(self.scroll_contact, Some(ScrollContact::Touch(..))) {
+            } => match (state, self.scroll_contact) {
+                (_, Some(ScrollContact::Touch(..))) => {}
+                (ElementState::Released, Some(ScrollContact::MouseControl(point))) => {
+                    self.end_direct_scroll(point, Instant::now());
+                }
+                (ElementState::Pressed, None) => {
+                    if let Some(point) = self.input.pointer_position() {
+                        self.begin_direct_scroll(
+                            ScrollContact::MouseControl(point),
+                            point,
+                            Instant::now(),
+                        );
+                    }
+                    if self.scroll_contact.is_none() {
+                        self.left_pointer(state);
+                    }
+                }
+                _ => {
                     self.cancel_direct_scroll();
                     self.left_pointer(state);
                 }
-            }
+            },
             WindowEvent::ModifiersChanged(modifiers) => self.modifiers = modifiers.state(),
             WindowEvent::KeyboardInput {
                 event,
                 is_synthetic,
                 ..
             } => {
+                if event.state == ElementState::Pressed
+                    && event.logical_key == Key::Named(NamedKey::Escape)
+                    && self.input.cancel_delay()
+                {
+                    self.cancel_direct_scroll();
+                    self.update_editor();
+                    return;
+                }
                 self.cancel_direct_scroll();
                 if event.state == ElementState::Pressed
                     && event.logical_key != Key::Named(NamedKey::Tab)
@@ -2333,10 +2618,18 @@ impl<C: Component, M, R: FnMut(&mut C, M)> ApplicationHandler<UserEvent> for App
                     };
                     if let Some(key) = key {
                         if event.state == ElementState::Pressed {
-                            self.input.key_press(key);
+                            self.input.key_press_with_scene(&self.scene, key);
+                            if let Some(layout) = &self.layout {
+                                self.input.begin_key_delay(
+                                    &self.scene,
+                                    layout,
+                                    key,
+                                    Instant::now(),
+                                );
+                            }
                             self.state.as_ref().unwrap().window.request_redraw();
                         } else {
-                            let target = self.input.key_release_target(key);
+                            let target = self.input.key_release_with_scene(&self.scene, key);
                             self.activate(target);
                         }
                     }

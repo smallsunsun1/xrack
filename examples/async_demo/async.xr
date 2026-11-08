@@ -7,6 +7,8 @@ export component AsyncDemo inherits Window {
     in-out property <string> query: "XRack";
     in-out property <string> local-status: "等待 UI 任务";
     in-out property <[string]> results: [];
+    in-out property <[string]> suggestions: [];
+    in-out property <string> result-query: "";
     in-out property <int> selection: -1;
     in-out property <bool> loading: false;
     callback search(string);
@@ -20,16 +22,30 @@ export component AsyncDemo inherits Window {
         Text { text: "异步搜索"; font-size: 20px; }
         HorizontalLayout {
             spacing: 8px;
-            query-field := LineEdit {
+            query-field := SearchField {
                 text <=> root.query;
-                accepted() => { root.search(root.query); }
+                accessible-name: "搜索查询";
+                placeholder-text: "输入关键词，查看异步候选";
+                live: true;
+                suggestions: root.suggestions;
+                suggestions-for: root.result-query;
+                search-triggered(query) => { root.search(query); }
             }
             submit := Button {
                 text: "搜索";
                 clicked() => { root.search(root.query); }
             }
         }
-        Text { text: root.loading ? "后台正在查找…" : "搜索结果"; color: #b8caff; }
+        HorizontalLayout {
+            spacing: 8px;
+            BusyIndicator {
+                width: 18px; height: 18px;
+                stroke-width: 2px;
+                running: root.loading;
+                accessible-name: "搜索加载中";
+            }
+            Text { text: root.loading ? "后台正在查找…" : "搜索结果"; color: #b8caff; }
+        }
         results-view := ListView {
             background: #223249;
             row-height: 30px;

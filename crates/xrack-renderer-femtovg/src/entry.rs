@@ -1,8 +1,8 @@
 use crate::{TextSystem, Theme, color};
 use femtovg::{Canvas, Color, Paint, Path, renderer::WGPURenderer};
 use std::{borrow::Cow, ops::Range};
-use xrack_layout::{Point, Rect, TextAreaLayout, TextEdit, TextPosition, font_size};
-use xrack_runtime::{Node, TextWrap};
+use xrack_layout::{PasswordMask, Point, Rect, TextAreaLayout, TextEdit, TextPosition, font_size};
+use xrack_runtime::{CheckState, Node, TextWrap};
 
 pub(crate) struct EntryText<'a> {
     pub value: &'a str,
@@ -43,6 +43,14 @@ fn display_text<'a>(node: &'a Node, value: &'a str, editor: Option<&TextEdit>) -
     let placeholder = content.is_empty();
     if placeholder {
         content = node.text("placeholder-text").unwrap_or("").into();
+    } else if node.password_masked() {
+        let mask = PasswordMask::new(&content);
+        selection = mask.display_offset(selection.start)..mask.display_offset(selection.end);
+        composition = mask.display_offset(composition.start)..mask.display_offset(composition.end);
+        if let Some(caret) = &mut caret {
+            caret.offset = mask.display_offset(caret.offset);
+        }
+        content = mask.into_display().into();
     }
     DisplayText {
         content,
@@ -75,20 +83,54 @@ impl TextSystem {
         let size = font_size(node);
         let area = bounds.inset(node.length("padding").unwrap_or(6.0).max(0.0));
         let advance = |text: &str| self.advance(text, size);
+        let mask = node.password_masked().then(|| PasswordMask::new(value));
+        let display = mask.as_ref().map_or(value, PasswordMask::display);
         let scroll = editor.map_or(0.0, |edit| {
-            entry_scroll(advance(&value[..edit.caret(value)]), area.width)
+            let caret = edit.caret(value);
+            let offset = mask
+                .as_ref()
+                .map_or(caret, |mask| mask.display_offset(caret));
+            entry_scroll(advance(&display[..offset]), area.width)
         });
-        let layout =
-            TextAreaLayout::new(value, area, size * 1.4, TextWrap::NoWrap, advance, str::len);
-        layout.hit(
-            value,
+        let layout = TextAreaLayout::new(
+            display,
+            area,
+            size * 1.4,
+            TextWrap::NoWrap,
+            advance,
+            str::len,
+        );
+        let mut position = layout.hit(
+            display,
             Point {
                 x: point.x,
                 y: area.y,
             },
             Point { x: scroll, y: 0.0 },
             advance,
-        )
+        );
+        if let Some(mask) = &mask {
+            position.offset = mask.source_offset(position.offset);
+        }
+        position
+    }
+
+    pub fn single_line_caret_x(
+        &self,
+        node: &Node,
+        bounds: Rect,
+        value: &str,
+        editor: Option<&TextEdit>,
+    ) -> f32 {
+        let display = display_text(node, value, editor);
+        let area = bounds.inset(node.length("padding").unwrap_or(6.0).max(0.0));
+        let advance = display
+            .caret
+            .filter(|_| !display.placeholder)
+            .map_or(0.0, |caret| {
+                self.advance(&display.content[..caret.offset], font_size(node))
+            });
+        area.x + (advance - entry_scroll(advance, area.width)).clamp(0.0, area.width)
     }
 
     pub fn text_area_caret(
@@ -331,10 +373,15 @@ pub(crate) fn toggle(
     let box_size = 18.0_f32.min(bounds.height);
     let x = bounds.x + 6.0;
     let y = bounds.y + (bounds.height - box_size) * 0.5;
-    let checked = node.boolean("checked", false);
+    let state = if node.kind == "GroupBox" {
+        node.boolean("checked", true).into()
+    } else {
+        node.check_state()
+    };
+    let checked = state == CheckState::Checked;
     let background = if !enabled {
         theme.disabled
-    } else if checked {
+    } else if state != CheckState::Unchecked {
         theme.button
     } else {
         xrack_runtime::Color(0x384761ff)
@@ -374,11 +421,15 @@ pub(crate) fn toggle(
                 theme.disabled_text
             })),
         );
-    } else if checked {
+    } else if state != CheckState::Unchecked {
         let mut mark = Path::new();
         mark.move_to(x + box_size * 0.20, y + box_size * 0.50);
-        mark.line_to(x + box_size * 0.43, y + box_size * 0.72);
-        mark.line_to(x + box_size * 0.80, y + box_size * 0.28);
+        if checked {
+            mark.line_to(x + box_size * 0.43, y + box_size * 0.72);
+            mark.line_to(x + box_size * 0.80, y + box_size * 0.28);
+        } else {
+            mark.line_to(x + box_size * 0.80, y + box_size * 0.50);
+        }
         let mut paint = Paint::color(Color::white());
         paint.set_line_width(2.0);
         canvas.stroke_path(&mark, &paint);
@@ -394,7 +445,12 @@ pub(crate) fn toggle(
         .fill_text(
             x + width + 7.0,
             bounds.y + ((bounds.height - size * 1.4) * 0.5).max(0.0),
-            node.text("text").unwrap_or(""),
+            node.text(if node.kind == "GroupBox" {
+                "title"
+            } else {
+                "text"
+            })
+            .unwrap_or(""),
             &paint,
         )
         .map_err(|error| format!("checkbox label drawing failed: {error}"))?;

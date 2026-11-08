@@ -97,3 +97,77 @@ export component FormDemo inherits Window {
         }
     }
 }
+
+export component PasswordDemo inherits Window {
+    title: "XRack · 密码输入";
+    width: 392px;
+    height: 214px;
+    background: #162034;
+
+    in-out property <string> secret: "";
+    in-out property <bool> reveal: false;
+    out property <int> submissions: 0;
+
+    Text { x: 24px; y: 18px; text: "密码输入"; font-size: 22px; }
+    passphrase := LineEdit {
+        x: 24px; y: 60px; width: 344px; height: 44px;
+        accessible-name: "口令";
+        placeholder-text: "输入测试口令";
+        input-type: password;
+        password-visible: root.reveal;
+        text <=> root.secret;
+        accepted => { root.submissions += 1; }
+    }
+    reveal-toggle := CheckBox {
+        x: 24px; y: 117px; width: 154px; height: 34px;
+        text: "显示口令";
+        checked <=> root.reveal;
+    }
+    Text { x: 24px; y: 166px; text: "提交 " + root.submissions + " 次"; color: #acc0db; }
+}
+
+export component ValidationDemo inherits Window {
+    title: "XRack · 表单输入限制";
+    width: 424px;
+    height: 338px;
+    background: #162034;
+
+    in-out property <string> code: "12";
+    in-out property <string> amount: "";
+    in-out property <string> note: "";
+    in-out property <int> note-limit: 6;
+    out property <int> amount-edits: 0;
+    out property <string> submitted-amount: "";
+
+    Text { x: 24px; y: 16px; text: "表单输入限制"; font-size: 22px; }
+    code-field := LineEdit {
+        x: 24px; y: 58px; width: 376px; height: 42px;
+        accessible-name: "验证码";
+        placeholder-text: "验证码 · 最多 4 位数字";
+        input-type: number;
+        maximum-length: 4;
+        text <=> root.code;
+    }
+    amount-field := TextInput {
+        x: 24px; y: 114px; width: 376px; height: 42px;
+        accessible-name: "金额";
+        placeholder-text: "金额 · 用逗号分隔小数，按 Enter 提交";
+        input-type: decimal;
+        decimal-separator: ",";
+        text <=> root.amount;
+        edited() => { root.amount-edits += 1; }
+        accepted => { root.submitted-amount = root.amount; }
+    }
+    note-field := TextArea {
+        x: 24px; y: 170px; width: 376px; height: 102px;
+        accessible-name: "备注";
+        placeholder-text: "备注 · 最多 " + root.note-limit + " 个字素簇";
+        maximum-length: root.note-limit;
+        text <=> root.note;
+    }
+    submission := Text {
+        x: 24px; y: 289px;
+        text: "已提交金额：" + root.submitted-amount;
+        color: #acc0db;
+    }
+}

@@ -25,7 +25,7 @@ export component Expressions inherits Rectangle {
     callback touch() -> bool;
     touch => { root.calls += 1; true }
     callback run-branch(bool);
-    run-branch(run) => { root.branch-result = run && root.touch(); }
+    run-branch(run) => { root.branch-result = !!(run && (root.touch() && true)); }
     out property <int> branch-value: 0;
     callback run-equal-branches();
     run-equal-branches() => { root.branch-value = root.touch() ? 7 : 7; }
@@ -94,6 +94,17 @@ export component LazyList inherits Window {
                 for detail in root.details : Text { text: root.detail-label(item, index, detail); }
             }
         }
+    }
+}
+
+export component SharedVisuals inherits Window {
+    in-out property <int> count: 0;
+    in-out property <[string]> items: ["A", "B"];
+    first := Text { text: "Count " + root.count; }
+    second := Text { text: "Count " + root.count; }
+    for item in root.items : VerticalLayout {
+        Text { text: "Row " + item; }
+        Text { text: "Row " + item; }
     }
 }
 

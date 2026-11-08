@@ -6,21 +6,29 @@ mod delegate;
 mod double_spin;
 mod list;
 mod model;
+mod picker;
 mod property;
 mod range;
 mod repeat;
 mod split;
 mod stack;
 mod table_selection;
+mod text_input;
+mod time_picker;
+mod timer;
 mod tree;
+mod tumbler;
 pub use animation::SceneTransition;
 pub use calendar::{CalendarAction, CalendarState, Date};
+#[doc(hidden)]
+pub use calendar::{DateBounds, DatePopupState};
 pub use controls::{
-    ActionKey, ControlAction, DialogRole, SpinAction, SpinRange, TableHeader, TableSort,
-    button_text, combo_editable, combo_index, group_index, group_item, is_button, is_modal_overlay,
-    is_spin_box, page_indicator_count, page_indicator_index, resizable_table_column,
-    resolve_swipe_index, search_suggestion, search_suggestions, spin_editable, spin_text,
-    spin_value_after, text_input_value,
+    ActionKey, ControlAction, DialogCommand, DialogRole, PopupPlacement, SpinAction, SpinRange,
+    StandardButtonKind, SwipeSide, TableHeader, TableSort, button_text, combo_editable,
+    combo_index, delay_millis, dialog_button_action, group_index, group_item, is_button,
+    is_modal_overlay, is_spin_box, is_window_overlay, page_indicator_count, page_indicator_index,
+    resizable_table_column, resolve_swipe_index, search_suggestion, search_suggestions,
+    spin_editable, spin_text, spin_value_after, text_input_value,
 };
 #[doc(hidden)]
 pub use delegate::{ComponentRepeater, RowContext};
@@ -29,10 +37,13 @@ pub use double_spin::{
 };
 pub use list::{ListMetrics, RowKey};
 #[doc(hidden)]
-pub use list::{ListModel, RowLifetime};
+pub use list::{ListModel, RowLifetime, standard_list_rows, standard_table_rows};
 pub use model::VecModel;
 pub use property::{ChangeSignal, Property};
-pub use range::{DialInputMode, RangeAction, SliderInterval, SliderRange, progress_value};
+pub use range::{
+    DialInputMode, IndicatorState, RangeAction, SliderInterval, SliderRange, indicator_state,
+    progress_value,
+};
 #[doc(hidden)]
 pub use repeat::Repeater;
 pub use stack::{StackNavigation, StackSnapshot, StackState};
@@ -40,7 +51,16 @@ use std::{collections::BTreeMap, rc::Rc, sync::Arc};
 pub use table_selection::{
     RowSelection, SelectionTarget, TableSelection, TableSelectionAction, TableSelectionSnapshot,
 };
+pub use text_input::InputType;
+pub use time_picker::Time;
+#[doc(hidden)]
+pub use time_picker::{TimePickerOptions, TimePopupState};
+#[doc(hidden)]
+pub use timer::{
+    TimerCommand, TimerConfig, TimerDelivery, TimerQueue, TimerRegistration, TimerSlot, TimerTick,
+};
 pub use tree::{TreeAction, TreeItem, TreeSelectionAction, TreeSnapshot, TreeState};
+pub use tumbler::{Tumbler, TumblerItems};
 
 /// A UI-thread handle that can be captured by callbacks without keeping a component alive.
 pub struct WeakComponent<C>(Rc<dyn Fn() -> Option<C>>);
@@ -79,7 +99,7 @@ pub trait Component {
 
     fn dispatch(&mut self, element_id: &str, event: &str) -> bool;
 
-    /// Commit the complete value of an editable text item.
+    /// Commit the complete value of an editable text item after input validation.
     fn edit_at(&mut self, _scene: &Node, _path: &[usize], _text: String) -> bool {
         false
     }
@@ -221,6 +241,23 @@ pub enum Orientation {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum FlexboxLayoutDirection {
+    #[default]
+    Row,
+    RowReverse,
+    Column,
+    ColumnReverse,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum FlexboxLayoutWrap {
+    #[default]
+    Wrap,
+    NoWrap,
+    WrapReverse,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum DrawerEdge {
     #[default]
     Left,
@@ -243,6 +280,59 @@ pub enum TextWrap {
     WordWrap,
     NoWrap,
     CharWrap,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum TextHorizontalAlignment {
+    #[default]
+    Start,
+    End,
+    Left,
+    Center,
+    Right,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum TextVerticalAlignment {
+    #[default]
+    Top,
+    Center,
+    Bottom,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum TextOverflow {
+    #[default]
+    Clip,
+    Elide,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum CheckState {
+    #[default]
+    Unchecked,
+    PartiallyChecked,
+    Checked,
+}
+
+impl From<bool> for CheckState {
+    fn from(checked: bool) -> Self {
+        if checked {
+            Self::Checked
+        } else {
+            Self::Unchecked
+        }
+    }
+}
+
+impl CheckState {
+    pub fn next(self, tristate: bool) -> Self {
+        match self {
+            Self::Checked => Self::Unchecked,
+            Self::Unchecked if tristate => Self::PartiallyChecked,
+            _ => Self::Checked,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -286,13 +376,24 @@ pub enum Value {
     LayoutAlignment(LayoutAlignment),
     CrossAxisAlignment(CrossAxisAlignment),
     Orientation(Orientation),
+    FlexboxLayoutDirection(FlexboxLayoutDirection),
+    FlexboxLayoutWrap(FlexboxLayoutWrap),
     DialInputMode(DialInputMode),
     ScrollBarPolicy(ScrollBarPolicy),
     TextWrap(TextWrap),
+    TextHorizontalAlignment(TextHorizontalAlignment),
+    TextVerticalAlignment(TextVerticalAlignment),
+    TextOverflow(TextOverflow),
+    InputType(InputType),
+    CheckState(CheckState),
     DialogRole(DialogRole),
+    StandardButtonKind(StandardButtonKind),
+    SwipeSide(SwipeSide),
     DrawerEdge(DrawerEdge),
+    PopupPlacement(PopupPlacement),
     SelectionTarget(SelectionTarget),
     Date(Date),
+    Time(Time),
 }
 
 macro_rules! value_from {
@@ -323,13 +424,24 @@ value_from!(ImageFit, ImageFit);
 value_from!(LayoutAlignment, LayoutAlignment);
 value_from!(CrossAxisAlignment, CrossAxisAlignment);
 value_from!(Orientation, Orientation);
+value_from!(FlexboxLayoutDirection, FlexboxLayoutDirection);
+value_from!(FlexboxLayoutWrap, FlexboxLayoutWrap);
 value_from!(DialInputMode, DialInputMode);
 value_from!(ScrollBarPolicy, ScrollBarPolicy);
 value_from!(TextWrap, TextWrap);
+value_from!(TextHorizontalAlignment, TextHorizontalAlignment);
+value_from!(TextVerticalAlignment, TextVerticalAlignment);
+value_from!(TextOverflow, TextOverflow);
+value_from!(InputType, InputType);
+value_from!(CheckState, CheckState);
 value_from!(DialogRole, DialogRole);
+value_from!(StandardButtonKind, StandardButtonKind);
+value_from!(SwipeSide, SwipeSide);
 value_from!(DrawerEdge, DrawerEdge);
+value_from!(PopupPlacement, PopupPlacement);
 value_from!(SelectionTarget, SelectionTarget);
 value_from!(Date, Date);
+value_from!(Time, Time);
 
 impl From<Brush> for Value {
     fn from(value: Brush) -> Self {
@@ -345,9 +457,15 @@ pub struct Node {
     pub kind: &'static str,
     pub id: Option<&'static str>,
     pub properties: BTreeMap<&'static str, Value>,
+    pub tumbler_items: Option<TumblerItems>,
     pub children: Vec<Node>,
+    #[doc(hidden)]
+    pub timers: Vec<TimerRegistration>,
     pub animations: BTreeMap<&'static str, u64>,
     pub list: Option<ListMetrics>,
+    /// Selection snapshot for model-backed views. Retains the generated field name.
+    #[doc(hidden)]
+    pub standard_list_stamp: Option<(u64, u64)>,
     pub table_header: Option<Box<TableHeader>>,
     pub table_selection: Option<Box<TableSelectionSnapshot>>,
     pub tree: Option<Arc<TreeSnapshot>>,
@@ -378,9 +496,23 @@ pub fn is_toggle(kind: &str) -> bool {
 }
 
 impl Node {
+    pub fn check_state(&self) -> CheckState {
+        match self.properties.get("check-state") {
+            Some(Value::CheckState(state)) if self.kind == "CheckBox" => *state,
+            _ => self.boolean("checked", false).into(),
+        }
+    }
+
     pub fn date(&self, name: &str) -> Option<Date> {
         match self.properties.get(name) {
             Some(Value::Date(date)) => Some(*date),
+            _ => None,
+        }
+    }
+
+    pub fn time(&self, name: &str) -> Option<Time> {
+        match self.properties.get(name) {
+            Some(Value::Time(time)) => Some(*time),
             _ => None,
         }
     }
@@ -390,9 +522,12 @@ impl Node {
             kind,
             id,
             properties: BTreeMap::new(),
+            tumbler_items: None,
             children: Vec::new(),
+            timers: Vec::new(),
             animations: BTreeMap::new(),
             list: None,
+            standard_list_stamp: None,
             table_header: None,
             table_selection: None,
             tree: None,
@@ -500,11 +635,40 @@ impl Node {
         }
     }
 
+    pub fn is_password(&self) -> bool {
+        self.input_type() == InputType::Password
+    }
+
+    pub fn password_masked(&self) -> bool {
+        self.is_password() && !self.boolean("password-visible", false)
+    }
+
     pub fn dialog_role(&self) -> DialogRole {
         match self.properties.get("role") {
             Some(Value::DialogRole(role)) => *role,
             _ => DialogRole::default(),
         }
+    }
+
+    pub fn standard_button_kind(&self) -> Option<StandardButtonKind> {
+        match (self.kind, self.properties.get("kind")) {
+            ("Button", Some(Value::StandardButtonKind(kind))) => Some(*kind),
+            _ => None,
+        }
+    }
+
+    pub fn swipe_side(&self) -> SwipeSide {
+        match self.properties.get("open-side") {
+            Some(Value::SwipeSide(side)) => *side,
+            _ => SwipeSide::Closed,
+        }
+    }
+
+    pub fn swipe_panel(&self, side: SwipeSide) -> Option<&Node> {
+        let kind = side.panel()?;
+        self.children
+            .iter()
+            .find(|child| child.kind == kind && child.is_visible())
     }
 
     pub fn drawer_edge(&self) -> DrawerEdge {
@@ -523,7 +687,11 @@ impl Node {
 
     pub fn is_visible(&self) -> bool {
         self.boolean("visible", true)
-            && (!is_modal_overlay(self.kind) || self.boolean("open", false))
+            && (!is_window_overlay(self.kind) || self.boolean("open", false))
+    }
+
+    pub fn is_modal(&self) -> bool {
+        is_modal_overlay(self.kind) || self.kind == "PopupWindow" && self.boolean("modal", false)
     }
 
     pub fn stack_page_index(&self) -> Option<usize> {
@@ -570,12 +738,28 @@ impl Node {
     pub fn interactive_at_path(&self, path: &[usize]) -> Option<&Self> {
         let mut node = self;
         for index in path {
-            if !node.is_visible() || !node.boolean("enabled", true) {
+            if !node.is_visible() || !node.boolean("enabled", true) || !node.group_content_enabled()
+            {
                 return None;
             }
-            node = node.children.get(*index)?;
+            let child = node.children.get(*index)?;
+            if node.kind == "SwipeDelegate"
+                && matches!(child.kind, "SwipeLeft" | "SwipeRight")
+                && node.swipe_side().panel() != Some(child.kind)
+            {
+                return None;
+            }
+            node = child;
         }
         (node.is_visible() && node.boolean("enabled", true)).then_some(node)
+    }
+
+    pub fn group_checkable(&self) -> bool {
+        self.kind == "GroupBox" && self.boolean("checkable", false)
+    }
+
+    pub fn group_content_enabled(&self) -> bool {
+        !self.group_checkable() || self.boolean("checked", true)
     }
 
     #[doc(hidden)]
@@ -584,7 +768,13 @@ impl Node {
             return self.interactive_at_path(path);
         }
         let node = match path.split_last() {
-            Some((&index, parent)) => self.interactive_at_path(parent)?.children.get(index)?,
+            Some((&index, parent)) => {
+                let parent = self.interactive_at_path(parent)?;
+                if !parent.group_content_enabled() {
+                    return None;
+                }
+                parent.children.get(index)?
+            }
             None => self,
         };
         (node.kind == "Drawer" && node.boolean("visible", true) && node.boolean("enabled", true))

@@ -177,6 +177,18 @@ impl Builder {
                         .strings(&[("owner", &navigation.owner), ("method", &navigation.method)]);
                     self.emit("navigate", navigation.span, &operands, &[], &attrs)?;
                 }
+                ir::Statement::Timer(timer) => {
+                    let attrs =
+                        self.strings(&[("owner", &timer.owner), ("command", &timer.command)]);
+                    self.emit("timer_command", timer.span, &[], &[], &attrs)?;
+                }
+                ir::Statement::Popup(popup) => {
+                    let attrs = self.strings(&[
+                        ("owner", &popup.owner),
+                        ("open", if popup.open { "true" } else { "false" }),
+                    ]);
+                    self.emit("popup_command", popup.span, &[], &[], &attrs)?;
+                }
             }
         }
         if let Some(result) = &callback.result {

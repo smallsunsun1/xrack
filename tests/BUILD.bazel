@@ -73,9 +73,13 @@ rust_test(
     deps = [
         "//crates/xrack-layout:xrack_layout",
         "//crates/xrack-runtime:xrack_runtime",
+        "//examples/async_demo:async_ui",
         "//examples/controls:controls_ui",
         "//examples/counter:counter_ui",
+        "//examples/delegates:delegates_ui",
         "//examples/dialog:dialog_ui",
+        "//examples/form:form_ui",
+        "//examples/list:list_ui",
         "//examples/menu:menu_ui",
         "//examples/navigation:navigation_ui",
         "//examples/selection:selection_ui",

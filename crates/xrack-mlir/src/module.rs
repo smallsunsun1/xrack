@@ -38,6 +38,7 @@ impl Drop for PassManager {
 pub struct Module {
     raw: ffi::MlirModule,
     context: Context,
+    visual_cache_plan: bool,
 }
 
 impl fmt::Debug for Module {
@@ -57,7 +58,11 @@ impl Module {
     pub(crate) fn empty() -> Self {
         let context = Context::new();
         let raw = unsafe { ffi::mlirModuleCreateEmpty(ffi::mlirLocationUnknownGet(context.0)) };
-        Self { raw, context }
+        Self {
+            raw,
+            context,
+            visual_cache_plan: false,
+        }
     }
 
     pub(crate) fn builder_handles(&mut self) -> (ffi::MlirContext, ffi::MlirBlock) {
@@ -75,7 +80,11 @@ impl Module {
             }
             Ok(raw)
         })?;
-        let module = Self { raw, context };
+        let module = Self {
+            raw,
+            context,
+            visual_cache_plan: false,
+        };
         module.verify()?;
         Ok(module)
     }
@@ -94,7 +103,7 @@ impl Module {
     }
 
     /// Consume the module before running mutating passes, invalidating old borrows.
-    pub fn optimize(self) -> Result<Self, String> {
+    pub fn optimize(mut self) -> Result<Self, String> {
         self.verify()?;
         capture_diagnostics(&self.context, || {
             let manager = PassManager(unsafe { ffi::mlirPassManagerCreate(self.context.0) });
@@ -114,7 +123,13 @@ impl Module {
             }
             Ok(())
         })?;
+        self.visual_cache_plan = true;
         Ok(self)
+    }
+
+    /// Only use cache groups created by this module's optimization pipeline.
+    pub fn has_visual_cache_plan(&self) -> bool {
+        self.visual_cache_plan
     }
 
     pub fn operations(&self) -> impl Iterator<Item = OperationRef<'_>> {

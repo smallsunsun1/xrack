@@ -54,3 +54,46 @@ export component TableDemo inherits Window {
         }
     }
 }
+export struct InventoryRow {
+    name: string,
+    units: int,
+    available: bool,
+    refreshed: Time,
+}
+
+export component StandardTableDemo inherits Window {
+    title: "XRack · 标准表格";
+    width: 620px; height: 380px;
+    background: #182331;
+    in-out property <[InventoryRow]> inventory;
+    in-out property <int> current: -1;
+    in property <int> target-row: 0;
+    out property <int> selections: 0;
+    callback sort-requested(column: int, descending: bool);
+
+    VerticalLayout {
+        padding: 16px; spacing: 8px;
+        Text { text: "库存 · 字段投影与虚拟滚动"; font-size: 22px; }
+        inventory-table := StandardTableView {
+            accessible-name: "库存表";
+            row-height: 32px;
+            resizable-columns: true;
+            multi-select: true;
+            model: root.inventory;
+            current-row <=> root.current;
+            current-row-changed(index) => { root.selections += 1; }
+            sort-ascending(column) => { root.sort-requested(column, false); }
+            sort-descending(column) => { root.sort-requested(column, true); }
+            TableColumn { title: "设备"; field: "name"; min-width: 160px; }
+            TableColumn { title: "数量"; field: "units"; min-width: 100px; }
+            TableColumn { title: "可用"; field: "available"; min-width: 100px; }
+            TableColumn { title: "刷新时间"; field: "refreshed"; min-width: 160px; }
+        }
+        HorizontalLayout {
+            spacing: 12px;
+            cross-axis-alignment: center;
+            jump := Button { text: "跳到目标行"; clicked() => { root.current = root.target-row; } }
+            Text { text: "当前索引 " + root.current + " · 用户选择 " + root.selections + " 次"; color: #b8caff; }
+        }
+    }
+}

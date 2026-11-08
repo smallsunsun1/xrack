@@ -24,6 +24,775 @@ fn compiler_errors_retain_source_diagnostics() {
 }
 
 #[test]
+fn standard_table_checks_column_fields_in_source_and_mlir() {
+    let source = r#"
+        export struct Part { device-name: string, count: int, time: Time, color: color }
+        export component App inherits Window {
+            in property <[Part]> parts;
+            in property <string> field-name: "device-name";
+            in-out property <int> current: -1;
+            view := StandardTableView {
+                model: root.parts;
+                current-row <=> root.current;
+                TableColumn { title: "Device"; field: "device-name"; }
+                TableColumn { title: "Count"; field: "count"; }
+                TableColumn { title: "Time"; field: "time"; }
+            }
+        }
+    "#;
+    let output = compile(source, "standard-table.xr").unwrap();
+    assert!(output.mlir.contains("kind = \"StandardTableView\""));
+    let rust = output.rust.to_string();
+    assert!(rust.contains("standard_table_rows") && rust.contains("device_name . to_string"));
+    for (replacement, expected) in [
+        ("\"missing\"", "has no field `missing`"),
+        ("root.field-name", "requires a constant string field name"),
+        (
+            "\"color\"",
+            "requires a string, int, float, bool, Date or Time field",
+        ),
+    ] {
+        let source = source.replace("field: \"device-name\"", &format!("field: {replacement}"));
+        assert!(
+            compile(&source, "standard-table.xr")
+                .err()
+                .unwrap()
+                .contains(expected)
+        );
+    }
+    let raw = lower(source, "standard-table.xr");
+    assert!(
+        mlir::process(&raw.replacen("device-name", "renamed", 1))
+            .unwrap_err()
+            .contains("record has no field device-name")
+    );
+    assert!(
+        mlir::process(&raw.replacen("name = \"field\"", "name = \"ignored\"", 1))
+            .unwrap_err()
+            .contains("requires exactly one field")
+    );
+}
+
+#[test]
+fn popup_window_checks_placement_open_links_and_commands() {
+    let source = r#"
+        export component App inherits Window {
+            in-out property <bool> shown: false;
+            trigger := Button {
+                clicked() => { popover.show(); }
+                popover := PopupWindow {
+                    open <=> root.shown;
+                    placement: below;
+                    anchor-gap: 8px;
+                    close-button := Button { clicked() => { popover.close(); } }
+                }
+            }
+        }
+    "#;
+    let result = compile(source, "popup.xr").unwrap();
+    assert!(result.mlir.contains("!xr.popupplacement"));
+    assert!(result.mlir.contains("xr.popup_command"));
+    let raw = lower(source, "popup.xr");
+    let invalid = raw.replace("name = \"anchor-gap\"", "name = \"placement\"");
+    assert!(
+        mlir::process(&invalid)
+            .unwrap_err()
+            .contains("incorrect PopupWindow property type")
+    );
+    let invalid = raw.replace("owner = \"popover\"", "owner = \"root\"");
+    assert!(
+        mlir::process(&invalid)
+            .unwrap_err()
+            .contains("requires a PopupWindow owner")
+    );
+    assert!(
+        compile("export component App inherits PopupWindow {}", "popup.xr")
+            .err()
+            .unwrap()
+            .contains("requires a visual owner")
+    );
+}
+
+#[test]
+fn text_and_label_layout_options_are_typed_in_mlir() {
+    let source = r#"
+        export component App inherits Window {
+            Label {
+                text: "A👩‍💻B";
+                horizontal-alignment: end;
+                vertical-alignment: bottom;
+                overflow: elide;
+                wrap: char-wrap;
+                max-lines: 2;
+            }
+            Text { wrap: no-wrap; overflow: clip; }
+        }
+    "#;
+    let output = compile(source, "label.xr").unwrap();
+    for kind in [
+        "Label",
+        "!xr.textoverflow",
+        "!xr.texthorizontalalignment",
+        "!xr.textverticalalignment",
+    ] {
+        assert!(output.mlir.contains(kind), "missing {kind}");
+    }
+    let raw = lower(source, "label.xr");
+    let wrong = raw.replace(
+        "name = \"horizontal-alignment\"",
+        "name = \"vertical-alignment\"",
+    );
+    assert!(
+        mlir::process(&wrong)
+            .unwrap_err()
+            .contains("incorrect text layout property type")
+    );
+    let wrong = source.replace("max-lines: 2", "max-lines: true");
+    assert!(
+        compile(&wrong, "label.xr")
+            .err()
+            .unwrap()
+            .contains("type mismatch")
+    );
+}
+
+#[test]
+fn flexbox_layout_keeps_typed_direction_wrap_and_line_alignment() {
+    let source = r#"
+        export component App inherits Window {
+            in property <FlexboxLayoutDirection> direction: row-reverse;
+            FlexboxLayout {
+                flex-direction: root.direction;
+                flex-wrap: wrap-reverse;
+                cross-axis-line-alignment: space-evenly;
+                spacing-horizontal: 8px;
+                Button { preferred-width: 100px; }
+            }
+        }
+    "#;
+    let result = compile(source, "flex.xr").unwrap();
+    assert!(result.mlir.contains("!xr.flexboxlayoutdirection"));
+    assert!(result.mlir.contains("!xr.flexboxlayoutwrap"));
+    let raw = lower(source, "flex.xr");
+    let invalid = raw.replace(
+        "name = \"spacing-horizontal\"",
+        "name = \"cross-axis-line-alignment\"",
+    );
+    assert!(
+        mlir::process(&invalid)
+            .unwrap_err()
+            .contains("incorrect FlexboxLayout property type")
+    );
+    let invalid = source.replace("wrap-reverse", "horizontal");
+    assert!(compile(&invalid, "flex.xr").is_err());
+}
+
+#[test]
+fn timer_validates_nonvisual_properties_and_effectful_commands() {
+    let source = r#"
+        export component App inherits Window {
+            in-out property <bool> active: false;
+            out property <int> hits: 0;
+            timer := Timer {
+                running <=> root.active;
+                interval: 80;
+                triggered() => { root.hits += 1; self.stop(); }
+            }
+            start := Button { clicked() => { timer.restart(); } }
+        }
+    "#;
+    let output = compile(source, "timer.xr").unwrap();
+    assert!(output.mlir.contains("xr.timer_command"));
+    assert!(output.rust.to_string().contains("TimerSlot"));
+    let raw = lower(source, "timer.xr");
+    let invalid = raw.replace("command = \"restart\"", "command = \"unknown\"");
+    assert!(
+        mlir::process(&invalid)
+            .unwrap_err()
+            .contains("requires start, stop, or restart")
+    );
+    let invalid = raw.replace("kind = \"Timer\"", "kind = \"Rectangle\"");
+    assert!(mlir::process(&invalid).is_err());
+    let invalid = source.replace("interval: 80;", "width: 80px;");
+    assert!(
+        compile(&invalid, "timer.xr")
+            .err()
+            .unwrap()
+            .contains("unknown property `Timer.width`")
+    );
+    let invalid = source.replace("timer.restart()", "timer.restart(1)");
+    assert!(
+        compile(&invalid, "timer.xr")
+            .err()
+            .unwrap()
+            .contains("takes no arguments")
+    );
+}
+
+#[test]
+fn swipe_delegate_checks_slots_and_the_typed_side() {
+    let source = r#"
+        export component App inherits Window {
+            in-out property <SwipeSide> side: closed;
+            row := SwipeDelegate {
+                open-side <=> root.side;
+                SwipeContent { Text { text: "Item"; } }
+                SwipeRight { Button { text: "Archive"; } }
+                changed(side) => { root.side = side; }
+            }
+        }
+    "#;
+    let output = compile(source, "swipe-delegate.xr").unwrap();
+    assert!(output.mlir.contains("!xr.swipeside"));
+    let raw = lower(source, "swipe-delegate.xr");
+    let missing = raw.replace("kind = \"SwipeRight\"", "kind = \"SwipeContent\"");
+    assert!(
+        mlir::process(&missing)
+            .unwrap_err()
+            .contains("duplicate SwipeContent slot")
+    );
+    let invalid = source.replace("SwipeRight { Button { text: \"Archive\"; } }", "");
+    assert!(
+        compile(&invalid, "swipe-delegate.xr")
+            .err()
+            .unwrap()
+            .contains("at least one action slot")
+    );
+}
+
+#[test]
+fn standard_buttons_use_a_verified_enum_and_button_box() {
+    let source = r#"
+        export component App inherits Window {
+            in property <StandardButtonKind> primary-kind: save-all;
+            out property <int> applies: 0;
+            dialog := Dialog {
+                open: true;
+                applied() => { root.applies += 1; }
+                discarded() => { root.applies = 0; }
+                DialogButtonBox {
+                    StandardButton { kind: root.primary-kind; primary: true; }
+                    StandardButton { kind: discard; }
+                    DialogButton { role: reject; }
+                }
+            }
+        }
+    "#;
+    let result = compile(source, "buttons.xr").unwrap();
+    assert!(result.mlir.contains("!xr.standardbuttonkind"));
+    assert!(result.mlir.contains("kind = \"DialogButtonBox\""));
+    assert!(
+        result
+            .rust
+            .to_string()
+            .contains("StandardButtonKind :: SaveAll")
+    );
+    let raw = lower(source, "buttons.xr");
+    let error =
+        mlir::process(&raw.replace("value = \"discard\"", "value = \"unknown\"")).unwrap_err();
+    assert!(
+        error.contains("literal spelling does not match result type")
+            && error.contains("standardbuttonkind"),
+        "{error}"
+    );
+    assert!(
+        mlir::process(&raw.replace("kind = \"DialogButton\"", "kind = \"Rectangle\""))
+            .unwrap_err()
+            .contains("requires direct button children")
+    );
+    assert!(
+        compile(
+            &source.replace("StandardButton { kind: discard; }", "Text {}"),
+            "buttons.xr"
+        )
+        .err()
+        .unwrap()
+        .contains("requires direct button children")
+    );
+}
+
+#[test]
+fn date_picker_popup_verifies_date_binding_and_modal_events() {
+    let source = r#"
+        export component App inherits Window {
+            in-out property <Date> selected: Date { year: 2024, month: 2, day: 29 };
+            in-out property <bool> picker-open: true;
+            out property <int> day: 0;
+            picker := DatePickerPopup {
+                open <=> root.picker-open;
+                date <=> root.selected;
+                minimum-date: Date { year: 2024, month: 2, day: 5 };
+                accepted(chosen) => { root.day = chosen.day; }
+                canceled() => { root.day = 0; }
+            }
+        }
+    "#;
+    let output = compile(source, "date-picker.xr").unwrap();
+    assert!(output.mlir.contains("kind = \"DatePickerPopup\""));
+    assert!(output.rust.to_string().contains("DatePopupState"));
+    let raw = lower(source, "date-picker.xr");
+    assert!(
+        mlir::process(&raw.replace("name = \"accepted\"", "name = \"changed\""))
+            .unwrap_err()
+            .contains("invalid picker event or signature")
+    );
+    assert!(
+        mlir::process(&raw.replace("name = \"minimum-date\"", "name = \"week-start\""))
+            .unwrap_err()
+            .contains("incorrect Calendar property type")
+    );
+    assert!(
+        compile(
+            &source.replace("accepted(chosen)", "accepted(chosen, extra)"),
+            "date-picker.xr"
+        )
+        .err()
+        .unwrap()
+        .contains("expects one date parameter")
+    );
+}
+
+#[test]
+fn time_picker_verifies_types_events_and_time_fields_in_mlir() {
+    let source = r#"
+        export component App inherits Window {
+            in-out property <Time> chosen: Time { hour: 12, minute: 32 };
+            in-out property <bool> shown: false;
+            out property <int> seconds: root.chosen.second;
+            inline := TimePicker { time <=> root.chosen; changed(value) => { root.seconds = value.second; } }
+            popup := TimePickerPopup {
+                open <=> root.shown;
+                time <=> root.chosen;
+                accepted(value) => { root.seconds = value.second; }
+                canceled => { root.seconds = 0; }
+            }
+        }
+    "#;
+    let raw = lower(source, "time.xr");
+    for text in ["!xr.time", "xr.make_time", "xr.time_field"] {
+        assert!(raw.contains(text), "missing {text}");
+    }
+    assert!(
+        compile(source, "time.xr")
+            .unwrap()
+            .rust
+            .to_string()
+            .contains("TimePopupState")
+    );
+    assert!(
+        mlir::process(&raw.replace("value = \"second\"", "value = \"day\""))
+            .unwrap_err()
+            .contains("requires hour, minute, or second")
+    );
+    assert!(
+        compile(&source.replace("accepted(value)", "accepted()"), "time.xr")
+            .err()
+            .unwrap()
+            .contains("expects one time parameter")
+    );
+    assert!(
+        compile(
+            &source.replace(
+                "Time { hour: 12, minute: 32 }",
+                "Date { year: 2024, month: 1, day: 1 }"
+            ),
+            "time.xr"
+        )
+        .err()
+        .unwrap()
+        .contains("type mismatch")
+    );
+}
+
+#[test]
+fn grid_view_checks_geometry_and_repeated_template_in_source_and_mlir() {
+    let source = r#"
+        component Tile inherits Rectangle { in property <int> index; }
+        export component App inherits Window {
+            in-out property <int> chosen: -1;
+            grid := GridView {
+                cell-width: 100px; cell-height: 84px; spacing: 10px;
+                current-index <=> root.chosen;
+                for item in 1000 : Tile { index: item; }
+                changed(index) => { root.chosen = index; }
+            }
+        }
+    "#;
+    let output = compile(source, "grid.xr").unwrap();
+    assert!(output.mlir.contains("kind = \"GridView\""));
+    assert!(output.rust.to_string().contains("render_range"));
+    let malformed = source.replace("100px", "true");
+    assert!(
+        compile(&malformed, "grid.xr")
+            .err()
+            .unwrap()
+            .contains("type mismatch")
+    );
+    let raw = lower(source, "grid.xr");
+    assert!(
+        mlir::process(&raw.replace("name = \"cell-width\"", "name = \"follow-current\""))
+            .unwrap_err()
+            .contains("incorrect GridView property type")
+    );
+    let malformed = source.replace("for item in 1000 : Tile { index: item; }", "Rectangle {}");
+    assert!(
+        compile(&malformed, "grid.xr")
+            .err()
+            .unwrap()
+            .contains("requires exactly one for element")
+    );
+}
+
+#[test]
+fn page_slots_have_a_unique_direct_parent_in_source_and_mlir() {
+    let source = r#"
+        export component App inherits Window {
+            Page {
+                title: "Settings";
+                PageFooter { height: 40px; }
+                Rectangle {}
+                PageHeader { height: 36px; }
+            }
+        }
+    "#;
+    assert!(compile(source, "page.xr").is_ok());
+    let duplicate = source.replace("PageFooter", "PageHeader");
+    assert!(
+        compile(&duplicate, "page.xr")
+            .err()
+            .unwrap()
+            .contains("only one PageHeader")
+    );
+    let raw = lower(source, "page.xr");
+    assert!(
+        mlir::process(&raw.replace("kind = \"PageFooter\"", "kind = \"PageHeader\""))
+            .unwrap_err()
+            .contains("only one PageHeader")
+    );
+    assert!(
+        mlir::process(&raw.replace("kind = \"Page\"", "kind = \"Rectangle\""))
+            .unwrap_err()
+            .contains("requires a direct Page parent")
+    );
+    let repeated = source.replace("PageFooter {", "for n in [1, 2] : PageFooter {");
+    assert!(
+        compile(&repeated, "page.xr")
+            .err()
+            .unwrap()
+            .contains("cannot repeat")
+    );
+}
+
+#[test]
+fn standard_list_uses_a_verified_record_text_field() {
+    let source = r#"
+        export struct Entry { label: string, rank: int }
+        export component App inherits Window {
+            in property <[Entry]> records: [Entry { label: "one", rank: 1 }];
+            in-out property <int> selected: -1;
+            list := StandardListView {
+                model: root.records;
+                text-role: "label";
+                current-index <=> root.selected;
+                changed(index) => { root.selected = index; }
+            }
+        }
+    "#;
+    let result = compile(source, "standard-list.xr").unwrap();
+    assert!(result.mlir.contains("kind = \"StandardListView\""));
+    assert!(result.rust.to_string().contains("standard_list_rows"));
+    assert!(
+        compile(
+            &source.replace("text-role: \"label\"", "text-role: \"rank\""),
+            "standard-list.xr"
+        )
+        .err()
+        .unwrap()
+        .contains("string field named `rank`")
+    );
+    let raw = lower(source, "standard-list.xr");
+    assert!(
+        mlir::process(&raw.replace("name = \"text-role\"", "name = \"unknown-role\""))
+            .unwrap_err()
+            .contains("string field named text")
+    );
+    assert!(compile(
+        "export component App inherits Window { StandardListView { model: [\"one\", \"two\"]; } }",
+        "strings.xr"
+    ).is_ok());
+}
+
+#[test]
+fn spinner_and_busy_indicator_verify_progress_and_motion_types() {
+    let source = r#"
+        export component App inherits Window {
+            in property <bool> loading: true;
+            BusyIndicator { running: root.loading; stroke-width: 3px; animated: false; }
+            Spinner { progress: 65%; track-color: #384761; }
+        }
+    "#;
+    let result = compile(source, "indicators.xr").unwrap();
+    assert!(result.mlir.contains("kind = \"BusyIndicator\""));
+    assert!(result.mlir.contains("kind = \"Spinner\""));
+    let raw = lower(source, "indicators.xr");
+    assert!(
+        mlir::process(&raw.replace("name = \"stroke-width\"", "name = \"track-color\""))
+            .unwrap_err()
+            .contains("incorrect activity indicator property type")
+    );
+    assert!(
+        compile(
+            &source.replace("running: root.loading", "progress: 0.5"),
+            "indicators.xr"
+        )
+        .err()
+        .unwrap()
+        .contains("progress")
+    );
+}
+
+#[test]
+fn group_box_checks_its_header_and_checked_binding_in_mlir() {
+    let source = r#"
+        export component App inherits Window {
+            in-out property <bool> enabled-group: true;
+            settings := GroupBox {
+                title: "Settings";
+                checkable: true;
+                checked <=> root.enabled-group;
+                content-padding: 12px;
+                toggled(active) => { root.enabled-group = active; }
+                LineEdit { placeholder-text: "Address"; }
+            }
+        }
+    "#;
+    let result = compile(source, "group.xr").unwrap();
+    assert!(result.mlir.contains("xr.control_link"));
+    assert!(result.mlir.contains("content-padding"));
+    assert!(
+        compile(&source.replace("toggled(active)", "toggled()"), "group.xr")
+            .err()
+            .unwrap()
+            .contains("expects one bool parameter")
+    );
+    let raw = lower(source, "group.xr");
+    assert!(
+        mlir::process(&raw.replace("name = \"content-padding\"", "name = \"title\""))
+            .unwrap_err()
+            .contains("incorrect GroupBox property type")
+    );
+}
+
+#[test]
+fn check_state_bindings_and_callbacks_use_the_typed_mlir_enum() {
+    let source = r#"
+        export component App inherits Window {
+            in-out property <CheckState> selection: CheckState.partially-checked;
+            out property <CheckState> last;
+            item := CheckBox {
+                check-state <=> root.selection;
+                tristate: true;
+                check-state-changed(state) => { root.last = state; }
+            }
+        }
+    "#;
+    let result = compile(source, "checked.xr").unwrap();
+    assert!(result.mlir.contains("!xr.checkstate"));
+    assert!(result.mlir.contains("xr.control_link"));
+    assert!(
+        result
+            .rust
+            .to_string()
+            .contains("CheckState :: PartiallyChecked")
+    );
+    let conflict = source.replace("tristate: true;", "checked: false;");
+    assert!(
+        compile(&conflict, "checked.xr")
+            .err()
+            .unwrap()
+            .contains("CheckBox accepts checked or check-state")
+    );
+    let raw = lower(source, "checked.xr");
+    let wrong = raw.replace("value = \"partially-checked\"", "value = \"mixed\"");
+    assert!(
+        mlir::process(&wrong)
+            .unwrap_err()
+            .contains("literal spelling")
+    );
+}
+
+#[test]
+fn delay_button_verifies_delay_checked_link_and_activation_handler() {
+    let source = r#"
+        export component App inherits Window {
+            in-out property <bool> confirmed: false;
+            confirm := DelayButton {
+                delay: 250;
+                checked <=> root.confirmed;
+                progress-color: #366483;
+                activated() => {}
+            }
+        }
+    "#;
+    let compilation = compile(source, "hold.xr").unwrap();
+    assert!(compilation.mlir.contains("xr.control_link"));
+    assert!(
+        compilation
+            .rust
+            .to_string()
+            .contains("ControlAction :: DelayButton")
+    );
+    assert!(
+        compile(&source.replace("activated()", "clicked()"), "hold.xr")
+            .err()
+            .unwrap()
+            .contains("unknown event")
+    );
+    let raw = lower(source, "hold.xr");
+    assert!(
+        mlir::process(&raw.replace("name = \"delay\"", "name = \"progress-color\""))
+            .unwrap_err()
+            .contains("incorrect DelayButton property type")
+    );
+}
+
+#[test]
+fn tumbler_verifies_the_model_source_and_index_link() {
+    let source = r#"
+        export component App inherits Window {
+            in-out property <int> selected: 0;
+            wheel := Tumbler {
+                model: ["one", "two"];
+                current-index <=> root.selected;
+                visible-item-count: 5;
+                changed(index) => { root.selected = index; }
+            }
+        }
+    "#;
+    let compilation = compile(source, "wheel.xr").unwrap();
+    assert!(compilation.mlir.contains("xr.control_link"));
+    assert!(compilation.rust.to_string().contains("TumblerItems :: new"));
+    let invalid = source.replace("visible-item-count: 5", "count: 5");
+    assert!(
+        compile(&invalid, "wheel.xr")
+            .err()
+            .unwrap()
+            .contains("either model or count")
+    );
+    let raw = lower(source, "wheel.xr");
+    assert!(
+        mlir::process(&raw.replace("name = \"visible-item-count\"", "name = \"wrap\""))
+            .unwrap_err()
+            .contains("incorrect Tumbler property type")
+    );
+}
+
+#[test]
+fn password_mode_and_reveal_are_typed_in_mlir() {
+    let source = r#"
+        export component App inherits Window {
+            in-out property <string> secret;
+            in property <InputType> mode: InputType.password;
+            in property <bool> reveal: false;
+            LineEdit {
+                input-type: root.mode;
+                password-visible: root.reveal;
+                text <=> root.secret;
+            }
+        }
+    "#;
+    let compilation = compile(source, "password.xr").unwrap();
+    assert!(compilation.mlir.contains("!xr.inputtype"));
+    assert!(
+        compilation
+            .rust
+            .to_string()
+            .contains("InputType :: Password")
+    );
+    let raw = lower(source, "password.xr");
+    assert!(
+        mlir::process(&raw.replace("name = \"input-type\"", "name = \"password-visible\""))
+            .unwrap_err()
+            .contains("incorrect password input property or type")
+    );
+    assert!(
+        compile(&source.replace("LineEdit", "SearchField"), "password.xr")
+            .err()
+            .unwrap()
+            .contains("input-type")
+    );
+}
+
+#[test]
+fn text_editor_constraints_are_verified_in_semantics_and_mlir() {
+    let source = r#"
+        export component App inherits Window {
+            LineEdit { input-type: number; maximum-length: 4; }
+            TextInput { input-type: decimal; decimal-separator: ","; }
+            LineEdit { input-type: search; }
+            TextArea { maximum-length: 20; }
+        }
+    "#;
+    let compilation = compile(source, "constraints.xr").unwrap();
+    let rust = compilation.rust.to_string();
+    for mode in ["Number", "Decimal", "Search"] {
+        assert!(rust.contains(&format!("InputType :: {mode}")));
+    }
+    let wrong_type = source.replace("maximum-length: 4", "maximum-length: true");
+    assert!(compile(&wrong_type, "constraints.xr").is_err());
+
+    let raw = lower(source, "constraints.xr");
+    let wrong_type = raw.replace("name = \"decimal-separator\"", "name = \"maximum-length\"");
+    assert!(
+        mlir::process(&wrong_type)
+            .unwrap_err()
+            .contains("maximum-length requires an integer")
+    );
+    let wrong_kind = raw.replace("kind = \"TextArea\"", "kind = \"Text\"");
+    assert!(
+        mlir::process(&wrong_kind)
+            .unwrap_err()
+            .contains("maximum-length requires an integer")
+    );
+    let wrong_enum = raw.replace("value = \"decimal\"", "value = \"hexadecimal\"");
+    assert!(mlir::process(&wrong_enum).is_err());
+}
+
+#[test]
+fn search_field_checks_live_query_and_candidate_model_types() {
+    let source = r#"
+        export component App inherits Window {
+            in-out property <string> query;
+            in property <[string]> matches;
+            in property <string> result-query;
+            out property <string> requested;
+            search := SearchField {
+                text <=> root.query;
+                live: true;
+                suggestions: root.matches;
+                suggestions-for: root.result-query;
+                search-triggered(query) => { root.requested = query; }
+            }
+        }
+    "#;
+    let compiled = compile(source, "search.xr").unwrap();
+    assert!(compiled.mlir.contains("xr.control_link"));
+    assert!(compiled.mlir.contains("search-triggered"));
+    let raw = lower(source, "search.xr");
+    assert!(
+        mlir::process(&raw.replace("name = \"live\"", "name = \"suggestions\""))
+            .unwrap_err()
+            .contains("incorrect SearchField property type")
+    );
+    assert!(
+        compile(&source.replace("live: true", "live: 1"), "search.xr")
+            .err()
+            .unwrap()
+            .contains("type mismatch")
+    );
+}
+
+#[test]
 fn decimal_spin_box_uses_float_links_and_typed_precision() {
     let source = r#"
         export component App inherits Window {
@@ -1364,7 +2133,7 @@ fn slider_callbacks_and_progress_ratios_have_typed_mlir() {
     }"#;
     let compilation = compile(source, "controls.xr").unwrap();
     assert!(compilation.mlir.contains("!xr.orientation"));
-    assert!(compilation.mlir.contains("\"xr.to_ratio\""));
+    assert!(lower(source, "controls.xr").contains("\"xr.to_ratio\""));
     assert!(compilation.mlir.contains("\"xr.control_link\""));
     let bad = source.replace("changed(value)", "changed()");
     assert!(

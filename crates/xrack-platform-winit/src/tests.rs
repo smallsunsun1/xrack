@@ -13,6 +13,86 @@ use std::{
 use xrack_runtime::Value;
 
 #[test]
+fn tumbler_frame_tracks_visible_labels_only() {
+    use xrack_layout::{TextMeasurer, layout_with_input};
+    use xrack_runtime::{TumblerItems, VecModel};
+
+    struct Measure;
+    impl TextMeasurer for Measure {
+        fn measure(&mut self, _: &str, _: f32, _: f32) -> Size {
+            Size::default()
+        }
+    }
+    let model = VecModel::from((0..50_000).map(|row| row.to_string()).collect::<Vec<_>>());
+    let mut node = Node::new("Tumbler", None);
+    node.tumbler_items = Some(TumblerItems::new(model.clone()));
+    let scene = Rc::new(node);
+    let input = Interaction::default();
+    let viewport = Size::new(140.0, 160.0);
+    let mut cache = FrameCache::default();
+    let prepare = |cache: &mut FrameCache| {
+        cache.prepare(scene.clone(), viewport, &input, |base| {
+            let layout = layout_with_input(&base, viewport, &mut Measure, &input);
+            (base, layout)
+        })
+    };
+    let (_, first) = prepare(&mut cache);
+    assert_eq!(first.tumbler.as_ref().unwrap().rows.len(), 5);
+    assert!(model.set_row(1_000, "offscreen".into()));
+    let (_, untouched) = prepare(&mut cache);
+    assert!(Rc::ptr_eq(&first, &untouched));
+    assert!(model.set_row(1, "visible".into()));
+    let (_, updated) = prepare(&mut cache);
+    assert!(!Rc::ptr_eq(&first, &updated));
+    assert!(
+        updated
+            .tumbler
+            .as_ref()
+            .unwrap()
+            .rows
+            .iter()
+            .any(|row| row.label == "visible")
+    );
+}
+
+#[test]
+fn password_clipboard_allows_paste_and_rejects_copy_and_cut_even_when_revealed() {
+    use xrack_runtime::InputType;
+
+    let mut field = Node::new("LineEdit", None);
+    field
+        .properties
+        .insert("text", "e\u{301}👩‍💻".to_owned().into());
+    let mut input = Interaction::default();
+    input.focused = Some(Target {
+        path: vec![],
+        id: None,
+        focusable: true,
+        row_key: None,
+    });
+    input.sync_editor(&field);
+    input
+        .editor
+        .as_mut()
+        .unwrap()
+        .apply(field.text("text").unwrap(), EditAction::SelectAll);
+    let (_, normal) = EditContext::request(&input, &field, &ClipboardShortcut::Cut).unwrap();
+    field
+        .properties
+        .insert("input-type", InputType::Password.into());
+    assert!(!normal.is_current(&input, &field));
+    for revealed in [false, true] {
+        field.properties.insert("password-visible", revealed.into());
+        assert!(EditContext::request(&input, &field, &ClipboardShortcut::Copy).is_none());
+        assert!(EditContext::request(&input, &field, &ClipboardShortcut::Cut).is_none());
+        assert!(matches!(
+            EditContext::request(&input, &field, &ClipboardShortcut::Paste),
+            Some((clipboard::Operation::Read, _))
+        ));
+    }
+}
+
+#[test]
 fn accessibility_scrolls_the_requested_container_without_moving_its_parent() {
     use xrack_layout::{TextMeasurer, layout};
     use xrack_runtime::Length;
@@ -117,7 +197,7 @@ fn accessibility_scrolls_the_requested_container_without_moving_its_parent() {
 fn accessibility_dispatches_clicks_and_edits_and_rejects_a_stale_path() {
     use accesskit::NodeId;
     use xrack_layout::{TextMeasurer, layout};
-    use xrack_runtime::Length;
+    use xrack_runtime::{InputType, Length};
 
     struct Measure;
     impl TextMeasurer for Measure {
@@ -137,6 +217,10 @@ fn accessibility_dispatches_clicks_and_edits_and_rejects_a_stale_path() {
             button.properties.insert("text", "Save".to_owned().into());
             let mut editor = Node::new("LineEdit", Some("editor"));
             editor.properties.insert("y", Length(50.0).into());
+            editor
+                .properties
+                .insert("input-type", InputType::Search.into());
+            editor.properties.insert("maximum-length", 3_i64.into());
             editor.properties.insert("text", self.text.clone().into());
             root.children = vec![button, editor];
             root
@@ -174,7 +258,7 @@ fn accessibility_dispatches_clicks_and_edits_and_rejects_a_stale_path() {
             .0
     };
     let click = id(accesskit::Role::Button);
-    let edit = id(accesskit::Role::TextInput);
+    let edit = id(accesskit::Role::SearchInput);
     let request = |target_node: NodeId, action, data| ActionRequest {
         action,
         target_tree: TreeId::ROOT,
@@ -193,6 +277,23 @@ fn accessibility_dispatches_clicks_and_edits_and_rejects_a_stale_path() {
         ),
     );
     assert_eq!(app.component.text, "工作区");
+    app.accessibility_action(
+        projection.route(edit).unwrap(),
+        request(
+            edit,
+            AccessibleAction::SetValue,
+            Some(ActionData::Value("太长的名称".into())),
+        ),
+    );
+    assert_eq!(app.component.text, "工作区");
+    assert!(
+        app.input
+            .editor
+            .as_ref()
+            .unwrap()
+            .selection("工作区")
+            .is_empty()
+    );
     assert_eq!(
         app.input.focused.as_ref().and_then(|target| target.id),
         Some("editor")
@@ -477,6 +578,98 @@ fn frame_cache_observes_visible_rows_and_ignores_offscreen_row_updates() {
         updated.at_path(&[1, 0]).unwrap().text("text"),
         Some("visible")
     );
+}
+
+#[test]
+fn window_timer_schedule_tracks_the_active_component_layout() {
+    use xrack_layout::{TextMeasurer, layout};
+    use xrack_runtime::{TimerConfig, TimerSlot};
+
+    struct Measure;
+    impl TextMeasurer for Measure {
+        fn measure(&mut self, _: &str, _: f32, _: f32) -> Size {
+            Size::default()
+        }
+    }
+    let mut app = Application::new(
+        TestUi::default(),
+        LocalExecutor::new(|| {}),
+        Inbox::<()>::new(|| {}),
+        |_, _| {},
+    );
+    let slot = TimerSlot::default();
+    let start = Instant::now();
+    let at = |millis| start + Duration::from_millis(millis);
+    for (visible, time, expected) in [
+        (true, 0, Some(at(80))),
+        (false, 40, None),
+        (true, 200, Some(at(280))),
+    ] {
+        let mut window = Node::new("Window", None);
+        let mut child = Node::new("Rectangle", None);
+        child.properties.insert("visible", visible.into());
+        child
+            .timers
+            .push(slot.register(TimerConfig::new(80, true, false).unwrap(), |_| true));
+        window.children.push(child);
+        app.scene = Rc::new(window);
+        app.layout = Some(Rc::new(layout(
+            &app.scene,
+            Size::new(300.0, 60.0),
+            &mut Measure,
+        )));
+        app.sync_timers(at(time));
+        assert_eq!(app.timers.deadline(), expected);
+    }
+    assert!(app.timers.next_due(at(280)).unwrap().fire());
+}
+
+#[test]
+fn swipe_preview_invalidates_the_native_frame_cache_until_canceled() {
+    use xrack_layout::{TextMeasurer, layout_with_input};
+    use xrack_runtime::Length;
+
+    struct Measure;
+    impl TextMeasurer for Measure {
+        fn measure(&mut self, _: &str, _: f32, _: f32) -> Size {
+            Size::default()
+        }
+    }
+    let mut row = Node::new("SwipeDelegate", None);
+    let mut actions = Node::new("SwipeRight", None);
+    actions.properties.insert("width", Length(96.0).into());
+    row.children
+        .extend([Node::new("SwipeContent", None), actions]);
+    let scene = Rc::new(row);
+    let mut cache = FrameCache::default();
+    let mut input = Interaction::default();
+    let viewport = Size::new(300.0, 60.0);
+    let mut prepare = |input: &Interaction| {
+        cache
+            .prepare(scene.clone(), viewport, input, |scene| {
+                let layout = layout_with_input(&scene, viewport, &mut Measure, input);
+                (scene, layout)
+            })
+            .1
+    };
+    let before = prepare(&input);
+    let now = Instant::now();
+    let start = Point { x: 150.0, y: 28.0 };
+    let moved = Point { x: 114.0, ..start };
+    assert!(input.begin_scroll_gesture(
+        &scene,
+        &before,
+        start,
+        now,
+        ScrollGestureKind::MouseControl
+    ));
+    assert!(input.move_scroll_gesture(&scene, &before, moved, now + Duration::from_millis(16)));
+    let preview = prepare(&input);
+    assert!(!Rc::ptr_eq(&preview, &before));
+    assert_eq!(preview.children[1].clip.width, 36.0);
+    input.cancel_scroll_gesture();
+    let closed = prepare(&input);
+    assert!(!closed.children[1].visible);
 }
 
 #[test]

@@ -1,9 +1,10 @@
 use crate::{LayoutNode, Point, Rect, Size, TextMeasurer, font_size, linear};
-use xrack_runtime::{DrawerEdge, Node, is_modal_overlay};
+use xrack_runtime::{DrawerEdge, Node, is_modal_overlay, is_window_overlay};
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct OverlayIndex {
     pub open: Vec<Vec<usize>>,
+    pub modal: Vec<Vec<usize>>,
     pub drawers: Vec<Vec<usize>>,
 }
 
@@ -152,7 +153,7 @@ pub(crate) fn opposite(edge: DrawerEdge) -> DrawerEdge {
     }
 }
 
-pub(crate) fn index_dialogs(scene: &Node, layout: &mut LayoutNode) {
+pub(crate) fn index_overlays(scene: &Node, layout: &mut LayoutNode) {
     fn visit(
         scene: &Node,
         layout: &LayoutNode,
@@ -168,11 +169,14 @@ pub(crate) fn index_dialogs(scene: &Node, layout: &mut LayoutNode) {
         {
             overlays.drawers.push(path.clone());
         }
-        if !layout.visible {
+        if !layout.visible || !scene.group_content_enabled() {
             return;
         }
-        if is_modal_overlay(scene.kind) {
+        if is_window_overlay(scene.kind) {
             overlays.open.push(path.clone());
+            if scene.is_modal() {
+                overlays.modal.push(path.clone());
+            }
         }
         for (index, (child, item)) in scene.children.iter().zip(&layout.children).enumerate() {
             path.push(index);

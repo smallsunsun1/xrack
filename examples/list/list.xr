@@ -29,3 +29,92 @@ export component ListDemo inherits Window {
         Text { text: root.current < 0 ? "尚未选择" : "已选择第 " + (root.current + 1) + " 条记录"; color: #b8caff; }
     }
 }
+
+export struct DirectoryItem {
+    label: string,
+    rank: int,
+}
+
+export component StandardListDemo inherits Window {
+    title: "XRack · 默认行列表";
+    width: 584px;
+    height: 355px;
+    background: #182331;
+
+    in-out property <[string]> categories: ["全部", "最近", "收藏"];
+    in-out property <[DirectoryItem]> records: [
+        DirectoryItem { label: "接口文档", rank: 0 },
+        DirectoryItem { label: "布局示例", rank: 1 },
+        DirectoryItem { label: "键盘导航", rank: 2 },
+    ];
+    in-out property <int> category: 0;
+    in-out property <int> current: -1;
+    in-out property <int> jump-index: 2;
+    out property <int> selections: 0;
+
+    Text { x: 20px; y: 16px; text: "默认行 · 字符串与记录模型"; font-size: 22px; }
+    categories-view := StandardListView {
+        x: 20px; y: 58px; width: 146px; height: 222px;
+        accessible-name: "分类";
+        model: root.categories;
+        current-index <=> root.category;
+        row-height: 34px;
+    }
+    records-view := StandardListView {
+        x: 180px; y: 58px; width: 384px; height: 222px;
+        accessible-name: "目录";
+        model: root.records;
+        text-role: "label";
+        current-index <=> root.current;
+        row-height: 32px;
+        changed(index) => { root.selections += 1; }
+    }
+    jump := Button {
+        x: 20px; y: 294px; width: 146px; height: 40px;
+        text: "跳到目标行";
+        clicked() => { root.current = root.jump-index; }
+    }
+    Text { x: 180px; y: 305px; text: "当前索引 " + root.current + " · 用户选择 " + root.selections + " 次"; color: #acc0db; }
+}
+component GridCard inherits Rectangle {
+    in property <string> label;
+    in property <int> rank;
+    property <bool> pinned: false;
+
+    accessible-name: root.label;
+    background: root.rank % 2 == 0 ? #263750 : #304565;
+    Text { x: 10px; y: 8px; text: root.label; color: #edf3ff; }
+    pin := CheckBox { x: 10px; y: 42px; text: "收藏"; checked <=> root.pinned; }
+}
+
+export component GridDemo inherits Window {
+    title: "XRack · 虚拟网格";
+    width: 620px; height: 420px;
+    background: #182331;
+
+    in-out property <[DirectoryItem]> records: [
+        DirectoryItem { label: "条目 00000", rank: 0 },
+        DirectoryItem { label: "条目 00001", rank: 1 },
+    ];
+    in-out property <int> current: -1;
+    in property <int> jump-index: 1;
+    out property <int> selections: 0;
+
+    VerticalLayout {
+        padding: 16px; spacing: 8px;
+        Text { text: "虚拟网格 · 调整窗口宽度重新排列"; font-size: 20px; }
+        tiles := GridView {
+            accessible-name: "资源网格";
+            cell-width: 128px; cell-height: 84px; spacing: 8px;
+            current-index <=> root.current;
+            changed(index) => { root.selections += 1; }
+            for item in root.records : GridCard { label: item.label; rank: item.rank; }
+        }
+        HorizontalLayout {
+            spacing: 12px;
+            cross-axis-alignment: center;
+            jump-grid := Button { text: "跳到目标"; clicked() => { root.current = root.jump-index; } }
+            Text { text: "索引 " + root.current + " · 用户选择 " + root.selections + " 次"; color: #acc0db; }
+        }
+    }
+}

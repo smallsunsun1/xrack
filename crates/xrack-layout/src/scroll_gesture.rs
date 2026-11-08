@@ -10,6 +10,8 @@ const DAMPING: f32 = 7.5;
 pub enum ScrollGestureKind {
     Touch,
     MousePan,
+    MouseTumbler,
+    MouseControl,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]

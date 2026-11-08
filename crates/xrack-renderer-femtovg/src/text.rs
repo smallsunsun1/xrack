@@ -1,7 +1,7 @@
 use femtovg::{Align, Baseline, Color, FontId, Paint, TextContext, TextMetrics};
 use fontdb::{Database, Family, Query};
 use std::{cell::RefCell, ops::Range, sync::Arc};
-use xrack_layout::{Rect, Size, TextAreaLayout, TextMeasurer, font_size};
+use xrack_layout::{LabelLayout, Rect, Size, TextAreaLayout, TextMeasurer, font_size};
 use xrack_runtime::{Node, TextWrap};
 
 struct EditLayout {
@@ -166,9 +166,19 @@ impl TextSystem {
             .break_text_vec(width, text, paint)
             .unwrap_or_else(|_| std::iter::once(0..text.len()).collect())
     }
+
+    pub(crate) fn label_layout<'a>(&self, node: &'a Node, available: Size) -> LabelLayout<'a> {
+        let size = font_size(node);
+        LabelLayout::new(node, available, |value| self.advance(value, size))
+    }
 }
 
 impl TextMeasurer for TextSystem {
+    fn measure_label(&mut self, node: &Node, max_width: f32) -> Size {
+        self.label_layout(node, Size::new(max_width, f32::INFINITY))
+            .size
+    }
+
     fn measure(&mut self, text: &str, font_size: f32, max_width: f32) -> Size {
         if max_width <= 0.0 {
             return Size::default();

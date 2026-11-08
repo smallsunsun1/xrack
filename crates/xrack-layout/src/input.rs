@@ -2,15 +2,19 @@ use crate::{
     CalendarGeometry, ChoiceKey, ChoiceMenu, ComboCompletion, ComboGeometry, DialGeometry,
     EditAction, EditSource, LayoutNode, MenuEntry, MenuKey, MenuPanel, MenuShortcut,
     PageIndicatorGeometry, Point, ScrollBarGeometry, ScrollGestureEnd, ScrollGestureKind,
-    SliderGeometry, SpinGeometry, SplitGeometry, SplitHandle, StackTransitions, TextEdit,
-    TreeRowGeometry,
+    SearchGeometry, SliderGeometry, SpinGeometry, SplitGeometry, SplitHandle, StackTransitions,
+    TextEdit, TreeRowGeometry, TumblerScroll,
     choice::ChoicePopup,
+    delay_button::{DelayHold, DelaySource},
     history::{EditHistories, EditorKey, Group, Record, TextHistory},
     menu::MenuPopup,
     modal,
     scroll_gesture::{DragMotion, FlingMotion},
     split::axis_point,
+    swipe_delegate::SwipeDrag,
     tooltip::{self, Source as TooltipSource, TooltipState},
+    tumbler::{TumblerDrag, TumblerWheel},
+    view_cells::ViewCells,
 };
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
@@ -18,11 +22,12 @@ use std::time::{Duration, Instant};
 use xrack_runtime::{
     CalendarAction, CalendarState, Component, ControlAction, Date, DialInputMode, DialogRole,
     DrawerEdge, ListMetrics, Node, Orientation, RangeAction, RowKey, RowSelection, SelectionTarget,
-    SliderInterval, SliderRange, SpinAction, SpinDecimal, TableSelectionAction, TreeAction,
-    TreeSelectionAction, combo_editable, combo_index, decimal_separator, editable_table_cell,
-    group_index, group_item, is_modal_overlay, is_multiline_text_input, is_spin_box, is_text_input,
-    is_toggle, page_indicator_count, page_indicator_index, resizable_table_column, spin_editable,
-    spin_text, spin_text_is_valid, text_input_value,
+    SliderInterval, SliderRange, SpinAction, SpinDecimal, StandardButtonKind, SwipeSide,
+    TableSelectionAction, TreeAction, TreeSelectionAction, Tumbler, combo_editable, combo_index,
+    decimal_separator, delay_millis, dialog_button_action, editable_table_cell, group_index,
+    group_item, is_multiline_text_input, is_spin_box, is_text_input, is_toggle, is_window_overlay,
+    page_indicator_count, page_indicator_index, resizable_table_column, search_suggestion,
+    spin_editable, spin_text, spin_text_is_valid, text_input_value,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -72,11 +77,15 @@ pub struct ControlInput {
 }
 
 fn dismiss_overlay(node: &Node) -> ControlAction {
-    if node.kind == "Drawer" {
-        ControlAction::Drawer(false)
-    } else {
-        ControlAction::Dialog(DialogRole::Reject)
+    match node.kind {
+        "Drawer" => ControlAction::Drawer(false),
+        "PopupWindow" => ControlAction::Popup(false),
+        _ => ControlAction::Dialog(DialogRole::Reject),
     }
+}
+
+fn is_modal_path(layout: &LayoutNode, path: &[usize]) -> bool {
+    layout.dialog_paths().iter().any(|modal| modal == path)
 }
 
 pub struct SplitResize {
@@ -116,6 +125,7 @@ fn tree_row_action(node: &Node, index: usize, operation: RowSelection) -> Option
 struct DialogFocus {
     path: Vec<usize>,
     row_key: Option<RowKey>,
+    modal: bool,
     return_focus: Option<Target>,
 }
 
@@ -269,6 +279,9 @@ struct ScrollGesture {
     popup: (bool, bool),
     drawer: Option<DrawerSwipe>,
     pages: Vec<PageSwipe>,
+    tumbler: Option<TumblerDrag>,
+    swipe_delegate: Option<SwipeDrag>,
+    delay_touch: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -382,8 +395,13 @@ pub struct Interaction {
     hovered_scroll_bar: Option<ScrollTarget>,
     scroll_bar_press: Option<ScrollBarPress>,
     scroll_gesture: Option<ScrollGesture>,
+    tumbler_wheel: Option<TumblerWheel>,
     scroll_fling: Option<ScrollFling>,
     key_pressed: Option<(ActivationKey, Target)>,
+    key_standard_button: Option<StandardButtonKind>,
+    delay_hold: Option<DelayHold>,
+    delay_pointer_claimed: bool,
+    delay_key_claimed: Option<ActivationKey>,
     range_keys: BTreeMap<SliderKey, Target>,
     slider_offset: f64,
     slider_anchor: Option<f64>,
@@ -391,6 +409,7 @@ pub struct Interaction {
     spin_pressed: Option<SpinAction>,
     spin_draft: Option<SpinDraft>,
     choice: Option<ChoicePopup>,
+    search_query: Option<String>,
     painted_combo_completion: Option<ComboCompletion>,
     dismissed_combo_draft: Option<String>,
     menu: Option<MenuPopup>,
@@ -409,6 +428,8 @@ pub struct Interaction {
     pressed_body_column: Option<usize>,
     hovered_control_part: Option<ControlAction>,
     pressed_control_part: Option<ControlAction>,
+    hovered_standard_button: Option<StandardButtonKind>,
+    pressed_standard_button: Option<StandardButtonKind>,
     hovered_table_grip: Option<(usize, f32)>,
     table_resize: Option<TableResize>,
     split_drag: Option<SplitDrag>,
@@ -418,7 +439,7 @@ pub struct Interaction {
     history: EditHistories,
     scroll_offsets: BTreeMap<Vec<usize>, f32>,
     horizontal_scroll_offsets: BTreeMap<Vec<usize>, f32>,
-    tab_scroll_selections: BTreeMap<Vec<usize>, Option<usize>>,
+    scroll_selections: BTreeMap<Vec<usize>, (Option<usize>, usize)>,
     text_offsets: BTreeMap<Vec<usize>, (Option<RowKey>, Point)>,
     dialogs: Vec<DialogFocus>,
     stack_focus: BTreeMap<StackFocusKey, Target>,
@@ -439,16 +460,24 @@ enum Hit {
 
 fn focusable(node: &Node) -> bool {
     let kind = node.kind;
+    if kind == "GroupBox" {
+        return node.group_checkable();
+    }
     if kind == "PageIndicator" {
         return node.boolean("interactive", false) && page_indicator_count(node) != 0;
+    }
+    if kind == "Tumbler" {
+        return Tumbler::from_node(node).selected().is_some();
     }
     matches!(
         kind,
         "Button"
             | "ToolButton"
+            | "DelayButton"
             | "DialogButton"
             | "Dialog"
             | "Drawer"
+            | "PopupWindow"
             | "Slider"
             | "Dial"
             | "RangeThumb"
@@ -460,8 +489,11 @@ fn focusable(node: &Node) -> bool {
             | "Tab"
             | "TabButton"
             | "SwipeView"
+            | "SwipeDelegate"
             | "StackView"
             | "ListView"
+            | "GridView"
+            | "StandardListView"
             | "TreeView"
             | "TableView"
             | "TableCell"
@@ -511,6 +543,15 @@ fn tree_cell_row<'a>(scene: &Node, path: &'a [usize]) -> Option<(&'a [usize], us
     None
 }
 
+pub(crate) fn scroll_selection(node: &Node) -> Option<usize> {
+    if node.kind == "TabBar" {
+        group_index(node)
+    } else {
+        let index = usize::try_from(ListMetrics::selection(node)?).ok()?;
+        (index < node.list?.row_count).then_some(index)
+    }
+}
+
 fn current_list_slot(node: &Node) -> Option<usize> {
     let index = usize::try_from(ListMetrics::selection(node)?).ok()?;
     index.checked_sub(node.list?.first_row)
@@ -553,6 +594,50 @@ fn hit(
     }
     if transitioning_stacks.contains(path) {
         return Hit::StackSlide;
+    }
+    if node.group_checkable() && crate::group_header(node, layout.bounds).contains(point) {
+        return if layout.enabled {
+            Hit::Target(Target {
+                path: path.clone(),
+                id: node.id,
+                focusable: true,
+                row_key: None,
+            })
+        } else {
+            Hit::Blocked(path.clone())
+        };
+    }
+    if let Some(action) = layout.tumbler.as_ref().and_then(|wheel| wheel.hit(point)) {
+        return if layout.enabled {
+            Hit::ControlPart(
+                Target {
+                    path: path.clone(),
+                    id: node.id,
+                    focusable: true,
+                    row_key: None,
+                },
+                action,
+            )
+        } else {
+            Hit::Blocked(path.clone())
+        };
+    }
+    if node.kind == "SearchField"
+        && let Some(action) = SearchGeometry::new(layout.bounds).action_at(node, point)
+    {
+        return if layout.enabled {
+            Hit::ControlPart(
+                Target {
+                    path: path.clone(),
+                    id: node.id,
+                    focusable: true,
+                    row_key: None,
+                },
+                action,
+            )
+        } else {
+            Hit::Blocked(path.clone())
+        };
     }
     if node.kind == "Calendar" {
         let action = CalendarGeometry::new(node, layout.bounds).action_at(point);
@@ -598,6 +683,26 @@ fn hit(
     if node.kind == "Dial" && !DialGeometry::new(layout.bounds, node).contains(point) {
         return Hit::None;
     }
+    if let Some((rect, action)) = layout
+        .swipe_delegate
+        .as_deref()
+        .and_then(crate::SwipeDelegateGeometry::toggle)
+        && rect.contains(point)
+    {
+        return if layout.enabled {
+            Hit::ControlPart(
+                Target {
+                    path: path.clone(),
+                    id: node.id,
+                    focusable: true,
+                    row_key: None,
+                },
+                action,
+            )
+        } else {
+            Hit::Blocked(path.clone())
+        };
+    }
     if let Some(bar) = layout
         .scroll_bars(node)
         .find(|bar| bar.scrollable() && bar.track.contains(point))
@@ -613,7 +718,7 @@ fn hit(
         };
     }
     for (i, (child, child_layout)) in node.children.iter().zip(&layout.children).enumerate().rev() {
-        if is_modal_overlay(child.kind) {
+        if is_window_overlay(child.kind) {
             continue;
         }
         path.push(i);
@@ -623,8 +728,8 @@ fn hit(
             return found;
         }
     }
-    if node.kind == "Tab"
-        || is_modal_overlay(node.kind)
+    if matches!(node.kind, "Tab" | "GroupBox")
+        || is_window_overlay(node.kind)
         || !interactive(node)
         || node.kind == "TreeCell" && !editable_table_cell(node)
     {
@@ -673,7 +778,10 @@ fn moved_row_target(target: &Target, scene: &Node, layout: &LayoutNode) -> Optio
         let Some(node) = scene.at_path(&target.path[..depth]) else {
             continue;
         };
-        if !matches!(node.kind, "ListView" | "TableView" | "TreeView") {
+        if !matches!(
+            node.kind,
+            "ListView" | "GridView" | "StandardListView" | "TableView" | "TreeView"
+        ) {
             continue;
         }
         let slot = node
@@ -690,6 +798,8 @@ fn moved_row_target(target: &Target, scene: &Node, layout: &LayoutNode) -> Optio
 fn eligible(node: &Node, layout: &LayoutNode) -> bool {
     let hitbox = if node.kind == "Tab" {
         layout.tab_header
+    } else if layout.visible && node.kind == "GroupBox" {
+        Some(crate::group_header(node, layout.bounds))
     } else if layout.visible {
         Some(layout.bounds)
     } else {
@@ -786,8 +896,9 @@ fn focus_targets(scene: &Node, layout: &LayoutNode, scope: &[usize]) -> Vec<Targ
                 return;
             }
         } else if !matches!(node.kind, "Tab" | "TreeCell")
-            && !is_modal_overlay(node.kind)
+            && !is_window_overlay(node.kind)
             && focusable(node)
+            && (node.kind != "GroupBox" || eligible(node, layout))
         {
             out.push(Target {
                 path: path.clone(),
@@ -798,7 +909,7 @@ fn focus_targets(scene: &Node, layout: &LayoutNode, scope: &[usize]) -> Vec<Targ
         }
         let mut visit = |index: usize| {
             if let Some((child, item)) = node.children.get(index).zip(layout.children.get(index))
-                && !is_modal_overlay(child.kind)
+                && !is_window_overlay(child.kind)
             {
                 path.push(index);
                 collect(child, item, path, out);
@@ -815,8 +926,8 @@ fn focus_targets(scene: &Node, layout: &LayoutNode, scope: &[usize]) -> Vec<Targ
                 visit(pane);
                 visit(count + pane);
             }
-        } else {
-            for index in 0..node.children.len() {
+        } else if !node.boolean("__standard-table", false) {
+            for index in crate::child_reading_order(node) {
                 visit(index);
             }
         }
@@ -824,7 +935,7 @@ fn focus_targets(scene: &Node, layout: &LayoutNode, scope: &[usize]) -> Vec<Targ
     let mut targets = Vec::new();
     if let Some((node, item)) = scene.at_path(scope).zip(layout.at_path(scope)) {
         collect(node, item, &mut scope.to_vec(), &mut targets);
-        if targets.is_empty() && is_modal_overlay(node.kind) && eligible(node, item) {
+        if targets.is_empty() && is_window_overlay(node.kind) && eligible(node, item) {
             targets.push(Target {
                 path: scope.to_vec(),
                 id: node.id,
@@ -837,6 +948,40 @@ fn focus_targets(scene: &Node, layout: &LayoutNode, scope: &[usize]) -> Vec<Targ
         target.row_key = scene.row_key_at(&target.path);
     }
     targets
+}
+
+fn dialog_entry_focus(scene: &Node, layout: &LayoutNode, path: &[usize]) -> Option<Target> {
+    let node = scene.at_path(path)?;
+    let targets = focus_targets(scene, layout, path);
+    let first = targets.iter().find(|target| {
+        scene
+            .at_path(&target.path)
+            .and_then(Node::standard_button_kind)
+            != Some(StandardButtonKind::Discard)
+    });
+    if node.kind == "Dialog"
+        && first
+            .and_then(|target| scene.at_path(&target.path))
+            .and_then(dialog_button_action)
+            .is_some()
+        && let Some(primary) = targets.iter().find(|target| {
+            scene.at_path(&target.path).is_some_and(|button| {
+                button.boolean("primary", false)
+                    && dialog_button_action(button)
+                        == Some(ControlAction::Dialog(DialogRole::Accept))
+            })
+        })
+    {
+        return Some(primary.clone());
+    }
+    first.cloned().or_else(|| {
+        eligible(node, layout.at_path(path)?).then(|| Target {
+            path: path.to_vec(),
+            id: node.id,
+            focusable: true,
+            row_key: scene.row_key_at(path),
+        })
+    })
 }
 
 fn slider_target<'a, 'b>(
@@ -899,9 +1044,9 @@ impl Interaction {
     pub fn update_tooltip(&mut self, scene: &Node, layout: &LayoutNode, now: Instant) -> bool {
         let scope = self.active_dialog(layout).unwrap_or_default();
         let key = match self.tooltip.source {
-            TooltipSource::Pointer => self
-                .pointer
-                .and_then(|point| tooltip::hovered(scene, layout, scope, point)),
+            TooltipSource::Pointer => self.pointer.and_then(|point| {
+                tooltip::hovered(scene, layout, self.pointer_scope(layout, point), point)
+            }),
             TooltipSource::Focus => self
                 .focused
                 .as_ref()
@@ -938,25 +1083,81 @@ impl Interaction {
         )
     }
 
-    pub fn dialog_layers<'a>(
+    pub fn overlay_layers<'a>(
         &'a self,
         layout: &'a LayoutNode,
-    ) -> impl Iterator<Item = &'a [usize]> + 'a {
+    ) -> impl DoubleEndedIterator<Item = &'a [usize]> + 'a {
         self.dialogs
             .iter()
-            .filter(move |dialog| layout.dialog_paths().contains(&dialog.path))
+            .filter(move |dialog| layout.overlay_paths().contains(&dialog.path))
             .map(|dialog| dialog.path.as_slice())
             .chain(
                 layout
-                    .dialog_paths()
+                    .overlay_paths()
                     .iter()
                     .filter(move |path| !self.dialogs.iter().any(|dialog| &dialog.path == *path))
                     .map(Vec::as_slice),
             )
     }
 
+    pub fn dialog_layers<'a>(
+        &'a self,
+        layout: &'a LayoutNode,
+    ) -> impl DoubleEndedIterator<Item = &'a [usize]> + 'a {
+        self.overlay_layers(layout)
+            .filter(move |path| is_modal_path(layout, path))
+    }
+
     fn active_dialog<'a>(&'a self, layout: &'a LayoutNode) -> Option<&'a [usize]> {
-        self.dialog_layers(layout).last()
+        self.dialog_layers(layout).next_back()
+    }
+
+    pub fn allows_popup(&self, layout: &LayoutNode, path: &[usize]) -> bool {
+        self.active_dialog(layout)
+            .is_none_or(|modal| path.starts_with(modal))
+    }
+
+    fn popups<'a>(&'a self, layout: &'a LayoutNode) -> impl Iterator<Item = &'a [usize]> + 'a {
+        self.overlay_layers(layout)
+            .rev()
+            .filter(move |path| !is_modal_path(layout, path) && self.allows_popup(layout, path))
+    }
+
+    fn popup_at<'a>(&'a self, layout: &'a LayoutNode, point: Point) -> Option<&'a [usize]> {
+        self.popups(layout).find(|path| {
+            layout
+                .at_path(path)
+                .is_some_and(|item| item.bounds.contains(point))
+        })
+    }
+
+    fn focused_popup<'a>(&'a self, layout: &'a LayoutNode) -> Option<&'a [usize]> {
+        let target = self.focused.as_ref()?;
+        self.popups(layout)
+            .find(|path| target.path.starts_with(path))
+    }
+
+    fn pointer_scope<'a>(&'a self, layout: &'a LayoutNode, point: Point) -> &'a [usize] {
+        self.popup_at(layout, point)
+            .or_else(|| self.active_dialog(layout))
+            .unwrap_or_default()
+    }
+
+    pub fn popup_outside_press(&self, scene: &Node, layout: &LayoutNode) -> Option<ControlInput> {
+        let path = self.popups(layout).next()?;
+        let point = self.pointer?;
+        let popup = scene.at_path(path)?;
+        let (_, anchor) = path.split_last()?;
+        let anchor_clicked = self
+            .target_at(scene, layout, point)
+            .is_some_and(|target| target.path == anchor);
+        (!anchor_clicked
+            && !layout.at_path(path)?.bounds.contains(point)
+            && popup.boolean("close-on-outside", true))
+        .then(|| ControlInput {
+            path: path.to_vec(),
+            action: ControlAction::Popup(false),
+        })
     }
 
     pub fn dialog_button(
@@ -968,29 +1169,44 @@ impl Interaction {
         let path = self.active_dialog(layout)?;
         let node = scene.at_path(&target.path)?;
         if !target.path.starts_with(path)
-            || node.kind != "DialogButton"
             || scene.at_path(path)?.kind != "Dialog"
+            || self
+                .popups(layout)
+                .any(|popup| target.path.starts_with(popup))
             || !valid(target, scene, layout)
         {
             return None;
         }
         Some(ControlInput {
             path: path.to_vec(),
-            action: ControlAction::Dialog(node.dialog_role()),
+            action: dialog_button_action(node)?,
         })
     }
 
     pub fn dialog_accept(&self, scene: &Node, layout: &LayoutNode) -> Option<ControlInput> {
+        if self.focused_popup(layout).is_some() {
+            return None;
+        }
         let path = self.active_dialog(layout)?;
-        let targets = focus_targets(scene, layout, path);
-        targets.iter().find_map(|target| {
-            self.dialog_button(scene, layout, target)
-                .filter(|action| action.action == ControlAction::Dialog(DialogRole::Accept))
-        })
+        focus_targets(scene, layout, path)
+            .iter()
+            .filter_map(|target| {
+                let action = self.dialog_button(scene, layout, target)?;
+                if action.action != ControlAction::Dialog(DialogRole::Accept) {
+                    return None;
+                }
+                let primary = scene.at_path(&target.path)?.boolean("primary", false);
+                Some((!primary, action))
+            })
+            .min_by_key(|(secondary, _)| *secondary)
+            .map(|(_, action)| action)
     }
 
     pub fn dialog_escape(&self, scene: &Node, layout: &LayoutNode) -> Option<ControlInput> {
-        let path = self.active_dialog(layout)?;
+        let path = self
+            .popups(layout)
+            .next()
+            .or_else(|| self.active_dialog(layout))?;
         let node = scene.at_path(path)?;
         node.boolean("close-on-escape", true).then(|| ControlInput {
             path: path.to_vec(),
@@ -1007,6 +1223,9 @@ impl Interaction {
         let Some(point) = self.pointer else {
             return false;
         };
+        if self.popup_at(layout, point).is_some() {
+            return false;
+        }
         let Some(item) = layout.at_path(path) else {
             return false;
         };
@@ -1035,7 +1254,11 @@ impl Interaction {
         let node = scene.at_path(path)?;
         if pressed != path
             || layout.at_path(path)?.bounds.contains(self.pointer?)
-            || !node.boolean("close-on-outside", node.kind == "Drawer")
+            || self.popup_at(layout, self.pointer?).is_some()
+            || !node.boolean(
+                "close-on-outside",
+                matches!(node.kind, "Drawer" | "PopupWindow"),
+            )
         {
             return None;
         }
@@ -1047,12 +1270,14 @@ impl Interaction {
 
     fn set_focus(&mut self, focus: Option<Target>) {
         if self.focused != focus {
+            self.cancel_delay();
             self.history.break_group();
             self.editor = None;
             self.spin_draft = None;
             self.table_edit = None;
             self.last_table_click = None;
             self.choice = None;
+            self.search_query = None;
             self.painted_combo_completion = None;
             self.dismissed_combo_draft = None;
             self.menu = None;
@@ -1140,7 +1365,10 @@ impl Interaction {
         {
             return None;
         }
-        let scope = self.active_dialog(layout).unwrap_or_default();
+        let scope = self
+            .focused_popup(layout)
+            .or_else(|| self.active_dialog(layout))
+            .unwrap_or_default();
         let path = crate::menu::shortcut_path(scene, layout, scope, self.menu.as_ref(), key)?;
         let action = if matches!(scene.at_path(&path)?.kind, "Button" | "ToolButton") {
             ControlAction::ActivateAction
@@ -1158,7 +1386,7 @@ impl Interaction {
     }
 
     fn hit_at(&self, scene: &Node, layout: &LayoutNode, point: Point) -> Hit {
-        let scope = self.active_dialog(layout).unwrap_or_default();
+        let scope = self.pointer_scope(layout, point);
         let Some((node, item)) = scene.at_path(scope).zip(layout.at_path(scope)) else {
             return Hit::None;
         };
@@ -1169,6 +1397,10 @@ impl Interaction {
             &mut scope.to_vec(),
             &self.transitioning_stacks,
         );
+        if matches!(result, Hit::None) && node.kind == "PopupWindow" && item.bounds.contains(point)
+        {
+            result = Hit::Blocked(scope.to_vec());
+        }
         match &mut result {
             Hit::Target(target) | Hit::ControlPart(target, _) => {
                 target.row_key = scene.row_key_at(&target.path)
@@ -1375,10 +1607,15 @@ impl Interaction {
         &self.horizontal_scroll_offsets
     }
 
-    pub(crate) fn tab_selection_changed(&self, node: &Node, path: &[usize]) -> bool {
-        self.tab_scroll_selections
+    pub(crate) fn scroll_selection_changed(
+        &self,
+        node: &Node,
+        path: &[usize],
+        columns: usize,
+    ) -> bool {
+        self.scroll_selections
             .get(path)
-            .is_some_and(|previous| *previous != group_index(node))
+            .is_some_and(|previous| *previous != (scroll_selection(node), columns))
     }
 
     pub fn pointer_position(&self) -> Option<Point> {
@@ -1558,9 +1795,10 @@ impl Interaction {
         if self.pointer_on_stack_slide || !delta.is_finite() || delta == 0.0 {
             return None;
         }
-        let scope = self.active_dialog(layout).unwrap_or_default();
+        let point = self.pointer?;
+        let scope = self.pointer_scope(layout, point);
         let scope_len = scope.len();
-        let path = Self::scroll_path(layout, self.pointer?, scope, orientation)?;
+        let path = Self::scroll_path(layout, point, scope, orientation)?;
         Some(self.consume_scroll(layout, &path, scope_len, delta, orientation))
     }
 
@@ -1659,9 +1897,38 @@ impl Interaction {
             return false;
         }
         let popup = (self.menu_open(), self.choice_open());
-        let scope = self.active_dialog(layout).unwrap_or_default().to_vec();
+        let scope = self.pointer_scope(layout, point).to_vec();
         let hit = self.hit_at(scene, layout, point);
         if !popup.0 && !popup.1 && matches!(hit, Hit::StackSlide) {
+            return false;
+        }
+        let tumbler = match &hit {
+            Hit::Target(target) | Hit::ControlPart(target, _) if !popup.0 && !popup.1 => scene
+                .at_path(&target.path)
+                .zip(layout.at_path(&target.path))
+                .and_then(|(node, item)| {
+                    (node.kind == "Tumbler")
+                        .then(|| TumblerDrag::new(target.clone(), node, item, point))
+                        .flatten()
+                }),
+            _ => None,
+        };
+        if kind == ScrollGestureKind::MouseTumbler && tumbler.is_none() {
+            return false;
+        }
+        let swipe_delegate = match &hit {
+            Hit::Target(target)
+                if !popup.0 && !popup.1 && kind != ScrollGestureKind::MouseTumbler =>
+            {
+                scene
+                    .at_path(&target.path)
+                    .zip(layout.at_path(&target.path))
+                    .and_then(|(node, item)| SwipeDrag::new(target.clone(), node, item, point))
+            }
+            _ => None,
+        };
+        if kind == ScrollGestureKind::MouseControl && tumbler.is_none() && swipe_delegate.is_none()
+        {
             return false;
         }
         let pages = if popup.0 || popup.1 {
@@ -1669,7 +1936,7 @@ impl Interaction {
         } else {
             Self::page_swipes(scene, layout, point, &scope, &hit)
         };
-        let drawer = if popup.0 || popup.1 {
+        let drawer = if popup.0 || popup.1 || self.popup_at(layout, point).is_some() {
             None
         } else {
             self.drawer_swipe(scene, layout, point)
@@ -1689,13 +1956,28 @@ impl Interaction {
         if kind == ScrollGestureKind::MousePan
             && drawer.is_none()
             && pages.is_empty()
+            && tumbler.is_none()
+            && swipe_delegate.is_none()
             && axes.iter().all(Option::is_none)
         {
             return false;
         }
-        let tap = (kind == ScrollGestureKind::Touch && !interrupted).then_some(hit);
+        let delay_target = match &hit {
+            Hit::Target(target) if kind == ScrollGestureKind::Touch && !popup.0 && !popup.1 => {
+                scene
+                    .at_path(&target.path)
+                    .filter(|node| node.kind == "DelayButton" && !node.boolean("checked", false))
+                    .map(|_| target.clone())
+            }
+            _ => None,
+        };
+        let tap = (kind != ScrollGestureKind::MousePan && !interrupted).then_some(hit);
         self.cancel_press();
         self.pointer_leave();
+        let delay_touch = delay_target.is_some_and(|target| {
+            self.set_focus(Some(target.clone()));
+            self.begin_delay(scene, layout, target, DelaySource::Touch(point), now)
+        });
         self.scroll_gesture = Some(ScrollGesture {
             route: ScrollRoute {
                 scope_row: scene.row_key_at(&scope),
@@ -1707,6 +1989,9 @@ impl Interaction {
             popup,
             drawer,
             pages,
+            tumbler,
+            swipe_delegate,
+            delay_touch,
         });
         true
     }
@@ -1850,7 +2135,8 @@ impl Interaction {
         layout: &LayoutNode,
         route: &ScrollRoute,
     ) -> bool {
-        self.active_dialog(layout).unwrap_or_default() == route.scope
+        (self.active_dialog(layout).unwrap_or_default() == route.scope
+            || self.popups(layout).any(|path| path == route.scope))
             && scene.row_key_at(&route.scope) == route.scope_row
     }
 
@@ -1896,10 +2182,35 @@ impl Interaction {
         if !self.scroll_route_is_current(scene, layout, &gesture.route)
             || gesture.popup != (self.menu_open(), self.choice_open())
         {
-            return false;
+            self.cancel_touch_delay();
+            return gesture.tumbler.is_some_and(|drag| drag.offset != 0.0)
+                || gesture
+                    .swipe_delegate
+                    .is_some_and(|drag| drag.has_preview());
+        }
+        if gesture.delay_touch
+            && let Some(hold) = &mut self.delay_hold
+            && matches!(hold.source, DelaySource::Touch(_))
+        {
+            hold.source = DelaySource::Touch(point);
+            if !layout
+                .at_path(&hold.target.path)
+                .is_some_and(|item| item.bounds.intersect(item.clip).contains(point))
+            {
+                self.cancel_delay();
+            }
         }
         let was_dragging = gesture.motion.dragging;
         let scrolled = gesture.motion.update(point, now).is_some_and(|delta| {
+            if gesture.delay_touch {
+                self.cancel_touch_delay();
+            }
+            if let Some(drag) = &mut gesture.tumbler {
+                if was_dragging || (point.y - drag.start.y).abs() > (point.x - drag.start.x).abs() {
+                    return drag.update(scene, layout, point);
+                }
+                gesture.tumbler = None;
+            }
             if !was_dragging && let Some(swipe) = &gesture.drawer {
                 let (distance, across) = swipe.movement(point);
                 if distance <= across {
@@ -1907,7 +2218,19 @@ impl Interaction {
                 }
             }
             if gesture.drawer.is_some() {
+                gesture.swipe_delegate = None;
                 return false;
+            }
+            if !was_dragging
+                && gesture
+                    .swipe_delegate
+                    .as_ref()
+                    .is_some_and(|swipe| !swipe.accepts_direction(point))
+            {
+                gesture.swipe_delegate = None;
+            }
+            if let Some(swipe) = &mut gesture.swipe_delegate {
+                return swipe.update(scene, layout, point);
             }
             if !was_dragging {
                 let selected = gesture.pages.iter().position(|page| {
@@ -1948,12 +2271,41 @@ impl Interaction {
         }
         let scrolled = self.move_scroll_gesture(scene, layout, point, now);
         let Some(gesture) = self.scroll_gesture.take() else {
-            return ScrollGestureEnd::default();
+            return ScrollGestureEnd {
+                scrolled,
+                ..ScrollGestureEnd::default()
+            };
         };
-        let tap = !gesture.motion.dragging
+        let tap = !gesture.delay_touch
+            && !gesture.motion.dragging
             && gesture
                 .tap
                 .is_some_and(|hit| hit == self.hit_at(scene, layout, point));
+        if gesture.delay_touch && !gesture.motion.dragging {
+            self.cancel_touch_delay();
+            return ScrollGestureEnd {
+                tap: false,
+                scrolled,
+                control: None,
+            };
+        }
+        if let Some(drag) = gesture.tumbler {
+            let had_preview = drag.offset != 0.0;
+            let target = drag.target.clone();
+            let control = if gesture.motion.dragging {
+                drag.finish(scene, layout)
+            } else {
+                None
+            };
+            if control.is_some() {
+                self.set_focus(Some(target));
+            }
+            return ScrollGestureEnd {
+                tap,
+                scrolled: scrolled || had_preview,
+                control,
+            };
+        }
         if let Some(swipe) = gesture.drawer {
             let control = gesture
                 .motion
@@ -1963,6 +2315,17 @@ impl Interaction {
             return ScrollGestureEnd {
                 tap,
                 scrolled,
+                control,
+            };
+        }
+        if let Some(swipe) = gesture.swipe_delegate {
+            let control = swipe.finish(scene, layout);
+            if control.is_some() {
+                self.set_focus(Some(swipe.target.clone()));
+            }
+            return ScrollGestureEnd {
+                tap,
+                scrolled: scrolled || swipe.has_preview(),
                 control,
             };
         }
@@ -2023,9 +2386,289 @@ impl Interaction {
         self.scroll_fling.is_some()
     }
 
+    pub fn tumbler_preview(&self) -> Option<(&[usize], f32)> {
+        let drag = self.scroll_gesture.as_ref()?.tumbler.as_ref()?;
+        (drag.offset != 0.0).then_some((&drag.target.path, drag.offset))
+    }
+
+    pub fn has_swipe_preview(&self) -> bool {
+        self.swipe_preview().is_some()
+    }
+
+    pub fn swipe_preview(&self) -> Option<(&[usize], Option<RowKey>, f32)> {
+        self.scroll_gesture
+            .as_ref()
+            .and_then(|gesture| gesture.swipe_delegate.as_ref())
+            .and_then(SwipeDrag::preview_state)
+    }
+
+    pub(crate) fn swipe_preview_offset(
+        &self,
+        path: &[usize],
+        node: &Node,
+        geometry: &crate::SwipeDelegateGeometry,
+        row: Option<RowKey>,
+    ) -> Option<f32> {
+        self.scroll_gesture
+            .as_ref()?
+            .swipe_delegate
+            .as_ref()?
+            .preview(path, node, geometry, row)
+    }
+
+    pub(crate) fn tumbler_offset(&self, wheel: &Tumbler<'_>, path: &[usize]) -> f32 {
+        self.scroll_gesture
+            .as_ref()
+            .and_then(|gesture| gesture.tumbler.as_ref())
+            .map_or(0.0, |drag| drag.offset_for(wheel, path))
+    }
+
+    pub fn tumbler_scroll(
+        &mut self,
+        scene: &Node,
+        layout: &LayoutNode,
+        delta: f32,
+        lines: bool,
+    ) -> TumblerScroll {
+        let target = self
+            .pointer
+            .and_then(|point| self.target_at(scene, layout, point));
+        if let Some(target) = target
+            && let Some(node) = scene
+                .at_path(&target.path)
+                .filter(|node| node.kind == "Tumbler")
+            && let Some(wheel) = layout
+                .at_path(&target.path)
+                .and_then(|item| item.tumbler.as_ref())
+        {
+            return crate::tumbler::scroll(
+                &mut self.tumbler_wheel,
+                &target,
+                &Tumbler::from_node(node),
+                wheel.center.height,
+                delta,
+                lines,
+            );
+        }
+        self.tumbler_wheel = None;
+        TumblerScroll::Unhandled
+    }
+
+    pub fn tumbler_key(
+        &self,
+        scene: &Node,
+        layout: &LayoutNode,
+        key: NavigationKey,
+    ) -> Option<ControlInput> {
+        let target = self.focused.as_ref()?;
+        if !valid(target, scene, layout) {
+            return None;
+        }
+        let node = scene
+            .at_path(&target.path)
+            .filter(|node| node.kind == "Tumbler")?;
+        let wheel = Tumbler::from_node(node);
+        let index = match key {
+            NavigationKey::Up => wheel.step(-1)?,
+            NavigationKey::Down => wheel.step(1)?,
+            NavigationKey::Home => 0,
+            NavigationKey::End => wheel.count().checked_sub(1)?,
+            NavigationKey::PageUp => wheel.step(-(wheel.visible() as i64))?,
+            NavigationKey::PageDown => wheel.step(wheel.visible() as i64)?,
+            _ => return None,
+        };
+        Some(ControlInput {
+            path: target.path.clone(),
+            action: wheel.select(index)?,
+        })
+    }
+
     pub fn cancel_scroll_gesture(&mut self) {
         self.scroll_gesture = None;
         self.scroll_fling = None;
+        self.cancel_touch_delay();
+    }
+
+    fn begin_delay(
+        &mut self,
+        scene: &Node,
+        layout: &LayoutNode,
+        target: Target,
+        source: DelaySource,
+        now: Instant,
+    ) -> bool {
+        let scope = self.active_dialog(layout).unwrap_or_default();
+        let Some(node) = scene.at_path(&target.path).filter(|node| {
+            node.kind == "DelayButton"
+                && !node.boolean("checked", false)
+                && target.path.starts_with(scope)
+                && valid(&target, scene, layout)
+        }) else {
+            return false;
+        };
+        if self.menu_open() || self.choice_open() {
+            return false;
+        }
+        self.delay_hold = Some(DelayHold::new(
+            target,
+            source,
+            scope.to_vec(),
+            Duration::from_millis(delay_millis(node)),
+            now,
+        ));
+        true
+    }
+
+    pub fn begin_pointer_delay(&mut self, scene: &Node, layout: &LayoutNode, now: Instant) {
+        if let Some(target) = self.pressed.clone() {
+            self.delay_pointer_claimed =
+                self.begin_delay(scene, layout, target, DelaySource::Pointer, now);
+        }
+    }
+
+    pub fn begin_key_delay(
+        &mut self,
+        scene: &Node,
+        layout: &LayoutNode,
+        key: ActivationKey,
+        now: Instant,
+    ) {
+        if let Some((pressed, target)) = self.key_pressed.clone()
+            && pressed == key
+            && self.begin_delay(scene, layout, target, DelaySource::Key(key), now)
+        {
+            self.delay_key_claimed = Some(key);
+        }
+    }
+
+    fn delay_current(&self, hold: &DelayHold, scene: &Node, layout: &LayoutNode) -> bool {
+        if self.focused.as_ref() != Some(&hold.target)
+            || self.menu_open()
+            || self.choice_open()
+            || self.active_dialog(layout).unwrap_or_default() != hold.scope
+            || !valid(&hold.target, scene, layout)
+            || !scene.at_path(&hold.target.path).is_some_and(|node| {
+                node.kind == "DelayButton"
+                    && !node.boolean("checked", false)
+                    && Duration::from_millis(delay_millis(node)) == hold.duration
+            })
+        {
+            return false;
+        }
+        match hold.source {
+            DelaySource::Pointer => {
+                self.pressed.as_ref() == Some(&hold.target)
+                    && self.pointer.is_some_and(|point| {
+                        self.target_at(scene, layout, point).as_ref() == Some(&hold.target)
+                    })
+            }
+            DelaySource::Key(key) => self
+                .key_pressed
+                .as_ref()
+                .is_some_and(|(current, target)| *current == key && target == &hold.target),
+            DelaySource::Touch(point) => {
+                self.target_at(scene, layout, point).as_ref() == Some(&hold.target)
+            }
+            DelaySource::Accessibility => true,
+        }
+    }
+
+    pub fn advance_delay(
+        &mut self,
+        scene: &Node,
+        layout: &LayoutNode,
+        now: Instant,
+    ) -> Option<ControlInput> {
+        let mut hold = self.delay_hold.take()?;
+        if !self.delay_current(&hold, scene, layout) {
+            return None;
+        }
+        if hold.sample(now) && !matches!(hold.source, DelaySource::Accessibility) {
+            return Some(ControlInput {
+                path: hold.target.path,
+                action: ControlAction::DelayButton(true),
+            });
+        }
+        self.delay_hold = Some(hold);
+        None
+    }
+
+    pub fn accessibility_delay_click(
+        &mut self,
+        scene: &Node,
+        layout: &LayoutNode,
+        target: Target,
+        now: Instant,
+    ) -> Option<ControlInput> {
+        let node = scene
+            .at_path(&target.path)
+            .filter(|node| node.kind == "DelayButton")?;
+        if !valid(&target, scene, layout)
+            || self.menu_open()
+            || self.choice_open()
+            || !target
+                .path
+                .starts_with(self.active_dialog(layout).unwrap_or_default())
+        {
+            return None;
+        }
+        self.accessibility_focus(target.clone());
+        if node.boolean("checked", false) {
+            self.cancel_delay();
+            return Some(ControlInput {
+                path: target.path,
+                action: ControlAction::DelayButton(false),
+            });
+        }
+        if let Some(hold) = self.delay_hold.take()
+            && matches!(hold.source, DelaySource::Accessibility)
+            && hold.target == target
+            && self.delay_current(&hold, scene, layout)
+        {
+            return (now >= hold.deadline()).then_some(ControlInput {
+                path: target.path,
+                action: ControlAction::DelayButton(true),
+            });
+        }
+        self.begin_delay(scene, layout, target, DelaySource::Accessibility, now);
+        None
+    }
+
+    pub fn cancel_delay(&mut self) -> bool {
+        self.delay_hold.take().is_some()
+    }
+
+    fn cancel_touch_delay(&mut self) {
+        if self
+            .delay_hold
+            .as_ref()
+            .is_some_and(|hold| matches!(hold.source, DelaySource::Touch(_)))
+        {
+            self.cancel_delay();
+        }
+    }
+
+    pub fn delay_deadline(&self) -> Option<Instant> {
+        self.delay_hold
+            .as_ref()
+            .filter(|hold| hold.pending())
+            .map(DelayHold::deadline)
+    }
+
+    pub fn delay_progress(&self, path: &[usize]) -> Option<(f32, bool)> {
+        let hold = self
+            .delay_hold
+            .as_ref()
+            .filter(|hold| hold.target.path == path)?;
+        Some((hold.fraction, hold.pending()))
+    }
+
+    pub fn delay_accessibility(&self) -> Option<(&Target, bool)> {
+        let hold = self
+            .delay_hold
+            .as_ref()
+            .filter(|hold| matches!(hold.source, DelaySource::Accessibility))?;
+        Some((&hold.target, !hold.pending()))
     }
 
     pub fn editor_value<'a>(&'a self, node: &'a Node) -> Cow<'a, str> {
@@ -2211,6 +2854,19 @@ impl Interaction {
         source: EditSource,
         now: Instant,
     ) -> bool {
+        self.apply_text_edit(scene, action, source, now, |target, text| {
+            component.edit_at(scene, &target.path, text)
+        })
+    }
+
+    fn apply_text_edit(
+        &mut self,
+        scene: &Node,
+        action: EditAction<'_>,
+        source: EditSource,
+        now: Instant,
+        commit: impl FnOnce(&Target, String) -> bool,
+    ) -> bool {
         let Some(target) = &self.focused else {
             return false;
         };
@@ -2222,7 +2878,10 @@ impl Interaction {
         if node.boolean("read-only", false)
             && matches!(
                 action,
-                EditAction::Insert(_) | EditAction::Backspace | EditAction::Delete
+                EditAction::Insert(_)
+                    | EditAction::ReplaceAll(_)
+                    | EditAction::Backspace
+                    | EditAction::Delete
             )
         {
             return false;
@@ -2246,8 +2905,11 @@ impl Interaction {
             self.break_text_edit_group();
             return false;
         }
-        if draft.is_none() && !component.edit_at(scene, &target.path, edit.text.clone()) {
+        if draft.is_none()
+            && (!node.allows_text_edit(&edit.text) || !commit(target, edit.text.clone()))
+        {
             *editor = previous;
+            editor.set_preedit(String::new(), None);
             return false;
         }
         self.painted_combo_completion = None;
@@ -2255,6 +2917,10 @@ impl Interaction {
         let group = Group::for_edit(source, action, before, &edit);
         let after = editor.selection_state(&edit.text);
         let (next, record) = Record::new(edit, before, after);
+        if node.kind == "SearchField" {
+            self.search_query = (!next.is_empty()).then(|| next.clone());
+            self.choice = None;
+        }
         if let Some(draft) = draft {
             draft.history.observe(&draft.draft);
             draft.draft = next.clone();
@@ -2265,6 +2931,42 @@ impl Interaction {
             history.push(next, record, group, now);
         }
         true
+    }
+
+    pub fn select_search_suggestion(
+        &mut self,
+        component: &mut impl Component,
+        scene: &Node,
+        index: usize,
+        now: Instant,
+    ) -> bool {
+        let Some(target) = self
+            .focused
+            .as_ref()
+            .filter(|target| scene.row_key_at(&target.path) == target.row_key)
+        else {
+            return false;
+        };
+        let Some(node) = scene.interactive_at_path(&target.path) else {
+            return false;
+        };
+        let Some(value) = search_suggestion(node, index) else {
+            return false;
+        };
+        let action = ControlAction::Select(index);
+        let changed = if value == text_input_value(node) {
+            component.control_at(scene, &target.path, action)
+        } else {
+            self.apply_text_edit(
+                scene,
+                EditAction::ReplaceAll(value),
+                EditSource::Atomic,
+                now,
+                |target, _| component.control_at(scene, &target.path, action),
+            )
+        };
+        self.dismiss_choice();
+        changed
     }
 
     pub fn replay_text_edit(
@@ -2306,12 +3008,16 @@ impl Interaction {
         let Some((next, selection)) = history.replay(redo) else {
             return false;
         };
-        if !component.edit_at(scene, &target.path, next.clone()) {
+        if !node.allows_text_edit(&next) || !component.edit_at(scene, &target.path, next.clone()) {
             return false;
         }
         self.editor
             .get_or_insert_with(|| TextEdit::at_end(text))
             .restore_selection(&next, selection);
+        if node.kind == "SearchField" {
+            self.search_query = (!next.is_empty()).then(|| next.clone());
+            self.choice = None;
+        }
         history.commit_replay(next, redo);
         self.painted_combo_completion = None;
         self.dismissed_combo_draft = None;
@@ -2479,6 +3185,12 @@ impl Interaction {
         target: Target,
     ) -> bool {
         let origin = self.press_origin.take();
+        if scene
+            .at_path(&target.path)
+            .is_none_or(|node| node.kind != "ComboBox")
+        {
+            return false;
+        }
         if scene.at_path(&target.path).is_some_and(combo_editable) {
             let Some(item) = layout.at_path(&target.path) else {
                 return false;
@@ -2506,6 +3218,35 @@ impl Interaction {
 
     pub fn dismiss_choice(&mut self) {
         self.choice = None;
+        self.search_query = None;
+    }
+
+    fn reconcile_search_choice(&mut self, scene: &Node, layout: &LayoutNode) {
+        let Some(query) = &self.search_query else {
+            return;
+        };
+        let Some(target) = self
+            .focused
+            .as_ref()
+            .filter(|target| valid(target, scene, layout))
+        else {
+            self.dismiss_choice();
+            return;
+        };
+        if !scene
+            .at_path(&target.path)
+            .is_some_and(|node| node.kind == "SearchField" && text_input_value(node) == query)
+            || self.menu_open()
+            || !target
+                .path
+                .starts_with(self.active_dialog(layout).unwrap_or_default())
+        {
+            self.dismiss_choice();
+            return;
+        }
+        if self.choice.is_none() {
+            self.choice = ChoicePopup::open(target.clone(), scene, layout);
+        }
     }
 
     pub fn choice_menu<'a>(&self, scene: &'a Node, layout: &LayoutNode) -> Option<ChoiceMenu<'a>> {
@@ -2516,10 +3257,22 @@ impl Interaction {
         let Some(popup) = &mut self.choice else {
             return false;
         };
-        if !self
-            .pointer
-            .is_some_and(|point| popup.press(scene, layout, point))
-        {
+        if let Some(point) = self.pointer {
+            if popup.press(scene, layout, point) {
+                return true;
+            }
+            let within_search = scene
+                .at_path(&popup.target.path)
+                .is_some_and(|node| node.kind == "SearchField")
+                && layout
+                    .at_path(&popup.target.path)
+                    .is_some_and(|item| item.clip.intersect(item.bounds).contains(point));
+            self.dismiss_choice();
+            if within_search {
+                self.pointer_move(scene, layout, point);
+                return false;
+            }
+        } else {
             self.dismiss_choice();
         }
         true
@@ -2561,16 +3314,22 @@ impl Interaction {
                     None
                 }
                 ChoiceKey::Accept => {
-                    let index = popup.selected(scene, layout)?;
                     let path = popup.target.path.clone();
+                    let action = if let Some(index) = popup.selected(scene, layout) {
+                        ControlAction::Select(index)
+                    } else if scene
+                        .at_path(&path)
+                        .is_some_and(|node| node.kind == "SearchField")
+                    {
+                        ControlAction::SubmitSearch
+                    } else {
+                        return None;
+                    };
                     self.dismiss_choice();
                     if scene.at_path(&path).is_some_and(combo_editable) {
                         self.editor = None;
                     }
-                    Some(ControlInput {
-                        path,
-                        action: ControlAction::Select(index),
-                    })
+                    Some(ControlInput { path, action })
                 }
                 _ => {
                     popup.move_highlight(scene, layout, key);
@@ -2582,9 +3341,36 @@ impl Interaction {
         if !valid(target, scene, layout) {
             return None;
         }
-        let node = scene
-            .at_path(&target.path)
-            .filter(|node| node.kind == "ComboBox")?;
+        let node = scene.at_path(&target.path)?;
+        if node.kind == "SearchField" {
+            return match key {
+                ChoiceKey::Accept => {
+                    let path = target.path.clone();
+                    self.dismiss_choice();
+                    Some(ControlInput {
+                        path,
+                        action: ControlAction::SubmitSearch,
+                    })
+                }
+                ChoiceKey::Open | ChoiceKey::Down | ChoiceKey::Up => {
+                    let text = text_input_value(node);
+                    self.search_query = (!text.is_empty()).then(|| text.to_owned());
+                    self.reconcile_search_choice(scene, layout);
+                    if let Some(popup) = &mut self.choice {
+                        popup.move_highlight(scene, layout, key);
+                    }
+                    None
+                }
+                ChoiceKey::Escape => {
+                    self.dismiss_choice();
+                    None
+                }
+                _ => None,
+            };
+        }
+        if node.kind != "ComboBox" {
+            return None;
+        }
         if key == ChoiceKey::Open
             || combo_editable(node) && matches!(key, ChoiceKey::Up | ChoiceKey::Down)
         {
@@ -2623,6 +3409,13 @@ impl Interaction {
         }
         self.pointer = Some(point);
         let hit = self.hit_at(scene, layout, point);
+        let cancelled_delay = self.delay_hold.as_ref().is_some_and(|hold| {
+            matches!(hold.source, DelaySource::Pointer)
+                && !matches!(&hit, Hit::Target(target) if *target == hold.target)
+        });
+        if cancelled_delay {
+            self.cancel_delay();
+        }
         self.pointer_on_stack_slide = matches!(hit, Hit::StackSlide);
         if let Some(popup) = &mut self.menu {
             return popup.hover(scene, layout, point);
@@ -2642,6 +3435,10 @@ impl Interaction {
             .filter(|node| node.kind == "RadioButton")
             .map(|node| node.text("text").unwrap_or(""));
         let list_row = next.as_ref().and_then(|target| list_row(scene, target));
+        let standard_button = next
+            .as_ref()
+            .and_then(|target| scene.at_path(&target.path))
+            .and_then(Node::standard_button_kind);
         let tree_indicator = next.as_ref().is_some_and(|target| {
             scene
                 .at_path(&target.path)
@@ -2679,9 +3476,11 @@ impl Interaction {
                 table_column = Some(index);
             }
         }
-        let changed = next != self.hovered
+        let changed = cancelled_delay
+            || next != self.hovered
             || scroll_bar != self.hovered_scroll_bar
             || control_part != self.hovered_control_part
+            || standard_button != self.hovered_standard_button
             || radio != self.hovered_radio.as_deref()
             || list_row != self.hovered_list_row
             || tree_indicator != self.hovered_tree_indicator
@@ -2694,6 +3493,7 @@ impl Interaction {
         self.hovered = next;
         self.hovered_scroll_bar = scroll_bar;
         self.hovered_control_part = control_part;
+        self.hovered_standard_button = standard_button;
         self.hovered_list_row = list_row;
         self.hovered_tree_indicator = tree_indicator;
         self.hovered_table_column = table_column;
@@ -2702,7 +3502,15 @@ impl Interaction {
         changed
     }
     pub fn pointer_leave(&mut self) -> bool {
+        let cancelled_delay = self
+            .delay_hold
+            .as_ref()
+            .is_some_and(|hold| matches!(hold.source, DelaySource::Pointer));
+        if cancelled_delay {
+            self.cancel_delay();
+        }
         self.pointer = None;
+        self.tumbler_wheel = None;
         self.pointer_on_stack_slide = false;
         let tooltip_was_visible = self.tooltip.pointer_left();
         self.hovered_radio = None;
@@ -2712,10 +3520,13 @@ impl Interaction {
         self.hovered_table_grip = None;
         self.hovered_body_column = None;
         self.hovered_control_part = None;
+        self.hovered_standard_button = None;
         let bar = self.hovered_scroll_bar.take().is_some();
-        self.hovered.take().is_some() || bar || tooltip_was_visible
+        self.hovered.take().is_some() || bar || tooltip_was_visible || cancelled_delay
     }
     pub fn pointer_press(&mut self) {
+        self.cancel_delay();
+        self.delay_pointer_claimed = false;
         if self.pointer_on_stack_slide {
             return;
         }
@@ -2729,6 +3540,7 @@ impl Interaction {
         self.pressed_table_column = self.hovered_table_column;
         self.pressed_body_column = self.hovered_body_column;
         self.pressed_control_part = self.hovered_control_part;
+        self.pressed_standard_button = self.hovered_standard_button;
         self.table_resize = (|| {
             let (column, width) = self.hovered_table_grip?;
             Some(TableResize {
@@ -3398,14 +4210,10 @@ impl Interaction {
             return;
         };
         let viewport = item.table.as_ref().map_or(item.bounds, |table| table.body);
-        let height = ListMetrics::row_height(node);
-        let top = row as f32 * height;
-        let offset = if top < scroll.offset {
-            top
-        } else {
-            scroll.offset.max(top + height - viewport.height)
-        }
-        .clamp(0.0, scroll.max_offset);
+        let cells = ViewCells::new(node, viewport.width);
+        let offset = scroll
+            .revealing(cells.top(row) as f32, cells.height, viewport.height)
+            .offset;
         if offset != scroll.offset {
             self.scroll_offsets.insert(path.to_vec(), offset);
         }
@@ -3428,18 +4236,43 @@ impl Interaction {
         let last = list.row_count.checked_sub(1)?;
         let layout = layout.at_path(path)?;
         layout.scroll?;
-        let height = ListMetrics::row_height(node);
         let viewport = layout
             .table
             .as_ref()
             .map_or(layout.bounds, |table| table.body);
-        let page = ((viewport.height / height).floor() as usize).max(1);
+        let cells = ViewCells::new(node, viewport.width);
+        let columns = cells.columns;
+        let page = ((f64::from(viewport.height) / cells.pitch()).floor() as usize)
+            .max(1)
+            .saturating_mul(columns);
         let current = ListMetrics::selection(node)
             .and_then(|value| usize::try_from(value).ok())
             .filter(|&row| row <= last);
         let index = match key {
-            NavigationKey::Up => current.map_or(0, |row| row.saturating_sub(1)),
-            NavigationKey::Down => current.map_or(0, |row| (row + 1).min(last)),
+            NavigationKey::Left if node.kind == "GridView" => current.map_or(0, |index| {
+                if index.is_multiple_of(columns) {
+                    index
+                } else {
+                    index - 1
+                }
+            }),
+            NavigationKey::Right if node.kind == "GridView" => current.map_or(0, |index| {
+                if (index + 1).is_multiple_of(columns) {
+                    index
+                } else {
+                    (index + 1).min(last)
+                }
+            }),
+            NavigationKey::Up => {
+                current.map_or(0, |index| index.checked_sub(columns).unwrap_or(index))
+            }
+            NavigationKey::Down => current.map_or(0, |index| {
+                if index / columns == last / columns {
+                    index
+                } else {
+                    index.saturating_add(columns).min(last)
+                }
+            }),
             NavigationKey::Home => 0,
             NavigationKey::End => last,
             NavigationKey::PageUp => current.map_or(0, |row| row.saturating_sub(page)),
@@ -3581,6 +4414,75 @@ impl Interaction {
         })
     }
 
+    pub fn swipe_delegate_key(
+        &self,
+        scene: &Node,
+        layout: &LayoutNode,
+        key: NavigationKey,
+    ) -> Option<ControlInput> {
+        let target = self.focused.as_ref()?;
+        let geometry = layout.at_path(&target.path)?.swipe_delegate.as_deref()?;
+        let side = match (key, geometry.side) {
+            (NavigationKey::Left, SwipeSide::Left) | (NavigationKey::Right, SwipeSide::Right) => {
+                SwipeSide::Closed
+            }
+            (NavigationKey::Left, _) => SwipeSide::Right,
+            (NavigationKey::Right, _) => SwipeSide::Left,
+            _ => return None,
+        };
+        self.swipe_delegate_action(scene, layout, target, side)
+    }
+
+    fn swipe_delegate_action(
+        &self,
+        scene: &Node,
+        layout: &LayoutNode,
+        target: &Target,
+        side: SwipeSide,
+    ) -> Option<ControlInput> {
+        let geometry = layout.at_path(&target.path)?.swipe_delegate.as_deref()?;
+        (valid(target, scene, layout) && geometry.side != side && geometry.supports(side)).then(
+            || ControlInput {
+                path: target.path.clone(),
+                action: ControlAction::SwipeDelegate(side),
+            },
+        )
+    }
+
+    pub fn swipe_delegate_accessibility(
+        &self,
+        scene: &Node,
+        layout: &LayoutNode,
+        target: &Target,
+        expand: bool,
+    ) -> Option<ControlInput> {
+        let geometry = layout.at_path(&target.path)?.swipe_delegate.as_deref()?;
+        if expand == (geometry.side != SwipeSide::Closed) {
+            return None;
+        }
+        let side = if !expand {
+            SwipeSide::Closed
+        } else if geometry.supports(SwipeSide::Right) {
+            SwipeSide::Right
+        } else {
+            SwipeSide::Left
+        };
+        self.swipe_delegate_action(scene, layout, target, side)
+    }
+
+    pub fn dismiss_focused_swipe(&self, scene: &Node, layout: &LayoutNode) -> Option<ControlInput> {
+        let focused = self.focused.as_ref()?;
+        (0..=focused.path.len()).rev().find_map(|depth| {
+            let path = &focused.path[..depth];
+            let geometry = layout.at_path(path)?.swipe_delegate.as_deref()?;
+            if geometry.side == SwipeSide::Closed {
+                return None;
+            }
+            let target = self.accessibility_target(scene, layout, path)?;
+            self.swipe_delegate_action(scene, layout, &target, SwipeSide::Closed)
+        })
+    }
+
     pub fn stack_back(&self, scene: &Node, layout: &LayoutNode) -> Option<ControlInput> {
         let focused = self.focused.as_ref()?;
         let scope = self.active_dialog(layout).unwrap_or_default();
@@ -3718,6 +4620,14 @@ impl Interaction {
     }
 
     pub fn pointer_release_target(&mut self) -> Option<Target> {
+        let claimed = std::mem::take(&mut self.delay_pointer_claimed);
+        if self
+            .delay_hold
+            .as_ref()
+            .is_some_and(|hold| matches!(hold.source, DelaySource::Pointer))
+        {
+            self.cancel_delay();
+        }
         if self.finish_scroll_bar() {
             return None;
         }
@@ -3726,10 +4636,12 @@ impl Interaction {
         let pressed_column = self.pressed_table_column.take();
         let pressed_body_column = self.pressed_body_column.take();
         let pressed_control_part = self.pressed_control_part.take();
+        let pressed_standard_button = self.pressed_standard_button.take();
         let resized = self.table_resize.take().is_some();
         let split_resized = self.split_drag.take().is_some();
         let pressed = self.pressed.take()?;
-        (!resized
+        (!claimed
+            && !resized
             && !split_resized
             && self.hovered.as_ref() == Some(&pressed)
             && pressed_radio == self.hovered_radio
@@ -3737,7 +4649,8 @@ impl Interaction {
             && self.pressed_tree_indicator == self.hovered_tree_indicator
             && pressed_column == self.hovered_table_column
             && pressed_body_column == self.hovered_body_column
-            && pressed_control_part == self.hovered_control_part)
+            && pressed_control_part == self.hovered_control_part
+            && pressed_standard_button == self.hovered_standard_button)
             .then_some(pressed)
     }
 
@@ -3862,15 +4775,18 @@ impl Interaction {
                 false
             }
         });
-        // While the selection is unchanged, preserve the user's scroll position
-        // even when the active tab is outside the viewport.
-        self.tab_scroll_selections = self
+        // Preserve the user's scroll between selection and grid reflow changes.
+        self.scroll_selections = self
             .scroll_offsets
             .keys()
             .chain(self.horizontal_scroll_offsets.keys())
             .filter_map(|path| {
-                let bar = scene.at_path(path).filter(|node| node.kind == "TabBar")?;
-                Some((path.clone(), group_index(bar)))
+                let view = scene.at_path(path).filter(|node| {
+                    matches!(node.kind, "TabBar" | "StandardListView" | "GridView")
+                        || node.kind == "TableView" && node.boolean("follow-current", false)
+                })?;
+                let cells = ViewCells::new(view, layout.at_path(path)?.bounds.width);
+                Some((path.clone(), (scroll_selection(view), cells.columns)))
             })
             .collect();
         if self
@@ -3912,7 +4828,8 @@ impl Interaction {
                     }
                     let item = layout.at_path(path)?;
                     let mut target = match node.kind {
-                        "ListView" | "TableView" | "TreeView" | "SwipeView" | "StackView"
+                        "ListView" | "GridView" | "StandardListView" | "TableView" | "TreeView"
+                        | "SwipeView" | "SwipeDelegate" | "StackView" | "GroupBox"
                             if eligible(node, item) =>
                         {
                             Target {
@@ -3923,9 +4840,7 @@ impl Interaction {
                             }
                         }
                         "TabWidget" | "TabBar" | "RadioGroup" => group_focus(node, item, path)?,
-                        "Dialog" | "Drawer" => {
-                            focus_targets(scene, layout, path).into_iter().next()?
-                        }
+                        "Dialog" | "Drawer" => dialog_entry_focus(scene, layout, path)?,
                         _ => return None,
                     };
                     target.row_key = scene.row_key_at(&target.path);
@@ -3964,8 +4879,9 @@ impl Interaction {
             .as_mut()
             .is_some_and(|popup| !popup.reconcile(scene, layout))
         {
-            self.dismiss_choice();
+            self.choice = None;
         }
+        self.reconcile_search_choice(scene, layout);
         if self
             .menu
             .as_mut()
@@ -4031,17 +4947,17 @@ impl Interaction {
     }
 
     fn reconcile_dialogs(&mut self, scene: &Node, layout: &LayoutNode) {
-        let previous = self
-            .dialogs
-            .last()
-            .map(|dialog| (dialog.path.clone(), dialog.row_key));
+        let key = |entry: &DialogFocus| (entry.path.clone(), entry.row_key, entry.modal);
+        let previous_top = self.dialogs.last().map(key);
+        let previous_modal = self.dialogs.iter().rfind(|entry| entry.modal).map(key);
         let mut focus = self.focused.clone();
         let mut index = 0;
         while index < self.dialogs.len() {
-            let dialog = &self.dialogs[index];
-            if layout.dialog_paths().contains(&dialog.path)
+            let dialog = &mut self.dialogs[index];
+            if layout.overlay_paths().contains(&dialog.path)
                 && scene.row_key_at(&dialog.path) == dialog.row_key
             {
+                dialog.modal = is_modal_path(layout, &dialog.path);
                 index += 1;
                 continue;
             }
@@ -4060,31 +4976,37 @@ impl Interaction {
                 }
             }
         }
-        for path in layout.dialog_paths() {
+        for path in layout.overlay_paths() {
             if self.dialogs.iter().any(|dialog| dialog.path == *path) {
                 continue;
             }
+            let modal = is_modal_path(layout, path);
             self.dialogs.push(DialogFocus {
                 path: path.clone(),
                 row_key: scene.row_key_at(path),
-                return_focus: focus,
+                modal,
+                return_focus: focus.clone(),
             });
-            focus = focus_targets(scene, layout, path).into_iter().next();
+            if modal
+                || self.allows_popup(layout, path)
+                    && scene
+                        .at_path(path)
+                        .is_some_and(|node| node.boolean("focus", true))
+            {
+                focus = dialog_entry_focus(scene, layout, path);
+            }
         }
-        let active = self
-            .dialogs
-            .last()
-            .map(|dialog| (dialog.path.as_slice(), dialog.row_key));
-        if previous.as_ref().map(|(path, key)| (path.as_slice(), *key)) == active {
+        if previous_top == self.dialogs.last().map(key)
+            && previous_modal == self.dialogs.iter().rfind(|entry| entry.modal).map(key)
+            && focus == self.focused
+        {
             return;
         }
-        let active = active.map(|(path, _)| path);
+        let active = self.active_dialog(layout);
         let scope = active.unwrap_or_default();
         let focus = focus
             .filter(|target| target.path.starts_with(scope) && valid(target, scene, layout))
-            .or_else(|| {
-                active.and_then(|path| focus_targets(scene, layout, path).into_iter().next())
-            });
+            .or_else(|| active.and_then(|path| dialog_entry_focus(scene, layout, path)));
         self.dismiss_choice();
         self.dismiss_menu();
         self.cancel_press();
@@ -4093,11 +5015,11 @@ impl Interaction {
     /// Move focus, returning whether revealing the focused tab requires layout.
     pub fn focus_next(&mut self, scene: &Node, layout: &LayoutNode, reverse: bool) -> bool {
         self.tooltip.focus_source();
-        let mut targets = focus_targets(
-            scene,
-            layout,
-            self.active_dialog(layout).unwrap_or_default(),
-        );
+        let scope = self
+            .focused_popup(layout)
+            .or_else(|| self.active_dialog(layout))
+            .unwrap_or_default();
+        let mut targets = focus_targets(scene, layout, scope);
         self.key_pressed = None;
         if targets.is_empty() {
             self.set_focus(None);
@@ -4121,8 +5043,14 @@ impl Interaction {
                     })
                 })
                 .or_else(|| {
-                    let (tree, _) = tree_cell_row(scene, &target.path)?;
-                    targets.iter().position(|entry| entry.path == tree)
+                    let (view, _) = tree_cell_row(scene, &target.path).or_else(|| {
+                        table_cell_row(scene, &target.path).filter(|(table, _)| {
+                            scene
+                                .at_path(table)
+                                .is_some_and(|node| node.boolean("__standard-table", false))
+                        })
+                    })?;
+                    targets.iter().position(|entry| entry.path == view)
                 })
         });
         let index = match current {
@@ -4182,7 +5110,19 @@ impl Interaction {
         }
     }
     pub fn key_press(&mut self, key: ActivationKey) {
+        self.cancel_delay();
+        self.delay_key_claimed = None;
         self.key_pressed = self.focused.clone().map(|t| (key, t));
+        self.key_standard_button = None;
+    }
+
+    pub fn key_press_with_scene(&mut self, scene: &Node, key: ActivationKey) {
+        self.key_press(key);
+        self.key_standard_button = self
+            .focused
+            .as_ref()
+            .and_then(|target| scene.at_path(&target.path))
+            .and_then(Node::standard_button_kind);
     }
     pub fn key_release(&mut self, key: ActivationKey) -> Option<&'static str> {
         self.key_release_target(key).and_then(|target| target.id)
@@ -4192,10 +5132,32 @@ impl Interaction {
             return None;
         }
         let (_, target) = self.key_pressed.take()?;
-        (self.focused.as_ref() == Some(&target)).then_some(target)
+        self.key_standard_button = None;
+        let claimed = self.delay_key_claimed.take() == Some(key);
+        if self
+            .delay_hold
+            .as_ref()
+            .is_some_and(|hold| matches!(hold.source, DelaySource::Key(pressed) if pressed == key))
+        {
+            self.cancel_delay();
+        }
+        (!claimed && self.focused.as_ref() == Some(&target)).then_some(target)
+    }
+
+    pub fn key_release_with_scene(&mut self, scene: &Node, key: ActivationKey) -> Option<Target> {
+        let kind = self.key_standard_button;
+        let target = self.key_release_target(key)?;
+        (scene
+            .at_path(&target.path)
+            .and_then(Node::standard_button_kind)
+            == kind)
+            .then_some(target)
     }
     pub fn cancel_press(&mut self) {
         self.cancel_scroll_gesture();
+        self.cancel_delay();
+        self.delay_pointer_claimed = false;
+        self.delay_key_claimed = None;
         self.dialog_backdrop = None;
         self.pressed = None;
         self.press_origin = None;
@@ -4206,6 +5168,7 @@ impl Interaction {
         self.pressed_table_column = None;
         self.pressed_body_column = None;
         self.pressed_control_part = None;
+        self.pressed_standard_button = None;
         self.table_resize = None;
         self.split_drag = None;
         self.slider_offset = 0.0;
@@ -4224,7 +5187,8 @@ impl Interaction {
     pub fn is_pressed(&self, path: &[usize]) -> bool {
         (self.pressed.as_ref().is_some_and(|t| t.path == path)
             && self.is_hovered(path)
-            && self.pressed_list_row == self.hovered_list_row)
+            && self.pressed_list_row == self.hovered_list_row
+            && self.pressed_standard_button == self.hovered_standard_button)
             || self
                 .key_pressed
                 .as_ref()

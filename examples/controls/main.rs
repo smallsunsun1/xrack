@@ -1,9 +1,19 @@
-use controls_ui::{CalendarDemo, ControlsDemo, DecimalSpinDemo};
+use controls_ui::{
+    CalendarDemo, CheckStateDemo, ControlsDemo, DecimalSpinDemo, DelayDemo, GroupBoxDemo,
+    IndicatorsDemo, TimeDemo, TimerDemo, TumblerDemo,
+};
 
 fn main() -> std::process::ExitCode {
     let result = match std::env::args().nth(1).as_deref() {
         Some("--calendar") => xrack_platform_winit::run(CalendarDemo::new()),
+        Some("--time") => xrack_platform_winit::run(TimeDemo::new()),
+        Some("--timer") => xrack_platform_winit::run(TimerDemo::new()),
         Some("--decimal-spin") => xrack_platform_winit::run(DecimalSpinDemo::new()),
+        Some("--tumbler") => xrack_platform_winit::run(TumblerDemo::new()),
+        Some("--delay") => xrack_platform_winit::run(DelayDemo::new()),
+        Some("--check-state") => xrack_platform_winit::run(CheckStateDemo::new()),
+        Some("--groups") => xrack_platform_winit::run(GroupBoxDemo::new()),
+        Some("--indicators") => xrack_platform_winit::run(IndicatorsDemo::new()),
         _ => {
             let mut ui = ControlsDemo::new();
             ui.on_interval_caption(|lower, upper| format!("区间 {lower:.1} – {upper:.1}"));

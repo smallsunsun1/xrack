@@ -46,13 +46,24 @@ fn ty(t: &Type) -> TokenStream {
         Type::Image => quote!(::xrack_runtime::Image),
         Type::ImageFit => quote!(::xrack_runtime::ImageFit),
         Type::Orientation => quote!(::xrack_runtime::Orientation),
+        Type::FlexboxLayoutDirection => quote!(::xrack_runtime::FlexboxLayoutDirection),
+        Type::FlexboxLayoutWrap => quote!(::xrack_runtime::FlexboxLayoutWrap),
         Type::DialInputMode => quote!(::xrack_runtime::DialInputMode),
         Type::ScrollBarPolicy => quote!(::xrack_runtime::ScrollBarPolicy),
         Type::TextWrap => quote!(::xrack_runtime::TextWrap),
+        Type::TextHorizontalAlignment => quote!(::xrack_runtime::TextHorizontalAlignment),
+        Type::TextVerticalAlignment => quote!(::xrack_runtime::TextVerticalAlignment),
+        Type::TextOverflow => quote!(::xrack_runtime::TextOverflow),
+        Type::InputType => quote!(::xrack_runtime::InputType),
+        Type::CheckState => quote!(::xrack_runtime::CheckState),
         Type::DialogRole => quote!(::xrack_runtime::DialogRole),
+        Type::StandardButtonKind => quote!(::xrack_runtime::StandardButtonKind),
+        Type::SwipeSide => quote!(::xrack_runtime::SwipeSide),
         Type::DrawerEdge => quote!(::xrack_runtime::DrawerEdge),
+        Type::PopupPlacement => quote!(::xrack_runtime::PopupPlacement),
         Type::SelectionTarget => quote!(::xrack_runtime::SelectionTarget),
         Type::Date => quote!(::xrack_runtime::Date),
+        Type::Time => quote!(::xrack_runtime::Time),
         Type::LayoutAlignment => quote!(::xrack_runtime::LayoutAlignment),
         Type::CrossAxisAlignment => quote!(::xrack_runtime::CrossAxisAlignment),
         Type::GradientStop => quote!(::xrack_runtime::GradientStop),
@@ -149,11 +160,21 @@ fn literal(value: &str, ty: Type) -> Result<TokenStream, String> {
         | Type::LayoutAlignment
         | Type::CrossAxisAlignment
         | Type::Orientation
+        | Type::FlexboxLayoutDirection
+        | Type::FlexboxLayoutWrap
         | Type::DialInputMode
         | Type::ScrollBarPolicy
         | Type::TextWrap
+        | Type::TextHorizontalAlignment
+        | Type::TextVerticalAlignment
+        | Type::TextOverflow
+        | Type::InputType
+        | Type::CheckState
         | Type::DialogRole
+        | Type::StandardButtonKind
+        | Type::SwipeSide
         | Type::DrawerEdge
+        | Type::PopupPlacement
         | Type::SelectionTarget => {
             if !ty.enum_variants().contains(&value) {
                 return Err(format!("unknown {} value {value}", ty.name()));
@@ -170,6 +191,7 @@ fn literal(value: &str, ty: Type) -> Result<TokenStream, String> {
         | Type::GradientStop
         | Type::Image
         | Type::Date
+        | Type::Time
         | Type::StringList
         | Type::Record(_)
         | Type::RecordList(_) => {
@@ -215,6 +237,26 @@ fn rust_key(key: &str) -> String {
 
 fn control_field(key: &str, property: &str) -> Ident {
     format_ident!("__control_{}_{}", rust_key(key), rust_key(property))
+}
+
+fn timer_member(key: &str, member: &str) -> Ident {
+    format_ident!("__timer_{}_{}", member, rust_key(key))
+}
+
+fn popup_method(key: &str) -> Ident {
+    format_ident!("__popup_{}", rust_key(key))
+}
+
+fn picker_field(key: &str) -> Ident {
+    format_ident!("__picker_{}", rust_key(key))
+}
+
+fn picker_value(kind: &str) -> Option<(&'static str, Type)> {
+    match kind {
+        "TimePickerPopup" => Some(("time", Type::Time)),
+        "DatePickerPopup" => Some(("date", Type::Date)),
+        _ => None,
+    }
 }
 
 fn table_sort_field(key: &str) -> Ident {
@@ -265,17 +307,43 @@ fn default_combo_edit_text(element: OperationRef<'_>) -> bool {
         && !children(element, "xr.bind").any(|binding| binding.attr("name") == Ok("edit-text"))
 }
 
+fn check_state_control(element: OperationRef<'_>) -> bool {
+    element.attr("kind") == Ok("CheckBox")
+        && element.children().any(|binding| {
+            matches!(binding.name(), "xr.bind" | "xr.control_link")
+                && matches!(binding.attr("name"), Ok("check-state" | "tristate"))
+        })
+}
+
+fn check_state_binding(element: OperationRef<'_>) -> Option<OperationRef<'_>> {
+    children(element, "xr.bind").find(|binding| binding.attr("name") == Ok("check-state"))
+}
+
 fn controlled_property(element: OperationRef<'_>) -> Option<(&'static str, Type)> {
     if children(element, "xr.row_link").next().is_some() || action_ref(element).is_some() {
         None
     } else if text_item(element) {
         Some(("text", Type::String))
+    } else if check_state_control(element) {
+        check_state_binding(element)
+            .is_none()
+            .then_some(("check-state", Type::CheckState))
     } else if element.attr("kind").is_ok_and(is_toggle)
-        || matches!(element.attr("kind"), Ok("MenuItem" | "Action"))
+        || matches!(
+            element.attr("kind"),
+            Ok("MenuItem" | "Action" | "DelayButton" | "GroupBox")
+        )
     {
         Some(("checked", Type::Bool))
-    } else if matches!(element.attr("kind"), Ok("Dialog" | "Drawer")) {
+    } else if matches!(
+        element.attr("kind"),
+        Ok("Dialog" | "Drawer" | "PopupWindow" | "TimePickerPopup" | "DatePickerPopup")
+    ) {
         Some(("open", Type::Bool))
+    } else if element.attr("kind") == Ok("TimePicker") {
+        Some(("time", Type::Time))
+    } else if element.attr("kind") == Ok("Timer") {
+        Some(("running", Type::Bool))
     } else if matches!(
         element.attr("kind"),
         Ok("Slider" | "Dial" | "DoubleSpinBox")
@@ -283,17 +351,26 @@ fn controlled_property(element: OperationRef<'_>) -> Option<(&'static str, Type)
         Some(("value", Type::Float))
     } else if element.attr("kind") == Ok("SpinBox") {
         Some(("value", Type::Int))
-    } else if element.attr("kind") == Ok("TableView") {
+    } else if element.attr("kind") == Ok("SwipeDelegate") {
+        Some(("open-side", Type::SwipeSide))
+    } else if matches!(element.attr("kind"), Ok("TableView" | "StandardTableView")) {
         Some(("current-row", Type::Int))
     } else if element.attr("kind") == Ok("TreeView") {
         Some(("current-key", Type::Int))
-    } else if element.attr("kind") == Ok("PageIndicator") {
+    } else if matches!(element.attr("kind"), Ok("PageIndicator" | "Tumbler")) {
         Some(("current-index", Type::Int))
     } else if element.attr("kind") == Ok("Calendar") {
         Some(("date", Type::Date))
     } else if matches!(
         element.attr("kind"),
-        Ok("ComboBox" | "RadioGroup" | "TabWidget" | "TabBar" | "SwipeView" | "ListView")
+        Ok("ComboBox"
+            | "RadioGroup"
+            | "TabWidget"
+            | "TabBar"
+            | "SwipeView"
+            | "ListView"
+            | "GridView"
+            | "StandardListView")
     ) {
         if element.children().any(|binding| {
             matches!(binding.name(), "xr.bind" | "xr.control_link")
@@ -314,6 +391,8 @@ fn controlled_properties(element: OperationRef<'_>) -> impl Iterator<Item = (&'s
             Some(("lower-value", Type::Float)),
             Some(("upper-value", Type::Float)),
         ]
+    } else if let Some(value) = element.attribute("kind").and_then(picker_value) {
+        [controlled_property(element), Some(value)]
     } else if element.attr("kind") == Ok("Calendar") {
         [
             controlled_property(element),
@@ -330,6 +409,14 @@ fn controlled_properties(element: OperationRef<'_>) -> impl Iterator<Item = (&'s
     properties.into_iter().flatten()
 }
 
+fn model_binding(element: OperationRef<'_>) -> Option<OperationRef<'_>> {
+    children(element, "xr.bind").find(|binding| binding.attr("name") == Ok("model"))
+}
+
+fn table_columns(element: OperationRef<'_>) -> impl Iterator<Item = OperationRef<'_>> {
+    scene_children(element).filter(|column| column.attr("kind") == Ok("TableColumn"))
+}
+
 fn control_link<'a>(element: OperationRef<'a>, property: &str) -> Option<OperationRef<'a>> {
     children(element, "xr.control_link").find(|link| link.attr("name") == Ok(property))
 }
@@ -342,21 +429,33 @@ fn typed_events(element: OperationRef<'_>) -> bool {
             | "RangeSlider"
             | "SpinBox"
             | "DoubleSpinBox"
+            | "SearchField"
             | "ComboBox"
             | "RadioGroup"
             | "TabWidget"
             | "TabBar"
             | "SwipeView"
+            | "SwipeDelegate"
             | "StackView"
             | "PageIndicator"
+            | "Tumbler"
             | "Calendar"
+            | "TimePicker"
+            | "TimePickerPopup"
+            | "DatePickerPopup"
             | "ListView"
+            | "GridView"
+            | "StandardListView"
             | "TableView"
+            | "StandardTableView"
             | "SplitView"
             | "TreeView"
             | "Dialog"
             | "Drawer"
-            | "MenuItem")
+            | "PopupWindow"
+            | "MenuItem"
+            | "DelayButton"
+            | "GroupBox")
     ) || element.attr("kind").is_ok_and(is_multiline_text_input)
 }
 
@@ -427,7 +526,7 @@ fn element_children(op: OperationRef<'_>) -> impl Iterator<Item = OperationRef<'
 }
 
 fn scene_children(op: OperationRef<'_>) -> impl Iterator<Item = OperationRef<'_>> {
-    element_children(op).filter(|op| op.attr("kind") != Ok("Action"))
+    element_children(op).filter(|op| !matches!(op.attr("kind"), Ok("Action" | "Timer")))
 }
 
 fn static_children(op: OperationRef<'_>) -> impl Iterator<Item = (usize, OperationRef<'_>)> {
@@ -459,10 +558,16 @@ fn row_editor_paths<'a>(
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+enum VisualCacheKey<'a> {
+    Operand(ValueRef<'a>),
+    Group(&'a str),
+}
+
 #[derive(Default)]
 struct VisualScope<'a> {
     row_index: Option<usize>,
-    bindings: HashMap<ValueRef<'a>, usize>,
+    bindings: HashMap<VisualCacheKey<'a>, usize>,
     binding_types: Vec<Type>,
     repeats: BTreeMap<&'a str, RepeatScope<'a>>,
 }
@@ -546,12 +651,16 @@ struct Generator<'a> {
     instances: BTreeMap<&'a str, OperationRef<'a>>,
     element_properties: Vec<(&'a str, OperationRef<'a>)>,
     unlinked_controls: Vec<(&'a str, &'static str, Type)>,
+    picker_popups: Vec<(&'a str, Type)>,
     tables: Vec<&'a str>,
     splits: Vec<&'a str>,
     trees: Vec<&'a str>,
     stacks: BTreeMap<&'a str, OperationRef<'a>>,
     actions: BTreeMap<&'a str, OperationRef<'a>>,
+    timers: Vec<OperationRef<'a>>,
+    popups: Vec<OperationRef<'a>>,
     visuals: VisualScope<'a>,
+    share_visual_bindings: bool,
     images: &'a BTreeMap<&'a str, Ident>,
 }
 
@@ -563,7 +672,10 @@ impl<'a> Generator<'a> {
             }
             "xr.element" => {
                 let key = element_key(op)?;
-                if op.attr("kind") == Ok("TableView") {
+                if let Some((_, ty)) = op.attribute("kind").and_then(picker_value) {
+                    self.picker_popups.push((key, ty));
+                }
+                if matches!(op.attr("kind"), Ok("TableView" | "StandardTableView")) {
                     self.tables.push(key);
                 }
                 if op.attr("kind") == Ok("SplitView") {
@@ -577,6 +689,12 @@ impl<'a> Generator<'a> {
                 }
                 if op.attr("kind") == Ok("Action") {
                     self.actions.insert(key, op);
+                }
+                if op.attr("kind") == Ok("Timer") {
+                    self.timers.push(op);
+                }
+                if op.attr("kind") == Ok("PopupWindow") {
+                    self.popups.push(op);
                 }
                 for (property, ty) in controlled_properties(op) {
                     if control_link(op, property).is_none() {
@@ -674,14 +792,22 @@ impl<'a> Generator<'a> {
             definition.name(),
             "xr.literal" | "xr.read" | "xr.image_url" | "xr.param"
         ) {
-            let operand = binding.operand(0).expect("verified binding operand");
-            if let std::collections::hash_map::Entry::Vacant(entry) = scope.bindings.entry(operand)
-            {
+            let key = self.visual_cache_key(binding);
+            if let std::collections::hash_map::Entry::Vacant(entry) = scope.bindings.entry(key) {
                 entry.insert(scope.binding_types.len());
                 scope.binding_types.push(value_type(definition)?);
             }
         }
         Ok(())
+    }
+
+    fn visual_cache_key(&self, binding: OperationRef<'a>) -> VisualCacheKey<'a> {
+        if self.share_visual_bindings
+            && let Some(group) = binding.attribute("xr.visual_cache_group")
+        {
+            return VisualCacheKey::Group(group);
+        }
+        VisualCacheKey::Operand(binding.operand(0).expect("verified binding operand"))
     }
 
     fn visual_value(
@@ -690,8 +816,7 @@ impl<'a> Generator<'a> {
         scope: &VisualScope<'_>,
     ) -> Result<TokenStream, String> {
         let value = self.visual_expr(self.operand(binding, 0)?, scope)?;
-        let operand = binding.operand(0).expect("verified binding operand");
-        if let Some(&id) = scope.bindings.get(&operand) {
+        if let Some(&id) = scope.bindings.get(&self.visual_cache_key(binding)) {
             let field = visual_field(id);
             let receiver = scope.receiver();
             Ok(quote!(#receiver.#field.get(|| #value)))
@@ -759,7 +884,11 @@ impl<'a> Generator<'a> {
                 let (year, month, day) = (arg(0)?, arg(1)?, arg(2)?);
                 quote!(::xrack_runtime::Date { year: #year, month: #month, day: #day })
             }
-            "xr.get_field" | "xr.date_field" => {
+            "xr.make_time" => {
+                let (hour, minute, second) = (arg(0)?, arg(1)?, arg(2)?);
+                quote!((::xrack_runtime::Time { hour: #hour, minute: #minute, second: #second }).normalized())
+            }
+            "xr.get_field" | "xr.date_field" | "xr.time_field" => {
                 let record = arg(0)?;
                 let field = ident(value);
                 quote!((#record).#field)
@@ -974,6 +1103,22 @@ impl<'a> Generator<'a> {
                     };
                     statements.extend(quote!(let _ = self.#method(None, #action);));
                 }
+                "xr.timer_command" => {
+                    let method = timer_member(statement.attr("owner")?, "command");
+                    let command = match statement.attr("command")? {
+                        "start" => quote!(Start),
+                        "stop" => quote!(Stop),
+                        "restart" => quote!(Restart),
+                        _ => return Err("unknown timer command".into()),
+                    };
+                    statements
+                        .extend(quote!(self.#method(::xrack_runtime::TimerCommand::#command);));
+                }
+                "xr.popup_command" => {
+                    let method = popup_method(statement.attr("owner")?);
+                    let open = statement.attr("open")? == "true";
+                    statements.extend(quote!(let _ = self.#method(#open);));
+                }
                 _ => {}
             }
         }
@@ -1004,11 +1149,18 @@ impl<'a> Generator<'a> {
             let condition = self.visual_value(guard, scope)?;
             let mut body = TokenStream::new();
             let name = self.render_element(element, scope, &mut body, next, None)?;
+            let close = if element.attribute("kind").and_then(picker_value).is_some() {
+                let popup = picker_field(element_key(element)?);
+                quote!(self.__state.#popup.close();)
+            } else {
+                TokenStream::new()
+            };
             out.extend(quote! {
                 let #name = if #condition {
                     #body
                     #name
                 } else {
+                    #close
                     ::xrack_runtime::Node::hidden()
                 };
             });
@@ -1085,9 +1237,47 @@ impl<'a> Generator<'a> {
             out.extend(
                 quote!([#(#path,)* rest @ ..] => self.__state.#field.__list_rows(rest, __range),),
             );
+        } else if element.attr("kind") == Ok("StandardTableView") {
+            let model = self.standard_table_model(element, &self.visuals)?;
+            let fields = table_columns(element)
+                .map(|column| {
+                    let binding = children(column, "xr.bind")
+                        .find(|binding| binding.attr("name") == Ok("field"))
+                        .ok_or("standard table column requires a field")?;
+                    let name: String =
+                        serde_json::from_str(self.operand(binding, 0)?.attr("value")?)
+                            .map_err(|error| error.to_string())?;
+                    Ok(ident(&name))
+                })
+                .collect::<Result<Vec<_>, String>>()?;
+            out.extend(quote! {
+                [#(#path),*] => ::xrack_runtime::standard_table_rows(&#model, __range, |item| [#(item.#fields.to_string()),*]),
+            });
+        } else if element.attr("kind") == Ok("StandardListView") {
+            if let Some(binding) = model_binding(element) {
+                let model = self.visual_value(binding, &self.visuals)?;
+                let label = if matches!(value_type(self.operand(binding, 0)?)?, Type::RecordList(_))
+                {
+                    let field = children(element, "xr.bind")
+                        .find(|binding| binding.attr("name") == Ok("text-role"))
+                        .map(|binding| -> Result<String, String> {
+                            let value = self.operand(binding, 0)?.attr("value")?;
+                            serde_json::from_str(value).map_err(|error| error.to_string())
+                        })
+                        .transpose()?
+                        .unwrap_or_else(|| "text".into());
+                    let field = ident(&field);
+                    quote!(|__xr_item| __xr_item.#field)
+                } else {
+                    quote!(|__xr_item| __xr_item)
+                };
+                out.extend(quote! {
+                    [#(#path),*] => ::xrack_runtime::standard_list_rows(&#model, __range, #label),
+                });
+            }
         } else if matches!(
             element.attr("kind"),
-            Ok("ListView" | "TableView" | "TreeView")
+            Ok("ListView" | "GridView" | "TableView" | "TreeView")
         ) {
             let (row, model) = self.list_template(element)?;
             let repeat = &self.visuals.repeats[element_key(row)?];
@@ -1147,7 +1337,7 @@ impl<'a> Generator<'a> {
             });
         } else if matches!(
             element.attr("kind"),
-            Ok("ListView" | "TableView" | "TreeView")
+            Ok("ListView" | "GridView" | "TableView" | "TreeView")
         ) {
             let (row, model) = self.list_template(element)?;
             let repeat = &self.visuals.repeats[element_key(row)?];
@@ -1191,6 +1381,11 @@ impl<'a> Generator<'a> {
                             let ::xrack_runtime::RoutedEvent::Dispatch("clicked") = action else { return Some(false); };
                             let expected = cell.boolean("checked", false);
                             let next = !expected;
+                        },
+                        Type::CheckState => quote! {
+                            let ::xrack_runtime::RoutedEvent::Dispatch("clicked") = action else { return Some(false); };
+                            let expected = cell.check_state();
+                            let next = expected.next(cell.boolean("tristate", false));
                         },
                         Type::Float => quote! {
                             let expected = cell.number("value")?;
@@ -1296,6 +1491,10 @@ impl<'a> Generator<'a> {
                 self.control_value(element, "date", Type::Date)?
             }
             None if ty == Type::Date => quote!(::xrack_runtime::Date::default()),
+            None if ty == Type::Time => quote!(::xrack_runtime::Time::default()),
+            None if ty == Type::SwipeSide => quote!(::xrack_runtime::SwipeSide::Closed),
+            None if ty == Type::CheckState => quote!(::xrack_runtime::CheckState::Unchecked),
+            None if ty == Type::Bool && element.attr("kind") == Ok("GroupBox") => quote!(true),
             None if ty == Type::Bool => quote!(false),
             None if ty == Type::Float => {
                 let bound = if name == "upper-value" {
@@ -1313,7 +1512,13 @@ impl<'a> Generator<'a> {
             None if ty == Type::Int
                 && matches!(
                     element.attr("kind"),
-                    Ok("RadioGroup" | "ListView" | "TableView" | "TreeView")
+                    Ok("RadioGroup"
+                        | "ListView"
+                        | "GridView"
+                        | "StandardListView"
+                        | "TableView"
+                        | "StandardTableView"
+                        | "TreeView")
                 ) =>
             {
                 quote!(-1_i64)
@@ -1356,6 +1561,78 @@ impl<'a> Generator<'a> {
         }
     }
 
+    fn binding_value_or(
+        &self,
+        element: OperationRef<'a>,
+        name: &str,
+        fallback: TokenStream,
+    ) -> Result<TokenStream, String> {
+        Ok(children(element, "xr.bind")
+            .find(|binding| binding.attr("name") == Ok(name))
+            .map(|binding| self.visual_value(binding, &self.visuals))
+            .transpose()?
+            .unwrap_or(fallback))
+    }
+
+    fn time_picker_options(&self, element: OperationRef<'a>) -> Result<TokenStream, String> {
+        let use_24_hours = self.binding_value_or(element, "use-24-hour-format", quote!(true))?;
+        let show_seconds = self.binding_value_or(element, "show-seconds", quote!(false))?;
+        Ok(quote!(::xrack_runtime::TimePickerOptions::new(#use_24_hours, #show_seconds)))
+    }
+
+    fn date_picker_bounds(&self, element: OperationRef<'a>) -> Result<TokenStream, String> {
+        let minimum =
+            self.binding_value_or(element, "minimum-date", quote!(::xrack_runtime::Date::MIN))?;
+        let maximum =
+            self.binding_value_or(element, "maximum-date", quote!(::xrack_runtime::Date::MAX))?;
+        Ok(quote!(::xrack_runtime::DateBounds::new(#minimum, #maximum)))
+    }
+
+    fn standard_table_model(
+        &self,
+        element: OperationRef<'a>,
+        scope: &VisualScope<'_>,
+    ) -> Result<TokenStream, String> {
+        self.visual_value(
+            model_binding(element).ok_or("standard table requires a model")?,
+            scope,
+        )
+    }
+
+    fn render_table_header(
+        &self,
+        element: OperationRef<'a>,
+        scope: &VisualScope<'_>,
+        out: &mut TokenStream,
+        next: &mut usize,
+        name: &Ident,
+        model: &TokenStream,
+    ) -> Result<(), String> {
+        let columns = table_columns(element)
+            .map(|column| self.render(column, scope, out, next))
+            .collect::<Result<Vec<_>, _>>()?;
+        let key = element_key(element)?;
+        let sort = table_sort_field(key);
+        let widths = table_widths_field(key);
+        let selection = table_selection_field(key);
+        out.extend(quote! {
+            #name.table_header = Some(::std::boxed::Box::new(::xrack_runtime::TableHeader {
+                columns: ::std::vec![#(#columns),*],
+                sort: self.__state.#sort.get(|| None),
+                column_widths: self.__state.#widths.get(::std::vec::Vec::new),
+            }));
+            let target = #name.selection_target();
+            let multiple = #name.boolean("multi-select", false);
+            if multiple || target != ::xrack_runtime::SelectionTarget::Rows {
+                let current = #name.int("current-row").and_then(|value| <::core::primitive::usize as ::core::convert::TryFrom<_>>::try_from(value).ok());
+                #name.table_selection = Some(::std::boxed::Box::new(
+                    self.__state.#selection.snapshot(#model, current, target, #name.table_header.as_ref().map_or(0, |header| header.columns.len()), multiple)
+                ));
+            }
+        });
+        Ok(())
+    }
+
     fn render_element(
         &self,
         element: OperationRef<'a>,
@@ -1386,6 +1663,12 @@ impl<'a> Generator<'a> {
             "xr.layout_bind"
         } else {
             let kind = element.attr("kind")?;
+            let kind = match kind {
+                "TimePickerPopup" | "DatePickerPopup" => "Dialog",
+                "StandardTableView" => "TableView",
+                "StandardButton" => "Button",
+                kind => kind,
+            };
             out.extend(quote!(let mut #name = ::xrack_runtime::Node::new(#kind, #id);));
             "xr.bind"
         };
@@ -1396,10 +1679,26 @@ impl<'a> Generator<'a> {
         }
         for binding in children(element, binding_op) {
             let key = binding.attr("name")?;
+            if element.attr("kind") == Ok("StandardListView")
+                && matches!(key, "model" | "text-role")
+            {
+                continue;
+            }
+            if (element.attr("kind") == Ok("StandardTableView") && key == "model")
+                || (element.attr("kind") == Ok("TableColumn") && key == "field")
+            {
+                continue;
+            }
             if controlled_properties(element).any(|(property, _)| key == property) {
                 continue;
             }
             let mut value = self.visual_value(binding, scope)?;
+            if key == "model" && element.attr("kind") == Ok("Tumbler") {
+                out.extend(quote! {
+                    #name.tumbler_items = Some(::xrack_runtime::TumblerItems::new(#value));
+                });
+                continue;
+            }
             if key == "enabled" && action.is_some() {
                 value = quote!(#name.boolean("enabled", true) && #value);
             }
@@ -1420,7 +1719,14 @@ impl<'a> Generator<'a> {
                 #name.properties.insert(#flag, ::xrack_runtime::Value::Bool(true));
             });
         }
+        let popup_value = element.attribute("kind").and_then(picker_value);
         for (property, ty) in controlled_properties(element) {
+            if popup_value
+                .as_ref()
+                .is_some_and(|(name, _)| property == *name)
+            {
+                continue;
+            }
             if property == "edit-text" && default_combo_edit_text(element) {
                 let field = control_field(element_key(element)?, property);
                 out.extend(quote! {
@@ -1443,13 +1749,67 @@ impl<'a> Generator<'a> {
             });
         }
         let kind = element.attribute("kind");
+        for timer in element_children(element).filter(|child| child.attr("kind") == Ok("Timer")) {
+            let register = timer_member(element_key(timer)?, "register");
+            out.extend(quote! { #name.timers.extend(self.#register()); });
+        }
+        if kind == Some("StandardButton") {
+            out.extend(quote! {
+                #name.properties.entry("kind").or_insert(::xrack_runtime::StandardButtonKind::Ok.into());
+            });
+        }
+        if let Some((property, ty)) = popup_value {
+            let popup = picker_field(element_key(element)?);
+            let value = self.control_value(element, property, ty)?;
+            out.extend(quote! { self.__state.#popup.populate(&mut #name, || #value); });
+            return Ok(name);
+        }
+        if kind == Some("TimePicker") {
+            out.extend(quote! {
+                let time = #name.time("time").unwrap_or_default();
+                ::xrack_runtime::TimePickerOptions::from_node(&#name).populate(&mut #name, time);
+            });
+            return Ok(name);
+        }
         if kind == Some("RangeSlider") {
             out.extend(quote! {
                 #name.children.push(::xrack_runtime::Node::new("RangeThumb", None));
                 #name.children.push(::xrack_runtime::Node::new("RangeThumb", None));
             });
         }
-        if matches!(kind, Some("ListView" | "TableView" | "TreeView")) {
+        if kind == Some("StandardListView") {
+            if let Some(binding) = model_binding(element) {
+                let model = self.visual_value(binding, scope)?;
+                out.extend(quote! {
+                    let __xr_model = #model;
+                    #name.list = Some(::xrack_runtime::ListMetrics {
+                        row_count: ::xrack_runtime::ListModel::row_count(&__xr_model), first_row: 0,
+                    });
+                    #name.standard_list_stamp = Some(::xrack_runtime::ListModel::structure_stamp(&__xr_model));
+                });
+            } else {
+                out.extend(quote! { #name.list = Some(::xrack_runtime::ListMetrics::default()); });
+            }
+            return Ok(name);
+        }
+        if kind == Some("StandardTableView") {
+            let model = self.standard_table_model(element, scope)?;
+            out.extend(quote! {
+                let __xr_table_model = #model;
+                #name.list = Some(::xrack_runtime::ListMetrics {
+                    row_count: ::xrack_runtime::ListModel::row_count(&__xr_table_model), first_row: 0,
+                });
+                #name.standard_list_stamp = Some(::xrack_runtime::ListModel::structure_stamp(&__xr_table_model));
+                #name.properties.insert("__standard-table", ::xrack_runtime::Value::Bool(true));
+                #name.properties.entry("follow-current").or_insert(::xrack_runtime::Value::Bool(true));
+            });
+            self.render_table_header(element, scope, out, next, &name, &quote!(&__xr_table_model))?;
+            return Ok(name);
+        }
+        if matches!(
+            kind,
+            Some("ListView" | "GridView" | "TableView" | "TreeView")
+        ) {
             let (row, model) = self.list_template(element)?;
             let repeat = &scope.repeats[element_key(row)?];
             let receiver = scope.receiver();
@@ -1468,34 +1828,22 @@ impl<'a> Generator<'a> {
                 });
                 return Ok(name);
             }
+            let count = if kind == Some("GridView") {
+                quote! {
+                    #receiver.#field.with_model(|| #model, |model| {
+                        #name.standard_list_stamp = Some(::xrack_runtime::ListModel::structure_stamp(model));
+                        ::xrack_runtime::ListModel::row_count(model)
+                    })
+                }
+            } else {
+                quote!(#receiver.#field.row_count(|| #model))
+            };
             out.extend(quote! {
-                #name.list = Some(::xrack_runtime::ListMetrics {
-                    row_count: #receiver.#field.row_count(|| #model), first_row: 0,
-                });
+                #name.list = Some(::xrack_runtime::ListMetrics { row_count: #count, first_row: 0 });
             });
             if kind == Some("TableView") {
-                let columns = scene_children(element)
-                    .filter(|child| child.attr("kind") == Ok("TableColumn"))
-                    .map(|column| self.render(column, scope, out, next))
-                    .collect::<Result<Vec<_>, _>>()?;
-                let sort = table_sort_field(element_key(element)?);
-                let widths = table_widths_field(element_key(element)?);
-                let selection = table_selection_field(element_key(element)?);
-                out.extend(quote! {
-                    #name.table_header = Some(::std::boxed::Box::new(::xrack_runtime::TableHeader {
-                        columns: ::std::vec![#(#columns),*],
-                        sort: self.__state.#sort.get(|| None),
-                        column_widths: self.__state.#widths.get(::std::vec::Vec::new),
-                    }));
-                    let target = #name.selection_target();
-                    let multiple = #name.boolean("multi-select", false);
-                    if multiple || target != ::xrack_runtime::SelectionTarget::Rows {
-                        let current = #name.int("current-row").and_then(|value| <::core::primitive::usize as ::core::convert::TryFrom<_>>::try_from(value).ok());
-                        #name.table_selection = Some(::std::boxed::Box::new(#receiver.#field.with_model(|| #model, |model| {
-                            self.__state.#selection.snapshot(model, current, target, #name.table_header.as_ref().map_or(0, |header| header.columns.len()), multiple)
-                        })));
-                    }
-                });
+                let model = quote!(&*#receiver.#field.resolve_model(|| #model));
+                self.render_table_header(element, scope, out, next, &name, &model)?;
             }
             return Ok(name);
         }
@@ -1550,7 +1898,7 @@ impl<'a> Generator<'a> {
                 content.extend(quote!(#name.children.push(#child);));
             }
         }
-        if matches!(kind, Some("Dialog" | "Drawer")) {
+        if matches!(kind, Some("Dialog" | "Drawer" | "PopupWindow")) {
             out.extend(quote! { if #name.is_visible() { #content } });
         } else if let Some(active) = include_children {
             out.extend(quote! {
@@ -1594,6 +1942,11 @@ impl<'a> Generator<'a> {
             return Ok(());
         }
         let id = element.attr("id")?;
+        let dispatchable = |handler: OperationRef<'_>| {
+            (!typed_events(element) && handler.attr("name") != Ok("check-state-changed"))
+                || (element.attr("kind") == Ok("SwipeDelegate")
+                    && handler.attr("name") == Ok("clicked"))
+        };
         if matches!(element.attr("kind"), Ok("Button" | "ToolButton"))
             && let Some(action) = action_ref(element)
         {
@@ -1602,10 +1955,60 @@ impl<'a> Generator<'a> {
             if !id.is_empty() {
                 local.extend(quote!((#id, "clicked") => self.#activate(),));
             }
+        } else if element.attr("kind") == Ok("GroupBox") {
+            let checkable = children(element, "xr.bind")
+                .find(|binding| binding.attr("name") == Ok("checkable"))
+                .map(|binding| self.visual_value(binding, &self.visuals))
+                .transpose()?
+                .unwrap_or_else(|| quote!(false));
+            let current = self.control_value(element, "checked", Type::Bool)?;
+            let update = self.set_control(element, &quote!(__xr_checked))?;
+            let toggled = self.typed_event(element, "toggled", &quote!(__xr_checked))?;
+            let click = quote!({
+                if !#checkable { return false; }
+                let __xr_checked = !(#current);
+                #update
+                #toggled
+                true
+            });
+            paths.extend(quote!([#(#path),*] => event == "clicked" && #click,));
+            if !id.is_empty() {
+                local.extend(quote!((#id, "clicked") => #click,));
+            }
         } else if element.attr("kind").is_ok_and(is_toggle) {
-            let checked = self.control_value(element, "checked", Type::Bool)?;
-            let update = self.set_control(element, &quote!(!(#checked)))?;
-            let click = quote!({ #update self.__dispatch_local(#id, "toggled"); true });
+            let projection = check_state_binding(element);
+            let (next, value) = if check_state_control(element) {
+                let current = if let Some(binding) = projection {
+                    self.visual_value(binding, &self.visuals)?
+                } else {
+                    self.control_value(element, "check-state", Type::CheckState)?
+                };
+                let tristate = children(element, "xr.bind")
+                    .find(|binding| binding.attr("name") == Ok("tristate"))
+                    .map(|binding| self.visual_value(binding, &self.visuals))
+                    .transpose()?
+                    .unwrap_or_else(|| quote!(false));
+                (quote!((#current).next(#tristate)), quote!(__xr_state))
+            } else {
+                let checked = self.control_value(element, "checked", Type::Bool)?;
+                (
+                    quote!(::xrack_runtime::CheckState::from(!(#checked))),
+                    quote!(__xr_state == ::xrack_runtime::CheckState::Checked),
+                )
+            };
+            let update = if projection.is_some() {
+                TokenStream::new()
+            } else {
+                self.set_control(element, &value)?
+            };
+            let changed = self.typed_event(element, "check-state-changed", &quote!(__xr_state))?;
+            let click = quote!({
+                let __xr_state = #next;
+                #update
+                self.__dispatch_local(#id, "toggled");
+                #changed
+                true
+            });
             paths.extend(quote! {
                 [#(#path),*] => {
                     if event == "clicked" { #click } else { self.__dispatch_local(#id, event) }
@@ -1614,10 +2017,10 @@ impl<'a> Generator<'a> {
             if !id.is_empty() {
                 local.extend(quote!((#id, "clicked") => #click,));
             }
-        } else if !typed_events(element) && children(element, "xr.handler").next().is_some() {
+        } else if children(element, "xr.handler").any(dispatchable) {
             paths.extend(quote!([#(#path),*] => self.__dispatch_local(#id, event),));
         }
-        for handler in children(element, "xr.handler").filter(|_| !typed_events(element)) {
+        for handler in children(element, "xr.handler").filter(|handler| dispatchable(*handler)) {
             let event = handler.attr("name")?;
             let statements = self.statements(handler)?;
             local.extend(quote!((#id, #event) => { #statements true },));
@@ -1647,6 +2050,16 @@ impl<'a> Generator<'a> {
             let set = self.set_control_property(element, "edit-text", &quote!(text.clone()))?;
             let edited = self.typed_event(element, "edited", &quote!(text))?;
             out.extend(quote!([#(#path),*] => { #set #edited true },));
+        } else if element.attr("kind") == Ok("SearchField") {
+            let set = self.set_control(element, &quote!(text.clone()))?;
+            let edited = self.typed_event(element, "edited", &quote!(text.clone()))?;
+            let search = self.typed_event(element, "search-triggered", &quote!(text))?;
+            let live = children(element, "xr.bind")
+                .find(|binding| binding.attr("name") == Ok("live"))
+                .map(|binding| self.expr(self.operand(binding, 0)?))
+                .transpose()?
+                .unwrap_or_else(|| quote!(false));
+            out.extend(quote!([#(#path),*] => { #set #edited if #live { #search } true },));
         } else if element.attr("kind").is_ok_and(is_multiline_text_input) {
             let has_handler =
                 children(element, "xr.handler").any(|handler| handler.attr("name") == Ok("edited"));
@@ -1826,14 +2239,22 @@ impl<'a> Generator<'a> {
                 };
                 let accepted = handler("accepted")?;
                 let rejected = handler("rejected")?;
+                let applied = handler("applied")?;
+                let reset = handler("reset")?;
+                let help = handler("help-requested")?;
+                let discarded = handler("discarded")?;
                 out.extend(quote! {
                     [#(#path),*] => {
-                        let ::xrack_runtime::ControlAction::Dialog(role) = action else { return false; };
+                        use ::xrack_runtime::{ControlAction, DialogCommand, DialogRole};
                         if !#open { return false; }
-                        #close
-                        match role {
-                            ::xrack_runtime::DialogRole::Accept => { #accepted }
-                            ::xrack_runtime::DialogRole::Reject => { #rejected }
+                        match action {
+                            ControlAction::Dialog(DialogRole::Accept) => { #close #accepted }
+                            ControlAction::Dialog(DialogRole::Reject) => { #close #rejected }
+                            ControlAction::DialogCommand(DialogCommand::Apply) => { #applied }
+                            ControlAction::DialogCommand(DialogCommand::Reset) => { #reset }
+                            ControlAction::DialogCommand(DialogCommand::Help) => { #help }
+                            ControlAction::DialogCommand(DialogCommand::Discard) => { #close #discarded }
+                            _ => return false,
                         }
                         true
                     },
@@ -1850,6 +2271,33 @@ impl<'a> Generator<'a> {
                         if #open == __xr_open { return false; }
                         #set
                         if __xr_open { #opened } else { #closed }
+                        true
+                    },
+                });
+            }
+            "PopupWindow" => {
+                let method = popup_method(element_key(element)?);
+                out.extend(quote! {
+                    [#(#path),*] => {
+                        let ::xrack_runtime::ControlAction::Popup(open) = action else { return false; };
+                        self.#method(open)
+                    },
+                });
+            }
+            "SwipeDelegate" => {
+                let current = self.control_value(element, "open-side", Type::SwipeSide)?;
+                let set = self.set_control(element, &quote!(__xr_side))?;
+                let changed = self.typed_event(element, "changed", &quote!(__xr_side))?;
+                out.extend(quote! {
+                    [#(#path),*] => {
+                        let ::xrack_runtime::ControlAction::SwipeDelegate(__xr_side) = action else { return false; };
+                        let current = #current;
+                        if node.swipe_side() != current || __xr_side == current
+                            || (__xr_side != ::xrack_runtime::SwipeSide::Closed && node.swipe_panel(__xr_side).is_none()) {
+                            return false;
+                        }
+                        #set
+                        #changed
                         true
                     },
                 });
@@ -1953,8 +2401,32 @@ impl<'a> Generator<'a> {
                     },
                 });
             }
-            "ListView" | "TableView" => {
-                let table = element.attr("kind")? == "TableView";
+            kind @ ("ListView" | "GridView" | "StandardListView" | "TableView"
+            | "StandardTableView") => {
+                let source_guard = if matches!(kind, "StandardListView" | "StandardTableView")
+                    && let Some(binding) = model_binding(element)
+                {
+                    let model = self.visual_value(binding, &self.visuals)?;
+                    quote! {
+                        if node.standard_list_stamp != Some(::xrack_runtime::ListModel::structure_stamp(&#model)) {
+                            return false;
+                        }
+                    }
+                } else if kind == "GridView" {
+                    let (row, repeat) = self.list_template(element)?;
+                    let field = repeat_field(self.visuals.repeats[element_key(row)?].index());
+                    let model = self.expr(self.operand(repeat, 0)?)?;
+                    quote! {
+                        let stamp = self.__state.__visuals.#field.with_model(
+                            || #model,
+                            ::xrack_runtime::ListModel::structure_stamp,
+                        );
+                        if node.standard_list_stamp != Some(stamp) { return false; }
+                    }
+                } else {
+                    TokenStream::new()
+                };
+                let table = matches!(kind, "TableView" | "StandardTableView");
                 let value = quote!(index as ::core::primitive::i64);
                 let set = self.set_control(element, &value)?;
                 let event = self.typed_event(
@@ -1970,9 +2442,16 @@ impl<'a> Generator<'a> {
                     let field = table_sort_field(element_key(element)?);
                     let widths = table_widths_field(element_key(element)?);
                     let selection = table_selection_field(element_key(element)?);
-                    let (row, repeat) = self.list_template(element)?;
-                    let repeater = repeat_field(self.visuals.repeats[element_key(row)?].index());
-                    let model = self.expr(self.operand(repeat, 0)?)?;
+                    let model = if kind == "StandardTableView" {
+                        let model = self.standard_table_model(element, &self.visuals)?;
+                        quote!(&#model)
+                    } else {
+                        let (row, repeat) = self.list_template(element)?;
+                        let repeater =
+                            repeat_field(self.visuals.repeats[element_key(row)?].index());
+                        let model = self.expr(self.operand(repeat, 0)?)?;
+                        quote!(&*self.__state.__visuals.#repeater.resolve_model(|| #model))
+                    };
                     let selected = self.typed_event(
                         element,
                         "selection-changed",
@@ -2005,9 +2484,7 @@ impl<'a> Generator<'a> {
                                 _ => return false,
                             };
                             let current = node.int("current-row").and_then(|value| <::core::primitive::usize as ::core::convert::TryFrom<_>>::try_from(value).ok());
-                            let Some(change) = self.__state.__visuals.#repeater.with_model(|| #model, |model| {
-                                self.__state.#selection.apply(model, view, current, action)
-                            }) else { return false; };
+                            let Some(change) = self.__state.#selection.apply(#model, view, current, action) else { return false; };
                             if let Some(index) = change.current { #set #event }
                             if let Some(count) = change.selected_count { #selected }
                             return change.current.is_some() || change.column_changed || change.selected_count.is_some();
@@ -2018,6 +2495,7 @@ impl<'a> Generator<'a> {
                 };
                 out.extend(quote! {
                     [#(#path),*] => {
+                        #source_guard
                         #header_actions
                         let ::xrack_runtime::ControlAction::Select(index) = action else { return false; };
                         if !node.list.is_some_and(|list| index < list.row_count)
@@ -2054,6 +2532,82 @@ impl<'a> Generator<'a> {
                     },
                 });
             }
+            "SearchField" => {
+                let set = self.set_control(element, &quote!(__xr_text.clone()))?;
+                let accepted = self.typed_event(element, "accepted", &quote!(__xr_text.clone()))?;
+                let edited = self.typed_event(element, "edited", &quote!(__xr_text.clone()))?;
+                let selected = self.typed_event(element, "selected", &quote!(__xr_text.clone()))?;
+                let search = self.typed_event(element, "search-triggered", &quote!(__xr_text))?;
+                out.extend(quote! {
+                    [#(#path),*] => {
+                        use ::xrack_runtime::ControlAction;
+                        let current = ::xrack_runtime::text_input_value(node);
+                        let __xr_text = match action {
+                            ControlAction::SubmitSearch => {
+                                let __xr_text = current.to_owned();
+                                #accepted
+                                __xr_text
+                            }
+                            ControlAction::Select(index) => {
+                                let Some(value) = ::xrack_runtime::search_suggestion(node, index) else { return false; };
+                                let __xr_text = value.to_owned();
+                                if value != current { #set #edited }
+                                #selected
+                                __xr_text
+                            }
+                            ControlAction::ClearSearch if !node.boolean("read-only", false) && !current.is_empty() =>
+                                return self.__edit_path(path, ::std::string::String::new()),
+                            _ => return false,
+                        };
+                        #search
+                        true
+                    },
+                });
+            }
+            "DelayButton" => {
+                let current = self.control_value(element, "checked", Type::Bool)?;
+                let set = self.set_control(element, &quote!(__xr_checked))?;
+                let activated = self.typed_event_values(element, "activated", &[])?;
+                out.extend(quote! {
+                    [#(#path),*] => {
+                        let ::xrack_runtime::ControlAction::DelayButton(__xr_checked) = action else { return false; };
+                        if #current == __xr_checked { return false; }
+                        #set
+                        if __xr_checked { #activated }
+                        true
+                    },
+                });
+            }
+            "Tumbler" => {
+                let set = self.set_control(element, &quote!(__xr_index))?;
+                let changed = self.typed_event(element, "changed", &quote!(__xr_index))?;
+                let source_guard = if let Some(binding) =
+                    children(element, "xr.bind").find(|binding| binding.attr("name") == Ok("model"))
+                {
+                    let model = self.visual_value(binding, &self.visuals)?;
+                    quote! {
+                        if node.tumbler_items.as_ref() != Some(&::xrack_runtime::TumblerItems::new(#model)) {
+                            return false;
+                        }
+                    }
+                } else {
+                    TokenStream::new()
+                };
+                out.extend(quote! {
+                    [#(#path),*] => {
+                        let ::xrack_runtime::ControlAction::PickTumbler { index, row } = action else { return false; };
+                        #source_guard
+                        let wheel = ::xrack_runtime::Tumbler::from_node(node);
+                        let __xr_index = index as ::core::primitive::i64;
+                        if wheel.row_key(index) != Some(row) || node.int("current-index") == Some(__xr_index) {
+                            return false;
+                        }
+                        #set
+                        #changed
+                        true
+                    },
+                });
+            }
             "Calendar" => {
                 let set_date = self.set_control_property(element, "date", &quote!(__xr_date))?;
                 let set_month =
@@ -2078,6 +2632,55 @@ impl<'a> Generator<'a> {
                         if let Some(__xr_date) = __xr_date.filter(|_| date_changed) { #date_changed }
                         if month_changed { #month_changed }
                         date_changed || month_changed
+                    },
+                });
+            }
+            "TimePicker" => {
+                let current = self.control_value(element, "time", Type::Time)?;
+                let options = self.time_picker_options(element)?;
+                let set = self.set_control(element, &quote!(__xr_time))?;
+                let changed = self.typed_event(element, "changed", &quote!(__xr_time))?;
+                out.extend(quote! {
+                    [#(#path,)* slot] => {
+                        let Some(__xr_time) = (#options).select(#current, *slot, node, action) else { return false; };
+                        #set
+                        #changed
+                        true
+                    },
+                });
+            }
+            kind @ ("TimePickerPopup" | "DatePickerPopup") => {
+                let popup = picker_field(element_key(element)?);
+                let open = self.control_value(element, "open", Type::Bool)?;
+                let close = self.set_control_property(element, "open", &quote!(false))?;
+                let (property, _) = picker_value(kind).ok_or("missing picker value")?;
+                let set = self.set_control_property(element, property, &quote!(__xr_value))?;
+                let accepted = self.typed_event(element, "accepted", &quote!(__xr_value))?;
+                let canceled = self.typed_event_values(element, "canceled", &[])?;
+                let finish = if kind == "TimePickerPopup" {
+                    let options = self.time_picker_options(element)?;
+                    out.extend(quote! {
+                        [#(#path,)* 0, slot] => (#open) && self.__state.#popup.edit(#options, *slot, node, action),
+                    });
+                    quote!(self.__state.#popup.finish(node))
+                } else {
+                    let bounds = self.date_picker_bounds(element)?;
+                    out.extend(quote! {
+                        [#(#path,)* 0] => (#open) && self.__state.#popup.edit(#bounds, node, action),
+                    });
+                    quote!(self.__state.#popup.finish(#bounds, node))
+                };
+                out.extend(quote! {
+                    [#(#path),*] => {
+                        let ::xrack_runtime::ControlAction::Dialog(role) = action else { return false; };
+                        if !(#open) { return false; }
+                        let Some(__xr_value) = #finish else { return false; };
+                        #close
+                        match role {
+                            ::xrack_runtime::DialogRole::Accept => { #set #accepted }
+                            ::xrack_runtime::DialogRole::Reject => { #canceled }
+                        }
+                        true
                     },
                 });
             }
@@ -2377,6 +2980,68 @@ impl<'a> Generator<'a> {
                 }
             });
         }
+        for &timer in &self.timers {
+            let key = element_key(timer)?;
+            let slot = timer_member(key, "slot");
+            let configure = timer_member(key, "config");
+            let register = timer_member(key, "register");
+            let command = timer_member(key, "command");
+            let trigger = timer_member(key, "trigger");
+            let running = self.control_value(timer, "running", Type::Bool)?;
+            let start = self.set_control(timer, &quote!(true))?;
+            let stop = self.set_control(timer, &quote!(false))?;
+            let interval = self.binding_value_or(timer, "interval", quote!(1000_i64))?;
+            let repeat = self.binding_value_or(timer, "repeat", quote!(false))?;
+            let immediate = self.binding_value_or(timer, "triggered-on-start", quote!(false))?;
+            let triggered = self.typed_event_values(timer, "triggered", &[])?;
+            fields.extend(quote!(#slot: ::xrack_runtime::TimerSlot,));
+            defaults.extend(quote!(#slot: ::core::default::Default::default(),));
+            methods.extend(quote! {
+                fn #configure(&self) -> Option<::xrack_runtime::TimerConfig> {
+                    if !(#running) { return None; }
+                    ::xrack_runtime::TimerConfig::new(#interval, #repeat, #immediate)
+                }
+                fn #register(&self) -> Option<::xrack_runtime::TimerRegistration> {
+                    let config = self.#configure()?;
+                    let weak = self.as_weak();
+                    Some(self.__state.#slot.register(config, move |tick| weak.upgrade().is_some_and(|ui| ui.#trigger(tick))))
+                }
+                fn #trigger(&self, tick: ::xrack_runtime::TimerTick) -> bool {
+                    if self.__state.#slot.revision() != tick.revision || self.#configure() != Some(tick.config) {
+                        return false;
+                    }
+                    if tick.completed { #stop }
+                    #triggered
+                    true
+                }
+                fn #command(&self, command: ::xrack_runtime::TimerCommand) {
+                    use ::xrack_runtime::TimerCommand;
+                    match command {
+                        TimerCommand::Start if #running => {}
+                        TimerCommand::Start | TimerCommand::Restart => {
+                            self.__state.#slot.restart();
+                            #start
+                        }
+                        TimerCommand::Stop => { #stop }
+                    }
+                }
+            });
+        }
+        for &popup in &self.popups {
+            let method = popup_method(element_key(popup)?);
+            let current = self.control_value(popup, "open", Type::Bool)?;
+            let set = self.set_control(popup, &quote!(__xr_open))?;
+            let opened = self.typed_event_values(popup, "opened", &[])?;
+            let closed = self.typed_event_values(popup, "closed", &[])?;
+            methods.extend(quote! {
+                fn #method(&self, __xr_open: bool) -> bool {
+                    if __xr_open == #current { return false; }
+                    #set
+                    if __xr_open { #opened } else { #closed }
+                    true
+                }
+            });
+        }
         for key in &self.tables {
             let field = table_sort_field(key);
             let widths = table_widths_field(key);
@@ -2387,6 +3052,16 @@ impl<'a> Generator<'a> {
             defaults.extend(quote!(#field: ::core::default::Default::default(),));
             defaults.extend(quote!(#widths: ::core::default::Default::default(),));
             defaults.extend(quote!(#selection: ::core::default::Default::default(),));
+        }
+        for (key, ty) in &self.picker_popups {
+            let field = picker_field(key);
+            let state = if *ty == Type::Date {
+                quote!(::xrack_runtime::DatePopupState)
+            } else {
+                quote!(::xrack_runtime::TimePopupState)
+            };
+            fields.extend(quote!(#field: #state,));
+            defaults.extend(quote!(#field: ::core::default::Default::default(),));
         }
         for key in &self.splits {
             let field = split_weights_field(key);
@@ -2811,7 +3486,9 @@ impl<'a> Generator<'a> {
                     path: &[::core::primitive::usize],
                     event: &::core::primitive::str,
                 ) -> ::core::primitive::bool {
-                    scene.interactive_at_path(path).is_some() && self.__route_delegate(scene, path, &::xrack_runtime::RoutedEvent::Dispatch(event))
+                    scene.interactive_at_path(path).is_some_and(|node| {
+                        event != "accepted" || !::xrack_runtime::is_text_input(node.kind) || node.accepts_text_submission()
+                    }) && self.__route_delegate(scene, path, &::xrack_runtime::RoutedEvent::Dispatch(event))
                         .unwrap_or_else(|| self.__dispatch_path(path, event))
                 }
             }
@@ -2880,12 +3557,16 @@ pub fn generate_with_images(
             instances: BTreeMap::new(),
             element_properties: Vec::new(),
             unlinked_controls: Vec::new(),
+            picker_popups: Vec::new(),
             tables: Vec::new(),
             splits: Vec::new(),
             trees: Vec::new(),
             stacks: BTreeMap::new(),
             actions: BTreeMap::new(),
+            timers: Vec::new(),
+            popups: Vec::new(),
             visuals: VisualScope::default(),
+            share_visual_bindings: module.has_visual_cache_plan(),
             images: &image_names,
         };
         generator.index(op)?;
@@ -2894,6 +3575,9 @@ pub fn generate_with_images(
             generator.index_visual_bindings(root, &mut visuals, &mut 0)?;
             for &action in generator.actions.values() {
                 generator.index_visual_bindings(action, &mut visuals, &mut 0)?;
+            }
+            for &timer in &generator.timers {
+                generator.index_visual_bindings(timer, &mut visuals, &mut 0)?;
             }
             generator.visuals = visuals;
         }

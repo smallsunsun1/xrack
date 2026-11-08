@@ -96,3 +96,98 @@ export component DialogDemo inherits Window {
         }
     }
 }
+export component StandardDialogDemo inherits Window {
+    title: "XRack · 标准对话框按钮";
+    width: 620px; height: 380px;
+    background: #182331;
+
+    in-out property <bool> settings-open: false;
+    in-out property <bool> show-editor: true;
+    in-out property <bool> danger-only: false;
+    in-out property <StandardButtonKind> preferred-kind: save;
+    in-out property <bool> save-enabled: true;
+    in-out property <string> draft: "工作区";
+    out property <string> saved: "工作区";
+    out property <int> accepts: 0;
+    out property <int> rejects: 0;
+    out property <int> applies: 0;
+    out property <int> resets: 0;
+    out property <int> helps: 0;
+    out property <int> discards: 0;
+
+    Text { x: 24px; y: 24px; text: "已保存 · " + root.saved; font-size: 22px; }
+    Text { x: 24px; y: 62px; text: "确认 " + root.accepts + " · 取消 " + root.rejects + " · 丢弃 " + root.discards; }
+    open-standard := StandardButton {
+        x: 24px; y: 108px; text: "编辑设置…";
+        kind: open; primary: true;
+        clicked => { root.draft = root.saved; root.settings-open = true; }
+    }
+    settings := Dialog {
+        title: "编辑设置"; width: 540px;
+        open <=> root.settings-open;
+        accepted() => { root.saved = root.draft; root.accepts += 1; }
+        rejected() => { root.rejects += 1; }
+        applied() => { root.saved = root.draft; root.applies += 1; }
+        reset() => { root.draft = root.saved; root.resets += 1; }
+        help-requested() => { root.helps += 1; }
+        discarded() => { root.draft = root.saved; root.discards += 1; }
+
+        if root.show-editor && !root.danger-only : setting-name := LineEdit { text <=> root.draft; }
+        Text { text: "应用 " + root.applies + " 次 · 帮助请求 " + root.helps + " 次"; }
+        actions := DialogButtonBox {
+            save := StandardButton {
+                kind: root.preferred-kind; primary: true; enabled: root.save-enabled; visible: !root.danger-only;
+                width: 86px; layout-order: 100;
+            }
+            cancel := StandardButton { kind: cancel; visible: !root.danger-only; }
+            apply := StandardButton { kind: apply; visible: !root.danger-only; }
+            discard := StandardButton { kind: discard; text: "丢弃草稿"; }
+            reset := StandardButton { kind: reset; visible: !root.danger-only; }
+            help := StandardButton { kind: help; visible: !root.danger-only; }
+        }
+    }
+}
+export component PopupDemo inherits Window {
+    title: "XRack · 锚定弹层";
+    width: 480px; height: 300px;
+    background: #182331;
+
+    in-out property <bool> filters-open: false;
+    in-out property <bool> modal: false;
+    in-out property <bool> close-outside: true;
+    in-out property <string> query: "";
+    out property <int> opens: 0;
+    out property <int> closes: 0;
+    out property <int> background-clicks: 0;
+
+    background-action := Button {
+        x: 24px; y: 24px; width: 165px; height: 44px;
+        text: "背景操作";
+        clicked() => { root.background-clicks += 1; }
+    }
+    Text {
+        x: 24px; y: 82px;
+        text: "背景操作 " + root.background-clicks + " 次 · 已关闭 " + root.closes + " 次";
+    }
+    CheckBox { x: 24px; y: 130px; text: "模态弹层"; checked <=> root.modal; }
+    filter-anchor := Button {
+        x: 320px; y: 220px; width: 128px; height: 44px;
+        text: "筛选…";
+        clicked() => { filters.show(); }
+
+        filters := PopupWindow {
+            open <=> root.filters-open;
+            modal: root.modal;
+            close-on-outside: root.close-outside;
+            placement: below;
+            anchor-gap: 8px;
+            width: 212px; height: 136px;
+            background: #2b4e58;
+            accessible-name: "筛选选项";
+            opened() => { root.opens += 1; }
+            closed() => { root.closes += 1; }
+            query-field := LineEdit { text <=> root.query; placeholder-text: "输入筛选条件"; }
+            finish-filter := Button { text: "完成"; clicked() => { filters.close(); } }
+        }
+    }
+}

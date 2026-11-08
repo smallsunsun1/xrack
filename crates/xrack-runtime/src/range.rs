@@ -83,6 +83,25 @@ pub fn progress_value(node: &Node) -> f64 {
     node.number("progress").unwrap_or(0.0).clamp(0.0, 1.0)
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum IndicatorState {
+    Hidden,
+    Determinate(f64),
+    Indeterminate,
+}
+
+pub fn indicator_state(node: &Node) -> Option<IndicatorState> {
+    Some(match node.kind {
+        "BusyIndicator" if node.boolean("running", true) => IndicatorState::Indeterminate,
+        "BusyIndicator" => IndicatorState::Hidden,
+        "Spinner" | "ProgressIndicator" if node.boolean("indeterminate", false) => {
+            IndicatorState::Indeterminate
+        }
+        "Spinner" | "ProgressIndicator" => IndicatorState::Determinate(progress_value(node)),
+        _ => return None,
+    })
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct SliderInterval {
     axis: SliderRange,

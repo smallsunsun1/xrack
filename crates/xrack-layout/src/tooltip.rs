@@ -3,7 +3,7 @@ use std::{
     collections::BTreeMap,
     time::{Duration, Instant},
 };
-use xrack_runtime::{Color, Length, Node, RowKey, is_modal_overlay};
+use xrack_runtime::{Color, Length, Node, RowKey, is_window_overlay};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) enum Source {
@@ -69,7 +69,7 @@ pub(crate) fn hovered(
             return false;
         }
         for (index, (child, layout)) in node.children.iter().zip(&item.children).enumerate().rev() {
-            if is_modal_overlay(child.kind) {
+            if is_window_overlay(child.kind) {
                 continue;
             }
             path.push(index);
@@ -341,6 +341,8 @@ pub fn layout_tooltip(
         height,
     );
     let mut context = LayoutContext {
+        row_key: None,
+        anchor: None,
         text,
         offsets: &BTreeMap::new(),
         input: None,

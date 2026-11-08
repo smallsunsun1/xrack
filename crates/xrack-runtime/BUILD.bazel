@@ -1,4 +1,5 @@
 load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+load("@crates//:defs.bzl", "all_crate_deps")
 
 rust_library(
     name = "xrack_runtime",
@@ -8,7 +9,7 @@ rust_library(
     edition = "2024",
     version = "0.1.0",
     visibility = ["//visibility:public"],
-    deps = [],
+    deps = all_crate_deps(normal = True),
 )
 
 rust_test(

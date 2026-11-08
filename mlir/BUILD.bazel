@@ -62,7 +62,10 @@ cc_library(
 
 cc_library(
     name = "xrack_passes",
-    srcs = ["xrack_passes.cc"],
+    srcs = [
+        "xrack_passes.cc",
+        "xrack_visual_cache.cc",
+    ],
     hdrs = ["xrack_passes.h"],
     deps = [
         ":xrack_dialect",
@@ -70,6 +73,7 @@ cc_library(
         "@llvm-project//llvm:Support",
         "@llvm-project//mlir:IR",
         "@llvm-project//mlir:Pass",
+        "@llvm-project//mlir:SideEffectInterfaces",
         "@llvm-project//mlir:TransformUtils",
         "@llvm-project//mlir:Transforms",
     ],

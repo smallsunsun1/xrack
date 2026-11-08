@@ -23,6 +23,117 @@ fn definition<'m>(op: OperationRef<'m>, index: usize) -> OperationRef<'m> {
         .unwrap()
 }
 
+fn visual_slots(module: &Module) -> usize {
+    let rust = codegen::generate(module).unwrap().to_string();
+    rust.split_whitespace()
+        .collect::<Vec<_>>()
+        .windows(2)
+        .filter(|pair| pair[0].starts_with("__visual_") && pair[1] == ":")
+        .count()
+}
+
+#[test]
+fn equivalent_visual_bindings_share_one_cache_across_sibling_elements() {
+    let input = raw(
+        r#"export component Demo inherits Window {
+            in-out property <int> count: 0;
+            first := Text { text: "Count " + root.count; }
+            second := Text { text: "Count " + root.count; }
+        }"#,
+        "shared-visuals.xr",
+    );
+    assert_eq!(visual_slots(&input), 2);
+    let optimized = input.optimize().unwrap();
+    let component = optimized.operations().next().unwrap();
+    let window = component
+        .children()
+        .find(|op| op.name() == "xr.element")
+        .unwrap();
+    let binding = |id| {
+        let element = window
+            .children()
+            .find(|op| op.attribute("id") == Some(id))
+            .unwrap();
+        member(element, "xr.bind", "text")
+    };
+    let first = binding("first");
+    let second = binding("second");
+    assert_ne!(first.operand(0), second.operand(0));
+    let group = first.attribute("xr.visual_cache_group");
+    assert!(group.is_some());
+    assert_eq!(group, second.attribute("xr.visual_cache_group"));
+    assert_eq!(visual_slots(&optimized), 1);
+
+    // Textual IR can carry arbitrary annotations. Only a cache plan generated
+    // by the optimization pipeline may change codegen behavior.
+    let reparsed = Module::parse(&optimized.to_mlir()).unwrap();
+    assert_eq!(visual_slots(&reparsed), 2);
+    assert_eq!(visual_slots(&reparsed.optimize().unwrap()), 1);
+}
+
+#[test]
+fn visual_cache_groups_are_separate_for_each_repeat_and_exclude_calls() {
+    let module = raw(
+        r#"export component Demo inherits Window {
+            in-out property <int> count: 0;
+            pure callback format-count(int) -> string;
+            a := Text { text: "Count " + root.format-count(root.count); }
+            b := Text { text: "Count " + root.format-count(root.count); }
+            for item in ["A", "B"] : VerticalLayout {
+                Text { text: "Row " + item; }
+                Text { text: "Row " + item; }
+                Text { text: "Detail " + item; }
+            }
+            for item in ["X", "Y"] : VerticalLayout {
+                Text { text: "Row " + item; }
+                Text { text: "Row " + item; }
+            }
+        }"#,
+        "scoped-visuals.xr",
+    )
+    .optimize()
+    .unwrap();
+    let component = module.operations().next().unwrap();
+    let window = component
+        .children()
+        .find(|op| op.name() == "xr.element")
+        .unwrap();
+    let elements: Vec<_> = window
+        .children()
+        .filter(|op| op.name() == "xr.element")
+        .collect();
+    for call in &elements[..2] {
+        assert_eq!(
+            member(*call, "xr.bind", "text").attribute("xr.visual_cache_group"),
+            None
+        );
+    }
+    let groups: Vec<_> = elements[2..]
+        .iter()
+        .map(|repeat| {
+            let rows: Vec<_> = repeat
+                .children()
+                .filter(|op| op.name() == "xr.element")
+                .collect();
+            let group = |element| {
+                member(element, "xr.bind", "text")
+                    .attr("xr.visual_cache_group")
+                    .unwrap()
+            };
+            assert_eq!(group(rows[0]), group(rows[1]));
+            if let Some(different) = rows.get(2) {
+                assert_eq!(
+                    member(*different, "xr.bind", "text").attribute("xr.visual_cache_group"),
+                    None
+                );
+            }
+            group(rows[0])
+        })
+        .collect();
+    assert_ne!(groups[0], groups[1]);
+    assert_eq!(visual_slots(&module), 5);
+}
+
 #[test]
 fn optimization_preserves_stack_reads_on_each_side_of_navigation() {
     let optimized = raw(
@@ -136,6 +247,140 @@ fn folding_and_cse_change_the_native_values_used_by_rust_codegen() {
             .to_string()
             .contains("discarded")
     );
+}
+
+#[test]
+fn constant_conversions_and_string_expressions_reach_rust_as_literals() {
+    let input = raw(
+        r#"export component App inherits Window {
+            out property <length> width-value: (20px + 4px) / 2;
+            out property <float> ratio: 25%;
+            out property <float> rounded: 9007199254740993;
+            out property <float> negative-zero: -0.0;
+            out property <float> infinity: 1.0 / 0.0;
+            out property <bool> comparison: 2.5px < 3px;
+            out property <bool> escaped-equality: "\u0041" == "A";
+            out property <string> caption: "版" + 2 + "\n" + true;
+        }"#,
+        "scalar-folding.xr",
+    );
+    let rust_before = codegen::generate(&input).unwrap().to_string();
+    assert!(rust_before.contains("format !"));
+
+    let optimized = input.optimize().unwrap();
+    let component = optimized.operations().next().unwrap();
+    let initializer = |name| definition(member(component, "xr.property", name), 0);
+    for (name, value) in [
+        ("width-value", 12.0_f64),
+        ("ratio", 0.25),
+        ("rounded", 9_007_199_254_740_992.0),
+        ("negative-zero", -0.0),
+    ] {
+        let op = initializer(name);
+        assert_eq!(op.name(), "xr.literal", "{name}");
+        let actual = op.attribute("value").unwrap().parse::<f64>().unwrap();
+        assert_eq!(actual.to_bits(), value.to_bits(), "{name}");
+    }
+    assert_eq!(initializer("infinity").name(), "xr.binary");
+    for name in ["comparison", "escaped-equality"] {
+        assert_eq!(initializer(name).name(), "xr.literal");
+        assert_eq!(initializer(name).attribute("value"), Some("true"));
+    }
+    assert_eq!(initializer("caption").name(), "xr.literal");
+    assert_eq!(
+        initializer("caption").attribute("value"),
+        Some("\"版2\\ntrue\"")
+    );
+    let rust = codegen::generate(&optimized).unwrap().to_string();
+    assert!(rust.contains("版2"));
+    assert!(!rust.contains("format !"));
+}
+
+#[test]
+fn identities_keep_live_reads_and_calls_and_prune_dead_operands() {
+    let optimized = raw(
+        r#"export component App inherits Window {
+            in-out property <int> count: 2;
+            in-out property <bool> enabled: true;
+            in-out property <string> caption: "app";
+            pure callback probe() -> bool;
+            callback ping;
+            callback run;
+            run => { root.ping(); }
+            out property <int> identity: 0 + (count - 0) * 1 / 1;
+            out property <int> zero: count * 0;
+            out property <bool> condition: !!(enabled && true) || false;
+            out property <bool> must-call: root.probe() && false;
+            out property <bool> never-call: false && root.probe();
+            out property <string> same: "" + caption + "";
+        }"#,
+        "identities.xr",
+    )
+    .optimize()
+    .unwrap();
+    let component = optimized.operations().next().unwrap();
+    let initializer = |name| definition(member(component, "xr.property", name), 0);
+    for (name, property) in [
+        ("identity", "count"),
+        ("condition", "enabled"),
+        ("same", "caption"),
+    ] {
+        let op = initializer(name);
+        assert_eq!(op.name(), "xr.read", "{name}");
+        assert_eq!(op.attribute("value"), Some(property));
+    }
+    assert_eq!(initializer("zero").name(), "xr.binary");
+    let call = initializer("must-call");
+    assert_eq!(call.name(), "xr.binary");
+    assert_eq!(definition(call, 0).name(), "xr.call");
+    assert_eq!(initializer("never-call").name(), "xr.literal");
+    assert_eq!(
+        component
+            .children()
+            .filter(|op| op.name() == "xr.call")
+            .count(),
+        1
+    );
+    assert!(!component.children().any(|op| op.name() == "xr.unary"));
+    let run = member(component, "xr.callback", "run");
+    assert!(run.children().any(|op| op.name() == "xr.invoke"));
+}
+
+#[test]
+fn only_unconditional_visual_guards_are_removed() {
+    let input = raw(
+        r#"export component App inherits Window {
+            in property <bool> show: true;
+            if 1 + 2 == 3 : always := Button { clicked() => {} }
+            if false : hidden := Text { text: "hidden"; }
+            if root.show : dynamic := Text { text: "dynamic"; }
+        }"#,
+        "visual-guards.xr",
+    );
+    let rust_before = codegen::generate(&input).unwrap().to_string();
+    let optimized = input.optimize().unwrap();
+    let component = optimized.operations().next().unwrap();
+    let window = component
+        .children()
+        .find(|op| op.name() == "xr.element")
+        .unwrap();
+    let element = |id| {
+        window
+            .children()
+            .find(|op| op.attribute("id") == Some(id))
+            .unwrap()
+    };
+    let has_guard = |id| element(id).children().any(|op| op.name() == "xr.show_if");
+    assert!(!has_guard("always"));
+    assert!(has_guard("hidden"));
+    assert!(has_guard("dynamic"));
+    assert_eq!(
+        member(element("always"), "xr.handler", "clicked").name(),
+        "xr.handler"
+    );
+    let rust = codegen::generate(&optimized).unwrap().to_string();
+    assert_eq!(rust_before.matches("Node :: hidden").count(), 3);
+    assert_eq!(rust.matches("Node :: hidden").count(), 2);
 }
 
 #[test]
