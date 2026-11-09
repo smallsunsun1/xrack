@@ -14,6 +14,7 @@ mod delegate;
 mod double_spin;
 mod drag;
 mod focus;
+mod image_animation;
 mod keyboard;
 mod list;
 mod model;
@@ -63,6 +64,9 @@ pub use drag::{DragAction, DragEvent, is_drag_area};
 pub use focus::{
     FocusAction, FocusContext, FocusEvent, FocusHandle, FocusReason, FocusRequest, FocusRequests,
 };
+pub use image_animation::{ImageAnimation, ImageAnimationFrame};
+#[doc(hidden)]
+pub use image_animation::{ImagePlaybackQueue, ImagePlaybackRegistration, ImagePlaybackSlot};
 pub use keyboard::{EventResult, KeyEvent, KeyModifiers, KeyPhase};
 pub use list::{ListMetrics, RowKey};
 #[doc(hidden)]
@@ -89,7 +93,7 @@ pub use scene_plan::{
 };
 pub use stack::{StackNavigation, StackSnapshot, StackState};
 use std::{collections::BTreeMap, rc::Rc, sync::Arc};
-pub use styled_text::{StyledRun, StyledText, StyledTextError, TextStyle};
+pub use styled_text::{StyledLink, StyledRun, StyledText, StyledTextError, TextStyle};
 pub use table_selection::{
     RowSelection, SelectionTarget, TableSelection, TableSelectionAction, TableSelectionSnapshot,
 };
@@ -365,13 +369,78 @@ pub enum Image {
         bytes: &'static [u8],
         size: [u32; 2],
     },
+    Animated(&'static ImageAnimation),
+    NineSliced {
+        format: ImageFormat,
+        bytes: &'static [u8],
+        size: [u32; 2],
+        edges: NineSlice,
+    },
 }
+
+/// Source edge widths in pixels, clockwise from the top.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct NineSlice {
+    pub top: u32,
+    pub right: u32,
+    pub bottom: u32,
+    pub left: u32,
+}
+
+impl NineSlice {
+    pub fn fits(self, [width, height]: [u32; 2]) -> bool {
+        self.left.saturating_add(self.right) < width
+            && self.top.saturating_add(self.bottom) < height
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+#[error("nine-slice edges must leave a nonempty center in the source image")]
+pub struct InvalidNineSlice;
 
 impl Image {
     pub fn size(self) -> [u32; 2] {
         match self {
             Self::Empty => [0, 0],
-            Self::Embedded { size, .. } => size,
+            Self::Animated(animation) => animation.size(),
+            Self::Embedded { size, .. } | Self::NineSliced { size, .. } => size,
+        }
+    }
+
+    pub fn frame_count(self) -> usize {
+        match self {
+            Self::Empty => 0,
+            Self::Animated(animation) => animation.frame_count(),
+            _ => 1,
+        }
+    }
+
+    pub fn frame(self, index: usize) -> Self {
+        match self {
+            Self::Animated(animation) => animation.frame(index),
+            _ => self,
+        }
+    }
+
+    pub fn with_nine_slice(self, edges: NineSlice) -> Result<Self, InvalidNineSlice> {
+        match self {
+            Self::Embedded {
+                format,
+                bytes,
+                size,
+            }
+            | Self::NineSliced {
+                format,
+                bytes,
+                size,
+                ..
+            } if edges.fits(size) => Ok(Self::NineSliced {
+                format,
+                bytes,
+                size,
+                edges,
+            }),
+            _ => Err(InvalidNineSlice),
         }
     }
 }
@@ -410,6 +479,37 @@ pub enum ImageFit {
     Contain,
     Cover,
     Preserve,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ImageTileMode {
+    #[default]
+    Stretch,
+    Repeat,
+    Round,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ImageHorizontalAlignment {
+    Left,
+    #[default]
+    Center,
+    Right,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ImageVerticalAlignment {
+    Top,
+    #[default]
+    Center,
+    Bottom,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ImageRendering {
+    #[default]
+    Smooth,
+    Pixelated,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -576,6 +676,10 @@ pub enum Value {
     Brush(Brush),
     Image(Image),
     ImageFit(ImageFit),
+    ImageTileMode(ImageTileMode),
+    ImageHorizontalAlignment(ImageHorizontalAlignment),
+    ImageVerticalAlignment(ImageVerticalAlignment),
+    ImageRendering(ImageRendering),
     LayoutAlignment(LayoutAlignment),
     CrossAxisAlignment(CrossAxisAlignment),
     Orientation(Orientation),
@@ -630,6 +734,10 @@ value_from!(Percent, Percent);
 value_from!(Color, Color);
 value_from!(Image, Image);
 value_from!(ImageFit, ImageFit);
+value_from!(ImageTileMode, ImageTileMode);
+value_from!(ImageHorizontalAlignment, ImageHorizontalAlignment);
+value_from!(ImageVerticalAlignment, ImageVerticalAlignment);
+value_from!(ImageRendering, ImageRendering);
 value_from!(LayoutAlignment, LayoutAlignment);
 value_from!(CrossAxisAlignment, CrossAxisAlignment);
 value_from!(Orientation, Orientation);
@@ -689,6 +797,8 @@ pub struct NodeData {
     pub children: Vec<Node>,
     #[doc(hidden)]
     pub timers: Vec<TimerRegistration>,
+    #[doc(hidden)]
+    pub image_playback: Option<Rc<ImagePlaybackRegistration>>,
     #[doc(hidden)]
     pub native_dialogs: Vec<NativeDialogRegistration>,
     pub animations: BTreeMap<&'static str, Animation>,
@@ -762,6 +872,7 @@ impl NodeData {
             fonts,
             tumbler_items,
             timers,
+            image_playback,
             native_dialogs,
             animations,
             state_timings,
@@ -837,6 +948,7 @@ impl Node {
             tumbler_items: None,
             children: Vec::new(),
             timers: Vec::new(),
+            image_playback: None,
             native_dialogs: Vec::new(),
             animations: BTreeMap::new(),
             state_timings: None,
@@ -905,7 +1017,7 @@ impl Node {
         }
     }
 
-    /// Compare frame inputs, allowing only compiler-proven paint values to differ.
+    /// Compare frame inputs, allowing paint-only values to differ.
     #[doc(hidden)]
     pub fn same_frame_inputs(&self, other: &Self) -> bool {
         if self.shares_storage_with(other) {
@@ -915,7 +1027,16 @@ impl Node {
             && other.kind == "Rectangle"
             && self.paint_only_background
             && other.paint_only_background;
-        let relevant = |(name, _): &(&&str, &Value)| !ignore_background || **name != "background";
+        let ignore_frame = self.kind == "AnimatedImage" && other.kind == "AnimatedImage";
+        let ignore_colorize =
+            matches!(self.kind, "Image" | "AnimatedImage") && self.kind == other.kind;
+        let relevant = |(name, _): &(&&str, &Value)| match **name {
+            "background" => !ignore_background,
+            "opacity" => false,
+            "current-frame" => !ignore_frame,
+            "colorize" => !ignore_colorize,
+            _ => true,
+        };
         self.same_structure_and_state(other)
             && self
                 .properties
@@ -1000,6 +1121,16 @@ impl Node {
             Some(Value::Float(value)) if value.is_finite() => Some(*value),
             _ => None,
         }
+    }
+
+    /// Visual opacity has no effect on layout, focus or hit testing.
+    pub fn opacity(&self) -> f32 {
+        self.number("opacity").unwrap_or(1.0).clamp(0.0, 1.0) as f32
+    }
+
+    /// Finite stacking order within an ordinary sibling list.
+    pub fn z(&self) -> f64 {
+        self.number("z").filter(|&z| z != 0.0).unwrap_or_default()
     }
 
     pub fn orientation(&self) -> Orientation {
@@ -1116,6 +1247,13 @@ impl Node {
         match self.properties.get(name) {
             Some(Value::ImageFit(value)) => Some(*value),
             _ => None,
+        }
+    }
+
+    pub fn image_tile_mode(&self, name: &str) -> ImageTileMode {
+        match self.properties.get(name) {
+            Some(Value::ImageTileMode(value)) => *value,
+            _ => ImageTileMode::default(),
         }
     }
 

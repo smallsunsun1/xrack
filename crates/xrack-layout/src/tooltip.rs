@@ -68,7 +68,7 @@ pub(crate) fn hovered(
         if !item.visible || !item.bounds.intersect(item.clip).contains(point) {
             return false;
         }
-        for (index, (child, layout)) in node.children.iter().zip(&item.children).enumerate().rev() {
+        for (index, child, layout) in item.children_in_paint_order(node).rev() {
             if is_window_overlay(child.kind) {
                 continue;
             }
@@ -262,6 +262,9 @@ pub fn layout_tooltip(
     } = popup;
     let area = viewport.inset(6.0);
     let mut surface = Node::new("VerticalLayout", None);
+    if let Some(opacity) = node.properties.get("opacity") {
+        surface.properties.insert("opacity", opacity.clone());
+    }
     surface.properties.insert(
         "background",
         node.properties

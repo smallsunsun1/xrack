@@ -43,7 +43,9 @@ call: reference '(' (expression (',' expression)* ','?)? ')';
 arrayLiteral: '[' (expression (',' expression)* ','?)? ']';
 recordLiteral: identifier '{' (recordValue (',' recordValue)* ','?)? '}';
 recordValue: identifier ':' expression;
-imageUrl: '@image-url' '(' STRING ')';
+imageUrl: '@image-url' '(' STRING (',' imageSlice)? ')';
+imageSlice: IDENT '(' imageEdge+ ')';
+imageEdge: NUMBER;
 markdown: '@markdown' '(' STRING ')';
 gradient: ('@linear-gradient' '(' gradientAngle | '@radial-gradient' '(' 'circle')
           ',' gradientStop (',' gradientStop)* ')';

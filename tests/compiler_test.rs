@@ -3187,7 +3187,7 @@ fn markdown_literals_are_typed_in_mlir_and_compiled_to_static_style_ranges() {
     assert!(compiled.mlir.contains("\"xr.markdown\""));
     assert!(compiled.mlir.contains("!xr.styledtext"));
     let tokens = compiled.rust.to_string();
-    assert!(tokens.contains("StyledText :: from_compiled (\"bold code\""));
+    assert!(tokens.contains("StyledText :: from_compiled_parts (\"bold code\""));
     assert!(tokens.contains("bold : true"));
     assert!(tokens.contains("monospace : true"));
     let invalid = source.replace("StyledText {", "Label {");
@@ -3198,11 +3198,11 @@ fn markdown_literals_are_typed_in_mlir_and_compiled_to_static_style_ranges() {
             .contains("type mismatch")
     );
 
-    let invalid = source.replace("**bold** `code`", "[link](https://example.test)");
+    let invalid = source.replace("**bold** `code`", "![image](assets/image.png)");
     let error = compile(&invalid, "markdown.xr").err().unwrap();
     assert!(error.contains("markdown.xr:2:"), "{error}");
     assert!(
-        error.contains("unsupported Markdown syntax: links"),
+        error.contains("unsupported Markdown syntax: images"),
         "{error}"
     );
 
@@ -3212,5 +3212,300 @@ fn markdown_literals_are_typed_in_mlir_and_compiled_to_static_style_ranges() {
         mlir::process(&malformed)
             .unwrap_err()
             .contains("incorrect text layout property type")
+    );
+}
+
+#[test]
+fn markdown_links_compile_with_a_typed_activation_handler() {
+    let source = r#"export component App inherits Window {
+        out property <string> destination: "";
+        body := StyledText {
+            text: @markdown("[**manual**](#docs)");
+            link-color: #41a6e7;
+            link-activated(target) => { root.destination = target; }
+        }
+    }"#;
+    let compiled = compile(source, "links.xr").unwrap();
+    assert!(compiled.mlir.contains("name = \"link-activated\""));
+    let tokens = compiled.rust.to_string();
+    assert!(tokens.contains("StyledLink"));
+    assert!(tokens.contains("Borrowed (\"#docs\")"));
+    assert!(tokens.contains("ControlAction :: ActivateTextLink"));
+    let raw = lower(source, "links.xr");
+    let malformed = raw.replace("link-activated", "clicked");
+    assert!(
+        mlir::process(&malformed)
+            .unwrap_err()
+            .contains("StyledText requires link-activated(string)")
+    );
+    let malformed = source.replace("link-activated(target)", "link-activated(target, extra)");
+    assert!(
+        compile(&malformed, "links.xr")
+            .err()
+            .unwrap()
+            .contains("expects one string parameter")
+    );
+}
+
+#[test]
+fn nine_slice_keeps_typed_edges_and_validates_against_the_embedded_asset() {
+    const SVG: &[u8] = include_bytes!("../examples/media/assets/nine-slice.svg");
+    let dir = std::env::var_os("TEST_TMPDIR")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir)
+        .join(format!("xrack-nine-slice-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("media.xr");
+    let asset = dir.join("frame.svg");
+    std::fs::write(&asset, SVG).unwrap();
+    let file = path.to_str().unwrap();
+    let source = r#"export component Media inherits Window {
+        Image {
+            source: @image-url("frame.svg", nine-slice(4 6 8 10));
+            horizontal-tile-mode: repeat;
+            vertical-tile-mode: round;
+        }
+    }"#;
+    let compiled = compile(source, file).unwrap();
+    assert!(compiled.mlir.contains("\"xr.nine_slice\""));
+    assert!(compiled.mlir.contains("!xr.imagetilemode"));
+    let tokens = compiled.rust.to_string();
+    assert!(
+        tokens.contains("NineSlice { top : 4u32 , right : 6u32 , bottom : 8u32 , left : 10u32")
+    );
+    assert!(tokens.contains("ImageTileMode :: Repeat"));
+    let malformed = lower(source, file).replace("value = \"10\"", "value = \"-1\"");
+    assert!(
+        mlir::process(&malformed)
+            .unwrap_err()
+            .contains("nonnegative integer literals")
+    );
+    for (edges, diagnostic) in [
+        ("3 1 2", "expects one, two or four edges"),
+        ("2.5", "nonnegative integers"),
+        ("18", "must leave a nonempty center"),
+        ("4294967295", "must leave a nonempty center"),
+    ] {
+        let invalid = source.replace("4 6 8 10", edges);
+        assert!(compile(&invalid, file).err().unwrap().contains(diagnostic));
+    }
+    let invalid = source.replace("4 6 8 10", "16");
+    let module = xrack_compiler::lower(&parse(&invalid).unwrap(), file).unwrap();
+    assert!(
+        xrack_compiler::check_resources(&module, file, Some(std::slice::from_ref(&asset)))
+            .unwrap_err()
+            .to_string()
+            .contains("must leave a nonempty center")
+    );
+    for (edges, top, right) in [("4", 4, 4), ("4 7", 4, 7)] {
+        let source = source.replace("4 6 8 10", edges);
+        let tokens = compile(&source, file).unwrap().rust.to_string();
+        assert!(tokens.contains(&format!(
+            "NineSlice {{ top : {top}u32 , right : {right}u32 , bottom : {top}u32 , left : {right}u32"
+        )));
+    }
+    std::fs::remove_file(asset).unwrap();
+    std::fs::remove_dir(dir).unwrap();
+}
+
+#[test]
+fn animated_image_embeds_gif_frames_and_checks_read_only_playback_state() {
+    const GIF: &[u8] = include_bytes!("../examples/media/assets/pulse.gif");
+    let dir = std::env::var_os("TEST_TMPDIR")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir)
+        .join(format!("xrack-gif-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let asset = dir.join("pulse.gif");
+    std::fs::write(&asset, GIF).unwrap();
+    let path = dir.join("animated.xr");
+    let file = path.to_str().unwrap();
+    let source = r#"export component Media inherits Window {
+        out property <int> frame: pulse.current-frame;
+        out property <int> frames: pulse.frame-count;
+        pulse := AnimatedImage {
+            source: @image-url("pulse.gif");
+            paused: true;
+            speed: 2.0;
+            loops: -1;
+            finished() => {}
+        }
+    }"#;
+    let compiled = compile(source, file).unwrap();
+    assert!(compiled.mlir.contains("\"xr.image_playback_read\""));
+    assert!(compiled.mlir.contains("value = \"frame-count\""));
+    let tokens = compiled.rust.to_string();
+    for time in [80, 200, 260] {
+        assert!(tokens.contains(&format!("end_ms : {time}u32")));
+    }
+    let invalid = source.replace("paused: true", "current-frame: 2");
+    assert!(compile(&invalid, file).err().unwrap().contains("read-only"));
+    let invalid = source.replace("speed: 2.0", "speed: true");
+    assert!(
+        compile(&invalid, file)
+            .err()
+            .unwrap()
+            .contains("type mismatch")
+    );
+    let malformed =
+        lower(source, file).replace("value = \"frame-count\"", "value = \"loop-count\"");
+    assert!(
+        mlir::process(&malformed)
+            .unwrap_err()
+            .contains("playback state property")
+    );
+    let invalid = source.replace("\"pulse.gif\"", "\"pulse.gif\", nine-slice(2)");
+    assert!(
+        compile(&invalid, file)
+            .err()
+            .unwrap()
+            .contains("static PNG or SVG")
+    );
+
+    let mut oversized = GIF.to_vec();
+    oversized[6..8].copy_from_slice(&5000_u16.to_le_bytes());
+    std::fs::write(&asset, oversized).unwrap();
+    let error = compile(source, file).err().unwrap();
+    assert!(error.contains("image dimensions"), "{error}");
+    std::fs::remove_file(asset).unwrap();
+    std::fs::remove_dir(dir).unwrap();
+}
+
+#[test]
+fn image_clips_alignments_and_intrinsic_dimensions_are_typed_in_mlir() {
+    let source = r#"export component Atlas inherits Window {
+        in property <image> atlas: @image-url("");
+        out property <int> pixels: root.atlas.width * root.atlas.height;
+        Image {
+            source: root.atlas;
+            source-clip-x: 1; source-clip-y: -2;
+            source-clip-width: root.atlas.width;
+            horizontal-alignment: right;
+            vertical-alignment: bottom;
+            image-rendering: pixelated;
+        }
+        AnimatedImage {
+            source: root.atlas;
+            source-clip-height: 4;
+            horizontal-tile-mode: repeat;
+        }
+    }"#;
+    let result = compile(source, "atlas.xr").unwrap();
+    assert!(result.mlir.contains("\"xr.image_dimension\""));
+    assert!(result.mlir.contains("!xr.imagehorizontalalignment"));
+    assert!(result.mlir.contains("!xr.imageverticalalignment"));
+    assert!(result.mlir.contains("!xr.imagerendering"));
+    assert!(result.rust.to_string().contains(". size ()"));
+    let invalid = source.replace("source-clip-x: 1", "source-clip-x: 1px");
+    assert!(
+        compile(&invalid, "atlas.xr")
+            .err()
+            .unwrap()
+            .contains("type mismatch")
+    );
+    let invalid = source.replace("root.atlas.height", "root.atlas.depth");
+    assert!(
+        compile(&invalid, "atlas.xr")
+            .err()
+            .unwrap()
+            .contains("image has no field")
+    );
+    let raw = lower(source, "atlas.xr");
+    let invalid = raw.replace("value = \"width\"", "value = \"depth\"");
+    assert!(
+        mlir::process(&invalid)
+            .unwrap_err()
+            .contains("image dimension must be width or height")
+    );
+    let invalid = raw.replace("name = \"source-clip-x\"", "name = \"image-rendering\"");
+    assert!(
+        mlir::process(&invalid)
+            .unwrap_err()
+            .contains("incorrect Image property type")
+    );
+}
+
+#[test]
+fn image_colorize_uses_typed_brushes_in_bindings_and_states() {
+    let source = r#"export component Art inherits Window {
+        in property <bool> alternate: false;
+        icon := Image {
+            source: @image-url("");
+            colorize: #0af;
+        }
+        AnimatedImage {
+            source: @image-url("");
+            colorize: root.alternate ? @linear-gradient(90deg, #0000, #f84) : #0af;
+        }
+        states [ alternate when root.alternate: {
+            icon.colorize: @radial-gradient(circle, #fff, #369);
+        } ]
+    }"#;
+    let result = compile(source, "colorize.xr").unwrap();
+    assert!(result.mlir.contains("name = \"colorize\""));
+    assert!(result.mlir.contains("!xr.brush"));
+    assert!(result.mlir.contains("\"xr.state_set\""));
+    assert!(result.rust.to_string().contains("Brush :: Solid"));
+    let invalid = source.replace("colorize: #0af", "colorize: 5");
+    assert!(
+        compile(&invalid, "colorize.xr")
+            .err()
+            .unwrap()
+            .contains("type mismatch")
+    );
+    let raw = lower(source, "colorize.xr");
+    let invalid = raw.replace("kind = \"Image\"", "kind = \"Rectangle\"");
+    assert!(
+        mlir::process(&invalid)
+            .unwrap_err()
+            .contains("incorrect Image property type")
+    );
+}
+
+#[test]
+fn composition_properties_have_typed_bindings_on_nodes_and_instances() {
+    let source = r#"component Card inherits Rectangle { background: #024; }
+    export component App inherits Window {
+        in property <bool> raised: true;
+        panel := Rectangle {
+            opacity: 0.5;
+            z: 2;
+            animate opacity { duration: 120ms; }
+        }
+        Card { opacity: 0.75; z: -1; }
+        states [ raise when root.raised: { panel.opacity: 1; panel.z: 3; } ]
+    }"#;
+    let result = compile(source, "compositing.xr").unwrap();
+    for line in result
+        .mlir
+        .lines()
+        .filter(|line| line.contains("name = \"opacity\"") || line.contains("name = \"z\""))
+    {
+        if !line.contains("xr.animate") {
+            assert!(line.contains("!xr.float"), "{line}");
+        }
+    }
+    assert!(
+        result
+            .mlir
+            .lines()
+            .any(|line| line.contains("\"xr.layout_bind\"") && line.contains("name = \"z\""))
+    );
+    let invalid = source.replace("opacity: 0.5", "opacity: true");
+    assert!(
+        compile(&invalid, "compositing.xr")
+            .err()
+            .unwrap()
+            .contains("type mismatch")
+    );
+    let invalid = source.replace("opacity: 0.5;", "Timer { opacity: 0.5; }");
+    assert!(compile(&invalid, "compositing.xr").is_err());
+
+    let raw = lower(source, "compositing.xr");
+    let invalid = raw.replace("name = \"background\"", "name = \"opacity\"");
+    assert!(
+        mlir::process(&invalid)
+            .unwrap_err()
+            .contains("z and opacity require")
     );
 }

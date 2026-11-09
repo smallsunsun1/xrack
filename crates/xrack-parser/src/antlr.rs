@@ -457,7 +457,20 @@ fn primary_expr(ctx: &PrimaryContextAll<'_>) -> Expr {
     let kind = if let Some(invocation) = ctx.call() {
         ExprKind::Call(call(&invocation))
     } else if let Some(url) = ctx.imageUrl() {
-        ExprKind::ImageUrl(url.STRING().expect("image URL").get_text())
+        let path = url.STRING().expect("image URL").get_text();
+        if let Some(slice) = url.imageSlice() {
+            ExprKind::SlicedImageUrl {
+                path,
+                slice: slice.IDENT().expect("image modifier").get_text(),
+                edges: slice
+                    .imageEdge_all()
+                    .iter()
+                    .map(|edge| edge.get_text())
+                    .collect(),
+            }
+        } else {
+            ExprKind::ImageUrl(path)
+        }
     } else if let Some(markdown) = ctx.markdown() {
         ExprKind::Markdown(markdown.STRING().expect("Markdown string").get_text())
     } else if let Some(array) = ctx.arrayLiteral() {

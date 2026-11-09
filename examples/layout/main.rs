@@ -1,11 +1,12 @@
 use bundled_ui::BundledFontsDemo;
 use layout_ui::{
-    AnimationsDemo, FlexDemo, FlowDemo, FocusScopesDemo, FontsDemo, LabelsDemo, LayoutDemo,
-    ScopedKeysDemo, StatesDemo, StyledTextDemo,
+    AnimationsDemo, CompositingDemo, FlexDemo, FlowDemo, FocusScopesDemo, FontsDemo, LabelsDemo,
+    LayoutDemo, ScopedKeysDemo, StatesDemo, StyledTextDemo,
 };
 
 fn main() -> std::process::ExitCode {
     let result = match std::env::args().nth(1).as_deref() {
+        Some("--compositing") => xrack_platform_winit::run(CompositingDemo::new()),
         Some("--flow") => xrack_platform_winit::run(FlowDemo::new()),
         Some("--flex") => xrack_platform_winit::run(FlexDemo::new()),
         Some("--styled-text") => xrack_platform_winit::run(StyledTextDemo::new()),

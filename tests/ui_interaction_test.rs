@@ -5419,3 +5419,112 @@ fn context_menu_respects_modal_scope_and_restores_focus() {
     ui.escape();
     assert_eq!(ui.focused(), Some("dialog-button"));
 }
+
+#[test]
+fn styled_text_links_share_pointer_keyboard_and_stale_document_guards() {
+    use layout_ui::StyledTextDemo;
+    use xrack_runtime::StyledText;
+
+    let mut ui = StyledTextDemo::new();
+    let document = "Before [first link](#first) after\n\n[second link](#second)";
+    ui.set_body(StyledText::from_markdown(document).unwrap());
+    let mut input = Interaction::default();
+    let frame = |ui: &StyledTextDemo| {
+        let scene = ui.render_shared();
+        let layout = xrack_layout::layout(&scene, Size::new(460.0, 268.0), &mut FixedText);
+        (scene, layout)
+    };
+    let path = [1];
+    let (scene, layout) = frame(&ui);
+    let first = layout
+        .at_path(&path)
+        .unwrap()
+        .text_link_regions()
+        .next()
+        .unwrap()
+        .1;
+    let point = Point {
+        x: first.x + first.width * 0.5,
+        y: first.y + first.height * 0.5,
+    };
+    input.pointer_move(&scene, &layout, point);
+    input.pointer_press_in_scene(&scene, &layout);
+    let action = input.control_part_release(&scene, &layout).unwrap();
+    assert_eq!(action.action, ControlAction::ActivateTextLink(0));
+    assert!(ui.control_at(&scene, &action.path, action.action));
+    assert_eq!(ui.get_last_link(), "#first");
+
+    input.focus_next(&scene, &layout, false);
+    assert_eq!(input.focused.as_ref().unwrap().text_link_index(), Some(1));
+    input.key_press_with_scene(&scene, ActivationKey::Enter);
+    let target = input
+        .key_release_with_scene(&scene, ActivationKey::Enter)
+        .unwrap();
+    let action = input
+        .text_link_activation(&scene, &layout, &target)
+        .unwrap();
+    assert!(ui.control_at(&scene, &action.path, action.action));
+    assert_eq!(ui.get_last_link(), "#second");
+
+    ui.set_compact(true);
+    let (scene, layout) = frame(&ui);
+    input.reconcile(&scene, &layout);
+    assert!(input.text_link_target(&scene, &layout, &path, 1).is_none());
+    assert!(
+        input
+            .text_link_activation(&scene, &layout, &target)
+            .is_none()
+    );
+
+    input.pointer_move(&scene, &layout, point);
+    input.pointer_press_in_scene(&scene, &layout);
+    ui.set_body(StyledText::from_markdown(&document.replace("#first", "#different")).unwrap());
+    let (scene, layout) = frame(&ui);
+    input.reconcile(&scene, &layout);
+    input.pointer_move(&scene, &layout, point);
+    assert!(input.control_part_release(&scene, &layout).is_none());
+    assert_eq!(ui.get_last_link(), "#second");
+
+    ui.set_links_enabled(false);
+    let (scene, layout) = frame(&ui);
+    input.reconcile(&scene, &layout);
+    input.pointer_move(&scene, &layout, point);
+    assert!(input.hovered.is_none());
+    input.focus_next(&scene, &layout, false);
+    assert_eq!(input.focused.as_ref().unwrap().text_link_index(), None);
+}
+
+#[test]
+fn sibling_stacking_controls_pointer_order_without_changing_tab_order() {
+    use layout_ui::CompositingDemo;
+
+    let mut ui = UiDriver::new(CompositingDemo::new(), FixedText, Size::new(460.0, 292.0));
+    ui.tab();
+    assert_eq!(ui.focused(), Some("first"));
+    ui.tab();
+    assert_eq!(ui.focused(), Some("second"));
+
+    assert!(ui.can_hit("first"));
+    assert!(!ui.can_hit("second"));
+    ui.click("first");
+    assert_eq!(ui.component().get_first_clicks(), 1);
+    ui.click("toggle-first");
+    assert_eq!(ui.node("first").opacity(), 0.0);
+    ui.click("first");
+    assert_eq!(ui.component().get_first_clicks(), 2);
+
+    ui.click("swap-order");
+    assert!(!ui.can_hit("first"));
+    ui.click("second");
+    assert_eq!(ui.component().get_second_clicks(), 1);
+
+    let mut tied = CompositingDemo::new();
+    tied.set_first_layer(1.0);
+    let mut tied = UiDriver::new(tied, FixedText, Size::new(460.0, 292.0));
+    tied.click("second");
+    assert_eq!(
+        tied.component().get_second_clicks(),
+        1,
+        "declaration-order tie break"
+    );
+}

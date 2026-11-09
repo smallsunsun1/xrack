@@ -12,7 +12,11 @@ path = "src/main.rs"
 
 [dependencies]
 clap.workspace = true
+gif.workspace = true
+gif-dispose.workspace = true
+png.workspace = true
 proc-macro2.workspace = true
+rgb.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 ttf-parser.workspace = true

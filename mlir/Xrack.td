@@ -30,6 +30,10 @@ def XR_Color : XR_Type<"Color", "color">;
 def XR_Brush : XR_Type<"Brush", "brush">;
 def XR_Image : XR_Type<"Image", "image">;
 def XR_ImageFit : XR_Type<"ImageFit", "imagefit">;
+def XR_ImageTileMode : XR_Type<"ImageTileMode", "imagetilemode">;
+def XR_ImageHorizontalAlignment : XR_Type<"ImageHorizontalAlignment", "imagehorizontalalignment">;
+def XR_ImageVerticalAlignment : XR_Type<"ImageVerticalAlignment", "imageverticalalignment">;
+def XR_ImageRendering : XR_Type<"ImageRendering", "imagerendering">;
 def XR_LayoutAlignment : XR_Type<"LayoutAlignment", "layoutalignment">;
 def XR_CrossAxisAlignment : XR_Type<"CrossAxisAlignment", "crossaxisalignment">;
 def XR_Orientation : XR_Type<"Orientation", "orientation">;
@@ -63,7 +67,8 @@ def XR_Time : XR_Type<"Time", "time">;
 def XR_GradientStop : XR_Type<"GradientStop", "gradientstop">;
 def XR_Value : AnyTypeOf<[XR_Int, XR_Float, XR_Bool, XR_String, XR_StyledText, XR_StringList, XR_Record, XR_RecordList, XR_Length, XR_Percent, XR_Color,
                          XR_EventResult, XR_FocusReason, XR_KeyEvent, XR_KeyModifiers,
-                         XR_Brush, XR_Image, XR_ImageFit, XR_LayoutAlignment, XR_CrossAxisAlignment,
+                         XR_Brush, XR_Image, XR_ImageFit, XR_ImageTileMode,
+                         XR_ImageHorizontalAlignment, XR_ImageVerticalAlignment, XR_ImageRendering, XR_LayoutAlignment, XR_CrossAxisAlignment,
                          XR_Orientation, XR_FlexboxLayoutDirection, XR_FlexboxLayoutWrap, XR_DialInputMode, XR_ScrollBarPolicy, XR_TextWrap, XR_TextHorizontalAlignment, XR_TextVerticalAlignment, XR_TextOverflow, XR_InputType, XR_ColorScheme, XR_FileDialogMode, XR_MessageLevel, XR_MessageButtons, XR_CheckState, XR_DialogRole, XR_StandardButtonKind, XR_SwipeSide, XR_DragAction, XR_DrawerEdge, XR_PopupPlacement, XR_SelectionTarget, XR_Date, XR_Time]>;
 def XR_Stringifiable : AnyTypeOf<[XR_Int, XR_Float, XR_Bool, XR_Date, XR_Time]>;
 
@@ -209,6 +214,13 @@ def XR_LiteralOp : XR_ExpressionOp<"literal", (ins), XR_Value, [Pure]> {
   let hasVerifier = 1;
 }
 def XR_ImageUrlOp : XR_ExpressionOp<"image_url", (ins), XR_Image, [Pure]>;
+def XR_ImageDimensionOp : XR_ExpressionOp<"image_dimension", (ins XR_Image:$input), XR_Int, [Pure]> {
+  let hasVerifier = 1;
+}
+def XR_NineSliceOp : XR_ExpressionOp<"nine_slice", (ins XR_Image:$input,
+    XR_Int:$top, XR_Int:$right, XR_Int:$bottom, XR_Int:$left), XR_Image, [Pure]> {
+  let hasVerifier = 1;
+}
 def XR_MarkdownOp : XR_ExpressionOp<"markdown", (ins), XR_StyledText, [Pure]>;
 def XR_ArrayOp : XR_ExpressionOp<"array", (ins Variadic<XR_String>:$items), XR_StringList, [Pure]>;
 def XR_RecordArrayOp : XR_ExpressionOp<"record_array", (ins Variadic<XR_Record>:$items), XR_RecordList, [Pure]>;
@@ -228,6 +240,9 @@ def XR_TimeFieldOp : XR_ExpressionOp<"time_field", (ins XR_Time:$input), XR_Int,
 }
 def XR_ReadOp : XR_ExpressionOp<"read", (ins OptionalAttr<StrAttr>:$owner)>;
 def XR_StackReadOp : XR_ExpressionOp<"stack_read", (ins StrAttr:$owner), AnyTypeOf<[XR_String, XR_Int, XR_Bool]>> {
+  let hasVerifier = 1;
+}
+def XR_ImagePlaybackReadOp : XR_ExpressionOp<"image_playback_read", (ins StrAttr:$owner), XR_Int> {
   let hasVerifier = 1;
 }
 def XR_FocusReadOp : XR_ExpressionOp<"focus_read", (ins StrAttr:$owner), XR_Bool, [Pure]> {

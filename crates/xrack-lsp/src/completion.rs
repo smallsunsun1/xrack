@@ -819,6 +819,17 @@ fn qualified<'a>(index: &Index<'a>, scope: usize, head: &[&Token<'a>], items: &m
             items.add(variant, ENUM_MEMBER, first);
         }
     }
+    if receiver.is_empty()
+        && index.ancestors(scope).any(|scope| {
+            index
+                .members(scope, false)
+                .into_iter()
+                .any(|member| member.name == first && member.ty == Some(Type::Image))
+        })
+    {
+        items.words("width height", FIELD, "read-only int");
+        return;
+    }
     if let Some(mut ty @ (Type::KeyEvent | Type::KeyModifiers)) =
         index.ancestors(scope).find_map(|scope| {
             index
@@ -924,15 +935,20 @@ fn qualified<'a>(index: &Index<'a>, scope: usize, head: &[&Token<'a>], items: &m
         };
         index.record(&record).iter().collect()
     };
-    for field in receiver.into_iter().rev() {
-        let Some(Type::Record(record)) = members
+    let mut fields = receiver.into_iter().rev().peekable();
+    while let Some(field) = fields.next() {
+        match members
             .iter()
-            .find(|m| m.name == field)
-            .and_then(|m| m.ty.as_ref())
-        else {
-            return;
-        };
-        members = index.record(record).iter().collect();
+            .find(|member| member.name == field)
+            .and_then(|member| member.ty.as_ref())
+        {
+            Some(Type::Record(record)) => members = index.record(record).iter().collect(),
+            Some(Type::Image) if fields.peek().is_none() => {
+                items.words("width height", FIELD, "read-only int");
+                return;
+            }
+            _ => return,
+        }
     }
     for member in members {
         items.member(member);

@@ -368,7 +368,9 @@ fn rebase_asset(spelling: &mut String, prefix: &Path) {
 fn rewrite_expr(expr: &mut ast::Expr, prefix: &Path, names: &BTreeMap<String, String>) {
     use ast::ExprKind::*;
     match &mut expr.kind {
-        ImageUrl(spelling) => rebase_asset(spelling, prefix),
+        ImageUrl(spelling) | SlicedImageUrl { path: spelling, .. } => {
+            rebase_asset(spelling, prefix)
+        }
         Unary { value, .. } => rewrite_expr(value, prefix, names),
         Binary { left, right, .. } => {
             rewrite_expr(left, prefix, names);

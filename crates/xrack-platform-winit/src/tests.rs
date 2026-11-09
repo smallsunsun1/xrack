@@ -175,6 +175,7 @@ fn password_clipboard_allows_paste_and_rejects_copy_and_cut_even_when_revealed()
         .insert("text", "e\u{301}👩‍💻".to_owned().into());
     let mut input = Interaction::default();
     input.focused = Some(Target {
+        text_link: None,
         path: vec![],
         id: None,
         focusable: true,
@@ -618,6 +619,7 @@ fn clipboard_reply_commits_only_for_the_current_selection() {
         |_: &mut Editor, _| {},
     );
     app.input.focused = Some(Target {
+        text_link: None,
         path: vec![],
         id: None,
         focusable: true,
@@ -1165,4 +1167,93 @@ fn mailbox_bounds_backlog_and_refreshes_once_per_batch() {
     assert!(events.try_recv().is_err());
     app.close_async();
     assert_eq!(sender.try_send(257), Err(TrySendError::Disconnected(257)));
+}
+
+#[test]
+fn image_playback_wakes_the_window_only_at_visible_frame_boundaries() {
+    use xrack_layout::{TextMeasurer, layout};
+    use xrack_runtime::{Image, ImageAnimation, ImageAnimationFrame, ImagePlaybackSlot};
+
+    static ANIMATION: ImageAnimation = ImageAnimation::new(
+        [10, 10],
+        &[
+            ImageAnimationFrame {
+                end_ms: 40,
+                png: &[],
+            },
+            ImageAnimationFrame {
+                end_ms: 100,
+                png: &[],
+            },
+        ],
+        0,
+    );
+    struct View {
+        slot: ImagePlaybackSlot,
+        x: f64,
+    }
+    impl Component for View {
+        fn render(&self) -> Node {
+            let mut image = Node::new("AnimatedImage", None);
+            image
+                .properties
+                .insert("source", Image::Animated(&ANIMATION).into());
+            image
+                .properties
+                .insert("x", xrack_runtime::Length(self.x).into());
+            self.slot.populate(&mut image, || false);
+            let mut window = Node::new("Window", None);
+            window.children.push(image);
+            window
+        }
+        fn dispatch(&mut self, _: &str, _: &str) -> bool {
+            false
+        }
+    }
+    struct Measure;
+    impl TextMeasurer for Measure {
+        fn measure(&mut self, _: &str, _: f32, _: f32) -> Size {
+            Size::default()
+        }
+    }
+    let mut app = Application::new(
+        View {
+            slot: ImagePlaybackSlot::default(),
+            x: 0.0,
+        },
+        LocalExecutor::new(|| {}),
+        Inbox::<()>::new(|| {}),
+        |_, _| {},
+    );
+    let start = Instant::now();
+    let at = |ms| start + Duration::from_millis(ms);
+    let place = |app: &mut Application<View, (), _>| {
+        app.scene = app.component.render_shared();
+        app.layout = Some(Rc::new(layout(
+            &app.scene,
+            Size::new(100.0, 80.0),
+            &mut Measure,
+        )));
+    };
+    place(&mut app);
+    app.sync_window_effects(at(0));
+    assert_eq!(app.refresh_deadline(at(0)), Some(at(40)));
+    app.tick(at(40));
+    assert_eq!(app.component.slot.current_frame(), 1);
+    assert_eq!(app.refresh_deadline(at(40)), Some(at(100)));
+    assert!(app.scene.same_frame_inputs(&app.base_scene));
+
+    app.component.x = 200.0;
+    place(&mut app);
+    app.sync_window_effects(at(50));
+    assert_eq!(app.refresh_deadline(at(50)), None);
+    app.tick(at(200));
+    assert_eq!(app.component.slot.current_frame(), 1);
+
+    app.component.x = 0.0;
+    place(&mut app);
+    app.sync_window_effects(at(200));
+    assert_eq!(app.refresh_deadline(at(200)), Some(at(250)));
+    app.tick(at(250));
+    assert_eq!(app.component.slot.current_frame(), 0);
 }

@@ -51,6 +51,7 @@ pub enum ControlAction {
     DelayButton(bool),
     StackBack { revision: u64 },
     ActivateMenuItem,
+    ActivateTextLink(usize),
     ActivateAction,
     ActivateShortcut,
     AmbiguousShortcut,

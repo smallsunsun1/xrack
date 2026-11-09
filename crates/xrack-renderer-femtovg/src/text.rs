@@ -1,7 +1,7 @@
 use femtovg::{Align, Baseline, Color, FontId, Paint, TextContext, TextDecoration, TextMetrics};
 use fontdb::{Database, Family, Query, Style, Weight};
 use std::{cell::RefCell, collections::HashMap, ops::Range, rc::Rc, sync::Arc};
-use xrack_layout::{LabelLayout, Rect, Size, TextAreaLayout, TextMeasurer};
+use xrack_layout::{LabelLayout, Rect, Size, StyledTextLayout, TextAreaLayout, TextMeasurer};
 use xrack_runtime::{EmbeddedFonts, Node, TextStyle, TextWrap};
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
@@ -589,13 +589,14 @@ impl TextMeasurer for TextSystem {
         self.default_size
     }
 
+    fn layout_styled_text(&mut self, node: &Node, available: Size) -> Option<StyledTextLayout> {
+        crate::styled_text::layout(self, node, available)
+    }
+
     fn measure_label(&mut self, node: &Node, max_width: f32) -> Size {
         let available = Size::new(max_width, f32::INFINITY);
-        if let Some(text) = node.styled_text("text") {
-            crate::styled_text::measure(self, node, text, available)
-        } else {
-            self.label_layout(node, available).size
-        }
+        self.layout_styled_text(node, available)
+            .map_or_else(|| self.label_layout(node, available).size, |plan| plan.size)
     }
 
     fn measure_node(&mut self, node: &Node, text: &str, max_width: f32) -> Size {

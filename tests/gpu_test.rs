@@ -4635,3 +4635,522 @@ fn styled_text_shapes_bidi_spans_and_elides_without_losing_the_source_text() {
     assert_eq!(colored_x(&clipped, visible, 2), None);
     assert_eq!(scene.at_path(&[1]).unwrap().text("text"), Some(body));
 }
+
+#[test]
+fn wrapped_text_link_geometry_tracks_gpu_paint_and_focus() {
+    use layout_ui::StyledTextDemo;
+    use xrack_runtime::StyledText;
+
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))
+    .unwrap();
+    let mut ui = StyledTextDemo::new();
+    ui.set_body(StyledText::from_markdown(
+        "See [**wrapping links** follow the paint geometry across lines of inline text](#wrapped).",
+    ).unwrap());
+    let mut input = Interaction::default();
+    let scene = ui.render_shared();
+    let normal = renderer.snapshot(&scene, 460, 268, 1.0, &input).unwrap();
+    let link_bounds: Vec<_> = normal
+        .layout
+        .at_path(&[1])
+        .unwrap()
+        .text_link_regions()
+        .filter_map(|(index, region)| (index == 0).then_some(region))
+        .collect();
+    assert!(link_bounds.iter().any(|region| region.y > link_bounds[0].y));
+    for rect in &link_bounds {
+        assert!(
+            (rect.y as u32..(rect.y + rect.height) as u32).any(|y| {
+                (rect.x as u32..(rect.x + rect.width) as u32).any(|x| {
+                    let [r, g, b, _] = normal.pixel(x, y).unwrap();
+                    r > 100 && g > r.saturating_add(45) && b >= g
+                })
+            }),
+            "missing link-colored pixels in {rect:?}"
+        );
+        input.pointer_move(
+            &scene,
+            &normal.layout,
+            Point {
+                x: rect.x + rect.width * 0.5,
+                y: rect.y + rect.height * 0.5,
+            },
+        );
+        assert_eq!(input.hovered.as_ref().unwrap().text_link_index(), Some(0));
+    }
+    input.focus_next(&scene, &normal.layout, false);
+    let focused = renderer.snapshot(&scene, 460, 268, 1.0, &input).unwrap();
+    assert!(link_bounds.iter().any(|rect| {
+        (rect.y as u32..(rect.y + rect.height) as u32).any(|y| {
+            (rect.x as u32..(rect.x + rect.width) as u32)
+                .any(|x| normal.pixel(x, y) != focused.pixel(x, y))
+        })
+    }));
+}
+
+#[test]
+fn nine_slice_preserves_asymmetric_corners_and_tiles_each_axis() {
+    use media_ui::NineSliceDemo;
+    use xrack_runtime::{ImageTileMode, Length, NineSlice, Node};
+
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))
+    .unwrap();
+    let mut ui = NineSliceDemo::new();
+    let input = Interaction::default();
+    let snapshot = |renderer: &mut Renderer, ui: &NineSliceDemo| {
+        renderer
+            .snapshot(&ui.render_shared(), 460, 268, 1.0, &input)
+            .unwrap()
+    };
+    let stretch = snapshot(&mut renderer, &ui);
+    let first = Some([0x6b, 0x3d, 0x92, 255]);
+    let second = Some([0xd4, 0x4b, 0x76, 255]);
+    let top_left = Some([0xff, 0xd1, 0x77, 255]);
+    let top_right = Some([0xfc, 0x88, 0x6d, 255]);
+    let bottom_left = Some([0x74, 0xcb, 0xf8, 255]);
+    let bottom_right = Some([0x90, 0xe4, 0xa1, 255]);
+
+    assert_eq!(stretch.pixel(26, 65), top_left);
+    assert_eq!(stretch.pixel(224, 65), top_right);
+    assert_eq!(stretch.pixel(26, 190), bottom_left);
+    assert_eq!(stretch.pixel(224, 190), bottom_right);
+    assert_eq!(stretch.pixel(53, 65), first);
+    assert_eq!(stretch.pixel(218, 65), second);
+
+    ui.set_horizontal_mode(ImageTileMode::Repeat);
+    let repeat = snapshot(&mut renderer, &ui);
+    assert_eq!(repeat.pixel(37, 65), first);
+    assert_eq!(repeat.pixel(45, 65), second);
+    assert_eq!(repeat.pixel(53, 65), first);
+    assert_eq!(repeat.pixel(213, 65), first);
+    assert_eq!(repeat.pixel(224, 65), top_right);
+    assert_eq!(repeat.pixel(26, 93), stretch.pixel(26, 93));
+
+    ui.set_horizontal_mode(ImageTileMode::Round);
+    ui.set_vertical_mode(ImageTileMode::Repeat);
+    let round = snapshot(&mut renderer, &ui);
+    assert_eq!(round.pixel(218, 65), second);
+    assert_eq!(round.pixel(26, 72), round.pixel(26, 92));
+    assert_ne!(round.pixel(26, 72), round.pixel(26, 82));
+    let hidpi = renderer
+        .snapshot(&ui.render_shared(), 920, 536, 2.0, &input)
+        .unwrap();
+    assert_eq!(hidpi.pixel(52, 130), top_left);
+    assert_eq!(hidpi.pixel(448, 380), bottom_right);
+
+    ui.set_panel_width(Length(8.0));
+    ui.set_panel_height(Length(6.0));
+    let tiny = snapshot(&mut renderer, &ui);
+    assert_eq!(tiny.pixel(26, 65), top_left);
+    assert_eq!(tiny.pixel(30, 65), top_right);
+    assert_eq!(tiny.pixel(26, 68), bottom_left);
+    assert_eq!(tiny.pixel(30, 68), bottom_right);
+    assert_eq!(tiny.pixel(32, 68), Some([0x10, 0x17, 0x25, 255]));
+
+    // A Rust application can apply the same metadata to an embedded PNG.
+    let scene = MediaDemo::new().render_shared();
+    let png = scene.find("png-image").unwrap().image("source").unwrap();
+    let mut original = Node::new("Image", None);
+    original.properties.insert("source", png.into());
+    let reference = renderer.snapshot(&original, 96, 48, 1.0, &input).unwrap();
+    ui.set_frame(
+        png.with_nine_slice(NineSlice {
+            top: 4,
+            right: 6,
+            bottom: 8,
+            left: 10,
+        })
+        .unwrap(),
+    );
+    ui.set_panel_width(Length(203.0));
+    ui.set_panel_height(Length(129.0));
+    let png = snapshot(&mut renderer, &ui);
+    assert_eq!(png.pixel(26, 65), reference.pixel(2, 1));
+    assert_eq!(png.pixel(224, 65), reference.pixel(93, 1));
+}
+
+#[test]
+fn animated_gif_samples_composited_frames_and_freezes_offscreen_and_when_paused() {
+    use media_ui::AnimatedImageDemo;
+    use std::time::{Duration, Instant};
+    use xrack_runtime::{Image, ImagePlaybackQueue};
+
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))
+    .unwrap();
+    let mut ui = AnimatedImageDemo::new();
+    ui.set_passes(0);
+    let mut playback = ImagePlaybackQueue::default();
+    let start = Instant::now();
+    let at = |ms| start + Duration::from_millis(ms);
+    let sync = |playback: &mut ImagePlaybackQueue, ui: &AnimatedImageDemo, ms| {
+        let scene = ui.render_shared();
+        let pulse = scene.find("pulse").unwrap();
+        playback.sync(
+            at(ms),
+            [(pulse.image_playback.as_ref().unwrap(), pulse.is_visible())],
+        );
+    };
+    let input = Interaction::default();
+    let capture = |renderer: &mut Renderer, ui: &AnimatedImageDemo| {
+        renderer
+            .snapshot(&ui.render_shared(), 460, 258, 1.0, &input)
+            .unwrap()
+    };
+    let coral = Some([0xfc, 0x88, 0x6d, 255]);
+    let teal = Some([0x39, 0xd6, 0xbc, 255]);
+    let blue = Some([0x51, 0x6c, 0xfe, 255]);
+
+    sync(&mut playback, &ui, 0);
+    assert_eq!(ui.get_frame_total(), 3);
+    assert_eq!(playback.deadline(), Some(at(80)));
+    let initial = capture(&mut renderer, &ui);
+    assert_eq!(initial.pixel(60, 80), coral);
+    assert_eq!(initial.pixel(190, 80), coral);
+
+    assert!(!playback.advance(at(79)));
+    assert!(playback.advance(at(80)));
+    assert_eq!(ui.get_frame(), 1);
+    let first = capture(&mut renderer, &ui);
+    assert_eq!(first.pixel(60, 80), teal);
+    assert_eq!(first.pixel(190, 80), coral);
+    assert_eq!(first.pixel(300, 80), coral);
+    let mut cropped = ui.render();
+    let pulse = cropped
+        .children
+        .iter_mut()
+        .find(|node| node.id == Some("pulse"))
+        .unwrap();
+    pulse.properties.insert("source-clip-x", 16_i64.into());
+    let cropped_frame = renderer.snapshot(&cropped, 460, 258, 1.0, &input).unwrap();
+    assert_eq!(
+        cropped_frame.pixel(60, 80),
+        coral,
+        "cropping follows the sampled GIF frame"
+    );
+
+    let pulse = cropped
+        .children
+        .iter_mut()
+        .find(|node| node.id == Some("pulse"))
+        .unwrap();
+    pulse
+        .properties
+        .insert("colorize", xrack_runtime::Color(0xffd177ff).into());
+    let tinted = renderer.snapshot(&cropped, 460, 258, 1.0, &input).unwrap();
+    assert_eq!(tinted.pixel(60, 80), Some([255, 209, 119, 255]));
+    assert_eq!(
+        tinted.pixel(300, 80),
+        coral,
+        "the static preview keeps the source color"
+    );
+
+    ui.set_pause(true);
+    sync(&mut playback, &ui, 100);
+    assert!(playback.deadline().is_none());
+    assert!(!playback.advance(at(1000)));
+    assert_eq!(ui.get_frame(), 1);
+
+    ui.set_pause(false);
+    ui.set_rate(2.0);
+    sync(&mut playback, &ui, 1000);
+    assert_eq!(playback.deadline(), Some(at(1050)));
+    assert!(playback.advance(at(1050)));
+    assert_eq!(ui.get_frame(), 2);
+    let second = capture(&mut renderer, &ui);
+    assert_eq!(second.pixel(60, 80), coral, "restore-previous GIF disposal");
+    assert_eq!(second.pixel(190, 80), blue);
+
+    ui.set_show(false);
+    sync(&mut playback, &ui, 1060);
+    assert!(playback.deadline().is_none());
+    assert!(!playback.advance(at(2000)));
+    assert_eq!(ui.get_frame_total(), 3);
+    ui.set_show(true);
+    sync(&mut playback, &ui, 2000);
+    assert_eq!(playback.deadline(), Some(at(2020)));
+    assert!(playback.advance(at(2020)));
+    assert_eq!(ui.get_frame(), 0);
+
+    assert!(playback.advance(at(2150)));
+    assert_eq!(ui.get_frame(), 2);
+    assert!(playback.next_finished().unwrap().finish());
+    assert_eq!(ui.get_completions(), 1);
+    assert!(playback.next_finished().is_none());
+    assert!(playback.deadline().is_none());
+
+    ui.set_running(false);
+    sync(&mut playback, &ui, 2150);
+    assert_eq!(ui.get_frame(), 0);
+    ui.set_animation(Image::Empty);
+    sync(&mut playback, &ui, 2150);
+    assert_eq!(ui.get_frame_total(), 0);
+}
+
+#[test]
+fn sprite_atlas_clips_before_layout_fit_and_isolates_gpu_sampling() {
+    use media_ui::{NineSliceDemo, SpriteAtlasDemo};
+    use xrack_runtime::{ImageFit, ImageRendering, ImageTileMode};
+
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))
+    .unwrap();
+    let mut ui = SpriteAtlasDemo::new();
+    let input = Interaction::default();
+    let capture = |renderer: &mut Renderer, ui: &SpriteAtlasDemo| {
+        renderer
+            .snapshot(&ui.render_shared(), 460, 282, 1.0, &input)
+            .unwrap()
+    };
+    let coral = Some([252, 136, 109, 255]);
+    let gold = Some([255, 209, 119, 255]);
+    let blue = Some([81, 108, 254, 255]);
+    let teal = Some([57, 214, 188, 255]);
+    let panel = Some([0x26, 0x36, 0x53, 255]);
+
+    assert_eq!((ui.get_atlas_width(), ui.get_atlas_height()), (8, 8));
+    let nearest = capture(&mut renderer, &ui);
+    assert_eq!(nearest.layout.at_path(&[3]).unwrap().bounds.height, 48.0);
+    assert_eq!(nearest.pixel(260, 90), panel, "right-aligned contain");
+    assert_eq!(nearest.pixel(334, 90), coral);
+    assert_eq!(nearest.pixel(399, 90), gold);
+
+    ui.set_sampling(ImageRendering::Smooth);
+    let smooth = capture(&mut renderer, &ui);
+    assert_ne!(smooth.pixel(334, 90), coral);
+    assert_eq!(
+        smooth.pixel(399, 90),
+        gold,
+        "the next atlas cell cannot bleed through"
+    );
+    ui.set_column(1);
+    let second = capture(&mut renderer, &ui);
+    assert_eq!(second.pixel(280, 90), blue);
+    assert_eq!(second.pixel(399, 90), teal);
+
+    ui.set_cell_height(2);
+    let shallow = capture(&mut renderer, &ui);
+    assert_eq!(shallow.layout.at_path(&[3]).unwrap().bounds.height, 24.0);
+    assert_eq!(shallow.pixel(260, 90), panel, "bottom-aligned contain");
+    assert_eq!(shallow.pixel(260, 140), blue);
+    ui.set_sampling(ImageRendering::Pixelated);
+    ui.set_fit_mode(ImageFit::Cover);
+    let cover = capture(&mut renderer, &ui);
+    assert_eq!(cover.pixel(255, 70), blue);
+    assert_eq!(cover.pixel(395, 70), teal);
+    ui.set_fit_mode(ImageFit::Contain);
+
+    ui.set_column(-1);
+    let empty = capture(&mut renderer, &ui);
+    assert_eq!(empty.layout.at_path(&[3]).unwrap().bounds.height, 0.0);
+    assert_eq!(empty.pixel(260, 140), panel);
+
+    ui.set_column(0);
+    ui.set_cell_height(4);
+    ui.set_sampling(ImageRendering::Pixelated);
+    ui.set_tile_mode(ImageTileMode::Repeat);
+    let repeat = capture(&mut renderer, &ui);
+    assert_eq!(repeat.pixel(251, 90), coral);
+    assert_eq!(repeat.pixel(253, 90), gold);
+    assert_eq!(repeat.pixel(399, 90), coral);
+    ui.set_tile_mode(ImageTileMode::Round);
+    assert_eq!(capture(&mut renderer, &ui).pixel(399, 90), gold);
+
+    let border = NineSliceDemo::new();
+    let scene = border.render_shared();
+    ui.set_tile_mode(ImageTileMode::Stretch);
+    ui.set_sampling(ImageRendering::Smooth);
+    ui.set_atlas(scene.children[2].image("source").unwrap());
+    ui.set_column(4);
+    let svg = capture(&mut renderer, &ui);
+    assert_eq!(svg.pixel(290, 90), Some([0x6b, 0x3d, 0x92, 255]));
+    assert_eq!(svg.pixel(390, 90), Some([0xd4, 0x4b, 0x76, 255]));
+
+    ui.set_atlas(border.get_frame());
+    ui.set_column(0);
+    let sliced_corner = capture(&mut renderer, &ui);
+    assert_eq!(sliced_corner.pixel(260, 140), gold);
+    assert_eq!(sliced_corner.pixel(390, 140), gold);
+}
+
+#[test]
+fn image_colorize_preserves_alpha_and_source_gradients_across_shared_textures() {
+    use media_ui::{ImageColorizeDemo, NineSliceDemo};
+    use xrack_runtime::{Brush, Color, GradientStop, ImageTileMode};
+
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))
+    .unwrap();
+    let mut ui = ImageColorizeDemo::new();
+    let input = Interaction::default();
+    let capture = |renderer: &mut Renderer, ui: &ImageColorizeDemo| {
+        renderer
+            .snapshot(&ui.render_shared(), 624, 266, 1.0, &input)
+            .unwrap()
+    };
+    let bg = Some([16, 23, 37, 255]);
+    let teal = Some([57, 214, 188, 255]);
+    let initial = capture(&mut renderer, &ui);
+    assert_eq!(initial.pixel(31, 90), Some([244, 95, 81, 255]));
+    assert_eq!(initial.pixel(183, 90), teal);
+    let half_alpha = initial.pixel(222, 90).unwrap();
+    for (channel, expected) in half_alpha.into_iter().zip([37u8, 119, 113, 255]) {
+        assert!(
+            channel.abs_diff(expected) <= 1,
+            "half-alpha color {half_alpha:?}"
+        );
+    }
+    assert_eq!(initial.pixel(251, 90), bg);
+    let original_scene = ui.render_shared();
+    ui.set_accent(Brush::Solid(Color(0x39d6bc80)));
+    let translucent = capture(&mut renderer, &ui);
+    assert_eq!(translucent.pixel(183, 90), Some(half_alpha));
+    assert_eq!(translucent.pixel(251, 90), bg);
+
+    let vertical = Brush::Linear {
+        angle_degrees: 180.0,
+        stops: [
+            GradientStop {
+                offset: 0.0,
+                color: Color(0xff0000ff),
+            },
+            GradientStop {
+                offset: 1.0,
+                color: Color(0x0000ffff),
+            },
+        ]
+        .into(),
+    };
+    ui.set_accent(vertical);
+    assert!(original_scene.same_frame_inputs(&ui.render_shared()));
+    let gradients = capture(&mut renderer, &ui);
+    let top = gradients.pixel(183, 69).unwrap();
+    let bottom = gradients.pixel(183, 170).unwrap();
+    assert!(top[0] > 200 && top[2] < 60, "top gradient {top:?}");
+    assert!(
+        bottom[2] > 200 && bottom[0] < 60,
+        "bottom gradient {bottom:?}"
+    );
+    assert_eq!(gradients.pixel(251, 90), bg);
+    assert_eq!(gradients.pixel(338, 95), initial.pixel(338, 95));
+    assert_eq!(gradients.pixel(436, 95), initial.pixel(436, 95));
+    assert_ne!(gradients.pixel(540, 121), bg);
+    assert_eq!(gradients.pixel(484, 65), bg);
+    let again = capture(&mut renderer, &ui);
+    assert_eq!(again.rgba, gradients.rgba);
+
+    let mut layered = ui.render();
+    layered
+        .children
+        .iter_mut()
+        .find(|node| node.id == Some("accent-preview"))
+        .unwrap()
+        .properties
+        .insert("opacity", 0.5_f64.into());
+    let faded = renderer.snapshot(&layered, 624, 266, 1.0, &input).unwrap();
+    let faded_top = faded.pixel(183, 69).unwrap();
+    for (index, background) in [16, 23, 37].into_iter().enumerate() {
+        let expected = ((u16::from(top[index]) + background) / 2) as u8;
+        assert!(faded_top[index].abs_diff(expected) <= 1);
+    }
+    assert_eq!(faded.pixel(338, 95), gradients.pixel(338, 95));
+
+    ui.set_clip_x(12);
+    ui.set_clip_width(4);
+    ui.set_tile_mode(ImageTileMode::Repeat);
+    let tiled = capture(&mut renderer, &ui);
+    let right = tiled.pixel(329, 95).unwrap();
+    assert!(
+        right[2] > right[0].saturating_add(60),
+        "source-space color {right:?}"
+    );
+    assert_eq!(tiled.pixel(329, 95), tiled.pixel(333, 95));
+    ui.set_accent(Brush::Solid(Color(0x00000000)));
+    let original = capture(&mut renderer, &ui);
+    assert_eq!(original.pixel(183, 90), Some([247, 184, 77, 255]));
+
+    ui.set_mask(NineSliceDemo::new().get_frame());
+    ui.set_clip_x(0);
+    ui.set_clip_width(32);
+    ui.set_tile_mode(ImageTileMode::Stretch);
+    let sliced = capture(&mut renderer, &ui);
+    let left_of_cut = sliced.pixel(337, 65).unwrap();
+    let right_of_cut = sliced.pixel(338, 65).unwrap();
+    assert!(left_of_cut[0].abs_diff(right_of_cut[0]) <= 12);
+    assert!(left_of_cut[0] > right_of_cut[2]);
+    assert_eq!(sliced.pixel(326, 65), bg);
+}
+
+#[test]
+fn whole_subtree_opacity_and_sibling_z_match_gpu_and_input() {
+    use layout_ui::CompositingDemo;
+
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))
+    .unwrap();
+    let mut ui = CompositingDemo::new();
+    let mut input = Interaction::default();
+    let scene = ui.render_shared();
+    let half = renderer.snapshot(&scene, 460, 292, 1.0, &input).unwrap();
+    let assert_rgb = |pixel: Option<[u8; 4]>, expected: [u8; 4]| {
+        let pixel = pixel.unwrap();
+        assert!(
+            pixel
+                .iter()
+                .zip(expected)
+                .all(|(actual, target)| actual.abs_diff(target) <= 1),
+            "{pixel:?} != {expected:?}"
+        );
+    };
+    assert_rgb(half.pixel(36, 66), [136, 12, 19, 255]);
+    assert_rgb(half.pixel(78, 91), [8, 12, 146, 255]);
+    assert_rgb(half.pixel(108, 108), [8, 75, 82, 255]);
+    assert_eq!(half.pixel(312, 92), Some([57, 214, 188, 255]));
+    let point = Point { x: 312.0, y: 92.0 };
+    input.pointer_move(&scene, &half.layout, point);
+    assert_eq!(input.hovered.as_ref().unwrap().id, Some("first"));
+
+    ui.set_fade(0.0);
+    let clear = ui.render_shared();
+    assert!(
+        scene
+            .find("composite")
+            .unwrap()
+            .same_frame_inputs(clear.find("composite").unwrap())
+    );
+    let invisible = renderer
+        .snapshot(&clear, 460, 292, 1.0, &Interaction::default())
+        .unwrap();
+    assert_eq!(invisible.layout, half.layout);
+    assert_eq!(invisible.pixel(78, 91), Some([16, 23, 37, 255]));
+
+    ui.set_first_layer(0.0);
+    let behind = ui.render_shared();
+    let reordered = renderer
+        .snapshot(&behind, 460, 292, 1.0, &Interaction::default())
+        .unwrap();
+    assert_eq!(reordered.pixel(312, 92), Some([255, 209, 119, 255]));
+    input.reconcile(&behind, &reordered.layout);
+    assert_eq!(input.hovered.as_ref().unwrap().id, Some("second"));
+
+    ui.set_fade(1.0);
+    let opaque = renderer
+        .snapshot(&ui.render_shared(), 920, 584, 2.0, &Interaction::default())
+        .unwrap();
+    assert_eq!(opaque.pixel(156, 182), Some([0, 0, 255, 255]));
+    assert_rgb(opaque.pixel(216, 216), [0, 128, 127, 255]);
+}

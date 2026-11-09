@@ -40,6 +40,7 @@ pub(crate) enum Route {
         kind: &'static str,
         standard_kind: Option<StandardButtonKind>,
     },
+    TextLink(Target),
     Choice {
         target: Target,
         index: usize,
@@ -405,6 +406,9 @@ impl Builder<'_> {
             _ => view,
         };
         let mut children = self.children(node, item, path, row, child_view);
+        if node.kind == "StyledText" {
+            children.extend(self.text_links(node, item, path, row));
+        }
         let label = node
             .text("accessible-name")
             .or_else(|| match role {
@@ -413,6 +417,7 @@ impl Builder<'_> {
                 }
                 Role::Tab if node.kind == "TabButton" => node.text("text"),
                 Role::Group if node.kind == "Calendar" => Some("Calendar"),
+                Role::Group if node.kind == "StyledText" => node.text("text"),
                 Role::Group if matches!(node.kind, "GroupBox" | "Page") => node.text("title"),
                 Role::ProgressIndicator if node.kind == "BusyIndicator" => Some("Loading"),
                 Role::ProgressIndicator => Some("Progress"),
@@ -805,6 +810,62 @@ impl Builder<'_> {
         accessible.set_children(children);
         self.nodes.push((id, accessible));
         Some(id)
+    }
+
+    fn text_links(
+        &mut self,
+        node: &Node,
+        item: &LayoutNode,
+        path: &[usize],
+        row: Option<(RowKey, usize)>,
+    ) -> Vec<NodeId> {
+        let Some(document) = node.styled_text("text") else {
+            return Vec::new();
+        };
+        let mut regions = BTreeMap::<usize, Rect>::new();
+        for (index, rect) in item.text_link_regions() {
+            regions
+                .entry(index)
+                .and_modify(|area| {
+                    let x = area.x.min(rect.x);
+                    let y = area.y.min(rect.y);
+                    let right = (area.x + area.width).max(rect.x + rect.width);
+                    let bottom = (area.y + area.height).max(rect.y + rect.height);
+                    *area = Rect::new(x, y, right - x, bottom - y);
+                })
+                .or_insert(rect);
+        }
+        regions
+            .into_iter()
+            .filter_map(|(index, rect)| {
+                let link = document.links().get(index)?;
+                let label = &document.text()[link.start..link.end];
+                let mut key = Key::element(node, path, row);
+                key.kind = "StyledTextLink";
+                key.option = Some((index, link.href.to_string()));
+                key.text_run = Some((link.start, label.into()));
+                let id = self.id(key);
+                let mut accessible = AccessibleNode::new(Role::Link);
+                accessible.set_bounds(bounds(rect, self.scale));
+                accessible.set_label(label);
+                accessible.set_url(link.href.as_ref());
+                if let Some(target) =
+                    self.input
+                        .text_link_target(self.scene, self.layout, path, index)
+                {
+                    accessible.add_action(Action::Focus);
+                    accessible.add_action(Action::Click);
+                    if self.input.focused.as_ref() == Some(&target) {
+                        self.focus = id;
+                    }
+                    self.routes.insert(id, Route::TextLink(target));
+                } else {
+                    accessible.set_disabled();
+                }
+                self.nodes.push((id, accessible));
+                Some(id)
+            })
+            .collect()
     }
 
     fn table_headers(
@@ -1252,7 +1313,21 @@ fn role(node: &Node, view: Option<&str>) -> Role {
         "Switch" => Role::Switch,
         "RadioButton" => Role::RadioButton,
         "RadioGroup" => Role::RadioGroup,
+        "StyledText"
+            if node
+                .styled_text("text")
+                .is_some_and(|text| !text.links().is_empty()) =>
+        {
+            Role::Group
+        }
         "Text" | "Label" | "StyledText" => Role::Label,
+        "Image" | "AnimatedImage"
+            if ["accessible-name", "accessible-description"]
+                .iter()
+                .any(|name| node.text(name).is_some_and(|value| !value.is_empty())) =>
+        {
+            Role::Image
+        }
         "TextInput" | "LineEdit" if node.is_password() => Role::PasswordInput,
         "TextInput" | "LineEdit" if node.input_type() == InputType::Search => Role::SearchInput,
         "TextInput" | "LineEdit" => Role::TextInput,
@@ -1445,6 +1520,45 @@ mod tests {
     }
 
     #[test]
+    fn z_and_opacity_preserve_accessibility_order_and_actions() {
+        let mut window = Node::new("Window", None);
+        window.children.extend([
+            button("first", "First", 0.0),
+            button("second", "Second", 0.0),
+        ]);
+        let mut projection = Projection::default();
+        let mut input = Interaction::default();
+        let snapshot = |node: &Node| {
+            let scene = Rc::new(node.clone());
+            let frame = Rc::new(layout(&scene, Size::new(160.0, 90.0), &mut Text));
+            (scene, frame)
+        };
+        let (scene, frame) = snapshot(&window);
+        input.focus_next(&scene, &frame, false);
+        let first = projection
+            .update(&scene, &frame, &input, 1.0, None)
+            .unwrap();
+        let (first_id, _) = named(&first, "First");
+        let (second_id, _) = named(&first, "Second");
+
+        window.children[0].properties.insert("z", 2.0_f64.into());
+        window.children[0]
+            .properties
+            .insert("opacity", 0.0_f64.into());
+        let (scene, frame) = snapshot(&window);
+        input.reconcile(&scene, &frame);
+        let update = projection
+            .update(&scene, &frame, &input, 1.0, None)
+            .unwrap();
+        let (id, item) = named(&update, "First");
+        assert_eq!(id, first_id);
+        assert_eq!(update.focus, first_id);
+        assert!(item.supports_action(Action::Click));
+        let root = update.nodes.iter().find(|(id, _)| *id == ROOT).unwrap();
+        assert_eq!(root.1.children(), &[first_id, second_id]);
+    }
+
+    #[test]
     fn popup_accessibility_exposes_background_only_when_nonmodal() {
         let mut window = Node::new("Window", None);
         let mut anchor = button("trigger", "Trigger", 130.0);
@@ -1518,6 +1632,26 @@ mod tests {
     }
 
     #[test]
+    fn named_images_have_an_image_role_and_decorative_images_are_omitted() {
+        let mut icon = Node::new("Image", Some("named"));
+        length(&mut icon, "width", 32.0);
+        length(&mut icon, "height", 32.0);
+        let mut decorative = icon.clone();
+        length(&mut decorative, "x", 40.0);
+        icon.properties
+            .insert("accessible-name", "Map preview".to_owned().into());
+        let mut window = Node::new("Window", None);
+        window.children.extend([icon, decorative]);
+        let scene = Rc::new(window);
+        let frame = Rc::new(layout(&scene, Size::new(100.0, 60.0), &mut Text));
+        let update = Projection::default()
+            .update(&scene, &frame, &Interaction::default(), 1.0, None)
+            .unwrap();
+        assert_eq!(named(&update, "Map preview").1.role(), Role::Image);
+        assert_eq!(update.nodes.len(), 2);
+    }
+
+    #[test]
     fn styled_text_exposes_full_plain_text_through_the_label_role() {
         let mut label = Node::new("StyledText", Some("rich"));
         length(&mut label, "width", 30.0);
@@ -1537,6 +1671,48 @@ mod tests {
             update.nodes.iter().any(|(_, node)| {
                 node.role() == Role::Label && node.value() == Some("Full text")
             })
+        );
+    }
+
+    #[test]
+    fn styled_text_projects_only_visible_links_with_independent_focus_routes() {
+        let mut label = Node::new("StyledText", Some("links"));
+        length(&mut label, "width", 210.0);
+        label.properties.insert(
+            "text",
+            xrack_runtime::StyledText::from_markdown("[first](#a) [second](#b)\n\n[hidden](#c)")
+                .unwrap()
+                .into(),
+        );
+        label.properties.insert("max-lines", 1_i64.into());
+        label
+            .properties
+            .insert("overflow", xrack_runtime::TextOverflow::Elide.into());
+        let mut scene = Node::new("Window", None);
+        scene.children.push(label);
+        let scene = Rc::new(scene);
+        let frame = Rc::new(layout(&scene, Size::new(240.0, 120.0), &mut Text));
+        let mut input = Interaction::default();
+        input.focus_next(&scene, &frame, false);
+        input.focus_next(&scene, &frame, false);
+        let mut projection = Projection::default();
+        let update = projection
+            .update(&scene, &frame, &input, 1.0, None)
+            .unwrap();
+        let links: Vec<_> = update
+            .nodes
+            .iter()
+            .filter(|(_, node)| node.role() == Role::Link)
+            .collect();
+        assert_eq!(links.len(), 2);
+        assert_eq!(links[0].1.url(), Some("#a"));
+        assert_eq!(links[1].1.url(), Some("#b"));
+        assert_eq!(update.focus, links[1].0);
+        assert!(links[1].1.supports_action(Action::Click));
+        assert!(links[1].1.supports_action(Action::Focus));
+        assert!(
+            matches!(projection.route(update.focus), Some(Route::TextLink(target))
+            if target.text_link_index() == Some(1))
         );
     }
 

@@ -37,6 +37,36 @@ pub struct Target {
     pub id: Option<&'static str>,
     pub focusable: bool,
     pub row_key: Option<RowKey>,
+    pub text_link: Option<TextLinkTarget>,
+}
+
+/// Retains the document seen when the target was resolved. A replacement
+/// document must never turn an in-flight action into activation of a new link.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TextLinkTarget {
+    index: usize,
+    document: xrack_runtime::StyledText,
+}
+
+impl Target {
+    pub fn text_link_index(&self) -> Option<usize> {
+        self.text_link.as_ref().map(|link| link.index)
+    }
+
+    pub(crate) fn for_text_link(node: &Node, path: &[usize], index: usize) -> Option<Self> {
+        let document = node.styled_text("text")?;
+        document.links().get(index)?;
+        Some(Self {
+            path: path.to_vec(),
+            id: node.id,
+            focusable: true,
+            row_key: None,
+            text_link: Some(TextLinkTarget {
+                index,
+                document: document.clone(),
+            }),
+        })
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -587,6 +617,7 @@ fn hit(
     {
         return if layout.enabled {
             Hit::Target(Target {
+                text_link: None,
                 path: path.clone(),
                 id: node.id,
                 focusable: true,
@@ -605,6 +636,7 @@ fn hit(
     if node.group_checkable() && layout.group_header(node).contains(point) {
         return if layout.enabled {
             Hit::Target(Target {
+                text_link: None,
                 path: path.clone(),
                 id: node.id,
                 focusable: true,
@@ -618,6 +650,7 @@ fn hit(
         return if layout.enabled {
             Hit::ControlPart(
                 Target {
+                    text_link: None,
                     path: path.clone(),
                     id: node.id,
                     focusable: true,
@@ -635,6 +668,7 @@ fn hit(
         return if layout.enabled {
             Hit::ControlPart(
                 Target {
+                    text_link: None,
                     path: path.clone(),
                     id: node.id,
                     focusable: true,
@@ -653,6 +687,7 @@ fn hit(
         {
             Hit::ControlPart(
                 Target {
+                    text_link: None,
                     path: path.clone(),
                     id: node.id,
                     focusable: true,
@@ -676,6 +711,7 @@ fn hit(
         return if layout.enabled {
             Hit::ControlPart(
                 Target {
+                    text_link: None,
                     path: path.clone(),
                     id: node.id,
                     focusable: true,
@@ -699,6 +735,7 @@ fn hit(
         return if layout.enabled {
             Hit::ControlPart(
                 Target {
+                    text_link: None,
                     path: path.clone(),
                     id: node.id,
                     focusable: true,
@@ -724,7 +761,7 @@ fn hit(
             Hit::Blocked(path.clone())
         };
     }
-    for (i, (child, child_layout)) in node.children.iter().zip(&layout.children).enumerate().rev() {
+    for (i, child, child_layout) in layout.children_in_paint_order(node).rev() {
         if is_window_overlay(child.kind) {
             continue;
         }
@@ -734,6 +771,17 @@ fn hit(
         if !matches!(found, Hit::None) {
             return found;
         }
+    }
+    if let Some((index, _)) = layout
+        .text_link_regions()
+        .find(|(_, rect)| rect.contains(point))
+        && let Some(target) = Target::for_text_link(node, path, index)
+    {
+        return if layout.enabled {
+            Hit::ControlPart(target, ControlAction::ActivateTextLink(index))
+        } else {
+            Hit::Blocked(path.clone())
+        };
     }
     if matches!(node.kind, "Tab" | "GroupBox")
         || is_window_overlay(node.kind)
@@ -747,6 +795,7 @@ fn hit(
         return Hit::Blocked(path.clone());
     }
     Hit::Target(Target {
+        text_link: None,
         path: path.clone(),
         id: node.id,
         focusable: focusable(node),
@@ -761,10 +810,17 @@ pub(crate) fn valid(target: &Target, scene: &Node, layout: &LayoutNode) -> bool 
     let Some(item) = layout.at_path(&target.path) else {
         return false;
     };
-    node.id == target.id
-        && target.focusable == focusable(node)
-        && target.row_key == scene.row_key_at(&target.path)
-        && eligible(node, item)
+    if node.id != target.id || target.row_key != scene.row_key_at(&target.path) {
+        return false;
+    }
+    if let Some(link) = &target.text_link {
+        return item.enabled
+            && node.styled_text("text") == Some(&link.document)
+            && item
+                .text_link_regions()
+                .any(|(index, _)| index == link.index);
+    }
+    target.focusable == focusable(node) && eligible(node, item)
 }
 
 fn split_target<'a, 'b>(
@@ -875,6 +931,7 @@ fn group_targets(
             Some((
                 index,
                 Target {
+                    text_link: None,
                     path: child_path,
                     id: child.id,
                     focusable: true,
@@ -914,11 +971,20 @@ pub(crate) fn focus_targets(scene: &Node, layout: &LayoutNode, scope: &[usize]) 
             && (node.kind != "GroupBox" || eligible(node, layout))
         {
             out.push(Target {
+                text_link: None,
                 path: path.clone(),
                 id: node.id,
                 focusable: true,
                 row_key: None,
             });
+        }
+        if node.kind == "StyledText" {
+            let indices: BTreeSet<_> = layout.text_link_regions().map(|(index, _)| index).collect();
+            out.extend(
+                indices
+                    .into_iter()
+                    .filter_map(|index| Target::for_text_link(node, path, index)),
+            );
         }
         let mut visit = |index: usize| {
             if let Some((child, item)) = node.children.get(index).zip(layout.children.get(index))
@@ -949,6 +1015,7 @@ pub(crate) fn focus_targets(scene: &Node, layout: &LayoutNode, scope: &[usize]) 
             && node.boolean("focus-on-tab-navigation", true)
         {
             out.push(Target {
+                text_link: None,
                 path: path.clone(),
                 id: node.id,
                 focusable: true,
@@ -961,6 +1028,7 @@ pub(crate) fn focus_targets(scene: &Node, layout: &LayoutNode, scope: &[usize]) 
         collect(node, item, &mut scope.to_vec(), &mut targets);
         if targets.is_empty() && is_window_overlay(node.kind) && eligible(node, item) {
             targets.push(Target {
+                text_link: None,
                 path: scope.to_vec(),
                 id: node.id,
                 focusable: true,
@@ -1000,6 +1068,7 @@ fn dialog_entry_focus(scene: &Node, layout: &LayoutNode, path: &[usize]) -> Opti
     }
     first.cloned().or_else(|| {
         eligible(node, layout.at_path(path)?).then(|| Target {
+            text_link: None,
             path: path.to_vec(),
             id: node.id,
             focusable: true,
@@ -1047,6 +1116,7 @@ fn sibling_menu(
             let mut path = parent.to_vec();
             path.push(slot);
             let sibling = Target {
+                text_link: None,
                 id: child.id,
                 row_key: scene.row_key_at(&path),
                 focusable: true,
@@ -1713,6 +1783,7 @@ impl Interaction {
                 self.pointer.unwrap()
             };
             let trigger = Target {
+                text_link: None,
                 path: path.to_vec(),
                 id: area.id,
                 focusable: true,
@@ -2038,9 +2109,9 @@ impl Interaction {
             {
                 return false;
             }
-            for (index, child) in layout.children.iter().enumerate().rev() {
+            for index in layout.child_paint_order().rev() {
                 path.push(index);
-                if target(child, point, path, orientation) {
+                if target(&layout.children[index], point, path, orientation) {
                     return true;
                 }
                 path.pop();
@@ -3929,6 +4000,7 @@ impl Interaction {
 
     fn focus_slider_thumb(&mut self, scene: &Node, path: &[usize]) {
         let target = Target {
+            text_link: None,
             path: path.to_vec(),
             id: None,
             focusable: true,
@@ -4158,6 +4230,7 @@ impl Interaction {
         };
         self.reveal_row(&path, node, layout.at_path(&path)?, next);
         self.set_focus(Some(Target {
+            text_link: None,
             path: path.clone(),
             id: node.id,
             focusable: true,
@@ -4437,6 +4510,7 @@ impl Interaction {
             self.horizontal_scroll_offsets.insert(path.clone(), offset);
         }
         self.set_focus(Some(Target {
+            text_link: None,
             path: path.clone(),
             id: node.id,
             focusable: true,
@@ -4529,6 +4603,7 @@ impl Interaction {
         self.reveal_row(&action.path, node, layout, index);
         if focused_cell {
             self.set_focus(Some(Target {
+                text_link: None,
                 path: action.path.clone(),
                 id: node.id,
                 focusable: true,
@@ -4646,6 +4721,7 @@ impl Interaction {
         }
         let path = path.to_vec();
         self.set_focus(Some(Target {
+            text_link: None,
             row_key: scene.row_key_at(&path),
             path: path.clone(),
             id: view.id,
@@ -4844,6 +4920,40 @@ impl Interaction {
         Some(ControlInput {
             path: target.path.clone(),
             action: ControlAction::Calendar(action),
+        })
+    }
+
+    pub fn text_link_target(
+        &self,
+        scene: &Node,
+        layout: &LayoutNode,
+        path: &[usize],
+        index: usize,
+    ) -> Option<Target> {
+        let node = scene.at_path(path)?;
+        let mut target = Target::for_text_link(node, path, index)?;
+        target.row_key = scene.row_key_at(path);
+        self.text_link_activation(scene, layout, &target)
+            .map(|_| target)
+    }
+
+    pub fn text_link_activation(
+        &self,
+        scene: &Node,
+        layout: &LayoutNode,
+        target: &Target,
+    ) -> Option<ControlInput> {
+        let index = target.text_link_index()?;
+        let scope = self
+            .focused_popup(layout)
+            .or_else(|| self.active_dialog(layout));
+        (self.menu.is_none()
+            && self.choice.is_none()
+            && scope.is_none_or(|scope| target.path.starts_with(scope))
+            && valid(target, scene, layout))
+        .then(|| ControlInput {
+            path: target.path.clone(),
+            action: ControlAction::ActivateTextLink(index),
         })
     }
 
@@ -5078,6 +5188,7 @@ impl Interaction {
                             if eligible(node, item) =>
                         {
                             Target {
+                                text_link: None,
                                 path: path.to_vec(),
                                 id: node.id,
                                 focusable: true,
@@ -5203,6 +5314,7 @@ impl Interaction {
             .next()
             .or_else(|| {
                 Some(Target {
+                    text_link: None,
                     path: path.to_vec(),
                     id: view.id,
                     focusable: true,
@@ -5371,6 +5483,7 @@ impl Interaction {
             return None;
         }
         Some(Target {
+            text_link: None,
             path: path.to_vec(),
             id: node.id,
             focusable: focusable(node),
@@ -5409,6 +5522,7 @@ impl Interaction {
                     handle: node.focus_handle.clone()?,
                     direct: depth == focus.path.len(),
                     target: Target {
+                        text_link: None,
                         path: path.to_vec(),
                         id: node.id,
                         focusable: true,

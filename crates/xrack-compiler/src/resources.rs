@@ -1,4 +1,5 @@
 use crate::{
+    animated_image::encode_gif_frames,
     codegen::{EmbeddedImage, EmbeddedPath},
     mlir::{Module, OperationRef},
 };
@@ -153,24 +154,35 @@ fn load_image(
         .extension()
         .and_then(|ext| ext.to_str())
         .unwrap_or_default();
-    let format = if extension.eq_ignore_ascii_case("png") {
-        ImageFormat::Png
-    } else if extension.eq_ignore_ascii_case("svg") {
-        ImageFormat::Svg
-    } else {
-        return Err("expected a .png or .svg image".into());
-    };
+    if !["png", "svg", "gif"]
+        .iter()
+        .any(|format| extension.eq_ignore_ascii_case(format))
+    {
+        return Err("expected a .png, .svg or .gif image".into());
+    }
     let path = asset_path(base, relative, declared, "image")?;
     let bytes = read_asset(&path, "image")?;
-    let size = image_size(format, &bytes)?;
-    Ok((
-        path,
-        EmbeddedImage {
+    let image = if extension.eq_ignore_ascii_case("gif") {
+        let animation = encode_gif_frames(&bytes)?;
+        EmbeddedImage::Animated {
+            size: animation.size,
+            frames: animation.frames,
+            plays: animation.plays,
+        }
+    } else {
+        let format = if extension.eq_ignore_ascii_case("png") {
+            ImageFormat::Png
+        } else {
+            ImageFormat::Svg
+        };
+        let size = image_size(format, &bytes)?;
+        EmbeddedImage::Static {
             format,
             size,
             bytes,
-        },
-    ))
+        }
+    };
+    Ok((path, image))
 }
 
 fn local_path(url: &str) -> Result<&Path, String> {

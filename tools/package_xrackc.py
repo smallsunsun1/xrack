@@ -50,6 +50,10 @@ def cargo_licenses(host):
         if package["license_file"]:
             files.add(directory / package["license_file"])
         name = f'{package["name"]}-{package["version"]}'
+        if not files and name == "gif-dispose-6.0.0" and package["license"] == "MIT OR Apache-2.0":
+            # This crate declares both licenses but ships neither text.
+            # Include the declaration and the Apache-2.0 terms.
+            files.update((directory / "Cargo.toml.orig", ROOT / "LICENSE-APACHE"))
         if not files:
             raise RuntimeError(f"no license files for {name}")
         for file in sorted(files):

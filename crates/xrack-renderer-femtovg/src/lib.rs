@@ -2,12 +2,14 @@
 mod controls;
 mod entry;
 mod image;
+mod image_colorize;
+mod nine_slice;
 mod range;
 mod styled_text;
 mod text;
 mod theme;
 mod vector;
-use femtovg::{Canvas, Color, Paint, Path, Solidity, renderer::WGPURenderer};
+use femtovg::{Canvas, Color, LayerEffects, Paint, Path, Solidity, renderer::WGPURenderer};
 use std::{
     fs::File,
     io::BufWriter,
@@ -19,14 +21,13 @@ pub use text::TextSystem;
 pub use theme::Theme;
 use theme::{Palette, PaletteRole as Role};
 use xrack_layout::{
-    ButtonContent, ComboCompletion, Interaction, LayoutNode, Rect, Size, SpinGeometry,
-    StackTransitions, TextMeasurer, TreeRowGeometry, dialog_title_height,
+    ButtonContent, ComboCompletion, ImagePresentation, Interaction, LayoutNode, Rect, Size,
+    SpinGeometry, StackTransitions, TextMeasurer, TreeRowGeometry, dialog_title_height,
 };
 use xrack_runtime::{
-    Brush, Color as UiColor, ColorScheme, Component, GradientStop, ImageFit, Node,
-    StandardButtonKind, Value, button_text, combo_editable, group_index, is_button,
-    is_multiline_text_input, is_spin_box, is_text_input, is_toggle, is_window_overlay,
-    spin_editable, spin_text, text_input_value,
+    Brush, Color as UiColor, ColorScheme, Component, GradientStop, Node, StandardButtonKind, Value,
+    button_text, combo_editable, group_index, is_button, is_multiline_text_input, is_spin_box,
+    is_text_input, is_toggle, is_window_overlay, spin_editable, spin_text, text_input_value,
 };
 
 #[derive(Clone, Copy)]
@@ -59,16 +60,24 @@ fn tint(value: UiColor, factor: f32) -> UiColor {
 }
 
 fn brush_paint(node: &Node, name: &str, bounds: Rect, shade: f32) -> Option<Paint> {
+    match node.properties.get(name)? {
+        Value::Color(value) => Some(Paint::color(color(tint(*value, shade)))),
+        Value::Brush(brush) => Some(paint_brush(brush, bounds, shade)),
+        _ => None,
+    }
+}
+
+fn paint_brush(brush: &Brush, bounds: Rect, shade: f32) -> Paint {
     let tinted = |value| color(tint(value, shade));
     let stop = |stop: &GradientStop| (stop.offset as f32, tinted(stop.color));
     let cx = bounds.x + bounds.width * 0.5;
     let cy = bounds.y + bounds.height * 0.5;
-    Some(match node.properties.get(name)? {
-        Value::Color(value) | Value::Brush(Brush::Solid(value)) => Paint::color(tinted(*value)),
-        Value::Brush(Brush::Linear {
+    match brush {
+        Brush::Solid(value) => Paint::color(tinted(*value)),
+        Brush::Linear {
             angle_degrees,
             stops: colors,
-        }) => {
+        } => {
             let degrees = if angle_degrees.is_finite() {
                 angle_degrees.rem_euclid(360.0)
             } else {
@@ -86,12 +95,11 @@ fn brush_paint(node: &Node, name: &str, bounds: Rect, shade: f32) -> Option<Pain
                 colors.iter().map(stop),
             )
         }
-        Value::Brush(Brush::Radial { stops: colors }) => {
+        Brush::Radial { stops: colors } => {
             let radius = bounds.width.hypot(bounds.height) * 0.5;
             Paint::radial_gradient_stops(cx, cy, 0.0, radius, colors.iter().map(stop))
         }
-        _ => return None,
-    })
+    }
 }
 
 fn indicator_phase(elapsed: Duration) -> f32 {
@@ -437,15 +445,39 @@ impl Renderer {
         frame: PaintFrame<'_>,
         in_layout: bool,
     ) -> Result<(), String> {
-        let bounds = layout.bounds;
-        let clip = layout.clip.intersect(bounds);
-        if !layout.visible || clip.width <= 0.0 || clip.height <= 0.0 {
+        if !layout.visible {
+            return Ok(());
+        }
+        self.paint_group(
+            layout.clip.intersect(layout.bounds),
+            node.opacity(),
+            |renderer| renderer.paint_element(node, layout, path, frame, in_layout),
+        )
+    }
+
+    fn paint_group(
+        &mut self,
+        clip: Rect,
+        opacity: f32,
+        draw: impl FnOnce(&mut Self) -> Result<(), String>,
+    ) -> Result<(), String> {
+        if opacity == 0.0 || clip.width <= 0.0 || clip.height <= 0.0 {
             return Ok(());
         }
         self.canvas.save();
         self.canvas
             .intersect_scissor(clip.x, clip.y, clip.width, clip.height);
-        let result = self.paint_element(node, layout, path, frame, in_layout);
+        let layer = opacity < 1.0;
+        if layer {
+            // FemtoVG supplies a pass-through fallback when it cannot reserve a layer.
+            let _captured = self
+                .canvas
+                .begin_layer(&LayerEffects::new().with_opacity(opacity));
+        }
+        let result = draw(self);
+        if layer {
+            self.canvas.end_layer();
+        }
         self.canvas.restore();
         result
     }
@@ -684,16 +716,23 @@ impl Renderer {
             );
             self.canvas.stroke_path(&path, &paint);
         }
-        if node.kind == "Image"
+        if matches!(node.kind, "Image" | "AnimatedImage")
             && let Some(image) = node.image("source")
         {
-            let fit = node.image_fit("image-fit").unwrap_or(if in_layout {
-                ImageFit::Contain
+            let image = if node.kind == "AnimatedImage" {
+                image.frame(node.int("current-frame").unwrap_or_default().max(0) as usize)
             } else {
-                ImageFit::Fill
-            });
-            self.images
-                .draw(&mut self.canvas, image, bounds, fit, scale)?;
+                image
+            };
+            let presentation = ImagePresentation::for_node(node, image.size(), in_layout);
+            self.images.draw(
+                &mut self.canvas,
+                image,
+                bounds,
+                scale,
+                presentation,
+                image::Colorize::from_value(node.properties.get("colorize")),
+            )?;
         } else if node.kind == "Path" {
             vector::draw_path(&mut self.canvas, node, bounds)?;
         } else if node.kind == "ColorPreview" {
@@ -708,7 +747,7 @@ impl Renderer {
         } else if matches!(node.kind, "TabWidget" | "TabBar") {
             let selected = group_index(node);
             let standalone = node.kind == "TabBar";
-            for (index, (tab, page)) in node.children.iter().zip(&layout.children).enumerate() {
+            for (index, tab, page) in layout.children_in_paint_order(node) {
                 let Some(header) = page
                     .tab_header
                     .or_else(|| (standalone && page.visible).then_some(page.bounds))
@@ -720,20 +759,22 @@ impl Renderer {
                     continue;
                 }
                 path.push(index);
-                let result = controls::tab(
-                    &mut self.canvas,
-                    &self.text,
-                    theme,
-                    header,
-                    tab.text(if standalone { "text" } else { "title" })
-                        .unwrap_or(""),
-                    tab,
-                    controls::TabAppearance {
-                        selected: selected == Some(index),
-                        enabled: page.enabled,
-                        focused: input.is_focused(path),
-                    },
-                );
+                let result = self.paint_group(clip, tab.opacity(), |renderer| {
+                    controls::tab(
+                        &mut renderer.canvas,
+                        &renderer.text,
+                        theme,
+                        header,
+                        tab.text(if standalone { "text" } else { "title" })
+                            .unwrap_or(""),
+                        tab,
+                        controls::TabAppearance {
+                            selected: selected == Some(index),
+                            enabled: page.enabled,
+                            focused: input.is_focused(path),
+                        },
+                    )
+                });
                 path.pop();
                 result?;
             }
@@ -944,38 +985,33 @@ impl Renderer {
             )? {
                 self.painted_combo_completion = completion;
             }
+        } else if node.kind == "StyledText" {
+            let focused = input
+                .focused
+                .as_ref()
+                .filter(|target| target.path == *path)
+                .and_then(xrack_layout::Target::text_link_index);
+            styled_text::draw(&mut self.canvas, &self.text, node, layout, theme, focused)?;
         } else if xrack_layout::uses_label_layout(node) {
             let tint = if layout.enabled {
                 node.color("color").unwrap_or(theme.text)
             } else {
                 theme.disabled_text
             };
-            if let Some(styled) = node.styled_text("text") {
-                styled_text::draw(
-                    &mut self.canvas,
-                    &self.text,
-                    node,
-                    styled,
-                    bounds,
-                    tint,
-                    layout.enabled,
-                )?;
-            } else {
-                let paint = self.text.paint_node(node, color(tint), false);
-                let label = self
-                    .text
-                    .label_layout(node, Size::new(bounds.width, bounds.height));
-                for line in label.lines {
-                    if !line.text.is_empty() {
-                        self.canvas
-                            .fill_text(
-                                bounds.x + line.origin.x,
-                                bounds.y + line.origin.y,
-                                &*line.text,
-                                &paint,
-                            )
-                            .map_err(|error| format!("text drawing failed: {error}"))?;
-                    }
+            let paint = self.text.paint_node(node, color(tint), false);
+            let label = self
+                .text
+                .label_layout(node, Size::new(bounds.width, bounds.height));
+            for line in label.lines {
+                if !line.text.is_empty() {
+                    self.canvas
+                        .fill_text(
+                            bounds.x + line.origin.x,
+                            bounds.y + line.origin.y,
+                            &*line.text,
+                            &paint,
+                        )
+                        .map_err(|error| format!("text drawing failed: {error}"))?;
                 }
             }
         } else if node.kind == "Text" || is_button {
@@ -1101,7 +1137,7 @@ impl Renderer {
                 result?;
             }
         }
-        for (i, (node, layout)) in node.children.iter().zip(&layout.children).enumerate() {
+        for (i, node, layout) in layout.children_in_paint_order(node) {
             if is_window_overlay(node.kind) {
                 continue;
             }

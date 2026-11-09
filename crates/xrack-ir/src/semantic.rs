@@ -35,6 +35,10 @@ fn stack_read_type(name: &str) -> Option<Type> {
     })
 }
 
+fn playback_property(name: &str) -> bool {
+    matches!(name, "current-frame" | "frame-count")
+}
+
 pub fn builtin_property(kind: &str, name: &str) -> Option<Type> {
     if !is_builtin(kind) {
         return None;
@@ -83,6 +87,11 @@ pub fn builtin_property(kind: &str, name: &str) -> Option<Type> {
             _ => None,
         };
     }
+    if matches!(name, "z" | "opacity")
+        && matches!(kind, "MenuItem" | "MenuSeparator" | "TableColumn")
+    {
+        return None;
+    }
     if let Some(ty) = layout_item_property(name) {
         return Some(ty);
     }
@@ -93,10 +102,41 @@ pub fn builtin_property(kind: &str, name: &str) -> Option<Type> {
             _ => builtin_property("Button", name),
         };
     }
-    if kind == "StyledText" && name == "text" {
-        return Some(Type::StyledText);
+    if kind == "AnimatedImage" {
+        return match name {
+            "playing" | "paused" => Some(Type::Bool),
+            "speed" => Some(Type::Float),
+            "loops" => Some(Type::Int),
+            name if playback_property(name) => Some(Type::Int),
+            _ => builtin_property("Image", name),
+        };
     }
-    if matches!(kind, "Label" | "StyledText") {
+    if kind == "Image" {
+        return match name {
+            "source" => Some(Type::Image),
+            "image-fit" => Some(Type::ImageFit),
+            "colorize" => Some(Type::Brush),
+            "source-clip-x" | "source-clip-y" | "source-clip-width" | "source-clip-height" => {
+                Some(Type::Int)
+            }
+            "horizontal-tile-mode" | "vertical-tile-mode" => Some(Type::ImageTileMode),
+            "horizontal-alignment" => Some(Type::ImageHorizontalAlignment),
+            "vertical-alignment" => Some(Type::ImageVerticalAlignment),
+            "image-rendering" => Some(Type::ImageRendering),
+            "accessible-name" | "accessible-description" => Some(Type::String),
+            "visible" => Some(Type::Bool),
+            _ => None,
+        };
+    }
+    if kind == "StyledText" {
+        return match name {
+            "text" => Some(Type::StyledText),
+            "link-color" => Some(Type::Color),
+            "enabled" => Some(Type::Bool),
+            _ => builtin_property("Text", name),
+        };
+    }
+    if kind == "Label" {
         return builtin_property("Text", name);
     }
     if focus_property(kind, name) {
@@ -540,8 +580,6 @@ pub fn builtin_property(kind: &str, name: &str) -> Option<Type> {
         {
             Type::Brush
         }
-        "source" if kind == "Image" => Type::Image,
-        "image-fit" if kind == "Image" => Type::ImageFit,
         "commands" if kind == "Path" => Type::String,
         "fill" | "stroke" if kind == "Path" => Type::Brush,
         "stroke-width" if matches!(kind, "Path" | "Spinner" | "BusyIndicator") => Type::Length,
@@ -557,7 +595,7 @@ pub fn layout_item_property(name: &str) -> Option<Type> {
     Some(match name {
         "width" | "height" | "x" | "y" | "min-width" | "min-height" | "preferred-width"
         | "preferred-height" | "max-width" | "max-height" => Type::Length,
-        "horizontal-stretch" | "vertical-stretch" => Type::Float,
+        "horizontal-stretch" | "vertical-stretch" | "z" | "opacity" => Type::Float,
         "visible" => Type::Bool,
         "layout-order" | "row" | "col" | "rowspan" | "colspan" => Type::Int,
         "cross-axis-self-alignment" => Type::CrossAxisAlignment,
@@ -621,6 +659,7 @@ pub fn is_builtin(s: &str) -> bool {
                 | "DragArea"
                 | "DropArea"
                 | "Image"
+                | "AnimatedImage"
                 | "Path"
                 | "GridLayout"
                 | "Row"
@@ -828,6 +867,8 @@ fn control_event(kind: &str, event: &str) -> bool {
         || kind == "Calendar" && matches!(event, "changed" | "month-changed")
         || kind == "TimePicker" && event == "changed"
         || kind == "SwipeDelegate" && matches!(event, "clicked" | "changed")
+        || kind == "StyledText" && event == "link-activated"
+        || kind == "AnimatedImage" && event == "finished"
         || kind == "Timer" && event == "triggered"
         || kind == "FileDialog" && matches!(event, "accepted" | "canceled" | "failed")
         || kind == "MessageDialog"
@@ -1679,6 +1720,7 @@ impl<'a> Scope<'a> {
     ) -> Result<(ir::PropertyRef, Type)> {
         if write
             && (self.stack_read(current, reference, span).is_some()
+                || self.image_playback_read(current, reference, span).is_some()
                 || self.focus_read(current, reference, span)?.is_some())
         {
             return fail(span, format!("property `{reference}` is read-only"));
@@ -1762,6 +1804,26 @@ impl<'a> Scope<'a> {
             owner: Some(owner.into()),
             value: name.into(),
             ty: stack_read_type(name)?,
+            args: Vec::new(),
+            span,
+        })
+    }
+
+    fn image_playback_read(&self, current: &str, reference: &str, span: Span) -> Option<ir::Expr> {
+        let (receiver, name) = reference.rsplit_once('.')?;
+        let owner = if receiver == "self" {
+            current
+        } else {
+            receiver
+        };
+        if self.owners.get(owner)?.kind != "AnimatedImage" || !playback_property(name) {
+            return None;
+        }
+        Some(ir::Expr {
+            op: "image_playback_read".into(),
+            owner: Some(owner.into()),
+            value: name.into(),
+            ty: Type::Int,
             args: Vec::new(),
             span,
         })
@@ -2322,6 +2384,19 @@ fn element<'a>(
             "TreeCell requires a stable child path within a TreeRow",
         );
     }
+    if kind == "AnimatedImage" {
+        let mut current = Some(owner);
+        while let Some(key) = current {
+            let element = &scope.owners[key];
+            if element.repeated {
+                return fail(
+                    span,
+                    "AnimatedImage in a repetition requires a component delegate",
+                );
+            }
+            current = element.parent.as_deref();
+        }
+    }
     lowered.push(LoweredMember::BeginElement {
         kind,
         id,
@@ -2497,6 +2572,12 @@ fn element<'a>(
                 }
                 if focus_property(kind, &b.name) {
                     return fail(b.span, format!("property `{kind}.{}` is read-only", b.name));
+                }
+                if kind == "AnimatedImage" && playback_property(&b.name) {
+                    return fail(
+                        b.span,
+                        format!("property `AnimatedImage.{}` is read-only", b.name),
+                    );
                 }
                 if kind == "StackView" && stack_read_type(&b.name).is_some() {
                     return fail(
@@ -2945,6 +3026,7 @@ fn element<'a>(
                     "CheckBox" if h.name == "check-state-changed" => &[Type::CheckState],
                     "StackView" => &[Type::String, Type::Int],
                     "SwipeDelegate" if h.name == "changed" => &[Type::SwipeSide],
+                    "StyledText" => &[Type::String],
                     "DragArea" if h.name == "drag-finished" => &[Type::DragAction],
                     "DropArea" if matches!(h.name.as_str(), "entered" | "dropped") => {
                         &[Type::String, Type::DragAction]
@@ -3059,6 +3141,9 @@ fn element<'a>(
                         "animate a visual child instead of the Window",
                     );
                 }
+                if kind == "AnimatedImage" && playback_property(target) {
+                    return fail(animation.span, "AnimatedImage playback state is read-only");
+                }
                 if !matches!(
                     builtin_property(kind, target),
                     Some(Type::Length | Type::Color | Type::Brush | Type::Float | Type::Int)
@@ -3141,6 +3226,7 @@ pub fn state_property(kind: &str, property: &str) -> Option<Type> {
                 | "border-bottom-right-radius"
                 | "visible"
                 | "enabled"
+                | "link-color"
                 | "font-family"
                 | "font-weight"
                 | "font-italic"
@@ -3149,6 +3235,14 @@ pub fn state_property(kind: &str, property: &str) -> Option<Type> {
                 | "accessible-description"
                 | "title"
                 | "source"
+                | "source-clip-x"
+                | "source-clip-y"
+                | "source-clip-width"
+                | "source-clip-height"
+                | "horizontal-tile-mode"
+                | "vertical-tile-mode"
+                | "image-rendering"
+                | "colorize"
                 | "fill"
                 | "stroke"
                 | "stroke-width"
@@ -3834,6 +3928,9 @@ fn default(ty: Type, span: Span) -> ir::Expr {
         Type::Bool => "false",
         Type::Color => "#00000000",
         Type::ImageFit => "contain",
+        Type::ImageTileMode => "stretch",
+        Type::ImageHorizontalAlignment | Type::ImageVerticalAlignment => "center",
+        Type::ImageRendering => "smooth",
         Type::LayoutAlignment => "stretch",
         Type::CrossAxisAlignment => "auto",
         Type::Orientation => "horizontal",
@@ -3873,7 +3970,7 @@ fn expression_as(
     expected: Type,
 ) -> Result<ir::Expr> {
     if let ExprKind::Conditional { condition, yes, no } = &e.kind
-        && !expected.enum_variants().is_empty()
+        && (expected == Type::Brush || !expected.enum_variants().is_empty())
     {
         let condition = expression_as(condition, scope, owner, Type::Bool)?;
         let yes = expression_as(yes, scope, owner, expected.clone())?;
@@ -4035,14 +4132,39 @@ fn expression(e: &ast::Expr, scope: &Scope<'_>, owner: &str) -> Result<ir::Expr>
                 ..ir::Expr::operation("markdown", Type::StyledText, vec![], span)
             }
         }
-        ExprKind::ImageUrl(url) => {
-            let value = serde_json::from_str::<String>(url).map_err(|e| Diagnostic {
+        ExprKind::ImageUrl(path) | ExprKind::SlicedImageUrl { path, .. } => {
+            let value = serde_json::from_str::<String>(path).map_err(|e| Diagnostic {
                 span,
                 message: format!("invalid image path: {e}"),
             })?;
-            ir::Expr {
+            let source = ir::Expr {
                 value,
                 ..ir::Expr::operation("image_url", Type::Image, vec![], span)
+            };
+            if let ExprKind::SlicedImageUrl { slice, edges, .. } = &e.kind {
+                if slice != "nine-slice" {
+                    return fail(span, format!("unknown image modifier `{slice}`"));
+                }
+                if source.value.is_empty() {
+                    return fail(span, "nine-slice requires a nonempty image path");
+                }
+                let edges = match edges.as_slice() {
+                    [all] => [all, all, all, all],
+                    [vertical, horizontal] => [vertical, horizontal, vertical, horizontal],
+                    [top, right, bottom, left] => [top, right, bottom, left],
+                    _ => return fail(span, "nine-slice expects one, two or four edges"),
+                };
+                let mut operands = vec![source];
+                for edge in edges {
+                    let value = edge.parse::<u32>().map_err(|_| Diagnostic {
+                        span,
+                        message: "nine-slice edges must be nonnegative integers".into(),
+                    })?;
+                    operands.push(ir::Expr::literal(Type::Int, value.to_string(), span));
+                }
+                ir::Expr::operation("nine_slice", Type::Image, operands, span)
+            } else {
+                source
             }
         }
         ExprKind::Array(items) => {
@@ -4156,6 +4278,10 @@ fn expression(e: &ast::Expr, scope: &Scope<'_>, owner: &str) -> Result<ir::Expr>
                 && matches!(
                     namespace,
                     "ImageFit"
+                        | "ImageTileMode"
+                        | "ImageHorizontalAlignment"
+                        | "ImageVerticalAlignment"
+                        | "ImageRendering"
                         | "LayoutAlignment"
                         | "CrossAxisAlignment"
                         | "Orientation"
@@ -4195,6 +4321,7 @@ fn expression(e: &ast::Expr, scope: &Scope<'_>, owner: &str) -> Result<ir::Expr>
                     ty @ (Type::Record(_)
                     | Type::Date
                     | Type::Time
+                    | Type::Image
                     | Type::KeyEvent
                     | Type::KeyModifiers),
                 ) = scope.parameters.get(base)
@@ -4212,6 +4339,7 @@ fn expression(e: &ast::Expr, scope: &Scope<'_>, owner: &str) -> Result<ir::Expr>
                     ty @ (Type::Record(_)
                     | Type::Date
                     | Type::Time
+                    | Type::Image
                     | Type::KeyEvent
                     | Type::KeyModifiers),
                 )) = scope.property(owner, base, false, span)
@@ -4221,14 +4349,14 @@ fn expression(e: &ast::Expr, scope: &Scope<'_>, owner: &str) -> Result<ir::Expr>
                     None
                 };
                 let record = record.or_else(|| {
-                    if base.ends_with(".modifiers") {
+                    if base.contains('.') {
                         let base = ast::Expr {
                             kind: ExprKind::Reference(base.into()),
                             span,
                         };
                         return expression(&base, scope, owner)
                             .ok()
-                            .filter(|value| value.ty == Type::KeyModifiers);
+                            .filter(|value| matches!(value.ty, Type::Image | Type::KeyModifiers));
                     }
                     None
                 });
@@ -4243,6 +4371,15 @@ fn expression(e: &ast::Expr, scope: &Scope<'_>, owner: &str) -> Result<ir::Expr>
                         return Ok(ir::Expr {
                             value: field.into(),
                             ..ir::Expr::operation("key_field", ty, vec![record], span)
+                        });
+                    }
+                    if record.ty == Type::Image {
+                        if !matches!(field, "width" | "height") {
+                            return fail(span, format!("image has no field `{field}`"));
+                        }
+                        return Ok(ir::Expr {
+                            value: field.into(),
+                            ..ir::Expr::operation("image_dimension", Type::Int, vec![record], span)
                         });
                     }
                     let civil = match record.ty {
@@ -4297,7 +4434,10 @@ fn expression(e: &ast::Expr, scope: &Scope<'_>, owner: &str) -> Result<ir::Expr>
             if let Some(read) = scope.focus_read(owner, s, span)? {
                 return Ok(read);
             }
-            if let Some(read) = scope.stack_read(owner, s, span) {
+            if let Some(read) = scope
+                .stack_read(owner, s, span)
+                .or_else(|| scope.image_playback_read(owner, s, span))
+            {
                 return Ok(read);
             }
             let (property, ty) = scope.property(owner, s, false, span)?;
@@ -4543,8 +4683,8 @@ fn collect_bindings(
     };
 
     fn dependencies(e: &ir::Expr, path: &impl Fn(&str, &str) -> String, out: &mut Vec<String>) {
-        // Focus is published by the host, so it is an input to the graph.
-        if e.op == "focus_read" {
+        // The host publishes these values, so they are inputs to the graph.
+        if matches!(e.op.as_str(), "focus_read" | "image_playback_read") {
             return;
         }
         if let Some(owner) = &e.owner {

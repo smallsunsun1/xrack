@@ -19,9 +19,9 @@ build:macos --cxxopt=-std=c++20 --host_cxxopt=-std=c++20
 build:windows --cxxopt=/std:c++20 --host_cxxopt=/std:c++20
 build:windows --cxxopt=/bigobj --host_cxxopt=/bigobj
 build:windows --enable_runfiles
-# LLVM's x64 assembly needs clang-cl's assembler on Windows.
-build:windows --extra_execution_platforms=//bazel:windows_x64_clang_cl
-build:windows --extra_toolchains=@local_config_cc//:cc-toolchain-x64_windows-clang-cl
+# Use clang-cl with the native Windows host architecture.
+build:windows --extra_execution_platforms=//bazel:windows_clang_cl
+build:windows --extra_toolchains=@local_config_cc//:cc-toolchain-x64_windows-clang-cl,@local_config_cc//:cc-toolchain-arm64_windows-clang-cl
 build:macos --features=-layering_check
 build:macos --host_features=-layering_check
 build:macos --macos_minimum_os=13.0

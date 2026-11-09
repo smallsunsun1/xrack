@@ -41,11 +41,29 @@ void XrackDialect::initialize() {
 }
 
 static bool isExpression(Operation &op) {
-  return isa<LiteralOp, ReadOp, StackReadOp, FocusReadOp, ParamOp, UnaryOp, CastOp,
+  return isa<LiteralOp, ReadOp, StackReadOp, ImagePlaybackReadOp, FocusReadOp, ParamOp, UnaryOp, CastOp,
              StringifyOp, BinaryOp, SelectOp, SolidBrushOp, GradientStopOp,
-             LinearGradientOp, RadialGradientOp, ImageUrlOp, MarkdownOp, ArrayOp, CallOp,
+             LinearGradientOp, RadialGradientOp, ImageUrlOp, ImageDimensionOp, NineSliceOp, MarkdownOp, ArrayOp, CallOp,
              ToRatioOp, MakeRecordOp, DefaultRecordOp, RecordArrayOp,
              GetFieldOp, KeyFieldOp, MakeDateOp, DateFieldOp, MakeTimeOp, TimeFieldOp>(op);
+}
+
+LogicalResult ImageDimensionOp::verify() {
+  return getValue() == "width" || getValue() == "height"
+      ? success() : emitOpError("image dimension must be width or height");
+}
+
+LogicalResult NineSliceOp::verify() {
+  auto image = getInput().getDefiningOp<ImageUrlOp>();
+  if (!image || image.getValue().empty())
+    return emitOpError("nine-slice requires a nonempty image URL");
+  for (Value edge : {getTop(), getRight(), getBottom(), getLeft()}) {
+    auto literal = edge.getDefiningOp<LiteralOp>();
+    uint32_t pixels;
+    if (!literal || literal.getValue().getAsInteger(10, pixels))
+      return emitOpError("nine-slice edges must be nonnegative integer literals");
+  }
+  return success();
 }
 
 LogicalResult KeyFieldOp::verify() {
@@ -216,6 +234,37 @@ LogicalResult ComponentOp::verify() {
 
 static bool focusTargetKind(llvm::StringRef kind);
 
+static bool validCompositionBinding(llvm::StringRef kind, llvm::StringRef name,
+                                    Type type) {
+  if (name != "z" && name != "opacity")
+    return true;
+  return isa<FloatType>(type) &&
+      !llvm::StringSwitch<bool>(kind)
+          .Cases({"Action", "Timer", "FileDialog", "MessageDialog",
+                  "SecondaryWindow", "Shortcut", "MenuItem",
+                  "MenuSeparator", "TableColumn"}, true)
+          .Default(false);
+}
+
+static bool validImageBinding(llvm::StringRef kind, llvm::StringRef name, Type type) {
+  bool image = kind == "Image" || kind == "AnimatedImage";
+  if (name == "horizontal-tile-mode" || name == "vertical-tile-mode")
+    return image && isa<ImageTileModeType>(type);
+  if (name == "image-rendering")
+    return image && isa<ImageRenderingType>(type);
+  if (name == "colorize")
+    return image && isa<BrushType>(type);
+  if (name == "source-clip-x" || name == "source-clip-y" ||
+      name == "source-clip-width" || name == "source-clip-height")
+    return image && isa<IntType>(type);
+  if (!image)
+    return true;
+  return (name != "source" || isa<ImageType>(type)) &&
+      (name != "image-fit" || isa<ImageFitType>(type)) &&
+      (name != "horizontal-alignment" || isa<ImageHorizontalAlignmentType>(type)) &&
+      (name != "vertical-alignment" || isa<ImageVerticalAlignmentType>(type));
+}
+
 LogicalResult ElementOp::verify() {
   const bool root = isa<ComponentOp>((*this)->getParentOp());
   if (!root && !isa<ElementOp>((*this)->getParentOp()))
@@ -224,6 +273,11 @@ LogicalResult ElementOp::verify() {
   auto parent = dyn_cast<ElementOp>((*this)->getParentOp());
   auto parentKind = parent ? parent.getKind() : llvm::StringRef{};
   auto &body = getBody().front();
+  if (kind == "AnimatedImage") {
+    for (auto element = *this; element; element = element->getParentOfType<ElementOp>())
+      if (!element.getBody().front().getOps<RepeatOp>().empty())
+        return emitOpError("AnimatedImage in a repetition requires a component delegate");
+  }
   if (kind == "SecondaryWindow") {
     if (parentKind != "Window" || !isa<ComponentOp>(parent->getParentOp()) || getId().empty())
       return emitOpError("SecondaryWindow requires a named declaration at the root Window");
@@ -696,10 +750,23 @@ LogicalResult ElementOp::verify() {
       if ((name == "accessible-name" || name == "accessible-description") &&
           !isa<StringType>(bind.getInput().getType()))
         return child.emitOpError("accessibility labels require strings");
+      if (!validCompositionBinding(kind, name, bind.getInput().getType()))
+        return child.emitOpError("z and opacity require a visual item and a float");
+      if (!validImageBinding(kind, name, bind.getInput().getType()))
+        return child.emitOpError("incorrect Image property type");
+      if (kind == "AnimatedImage" &&
+          ((name == "current-frame" || name == "frame-count") ||
+           ((name == "playing" || name == "paused") && !isa<BoolType>(bind.getInput().getType())) ||
+           (name == "speed" && !isa<FloatType>(bind.getInput().getType())) ||
+           (name == "loops" && !isa<IntType>(bind.getInput().getType()))))
+        return child.emitOpError("incorrect AnimatedImage playback property or type");
+      if (name == "link-color" && (kind != "StyledText" || !isa<ColorType>(bind.getInput().getType())))
+        return child.emitOpError("link-color requires StyledText and a color");
       if (kind == "Text" || kind == "Label" || kind == "StyledText") {
         auto type = bind.getInput().getType();
         if ((name == "text" &&
              !(kind == "StyledText" ? isa<StyledTextType>(type) : isa<StringType>(type))) ||
+            (kind == "StyledText" && name == "enabled" && !isa<BoolType>(type)) ||
             (name == "wrap" && !isa<TextWrapType>(type)) ||
             (name == "overflow" && !isa<TextOverflowType>(type)) ||
             (name == "max-lines" && !isa<IntType>(type)) ||
@@ -1188,7 +1255,12 @@ static bool sameVisualType(Type a, Type b) {
 LogicalResult StateSetOp::verify() {
   if (!stateCase(*this, getSelector(), getCaseIndexAttr().getInt()) || getName().empty())
     return emitOpError("requires a property and a state case in scope");
-  auto &body = cast<ElementOp>((*this)->getParentOp()).getBody().front();
+  auto element = cast<ElementOp>((*this)->getParentOp());
+  if (!validCompositionBinding(element.getKind(), getName(), getInput().getType()))
+    return emitOpError("z and opacity require a visual item and a float");
+  if (!validImageBinding(element.getKind(), getName(), getInput().getType()))
+    return emitOpError("incorrect Image property type");
+  auto &body = element.getBody().front();
   for (auto binding : body.getOps<BindOp>())
     if (binding.getName() == getName() &&
         !sameVisualType(binding.getInput().getType(), getInput().getType()))
@@ -1379,6 +1451,11 @@ LogicalResult SecondaryWindowCommandOp::verify() {
   return success();
 }
 
+LogicalResult ImagePlaybackReadOp::verify() {
+  return getValue() == "current-frame" || getValue() == "frame-count"
+      ? success() : emitOpError("requires an AnimatedImage playback state property");
+}
+
 LogicalResult FocusReadOp::verify() {
   return getValue() == "has-focus" || getValue() == "focus-within"
       ? success() : emitOpError("requires a focus state property");
@@ -1471,7 +1548,7 @@ LogicalResult LayoutBindOp::verify() {
                   "max-width", "max-height", "preferred-width",
                   "preferred-height"},
                  LengthType::get(context))
-          .Cases({"horizontal-stretch", "vertical-stretch"},
+          .Cases({"horizontal-stretch", "vertical-stretch", "z", "opacity"},
                  FloatType::get(context))
           .Case("visible", BoolType::get(context))
           .Cases({"layout-order", "row", "col", "rowspan", "colspan"},
@@ -1533,6 +1610,14 @@ static LogicalResult verifyCallback(Operation *op, Region &body,
           !argIs(within ? 1 : 0, "FocusReason") || (within && !argIs(0, "bool")))
         return handler.emitOpError("incorrect FocusScope focus event signature");
     }
+    if (kind == "StyledText" || handler.getName() == "link-activated") {
+      auto *arg = args->size() == 1 ? args->front().getAsObject() : nullptr;
+      if (kind != "StyledText" || handler.getName() != "link-activated" || !arg ||
+          arg->getString("ty") != "string" || !arg->getString("name"))
+        return handler.emitOpError("StyledText requires link-activated(string)");
+    }
+    if (kind == "AnimatedImage" && (handler.getName() != "finished" || !args->empty()))
+      return handler.emitOpError("AnimatedImage requires finished() without parameters");
     if (kind == "Timer" && (handler.getName() != "triggered" || !args->empty()))
       return handler.emitOpError("Timer requires triggered() without parameters");
     if (kind == "SplitView" &&
@@ -1723,6 +1808,14 @@ LogicalResult LiteralOp::verify() {
   } else if (isa<ImageFitType>(type)) {
     valid = spelling == "fill" || spelling == "contain" ||
             spelling == "cover" || spelling == "preserve";
+  } else if (isa<ImageTileModeType>(type)) {
+    valid = spelling == "stretch" || spelling == "repeat" || spelling == "round";
+  } else if (isa<ImageHorizontalAlignmentType>(type)) {
+    valid = spelling == "left" || spelling == "center" || spelling == "right";
+  } else if (isa<ImageVerticalAlignmentType>(type)) {
+    valid = spelling == "top" || spelling == "center" || spelling == "bottom";
+  } else if (isa<ImageRenderingType>(type)) {
+    valid = spelling == "smooth" || spelling == "pixelated";
   } else if (isa<LayoutAlignmentType>(type)) {
     valid = spelling == "stretch" || spelling == "center" ||
             spelling == "start" || spelling == "end" ||
@@ -2040,6 +2133,10 @@ static LogicalResult verifyReferences(ComponentOp component,
     else if (auto read = dyn_cast<StackReadOp>(op)) {
       if (!stackOwner(read.getOwner()))
         result = op->emitOpError("requires a StackView owner");
+    } else if (auto read = dyn_cast<ImagePlaybackReadOp>(op)) {
+      auto target = elementOwner(read.getOwner());
+      if (!target || target.getKind() != "AnimatedImage")
+        result = op->emitOpError("requires an AnimatedImage owner");
     } else if (auto focus = dyn_cast<FocusReadOp>(op)) {
       auto target = elementOwner(focus.getOwner());
       if (!target || !focusTargetKind(target.getKind()) ||
@@ -2239,7 +2336,8 @@ static bool recordIdentifier(llvm::StringRef name) {
 static bool recordScalarType(llvm::StringRef type) {
   return llvm::StringSwitch<bool>(type)
       .Cases({"int", "float", "bool", "string", "styled-text", "length", "color", "brush",
-              "image", "ImageFit", "LayoutAlignment", "CrossAxisAlignment",
+              "image", "ImageFit", "ImageTileMode", "ImageHorizontalAlignment", "ImageVerticalAlignment", "ImageRendering",
+              "LayoutAlignment", "CrossAxisAlignment",
               "Orientation", "FlexboxLayoutDirection", "FlexboxLayoutWrap", "DialInputMode", "ScrollBarPolicy", "TextWrap",
               "TextHorizontalAlignment", "TextVerticalAlignment", "TextOverflow", "InputType", "ColorScheme", "FileDialogMode", "MessageLevel", "MessageButtons",
               "DialogRole", "StandardButtonKind", "SwipeSide", "DragAction", "KeyEvent", "KeyModifiers", "EventResult", "FocusReason", "DrawerEdge", "PopupPlacement", "SelectionTarget", "Date", "Time", "CheckState"},

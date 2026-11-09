@@ -1332,3 +1332,24 @@ fn model_change_cancels_capture_without_retargeting_a_click() {
     input.reconcile(&root, &layout(&root, Size::new(100.0, 100.0), &mut Text));
     assert_eq!(input.key_release(ActivationKey::Enter), None);
 }
+
+#[test]
+fn overlapping_scroll_views_route_wheel_input_in_paint_order() {
+    let mut window = node("Window", "root");
+    for id in ["first", "second"] {
+        let mut view = node("ScrollView", id);
+        length(&mut view, "width", 120.0);
+        length(&mut view, "height", 100.0);
+        length(&mut view, "content-height", 300.0);
+        window.children.push(view);
+    }
+    window.children[0].properties.insert("z", 1.0_f64.into());
+    let point = Point { x: 20.0, y: 20.0 };
+    let viewport = Size::new(160.0, 120.0);
+    let frame = layout(&window, viewport, &mut Text);
+    let mut input = Interaction::default();
+    input.pointer_move(&window, &frame, point);
+    assert!(input.scroll_wheel(&frame, Point { x: 0.0, y: 32.0 }, false));
+    assert_eq!(input.scroll_offsets().get(&[0][..]), Some(&32.0));
+    assert!(!input.scroll_offsets().contains_key(&[1][..]));
+}

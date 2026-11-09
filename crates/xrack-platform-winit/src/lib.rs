@@ -51,11 +51,12 @@ use xrack_layout::{
 };
 use xrack_renderer_femtovg::Renderer;
 use xrack_runtime::{
-    ColorScheme, Component, ControlAction, DragAction, EventResult, FocusRequests, KeyPhase,
-    NativeDialogQueue, NativeDialogRegistration, NativeDialogResult, Node, Orientation,
-    RangeAction, RowSelection, SceneTransition, SecondaryWindowRegistration, SpinAction,
-    SpinDecimal, TimerQueue, TimerRegistration, combo_editable, decimal_separator,
-    is_multiline_text_input, is_spin_box, spin_editable, text_input_value,
+    ColorScheme, Component, ControlAction, DragAction, EventResult, FocusRequests,
+    ImagePlaybackQueue, ImagePlaybackRegistration, KeyPhase, NativeDialogQueue,
+    NativeDialogRegistration, NativeDialogResult, Node, Orientation, RangeAction, RowSelection,
+    SceneTransition, SecondaryWindowRegistration, SpinAction, SpinDecimal, TimerQueue,
+    TimerRegistration, combo_editable, decimal_separator, is_multiline_text_input, is_spin_box,
+    spin_editable, text_input_value,
 };
 
 struct WindowState {
@@ -219,6 +220,7 @@ struct Application<C, M, R> {
     transition_epoch: Instant,
     animation_wake: Option<Instant>,
     timers: TimerQueue,
+    image_playback: ImagePlaybackQueue,
     native_dialogs: NativeDialogQueue,
     stack_transitions: StackTransitions,
     layout: Option<Rc<LayoutNode>>,
@@ -261,6 +263,7 @@ impl<C: Component, M, R: FnMut(&mut C, M)> Application<C, M, R> {
             transition_epoch: Instant::now(),
             animation_wake: None,
             timers: TimerQueue::default(),
+            image_playback: ImagePlaybackQueue::default(),
             native_dialogs: NativeDialogQueue::default(),
             stack_transitions: StackTransitions::default(),
             layout: None,
@@ -378,6 +381,24 @@ impl<C: Component, M, R: FnMut(&mut C, M)> Application<C, M, R> {
             Route::Element { target, .. }
             | Route::Choice { target, .. }
             | Route::ControlPart { target, .. } => target,
+            Route::TextLink(target) => {
+                let Some(action) = self.input.text_link_activation(&self.scene, layout, target)
+                else {
+                    return;
+                };
+                match request.action {
+                    AccessibleAction::Focus => {
+                        self.input.focus_target(&self.scene, layout, target.clone());
+                        self.update_editor();
+                    }
+                    AccessibleAction::Click => {
+                        self.input.focus_target(&self.scene, layout, target.clone());
+                        self.apply_control(action);
+                    }
+                    _ => {}
+                }
+                return;
+            }
             Route::MenuEntry { trigger, entry } => {
                 let activate = match request.action {
                     AccessibleAction::Focus => false,
@@ -811,6 +832,19 @@ impl<C: Component, M, R: FnMut(&mut C, M)> Application<C, M, R> {
         visible
     }
     fn activate(&mut self, target: Option<Target>) {
+        if let Some(target) = target
+            .as_ref()
+            .filter(|target| target.text_link_index().is_some())
+        {
+            if let Some(action) = self
+                .layout
+                .as_ref()
+                .and_then(|layout| self.input.text_link_activation(&self.scene, layout, target))
+            {
+                self.apply_control(action);
+            }
+            return;
+        }
         if let Some(target) = &target
             && let Some(node) = self.scene.interactive_at_path(&target.path)
             && node.kind == "DelayButton"
@@ -2580,25 +2614,54 @@ impl<C: Component, M, R: FnMut(&mut C, M)> Application<C, M, R> {
             layout: &LayoutNode,
             timers: &mut Vec<&'a TimerRegistration>,
             dialogs: &mut Vec<&'a NativeDialogRegistration>,
+            playback: &mut Vec<(&'a Rc<ImagePlaybackRegistration>, bool)>,
         ) {
-            if !layout.visible {
-                return;
+            if layout.visible {
+                timers.extend(&node.timers);
+                if layout.enabled {
+                    dialogs.extend(&node.native_dialogs);
+                }
             }
-            timers.extend(&node.timers);
-            if layout.enabled {
-                dialogs.extend(&node.native_dialogs);
+            if let Some(image) = &node.image_playback {
+                let clip = layout.clip.intersect(layout.bounds);
+                playback.push((
+                    image,
+                    layout.visible && clip.width > 0.0 && clip.height > 0.0,
+                ));
             }
             for (child, item) in node.children.iter().zip(&layout.children) {
-                collect(child, item, timers, dialogs);
+                collect(child, item, timers, dialogs, playback);
             }
         }
         let mut timers = Vec::new();
         let mut dialogs = Vec::new();
+        let mut playback = Vec::new();
         if let Some(layout) = &self.layout {
-            collect(&self.scene, layout, &mut timers, &mut dialogs);
+            collect(
+                &self.scene,
+                layout,
+                &mut timers,
+                &mut dialogs,
+                &mut playback,
+            );
         }
         self.timers.sync(now, timers);
         self.native_dialogs.sync(&dialogs);
+        self.image_playback.sync(now, playback);
+    }
+
+    fn tick_image_playback(&mut self, now: Instant) {
+        if self.image_playback.advance(now) {
+            self.refresh_after_update(false);
+        }
+        for _ in 0..64 {
+            let Some(delivery) = self.image_playback.next_finished() else {
+                break;
+            };
+            if delivery.finish() {
+                self.refresh_after_update(false);
+            }
+        }
     }
 
     fn present_native_dialog(&mut self) {
@@ -2851,6 +2914,7 @@ impl<C: Component, M, R: FnMut(&mut C, M)> HostedWindow for Application<C, M, R>
         self.input.clear_file_drag();
         self.layout = None;
         self.timers = TimerQueue::default();
+        self.image_playback.sync(Instant::now(), []);
         self.native_dialogs.sync(&[]);
         self.state = None;
     }
@@ -2860,6 +2924,7 @@ impl<C: Component, M, R: FnMut(&mut C, M)> HostedWindow for Application<C, M, R>
         self.refresh_dependencies();
         self.tick_delay(now);
         self.tick_timers(now);
+        self.tick_image_playback(now);
     }
 
     fn refresh_deadline(&mut self, now: Instant) -> Option<Instant> {
@@ -2891,6 +2956,7 @@ impl<C: Component, M, R: FnMut(&mut C, M)> HostedWindow for Application<C, M, R>
             self.animation_wake,
             self.input.delay_deadline(),
             self.timers.deadline(),
+            self.image_playback.deadline(),
         ]
         .into_iter()
         .flatten()

@@ -147,9 +147,7 @@ impl Context<'_> {
             {
                 return None;
             }
-            for (index, (child, item)) in
-                node.children.iter().zip(&layout.children).enumerate().rev()
-            {
+            for (index, child, item) in layout.children_in_paint_order(node).rev() {
                 if is_window_overlay(child.kind) {
                     continue;
                 }
@@ -178,6 +176,7 @@ impl Context<'_> {
         )?;
         Some((
             Target {
+                text_link: None,
                 id: self.scene.at_path(&path)?.id,
                 row_key: self.scene.row_key_at(&path),
                 path,

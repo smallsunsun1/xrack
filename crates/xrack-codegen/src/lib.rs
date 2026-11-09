@@ -1,7 +1,9 @@
 //! Rust token generation from the typed UI operations exported from MLIR.
+mod image;
 mod scene_plan;
 mod styled_text;
 
+pub use image::check_nine_slices;
 use proc_macro2::{Ident, Literal, Span, TokenStream};
 use quote::{format_ident, quote};
 pub use scene_plan::EmbeddedPath;
@@ -50,6 +52,10 @@ fn ty(t: &Type) -> TokenStream {
         Type::Brush => quote!(::xrack_runtime::Brush),
         Type::Image => quote!(::xrack_runtime::Image),
         Type::ImageFit => quote!(::xrack_runtime::ImageFit),
+        Type::ImageTileMode => quote!(::xrack_runtime::ImageTileMode),
+        Type::ImageHorizontalAlignment => quote!(::xrack_runtime::ImageHorizontalAlignment),
+        Type::ImageVerticalAlignment => quote!(::xrack_runtime::ImageVerticalAlignment),
+        Type::ImageRendering => quote!(::xrack_runtime::ImageRendering),
         Type::Orientation => quote!(::xrack_runtime::Orientation),
         Type::FlexboxLayoutDirection => quote!(::xrack_runtime::FlexboxLayoutDirection),
         Type::FlexboxLayoutWrap => quote!(::xrack_runtime::FlexboxLayoutWrap),
@@ -171,6 +177,10 @@ fn literal(value: &str, ty: Type) -> Result<TokenStream, String> {
             quote!(::xrack_runtime::Color(#rgba))
         }
         Type::ImageFit
+        | Type::ImageTileMode
+        | Type::ImageHorizontalAlignment
+        | Type::ImageVerticalAlignment
+        | Type::ImageRendering
         | Type::LayoutAlignment
         | Type::CrossAxisAlignment
         | Type::Orientation
@@ -267,6 +277,10 @@ fn control_field(key: &str, property: &str) -> Ident {
 
 fn timer_member(key: &str, member: &str) -> Ident {
     format_ident!("__timer_{}_{}", member, rust_key(key))
+}
+
+fn playback_slot(key: &str) -> Ident {
+    format_ident!("__image_playback_{}", rust_key(key))
 }
 
 fn native_dialog_member(key: &str, member: &str) -> Ident {
@@ -539,6 +553,8 @@ fn typed_events(element: OperationRef<'_>) -> bool {
             | "Shortcut"
             | "DelayButton"
             | "FocusScope"
+            | "StyledText"
+            | "AnimatedImage"
             | "DragArea"
             | "DropArea"
             | "GroupBox")
@@ -774,6 +790,7 @@ struct Generator<'a> {
     stacks: BTreeMap<&'a str, OperationRef<'a>>,
     actions: BTreeMap<&'a str, OperationRef<'a>>,
     timers: Vec<OperationRef<'a>>,
+    animated_images: Vec<OperationRef<'a>>,
     native_dialogs: Vec<OperationRef<'a>>,
     focus_targets: BTreeSet<&'a str>,
     secondary_windows: Vec<OperationRef<'a>>,
@@ -821,6 +838,9 @@ impl<'a> Generator<'a> {
                 }
                 if op.attr("kind") == Ok("Action") {
                     self.actions.insert(key, op);
+                }
+                if op.attr("kind") == Ok("AnimatedImage") {
+                    self.animated_images.push(op);
                 }
                 if op.attr("kind") == Ok("Timer") {
                     self.timers.push(op);
@@ -1093,6 +1113,15 @@ impl<'a> Generator<'a> {
                 let (hour, minute, second) = (arg(0)?, arg(1)?, arg(2)?);
                 quote!((::xrack_runtime::Time { hour: #hour, minute: #minute, second: #second }).normalized())
             }
+            "xr.image_dimension" => {
+                let image = arg(0)?;
+                let axis = match value {
+                    "width" => 0usize,
+                    "height" => 1usize,
+                    _ => return Err("invalid image dimension".into()),
+                };
+                quote!(::core::primitive::i64::from((#image).size()[#axis]))
+            }
             "xr.get_field" | "xr.date_field" | "xr.time_field" | "xr.key_field" => {
                 let record = arg(0)?;
                 let field = ident(value);
@@ -1113,6 +1142,20 @@ impl<'a> Generator<'a> {
                     .ok_or_else(|| format!("unresolved image {value:?}"))?;
                 quote!(#image)
             }
+            "xr.nine_slice" => {
+                let source = arg(0)?;
+                let xrack_runtime::NineSlice {
+                    top,
+                    right,
+                    bottom,
+                    left,
+                } = image::edges(op)?;
+                quote! {
+                    #source.with_nine_slice(::xrack_runtime::NineSlice {
+                        top: #top, right: #right, bottom: #bottom, left: #left,
+                    }).expect("verified image slice")
+                }
+            }
             "xr.read" => {
                 let owner = owner(op);
                 if self.instances.contains_key(owner) {
@@ -1132,6 +1175,11 @@ impl<'a> Generator<'a> {
                     _ => return Err("unknown focus state property".into()),
                 };
                 quote!(#receiver.__state.#handle.#getter())
+            }
+            "xr.image_playback_read" => {
+                let slot = playback_slot(owner(op));
+                let getter = ident(value);
+                quote!(#receiver.__state.#slot.#getter())
             }
             "xr.stack_read" => {
                 let snapshot = stack_snapshot_method(owner(op));
@@ -2279,6 +2327,14 @@ impl<'a> Generator<'a> {
             self.render_combo_model(element, binding, scope, &name, out)?;
         }
         self.render_state_overrides(element, scope, &name, &state_overrides, out)?;
+        if element.attribute("kind") == Some("AnimatedImage") {
+            let slot = playback_slot(key);
+            let finished = format_ident!("{}_finished", slot);
+            out.extend(quote! {
+                let weak = self.as_weak();
+                self.__state.#slot.populate(&mut #name, move || weak.upgrade().is_some_and(|ui| ui.#finished()));
+            });
+        }
         for animation in children(element, "xr.animate") {
             let key = animation.attr("name")?;
             let timing = self.animation_timing(animation, 0, scope)?;
@@ -3004,6 +3060,27 @@ impl<'a> Generator<'a> {
             return Ok(());
         }
         match element.attr("kind")? {
+            "StyledText"
+                if children(element, "xr.handler")
+                    .any(|handler| handler.attr("name") == Ok("link-activated")) =>
+            {
+                let activated = self.typed_event_values(
+                    element,
+                    "link-activated",
+                    &[quote!(link.href.to_string())],
+                )?;
+                out.extend(quote! {
+                    [#(#path),*] => {
+                        let ::xrack_runtime::ControlAction::ActivateTextLink(index) = action else { return false; };
+                        let Some(link) = node.styled_text("text").and_then(|text| text.links().get(index)) else {
+                            return false;
+                        };
+                        #activated
+                        true
+                    }
+                });
+            }
+
             kind @ ("MenuItem" | "Button" | "ToolButton" | "Shortcut")
                 if action_ref(element).is_some() =>
             {
@@ -3943,6 +4020,20 @@ impl<'a> Generator<'a> {
                 }
             });
         }
+        for &image in &self.animated_images {
+            let slot = playback_slot(element_key(image)?);
+            let finished = format_ident!("{}_finished", slot);
+            let handler = self.typed_event_values(image, "finished", &[])?;
+            let handled = !handler.is_empty();
+            fields.extend(quote!(#slot: ::xrack_runtime::ImagePlaybackSlot,));
+            defaults.extend(quote!(#slot: ::core::default::Default::default(),));
+            methods.extend(quote! {
+                fn #finished(&self) -> bool {
+                    #handler
+                    #handled
+                }
+            });
+        }
         for &timer in &self.timers {
             let key = element_key(timer)?;
             let slot = timer_member(key, "slot");
@@ -4602,10 +4693,25 @@ pub fn generate(module: &Module) -> Result<TokenStream, String> {
     generate_with_images(module, &BTreeMap::new())
 }
 
-pub struct EmbeddedImage {
-    pub format: ImageFormat,
-    pub size: [u32; 2],
-    pub bytes: Vec<u8>,
+pub enum EmbeddedImage {
+    Static {
+        format: ImageFormat,
+        size: [u32; 2],
+        bytes: Vec<u8>,
+    },
+    Animated {
+        size: [u32; 2],
+        frames: Vec<(u32, Vec<u8>)>,
+        plays: u32,
+    },
+}
+
+impl EmbeddedImage {
+    pub fn size(&self) -> [u32; 2] {
+        match self {
+            Self::Static { size, .. } | Self::Animated { size, .. } => *size,
+        }
+    }
 }
 
 pub fn generate_with_images(
@@ -4633,6 +4739,7 @@ pub fn generate_with_resource_plans(
     fonts: &[Vec<u8>],
     paths: &BTreeMap<String, EmbeddedPath>,
 ) -> Result<TokenStream, String> {
+    check_nine_slices(module, images)?;
     let mut out = quote! {
         const _: () = assert!(
             ::xrack_runtime::CODEGEN_ABI_VERSION == 1,
@@ -4657,19 +4764,7 @@ pub fn generate_with_resource_plans(
     let mut image_names = BTreeMap::new();
     for (index, (path, image)) in images.iter().enumerate() {
         let name = format_ident!("__XR_IMAGE_{index}");
-        let variant = match image.format {
-            ImageFormat::Png => quote!(Png),
-            ImageFormat::Svg => quote!(Svg),
-        };
-        let [width, height] = image.size;
-        let bytes = Literal::byte_string(&image.bytes);
-        out.extend(quote! {
-            static #name: ::xrack_runtime::Image = ::xrack_runtime::Image::Embedded {
-                format: ::xrack_runtime::ImageFormat::#variant,
-                bytes: #bytes,
-                size: [#width, #height],
-            };
-        });
+        out.extend(image::declaration(&name, image));
         image_names.insert(path.as_str(), name);
     }
     let mut path_names = BTreeMap::new();
@@ -4713,6 +4808,7 @@ pub fn generate_with_resource_plans(
             stacks: BTreeMap::new(),
             actions: BTreeMap::new(),
             timers: Vec::new(),
+            animated_images: Vec::new(),
             native_dialogs: Vec::new(),
             focus_targets: BTreeSet::new(),
             secondary_windows: Vec::new(),

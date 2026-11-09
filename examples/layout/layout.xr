@@ -540,8 +540,10 @@ export component StyledTextDemo inherits Window {
     title: "XRack · 富文本";
     width: 460px; height: 268px;
     background: #141d2c;
-    in-out property <styled-text> body: @markdown("# 发布说明\n\n**粗体**、*斜体*、`xrackc` 和 ~~已弃用~~。\n\n**مرحبا** بكم في XRack");
+    in-out property <styled-text> body: @markdown("# 发布说明\n\n**粗体**、*斜体*、[`xrackc`](#compiler) 和 ~~已弃用~~。\n\n**مرحبا** بكم في XRack · [阅读手册](#manual)");
     in-out property <bool> compact: false;
+    in-out property <bool> links-enabled: true;
+    out property <string> last-link: "";
 
     Label {
         x: 24px; y: 20px; text: "带内联样式的文字";
@@ -551,13 +553,83 @@ export component StyledTextDemo inherits Window {
         x: 24px; y: 52px; width: 412px;
         font-size: 22px;
         color: #e8f2ff;
+        link-color: #84d8ff;
+        enabled: root.links-enabled;
         max-lines: root.compact ? 2 : 5;
         overflow: elide;
         text: root.body;
+        link-activated(target) => { root.last-link = target; }
+    }
+    Label {
+        x: 24px; y: 212px; width: 412px; overflow: elide;
+        text: root.last-link == "" ? "用 Tab 和 Enter 打开链接" : "已激活 " + root.last-link;
     }
     CheckBox {
-        x: 24px; y: 220px; width: 412px; height: 36px;
+        x: 24px; y: 236px; width: 412px; height: 30px;
         text: "只显示两行";
         checked <=> root.compact;
+    }
+}
+
+export component CompositingDemo inherits Window {
+    title: "XRack · 叠放与整组透明度";
+    width: 460px; height: 292px;
+    background: #101725;
+    in-out property <float> fade: 0.5;
+    in-out property <float> first-layer: 2.0;
+    in-out property <float> first-opacity: 1.0;
+    out property <int> first-clicks: 0;
+    out property <int> second-clicks: 0;
+
+    Label { x: 24px; y: 22px; text: "整组淡出"; color: #e8f2ff; }
+    Label { x: 240px; y: 22px; text: "绘制与命中共用叠放顺序"; color: #e8f2ff; }
+    composite := Rectangle {
+        x: 24px; y: 56px; width: 172px; height: 124px;
+        background: #ff0000;
+        opacity: root.fade;
+        Rectangle {
+            x: 42px; y: 24px; width: 90px; height: 78px;
+            background: #0000ff;
+            Rectangle {
+                x: 31px; y: 20px; width: 44px; height: 42px;
+                opacity: 0.5; background: #00ff00;
+            }
+        }
+    }
+    stage := Rectangle {
+        x: 240px; y: 56px; width: 184px; height: 124px;
+        background: #263653;
+        first := Button {
+            x: 10px; y: 12px; width: 132px; height: 68px;
+            z: root.first-layer;
+            opacity: root.first-opacity;
+            background: #39d6bc; color: #102132; text: "第一项";
+            clicked() => { root.first-clicks = root.first-clicks + 1; }
+        }
+        second := Button {
+            x: 42px; y: 30px; width: 132px; height: 68px;
+            z: 1.0;
+            background: #ffd177; color: #102132; text: "第二项";
+            clicked() => { root.second-clicks = root.second-clicks + 1; }
+        }
+    }
+    Slider {
+        x: 24px; y: 201px; width: 172px; height: 28px;
+        minimum: 0.0; maximum: 1.0;
+        value <=> root.fade;
+        accessible-name: "整组透明度";
+    }
+    swap-order := Button {
+        x: 240px; y: 198px; width: 184px; height: 31px; text: "交换叠放顺序";
+        clicked() => { root.first-layer = root.first-layer > 1.0 ? 0.0 : 2.0; }
+    }
+    toggle-first := Button {
+        x: 240px; y: 237px; width: 184px; height: 31px; text: "切换第一项透明度";
+        clicked() => { root.first-opacity = root.first-opacity == 0.0 ? 1.0 : 0.0; }
+    }
+    Label {
+        x: 24px; y: 242px; width: 184px;
+        color: #a7b6ce;
+        text: "第一项 " + root.first-clicks + " · 第二项 " + root.second-clicks;
     }
 }

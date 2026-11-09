@@ -13,6 +13,7 @@ mod geometry;
 mod grid;
 mod group_box;
 mod history;
+mod image;
 mod input;
 mod keyboard;
 mod label;
@@ -32,6 +33,7 @@ mod shortcut;
 mod spin;
 mod split;
 mod stack_transition;
+mod styled_text;
 mod swipe_delegate;
 mod table;
 mod text_area;
@@ -49,9 +51,10 @@ pub use focus_observers::{FocusDelivery, FocusObservers};
 pub use geometry::{Point, Rect, Size};
 pub use group_box::group_header;
 pub use history::EditSource;
+pub use image::{ImagePlacement, ImagePresentation, ImageRegion, fitted_rect, tile_extent};
 pub use input::{
     ActivationKey, ControlInput, Interaction, NavigationKey, RangeInput, SliderKey, SplitResize,
-    TableSelectionKey, Target,
+    TableSelectionKey, Target, TextLinkTarget,
 };
 pub use keyboard::KeyRoute;
 pub use label::{LabelLayout, LabelLine, LabelPlan, PlannedLabelLine, uses_label_layout};
@@ -69,6 +72,7 @@ pub use spin::SpinGeometry;
 pub use split::{SplitGeometry, SplitHandle};
 pub use stack_transition::{StackSlide, StackTransitions};
 use std::{collections::BTreeMap, rc::Rc};
+pub use styled_text::{StyledFragment, StyledTextLayout};
 pub use swipe_delegate::SwipeDelegateGeometry;
 pub use table::TableGeometry;
 pub use text_area::{TextAreaLayout, TextAreaMotion};
@@ -106,7 +110,22 @@ pub trait TextMeasurer {
         self.measure(text, self.font_size(node), max_width)
     }
 
+    fn layout_styled_text(&mut self, node: &Node, available: Size) -> Option<StyledTextLayout> {
+        let document = node.styled_text("text")?;
+        let size = self.font_size(node);
+        Some(StyledTextLayout::new(
+            node,
+            document,
+            available,
+            size,
+            |text, _| self.measure_node(node, text, f32::MAX).width,
+        ))
+    }
+
     fn measure_label(&mut self, node: &Node, max_width: f32) -> Size {
+        if let Some(plan) = self.layout_styled_text(node, Size::new(max_width, f32::INFINITY)) {
+            return plan.size;
+        }
         LabelLayout::with_font_size(
             node,
             Size::new(max_width, f32::INFINITY),
@@ -132,8 +151,10 @@ pub struct LayoutNode {
     pub tab_header: Option<Rect>,
     pub tumbler: Option<Box<TumblerGeometry>>,
     pub swipe_delegate: Option<Box<SwipeDelegateGeometry>>,
+    pub styled_text: Option<Box<StyledTextLayout>>,
     font_size: f32,
     overlays: Option<Box<modal::OverlayIndex>>,
+    paint_order: Option<Box<[usize]>>,
     pub children: Vec<LayoutNode>,
 }
 
@@ -163,6 +184,44 @@ impl ScrollLayout {
 }
 
 impl LayoutNode {
+    /// Back to front. Scene indices stay in declaration order for routing.
+    pub fn child_paint_order(&self) -> impl DoubleEndedIterator<Item = usize> + '_ {
+        (0..self.children.len()).map(|index| {
+            self.paint_order
+                .as_deref()
+                .map_or(index, |order| order[index])
+        })
+    }
+
+    pub fn children_in_paint_order<'a>(
+        &'a self,
+        node: &'a Node,
+    ) -> impl DoubleEndedIterator<Item = (usize, &'a Node, &'a LayoutNode)> + 'a {
+        self.child_paint_order().filter_map(move |index| {
+            Some((index, node.children.get(index)?, &self.children[index]))
+        })
+    }
+
+    pub fn text_link_regions(&self) -> impl Iterator<Item = (usize, Rect)> + '_ {
+        self.styled_text
+            .iter()
+            .flat_map(|plan| &plan.fragments)
+            .filter_map(|fragment| {
+                let link = fragment.link()?;
+                let rect = fragment.bounds;
+                let visible = Rect::new(
+                    self.bounds.x + rect.x,
+                    self.bounds.y + rect.y,
+                    rect.width,
+                    rect.height,
+                )
+                .intersect(self.clip)
+                .intersect(self.bounds);
+                (self.visible && visible.width > 0.0 && visible.height > 0.0)
+                    .then_some((link, visible))
+            })
+    }
+
     pub fn group_header(&self, node: &Node) -> Rect {
         group_box::header_with_font_size(node, self.bounds, self.font_size)
     }
@@ -205,6 +264,16 @@ impl LayoutNode {
         }
         Some(item)
     }
+}
+
+fn sibling_paint_order(children: &[Node]) -> Option<Box<[usize]>> {
+    // Already ordered (including the default of all zeroes) needs no storage.
+    if !children.windows(2).any(|pair| pair[0].z() > pair[1].z()) {
+        return None;
+    }
+    let mut order: Vec<_> = (0..children.len()).collect();
+    order.sort_by(|&left, &right| children[left].z().total_cmp(&children[right].z()));
+    Some(order.into_boxed_slice())
 }
 
 pub fn font_size(node: &Node) -> f32 {
@@ -560,8 +629,10 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
                 tab_header: None,
                 tumbler: None,
                 swipe_delegate: None,
+                styled_text: None,
                 font_size,
                 overlays: None,
+                paint_order: None,
                 children: Vec::new(),
             };
         }
@@ -624,8 +695,10 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
                 tab_header: None,
                 tumbler: None,
                 swipe_delegate: None,
+                styled_text: None,
                 font_size,
                 overlays: None,
+                paint_order: None,
                 children,
             };
         }
@@ -812,7 +885,7 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
                 })
                 .collect()
         };
-        let children = node
+        let children: Vec<_> = node
             .children
             .iter()
             .zip(placements)
@@ -871,8 +944,16 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
             tab_header: None,
             tumbler,
             swipe_delegate,
+            styled_text: if visible && node.kind == "StyledText" {
+                self.text
+                    .layout_styled_text(node, Size::new(bounds.width, bounds.height))
+                    .map(Box::new)
+            } else {
+                None
+            },
             font_size,
             overlays: None,
+            paint_order: sibling_paint_order(&node.children[..children.len()]),
             children,
         }
     }
@@ -964,7 +1045,7 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
 
 fn absolute_width(node: &Node, info: linear::AxisInfo, available: f32) -> f32 {
     if xrack_runtime::is_button(node.kind)
-        || node.kind == "Image"
+        || matches!(node.kind, "Image" | "AnimatedImage")
         || node.properties.contains_key("preferred-width")
     {
         info.preferred

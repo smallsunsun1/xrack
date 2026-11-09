@@ -126,7 +126,7 @@ bool staticValue(Value value, llvm::DenseMap<Value, bool> &known) {
     return found->second;
   auto *definition = value.getDefiningOp();
   bool result =
-      isa_and_nonnull<LiteralOp, ImageUrlOp, MarkdownOp, SolidBrushOp, GradientStopOp,
+      isa_and_nonnull<LiteralOp, ImageUrlOp, ImageDimensionOp, NineSliceOp, MarkdownOp, SolidBrushOp, GradientStopOp,
                       LinearGradientOp, RadialGradientOp>(definition) &&
       llvm::all_of(definition->getOperands(),
                    [&](Value operand) { return staticValue(operand, known); });

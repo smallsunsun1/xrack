@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import subprocess
 import tarfile
+import tempfile
 from urllib.error import HTTPError
 from urllib.request import urlopen
 
@@ -92,7 +93,10 @@ def main():
     command = ["cargo", "publish", "--registry", "crates-io", "--locked", mode]
     for name in pending:
         command.extend(("-p", name))
-    subprocess.run(command, cwd=ROOT, check=True)
+    # Cargo's temporary package registry caches by crate version and target directory.
+    # A fresh directory keeps a previous dry-run of the same version out of this release.
+    with tempfile.TemporaryDirectory(prefix="xrack-release-") as target_dir:
+        subprocess.run([*command, "--target-dir", target_dir], cwd=ROOT, check=True)
 
 
 if __name__ == "__main__":

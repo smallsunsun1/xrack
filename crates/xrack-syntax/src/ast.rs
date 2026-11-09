@@ -164,6 +164,10 @@ pub enum Type {
     Brush,
     Image,
     ImageFit,
+    ImageTileMode,
+    ImageHorizontalAlignment,
+    ImageVerticalAlignment,
+    ImageRendering,
     LayoutAlignment,
     CrossAxisAlignment,
     Orientation,
@@ -237,6 +241,10 @@ impl Type {
             Self::Brush => "brush",
             Self::Image => "image",
             Self::ImageFit => "imagefit",
+            Self::ImageTileMode => "imagetilemode",
+            Self::ImageHorizontalAlignment => "imagehorizontalalignment",
+            Self::ImageVerticalAlignment => "imageverticalalignment",
+            Self::ImageRendering => "imagerendering",
             Self::LayoutAlignment => "layoutalignment",
             Self::CrossAxisAlignment => "crossaxisalignment",
             Self::Orientation => "orientation",
@@ -284,6 +292,12 @@ impl Type {
             "brush" => Self::Brush,
             "image" => Self::Image,
             "imagefit" | "ImageFit" => Self::ImageFit,
+            "imagetilemode" | "ImageTileMode" => Self::ImageTileMode,
+            "imagehorizontalalignment" | "ImageHorizontalAlignment" => {
+                Self::ImageHorizontalAlignment
+            }
+            "imageverticalalignment" | "ImageVerticalAlignment" => Self::ImageVerticalAlignment,
+            "imagerendering" | "ImageRendering" => Self::ImageRendering,
             "layoutalignment" | "LayoutAlignment" => Self::LayoutAlignment,
             "crossaxisalignment" | "CrossAxisAlignment" => Self::CrossAxisAlignment,
             "orientation" | "Orientation" => Self::Orientation,
@@ -340,6 +354,10 @@ impl Type {
     pub fn enum_variants(&self) -> &'static [&'static str] {
         match self {
             Self::ImageFit => &["fill", "contain", "cover", "preserve"],
+            Self::ImageTileMode => &["stretch", "repeat", "round"],
+            Self::ImageHorizontalAlignment => &["left", "center", "right"],
+            Self::ImageVerticalAlignment => &["top", "center", "bottom"],
+            Self::ImageRendering => &["smooth", "pixelated"],
             Self::LayoutAlignment => &[
                 "stretch",
                 "center",
@@ -415,6 +433,10 @@ impl Serialize for Type {
             Self::StyledText => serializer.serialize_str("styled-text"),
             Self::StringList => serializer.serialize_str("[string]"),
             Self::ImageFit => serializer.serialize_str("ImageFit"),
+            Self::ImageTileMode => serializer.serialize_str("ImageTileMode"),
+            Self::ImageHorizontalAlignment => serializer.serialize_str("ImageHorizontalAlignment"),
+            Self::ImageVerticalAlignment => serializer.serialize_str("ImageVerticalAlignment"),
+            Self::ImageRendering => serializer.serialize_str("ImageRendering"),
             Self::LayoutAlignment => serializer.serialize_str("LayoutAlignment"),
             Self::CrossAxisAlignment => serializer.serialize_str("CrossAxisAlignment"),
             Self::Orientation => serializer.serialize_str("Orientation"),
@@ -556,6 +578,11 @@ pub enum ExprKind {
         ty: Type,
     },
     ImageUrl(String),
+    SlicedImageUrl {
+        path: String,
+        slice: String,
+        edges: Vec<String>,
+    },
     Markdown(String),
     Array(Vec<Expr>),
     Record {
