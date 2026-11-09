@@ -84,9 +84,12 @@ jobs:
             ${{ runner.os == 'Windows' && 'startup --windows_enable_symlinks' || '' }}
             build --jobs=3
       - name: Test compiler, MLIR passes, and generated Rust
+        # Bazel extension digests can differ between the local installation and hosted runners.
         run: >-
-          bazel test --lockfile_mode=error
+          bazel test --lockfile_mode=update
           //tests:compiler_test //tests:mlir_pass_test //tests:expressions_test
+      - name: Check the Cargo dependency lock
+        run: git diff --exit-code -- Cargo.lock
       - name: Package xrackc
         run: python tools/package_xrackc.py
       - name: Run the standalone Cargo consumer
