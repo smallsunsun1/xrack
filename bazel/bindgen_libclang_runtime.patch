@@ -1,0 +1,26 @@
+--- a/private/bindgen.bzl
++++ b/private/bindgen.bzl
+@@ -259,0 +260 @@
++    libclang_runtime = None
+@@ -261,3 +262,12 @@
+-        # libclang should only have 1 output file
+-        libclang_dir = _get_libs_for_static_executable(libclang).to_list()[0].dirname
+-        env["LIBCLANG_PATH"] = libclang_dir
++        # Bindgen loads the shared library, so the import library alone is
++        # insufficient when Bazel restores an action from its cache.
++        runtimes = depset([
++            lib.resolved_symlink_dynamic_library or lib.dynamic_library
++            for linker_input in libclang[CcInfo].linking_context.linker_inputs.to_list()
++            for lib in linker_input.libraries
++            if lib.dynamic_library
++        ]).to_list()
++        if len(runtimes) != 1:
++            fail("bindgen requires exactly one libclang shared library")
++        libclang_runtime = runtimes[0]
++        env["LIBCLANG_PATH"] = libclang_runtime.path
+@@ -447 +457 @@
+-            [header],
++            [header] + ([libclang_runtime] if libclang_runtime else []),
+@@ -451,2 +460,0 @@
+-                _get_libs_for_static_executable(libclang),
+-            ] if libclang else []) + ([
