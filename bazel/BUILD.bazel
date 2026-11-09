@@ -6,9 +6,18 @@ exports_files([
 ])
 
 platform(
-    name = "windows_clang_cl",
+    name = "linux_gnu",
     constraint_values = [
-        "@rules_cc//cc/private/toolchain:clang-cl",
+        "@llvm//constraints/libc:gnu.2.28",
+    ],
+    parents = ["@platforms//host"],
+)
+
+platform(
+    name = "windows_msvc",
+    constraint_values = [
+        "@llvm//constraints/windows/abi:msvc",
+        "@llvm//constraints/windows/crt:ucrt",
     ],
     parents = ["@platforms//host"],
 )

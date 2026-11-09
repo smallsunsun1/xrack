@@ -7,8 +7,7 @@ bazel_dep(name = "rules_cc", version = "0.2.27")
 bazel_dep(name = "rules_java", version = "9.3.0")
 bazel_dep(name = "platforms", version = "1.1.0")
 
-cc_configure = use_extension("@rules_cc//cc:extensions.bzl", "cc_configure_extension")
-use_repo(cc_configure, "local_config_cc")
+register_toolchains("@llvm//toolchain:all")
 
 single_version_override(
     module_name = "rules_rust_bindgen",
@@ -31,10 +30,6 @@ rust.toolchain(
     versions = ["1.99.1"],
     rustfmt_version = "1.99.1",
     rust_analyzer_version = "1.99.1",
-    # The Linux arm64 C++ archives use GCC outline atomics. Append libgcc
-    # after the native archives in both target and exec Rust links.
-    extra_rustc_flags_triples = {"aarch64-unknown-linux-gnu": ["-Clink-arg=-lgcc"]},
-    extra_exec_rustc_flags_triples = {"aarch64-unknown-linux-gnu": ["-Clink-arg=-lgcc"]},
 )
 use_repo(rust, "rust_toolchains")
 register_toolchains("@rust_toolchains//:all")

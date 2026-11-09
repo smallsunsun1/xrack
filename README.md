@@ -6,7 +6,7 @@
 
 ## 构建和运行
 
-要求 Bazel 9.2.0 / Bazelisk、JDK 17+（仅运行 ANTLR generator），以及支持 **C++20** 的平台 C++ 编译工具链（macOS 需要 Xcode Command Line Tools）。目标与构建工具均使用 C++20。依赖由 Bzlmod 下载；首次构建会从源码编译 LLVM/MLIR，耗时明显多于增量构建。
+要求 Bazel 9.2.0 / Bazelisk 和 JDK 17+（用于 ANTLR generator）。Bazel 通过 Bzlmod 获取 LLVM 提供的 **C++20** 编译器、链接器和目标平台 SDK。首次构建会从源码编译 LLVM/MLIR，耗时明显多于增量构建。
 
 ```sh
 bazel build //:xrackc
@@ -48,7 +48,9 @@ bazel run //:xrackc -- --check examples/counter/counter.xr
 
 系统、`rust-toolchain.toml`、`Cargo.toml` 和 `rules_rust` toolchain 使用 Rust **1.99.1**、edition **2024**；`rules_rust` 固定为 **0.75.0**。依赖版本由 `Cargo.lock` 与 `MODULE.bazel.lock` 锁定。
 
-MLIR 通过 `llvm` module **0.8.26** 导出的 `@llvm-project` 构建，LLVM 版本固定为 **23.1.2**。不探测 `llvm-config`、Homebrew LLVM 或系统 MLIR，不使用 Melior 的系统链接方式。
+MLIR 通过 `llvm` module **0.8.26** 导出的 `@llvm-project` 构建，LLVM 版本固定为 **23.1.2**。目标与执行阶段都由 `@llvm//toolchain:all` 提供 C++ 工具链。Linux 使用 glibc 2.28 目标平台，macOS 使用 LLVM module 管理的 Apple SDK，Windows 保持 MSVC ABI。
+
+Windows 的 Bazel genrule 需要 Bash。下载 MSVC runtime 和 Windows SDK 前，请核对 [Microsoft 组件许可要求](https://github.com/hermeticbuild/windows_support)，并在有权使用这些组件时设置 `BAZEL_MSVC_RUNTIME_VISUAL_STUDIO_EULA=1` 和 `BAZEL_WINDOWS_SDK_EULA=1`。
 
 Bazel 使用配套的 Rust 目标生成器和 `antlr4rust 0.6.0` runtime。`.g4` 变化后，Bazel 通过 JDK 重新生成 Rust lexer、parser 和 listener。JDK 只用于生成源码。
 
@@ -104,7 +106,7 @@ Cargo 会验证打包后的源码，并在发布时按依赖顺序上传这些 c
 
 [CI](.github/workflows/ci.yml) 在 macOS arm64、Linux x64 与 arm64、Windows x64 与 arm64 上测试 Cargo 桌面依赖栈与 Bazel 编译器。每个平台用归档中的 `xrackc` 运行仓库外 Cargo 示例。成功的任务上传对应的编译器归档和校验文件，Linux x64 任务额外上传通过 Cargo 验证的 5 个 `.crate`。真实 GPU 测试使用本地显式目标 `//tests:gpu_test`。
 
-编译器任务通过 `setup-bazel` 缓存 Bazelisk、依赖下载和编译产物。缓存按操作系统和架构隔离。依赖下载缓存跟踪 Bazel 版本、`MODULE.bazel` 和 `Cargo.lock`，编译产物缓存额外跟踪 Bazel 构建规则。Windows 使用 MSVC SDK 和对应宿主架构的 `clang-cl` 工具链构建 C++，本地可用 `BAZEL_LLVM` 指定 `clang-cl` 的安装目录。
+编译器任务通过 `setup-bazel` 缓存 Bazelisk、依赖下载和编译产物。缓存按操作系统和架构隔离。依赖下载缓存跟踪 Bazel 版本、`MODULE.bazel` 和 `Cargo.lock`，编译产物缓存额外跟踪 Bazel 构建规则。Windows 编译器任务从仓库的 Actions variables 读取上述两个 Microsoft 许可变量。
 
 ## VS Code
 

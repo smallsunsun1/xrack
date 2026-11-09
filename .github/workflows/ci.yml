@@ -79,12 +79,19 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
-      - name: Configure Windows shell and clang-cl
+      - name: Configure Windows shell and SDK license settings
         if: runner.os == 'Windows'
         shell: pwsh
+        env:
+          BAZEL_MSVC_RUNTIME_VISUAL_STUDIO_EULA: ${{ vars.BAZEL_MSVC_RUNTIME_VISUAL_STUDIO_EULA }}
+          BAZEL_WINDOWS_SDK_EULA: ${{ vars.BAZEL_WINDOWS_SDK_EULA }}
         run: |
+          if ($env:BAZEL_MSVC_RUNTIME_VISUAL_STUDIO_EULA -ne '1' -or $env:BAZEL_WINDOWS_SDK_EULA -ne '1') {
+            throw 'Set BAZEL_MSVC_RUNTIME_VISUAL_STUDIO_EULA and BAZEL_WINDOWS_SDK_EULA to 1 after confirming the Microsoft licenses.'
+          }
           "BAZEL_SH=C:/msys64/usr/bin/bash.exe" >> $env:GITHUB_ENV
-          "BAZEL_LLVM=$env:ProgramFiles/LLVM" >> $env:GITHUB_ENV
+          "BAZEL_MSVC_RUNTIME_VISUAL_STUDIO_EULA=$env:BAZEL_MSVC_RUNTIME_VISUAL_STUDIO_EULA" >> $env:GITHUB_ENV
+          "BAZEL_WINDOWS_SDK_EULA=$env:BAZEL_WINDOWS_SDK_EULA" >> $env:GITHUB_ENV
       - name: Select native Rust on Windows arm64
         if: matrix.os == 'windows-11-arm'
         run: rustup set default-host aarch64-pc-windows-msvc
