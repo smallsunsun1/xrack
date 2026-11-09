@@ -95,6 +95,8 @@ Cargo 会验证打包后的源码。正式发布按 `xrack-runtime`、`xrack-ass
 
 [CI](.github/workflows/ci.yml) 在 macOS arm64、Linux x64 和 Windows x64 上分别测试 Cargo 桌面依赖栈与 Bazel 编译器。每个平台用归档中的 `xrackc` 运行仓库外 Cargo 示例。成功的任务上传对应的编译器归档和校验文件，Linux 任务额外上传通过 Cargo 验证的 5 个 `.crate`。真实 GPU 测试使用本地显式目标 `//tests:gpu_test`。
 
+编译器任务通过 `setup-bazel` 缓存 Bazelisk、依赖下载和编译产物。缓存按操作系统和架构隔离。依赖下载缓存跟踪 Bazel 版本、`MODULE.bazel` 和 `Cargo.lock`，编译产物缓存额外跟踪 Bazel 构建规则。Windows x64 使用 MSVC SDK 和 `clang-cl` 构建 C++，本地可用 `BAZEL_LLVM` 指定 `clang-cl` 的安装目录。
+
 ## VS Code
 
 打开仓库根目录，安装推荐的 Rust Analyzer 和 CodeLLDB 扩展。用 **Terminal → Run Task → Bazel: Generate rust-project.json** 生成本机项目图，或在终端运行：
