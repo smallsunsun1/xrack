@@ -3,7 +3,7 @@ load("@llvm-project//mlir:tblgen.bzl", "gentbl_cc_library")
 load("@rules_rust//rust:defs.bzl", "rust_library")
 load("@rules_rust_bindgen//:defs.bzl", "rust_bindgen", "rust_bindgen_toolchain")
 load("//bazel:xrack.bzl", "rust_generated_source")
-load(":bindgen.bzl", "LLVM_BUILTIN_HEADERS")
+load(":bindgen.bzl", "LLVM_BUILTIN_HEADERS", "MLIR_C_HEADERS")
 
 rust_bindgen_toolchain(
     name = "bindgen_impl",
@@ -95,6 +95,12 @@ cc_library(
     name = "xrack_c_api",
     srcs = ["bridge.cc"],
     hdrs = ["c_api.h"],
+    # GCC puts AArch64 outline atomics in libgcc.a. Rust's link omits the
+    # compiler driver's default libraries.
+    linkopts = select({
+        "@rules_rust//rust/platform:aarch64-unknown-linux-gnu": ["-lgcc"],
+        "//conditions:default": [],
+    }),
     deps = [
         ":xrack_dialect",
         ":xrack_inc_gen",
@@ -128,6 +134,9 @@ rust_bindgen(
         "-x",
         "c",
         "-std=c11",
+        # Bindgen filters clang-cl's /I and /imsvc flags from the CC toolchain.
+        "-I",
+        MLIR_C_HEADERS,
         "-isystem",
         LLVM_BUILTIN_HEADERS,
     ],
