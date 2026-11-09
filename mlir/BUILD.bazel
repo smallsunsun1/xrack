@@ -95,12 +95,6 @@ cc_library(
     name = "xrack_c_api",
     srcs = ["bridge.cc"],
     hdrs = ["c_api.h"],
-    # GCC puts AArch64 outline atomics in libgcc.a. Rust's link omits the
-    # compiler driver's default libraries.
-    linkopts = select({
-        "@rules_rust//rust/platform:aarch64-unknown-linux-gnu": ["-lgcc"],
-        "//conditions:default": [],
-    }),
     deps = [
         ":xrack_dialect",
         ":xrack_inc_gen",
