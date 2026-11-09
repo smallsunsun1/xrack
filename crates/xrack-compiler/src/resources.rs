@@ -1,5 +1,5 @@
 use crate::{
-    codegen::EmbeddedImage,
+    codegen::{EmbeddedImage, EmbeddedPath},
     mlir::{Module, OperationRef},
 };
 use std::{
@@ -8,7 +8,16 @@ use std::{
     io::Read,
     path::{Path, PathBuf},
 };
-use xrack_assets::{ImageFormat, MAX_ASSET_BYTES, image_size, parse_path};
+use xrack_assets::{
+    ImageFormat, MAX_ASSET_BYTES, image_size, parse_path, vector_bounds, vector_segments,
+};
+
+#[derive(Default)]
+pub struct Resolved {
+    pub images: BTreeMap<String, EmbeddedImage>,
+    pub fonts: Vec<Vec<u8>>,
+    pub paths: BTreeMap<String, EmbeddedPath>,
+}
 
 fn walk<'m>(
     op: OperationRef<'m>,
@@ -25,7 +34,7 @@ pub fn resolve(
     module: &Module,
     filename: &str,
     declared_assets: Option<&[PathBuf]>,
-) -> Result<BTreeMap<String, EmbeddedImage>, String> {
+) -> Result<Resolved, String> {
     let declared = declared_assets
         .map(|paths| {
             paths
@@ -40,11 +49,40 @@ pub fn resolve(
     let base = Path::new(filename)
         .parent()
         .unwrap_or_else(|| Path::new("."));
-    let mut images = BTreeMap::new();
+    let mut assets = Resolved::default();
+    let mut seen_fonts = BTreeSet::new();
     let mut visit = |op: OperationRef<'_>| {
-        if op.name() == "xr.image_url" {
+        if op.name() == "xr.font" {
+            let url = op.attr("path")?;
+            let span = op.span();
+            let source = op.source_file().unwrap_or(filename);
+            let error_at_import = |error| {
+                format!(
+                    "{source}:{}:{}: font {url:?}: {error}",
+                    span.line, span.column
+                )
+            };
+            let relative = local_path(url).map_err(error_at_import)?;
+            let extension = relative
+                .extension()
+                .and_then(|ext| ext.to_str())
+                .unwrap_or_default();
+            if !["ttf", "otf", "ttc"]
+                .iter()
+                .any(|format| extension.eq_ignore_ascii_case(format))
+            {
+                return Err(error_at_import("expected a .ttf, .otf or .ttc font".into()));
+            }
+            let path =
+                asset_path(base, relative, declared.as_ref(), "font").map_err(error_at_import)?;
+            if seen_fonts.insert(path.clone()) {
+                let bytes = read_asset(&path, "font").map_err(error_at_import)?;
+                validate_font(&bytes).map_err(error_at_import)?;
+                assets.fonts.push(bytes);
+            }
+        } else if op.name() == "xr.image_url" {
             let url = op.attr("value")?;
-            if url.is_empty() || images.contains_key(url) {
+            if url.is_empty() || assets.images.contains_key(url) {
                 return Ok(());
             }
             let image = load_image(base, url, declared.as_ref()).map_err(|error| {
@@ -54,7 +92,7 @@ pub fn resolve(
                     span.line, span.column
                 )
             })?;
-            images.insert(url.to_owned(), image);
+            assets.images.insert(url.to_owned(), image);
         } else if op.name() == "xr.element" && op.attr("kind")? == "Path" {
             for binding in op.children() {
                 if binding.name() == "xr.bind"
@@ -66,13 +104,31 @@ pub fn resolve(
                 {
                     let commands: String = serde_json::from_str(literal.attr("value")?)
                         .map_err(|error| error.to_string())?;
-                    parse_path(&commands).map_err(|error| {
+                    if assets.paths.contains_key(&commands) {
+                        continue;
+                    }
+                    let path = parse_path(&commands).map_err(|error| {
                         let span = binding.span();
                         format!(
                             "{filename}:{}:{}: invalid Path commands: {error}",
                             span.line, span.column,
                         )
                     })?;
+                    if module.has_visual_cache_plan()
+                        && binding.attribute("xr.precompiled_path") == Some("true")
+                    {
+                        let plan = match path {
+                            Some(path) => EmbeddedPath {
+                                bounds: vector_bounds(&path),
+                                segments: vector_segments(&path).collect(),
+                            },
+                            None => EmbeddedPath {
+                                bounds: [0.0; 4],
+                                segments: Vec::new(),
+                            },
+                        };
+                        assets.paths.insert(commands, plan);
+                    }
                 }
             }
         }
@@ -81,7 +137,7 @@ pub fn resolve(
     for op in module.operations() {
         walk(op, &mut visit)?;
     }
-    Ok(images)
+    Ok(assets)
 }
 
 fn load_image(
@@ -89,10 +145,7 @@ fn load_image(
     url: &str,
     declared: Option<&BTreeSet<PathBuf>>,
 ) -> Result<EmbeddedImage, String> {
-    let relative = Path::new(url);
-    if relative.is_absolute() || url.contains(':') {
-        return Err("expected a local path relative to the .xr file".into());
-    }
+    let relative = local_path(url)?;
     let extension = relative
         .extension()
         .and_then(|ext| ext.to_str())
@@ -104,9 +157,33 @@ fn load_image(
     } else {
         return Err("expected a .png or .svg image".into());
     };
+    let path = asset_path(base, relative, declared, "image")?;
+    let bytes = read_asset(&path, "image")?;
+    let size = image_size(format, &bytes)?;
+    Ok(EmbeddedImage {
+        format,
+        size,
+        bytes,
+    })
+}
+
+fn local_path(url: &str) -> Result<&Path, String> {
+    let relative = Path::new(url);
+    if url.is_empty() || relative.is_absolute() || url.contains(':') {
+        return Err("expected a local path relative to the .xr file".into());
+    }
+    Ok(relative)
+}
+
+fn asset_path(
+    base: &Path,
+    relative: &Path,
+    declared: Option<&BTreeSet<PathBuf>>,
+    kind: &str,
+) -> Result<PathBuf, String> {
     let path = base.join(relative).canonicalize().map_err(|error| {
         if declared.is_some() {
-            format!("{error}; list the image in xr_ui_library(assets = [...])")
+            format!("{error}; list the {kind} in xr_ui_library(assets = [...])")
         } else {
             error.to_string()
         }
@@ -114,6 +191,10 @@ fn load_image(
     if declared.is_some_and(|inputs| !inputs.contains(&path)) {
         return Err("not declared in xr_ui_library(assets = [...])".into());
     }
+    Ok(path)
+}
+
+fn read_asset(path: &Path, kind: &str) -> Result<Vec<u8>, String> {
     let mut bytes = Vec::new();
     File::open(path)
         .map_err(|error| error.to_string())?
@@ -121,12 +202,37 @@ fn load_image(
         .read_to_end(&mut bytes)
         .map_err(|error| error.to_string())?;
     if bytes.len() as u64 > MAX_ASSET_BYTES {
-        return Err("image file exceeds 16 MiB".into());
+        return Err(format!("{kind} file exceeds 16 MiB"));
     }
-    let size = image_size(format, &bytes)?;
-    Ok(EmbeddedImage {
-        format,
-        size,
-        bytes,
-    })
+    Ok(bytes)
+}
+
+fn validate_font(bytes: &[u8]) -> Result<(), String> {
+    let count = ttf_parser::fonts_in_collection(bytes).unwrap_or(1);
+    if !(1..=256).contains(&count) {
+        return Err("a font file must contain between 1 and 256 faces".into());
+    }
+    for index in 0..count {
+        let face = ttf_parser::Face::parse(bytes, index)
+            .map_err(|error| format!("invalid font face {index}: {error}"))?;
+        let named = |names: &[u16]| {
+            face.names().into_iter().any(|name| {
+                names.contains(&name.name_id)
+                    && (name.to_string().is_some_and(|name| !name.trim().is_empty())
+                        || name.platform_id == ttf_parser::PlatformId::Macintosh
+                            && name.encoding_id == 0
+                            && !name.name.is_empty())
+            })
+        };
+        use ttf_parser::name_id;
+        if !named(&[name_id::FAMILY, name_id::TYPOGRAPHIC_FAMILY])
+            || !named(&[name_id::POST_SCRIPT_NAME])
+            || face.tables().cmap.is_none()
+        {
+            return Err(format!(
+                "font face {index} requires family and PostScript names and a character map"
+            ));
+        }
+    }
+    Ok(())
 }

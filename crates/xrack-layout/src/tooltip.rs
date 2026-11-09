@@ -288,10 +288,14 @@ pub fn layout_tooltip(
     if let Some(value) = node.text("text") {
         let mut label = Node::new("Text", None);
         label.properties.insert("text", value.to_owned().into());
-        label.properties.insert(
-            "font-size",
-            Length(f64::from(node.length("font-size").unwrap_or(14.0))).into(),
-        );
+        for name in ["font-size", "font-family", "font-weight", "font-italic"] {
+            if let Some(value) = node.properties.get(name) {
+                label.properties.insert(name, value.clone());
+            }
+        }
+        if label.length("font-size").is_none() && text.default_font_size().is_none() {
+            label.properties.insert("font-size", Length(14.0).into());
+        }
         if let Some(color) = node.color("color") {
             label.properties.insert("color", color.into());
         }

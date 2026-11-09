@@ -28,6 +28,8 @@ pub struct Document {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub imports: Vec<Import>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fonts: Vec<FontImport>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub records: Vec<RecordDef>,
     pub components: Vec<Component>,
 }
@@ -52,6 +54,14 @@ pub struct Import {
     pub path: String,
     pub names: Vec<ImportName>,
     pub span: Span,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct FontImport {
+    pub path: String,
+    pub span: Span,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub filename: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -128,10 +138,15 @@ pub enum Type {
     TextVerticalAlignment,
     TextOverflow,
     InputType,
+    ColorScheme,
+    FileDialogMode,
+    MessageLevel,
+    MessageButtons,
     CheckState,
     DialogRole,
     StandardButtonKind,
     SwipeSide,
+    DragAction,
     DrawerEdge,
     PopupPlacement,
     SelectionTarget,
@@ -180,10 +195,15 @@ impl Type {
             Self::TextVerticalAlignment => "textverticalalignment",
             Self::TextOverflow => "textoverflow",
             Self::InputType => "inputtype",
+            Self::ColorScheme => "colorscheme",
+            Self::FileDialogMode => "filedialogmode",
+            Self::MessageLevel => "messagelevel",
+            Self::MessageButtons => "messagebuttons",
             Self::CheckState => "checkstate",
             Self::DialogRole => "dialogrole",
             Self::StandardButtonKind => "standardbuttonkind",
             Self::SwipeSide => "swipeside",
+            Self::DragAction => "dragaction",
             Self::DrawerEdge => "draweredge",
             Self::PopupPlacement => "popupplacement",
             Self::SelectionTarget => "selectiontarget",
@@ -217,10 +237,15 @@ impl Type {
             "textverticalalignment" | "TextVerticalAlignment" => Self::TextVerticalAlignment,
             "textoverflow" | "TextOverflow" => Self::TextOverflow,
             "inputtype" | "InputType" => Self::InputType,
+            "colorscheme" | "ColorScheme" => Self::ColorScheme,
+            "filedialogmode" | "FileDialogMode" => Self::FileDialogMode,
+            "messagelevel" | "MessageLevel" => Self::MessageLevel,
+            "messagebuttons" | "MessageButtons" => Self::MessageButtons,
             "checkstate" | "CheckState" => Self::CheckState,
             "dialogrole" | "DialogRole" => Self::DialogRole,
             "standardbuttonkind" | "StandardButtonKind" => Self::StandardButtonKind,
             "swipeside" | "SwipeSide" => Self::SwipeSide,
+            "dragaction" | "DragAction" => Self::DragAction,
             "draweredge" | "DrawerEdge" => Self::DrawerEdge,
             "popupplacement" | "PopupPlacement" => Self::PopupPlacement,
             "selectiontarget" | "SelectionTarget" => Self::SelectionTarget,
@@ -272,9 +297,14 @@ impl Type {
             Self::TextVerticalAlignment => &["top", "center", "bottom"],
             Self::TextOverflow => &["clip", "elide"],
             Self::InputType => &["text", "password", "number", "decimal", "search"],
+            Self::ColorScheme => &["system", "light", "dark"],
+            Self::FileDialogMode => &["open-file", "open-files", "save-file", "select-folder"],
+            Self::MessageLevel => &["info", "warning", "error"],
+            Self::MessageButtons => &["ok", "ok-cancel", "yes-no", "yes-no-cancel"],
             Self::CheckState => &["unchecked", "partially-checked", "checked"],
             Self::DialogRole => &["accept", "reject"],
             Self::SwipeSide => &["closed", "left", "right"],
+            Self::DragAction => &["none", "copy", "move", "link"],
             Self::StandardButtonKind => &[
                 "ok",
                 "open",
@@ -322,10 +352,15 @@ impl Serialize for Type {
             Self::TextVerticalAlignment => serializer.serialize_str("TextVerticalAlignment"),
             Self::TextOverflow => serializer.serialize_str("TextOverflow"),
             Self::InputType => serializer.serialize_str("InputType"),
+            Self::ColorScheme => serializer.serialize_str("ColorScheme"),
+            Self::FileDialogMode => serializer.serialize_str("FileDialogMode"),
+            Self::MessageLevel => serializer.serialize_str("MessageLevel"),
+            Self::MessageButtons => serializer.serialize_str("MessageButtons"),
             Self::CheckState => serializer.serialize_str("CheckState"),
             Self::DialogRole => serializer.serialize_str("DialogRole"),
             Self::StandardButtonKind => serializer.serialize_str("StandardButtonKind"),
             Self::SwipeSide => serializer.serialize_str("SwipeSide"),
+            Self::DragAction => serializer.serialize_str("DragAction"),
             Self::DrawerEdge => serializer.serialize_str("DrawerEdge"),
             Self::PopupPlacement => serializer.serialize_str("PopupPlacement"),
             Self::SelectionTarget => serializer.serialize_str("SelectionTarget"),

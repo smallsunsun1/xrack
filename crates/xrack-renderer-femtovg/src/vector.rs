@@ -1,8 +1,8 @@
 use crate::{brush_paint, image::fitted_rect};
 use femtovg::{Canvas, Path, renderer::WGPURenderer};
-use xrack_assets::{PathSegment, parse_path};
+use xrack_assets::{parse_path, vector_bounds, vector_segments};
 use xrack_layout::{Rect, Size};
-use xrack_runtime::Node;
+use xrack_runtime::{Node, VectorSegment};
 
 pub(crate) fn draw_path(
     canvas: &mut Canvas<WGPURenderer>,
@@ -12,6 +12,14 @@ pub(crate) fn draw_path(
     let Some(commands) = node.text("commands") else {
         return Ok(());
     };
+    if let Some(path) = node.precompiled_path(commands) {
+        if path.segments.is_empty() {
+            return Ok(());
+        }
+        return draw_segments(canvas, node, bounds, path.segments.iter().copied(), || {
+            path.bounds
+        });
+    }
     let Some(source) = parse_path(commands).map_err(|error| {
         format!(
             "invalid Path commands on {}: {error}",
@@ -21,7 +29,18 @@ pub(crate) fn draw_path(
     else {
         return Ok(());
     };
+    draw_segments(canvas, node, bounds, vector_segments(&source), || {
+        vector_bounds(&source)
+    })
+}
 
+fn draw_segments(
+    canvas: &mut Canvas<WGPURenderer>,
+    node: &Node,
+    bounds: Rect,
+    segments: impl Iterator<Item = VectorSegment>,
+    extents: impl FnOnce() -> [f32; 4],
+) -> Result<(), String> {
     let stroke = node.length("stroke-width").unwrap_or(0.0).max(0.0);
     let explicit_width = node.float("viewbox-width").unwrap_or(0.0);
     let explicit_height = node.float("viewbox-height").unwrap_or(0.0);
@@ -36,24 +55,22 @@ pub(crate) fn draw_path(
             bounds,
         )
     } else {
-        let extents = source
-            .compute_tight_bounds()
-            .unwrap_or_else(|| source.bounds());
-        let width = if extents.width() == 0.0 {
+        let [x, y, source_width, source_height] = extents();
+        let width = if source_width == 0.0 {
             1.0
         } else {
-            extents.width()
+            source_width
         };
-        let height = if extents.height() == 0.0 {
+        let height = if source_height == 0.0 {
             1.0
         } else {
-            extents.height()
+            source_height
         };
         (
             // A single horizontal or vertical line still has a useful stroked extent.
             Rect::new(
-                extents.x() - (width - extents.width()) * 0.5,
-                extents.y() - (height - extents.height()) * 0.5,
+                x - (width - source_width) * 0.5,
+                y - (height - source_height) * 0.5,
                 width,
                 height,
             ),
@@ -78,28 +95,28 @@ pub(crate) fn draw_path(
     };
 
     let mut path = Path::new();
-    for segment in source.segments() {
+    for segment in segments {
         match segment {
-            PathSegment::MoveTo(p) => {
-                let (x, y) = map(p.x, p.y)?;
+            VectorSegment::MoveTo([x, y]) => {
+                let (x, y) = map(x, y)?;
                 path.move_to(x, y);
             }
-            PathSegment::LineTo(p) => {
-                let (x, y) = map(p.x, p.y)?;
+            VectorSegment::LineTo([x, y]) => {
+                let (x, y) = map(x, y)?;
                 path.line_to(x, y);
             }
-            PathSegment::QuadTo(c, p) => {
-                let (cx, cy) = map(c.x, c.y)?;
-                let (x, y) = map(p.x, p.y)?;
+            VectorSegment::QuadTo([cx, cy], [x, y]) => {
+                let (cx, cy) = map(cx, cy)?;
+                let (x, y) = map(x, y)?;
                 path.quad_to(cx, cy, x, y);
             }
-            PathSegment::CubicTo(c1, c2, p) => {
-                let (c1x, c1y) = map(c1.x, c1.y)?;
-                let (c2x, c2y) = map(c2.x, c2.y)?;
-                let (x, y) = map(p.x, p.y)?;
+            VectorSegment::CubicTo([c1x, c1y], [c2x, c2y], [x, y]) => {
+                let (c1x, c1y) = map(c1x, c1y)?;
+                let (c2x, c2y) = map(c2x, c2y)?;
+                let (x, y) = map(x, y)?;
                 path.bezier_to(c1x, c1y, c2x, c2y, x, y);
             }
-            PathSegment::Close => path.close(),
+            VectorSegment::Close => path.close(),
         }
     }
     if let Some(fill) = brush_paint(node, "fill", bounds, 0.0) {

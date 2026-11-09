@@ -16,10 +16,15 @@ struct FrameInput {
 pub(crate) struct FrameCache {
     input: Option<FrameInput>,
     input_changed: ChangeSignal,
-    prepared: Property<(Rc<Node>, Rc<LayoutNode>)>,
+    prepared: Property<(Option<Rc<Node>>, Rc<LayoutNode>)>,
+    uses_base_scene: bool,
 }
 
 impl FrameCache {
+    pub(crate) fn is_dirty(&self) -> bool {
+        self.prepared.is_dirty()
+    }
+
     pub(crate) fn prepare(
         &mut self,
         scene: Rc<Node>,
@@ -31,9 +36,8 @@ impl FrameCache {
         let horizontal_offsets = input.horizontal_scroll_offsets();
         let tumbler_preview = input.tumbler_preview();
         let swipe_preview = input.swipe_preview();
-        if !self.input.as_ref().is_some_and(|last| {
-            Rc::ptr_eq(&last.scene, &scene)
-                && last.viewport == viewport
+        let same_geometry_inputs = self.input.as_ref().is_some_and(|last| {
+            last.viewport == viewport
                 && &last.offsets == offsets
                 && &last.horizontal_offsets == horizontal_offsets
                 && last
@@ -46,7 +50,18 @@ impl FrameCache {
                     .as_ref()
                     .map(|(path, key, offset)| (path.as_slice(), *key, *offset))
                     == swipe_preview
-        }) {
+        });
+        if same_geometry_inputs {
+            let last = self.input.as_mut().expect("matching frame input");
+            if !Rc::ptr_eq(&last.scene, &scene) {
+                // Prepared scenes with materialized rows must be rebuilt from
+                // the new base, even if the base changed only in paint data.
+                if !self.uses_base_scene || !last.scene.same_frame_inputs(&scene) {
+                    self.input_changed.notify();
+                }
+                last.scene = scene.clone();
+            }
+        } else {
             self.input = Some(FrameInput {
                 scene: scene.clone(),
                 viewport,
@@ -58,10 +73,12 @@ impl FrameCache {
             });
             self.input_changed.notify();
         }
-        self.prepared.get(|| {
+        let (prepared, layout) = self.prepared.get(|| {
             self.input_changed.track();
-            let (scene, layout) = resolve(scene);
-            (scene, Rc::new(layout))
-        })
+            let (prepared, layout) = resolve(scene.clone());
+            self.uses_base_scene = Rc::ptr_eq(&scene, &prepared);
+            ((!self.uses_base_scene).then_some(prepared), Rc::new(layout))
+        });
+        (prepared.unwrap_or(scene), layout)
     }
 }

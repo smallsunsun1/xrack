@@ -1,10 +1,14 @@
-use crate::{TextSystem, Theme, color, image::Images};
+use crate::{
+    TextSystem, color,
+    image::Images,
+    theme::{Palette, PaletteRole as Role},
+};
 use femtovg::{Align, Canvas, Paint, Path, renderer::WGPURenderer};
 use xrack_layout::{
     CalendarGeometry, ChoiceMenu, ComboGeometry, MenuPanel, PageIndicatorGeometry, Rect,
-    SpinGeometry, TableGeometry, font_size,
+    SpinGeometry, TableGeometry, TextMeasurer,
 };
-use xrack_runtime::{Color, Node, Orientation, TableHeader, combo_editable, combo_index};
+use xrack_runtime::{Color, Node, Orientation, TableHeader, combo_editable, combo_text};
 
 fn fill(canvas: &mut Canvas<WGPURenderer>, rect: Rect, radius: f32, tint: Color) {
     let mut path = Path::new();
@@ -12,17 +16,34 @@ fn fill(canvas: &mut Canvas<WGPURenderer>, rect: Rect, radius: f32, tint: Color)
     canvas.fill_path(&path, &Paint::color(color(tint)));
 }
 
+pub(crate) fn color_preview(canvas: &mut Canvas<WGPURenderer>, bounds: Rect, tint: Color) {
+    fill(canvas, bounds, 0.0, Color(0xe0e4ecff));
+    let tile = Rect::new(0.0, 0.0, bounds.width / 8.0, bounds.height / 2.0);
+    for row in 0..2 {
+        for column in (row..8).step_by(2) {
+            let rect = Rect::new(
+                bounds.x + column as f32 * tile.width,
+                bounds.y + row as f32 * tile.height,
+                tile.width,
+                tile.height,
+            );
+            fill(canvas, rect, 0.0, Color(0x8791a3ff));
+        }
+    }
+    fill(canvas, bounds, 0.0, tint);
+}
+
 pub(crate) fn calendar(
     canvas: &mut Canvas<WGPURenderer>,
     text: &TextSystem,
-    theme: Theme,
+    theme: Palette,
     node: &Node,
     geometry: &CalendarGeometry,
     enabled: bool,
 ) -> Result<(), String> {
     let draw = |canvas: &mut Canvas<WGPURenderer>, rect: Rect, label: &str, tint: Color| {
-        let size = font_size(node).min((rect.height * 0.56).max(1.0));
-        let paint = text.paint(size, color(tint), true);
+        let size = text.font_size(node).min((rect.height * 0.56).max(1.0));
+        let paint = text.paint_node_at_size(node, size, color(tint), true);
         canvas.save();
         canvas.intersect_scissor(rect.x, rect.y, rect.width, rect.height);
         let result = canvas.fill_text(
@@ -71,7 +92,11 @@ pub(crate) fn calendar(
             );
         }
         let tint = if enabled && day.enabled && (day.in_month || day.selected) {
-            theme.text
+            if day.selected {
+                theme.on_accent(theme.text)
+            } else {
+                theme.text
+            }
         } else {
             theme.disabled_text
         };
@@ -82,7 +107,7 @@ pub(crate) fn calendar(
 
 pub(crate) fn page_indicator(
     canvas: &mut Canvas<WGPURenderer>,
-    theme: Theme,
+    theme: Palette,
     node: &Node,
     geometry: &PageIndicatorGeometry,
     enabled: bool,
@@ -105,7 +130,7 @@ pub(crate) fn page_indicator(
         (
             ordinary,
             if enabled {
-                node.color("color").unwrap_or(Color(0x75859aff))
+                node.color("color").unwrap_or(theme.role(Role::Border))
             } else {
                 theme.disabled
             },
@@ -129,7 +154,7 @@ pub(crate) fn page_indicator(
 pub(crate) fn tumbler(
     canvas: &mut Canvas<WGPURenderer>,
     text: &TextSystem,
-    theme: Theme,
+    theme: Palette,
     node: &Node,
     wheel: &xrack_layout::TumblerGeometry,
     enabled: bool,
@@ -148,14 +173,21 @@ pub(crate) fn tumbler(
         },
     );
     for row in &wheel.rows {
-        let size = font_size(node).min((row.bounds.height * 0.64).max(1.0));
+        let size = text
+            .font_size(node)
+            .min((row.bounds.height * 0.64).max(1.0));
         let mut tint = color(if enabled {
-            node.color("color").unwrap_or(theme.text)
+            let foreground = if row.displacement.abs() < 0.5 {
+                theme.on_accent(theme.text)
+            } else {
+                theme.text
+            };
+            node.color("color").unwrap_or(foreground)
         } else {
             theme.disabled_text
         });
         tint.a *= (1.0 - 0.22 * row.displacement.abs()).max(0.38);
-        let paint = text.paint(size, tint, true);
+        let paint = text.paint_node_at_size(node, size, tint, true);
         canvas.save();
         canvas.intersect_scissor(
             row.bounds.x + 4.0,
@@ -179,7 +211,7 @@ pub(crate) fn split_handle(
     canvas: &mut Canvas<WGPURenderer>,
     node: &Node,
     bounds: Rect,
-    theme: Theme,
+    theme: Palette,
     enabled: bool,
     highlighted: bool,
 ) {
@@ -188,15 +220,15 @@ pub(crate) fn split_handle(
         bounds,
         0.0,
         if highlighted && enabled {
-            Color(0x405582ff)
+            theme.role(Role::HoverSurface)
         } else {
-            Color(0x25334bff)
+            theme.role(Role::InsetSurface)
         },
     );
     let tint = if highlighted && enabled {
         theme.focus
     } else {
-        node.color("color").unwrap_or(Color(0x637ca4ff))
+        node.color("color").unwrap_or(theme.role(Role::Divider))
     };
     let width = bounds.width.min(2.0);
     let height = bounds.height.min(2.0);
@@ -220,16 +252,21 @@ pub(crate) fn split_handle(
 pub(crate) fn menu_header(
     canvas: &mut Canvas<WGPURenderer>,
     text: &TextSystem,
-    theme: Theme,
+    theme: Palette,
     node: &Node,
     bounds: Rect,
     enabled: bool,
     highlighted: bool,
 ) -> Result<(), String> {
     if highlighted && enabled {
-        fill(canvas, bounds.inset(2.0), 5.0, Color(0x405582ff));
+        fill(
+            canvas,
+            bounds.inset(2.0),
+            5.0,
+            theme.role(Role::HoverSurface),
+        );
     }
-    let size = font_size(node);
+    let size = text.font_size(node);
     let tint = if enabled {
         theme.text
     } else {
@@ -240,7 +277,7 @@ pub(crate) fn menu_header(
             bounds.x + 12.0,
             bounds.y + (bounds.height - size * 1.4).max(0.0) * 0.5,
             node.text("title").unwrap_or(""),
-            &text.paint(size, color(tint), false),
+            &text.paint_node_at_size(node, size, color(tint), false),
         )
         .map(|_| ())
         .map_err(|error| format!("menu header drawing failed: {error}"))
@@ -249,14 +286,19 @@ pub(crate) fn menu_header(
 pub(crate) fn menu_panel(
     canvas: &mut Canvas<WGPURenderer>,
     text: &TextSystem,
-    theme: Theme,
+    theme: Palette,
     panel: MenuPanel<'_>,
     images: &mut Images,
     scale: f32,
 ) -> Result<(), String> {
     let bounds = panel.bounds;
-    fill(canvas, bounds, 6.0, Color(0x627596ff));
-    fill(canvas, bounds.inset(1.0), 5.0, Color(0x25334bff));
+    fill(canvas, bounds, 6.0, theme.role(Role::RaisedBorder));
+    fill(
+        canvas,
+        bounds.inset(1.0),
+        5.0,
+        theme.role(Role::InsetSurface),
+    );
     canvas.save();
     canvas.scissor(bounds.x, bounds.y, bounds.width, bounds.height);
     let result = (|| {
@@ -268,32 +310,38 @@ pub(crate) fn menu_panel(
                     canvas,
                     Rect::new(rect.x + 8.0, center, (rect.width - 16.0).max(0.0), 1.0),
                     0.0,
-                    Color(0x506483ff),
+                    theme.role(Role::StrongDivider),
                 );
                 continue;
             }
             if panel.row_highlighted(slot) && row.enabled {
-                fill(canvas, rect.inset(2.0), 4.0, Color(0x405582ff));
+                fill(canvas, rect.inset(2.0), 4.0, theme.role(Role::HoverSurface));
             }
             let tint = if row.enabled {
                 theme.text
             } else {
                 theme.disabled_text
             };
-            let paint = text.paint(15.0, color(tint), false);
+            let size = row
+                .node
+                .length("font-size")
+                .or_else(|| text.default_font_size())
+                .unwrap_or(15.0)
+                .clamp(1.0, (rect.height / 1.4).max(1.0));
+            let paint = text.paint_node_at_size(row.node, size, color(tint), false);
             if let Some(image) = row.icon {
                 images.draw_icon(canvas, image, panel.icon_bounds(slot), scale, row.enabled)?;
             }
             let left = rect.x + panel.label_offset();
             let right = rect.x + rect.width - 12.0;
-            let y = rect.y + (rect.height - 21.0).max(0.0) * 0.5;
+            let y = rect.y + (rect.height - size * 1.4).max(0.0) * 0.5;
             let mut label_end = right - if row.submenu { 10.0 } else { 0.0 };
             if let Some(shortcut) = &row.shortcut {
                 let width = text
-                    .advance(shortcut, 15.0)
+                    .advance_painted(shortcut, &paint)
                     .min((right - left).max(0.0) * 0.65);
                 if width > 0.0 {
-                    let mut shortcut_paint = text.paint(15.0, color(tint), false);
+                    let mut shortcut_paint = paint.clone();
                     shortcut_paint.set_text_align(Align::Right);
                     canvas.save();
                     canvas.intersect_scissor(right - width, rect.y, width, rect.height);
@@ -335,27 +383,28 @@ pub(crate) fn menu_panel(
 
 pub(crate) fn list_row(
     canvas: &mut Canvas<WGPURenderer>,
+    theme: Palette,
     bounds: Rect,
     selected: bool,
     hovered: bool,
     current: bool,
 ) {
     if selected {
-        fill(canvas, bounds, 0.0, Color(0x768dff38));
+        fill(canvas, bounds, 0.0, theme.role(Role::RowSelection));
         fill(
             canvas,
             Rect::new(bounds.x, bounds.y, 3.0, bounds.height),
             0.0,
-            Color(0x9aadffff),
+            theme.role(Role::SelectionOutline),
         );
     } else if hovered {
-        fill(canvas, bounds, 0.0, Color(0xb3c3ff24));
+        fill(canvas, bounds, 0.0, theme.role(Role::RowHover));
     }
     if current {
         let mut outline = Path::new();
         let inset = bounds.inset(1.0);
         outline.rect(inset.x, inset.y, inset.width, inset.height);
-        let mut paint = Paint::color(color(Color(0x9aadffff)));
+        let mut paint = Paint::color(color(theme.role(Role::SelectionOutline)));
         paint.set_line_width(1.0);
         canvas.stroke_path(&outline, &paint);
     }
@@ -363,6 +412,7 @@ pub(crate) fn list_row(
 
 pub(crate) fn tree_indicator(
     canvas: &mut Canvas<WGPURenderer>,
+    theme: Palette,
     bounds: Rect,
     expanded: bool,
     enabled: bool,
@@ -382,9 +432,9 @@ pub(crate) fn tree_indicator(
     }
     arrow.close();
     let tint = if enabled {
-        Color(0xc0d1eaff)
+        theme.role(Role::Disclosure)
     } else {
-        Color(0x687991ff)
+        theme.role(Role::DisabledDisclosure)
     };
     canvas.fill_path(&arrow, &Paint::color(color(tint)));
 }
@@ -392,7 +442,7 @@ pub(crate) fn tree_indicator(
 pub(crate) fn table_header(
     canvas: &mut Canvas<WGPURenderer>,
     text: &TextSystem,
-    theme: Theme,
+    theme: Palette,
     header: &TableHeader,
     geometry: &TableGeometry,
     clip: Rect,
@@ -402,7 +452,7 @@ pub(crate) fn table_header(
         canvas,
         geometry.header.intersect(clip),
         0.0,
-        Color(0x314363ff),
+        theme.role(Role::TableHeader),
     );
     for (index, (column, bounds)) in header.columns.iter().zip(&geometry.columns).enumerate() {
         let visible = bounds.intersect(clip);
@@ -411,7 +461,7 @@ pub(crate) fn table_header(
         }
         let (highlighted, resizing, selected) = highlights(index);
         if selected {
-            fill(canvas, visible, 0.0, Color(0x455a89ff));
+            fill(canvas, visible, 0.0, theme.role(Role::SelectedColumn));
         }
         if highlighted {
             fill(
@@ -419,9 +469,9 @@ pub(crate) fn table_header(
                 visible,
                 0.0,
                 if selected {
-                    Color(0x526899ff)
+                    theme.role(Role::ActiveColumn)
                 } else {
-                    Color(0x405582ff)
+                    theme.role(Role::HoverSurface)
                 },
             );
         }
@@ -432,11 +482,15 @@ pub(crate) fn table_header(
         if title.width > 0.0 && title.height > 0.0 {
             canvas.save();
             canvas.intersect_scissor(title.x, title.y, title.width, title.height);
+            let size = text
+                .default_font_size()
+                .unwrap_or(15.0)
+                .clamp(1.0, (bounds.height / 1.4).max(1.0));
             let result = canvas.fill_text(
                 bounds.x + 8.0,
-                bounds.y + (bounds.height - 21.0).max(0.0) * 0.5,
+                bounds.y + (bounds.height - size * 1.4).max(0.0) * 0.5,
                 column.text("title").unwrap_or(""),
-                &text.paint(15.0, color(theme.text), false),
+                &text.paint(size, color(theme.text), false),
             );
             canvas.restore();
             result.map_err(|error| format!("table header drawing failed: {error}"))?;
@@ -472,7 +526,7 @@ pub(crate) fn table_header(
                 if resizing {
                     theme.focus
                 } else {
-                    Color(0x637ca4ff)
+                    theme.role(Role::Divider)
                 },
             );
         }
@@ -494,7 +548,7 @@ fn chevron(canvas: &mut Canvas<WGPURenderer>, x: f32, y: f32, size: f32, up: boo
 pub(crate) fn spin_buttons(
     canvas: &mut Canvas<WGPURenderer>,
     geometry: &SpinGeometry,
-    theme: Theme,
+    theme: Palette,
     editable: bool,
 ) {
     let foreground = if editable {
@@ -503,7 +557,7 @@ pub(crate) fn spin_buttons(
         theme.disabled_text
     };
     for (rect, up) in [(geometry.up, true), (geometry.down, false)] {
-        fill(canvas, rect, 0.0, Color(0x384761ff));
+        fill(canvas, rect, 0.0, theme.role(Role::Control));
         chevron(
             canvas,
             rect.x + rect.width * 0.5,
@@ -518,7 +572,7 @@ pub(crate) fn spin_buttons(
 pub(crate) fn combo(
     canvas: &mut Canvas<WGPURenderer>,
     text: &TextSystem,
-    theme: Theme,
+    theme: Palette,
     node: &Node,
     bounds: Rect,
     enabled: bool,
@@ -538,10 +592,11 @@ pub(crate) fn combo(
         open,
         foreground,
     );
-    let Some(index) = combo_index(node).filter(|_| !combo_editable(node)) else {
+    let label = combo_text(node);
+    if label.is_empty() || combo_editable(node) {
         return Ok(());
-    };
-    let size = font_size(node);
+    }
+    let size = text.font_size(node);
     canvas.save();
     canvas.intersect_scissor(
         bounds.x + 8.0,
@@ -552,8 +607,8 @@ pub(crate) fn combo(
     let result = canvas.fill_text(
         bounds.x + 9.0,
         bounds.y + ((bounds.height - size * 1.4) * 0.5).max(0.0),
-        &node.strings("model")[index],
-        &text.paint(size, color(foreground), false),
+        label,
+        &text.paint_node_at_size(node, size, color(foreground), false),
     );
     canvas.restore();
     result
@@ -564,10 +619,10 @@ pub(crate) fn combo(
 pub(crate) fn menu(
     canvas: &mut Canvas<WGPURenderer>,
     text: &TextSystem,
-    theme: Theme,
+    theme: Palette,
     menu: ChoiceMenu<'_>,
 ) -> Result<(), String> {
-    fill(canvas, menu.bounds, 6.0, Color(0x27354dff));
+    fill(canvas, menu.bounds, 6.0, theme.role(Role::Surface));
     canvas.save();
     canvas.scissor(
         menu.bounds.x,
@@ -580,16 +635,32 @@ pub(crate) fn menu(
             let row = menu.row_bounds(offset);
             let index = menu.first + offset;
             if Some(index) == menu.highlighted {
-                fill(canvas, row.inset(2.0), 4.0, Color(0x435e99ff));
+                fill(
+                    canvas,
+                    row.inset(2.0),
+                    4.0,
+                    theme.role(Role::SelectedSurface),
+                );
             } else if menu.selected == Some(index) {
-                fill(canvas, row.inset(2.0), 4.0, Color(0x35466dff));
+                fill(
+                    canvas,
+                    row.inset(2.0),
+                    4.0,
+                    theme.role(Role::InactiveSelection),
+                );
             }
+            let size = menu
+                .control
+                .length("font-size")
+                .or_else(|| text.default_font_size())
+                .unwrap_or(14.0)
+                .clamp(1.0, (row.height / 1.4).max(1.0));
             canvas
                 .fill_text(
                     row.x + 10.0,
-                    row.y + ((row.height - 18.0) * 0.5).max(0.0),
+                    row.y + ((row.height - size * 1.4) * 0.5).max(0.0),
                     label,
-                    &text.paint(14.0, color(theme.text), false),
+                    &text.paint_node_at_size(menu.control, size, color(theme.text), false),
                 )
                 .map_err(|err| format!("combobox popup drawing failed: {err}"))?;
         }
@@ -602,6 +673,7 @@ pub(crate) fn menu(
 pub(crate) fn label(
     canvas: &mut Canvas<WGPURenderer>,
     text: &TextSystem,
+    node: &Node,
     bounds: Rect,
     value: &str,
     size: f32,
@@ -616,7 +688,7 @@ pub(crate) fn label(
         bounds.x,
         bounds.y + ((bounds.height - size * 1.4) * 0.5).max(0.0),
         value,
-        &text.paint(size, color(tint), false),
+        &text.paint_node_at_size(node, size, color(tint), false),
     );
     canvas.restore();
     result
@@ -626,7 +698,7 @@ pub(crate) fn label(
 
 pub(crate) fn search_icons(
     canvas: &mut Canvas<WGPURenderer>,
-    theme: Theme,
+    theme: Palette,
     node: &Node,
     geometry: &xrack_layout::SearchGeometry,
     enabled: bool,
@@ -663,7 +735,7 @@ pub(crate) fn search_icons(
 pub(crate) fn radio(
     canvas: &mut Canvas<WGPURenderer>,
     text: &TextSystem,
-    theme: Theme,
+    theme: Palette,
     node: &Node,
     bounds: Rect,
     enabled: bool,
@@ -700,6 +772,7 @@ pub(crate) fn radio(
     label(
         canvas,
         text,
+        node,
         Rect::new(
             bounds.x + 28.0,
             bounds.y,
@@ -707,7 +780,7 @@ pub(crate) fn radio(
             bounds.height,
         ),
         node.text("text").unwrap_or(""),
-        font_size(node),
+        text.font_size(node),
         foreground,
     )
 }
@@ -715,7 +788,7 @@ pub(crate) fn radio(
 pub(crate) fn group_title(
     canvas: &mut Canvas<WGPURenderer>,
     text: &TextSystem,
-    theme: Theme,
+    theme: Palette,
     node: &Node,
     bounds: Rect,
 ) -> Result<(), String> {
@@ -729,10 +802,11 @@ pub(crate) fn group_title(
         .or_else(|| node.length("padding"))
         .unwrap_or(0.0)
         .max(0.0);
-    let size = font_size(node);
+    let size = text.font_size(node);
     label(
         canvas,
         text,
+        node,
         Rect::new(
             bounds.x + left,
             bounds.y + top,
@@ -754,17 +828,18 @@ pub(crate) struct TabAppearance {
 pub(crate) fn tab(
     canvas: &mut Canvas<WGPURenderer>,
     text: &TextSystem,
-    theme: Theme,
+    theme: Palette,
     bounds: Rect,
     title: &str,
+    node: &Node,
     appearance: TabAppearance,
 ) -> Result<(), String> {
     let base = if !appearance.enabled {
         theme.disabled
     } else if appearance.selected {
-        Color(0x435e99ff)
+        theme.role(Role::SelectedSurface)
     } else {
-        Color(0x27354dff)
+        theme.role(Role::Surface)
     };
     let surface = bounds.inset(2.0);
     fill(canvas, surface, 6.0, base);
@@ -778,6 +853,7 @@ pub(crate) fn tab(
     label(
         canvas,
         text,
+        node,
         Rect::new(
             bounds.x + 10.0,
             bounds.y,
@@ -785,7 +861,9 @@ pub(crate) fn tab(
             bounds.height,
         ),
         title,
-        xrack_layout::TAB_LABEL_SIZE,
+        text.default_font_size()
+            .unwrap_or(xrack_layout::TAB_LABEL_SIZE)
+            .clamp(1.0, (bounds.height / 1.4).max(1.0)),
         if appearance.enabled {
             theme.text
         } else {

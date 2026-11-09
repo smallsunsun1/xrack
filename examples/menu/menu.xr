@@ -85,3 +85,75 @@ export component MenuDemo inherits Window {
         }
     }
 }
+
+export component ShortcutDemo inherits Window {
+    title: "XRack · 快捷键";
+    width: 532px; height: 344px;
+
+    in-out property <bool> conflict: false;
+    in-out property <bool> command-enabled: true;
+    in-out property <bool> dialog-open: false;
+    in-out property <string> draft: "";
+    out property <int> commands: 0;
+    out property <int> window-hits: 0;
+    out property <int> dialog-hits: 0;
+    out property <int> focused-hits: 0;
+    out property <int> repeats: 0;
+    out property <int> conflicts: 0;
+
+    palette-command := Action {
+        text: "命令面板";
+        shortcut: "F9";
+        enabled: root.command-enabled;
+        activated => { root.commands += 1; }
+    }
+    Shortcut {
+        action: palette-command;
+        sequences: ["Primary+K, Primary+P", "F9"];
+    }
+    Shortcut {
+        sequence: "F6";
+        activated => { root.window-hits += 1; }
+        activated-ambiguously => { root.conflicts += 1; }
+    }
+    Shortcut {
+        sequence: "F6";
+        enabled: root.conflict;
+        activated-ambiguously => { root.conflicts += 1; }
+    }
+    Shortcut {
+        sequence: "F7";
+        auto-repeat: true;
+        activated => { root.repeats += 1; }
+    }
+
+    VerticalLayout {
+        padding: 18px;
+        spacing: 8px;
+        alignment: start;
+        MenuBar { Menu { title: "操作"; MenuItem { action: palette-command; } } }
+        Text { text: "命令面板 · Primary+K 后按 Primary+P，或 F9"; }
+        Text { text: "已执行命令 · " + root.commands; }
+        GroupBox {
+            title: "编辑区 · 聚焦后按 F8";
+            height: 94px;
+            entry := LineEdit { text <=> root.draft; placeholder-text: "这里可以正常输入"; }
+            Shortcut { sequence: "F8"; focus-within: true; activated => { root.focused-hits += 1; } }
+        }
+        Text { text: "窗口 F6 · " + root.window-hits + "    F7 · " + root.repeats + "    编辑区 F8 · " + root.focused-hits; }
+        HorizontalLayout {
+            spacing: 10px;
+            conflict-toggle := CheckBox { text: "制造 F6 冲突"; checked <=> root.conflict; }
+            open-shortcut-dialog := Button { text: "打开模态窗口"; clicked => { root.dialog-open = true; } }
+        }
+        Text { text: "冲突通知 · " + root.conflicts; }
+    }
+    shortcut-dialog := Dialog {
+        open <=> root.dialog-open;
+        title: "模态窗口快捷键";
+        width: 350px;
+        Text { text: "对话框 F6 · " + root.dialog-hits; }
+        DialogButton { text: "关闭"; role: reject; }
+        Shortcut { sequence: "F6"; activated => { root.dialog-hits += 1; } }
+    }
+}

@@ -189,6 +189,20 @@ impl Builder {
                     ]);
                     self.emit("popup_command", popup.span, &[], &[], &attrs)?;
                 }
+                ir::Statement::NativeDialogOpen(open) => {
+                    let attrs = self.strings(&[("owner", &open.dialog)]);
+                    self.emit("native_dialog_open", open.span, &[], &[], &attrs)?;
+                }
+                ir::Statement::WindowClose { window_close } => {
+                    self.emit("window_close", *window_close, &[], &[], &[])?;
+                }
+                ir::Statement::SecondaryWindowCommand(command) => {
+                    let attrs = self.strings(&[
+                        ("owner", &command.secondary_window),
+                        ("command", &command.command),
+                    ]);
+                    self.emit("secondary_window_command", command.span, &[], &[], &attrs)?;
+                }
             }
         }
         if let Some(result) = &callback.result {
@@ -291,6 +305,20 @@ pub fn lower_module(doc: &Document, filename: &str) -> Result<Module, Vec<Diagno
         blocks: vec![(body, Span::default())],
         filename: filename.into(),
     };
+    for font in &doc.fonts {
+        let path: String = serde_json::from_str(&font.path).map_err(|error| {
+            vec![Diagnostic {
+                span: font.span,
+                message: format!("invalid font import path: {error}"),
+            }]
+        })?;
+        builder.filename = font.filename.as_deref().unwrap_or(filename).into();
+        let attrs = builder.strings(&[("path", &path)]);
+        builder
+            .emit("font", font.span, &[], &[], &attrs)
+            .map_err(|error| vec![error])?;
+    }
+    builder.filename = filename.into();
     for record in &doc.records {
         let fields = record
             .fields

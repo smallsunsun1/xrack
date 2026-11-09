@@ -2,14 +2,15 @@ use crate::{
     CalendarGeometry, ChoiceKey, ChoiceMenu, ComboCompletion, ComboGeometry, DialGeometry,
     EditAction, EditSource, LayoutNode, MenuEntry, MenuKey, MenuPanel, MenuShortcut,
     PageIndicatorGeometry, Point, ScrollBarGeometry, ScrollGestureEnd, ScrollGestureKind,
-    SearchGeometry, SliderGeometry, SpinGeometry, SplitGeometry, SplitHandle, StackTransitions,
-    TextEdit, TreeRowGeometry, TumblerScroll,
+    SearchGeometry, ShortcutOutcome, SliderGeometry, SpinGeometry, SplitGeometry, SplitHandle,
+    StackTransitions, TextEdit, TreeRowGeometry, TumblerScroll,
     choice::ChoicePopup,
     delay_button::{DelayHold, DelaySource},
     history::{EditHistories, EditorKey, Group, Record, TextHistory},
     menu::MenuPopup,
     modal,
     scroll_gesture::{DragMotion, FlingMotion},
+    shortcut::{self, PendingShortcut},
     split::axis_point,
     swipe_delegate::SwipeDrag,
     tooltip::{self, Source as TooltipSource, TooltipState},
@@ -23,11 +24,11 @@ use xrack_runtime::{
     CalendarAction, CalendarState, Component, ControlAction, Date, DialInputMode, DialogRole,
     DrawerEdge, ListMetrics, Node, Orientation, RangeAction, RowKey, RowSelection, SelectionTarget,
     SliderInterval, SliderRange, SpinAction, SpinDecimal, StandardButtonKind, SwipeSide,
-    TableSelectionAction, TreeAction, TreeSelectionAction, Tumbler, combo_editable, combo_index,
-    decimal_separator, delay_millis, dialog_button_action, editable_table_cell, group_index,
-    group_item, is_multiline_text_input, is_spin_box, is_text_input, is_toggle, is_window_overlay,
-    page_indicator_count, page_indicator_index, resizable_table_column, search_suggestion,
-    spin_editable, spin_text, spin_text_is_valid, text_input_value,
+    TableSelectionAction, TreeAction, TreeSelectionAction, Tumbler, combo_count, combo_editable,
+    combo_index, decimal_separator, delay_millis, dialog_button_action, editable_table_cell,
+    group_index, group_item, is_multiline_text_input, is_spin_box, is_text_input, is_toggle,
+    is_window_overlay, page_indicator_count, page_indicator_index, resizable_table_column,
+    search_suggestion, spin_editable, spin_text, spin_text_is_valid, text_input_value,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -392,6 +393,8 @@ pub struct Interaction {
     pub hovered: Option<Target>,
     pub focused: Option<Target>,
     pub pressed: Option<Target>,
+    drag: Option<crate::drag::DragSession>,
+    file_drag: crate::file_drop::FileDrag,
     hovered_scroll_bar: Option<ScrollTarget>,
     scroll_bar_press: Option<ScrollBarPress>,
     scroll_gesture: Option<ScrollGesture>,
@@ -413,6 +416,7 @@ pub struct Interaction {
     painted_combo_completion: Option<ComboCompletion>,
     dismissed_combo_draft: Option<String>,
     menu: Option<MenuPopup>,
+    pending_shortcut: Option<PendingShortcut>,
     pointer: Option<Point>,
     press_origin: Option<Point>,
     tooltip: TooltipState,
@@ -595,7 +599,7 @@ fn hit(
     if transitioning_stacks.contains(path) {
         return Hit::StackSlide;
     }
-    if node.group_checkable() && crate::group_header(node, layout.bounds).contains(point) {
+    if node.group_checkable() && layout.group_header(node).contains(point) {
         return if layout.enabled {
             Hit::Target(Target {
                 path: path.clone(),
@@ -799,7 +803,7 @@ fn eligible(node: &Node, layout: &LayoutNode) -> bool {
     let hitbox = if node.kind == "Tab" {
         layout.tab_header
     } else if layout.visible && node.kind == "GroupBox" {
-        Some(crate::group_header(node, layout.bounds))
+        Some(layout.group_header(node))
     } else if layout.visible {
         Some(layout.bounds)
     } else {
@@ -1143,6 +1147,152 @@ impl Interaction {
             .unwrap_or_default()
     }
 
+    fn drag_context<'a>(
+        &'a self,
+        scene: &'a Node,
+        layout: &'a LayoutNode,
+        point: Point,
+    ) -> crate::drag::Context<'a> {
+        crate::drag::Context {
+            scene,
+            layout,
+            scope: self.pointer_scope(layout, point),
+            modal: self.active_dialog(layout),
+            transitions: &self.transitioning_stacks,
+            blocked: self.menu_open() || self.choice_open(),
+        }
+    }
+
+    pub fn arm_drag(&mut self, scene: &Node, layout: &LayoutNode, point: Point) {
+        let competing = match self.hit_at(scene, layout, point) {
+            Hit::Target(target) => scene.at_path(&target.path).is_some_and(|node| {
+                is_text_input(node.kind)
+                    || combo_editable(node)
+                    || is_spin_box(node.kind)
+                    || matches!(
+                        node.kind,
+                        "Slider"
+                            | "Dial"
+                            | "RangeSlider"
+                            | "SplitHandle"
+                            | "TableCell"
+                            | "TreeCell"
+                            | "Tumbler"
+                            | "SwipeDelegate"
+                    )
+            }),
+            Hit::None => false,
+            _ => true,
+        };
+        self.drag = if competing {
+            None
+        } else {
+            crate::drag::DragSession::arm(self.drag_context(scene, layout, point), point)
+        };
+    }
+
+    pub fn drag_motion(
+        &mut self,
+        scene: &Node,
+        layout: &LayoutNode,
+        point: Point,
+        requested: Option<xrack_runtime::DragAction>,
+    ) -> crate::DragUpdate {
+        let Some(mut drag) = self.drag.take() else {
+            return crate::DragUpdate::default();
+        };
+        let active = drag.active();
+        let (update, keep) = drag.motion(self.drag_context(scene, layout, point), point, requested);
+        self.drag = keep.then_some(drag);
+        if update.captured && !active {
+            self.cancel_press();
+            self.pointer_leave();
+        }
+        update
+    }
+
+    pub fn finish_drag(
+        &mut self,
+        scene: &Node,
+        layout: &LayoutNode,
+        point: Point,
+        requested: Option<xrack_runtime::DragAction>,
+    ) -> crate::DragUpdate {
+        self.drag
+            .take()
+            .map_or_else(crate::DragUpdate::default, |drag| {
+                drag.finish(self.drag_context(scene, layout, point), point, requested)
+            })
+    }
+
+    pub fn cancel_drag(&mut self) -> crate::DragUpdate {
+        self.drag
+            .take()
+            .map_or_else(crate::DragUpdate::default, |mut drag| drag.cancel())
+    }
+
+    pub fn reconcile_drag(
+        &mut self,
+        scene: &Node,
+        layout: &LayoutNode,
+        requested: Option<xrack_runtime::DragAction>,
+    ) -> crate::DragUpdate {
+        let Some(mut drag) = self.drag.take() else {
+            return crate::DragUpdate::default();
+        };
+        let point = drag.point;
+        let (update, keep) =
+            drag.reconcile(self.drag_context(scene, layout, point), point, requested);
+        self.drag = keep.then_some(drag);
+        update
+    }
+
+    pub fn drag_position(&self) -> Option<Point> {
+        self.drag.as_ref().map(|drag| drag.point)
+    }
+
+    pub fn drag_action(&self) -> Option<xrack_runtime::DragAction> {
+        self.drag
+            .as_ref()
+            .and_then(crate::drag::DragSession::action)
+    }
+
+    pub fn is_drop_target(&self, node: &Node, path: &[usize]) -> bool {
+        self.drag.as_ref().is_some_and(|drag| drag.over(node, path))
+            || self.file_drag.over(node, path)
+    }
+
+    pub fn file_drop_scope(&self, layout: &LayoutNode) -> crate::FileDropScope {
+        crate::FileDropScope {
+            modal: self.active_dialog(layout).map(<[usize]>::to_vec),
+            popups: self.popups(layout).map(<[usize]>::to_vec).collect(),
+            transitions: self.transitioning_stacks.clone(),
+            blocked: self.menu_open() || self.choice_open() || self.drag_action().is_some(),
+        }
+    }
+
+    pub fn file_drag_event(
+        &mut self,
+        scene: &Node,
+        layout: &LayoutNode,
+        input: crate::FileDragInput,
+    ) -> crate::DragUpdate {
+        let scope = self.file_drop_scope(layout);
+        self.file_drag.update(&scope, scene, layout, input)
+    }
+
+    pub fn reconcile_file_drag(&mut self, scene: &Node, layout: &LayoutNode) -> crate::DragUpdate {
+        if !self.file_drag.has_hover() {
+            return crate::DragUpdate::default();
+        }
+        let scope = self.file_drop_scope(layout);
+        self.file_drag.reconcile(&scope, scene, layout)
+    }
+
+    pub fn clear_file_drag(&mut self) {
+        self.file_drag = crate::file_drop::FileDrag::default();
+    }
+
     pub fn popup_outside_press(&self, scene: &Node, layout: &LayoutNode) -> Option<ControlInput> {
         let path = self.popups(layout).next()?;
         let point = self.pointer?;
@@ -1270,6 +1420,7 @@ impl Interaction {
 
     fn set_focus(&mut self, focus: Option<Target>) {
         if self.focused != focus {
+            self.cancel_shortcut_sequence();
             self.cancel_delay();
             self.history.break_group();
             self.editor = None;
@@ -1291,7 +1442,9 @@ impl Interaction {
     }
 
     pub fn dismiss_menu(&mut self) {
-        self.menu = None;
+        if self.menu.take().is_some() {
+            self.cancel_shortcut_sequence();
+        }
     }
 
     pub fn close_menu(&mut self, scene: &Node, layout: &LayoutNode) {
@@ -1357,25 +1510,63 @@ impl Interaction {
         layout: &LayoutNode,
         key: MenuShortcut,
     ) -> Option<ControlInput> {
-        if self.choice_open()
+        if self.shortcuts_blocked() {
+            return None;
+        }
+        let scope = self.shortcut_scope(layout);
+        shortcut::single_action(
+            shortcut::bindings(
+                scene,
+                layout,
+                scope,
+                self.menu.as_ref(),
+                self.focused.as_ref(),
+            ),
+            key,
+        )
+    }
+
+    pub fn shortcut_press(
+        &mut self,
+        scene: &Node,
+        layout: &LayoutNode,
+        key: MenuShortcut,
+        repeat: bool,
+        now: Instant,
+    ) -> ShortcutOutcome {
+        let mut pending = self.pending_shortcut.take();
+        if self.shortcuts_blocked() {
+            return ShortcutOutcome::Unmatched;
+        }
+        let scope = self.shortcut_scope(layout);
+        let bindings = shortcut::bindings(
+            scene,
+            layout,
+            scope,
+            self.menu.as_ref(),
+            self.focused.as_ref(),
+        );
+        let outcome = shortcut::press(&mut pending, bindings, scope, key, repeat, now);
+        self.pending_shortcut = pending;
+        outcome
+    }
+
+    pub fn cancel_shortcut_sequence(&mut self) {
+        self.pending_shortcut = None;
+    }
+
+    fn shortcuts_blocked(&self) -> bool {
+        self.choice_open()
             || self
                 .editor
                 .as_ref()
                 .is_some_and(|edit| !edit.preedit.is_empty())
-        {
-            return None;
-        }
-        let scope = self
-            .focused_popup(layout)
+    }
+
+    fn shortcut_scope<'a>(&'a self, layout: &'a LayoutNode) -> &'a [usize] {
+        self.focused_popup(layout)
             .or_else(|| self.active_dialog(layout))
-            .unwrap_or_default();
-        let path = crate::menu::shortcut_path(scene, layout, scope, self.menu.as_ref(), key)?;
-        let action = if matches!(scene.at_path(&path)?.kind, "Button" | "ToolButton") {
-            ControlAction::ActivateAction
-        } else {
-            ControlAction::ActivateMenuItem
-        };
-        Some(ControlInput { path, action })
+            .unwrap_or_default()
     }
 
     fn target_at(&self, scene: &Node, layout: &LayoutNode, point: Point) -> Option<Target> {
@@ -1450,6 +1641,7 @@ impl Interaction {
         };
         self.dismiss_choice();
         self.set_focus(Some(target));
+        self.cancel_shortcut_sequence();
         self.menu = Some(popup);
         true
     }
@@ -1508,6 +1700,7 @@ impl Interaction {
             };
             self.dismiss_choice();
             self.cancel_press();
+            self.cancel_shortcut_sequence();
             self.menu = Some(popup);
             return true;
         }
@@ -3109,10 +3302,10 @@ impl Interaction {
         {
             return None;
         }
-        let value = crate::choice::completion_value(node.strings("model"), draft)?;
+        let value = crate::choice::completion_value(node, draft)?;
         Some(ComboCompletion {
             target: target.clone(),
-            value: value.into(),
+            value: value.into_owned(),
             draft_len: draft.len(),
         })
     }
@@ -3170,6 +3363,7 @@ impl Interaction {
             return false;
         };
         self.set_focus(Some(target));
+        self.cancel_shortcut_sequence();
         self.choice = Some(popup);
         self.pressed = None;
         self.pressed_radio = None;
@@ -3388,7 +3582,7 @@ impl Interaction {
                 action: ControlAction::AcceptComboText,
             });
         }
-        let last = node.strings("model").len().checked_sub(1)?;
+        let last = combo_count(node).checked_sub(1)?;
         let current = combo_index(node);
         let index = match key {
             ChoiceKey::Up => current.map_or(last, |index| index.saturating_sub(1)),
@@ -3525,6 +3719,7 @@ impl Interaction {
         self.hovered.take().is_some() || bar || tooltip_was_visible || cancelled_delay
     }
     pub fn pointer_press(&mut self) {
+        self.cancel_shortcut_sequence();
         self.cancel_delay();
         self.delay_pointer_claimed = false;
         if self.pointer_on_stack_slide {
@@ -4889,6 +5084,21 @@ impl Interaction {
         {
             self.dismiss_menu();
         }
+        if let Some(mut pending) = self.pending_shortcut.take()
+            && !self.shortcuts_blocked()
+        {
+            let scope = self.shortcut_scope(layout);
+            let active = shortcut::bindings(
+                scene,
+                layout,
+                scope,
+                self.menu.as_ref(),
+                self.focused.as_ref(),
+            );
+            if pending.retain_active(scope, &active) {
+                self.pending_shortcut = Some(pending);
+            }
+        }
         if let Some(point) = self.pointer {
             // Keyboard highlight should survive a layout pass with a stationary cursor.
             if !self.choice_open() && !self.menu_open() {
@@ -5010,6 +5220,7 @@ impl Interaction {
         self.dismiss_choice();
         self.dismiss_menu();
         self.cancel_press();
+        self.cancel_shortcut_sequence();
         self.set_focus(focus);
     }
     /// Move focus, returning whether revealing the focused tab requires layout.

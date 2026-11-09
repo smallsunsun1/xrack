@@ -17,12 +17,14 @@
 #include <string>
 
 namespace xrack::dialect {
-void addShareVisualBindingsPass(mlir::OpPassManager &passes);
+void addVisualCachePasses(mlir::OpPassManager &passes);
+void addScenePlanPasses(mlir::OpPassManager &passes);
 
 #define GEN_PASS_DEF_XRFOLDCONSTANTS
 #define GEN_PASS_DEF_XRSIMPLIFYEXPRESSIONS
 #define GEN_PASS_DEF_XRSIMPLIFYVISUALS
 #define GEN_PASS_DEF_XRPRUNEEXPRESSIONS
+#define GEN_PASS_DEF_XRSPECIALIZEHIDDENVISUALS
 #include "mlir/XrackPasses.h.inc"
 
 using namespace ::mlir;
@@ -443,6 +445,23 @@ struct PruneExpressions : impl::XrPruneExpressionsBase<PruneExpressions> {
         });
   }
 };
+
+struct SpecializeHiddenVisuals
+    : impl::XrSpecializeHiddenVisualsBase<SpecializeHiddenVisuals> {
+  void runOnOperation() override {
+    auto name = StringAttr::get(&getContext(), "xr.static_hidden");
+    auto marker = StringAttr::get(&getContext(), "true");
+    getOperation()->walk([&](ShowIfOp guard) {
+      if (guard->getDiscardableAttr(name))
+        guard->removeDiscardableAttr(name);
+      auto *block = guard->getBlock();
+      if (isBoolLiteral(guard.getInput(), false) &&
+          llvm::hasSingleElement(block->getOps<ShowIfOp>()) &&
+          block->getOps<RepeatOp>().empty())
+        guard->setDiscardableAttr(name, marker);
+    });
+  }
+};
 } // namespace
 
 void buildPipeline(OpPassManager &passes) {
@@ -452,6 +471,8 @@ void buildPipeline(OpPassManager &passes) {
   passes.addPass(createCanonicalizerPass());
   passes.addPass(createCSEPass());
   passes.addPass(std::make_unique<PruneExpressions>());
-  addShareVisualBindingsPass(passes);
+  passes.addPass(std::make_unique<SpecializeHiddenVisuals>());
+  addScenePlanPasses(passes);
+  addVisualCachePasses(passes);
 }
 } // namespace xrack::dialect

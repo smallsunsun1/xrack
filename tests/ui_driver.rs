@@ -98,7 +98,7 @@ impl<C: Component, T: TextMeasurer> UiDriver<C, T> {
         let item = self.layout.at_path(path).expect("target has layout");
         let node = self.scene.at_path(path).expect("target has scene node");
         let bounds = if node.group_checkable() {
-            xrack_layout::group_header(node, item.bounds)
+            item.group_header(node)
         } else {
             item.bounds
         };

@@ -53,12 +53,21 @@ pub struct LabelLayout<'a> {
 }
 
 impl<'a> LabelLayout<'a> {
-    pub fn new(node: &'a Node, available: Size, mut advance: impl FnMut(&str) -> f32) -> Self {
+    pub fn new(node: &'a Node, available: Size, advance: impl FnMut(&str) -> f32) -> Self {
+        Self::with_font_size(node, available, font_size(node), advance)
+    }
+
+    pub fn with_font_size(
+        node: &'a Node,
+        available: Size,
+        size: f32,
+        mut advance: impl FnMut(&str) -> f32,
+    ) -> Self {
         use TextHorizontalAlignment as Horizontal;
         use TextVerticalAlignment as Vertical;
 
         let text = node.text("text").unwrap_or("");
-        let line_height = font_size(node) * 1.4;
+        let line_height = size * 1.4;
         let elide =
             node.properties.get("overflow") == Some(&Value::TextOverflow(TextOverflow::Elide));
         let horizontal = match node.properties.get("horizontal-alignment") {

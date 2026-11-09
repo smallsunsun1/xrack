@@ -50,6 +50,7 @@ pub fn parse_document(
         next_module: 0,
         components: Vec::new(),
         records: Vec::new(),
+        fonts: Vec::new(),
     };
     if let Ok(canonical) = file.canonicalize() {
         loader.active.insert(canonical);
@@ -57,6 +58,7 @@ pub fn parse_document(
     loader.resolve(entry, file, true)?;
     Ok(ast::Document {
         imports: Vec::new(),
+        fonts: loader.fonts,
         records: loader.records,
         components: loader.components,
     })
@@ -71,6 +73,7 @@ struct Loader {
     next_module: usize,
     components: Vec<ast::Component>,
     records: Vec<ast::RecordDef>,
+    fonts: Vec<ast::FontImport>,
 }
 
 impl Loader {
@@ -189,6 +192,11 @@ impl Loader {
                 })?;
             relative_directory(&self.base, &actual)
         };
+        for mut font in doc.fonts {
+            rebase_asset(&mut font.path, &asset_prefix);
+            font.filename = Some(file.to_string_lossy().into_owned());
+            self.fonts.push(font);
+        }
         for mut record in doc.records {
             record.name = names[&record.name].clone();
             for field in &mut record.fields {
@@ -301,18 +309,20 @@ fn rewrite_members(
     Ok(())
 }
 
+fn rebase_asset(spelling: &mut String, prefix: &Path) {
+    if let Ok(url) = serde_json::from_str::<String>(spelling)
+        && !url.is_empty()
+        && Path::new(&url).is_relative()
+        && !url.contains(':')
+    {
+        *spelling = serde_json::to_string(&prefix.join(url).to_string_lossy()).unwrap();
+    }
+}
+
 fn rewrite_expr(expr: &mut ast::Expr, prefix: &Path, names: &BTreeMap<String, String>) {
     use ast::ExprKind::*;
     match &mut expr.kind {
-        ImageUrl(spelling) => {
-            if let Ok(url) = serde_json::from_str::<String>(spelling)
-                && !url.is_empty()
-                && Path::new(&url).is_relative()
-                && !url.contains(':')
-            {
-                *spelling = serde_json::to_string(&prefix.join(url).to_string_lossy()).unwrap();
-            }
-        }
+        ImageUrl(spelling) => rebase_asset(spelling, prefix),
         Unary { value, .. } => rewrite_expr(value, prefix, names),
         Binary { left, right, .. } => {
             rewrite_expr(left, prefix, names);

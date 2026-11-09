@@ -80,6 +80,49 @@ export component SelectionDemo inherits Window {
     }
 }
 
+export struct WorkspaceOption { code: int, title: string, notes: string }
+
+export component RecordComboDemo inherits Window {
+    title: "XRack · 记录下拉框";
+    width: 472px; height: 296px;
+    color-scheme: system;
+
+    in-out property <[WorkspaceOption]> options: [
+        WorkspaceOption { code: 200, title: "共享工作区", notes: "团队 B" },
+        WorkspaceOption { code: 100, title: "共享工作区", notes: "团队 A" },
+        WorkspaceOption { code: 300, title: "归档", notes: "只读归档" }
+    ];
+    in-out property <int> code: 200;
+    in-out property <bool> editable: false;
+    out property <int> selected-code: -1;
+    out property <string> selected-label: "";
+    out property <string> accepted-text: "";
+    callback reorder;
+
+    Text { x: 20px; y: 16px; text: "记录模型与业务编号"; font-size: 22px; }
+    choice := ComboBox {
+        x: 20px; y: 62px; width: 258px; height: 38px;
+        accessible-name: "工作区选择";
+        model: root.options;
+        text-role: "title";
+        value-role: "code";
+        current-value <=> root.code;
+        editable: root.editable;
+        selected(label) => { root.selected-label = label; }
+        value-selected(value) => { root.selected-code = value; }
+        accepted(text) => { root.accepted-text = text; }
+    }
+    reorder-options := Button {
+        x: 294px; y: 62px; width: 156px; height: 38px;
+        text: "按编号重排";
+        clicked => { root.reorder(); }
+    }
+    enable-editing := CheckBox { x: 20px; y: 136px; text: "允许编辑"; checked <=> root.editable; }
+    Text { x: 20px; y: 182px; text: "当前编号 · " + root.code; }
+    Text { x: 20px; y: 213px; text: "已选择编号 · " + root.selected-code; }
+    Text { x: 20px; y: 246px; text: "已提交文本 · " + root.accepted-text; }
+}
+
 export component EditableChoiceDemo inherits Window {
     in-out property <[string]> workspaces: ["总部", "设计", "研发", "研发预览"];
     in-out property <int> active: 0;

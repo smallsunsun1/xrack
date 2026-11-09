@@ -24,6 +24,191 @@ fn compiler_errors_retain_source_diagnostics() {
 }
 
 #[test]
+fn drag_areas_verify_action_types_and_generate_typed_event_routes() {
+    let source = r#"export component App inherits Window {
+        out property <DragAction> result: none;
+        source := DragArea {
+            data: "ticket"; drag-key: "tasks"; allow-move: true;
+            drag-finished(action) => { root.result = action; }
+        }
+        target := DropArea {
+            drop-action: move;
+            dropped(data, action) => { root.result = action; }
+        }
+    }"#;
+    let compiled = compile(source, "drag.xr").unwrap();
+    assert!(compiled.mlir.contains("!xr.dragaction"));
+    assert!(compiled.rust.to_string().contains("DragEvent :: Dropped"));
+    let invalid = source.replace("drop-action: move", "drop-action: true");
+    assert!(
+        compile(&invalid, "drag.xr")
+            .err()
+            .unwrap()
+            .contains("type mismatch")
+    );
+    let raw = lower(source, "drag.xr");
+    let invalid = raw.replace("name = \"drop-action\"", "name = \"keys\"");
+    assert!(
+        mlir::process(&invalid)
+            .unwrap_err()
+            .contains("incorrect drag-and-drop property type")
+    );
+    let invalid = raw.replace("name = \"dropped\"", "name = \"exited\"");
+    assert!(
+        mlir::process(&invalid)
+            .unwrap_err()
+            .contains("invalid drag-and-drop event or signature")
+    );
+}
+
+#[test]
+fn native_file_drop_uses_a_typed_string_list_event() {
+    let source = r#"export component App inherits Window {
+        out property <[string]> selection: [];
+        inbox := DropArea {
+            accept-files: true;
+            file-extensions: ["png", "jpg"];
+            files-dropped(paths) => { root.selection = paths; }
+        }
+    }"#;
+    let compiled = compile(source, "files.xr").unwrap();
+    assert!(compiled.mlir.contains("files-dropped"));
+    assert!(
+        compiled
+            .rust
+            .to_string()
+            .contains("DragEvent :: FilesDropped")
+    );
+    let invalid = source.replace("accept-files: true", "accept-files: 1");
+    assert!(
+        compile(&invalid, "files.xr")
+            .err()
+            .unwrap()
+            .contains("type mismatch")
+    );
+    let raw = lower(source, "files.xr");
+    let invalid = raw.replace("name = \"file-extensions\"", "name = \"drop-action\"");
+    assert!(
+        mlir::process(&invalid)
+            .unwrap_err()
+            .contains("incorrect drag-and-drop property type")
+    );
+    let invalid = raw.replace("name = \"files-dropped\"", "name = \"dropped\"");
+    assert!(
+        mlir::process(&invalid)
+            .unwrap_err()
+            .contains("invalid drag-and-drop event or signature")
+    );
+}
+
+#[test]
+fn window_and_control_fonts_keep_typed_bindings_through_mlir() {
+    let source = r#"
+        export component App inherits Window {
+            in property <string> family: "monospace";
+            default-font-family: root.family;
+            default-font-size: 19px;
+            default-font-weight: 400;
+            default-font-italic: true;
+            Label { text: "sample"; font-weight: 700; font-italic: false; }
+            LineEdit { font-family: "Arial"; }
+        }
+    "#;
+    let output = compile(source, "fonts.xr").unwrap();
+    for property in [
+        "default-font-family",
+        "default-font-size",
+        "default-font-weight",
+        "default-font-italic",
+        "font-family",
+        "font-weight",
+        "font-italic",
+    ] {
+        assert!(output.mlir.contains(&format!("name = \"{property}\"")));
+    }
+    let wrong = source.replace("font-weight: 700", "font-weight: true");
+    assert!(
+        compile(&wrong, "fonts.xr")
+            .err()
+            .unwrap()
+            .contains("type mismatch")
+    );
+
+    let raw = lower(source, "fonts.xr");
+    let wrong = raw.replace("name = \"font-italic\"", "name = \"font-family\"");
+    assert!(
+        mlir::process(&wrong)
+            .unwrap_err()
+            .contains("incorrect text font property or type")
+    );
+    let wrong = raw.replace("name = \"font-weight\"", "name = \"default-font-weight\"");
+    assert!(
+        mlir::process(&wrong)
+            .unwrap_err()
+            .contains("incorrect window font property or type")
+    );
+}
+
+#[test]
+fn font_imports_are_verified_in_the_declaring_module_and_embedded_once() {
+    use std::{fs, path::PathBuf};
+    use xrack_compiler::{check_resources, generate_rust, parse_document};
+
+    let directory = std::env::var_os("TEST_TMPDIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir)
+        .join(format!("xrack-font-import-{}", std::process::id()));
+    let dependency = directory.join("parts/font.xr");
+    let font = directory.join("parts/demo.ttc");
+    fs::create_dir_all(font.parent().unwrap()).unwrap();
+    fs::write(
+        &dependency,
+        "import \"demo.ttc\";\nexport component FontLabel inherits Label { text: \"XRACK\"; }\n",
+    )
+    .unwrap();
+    let font_data = include_bytes!("../examples/layout/fonts/demo.ttc");
+    fs::write(&font, font_data).unwrap();
+    let source = r#"import { FontLabel } from "parts/font.xr";
+        import "./parts/demo.ttc";
+        export component App inherits Window { sample := FontLabel {} }
+    "#;
+    let filename = directory.join("app.xr");
+    let filename = filename.to_str().unwrap();
+    let doc = parse_document(source, filename, Some(std::slice::from_ref(&dependency))).unwrap();
+    let module = xrack_compiler::lower(&doc, filename).unwrap();
+    let imports: Vec<_> = module
+        .operations()
+        .filter(|op| op.name() == "xr.font")
+        .collect();
+    assert_eq!(imports.len(), 2);
+    assert_eq!(imports[0].attr("path").unwrap(), "parts/demo.ttc");
+    assert_eq!(imports[0].source_file(), dependency.to_str());
+    let rust = generate_rust(&module, filename, Some(std::slice::from_ref(&font)))
+        .unwrap()
+        .to_string();
+    assert_eq!(rust.matches("b\"ttcf").count(), 1);
+    let missing = check_resources(&module, filename, Some(&[]))
+        .unwrap_err()
+        .to_string();
+    assert!(missing.contains("parts/font.xr:1:1") && missing.contains("not declared"));
+
+    fs::write(&font, b"ttcf\0\x01\0\0\xFF\xFF\xFF\xFF").unwrap();
+    let invalid = check_resources(&module, filename, None)
+        .unwrap_err()
+        .to_string();
+    assert!(invalid.contains("1 and 256 faces"), "{invalid}");
+    fs::write(&font, b"invalid font").unwrap();
+    let invalid = check_resources(&module, filename, None)
+        .unwrap_err()
+        .to_string();
+    assert!(
+        invalid.contains("parts/font.xr:1:1") && invalid.contains("invalid font face 0"),
+        "{invalid}"
+    );
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
 fn standard_table_checks_column_fields_in_source_and_mlir() {
     let source = r#"
         export struct Part { device-name: string, count: int, time: Time, color: color }
@@ -402,6 +587,302 @@ fn time_picker_verifies_types_events_and_time_fields_in_mlir() {
         .unwrap()
         .contains("type mismatch")
     );
+}
+
+#[test]
+fn combo_roles_and_business_value_types_are_verified() {
+    let source = r#"
+        struct OptionRow { title: string, key: int }
+        export component App inherits Window {
+            in-out property <[OptionRow]> rows: [OptionRow { title: "One", key: 1 }];
+            in-out property <int> selection: 1;
+            choice := ComboBox {
+                model: root.rows;
+                text-role: "title";
+                value-role: "key";
+                current-value <=> root.selection;
+                value-selected(value) => { root.selection = value; }
+            }
+        }
+    "#;
+    let compiled = compile(source, "combo_roles.xr").unwrap();
+    assert!(compiled.mlir.contains("!xr.recordlist"));
+    assert!(compiled.rust.to_string().contains("ComboItems :: new"));
+    let raw = lower(source, "combo_roles.xr");
+    let bad_role = raw.replace(r#"value = "\22key\22""#, r#"value = "\22title\22""#);
+    assert!(
+        mlir::process(&bad_role)
+            .unwrap_err()
+            .contains("ComboBox current-value requires string")
+    );
+    assert!(
+        compile(
+            &source.replace("text-role: \"title\"", "text-role: \"key\""),
+            "combo_roles.xr"
+        )
+        .is_err()
+    );
+    assert!(
+        compile(
+            &source.replace("value-role: \"key\"", "value-role: \"unknown\""),
+            "combo_roles.xr"
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn secondary_windows_require_a_window_component_and_typed_visibility() {
+    let source = r#"
+        component Content inherits Window { title: "Inspector"; }
+        component Panel inherits Rectangle {}
+        export component App inherits Window {
+            in-out property <bool> inspecting: false;
+            inspector := SecondaryWindow { visible <=> root.inspecting; Content {} }
+            open := Button { clicked => { inspector.show(); } }
+        }
+    "#;
+    let compiled = compile(source, "secondary.xr").unwrap();
+    assert!(compiled.mlir.contains("xr.secondary_window_command"));
+    assert!(compiled.rust.to_string().contains("SecondaryWindowSlot"));
+    let raw = lower(source, "secondary.xr");
+    let wrong_root = raw.replace("component = @Content", "component = @Panel");
+    assert!(
+        mlir::process(&wrong_root)
+            .unwrap_err()
+            .contains("SecondaryWindow requires a component rooted in Window")
+    );
+    let wrong_command = raw.replace("command = \"show\"", "command = \"raise\"");
+    assert!(
+        mlir::process(&wrong_command)
+            .unwrap_err()
+            .contains("requires show, hide, or close")
+    );
+    assert!(compile(&source.replace("Content {}", "Panel {}"), "secondary.xr").is_err());
+    assert!(
+        compile(
+            &source.replace("Content {}", "Content { width: 200px; }"),
+            "secondary.xr"
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn window_close_commands_and_guard_results_are_verified() {
+    let source = r#"
+        export component App inherits Window {
+            close-requested() => { false }
+            quit := Button { clicked => { root.close(); } }
+        }
+    "#;
+    let compiled = compile(source, "close.xr").unwrap();
+    assert!(compiled.mlir.contains("xr.window_close"));
+    assert!(compiled.mlir.contains("xr.return"));
+    assert!(
+        compiled
+            .rust
+            .to_string()
+            .contains("take_window_close_request")
+    );
+
+    let raw = lower(source, "close.xr");
+    let wrong_type = raw
+        .replace("value = \"false\"", "value = \"1\"")
+        .replace("!xr.bool", "!xr.int");
+    assert!(
+        mlir::process(&wrong_type)
+            .unwrap_err()
+            .contains("close-requested requires no parameters and a bool result")
+    );
+    let wrong_event = raw.replace("name = \"close-requested\"", "name = \"clicked\"");
+    assert!(
+        mlir::process(&wrong_event)
+            .unwrap_err()
+            .contains("only close-requested may return a value")
+    );
+    let missing = source.replace("{ false }", "{ }");
+    assert!(
+        compile(&missing, "close.xr")
+            .err()
+            .unwrap()
+            .contains("close-requested must return a bool")
+    );
+}
+
+#[test]
+fn file_dialog_open_and_result_signatures_are_verified() {
+    let source = r#"
+        export component App inherits Window {
+            out property <[string]> paths: [];
+            callback choose;
+            choose => { picker.open(); }
+            picker := FileDialog {
+                mode: open-files;
+                name-filters: ["Text files (*.txt)"];
+                accepted(files) => { root.paths = files; }
+            }
+        }
+    "#;
+    let compiled = compile(source, "files.xr").unwrap();
+    assert!(compiled.mlir.contains("xr.native_dialog_open"));
+    assert!(compiled.mlir.contains("!xr.filedialogmode"));
+    assert!(compiled.rust.to_string().contains("NativeDialogSlot"));
+    let raw = lower(source, "files.xr");
+    assert!(mlir::process(&raw.replace("xr.native_dialog_open", "xr.file_dialog_open")).is_ok());
+    let wrong_owner = raw.replace("owner = \"picker\"", "owner = \"root\"");
+    assert!(
+        mlir::process(&wrong_owner)
+            .unwrap_err()
+            .contains("requires a native dialog owner")
+    );
+    let bad_event = raw.replace("name = \"accepted\"", "name = \"failed\"");
+    assert!(
+        mlir::process(&bad_event)
+            .unwrap_err()
+            .contains("FileDialog requires accepted([string])")
+    );
+    let pure = source.replace("callback choose;", "pure callback choose;");
+    assert!(
+        compile(&pure, "files.xr")
+            .err()
+            .unwrap()
+            .contains("FileDialog.open() is not allowed in a pure callback")
+    );
+}
+
+#[test]
+fn message_dialog_has_typed_buttons_levels_and_results() {
+    let source = r#"
+        export component App inherits Window {
+            out property <StandardButtonKind> button;
+            callback ask;
+            ask => { prompt.open(); }
+            prompt := MessageDialog {
+                level: warning;
+                buttons: MessageButtons.yes-no-cancel;
+                text: "Replace settings?";
+                finished(answer) => { root.button = answer; }
+            }
+        }
+    "#;
+    let compiled = compile(source, "message.xr").unwrap();
+    assert!(compiled.mlir.contains("!xr.messagebuttons"));
+    assert!(compiled.mlir.contains("!xr.messagelevel"));
+    assert!(
+        compiled
+            .rust
+            .to_string()
+            .contains("NativeDialogResult :: Button")
+    );
+    let raw = lower(source, "message.xr");
+    let bad_type = raw.replace("name = \"buttons\"", "name = \"level\"");
+    assert!(
+        mlir::process(&bad_type)
+            .unwrap_err()
+            .contains("incorrect MessageDialog property or type")
+    );
+    let bad_event = raw.replace("name = \"finished\"", "name = \"canceled\"");
+    assert!(
+        mlir::process(&bad_event)
+            .unwrap_err()
+            .contains("invalid MessageDialog result handler or signature")
+    );
+}
+
+#[test]
+fn shortcut_bindings_and_action_links_are_checked_in_mlir() {
+    let source = r#"
+        export component App inherits Window {
+            out property <int> hits: 0;
+            save := Action { shortcut: "Primary+S"; activated => { root.hits += 1; } }
+            Shortcut { action: save; sequences: ["Primary+K, Primary+S", "F9"]; }
+            Shortcut { sequence: "F6"; activated-ambiguously => { root.hits += 2; } }
+        }
+    "#;
+    let output = compile(source, "shortcuts.xr").unwrap();
+    assert!(output.mlir.contains("kind = \"Shortcut\""));
+    assert!(output.rust.to_string().contains("ActivateShortcut"));
+    let raw = lower(source, "shortcuts.xr");
+    let bad_type = raw.replace("name = \"sequences\"", "name = \"sequence\"");
+    assert!(
+        mlir::process(&bad_type)
+            .unwrap_err()
+            .contains("incorrect Shortcut property or type")
+    );
+    let bad_event = raw.replace("name = \"activated-ambiguously\"", "name = \"clicked\"");
+    assert!(
+        mlir::process(&bad_event)
+            .unwrap_err()
+            .contains("Shortcut requires an activation handler")
+    );
+    let ambiguous_source =
+        source.replace("sequence: \"F6\"", "sequence: \"F6\"; sequences: [\"F7\"]");
+    assert!(compile(&ambiguous_source, "shortcuts.xr").is_err());
+}
+
+#[test]
+fn window_palette_is_typed_in_xr_and_mlir() {
+    let source = r#"
+        export component App inherits Window {
+            in-out property <ColorScheme> scheme: ColorScheme.light;
+            color-scheme: root.scheme;
+            accent-color: #c36728;
+            Button { text: "Preview"; }
+        }
+    "#;
+    let output = compile(source, "theme.xr").unwrap();
+    assert!(output.mlir.contains("!xr.colorscheme"));
+    assert!(output.rust.to_string().contains("ColorScheme :: Light"));
+    let raw = lower(source, "theme.xr");
+    let bad_binding = raw.replace("name = \"accent-color\"", "name = \"color-scheme\"");
+    assert!(
+        mlir::process(&bad_binding)
+            .unwrap_err()
+            .contains("incorrect window palette property or type")
+    );
+    let bad_variant = raw.replace("value = \"light\"", "value = \"sepia\"");
+    assert!(mlir::process(&bad_variant).is_err());
+    let bad_owner = source.replace(
+        "Button { text: \"Preview\"; }",
+        "Button { color-scheme: dark; }",
+    );
+    assert!(compile(&bad_owner, "theme.xr").is_err());
+}
+
+#[test]
+fn color_popup_verifies_control_links_and_callback_types() {
+    let source = r#"
+        export component App inherits Window {
+            in-out property <color> selected: #124380a0;
+            in-out property <bool> shown: false;
+            out property <color> accepted-color;
+            picker := ColorPickerPopup {
+                open <=> root.shown;
+                color <=> root.selected;
+                show-alpha: true;
+                accepted(value) => { root.accepted-color = value; }
+            }
+        }
+    "#;
+    let raw = lower(source, "color.xr");
+    assert!(raw.contains("!xr.color"));
+    let compiled = compile(source, "color.xr").unwrap();
+    assert!(compiled.rust.to_string().contains("ColorPopupState"));
+    let bad_binding = raw.replace("name = \"show-alpha\"", "name = \"color\"");
+    assert!(
+        mlir::process(&bad_binding)
+            .unwrap_err()
+            .contains("incorrect color picker property type")
+    );
+    let bad_event = raw.replace("name = \"accepted\"", "name = \"canceled\"");
+    assert!(
+        mlir::process(&bad_event)
+            .unwrap_err()
+            .contains("invalid picker event or signature")
+    );
+    let bad_source = source.replace("color <=> root.selected", "color <=> root.shown");
+    assert!(compile(&bad_source, "color.xr").is_err());
 }
 
 #[test]

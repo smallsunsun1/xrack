@@ -2,18 +2,21 @@ pub mod ui_driver;
 
 use async_ui::AsyncDemo;
 use controls_ui::{
-    CalendarDemo, CheckStateDemo, DecimalPrice, DecimalSpinDemo, DelayDemo, GroupBoxDemo,
-    ReviewRow, TimeDemo, TimerDemo, TumblerDemo,
+    CalendarDemo, CheckStateDemo, ColorDemo, DecimalPrice, DecimalSpinDemo, DelayDemo,
+    GroupBoxDemo, ReviewRow, TimeDemo, TimerDemo, TumblerDemo,
 };
 use counter_ui::Counter;
 use delegates_ui::SwipeDemo;
 use dialog_ui::{DialogDemo, PopupDemo, StandardDialogDemo};
-use form_ui::ValidationDemo;
+use form_ui::{
+    CloseGuardDemo, DragDropDemo, FileDialogDemo, FileDropDemo, MessageDialogDemo, ValidationDemo,
+    VirtualDragDemo,
+};
 use list_ui::{DirectoryItem, GridDemo, StandardListDemo};
-use menu_ui::MenuDemo;
+use menu_ui::{MenuDemo, ShortcutDemo};
 use navigation_ui::{PageDemo, StackDemo, TabBarDemo};
 use records_ui::{RecordTableDemo, StockRow};
-use selection_ui::{EditableChoiceDemo, SelectionDemo};
+use selection_ui::{EditableChoiceDemo, RecordComboDemo, SelectionDemo};
 use split_ui::SplitDemo;
 use std::time::{Duration, Instant};
 use table_ui::{InventoryRow, StandardTableDemo, TableDemo};
@@ -22,17 +25,462 @@ use tree_ui::{TreeDemo, TreeRecord};
 use ui_driver::UiDriver;
 use xrack_layout::{
     ActivationKey, CalendarGeometry, ChoiceKey, EditAction, EditSource, Interaction, MenuKey,
-    NavigationKey, Point, Rect, ScrollGestureKind, Size, SliderKey, SpinGeometry, TableGeometry,
-    TableSelectionKey, TextMeasurer, TreeRowGeometry, layout_tooltip, prepare_scene,
+    NavigationKey, Point, Rect, ScrollGestureKind, ShortcutOutcome, Size, SliderKey, SpinGeometry,
+    TableGeometry, TableSelectionKey, TextMeasurer, TreeRowGeometry, layout_tooltip, prepare_scene,
     prepare_scene_with_input,
 };
 use xrack_runtime::{
-    CalendarAction, CheckState, Component, ControlAction, Date, DialogRole, Orientation, Property,
-    RangeAction, RowSelection, SelectionTarget, SpinAction, StandardButtonKind, SwipeSide,
-    TableSelectionAction, TableSort, Time, TreeAction, TreeSelectionAction,
+    CalendarAction, CheckState, Color, Component, ControlAction, Date, DialogRole, Orientation,
+    Property, RangeAction, RowSelection, SelectionTarget, SpinAction, StandardButtonKind,
+    SwipeSide, TableSelectionAction, TableSort, Time, TreeAction, TreeSelectionAction,
 };
 
 struct FixedText;
+
+#[test]
+fn native_file_drop_filters_a_whole_batch_and_revalidates_the_release_route() {
+    use std::sync::Arc;
+    use xrack_layout::FileDragInput;
+
+    let path = |name| std::env::temp_dir().join(name).to_str().unwrap().to_owned();
+    let paths: Arc<[String]> = [path("照片 1.PNG"), path("two.jpg")].into();
+    let mixed = [paths[0].clone(), path("notes.txt")];
+    let images = Point { x: 100.0, y: 110.0 };
+    let documents = Point { x: 330.0, y: 110.0 };
+    let mut ui = FileDropDemo::new();
+    let mut input = Interaction::default();
+    let prepare = |ui: &FileDropDemo| {
+        let scene = ui.render_shared();
+        let layout = xrack_layout::layout(&scene, Size::new(536.0, 310.0), &mut FixedText);
+        (scene, layout)
+    };
+    let dispatch =
+        |ui: &mut FileDropDemo, scene: &xrack_runtime::Node, update: xrack_layout::DragUpdate| {
+            for event in update.events {
+                assert!(event.apply(ui, scene));
+            }
+        };
+    let (scene, layout) = prepare(&ui);
+    let scope = input.file_drop_scope(&layout);
+    assert!(scope.target(&scene, &layout, images, &mixed).is_none());
+    assert!(
+        scope
+            .target(&scene, &layout, images, &["relative.png".into()])
+            .is_none()
+    );
+    let target = scope.target(&scene, &layout, images, &paths).unwrap();
+    assert_eq!(target.id, Some("images"));
+    assert!(scope.target(&scene, &layout, documents, &paths).is_none());
+
+    let move_to = |sequence, point| FileDragInput::Moved {
+        sequence,
+        point,
+        paths: paths.clone(),
+    };
+    let drop_at = |sequence| FileDragInput::Dropped {
+        sequence,
+        point: images,
+        paths: paths.clone(),
+        target: target.clone(),
+    };
+    dispatch(
+        &mut ui,
+        &scene,
+        input.file_drag_event(&scene, &layout, move_to(1, images)),
+    );
+    assert_eq!(ui.get_preview(), paths.as_ref());
+    dispatch(
+        &mut ui,
+        &scene,
+        input.file_drag_event(&scene, &layout, move_to(1, documents)),
+    );
+    assert!(ui.get_preview().is_empty());
+    dispatch(
+        &mut ui,
+        &scene,
+        input.file_drag_event(&scene, &layout, move_to(1, images)),
+    );
+    dispatch(
+        &mut ui,
+        &scene,
+        input.file_drag_event(&scene, &layout, drop_at(1)),
+    );
+    assert!(
+        input
+            .file_drag_event(&scene, &layout, drop_at(1))
+            .events
+            .is_empty()
+    );
+    assert_eq!(ui.get_paths(), paths.as_ref());
+    assert_eq!(ui.get_zone(), "图片");
+    assert_eq!(ui.get_batches(), 1);
+    assert!(ui.get_preview().is_empty());
+
+    dispatch(
+        &mut ui,
+        &scene,
+        input.file_drag_event(&scene, &layout, move_to(2, images)),
+    );
+    ui.set_images_enabled(false);
+    let (current, layout) = prepare(&ui);
+    dispatch(
+        &mut ui,
+        &current,
+        input.file_drag_event(&current, &layout, drop_at(2)),
+    );
+    assert_eq!(ui.get_batches(), 1);
+    assert!(ui.get_preview().is_empty());
+}
+
+#[test]
+fn dragging_preserves_clicks_negotiates_targets_and_freezes_the_payload() {
+    use xrack_runtime::DragAction;
+
+    let mut ui = DragDropDemo::new();
+    let mut input = Interaction::default();
+    let viewport = Size::new(560.0, 258.0);
+    let start = Point { x: 102.0, y: 117.0 };
+    let tiny = Point { x: 105.0, ..start };
+    let target = Point { x: 420.0, y: 117.0 };
+    let prepare = |ui: &DragDropDemo| {
+        let scene = ui.render_shared();
+        let layout = xrack_layout::layout(&scene, viewport, &mut FixedText);
+        (scene, layout)
+    };
+    let dispatch =
+        |ui: &mut DragDropDemo, scene: &xrack_runtime::Node, update: xrack_layout::DragUpdate| {
+            assert!(update.captured);
+            for event in update.events {
+                assert!(event.apply(ui, scene));
+            }
+        };
+    let (scene, layout) = prepare(&ui);
+    input.pointer_move(&scene, &layout, start);
+    input.pointer_press();
+    input.arm_drag(&scene, &layout, start);
+    assert!(!input.drag_motion(&scene, &layout, tiny, None).captured);
+    input.pointer_move(&scene, &layout, tiny);
+    assert!(!input.finish_drag(&scene, &layout, tiny, None).captured);
+    let clicked = input.pointer_release_target().unwrap();
+    assert!(ui.dispatch_at(&scene, &clicked.path, "clicked"));
+    assert_eq!(ui.get_clicks(), 1);
+
+    input.pointer_move(&scene, &layout, start);
+    input.pointer_press();
+    input.arm_drag(&scene, &layout, start);
+    dispatch(
+        &mut ui,
+        &scene,
+        input.drag_motion(&scene, &layout, target, Some(DragAction::Copy)),
+    );
+    assert_eq!(ui.get_trace(), "start-enter");
+    assert_eq!(ui.get_last_x().0, 94.0);
+    assert!(input.pressed.is_none());
+    ui.set_payload("new value".into());
+    let (scene, layout) = prepare(&ui);
+    dispatch(
+        &mut ui,
+        &scene,
+        input.finish_drag(&scene, &layout, target, Some(DragAction::Copy)),
+    );
+    assert_eq!(ui.get_trace(), "start-enter-drop-finish");
+    assert_eq!(ui.get_received(), "XR-42");
+    assert_eq!(ui.get_result(), DragAction::Copy);
+    assert!(ui.get_card_present());
+
+    input.arm_drag(&scene, &layout, start);
+    dispatch(
+        &mut ui,
+        &scene,
+        input.drag_motion(&scene, &layout, target, Some(DragAction::Link)),
+    );
+    assert_eq!(input.drag_action(), Some(DragAction::None));
+    assert_eq!(ui.get_trace(), "start");
+    dispatch(
+        &mut ui,
+        &scene,
+        input.drag_motion(&scene, &layout, target, None),
+    );
+    dispatch(&mut ui, &scene, input.cancel_drag());
+    assert_eq!(ui.get_result(), DragAction::None);
+    assert_eq!(ui.get_trace(), "start-enter-exit-finish");
+    assert_eq!(ui.get_received(), "XR-42");
+
+    input.arm_drag(&scene, &layout, start);
+    dispatch(
+        &mut ui,
+        &scene,
+        input.drag_motion(&scene, &layout, target, None),
+    );
+    ui.set_target_enabled(false);
+    let (scene, layout) = prepare(&ui);
+    let leaving = input.reconcile_drag(&scene, &layout, None);
+    assert_eq!(leaving.events.len(), 1);
+    assert!(
+        leaving
+            .events
+            .into_iter()
+            .next()
+            .unwrap()
+            .apply(&mut ui, &scene)
+    );
+    dispatch(
+        &mut ui,
+        &scene,
+        input.finish_drag(&scene, &layout, target, None),
+    );
+    assert_eq!(ui.get_trace(), "start-enter-exit-finish");
+    assert_eq!(ui.get_result(), DragAction::None);
+
+    ui.set_source_enabled(false);
+    let (scene, layout) = prepare(&ui);
+    input.arm_drag(&scene, &layout, start);
+    assert!(input.drag_position().is_none());
+    let mut driver = UiDriver::new(ui, FixedText, viewport);
+    driver.click("card");
+    assert_eq!(driver.component().get_clicks(), 2);
+}
+
+#[test]
+fn recycled_drag_routes_cannot_dispatch_to_a_different_model_row() {
+    use xrack_runtime::DragEvent;
+
+    let mut ui = VirtualDragDemo::new();
+    let mut input = Interaction::default();
+    let prepare = |ui: &VirtualDragDemo, input: &Interaction| {
+        prepare_scene_with_input(
+            ui,
+            ui.render_shared(),
+            Size::new(360.0, 180.0),
+            &mut FixedText,
+            input,
+        )
+    };
+    let point = Point { x: 194.0, y: 32.0 };
+    let drag = |input: &mut Interaction,
+                scene: &xrack_runtime::Node,
+                layout: &xrack_layout::LayoutNode| {
+        input.arm_drag(scene, layout, Point { x: 68.0, y: 34.0 });
+        assert!(input.drag_motion(scene, layout, point, None).captured);
+        input
+            .finish_drag(scene, layout, point, None)
+            .events
+            .into_iter()
+            .find(|event| matches!(event.event, DragEvent::Dropped { .. }))
+            .unwrap()
+    };
+
+    let (scene, layout) = prepare(&ui, &input);
+    let drop = drag(&mut input, &scene, &layout);
+    assert!(drop.target.row_key.is_some());
+    let target = drop.target.path.clone();
+    assert!(drop.apply(&mut ui, &scene));
+    let (scene, layout) = prepare(&ui, &input);
+    assert_eq!(
+        scene.at_path(&target).unwrap().children[0].text("text"),
+        Some("old:ticket")
+    );
+
+    let stale = drag(&mut input, &scene, &layout);
+    assert!(ui.model_items().sort_by(|a, b| a.cmp(b)));
+    let (current, _) = prepare(&ui, &input);
+    assert_ne!(scene.row_key_at(&target), current.row_key_at(&target));
+    assert!(!stale.apply(&mut ui, &current));
+    assert_eq!(
+        current.at_path(&target).unwrap().children[0].text("text"),
+        Some("new:")
+    );
+}
+
+#[test]
+fn a_close_guard_can_keep_the_window_open_and_retry_after_confirmation() {
+    use xrack_runtime::{NativeDialogQueue, NativeDialogResult};
+
+    let mut ui = CloseGuardDemo::new();
+    assert!(ui.close_requested());
+    assert!(ui.render_shared().native_dialogs.is_empty());
+    ui.set_dirty(true);
+    ui.set_draft("草稿".into());
+
+    assert!(ui.dispatch("close-window", "clicked"));
+    assert!(ui.dispatch("close-window", "clicked"));
+    assert!(ui.take_window_close_request());
+    assert!(!ui.take_window_close_request());
+    assert!(!ui.close_requested());
+
+    let mut queue = NativeDialogQueue::default();
+    let scene = ui.render_shared();
+    queue.sync(&[&scene.native_dialogs[0]]);
+    let request = queue.begin_next().unwrap();
+    assert!(queue.complete(
+        request.id,
+        NativeDialogResult::Button(StandardButtonKind::Cancel)
+    ));
+    assert!(ui.get_dirty());
+    assert_eq!(ui.get_draft(), "草稿");
+    assert!(!ui.take_window_close_request());
+
+    assert!(!ui.close_requested());
+    let scene = ui.render_shared();
+    queue.sync(&[&scene.native_dialogs[0]]);
+    let request = queue.begin_next().unwrap();
+    assert!(queue.complete(
+        request.id,
+        NativeDialogResult::Button(StandardButtonKind::Ok)
+    ));
+    assert!(!ui.get_dirty());
+    assert!(ui.take_window_close_request());
+    assert!(ui.close_requested());
+    assert_eq!(ui.get_requests(), 4);
+    assert!(ui.render_shared().native_dialogs.is_empty());
+}
+
+#[test]
+fn native_dialogs_snapshot_options_serialize_panels_and_discard_abandoned_results() {
+    use xrack_runtime::{
+        FileDialogMode, NativeDialogOptions, NativeDialogQueue, NativeDialogResult,
+    };
+
+    let mut first = FileDialogDemo::new();
+    let mut second = FileDialogDemo::new();
+    assert!(first.render_shared().native_dialogs.is_empty());
+    first.set_start_directory("/workspace".into());
+    first.invoke_choose(FileDialogMode::OpenFiles);
+    let initial = first.render_shared();
+    first.set_start_directory("/changed".into());
+    first.invoke_choose(FileDialogMode::SaveFile);
+    let first_scene = first.render_shared();
+    assert_eq!(first_scene.native_dialogs, initial.native_dialogs);
+    assert!(
+        first_scene
+            .children
+            .iter()
+            .all(|node| node.kind != "FileDialog")
+    );
+
+    second.invoke_choose(FileDialogMode::SaveFile);
+    let second_scene = second.render_shared();
+    let mut queue = NativeDialogQueue::default();
+    queue.sync(&[
+        &first_scene.native_dialogs[0],
+        &second_scene.native_dialogs[0],
+    ]);
+    let request = queue.begin_next().unwrap();
+    let NativeDialogOptions::File(options) = request.options.as_ref() else {
+        panic!("expected a file dialog")
+    };
+    assert_eq!(options.mode, FileDialogMode::OpenFiles);
+    assert_eq!(options.directory, "/workspace");
+    assert!(options.file_name.is_empty());
+    assert!(queue.begin_next().is_none());
+    assert!(!queue.complete(
+        second_scene.native_dialogs[0].id(),
+        NativeDialogResult::Canceled
+    ));
+
+    queue.sync(&[&second_scene.native_dialogs[0]]);
+    assert!(request.is_abandoned());
+    assert!(queue.complete(
+        request.id,
+        NativeDialogResult::Files(vec!["/stale.txt".into()])
+    ));
+    assert!(first.get_paths().is_empty());
+    assert!(first.render_shared().native_dialogs.is_empty());
+
+    let saving = queue.begin_next().unwrap();
+    let NativeDialogOptions::File(options) = saving.options.as_ref() else {
+        panic!("expected a file dialog")
+    };
+    assert_eq!(options.mode, FileDialogMode::SaveFile);
+    assert_eq!(options.file_name, "notes.txt");
+    assert!(queue.complete(
+        saving.id,
+        NativeDialogResult::Files(vec!["/notes.txt".into()])
+    ));
+    assert_eq!(second.get_paths(), ["/notes.txt"]);
+    assert_eq!(second.get_status(), "已选择");
+
+    second.invoke_choose(FileDialogMode::SelectFolder);
+    let scene = second.render_shared();
+    queue.sync(&[&scene.native_dialogs[0]]);
+    let folder = queue.begin_next().unwrap();
+    assert_ne!(folder.id, saving.id);
+    assert!(!queue.complete(saving.id, NativeDialogResult::Canceled));
+    assert!(queue.complete(folder.id, NativeDialogResult::Canceled));
+    assert_eq!(second.get_paths(), ["/notes.txt"]);
+    assert_eq!(second.get_status(), "已取消");
+}
+
+#[test]
+fn messages_and_file_panels_share_request_order_and_preserve_each_button_result() {
+    use xrack_runtime::{
+        FileDialogMode, MessageButtons, MessageLevel, NativeDialogOptions, NativeDialogQueue,
+        NativeDialogResult,
+    };
+
+    let mut message = MessageDialogDemo::new();
+    message.set_confirm_enabled(false);
+    message.invoke_ask();
+    assert!(message.render_shared().native_dialogs.is_empty());
+    message.set_confirm_enabled(true);
+    message.invoke_ask();
+    let message_scene = message.render_shared();
+
+    let mut files = FileDialogDemo::new();
+    files.invoke_choose(FileDialogMode::OpenFile);
+    let file_scene = files.render_shared();
+    let mut queue = NativeDialogQueue::default();
+    queue.sync(&[
+        &file_scene.native_dialogs[0],
+        &message_scene.native_dialogs[0],
+    ]);
+    let prompt = queue.begin_next().unwrap();
+    let NativeDialogOptions::Message(options) = prompt.options.as_ref() else {
+        panic!("the message was requested first")
+    };
+    assert_eq!(options.buttons, MessageButtons::YesNoCancel);
+    assert_eq!(options.level, MessageLevel::Warning);
+    assert!(queue.begin_next().is_none());
+    assert!(queue.complete(
+        prompt.id,
+        NativeDialogResult::Button(StandardButtonKind::No)
+    ));
+    assert_eq!(message.get_answer(), StandardButtonKind::No);
+    assert_eq!(message.get_rejects(), 1);
+
+    let file = queue.begin_next().unwrap();
+    assert!(matches!(
+        file.options.as_ref(),
+        NativeDialogOptions::File(_)
+    ));
+    assert!(queue.complete(file.id, NativeDialogResult::Canceled));
+    assert_eq!(files.get_status(), "已取消");
+
+    for button in [StandardButtonKind::Yes, StandardButtonKind::Cancel] {
+        message.invoke_ask();
+        let scene = message.render_shared();
+        queue.sync(&[&scene.native_dialogs[0]]);
+        let current = queue.begin_next().unwrap();
+        assert!(queue.complete(current.id, NativeDialogResult::Button(button)));
+        assert_eq!(message.get_answer(), button);
+    }
+    assert_eq!(message.get_accepts(), 1);
+    assert_eq!(message.get_rejects(), 2);
+    assert_eq!(message.get_status(), "已取消");
+
+    message.invoke_ask();
+    let scene = message.render_shared();
+    queue.sync(&[&scene.native_dialogs[0]]);
+    let closing = queue.begin_next().unwrap();
+    queue.close();
+    assert!(closing.is_abandoned());
+    assert!(message.render_shared().native_dialogs.is_empty());
+    assert!(!queue.complete(
+        closing.id,
+        NativeDialogResult::Button(StandardButtonKind::Yes)
+    ));
+    assert_eq!(message.get_accepts(), 1);
+}
 
 #[test]
 fn constrained_editors_validate_atomic_input_without_losing_selection_or_history() {
@@ -1265,7 +1713,7 @@ fn search_field_only_opens_matching_results_and_undoes_candidate_selection() {
     input.reconcile(&scene, &layout);
     let menu = input.choice_menu(&scene, &layout).unwrap();
     assert_eq!(menu.highlighted, None);
-    assert_eq!(menu.rows, ["cloud files", "cloud storage"]);
+    assert_eq!(menu.rows.as_ref(), ["cloud files", "cloud storage"]);
     let submit = input
         .choice_key(&scene, &layout, ChoiceKey::Accept)
         .unwrap();
@@ -1740,6 +2188,75 @@ fn time_popup_commits_once_cancels_and_ignores_actions_from_a_previous_session()
 }
 
 #[test]
+fn color_popup_edits_a_session_draft_and_preserves_hidden_alpha() {
+    let mut ui = ColorDemo::new();
+    let mut input = Interaction::default();
+    let viewport = Size::new(478.0, 384.0);
+    let launcher = [2];
+    let dialog = [5];
+    let red = [5, 0, 1, 1];
+    let green = [5, 0, 2, 2];
+    let alpha = [5, 0, 4, 1];
+    let preview = [5, 0, 0, 0];
+    let original = ui.get_selected();
+
+    let closed = ui.render_shared();
+    assert!(closed.at_path(&dialog).unwrap().children.is_empty());
+    let layout = xrack_layout::layout(&closed, viewport, &mut FixedText);
+    input.accessibility_focus(
+        input
+            .accessibility_target(&closed, &layout, &launcher)
+            .unwrap(),
+    );
+    assert!(ui.dispatch_at(&closed, &launcher, "clicked"));
+
+    let old = ui.render_shared();
+    let layout = xrack_layout::layout(&old, viewport, &mut FixedText);
+    input.reconcile(&old, &layout);
+    assert!(input.is_focused(&red));
+    let action = input
+        .slider_key(&old, &layout, SliderKey::End, true)
+        .unwrap();
+    assert!(ui.adjust_range_at(&old, &action.path, action.action));
+    assert!(!ui.adjust_range_at(&old, &red, RangeAction::Decrease));
+    let draft = ui.render_shared();
+    assert!(ui.control_at(&draft, &green, ControlAction::Spin(SpinAction::Commit(23))));
+    assert_eq!(ui.get_selected(), original);
+    let draft = ui.render_shared();
+    assert_eq!(
+        draft.at_path(&preview).unwrap().color("color"),
+        Some(Color(0xff17c080))
+    );
+    let layout = xrack_layout::layout(&draft, viewport, &mut FixedText);
+    let escape = input.dialog_escape(&draft, &layout).unwrap();
+    assert!(ui.control_at(&draft, &escape.path, escape.action));
+    assert_eq!(ui.get_cancels(), 1);
+    assert_eq!(ui.get_selected(), original);
+    let closed = ui.render_shared();
+    let layout = xrack_layout::layout(&closed, viewport, &mut FixedText);
+    input.reconcile(&closed, &layout);
+    assert!(input.is_focused(&launcher));
+
+    ui.set_picker_open(true);
+    let shown = ui.render_shared();
+    assert!(!ui.adjust_range_at(&old, &alpha, RangeAction::Maximum));
+    assert!(!ui.control_at(&old, &dialog, ControlAction::Dialog(DialogRole::Accept)));
+    assert!(ui.adjust_range_at(&shown, &alpha, RangeAction::SetFraction(0.25)));
+    let shown = ui.render_shared();
+    ui.set_alpha_visible(false);
+    assert!(!ui.adjust_range_at(&shown, &alpha, RangeAction::Maximum));
+    let draft = ui.render_shared();
+    assert!(draft.at_path(&alpha).is_none());
+    assert!(ui.control_at(&draft, &green, ControlAction::Spin(SpinAction::Commit(0))));
+    let draft = ui.render_shared();
+    assert!(ui.control_at(&draft, &dialog, ControlAction::Dialog(DialogRole::Accept)));
+    assert_eq!(ui.get_selected(), Color(0x4000c040));
+    assert_eq!(ui.get_accepted_color(), ui.get_selected());
+    assert_eq!(ui.get_accepts(), 1);
+    assert!(!ui.get_picker_open());
+}
+
+#[test]
 fn tab_bar_reveals_offscreen_tabs_and_shares_selection_with_swipe_view() {
     let mut driver = UiDriver::new(TabBarDemo::new(), FixedText, Size::new(536.0, 318.0));
     driver.tab();
@@ -1778,6 +2295,89 @@ fn tab_bar_reveals_offscreen_tabs_and_shares_selection_with_swipe_view() {
         driver.node("filters-bar").children[2].text("text"),
         Some("收藏")
     );
+}
+
+#[test]
+fn record_combo_tracks_keys_and_guards_pressed_rows_across_reorder() {
+    use xrack_runtime::{combo_index, combo_text};
+
+    let mut ui = RecordComboDemo::new();
+    let model = ui.model_options();
+    let path = [1];
+    let viewport = Size::new(472.0, 296.0);
+    let render = |ui: &RecordComboDemo| {
+        let scene = ui.render_shared();
+        let layout = xrack_layout::layout(&scene, viewport, &mut FixedText);
+        (scene, layout)
+    };
+    let (scene, layout) = render(&ui);
+    let node = scene.at_path(&path).unwrap();
+    assert_eq!(combo_index(node), Some(0));
+    assert_eq!(combo_text(node), "共享工作区");
+    let mut first = model.row(0).unwrap();
+    first.notes = "unrelated field".into();
+    assert!(model.set_row(0, first));
+    assert!(!ui.scene_dirty());
+    assert!(std::rc::Rc::ptr_eq(&scene, &ui.render_shared()));
+
+    let mut input = Interaction::default();
+    let target = input.accessibility_target(&scene, &layout, &path).unwrap();
+    assert!(input.open_choice(&scene, &layout, target));
+    let first = input.choice_menu(&scene, &layout).unwrap().row_bounds(0);
+    input.pointer_move(
+        &scene,
+        &layout,
+        Point {
+            x: first.x + 14.0,
+            y: first.y + 10.0,
+        },
+    );
+    assert!(input.choice_press(&scene, &layout));
+    assert!(model.sort_by(|a, b| a.code.cmp(&b.code)));
+    let (scene, layout) = render(&ui);
+    input.reconcile(&scene, &layout);
+    let menu = input.choice_menu(&scene, &layout).unwrap();
+    assert_eq!(menu.highlighted, Some(1));
+    assert_eq!(menu.selected, Some(1));
+    assert!(
+        input.choice_release(&scene, &layout).is_none(),
+        "the same label now belongs to a different record"
+    );
+    assert_eq!(ui.get_code(), 200);
+
+    input.choice_key(&scene, &layout, ChoiceKey::Home);
+    let selection = input
+        .choice_key(&scene, &layout, ChoiceKey::Accept)
+        .unwrap();
+    assert!(ui.control_at(&scene, &selection.path, selection.action));
+    assert_eq!(ui.get_code(), 100);
+    assert_eq!(ui.get_selected_code(), 100);
+    assert_eq!(ui.get_selected_label(), "共享工作区");
+
+    ui.set_editable(true);
+    let edit_and_accept = |ui: &mut RecordComboDemo, input: &mut Interaction, text| {
+        let (scene, layout) = render(ui);
+        input.reconcile(&scene, &layout);
+        input.sync_editor(&scene);
+        assert!(input.edit_text(
+            ui,
+            &scene,
+            EditAction::ReplaceAll(text),
+            EditSource::Atomic,
+            Instant::now()
+        ));
+        let (scene, layout) = render(ui);
+        let accepted = input
+            .choice_key(&scene, &layout, ChoiceKey::Accept)
+            .unwrap();
+        assert!(ui.control_at(&scene, &accepted.path, accepted.action));
+    };
+    edit_and_accept(&mut ui, &mut input, "custom");
+    assert_eq!(ui.get_accepted_text(), "custom");
+    assert_eq!(ui.get_code(), 100);
+    edit_and_accept(&mut ui, &mut input, "归档");
+    assert_eq!(ui.get_code(), 300);
+    assert_eq!(ui.get_selected_code(), 300);
 }
 
 #[test]
@@ -4209,6 +4809,111 @@ fn menu_bar_skips_disabled_items_and_navigates_submenus() {
     assert_eq!(
         ui.node("background-button").text("text"),
         Some("背景计数 · 1")
+    );
+}
+
+#[test]
+fn shortcuts_share_actions_and_respect_sequence_focus_and_modal_scope() {
+    let mut ui = ShortcutDemo::new();
+    let mut input = Interaction::default();
+    let viewport = Size::new(532.0, 344.0);
+    let now = Instant::now();
+    let press = |ui: &mut ShortcutDemo, input: &mut Interaction, key: &str, repeat, when| {
+        let scene = ui.render_shared();
+        let layout = xrack_layout::layout(&scene, viewport, &mut FixedText);
+        input.reconcile(&scene, &layout);
+        let result = input.shortcut_press(&scene, &layout, key.parse().unwrap(), repeat, when);
+        let events: &[_] = match &result {
+            ShortcutOutcome::Activate(event) => std::slice::from_ref(event),
+            ShortcutOutcome::Ambiguous(events) => events,
+            _ => &[],
+        };
+        for event in events {
+            assert!(ui.control_at(&scene, &event.path, event.action));
+        }
+        result
+    };
+    assert_eq!(
+        press(&mut ui, &mut input, "Primary+K", false, now),
+        ShortcutOutcome::Consumed
+    );
+    assert_eq!(
+        press(&mut ui, &mut input, "Primary+K", true, now),
+        ShortcutOutcome::Consumed
+    );
+    assert!(matches!(
+        press(&mut ui, &mut input, "Primary+P", false, now),
+        ShortcutOutcome::Activate(_)
+    ));
+    assert_eq!(ui.get_commands(), 1);
+    assert!(matches!(
+        press(&mut ui, &mut input, "F9", false, now),
+        ShortcutOutcome::Activate(_)
+    ));
+    assert_eq!(
+        ui.get_commands(),
+        2,
+        "the linked menu and shortcut invoke one Action"
+    );
+    assert_eq!(
+        press(&mut ui, &mut input, "F9", true, now),
+        ShortcutOutcome::Consumed
+    );
+    press(&mut ui, &mut input, "Primary+K", false, now);
+    assert_eq!(
+        press(
+            &mut ui,
+            &mut input,
+            "Primary+P",
+            false,
+            now + Duration::from_secs(2)
+        ),
+        ShortcutOutcome::Unmatched
+    );
+    press(&mut ui, &mut input, "Primary+K", false, now);
+    ui.set_command_enabled(false);
+    assert_eq!(
+        press(&mut ui, &mut input, "Primary+P", false, now),
+        ShortcutOutcome::Unmatched
+    );
+    assert_eq!(ui.get_commands(), 2);
+    assert!(matches!(
+        press(&mut ui, &mut input, "F7", true, now),
+        ShortcutOutcome::Activate(_)
+    ));
+    assert_eq!(ui.get_repeats(), 1);
+
+    assert_eq!(
+        press(&mut ui, &mut input, "F8", false, now),
+        ShortcutOutcome::Unmatched
+    );
+    let scene = ui.render_shared();
+    let layout = xrack_layout::layout(&scene, viewport, &mut FixedText);
+    let entry = [4, 3, 0];
+    assert_eq!(scene.at_path(&entry).unwrap().id, Some("entry"));
+    input.accessibility_focus(input.accessibility_target(&scene, &layout, &entry).unwrap());
+    assert!(matches!(
+        press(&mut ui, &mut input, "F8", false, now),
+        ShortcutOutcome::Activate(_)
+    ));
+    assert_eq!(ui.get_focused_hits(), 1);
+
+    ui.set_conflict(true);
+    let conflict = press(&mut ui, &mut input, "F6", false, now);
+    assert!(matches!(conflict, ShortcutOutcome::Ambiguous(events) if events.len() == 2));
+    assert_eq!(ui.get_conflicts(), 2);
+    assert_eq!(ui.get_window_hits(), 0);
+
+    ui.set_dialog_open(true);
+    assert!(matches!(
+        press(&mut ui, &mut input, "F6", false, now),
+        ShortcutOutcome::Activate(_)
+    ));
+    assert_eq!(ui.get_dialog_hits(), 1);
+    assert_eq!(ui.get_window_hits(), 0);
+    assert_eq!(
+        press(&mut ui, &mut input, "F8", false, now),
+        ShortcutOutcome::Unmatched
     );
 }
 

@@ -3,7 +3,9 @@ mod button;
 mod calendar;
 mod choice;
 mod delay_button;
+mod drag;
 mod edit;
+mod file_drop;
 mod flow;
 mod geometry;
 mod grid;
@@ -37,7 +39,9 @@ mod view_cells;
 pub use button::ButtonContent;
 pub use calendar::{CalendarDay, CalendarGeometry};
 pub use choice::{ChoiceKey, ChoiceMenu, ComboCompletion, ComboGeometry};
+pub use drag::{DragDispatch, DragUpdate};
 pub use edit::{EditAction, TextEdit, TextPosition};
+pub use file_drop::{FileDragInput, FileDropScope};
 pub use geometry::{Point, Rect, Size};
 pub use group_box::group_header;
 pub use history::EditSource;
@@ -55,7 +59,7 @@ pub use scroll_bar::ScrollBarGeometry;
 pub use scroll_gesture::{ScrollGestureEnd, ScrollGestureKind};
 pub use search::SearchGeometry;
 pub use selection::TAB_LABEL_SIZE;
-pub use shortcut::{MenuShortcut, ShortcutKey, ShortcutModifiers};
+pub use shortcut::{MenuShortcut, ShortcutKey, ShortcutModifiers, ShortcutOutcome};
 pub use spin::SpinGeometry;
 pub use split::{SplitGeometry, SplitHandle};
 pub use stack_transition::{StackSlide, StackTransitions};
@@ -80,11 +84,30 @@ pub const DEFAULT_FONT_SIZE: f32 = 16.0;
 pub trait TextMeasurer {
     fn measure(&mut self, text: &str, font_size: f32, max_width: f32) -> Size;
 
+    fn begin_window(&mut self, _scene: &Node) {}
+
+    fn default_font_size(&self) -> Option<f32> {
+        None
+    }
+
+    fn font_size(&self, node: &Node) -> f32 {
+        node.length("font-size")
+            .or_else(|| self.default_font_size())
+            .unwrap_or(DEFAULT_FONT_SIZE)
+            .clamp(1.0, 512.0)
+    }
+
+    fn measure_node(&mut self, node: &Node, text: &str, max_width: f32) -> Size {
+        self.measure(text, self.font_size(node), max_width)
+    }
+
     fn measure_label(&mut self, node: &Node, max_width: f32) -> Size {
-        let size = font_size(node);
-        LabelLayout::new(node, Size::new(max_width, f32::INFINITY), |value| {
-            self.measure(value, size, f32::MAX).width
-        })
+        LabelLayout::with_font_size(
+            node,
+            Size::new(max_width, f32::INFINITY),
+            self.font_size(node),
+            |value| self.measure_node(node, value, f32::MAX).width,
+        )
         .size
     }
 }
@@ -104,6 +127,7 @@ pub struct LayoutNode {
     pub tab_header: Option<Rect>,
     pub tumbler: Option<Box<TumblerGeometry>>,
     pub swipe_delegate: Option<Box<SwipeDelegateGeometry>>,
+    font_size: f32,
     overlays: Option<Box<modal::OverlayIndex>>,
     pub children: Vec<LayoutNode>,
 }
@@ -134,6 +158,10 @@ impl ScrollLayout {
 }
 
 impl LayoutNode {
+    pub fn group_header(&self, node: &Node) -> Rect {
+        group_box::header_with_font_size(node, self.bounds, self.font_size)
+    }
+
     pub fn scroll_on(&self, orientation: Orientation) -> Option<ScrollLayout> {
         match orientation {
             Orientation::Horizontal => self
@@ -185,7 +213,9 @@ fn dimension(node: &Node, name: &str) -> Option<f32> {
 }
 
 fn participates_in_flow(node: &Node) -> bool {
-    !is_window_overlay(node.kind) && !matches!(node.kind, "Menu" | "Tooltip") && node.is_visible()
+    !is_window_overlay(node.kind)
+        && !matches!(node.kind, "Menu" | "Tooltip" | "Shortcut")
+        && node.is_visible()
 }
 
 pub fn is_layout(kind: &str) -> bool {
@@ -248,6 +278,7 @@ fn layout_with_offsets(
     offsets: &BTreeMap<Vec<usize>, f32>,
     input: Option<&Interaction>,
 ) -> LayoutNode {
+    text.begin_window(scene);
     let bounds = Rect::new(0.0, 0.0, viewport.width.max(0.0), viewport.height.max(0.0));
     let mut layout = LayoutContext {
         text,
@@ -484,12 +515,15 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
         parent_enabled: bool,
         row_children: Option<Vec<Rect>>,
     ) -> LayoutNode {
-        let enabled = parent_enabled && node.boolean("enabled", true);
+        let font_size = self.text.font_size(node);
+        let enabled = parent_enabled && node.enables_children();
         let visible = parent_visible
             && node.is_visible()
             && (node.kind != "PopupWindow" || enabled && self.anchor.is_some())
             && xrack_runtime::indicator_state(node) != Some(xrack_runtime::IndicatorState::Hidden);
-        let (bounds, clip) = if visible
+        let (bounds, clip) = if node.kind == "Shortcut" {
+            (Rect::new(bounds.x, bounds.y, 0.0, 0.0), clip)
+        } else if visible
             && node.kind == "PopupWindow"
             && let Some(anchor) = self.anchor
         {
@@ -503,9 +537,12 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
             (bounds, clip)
         };
         let clipped = bounds.intersect(clip);
-        self.anchor = (visible && clipped.width > 0.0 && clipped.height > 0.0).then_some(clipped);
-        if matches!(node.kind, "Menu" | "Tooltip") {
-            // Popup entries use window coordinates and are laid out by the menu presenter.
+        if node.kind != "Shortcut" {
+            self.anchor =
+                (visible && clipped.width > 0.0 && clipped.height > 0.0).then_some(clipped);
+        }
+        if matches!(node.kind, "Menu" | "Tooltip" | "Shortcut") {
+            // Menus and tooltips lay out their children in the overlay presenter.
             return LayoutNode {
                 bounds,
                 clip,
@@ -518,6 +555,7 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
                 tab_header: None,
                 tumbler: None,
                 swipe_delegate: None,
+                font_size,
                 overlays: None,
                 children: Vec::new(),
             };
@@ -581,6 +619,7 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
                 tab_header: None,
                 tumbler: None,
                 swipe_delegate: None,
+                font_size,
                 overlays: None,
                 children,
             };
@@ -732,9 +771,9 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
                 .collect()
         } else {
             let mut content = bounds;
-            let title = (selection::radio_title_height(node)
-                + dialog_title_height(node)
-                + group_box::title_height(node))
+            let title = (selection::radio_title_height(node, font_size)
+                + modal::title_height(node, font_size)
+                + group_box::title_height(node, font_size))
             .min(bounds.height);
             content.y += title;
             content.height -= title;
@@ -827,6 +866,7 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
             tab_header: None,
             tumbler,
             swipe_delegate,
+            font_size,
             overlays: None,
             children,
         }

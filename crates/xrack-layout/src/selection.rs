@@ -1,4 +1,4 @@
-use crate::{Rect, ScrollLayout, Size, TextMeasurer, font_size, linear::Axis};
+use crate::{Rect, ScrollLayout, Size, TextMeasurer, linear::Axis};
 use xrack_runtime::{Node, Orientation, group_index};
 
 pub const TAB_LABEL_SIZE: f32 = 14.0;
@@ -29,7 +29,11 @@ pub(crate) fn tab_bar(
             let size = explicit.unwrap_or_else(|| match axis {
                 Axis::Horizontal => {
                     let label = tab.text("text").unwrap_or("");
-                    (text.measure(label, TAB_LABEL_SIZE, f32::INFINITY).width + 24.0).max(48.0)
+                    let font_size = text
+                        .default_font_size()
+                        .unwrap_or(TAB_LABEL_SIZE)
+                        .clamp(1.0, (cross_extent / 1.4).max(1.0));
+                    (text.measure(label, font_size, f32::INFINITY).width + 24.0).max(48.0)
                 }
                 Axis::Vertical => 36.0,
             });
@@ -99,9 +103,9 @@ pub(crate) fn tab_reveal_offset(
         .min(start)
 }
 
-pub(crate) fn radio_title_height(node: &Node) -> f32 {
+pub(crate) fn radio_title_height(node: &Node, size: f32) -> f32 {
     if node.kind == "RadioGroup" && node.text("title").is_some_and(|title| !title.is_empty()) {
-        font_size(node) * 1.4 + 6.0
+        size * 1.4 + 6.0
     } else {
         0.0
     }

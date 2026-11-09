@@ -4,6 +4,7 @@ mod entry;
 mod image;
 mod range;
 mod text;
+mod theme;
 mod vector;
 use femtovg::{Canvas, Color, Paint, Path, Solidity, renderer::WGPURenderer};
 use std::{
@@ -14,25 +15,18 @@ use std::{
     time::{Duration, Instant},
 };
 pub use text::TextSystem;
+pub use theme::Theme;
+use theme::{Palette, PaletteRole as Role};
 use xrack_layout::{
     ButtonContent, ComboCompletion, Interaction, LayoutNode, Rect, Size, SpinGeometry,
-    StackTransitions, TreeRowGeometry, dialog_title_height, font_size,
+    StackTransitions, TextMeasurer, TreeRowGeometry, dialog_title_height,
 };
 use xrack_runtime::{
-    Brush, Color as UiColor, Component, GradientStop, ImageFit, Node, StandardButtonKind, Value,
-    button_text, combo_editable, group_index, is_button, is_multiline_text_input, is_spin_box,
-    is_text_input, is_toggle, is_window_overlay, spin_editable, spin_text, text_input_value,
+    Brush, Color as UiColor, ColorScheme, Component, GradientStop, ImageFit, Node,
+    StandardButtonKind, Value, button_text, combo_editable, group_index, is_button,
+    is_multiline_text_input, is_spin_box, is_text_input, is_toggle, is_window_overlay,
+    spin_editable, spin_text, text_input_value,
 };
-
-#[derive(Clone, Copy)]
-pub struct Theme {
-    pub window: UiColor,
-    pub text: UiColor,
-    pub button: UiColor,
-    pub disabled: UiColor,
-    pub disabled_text: UiColor,
-    pub focus: UiColor,
-}
 
 #[derive(Clone, Copy)]
 struct PaintFrame<'a> {
@@ -40,18 +34,7 @@ struct PaintFrame<'a> {
     scale: f32,
     transitions: Option<&'a StackTransitions>,
     indicator_phase: Option<f32>,
-}
-impl Default for Theme {
-    fn default() -> Self {
-        Self {
-            window: UiColor(0x18202bff),
-            text: UiColor(0xf2f5faff),
-            button: UiColor(0x536dfeff),
-            disabled: UiColor(0x3a4350ff),
-            disabled_text: UiColor(0x85909fff),
-            focus: UiColor(0xadc2ffff),
-        }
-    }
+    theme: Palette,
 }
 
 fn color(color: UiColor) -> Color {
@@ -121,26 +104,29 @@ pub struct Renderer {
     pub device: wgpu::Device,
     pub queue: wgpu::Queue,
     canvas: Canvas<WGPURenderer>,
+    canvas_font_context: Rc<()>,
     images: image::Images,
     clock: Instant,
     needs_redraw: bool,
     painted_combo_completion: Option<ComboCompletion>,
     pub text: TextSystem,
     pub theme: Theme,
+    system_color_scheme: ColorScheme,
 }
 
-impl Renderer {
-    pub async fn new(
-        instance: wgpu::Instance,
-        surface: Option<&wgpu::Surface<'_>>,
-    ) -> Result<Self, String> {
-        Self::with_text(instance, surface, TextSystem::system()?).await
-    }
+/// GPU resources that can back more than one independent renderer.
+#[derive(Clone)]
+pub struct RenderDevice {
+    instance: wgpu::Instance,
+    adapter: wgpu::Adapter,
+    device: wgpu::Device,
+    queue: wgpu::Queue,
+}
 
-    pub async fn with_text(
+impl RenderDevice {
+    pub async fn request(
         instance: wgpu::Instance,
         surface: Option<&wgpu::Surface<'_>>,
-        text: TextSystem,
     ) -> Result<Self, String> {
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions {
@@ -160,9 +146,49 @@ impl Renderer {
             })
             .await
             .map_err(|e| format!("GPU device creation failed: {e}"))?;
+        Ok(Self {
+            instance,
+            adapter,
+            device,
+            queue,
+        })
+    }
+
+    pub fn supports_surface(&self, surface: &wgpu::Surface<'_>) -> bool {
+        self.adapter.is_surface_supported(surface)
+    }
+}
+
+impl Renderer {
+    pub async fn new(
+        instance: wgpu::Instance,
+        surface: Option<&wgpu::Surface<'_>>,
+    ) -> Result<Self, String> {
+        Self::with_text(instance, surface, TextSystem::system()?).await
+    }
+
+    pub async fn with_text(
+        instance: wgpu::Instance,
+        surface: Option<&wgpu::Surface<'_>>,
+        text: TextSystem,
+    ) -> Result<Self, String> {
+        Self::with_device_and_text(RenderDevice::request(instance, surface).await?, text)
+    }
+
+    pub fn with_device(gpu: RenderDevice) -> Result<Self, String> {
+        Self::with_device_and_text(gpu, TextSystem::system()?)
+    }
+
+    fn with_device_and_text(gpu: RenderDevice, text: TextSystem) -> Result<Self, String> {
+        let RenderDevice {
+            instance,
+            adapter,
+            device,
+            queue,
+        } = gpu;
         let canvas = Canvas::new_with_text_context(
             WGPURenderer::new(device.clone(), queue.clone()),
-            text.context.clone(),
+            text.context().clone(),
         )
         .map_err(|e| e.to_string())?;
         Ok(Self {
@@ -171,12 +197,14 @@ impl Renderer {
             device,
             queue,
             canvas,
+            canvas_font_context: text.context_key().clone(),
             images: image::Images::default(),
             clock: Instant::now(),
             needs_redraw: false,
             painted_combo_completion: None,
             text,
             theme: Theme::default(),
+            system_color_scheme: ColorScheme::System,
         })
     }
 
@@ -212,6 +240,15 @@ impl Renderer {
         self.painted_combo_completion.take()
     }
 
+    /// Set the host color scheme used by windows that request `system`.
+    pub fn set_system_color_scheme(&mut self, scheme: ColorScheme) -> bool {
+        std::mem::replace(&mut self.system_color_scheme, scheme) != scheme
+    }
+
+    fn palette(&self, scene: &Node) -> Palette {
+        Palette::resolve(self.theme, scene, self.system_color_scheme)
+    }
+
     /// Draw into a caller-owned render attachment, in logical pixels at the given scale.
     pub fn draw(
         &mut self,
@@ -239,6 +276,7 @@ impl Renderer {
             PaintFrame {
                 input,
                 scale,
+                theme: self.palette(scene),
                 transitions: None,
                 indicator_phase: Some(indicator_phase(self.clock.elapsed())),
             },
@@ -288,6 +326,7 @@ impl Renderer {
             PaintFrame {
                 input,
                 scale,
+                theme: self.palette(scene),
                 transitions: Some(transitions),
                 indicator_phase: Some(indicator_phase(self.clock.elapsed())),
             },
@@ -301,14 +340,29 @@ impl Renderer {
         target: &wgpu::Texture,
         frame: PaintFrame<'_>,
     ) -> Result<(), String> {
-        let PaintFrame { input, scale, .. } = frame;
+        let PaintFrame {
+            input,
+            scale,
+            theme,
+            ..
+        } = frame;
+        self.text.set_window(scene);
+        if !Rc::ptr_eq(&self.canvas_font_context, self.text.context_key()) {
+            self.canvas = Canvas::new_with_text_context(
+                WGPURenderer::new(self.device.clone(), self.queue.clone()),
+                self.text.context().clone(),
+            )
+            .map_err(|error| error.to_string())?;
+            self.canvas_font_context = self.text.context_key().clone();
+            self.images = image::Images::default();
+        }
         self.needs_redraw = false;
         self.painted_combo_completion = None;
         let size = target.size();
         self.canvas.set_size(size.width, size.height, scale);
         self.canvas.reset();
         self.canvas
-            .clear_rect(0, 0, size.width, size.height, color(self.theme.window));
+            .clear_rect(0, 0, size.width, size.height, color(theme.window));
         self.canvas.scale(scale, scale);
         self.images.begin_frame();
         if !is_window_overlay(scene.kind) {
@@ -330,18 +384,18 @@ impl Renderer {
                     size.height as f32 / scale,
                 );
                 self.canvas
-                    .fill_path(&backdrop, &Paint::color(Color::rgba(8, 13, 21, 168)));
+                    .fill_path(&backdrop, &Paint::color(color(theme.role(Role::Scrim))));
             }
             self.paint(node, item, &mut path.to_vec(), frame, false)?;
         }
         if let Some(menu) = input.choice_menu(scene, layout) {
-            controls::menu(&mut self.canvas, &self.text, self.theme, menu)?;
+            controls::menu(&mut self.canvas, &self.text, theme, menu)?;
         }
         for panel in input.menu_panels(scene, layout) {
             controls::menu_panel(
                 &mut self.canvas,
                 &self.text,
-                self.theme,
+                theme,
                 panel,
                 &mut self.images,
                 scale,
@@ -362,6 +416,7 @@ impl Renderer {
                 PaintFrame {
                     input: &Interaction::default(),
                     scale,
+                    theme,
                     transitions: None,
                     indicator_phase: frame.indicator_phase,
                 },
@@ -407,16 +462,16 @@ impl Renderer {
             scale,
             transitions,
             indicator_phase,
+            theme,
         } = frame;
         let bounds = layout.bounds;
-        let group_header =
-            (node.kind == "GroupBox").then(|| xrack_layout::group_header(node, bounds));
+        let group_header = (node.kind == "GroupBox").then(|| layout.group_header(node));
         if node.kind == "SplitHandle" {
             controls::split_handle(
                 &mut self.canvas,
                 node,
                 bounds,
-                self.theme,
+                theme,
                 layout.enabled,
                 input.is_hovered(path) || input.is_focused(path),
             );
@@ -426,7 +481,7 @@ impl Renderer {
             return controls::menu_header(
                 &mut self.canvas,
                 &self.text,
-                self.theme,
+                theme,
                 node,
                 bounds,
                 layout.enabled,
@@ -461,12 +516,20 @@ impl Renderer {
         let checked = is_button
             && (node.kind == "DelayButton" || node.boolean("checkable", false))
             && node.boolean("checked", false);
+        let field = is_input || is_spin_box(node.kind) || node.kind == "ComboBox";
+        let mut button_text_color = theme.text;
         let background = if !is_button {
-            brush_paint(node, "background", bounds, 0.0)
-                .or_else(|| boxed.then(|| Paint::color(color(UiColor(0x27354dff)))))
+            brush_paint(node, "background", bounds, 0.0).or_else(|| {
+                let surface = if field && theme.is_light() {
+                    Role::InsetSurface
+                } else {
+                    Role::Surface
+                };
+                boxed.then(|| Paint::color(color(theme.role(surface))))
+            })
         } else if !layout.enabled {
             let shade = if checked { -0.2 } else { 0.0 };
-            Some(Paint::color(color(tint(self.theme.disabled, shade))))
+            Some(Paint::color(color(tint(theme.disabled, shade))))
         } else {
             let shade = if input.is_pressed(path) {
                 -0.18
@@ -476,16 +539,28 @@ impl Renderer {
                 0.0
             } - if checked { 0.28 } else { 0.0 };
             brush_paint(node, "background", bounds, shade).or_else(|| {
-                let base = match node.standard_button_kind() {
-                    Some(StandardButtonKind::Discard) => UiColor(0xa63843ff),
-                    Some(_) if !node.boolean("primary", false) => UiColor(0x384966ff),
-                    _ => self.theme.button,
+                let (base, foreground) = match node.standard_button_kind() {
+                    Some(StandardButtonKind::Discard) => (
+                        theme.role(Role::Danger),
+                        if theme.is_light() {
+                            UiColor(0xffffffff)
+                        } else {
+                            theme.text
+                        },
+                    ),
+                    Some(_) if !node.boolean("primary", false) => {
+                        (theme.role(Role::SecondaryButton), theme.text)
+                    }
+                    _ => (theme.button, theme.on_accent(theme.text)),
                 };
                 (node.kind != "ToolButton"
                     || checked
                     || input.is_hovered(path)
                     || input.is_pressed(path))
-                .then(|| Paint::color(color(tint(base, shade))))
+                .then(|| {
+                    button_text_color = foreground;
+                    Paint::color(color(tint(base, shade)))
+                })
             })
         };
         let radii = corner_radii(node, bounds);
@@ -507,16 +582,18 @@ impl Renderer {
                 );
                 let mut path = Path::new();
                 append_rect(&mut path, bounds, radii);
-                let tint = node.color("progress-color").unwrap_or(UiColor(0x366483ff));
+                let tint = node
+                    .color("progress-color")
+                    .unwrap_or(theme.role(Role::DelayProgress));
                 self.canvas.fill_path(&path, &Paint::color(color(tint)));
                 self.canvas.restore();
             }
             self.needs_redraw |= pending && layout.enabled;
         }
         if dialog_title_height(node) > 0.0 {
-            let paint = self.text.paint(
-                font_size(node),
-                color(node.color("color").unwrap_or(self.theme.text)),
+            let paint = self.text.paint_node(
+                node,
+                color(node.color("color").unwrap_or(theme.text)),
                 false,
             );
             self.canvas
@@ -538,24 +615,24 @@ impl Renderer {
                 entry::toggle(
                     &mut self.canvas,
                     &self.text,
-                    self.theme,
+                    theme,
                     node,
                     header,
                     layout.enabled,
                 )
             } else {
-                let size = font_size(node);
+                let size = self.text.font_size(node);
                 let foreground = if layout.enabled {
-                    node.color("color").unwrap_or(self.theme.text)
+                    node.color("color").unwrap_or(theme.text)
                 } else {
-                    self.theme.disabled_text
+                    theme.disabled_text
                 };
                 self.canvas
                     .fill_text(
                         header.x,
                         header.y + ((header.height - size * 1.4) * 0.5).max(0.0),
                         node.text("title").unwrap_or(""),
-                        &self.text.paint(size, color(foreground), false),
+                        &self.text.paint_node(node, color(foreground), false),
                     )
                     .map(|_| ())
                     .map_err(|error| format!("group title drawing failed: {error}"))
@@ -565,7 +642,11 @@ impl Renderer {
         }
         let border = node
             .length("border-width")
-            .unwrap_or(if group_header.is_some() { 1.0 } else { 0.0 })
+            .unwrap_or(if group_header.is_some() || field && theme.is_light() {
+                1.0
+            } else {
+                0.0
+            })
             .max(0.0)
             .min(bounds.width.min(bounds.height));
         if border > 0.0 {
@@ -577,7 +658,7 @@ impl Renderer {
                 path.solidity(Solidity::Hole);
             }
             let paint = brush_paint(node, "border-color", bounds, 0.0)
-                .unwrap_or_else(|| Paint::color(color(UiColor(0x75859aff))));
+                .unwrap_or_else(|| Paint::color(color(theme.role(Role::Border))));
             self.canvas.fill_path(&path, &paint);
         }
         if (is_button
@@ -591,7 +672,7 @@ impl Renderer {
             && input.is_focused(path)
             && layout.enabled
         {
-            let mut paint = Paint::color(color(self.theme.focus));
+            let mut paint = Paint::color(color(theme.focus));
             paint.set_line_width(2.0);
             let mut path = Path::new();
             let focus = group_header.unwrap_or(bounds);
@@ -614,9 +695,15 @@ impl Renderer {
                 .draw(&mut self.canvas, image, bounds, fit, scale)?;
         } else if node.kind == "Path" {
             vector::draw_path(&mut self.canvas, node, bounds)?;
+        } else if node.kind == "ColorPreview" {
+            controls::color_preview(
+                &mut self.canvas,
+                bounds,
+                node.color("color").unwrap_or_default(),
+            );
         }
         if node.kind == "RadioGroup" {
-            controls::group_title(&mut self.canvas, &self.text, self.theme, node, bounds)?;
+            controls::group_title(&mut self.canvas, &self.text, theme, node, bounds)?;
         } else if matches!(node.kind, "TabWidget" | "TabBar") {
             let selected = group_index(node);
             let standalone = node.kind == "TabBar";
@@ -635,10 +722,11 @@ impl Renderer {
                 let result = controls::tab(
                     &mut self.canvas,
                     &self.text,
-                    self.theme,
+                    theme,
                     header,
                     tab.text(if standalone { "text" } else { "title" })
                         .unwrap_or(""),
+                    tab,
                     controls::TabAppearance {
                         selected: selected == Some(index),
                         enabled: page.enabled,
@@ -653,7 +741,7 @@ impl Renderer {
             controls::tumbler(
                 &mut self.canvas,
                 &self.text,
-                self.theme,
+                theme,
                 node,
                 wheel,
                 layout.enabled,
@@ -662,7 +750,7 @@ impl Renderer {
             controls::calendar(
                 &mut self.canvas,
                 &self.text,
-                self.theme,
+                theme,
                 node,
                 &xrack_layout::CalendarGeometry::new(node, bounds),
                 layout.enabled,
@@ -670,7 +758,7 @@ impl Renderer {
         } else if node.kind == "Slider" {
             range::slider(
                 &mut self.canvas,
-                self.theme,
+                theme,
                 node,
                 bounds,
                 layout.enabled,
@@ -682,7 +770,7 @@ impl Renderer {
         } else if node.kind == "Dial" {
             range::dial(
                 &mut self.canvas,
-                self.theme,
+                theme,
                 node,
                 bounds,
                 layout.enabled,
@@ -697,7 +785,7 @@ impl Renderer {
             });
             range::interval(
                 &mut self.canvas,
-                self.theme,
+                theme,
                 node,
                 bounds,
                 layout.enabled,
@@ -707,7 +795,7 @@ impl Renderer {
             if let Some(geometry) = xrack_layout::PageIndicatorGeometry::new(node, bounds) {
                 controls::page_indicator(
                     &mut self.canvas,
-                    self.theme,
+                    theme,
                     node,
                     &geometry,
                     layout.enabled,
@@ -719,7 +807,7 @@ impl Renderer {
                 indicator_phase.filter(|_| layout.enabled && node.boolean("animated", true));
             self.needs_redraw |= range::indicator(
                 &mut self.canvas,
-                self.theme,
+                theme,
                 node,
                 bounds,
                 indicator,
@@ -730,6 +818,7 @@ impl Renderer {
             controls::label(
                 &mut self.canvas,
                 &self.text,
+                node,
                 Rect::new(
                     bounds.x + 12.0,
                     bounds.y,
@@ -737,18 +826,18 @@ impl Renderer {
                     bounds.height,
                 ),
                 node.text("text").unwrap_or("").lines().next().unwrap_or(""),
-                font_size(node),
+                self.text.font_size(node),
                 if layout.enabled {
-                    self.theme.text
+                    theme.text
                 } else {
-                    self.theme.disabled_text
+                    theme.disabled_text
                 },
             )?;
         } else if node.kind == "RadioButton" {
             controls::radio(
                 &mut self.canvas,
                 &self.text,
-                self.theme,
+                theme,
                 node,
                 bounds,
                 layout.enabled,
@@ -757,7 +846,7 @@ impl Renderer {
             entry::toggle(
                 &mut self.canvas,
                 &self.text,
-                self.theme,
+                theme,
                 node,
                 bounds,
                 layout.enabled,
@@ -766,7 +855,7 @@ impl Renderer {
             controls::combo(
                 &mut self.canvas,
                 &self.text,
-                self.theme,
+                theme,
                 node,
                 bounds,
                 layout.enabled,
@@ -777,7 +866,7 @@ impl Renderer {
                 controls::combo(
                     &mut self.canvas,
                     &self.text,
-                    self.theme,
+                    theme,
                     node,
                     bounds,
                     layout.enabled,
@@ -789,13 +878,7 @@ impl Renderer {
                 )
             } else if node.kind == "SearchField" {
                 let geometry = xrack_layout::SearchGeometry::new(bounds);
-                controls::search_icons(
-                    &mut self.canvas,
-                    self.theme,
-                    node,
-                    &geometry,
-                    layout.enabled,
-                );
+                controls::search_icons(&mut self.canvas, theme, node, &geometry, layout.enabled);
                 (
                     geometry.entry,
                     std::borrow::Cow::Borrowed(text_input_value(node)),
@@ -805,7 +888,7 @@ impl Renderer {
                 controls::spin_buttons(
                     &mut self.canvas,
                     &geometry,
-                    self.theme,
+                    theme,
                     layout.enabled && !node.boolean("read-only", false),
                 );
                 let value = if input.is_focused(path) {
@@ -843,7 +926,7 @@ impl Renderer {
                 entry::draw_area(
                     &mut self.canvas,
                     &self.text,
-                    self.theme,
+                    theme,
                     node,
                     area,
                     entry,
@@ -852,7 +935,7 @@ impl Renderer {
             } else if entry::draw(
                 &mut self.canvas,
                 &self.text,
-                self.theme,
+                theme,
                 node,
                 area,
                 entry,
@@ -862,11 +945,11 @@ impl Renderer {
             }
         } else if xrack_layout::uses_label_layout(node) {
             let tint = if layout.enabled {
-                node.color("color").unwrap_or(self.theme.text)
+                node.color("color").unwrap_or(theme.text)
             } else {
-                self.theme.disabled_text
+                theme.disabled_text
             };
-            let paint = self.text.paint(font_size(node), color(tint), false);
+            let paint = self.text.paint_node(node, color(tint), false);
             let label = self
                 .text
                 .label_layout(node, Size::new(bounds.width, bounds.height));
@@ -888,9 +971,9 @@ impl Renderer {
                 .as_ref()
                 .map_or_else(|| button_text(node), |button| button.label);
             let text_color = if !layout.enabled {
-                self.theme.disabled_text
+                theme.disabled_text
             } else {
-                node.color("color").unwrap_or(self.theme.text)
+                node.color("color").unwrap_or(button_text_color)
             };
             let area = button
                 .as_ref()
@@ -906,11 +989,9 @@ impl Renderer {
                 .map_or(0.0, ButtonContent::gap);
             let icon_width = icon.map_or(0.0, |(_, size)| size + gap);
             let label_width = (area.width - icon_width).max(0.0);
-            let paint = self
-                .text
-                .paint(font_size(node), color(text_color), is_button);
+            let paint = self.text.paint_node(node, color(text_color), is_button);
             let lines = self.text.lines(text, &paint, label_width);
-            let line_height = font_size(node) * 1.4;
+            let line_height = self.text.font_size(node) * 1.4;
             let y = if is_button {
                 bounds.y + ((bounds.height - line_height * lines.len() as f32) * 0.5).max(0.0)
             } else {
@@ -920,7 +1001,7 @@ impl Renderer {
             let x = if let Some((image, size)) = icon {
                 let label = lines
                     .iter()
-                    .map(|range| self.text.advance(&text[range.clone()], font_size(node)))
+                    .map(|range| self.text.advance_painted(&text[range.clone()], &paint))
                     .fold(0.0_f32, f32::max)
                     .min(label_width);
                 let left = area.x + (area.width - icon_width - label).max(0.0) * 0.5;
@@ -966,7 +1047,7 @@ impl Renderer {
             controls::table_header(
                 &mut self.canvas,
                 &self.text,
-                self.theme,
+                theme,
                 header,
                 table,
                 layout.clip.intersect(bounds),
@@ -989,6 +1070,7 @@ impl Renderer {
             let frozen = PaintFrame {
                 input: &frozen_input,
                 scale,
+                theme,
                 transitions: None,
                 indicator_phase: None,
             };
@@ -1037,16 +1119,18 @@ impl Renderer {
             self.canvas.fill_path(
                 &dots,
                 &Paint::color(color(if layout.enabled {
-                    self.theme.text
+                    theme.text
                 } else {
-                    self.theme.disabled_text
+                    theme.disabled_text
                 })),
             );
         }
-        if node.kind == "SwipeDelegate" && input.is_focused(path) && layout.enabled {
+        let drag_target = node.kind == "DropArea" && input.is_drop_target(node, path);
+        if (node.kind == "SwipeDelegate" && input.is_focused(path) || drag_target) && layout.enabled
+        {
             let mut outline = Path::new();
             append_rect(&mut outline, bounds.inset(2.0), [0.0; 4]);
-            let mut paint = Paint::color(color(self.theme.focus));
+            let mut paint = Paint::color(color(theme.focus));
             paint.set_line_width(2.0);
             self.canvas.stroke_path(&outline, &paint);
         }
@@ -1054,11 +1138,12 @@ impl Renderer {
             let mut path = Path::new();
             path.rounded_rect(grip.x, grip.y, grip.width, grip.height, 1.5);
             self.canvas
-                .fill_path(&path, &Paint::color(Color::rgba(155, 180, 227, 160)));
+                .fill_path(&path, &Paint::color(color(theme.role(Role::Grip))));
         }
         if node.kind == "ListRow" {
             controls::list_row(
                 &mut self.canvas,
+                theme,
                 bounds,
                 node.boolean("selected", false),
                 input.is_hovered(path) && layout.enabled,
@@ -1072,6 +1157,7 @@ impl Renderer {
             {
                 controls::tree_indicator(
                     &mut self.canvas,
+                    theme,
                     tree.indicator,
                     node.boolean("tree-expanded", false),
                     layout.enabled,
@@ -1083,12 +1169,19 @@ impl Renderer {
             && path.len() >= 3
             && input.is_focused(&path[..path.len() - 3]);
         if cell_selected || cell_current {
-            controls::list_row(&mut self.canvas, bounds, cell_selected, false, cell_current);
+            controls::list_row(
+                &mut self.canvas,
+                theme,
+                bounds,
+                cell_selected,
+                false,
+                cell_current,
+            );
         }
         for bar in layout.scroll_bars(node) {
             range::scroll_bar(
                 &mut self.canvas,
-                self.theme,
+                theme,
                 bar,
                 layout.enabled,
                 input.scroll_bar_highlighted(path, bar.orientation),
@@ -1133,6 +1226,7 @@ impl Renderer {
             PaintFrame {
                 input,
                 scale,
+                theme: self.palette(scene),
                 transitions: Some(transitions),
                 indicator_phase: Some(indicator_phase(self.clock.elapsed())),
             },
@@ -1156,6 +1250,7 @@ impl Renderer {
             PaintFrame {
                 input,
                 scale,
+                theme: self.palette(scene),
                 transitions: None,
                 indicator_phase: Some(indicator_phase(elapsed)),
             },

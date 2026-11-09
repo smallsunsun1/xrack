@@ -7,11 +7,22 @@ xr_ui_library(
     visibility = ["//tests:__pkg__"],
 )
 
+xr_ui_library(
+    name = "bundled_ui",
+    src = "bundled.xr",
+    assets = ["fonts/demo.ttc"],
+    sources = ["fonts/sample.xr"],
+    visibility = ["//tests:__pkg__"],
+)
+
+exports_files(["fonts/demo.ttc"], visibility = ["//tests:__pkg__"])
+
 rust_binary(
     name = "layout",
     srcs = ["main.rs"],
     edition = "2024",
     deps = [
+        ":bundled_ui",
         ":layout_ui",
         "//crates/xrack-platform-winit:xrack_platform_winit",
     ],

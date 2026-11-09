@@ -1,14 +1,15 @@
 use async_ui::AsyncDemo;
+use bundled_ui::BundledFontsDemo;
 pub mod ui_driver;
 use controls_ui::{
-    CalendarDemo, CheckStateDemo, ControlsDemo, DecimalSpinDemo, DelayDemo, GroupBoxDemo,
-    IndicatorsDemo, TimeDemo, TimerDemo, TumblerDemo,
+    CalendarDemo, CheckStateDemo, ColorDemo, ControlsDemo, DecimalSpinDemo, DelayDemo,
+    GroupBoxDemo, IndicatorsDemo, ThemeDemo, TimeDemo, TimerDemo, TumblerDemo,
 };
 use counter_ui::Counter;
 use delegates_ui::{DelegatesDemo, SwipeDemo};
 use dialog_ui::{DialogDemo, PopupDemo, StandardDialogDemo};
-use form_ui::{FormDemo, PasswordDemo};
-use layout_ui::{FlexDemo, FlowDemo, LabelsDemo, LayoutDemo};
+use form_ui::{DragDropDemo, FileDropDemo, FormDemo, PasswordDemo};
+use layout_ui::{FlexDemo, FlowDemo, FontsDemo, LabelsDemo, LayoutDemo};
 use list_ui::{DirectoryItem, GridDemo, ListDemo, StandardListDemo};
 use media_ui::MediaDemo;
 use menu_ui::MenuDemo;
@@ -27,6 +28,193 @@ use xrack_layout::{
     RangeInput, Size, SliderGeometry, SliderKey, SpinGeometry, TextAreaMotion, TextEdit,
     TextPosition, font_size,
 };
+
+#[test]
+fn accepting_drop_area_paints_above_its_child_and_clears_on_cancel() {
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))
+    .unwrap();
+    let scene = DragDropDemo::new().render();
+    let mut input = Interaction::default();
+    let before = renderer.snapshot(&scene, 560, 258, 1.0, &input).unwrap();
+    input.arm_drag(&scene, &before.layout, Point { x: 100.0, y: 117.0 });
+    assert!(
+        input
+            .drag_motion(&scene, &before.layout, Point { x: 420.0, y: 117.0 }, None)
+            .captured
+    );
+    let hover = renderer.snapshot(&scene, 560, 258, 1.0, &input).unwrap();
+    assert_ne!(hover.pixel(328, 110), before.pixel(328, 110));
+    assert_eq!(hover.pixel(520, 140), before.pixel(520, 140));
+    assert!(input.cancel_drag().captured);
+    let after = renderer.snapshot(&scene, 560, 258, 1.0, &input).unwrap();
+    assert_eq!(before.rgba, after.rgba);
+}
+
+#[test]
+fn file_drag_highlight_tracks_the_accepting_area() {
+    use std::sync::Arc;
+    use xrack_layout::FileDragInput;
+
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))
+    .unwrap();
+    let scene = FileDropDemo::new().render();
+    let mut input = Interaction::default();
+    let initial = renderer.snapshot(&scene, 536, 310, 1.0, &input).unwrap();
+    let paths: Arc<[String]> = [std::env::temp_dir()
+        .join("photo.png")
+        .to_str()
+        .unwrap()
+        .into()]
+    .into();
+    let movement = |x| FileDragInput::Moved {
+        sequence: 1,
+        point: Point { x, y: 110.0 },
+        paths: paths.clone(),
+    };
+    assert!(
+        !input
+            .file_drag_event(&scene, &initial.layout, movement(120.0))
+            .events
+            .is_empty()
+    );
+    let accepted = renderer.snapshot(&scene, 536, 310, 1.0, &input).unwrap();
+    assert_ne!(accepted.pixel(26, 110), initial.pixel(26, 110));
+    assert_eq!(accepted.pixel(280, 110), initial.pixel(280, 110));
+    assert!(
+        !input
+            .file_drag_event(&scene, &initial.layout, movement(330.0))
+            .events
+            .is_empty()
+    );
+    let rejected = renderer.snapshot(&scene, 536, 310, 1.0, &input).unwrap();
+    assert_eq!(rejected.rgba, initial.rgba);
+}
+
+#[test]
+fn bundled_font_collection_shapes_and_paints_without_system_fonts() {
+    let text = xrack_renderer_femtovg::TextSystem::bundled_only();
+    let mut renderer = pollster::block_on(Renderer::with_text(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+        text,
+    ))
+    .unwrap();
+    let scene = BundledFontsDemo::new().render();
+    assert_eq!(scene.fonts.unwrap().sources().len(), 1);
+    let input = Interaction::default();
+    let frame = renderer.snapshot(&scene, 420, 190, 1.0, &input).unwrap();
+    let width = |id| renderer.text.advance_node(scene.find(id).unwrap(), "WWWW");
+    assert!((width("regular") - 48.0).abs() < 0.1);
+    assert!((width("bold") - 60.0).abs() < 0.1);
+    let regular = frame.layout.at_path(&[0, 0]).unwrap().bounds;
+    let bold = frame.layout.at_path(&[0, 1]).unwrap().bounds;
+    assert!((regular.width - 120.0).abs() < 0.1);
+    assert!((bold.width - 150.0).abs() < 0.1);
+    let background = frame.pixel(0, 0);
+    for bounds in [regular, bold] {
+        assert!(
+            (bounds.y as u32..(bounds.y + bounds.height) as u32).any(|y| {
+                (bounds.x as u32..(bounds.x + bounds.width) as u32)
+                    .any(|x| frame.pixel(x, y) != background)
+            })
+        );
+    }
+
+    let blank = xrack_runtime::Node::new("Window", None);
+    renderer.snapshot(&blank, 420, 190, 1.0, &input).unwrap();
+    assert!(renderer.text.shape("WWWW", 20.0).is_err());
+    let restored = renderer.snapshot(&scene, 420, 190, 1.0, &input).unwrap();
+    assert_eq!(frame.rgba, restored.rgba);
+}
+
+#[test]
+fn window_fonts_update_layout_gpu_paint_and_editor_geometry_together() {
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))
+    .unwrap();
+    let mut ui = FontsDemo::new();
+    let input = Interaction::default();
+    let scene = ui.render_shared();
+    let before = renderer.snapshot(&scene, 500, 390, 1.0, &input).unwrap();
+    let label = [0, 0];
+    let overridden = [0, 1];
+    let entry = [0, 2];
+    let area = [0, 3];
+    let bounds = |frame: &xrack_renderer_femtovg::Snapshot, path: &[usize]| {
+        frame.layout.at_path(path).unwrap().bounds
+    };
+    let edit = TextEdit::at_end("WWWWiiii");
+    let caret =
+        |text: &xrack_renderer_femtovg::TextSystem, scene: &xrack_runtime::Node, entry_bounds| {
+            text.single_line_caret_x(
+                scene.at_path(&entry).unwrap(),
+                entry_bounds,
+                "WWWWiiii",
+                Some(&edit),
+            )
+        };
+    let paragraph =
+        |text: &xrack_renderer_femtovg::TextSystem, scene: &xrack_runtime::Node, bounds| {
+            let node = scene.at_path(&area).unwrap();
+            text.text_area_layout(node, bounds, node.text("text").unwrap())
+        };
+    let caret_before = caret(&renderer.text, &scene, bounds(&before, &entry));
+    let area_before = paragraph(&renderer.text, &scene, bounds(&before, &area));
+
+    ui.set_mono(true);
+    let mono = ui.render_shared();
+    let after = renderer.snapshot(&mono, 500, 390, 1.0, &input).unwrap();
+    let measure = |value| {
+        renderer
+            .text
+            .advance_node(mono.at_path(&entry).unwrap(), value)
+    };
+    assert!((measure("WWWW") - measure("iiii")).abs() < 0.5);
+    assert_ne!(bounds(&before, &label).width, bounds(&after, &label).width);
+    assert_eq!(bounds(&before, &overridden), bounds(&after, &overridden));
+    let area_after = paragraph(&renderer.text, &mono, bounds(&after, &area));
+    assert_eq!(area_before.line_height, area_after.line_height);
+    assert_ne!(area_before.lines, area_after.lines);
+    let entry_bounds = bounds(&after, &entry);
+    let caret_after = caret(&renderer.text, &mono, entry_bounds);
+    assert!((caret_after - (entry_bounds.x + 6.0 + measure("WWWWiiii"))).abs() < 0.01);
+    assert!((caret_after - caret_before).abs() > 0.5);
+    let hit = renderer.text.single_line_hit_with_text(
+        mono.at_path(&entry).unwrap(),
+        entry_bounds,
+        Point {
+            x: entry_bounds.x + 6.0 + measure("WWWW"),
+            y: entry_bounds.y,
+        },
+        None,
+        "WWWWiiii",
+    );
+    assert_eq!(hit.offset, 4);
+    let rect = entry_bounds.inset(8.0);
+    assert!((rect.y as u32..(rect.y + rect.height) as u32).any(|y| {
+        (rect.x as u32..(rect.x + rect.width) as u32)
+            .any(|x| before.pixel(x, y) != after.pixel(x, y))
+    }));
+
+    ui.set_large(true);
+    let large = renderer
+        .snapshot(&ui.render(), 500, 390, 1.0, &input)
+        .unwrap();
+    assert!(bounds(&large, &label).height > bounds(&after, &label).height);
+    assert!(bounds(&large, &entry).height > bounds(&after, &entry).height);
+    assert_eq!(
+        bounds(&large, &overridden).height,
+        bounds(&after, &overridden).height
+    );
+}
 
 #[test]
 fn grid_view_paints_selection_and_reuses_frames_for_offscreen_value_changes() {
@@ -242,6 +430,100 @@ fn indicators_use_explicit_snapshot_time_and_stop_requesting_frames_when_static(
     offscreen.children.push(indicator);
     sample(&mut renderer, &offscreen, later);
     assert!(!renderer.needs_redraw());
+}
+
+#[test]
+fn window_palette_updates_controls_and_overlays_without_rebuilding_the_scene() {
+    use xrack_runtime::ColorScheme;
+
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))
+    .unwrap();
+    let mut ui = ThemeDemo::new();
+    let scene = ui.render_shared();
+    let mut input = Interaction::default();
+    assert!(renderer.set_system_color_scheme(ColorScheme::Dark));
+    let dark = renderer.snapshot(&scene, 446, 318, 1.0, &input).unwrap();
+    assert!(renderer.set_system_color_scheme(ColorScheme::Light));
+    let light = renderer.snapshot(&scene, 446, 318, 1.0, &input).unwrap();
+    assert!(std::rc::Rc::ptr_eq(&scene, &ui.render_shared()));
+    assert_eq!(dark.pixel(10, 10), Some([24, 32, 43, 255]));
+    assert_eq!(light.pixel(10, 10), Some([243, 246, 251, 255]));
+    assert_ne!(dark.pixel(410, 132), light.pixel(410, 132));
+    assert_eq!(dark.pixel(30, 282), Some([188, 80, 134, 255]));
+    assert_eq!(dark.pixel(30, 282), light.pixel(30, 282));
+    assert_eq!(
+        dark.layout.at_path(&[5]).unwrap().bounds,
+        light.layout.at_path(&[5]).unwrap().bounds
+    );
+
+    input.pointer_move(&scene, &light.layout, Point { x: 80.0, y: 181.0 });
+    input.pointer_press();
+    let target = input.pointer_release_target().unwrap();
+    assert!(input.open_choice_at_pointer(&scene, &light.layout, target));
+    let menu = input.choice_menu(&scene, &light.layout).unwrap();
+    let (x, y) = (
+        (menu.bounds.x + 1.0) as u32,
+        (menu.bounds.y + menu.bounds.height * 0.5) as u32,
+    );
+    let light_menu = renderer.snapshot(&scene, 446, 318, 1.0, &input).unwrap();
+    assert_eq!(light_menu.pixel(x, y), Some([255, 255, 255, 255]));
+    renderer.set_system_color_scheme(ColorScheme::Dark);
+    let dark_menu = renderer.snapshot(&scene, 446, 318, 1.0, &input).unwrap();
+    assert_eq!(dark_menu.pixel(x, y), Some([39, 53, 77, 255]));
+
+    input.dismiss_choice();
+    ui.set_scheme(ColorScheme::Light);
+    ui.set_accent(Color(0xf5a63bff));
+    let scene = ui.render_shared();
+    let forced = renderer.snapshot(&scene, 446, 318, 1.0, &input).unwrap();
+    assert_eq!(forced.pixel(10, 10), light.pixel(10, 10));
+    assert_eq!(light.pixel(30, 72), Some([62, 101, 232, 255]));
+    assert_eq!(forced.pixel(30, 72), Some([245, 166, 59, 255]));
+    assert_eq!(ui.get_draft(), "保留输入状态");
+    assert!(ui.get_selected());
+}
+
+#[test]
+fn color_picker_paints_channel_gradients_and_alpha_over_checkerboard() {
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))
+    .unwrap();
+    let mut ui = ColorDemo::new();
+    ui.set_picker_open(true);
+    let input = Interaction::default();
+    let scene = ui.render_shared();
+    let translucent = renderer.snapshot(&scene, 478, 384, 1.0, &input).unwrap();
+    let swatch = |snapshot: &xrack_renderer_femtovg::Snapshot, column: f32| {
+        let bounds = snapshot.layout.at_path(&[5, 0, 0, 0]).unwrap().bounds;
+        let x = bounds.x + bounds.width * (column + 0.5) / 8.0;
+        let y = bounds.y + bounds.height * 0.25;
+        snapshot.pixel(x as u32, y as u32).unwrap()
+    };
+    assert_ne!(swatch(&translucent, 0.0), swatch(&translucent, 1.0));
+    let red = translucent.layout.at_path(&[5, 0, 1, 1]).unwrap().bounds;
+    let slider = SliderGeometry::new(red, Orientation::Horizontal);
+    let red_at = |fraction| {
+        let point = slider.position(fraction);
+        translucent.pixel(point.x as u32, point.y as u32).unwrap()[0]
+    };
+    let (low, high) = (red_at(0.1), red_at(0.9));
+    assert!(
+        high.saturating_sub(low) > 100,
+        "red gradient ranges from {low} to {high}"
+    );
+
+    assert!(ui.adjust_range_at(&scene, &[5, 0, 4, 1], RangeAction::Maximum));
+    let opaque = renderer
+        .snapshot(&ui.render_shared(), 478, 384, 1.0, &input)
+        .unwrap();
+    assert_eq!(swatch(&opaque, 0.0), [64, 128, 192, 255]);
+    assert_eq!(swatch(&opaque, 0.0), swatch(&opaque, 1.0));
+    assert_eq!(ui.get_selected(), Color(0x4080c080));
 }
 
 #[test]
@@ -4044,6 +4326,39 @@ fn media_renders_embedded_images_and_vector_paths() {
     let input = Interaction::default();
     let snapshot = renderer.snapshot(&scene, 660, 376, 1.0, &input).unwrap();
     let card = [0x1d, 0x29, 0x3d, 255];
+
+    let mut badge = scene.find("badge").unwrap().clone();
+    let commands = badge.text("commands").unwrap();
+    let plan = badge.precompiled_path(commands).unwrap();
+    assert!(!plan.segments.is_empty());
+    // Exercise the precomputed tight bounds as well as the normalized segments.
+    badge.properties.remove("viewbox-width");
+    badge.properties.remove("viewbox-height");
+    let mut fallback = xrack_runtime::Node::new("Path", badge.id);
+    fallback.properties = badge.properties.clone();
+    assert!(
+        fallback
+            .precompiled_path(fallback.text("commands").unwrap())
+            .is_none()
+    );
+    let planned_pixels = renderer.snapshot(&badge, 128, 128, 1.0, &input).unwrap();
+    let parsed_pixels = renderer.snapshot(&fallback, 128, 128, 1.0, &input).unwrap();
+    let corner = planned_pixels.pixel(0, 0).unwrap();
+    assert!(
+        planned_pixels
+            .rgba
+            .chunks_exact(4)
+            .any(|pixel| pixel != corner)
+    );
+    assert_eq!(planned_pixels.rgba, parsed_pixels.rgba);
+    badge
+        .properties
+        .insert("commands", xrack_runtime::Value::String("M0 0 L1 1".into()));
+    assert!(
+        badge
+            .precompiled_path(badge.text("commands").unwrap())
+            .is_none()
+    );
 
     assert_eq!(
         scene

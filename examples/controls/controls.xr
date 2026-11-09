@@ -570,6 +570,112 @@ export component TimeDemo inherits Window {
         canceled => { root.cancels += 1; }
     }
 }
+
+export component ColorDemo inherits Window {
+    title: "XRack · 颜色选择";
+    width: 478px;
+    height: 384px;
+    background: #162034;
+
+    in-out property <color> selected: #4080C080;
+    in-out property <bool> picker-open: false;
+    in-out property <bool> alpha-visible: true;
+    out property <color> accepted-color: #00000000;
+    out property <int> accepts: 0;
+    out property <int> cancels: 0;
+
+    Text { x: 24px; y: 22px; text: "选择绘图颜色"; font-size: 24px; }
+    saved-color := Rectangle {
+        x: 24px; y: 70px; width: 430px; height: 118px;
+        background: root.selected;
+        border-radius: 8px;
+    }
+    open-color := Button {
+        x: 24px; y: 211px; width: 156px; height: 44px;
+        text: "选择颜色…";
+        clicked => { root.picker-open = true; }
+    }
+    show-alpha-toggle := CheckBox {
+        x: 202px; y: 216px;
+        text: "编辑透明度";
+        checked <=> root.alpha-visible;
+    }
+    Text { x: 24px; y: 280px; text: "已确认 " + root.accepts + " 次"; }
+    popup-color := ColorPickerPopup {
+        width: 380px;
+        title: "调整绘图颜色";
+        open <=> root.picker-open;
+        color <=> root.selected;
+        show-alpha: root.alpha-visible;
+        accept-text: "应用颜色";
+        cancel-text: "取消";
+        accepted(value) => { root.accepts += 1; root.accepted-color = value; }
+        canceled => { root.cancels += 1; }
+    }
+}
+
+export component ThemeDemo inherits Window {
+    title: "XRack · 窗口主题";
+    width: 446px;
+    height: 318px;
+
+    in-out property <ColorScheme> scheme: ColorScheme.system;
+    in-out property <color> accent: #3e65e8;
+    private property <bool> warm: false;
+    private property <bool> shown: false;
+    in-out property <string> draft: "保留输入状态";
+    in-out property <bool> selected: true;
+
+    color-scheme: root.scheme;
+    accent-color: root.accent;
+
+    Text { x: 20px; y: 16px; text: "窗口主题"; font-size: 22px; }
+    system-mode := Button {
+        x: 20px; y: 55px; width: 112px; height: 36px;
+        text: "跟随系统";
+        clicked => { root.scheme = ColorScheme.system; }
+    }
+    light-mode := Button {
+        x: 141px; y: 55px; width: 78px; height: 36px;
+        text: "浅色";
+        clicked => { root.scheme = ColorScheme.light; }
+    }
+    dark-mode := Button {
+        x: 228px; y: 55px; width: 78px; height: 36px;
+        text: "深色";
+        clicked => { root.scheme = ColorScheme.dark; }
+    }
+    accent-button := Button {
+        x: 315px; y: 55px; width: 111px; height: 36px;
+        text: "更换强调色";
+        clicked => {
+            root.warm = !root.warm;
+            root.accent = root.warm ? #f5a63b : #3e65e8;
+        }
+    }
+    entry := LineEdit { x: 20px; y: 109px; width: 406px; height: 40px; text <=> root.draft; }
+    choice := ComboBox {
+        x: 20px; y: 164px; width: 168px; height: 36px;
+        model: ["颜色", "字号", "间距"];
+    }
+    range := Slider { x: 205px; y: 166px; width: 221px; value: 38.0; }
+    toggle := CheckBox { x: 20px; y: 215px; text: "已启用"; checked <=> root.selected; }
+    show-dialog := Button {
+        x: 205px; y: 214px; width: 150px; height: 36px;
+        text: "打开对话框";
+        clicked => { root.shown = true; }
+    }
+    fixed-color := Rectangle { x: 20px; y: 270px; width: 26px; height: 26px; background: #bc5086; }
+    Text { x: 56px; y: 273px; text: "保留显式指定的颜色"; }
+    themed-dialog := Dialog {
+        title: "与窗口共享调色板";
+        width: 306px;
+        open <=> root.shown;
+        Text { text: "对话框、菜单和控件使用相同主题。"; }
+        DialogButton { text: "关闭"; role: reject; }
+    }
+}
+
 export component TimerDemo inherits Window {
     title: "XRack · 声明式计时器";
     width: 460px; height: 240px;

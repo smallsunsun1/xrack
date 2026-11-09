@@ -41,10 +41,15 @@ def XR_TextHorizontalAlignment : XR_Type<"TextHorizontalAlignment", "texthorizon
 def XR_TextVerticalAlignment : XR_Type<"TextVerticalAlignment", "textverticalalignment">;
 def XR_TextOverflow : XR_Type<"TextOverflow", "textoverflow">;
 def XR_InputType : XR_Type<"InputMode", "inputtype">;
+def XR_ColorScheme : XR_Type<"ColorScheme", "colorscheme">;
+def XR_FileDialogMode : XR_Type<"FileDialogMode", "filedialogmode">;
+def XR_MessageLevel : XR_Type<"MessageLevel", "messagelevel">;
+def XR_MessageButtons : XR_Type<"MessageButtons", "messagebuttons">;
 def XR_CheckState : XR_Type<"CheckState", "checkstate">;
 def XR_DialogRole : XR_Type<"DialogRole", "dialogrole">;
 def XR_StandardButtonKind : XR_Type<"StandardButtonKind", "standardbuttonkind">;
 def XR_SwipeSide : XR_Type<"SwipeSide", "swipeside">;
+def XR_DragAction : XR_Type<"DragAction", "dragaction">;
 def XR_DrawerEdge : XR_Type<"DrawerEdge", "draweredge">;
 def XR_PopupPlacement : XR_Type<"PopupPlacement", "popupplacement">;
 def XR_SelectionTarget : XR_Type<"SelectionTarget", "selectiontarget">;
@@ -53,7 +58,7 @@ def XR_Time : XR_Type<"Time", "time">;
 def XR_GradientStop : XR_Type<"GradientStop", "gradientstop">;
 def XR_Value : AnyTypeOf<[XR_Int, XR_Float, XR_Bool, XR_String, XR_StringList, XR_Record, XR_RecordList, XR_Length, XR_Percent, XR_Color,
                          XR_Brush, XR_Image, XR_ImageFit, XR_LayoutAlignment, XR_CrossAxisAlignment,
-                         XR_Orientation, XR_FlexboxLayoutDirection, XR_FlexboxLayoutWrap, XR_DialInputMode, XR_ScrollBarPolicy, XR_TextWrap, XR_TextHorizontalAlignment, XR_TextVerticalAlignment, XR_TextOverflow, XR_InputType, XR_CheckState, XR_DialogRole, XR_StandardButtonKind, XR_SwipeSide, XR_DrawerEdge, XR_PopupPlacement, XR_SelectionTarget, XR_Date, XR_Time]>;
+                         XR_Orientation, XR_FlexboxLayoutDirection, XR_FlexboxLayoutWrap, XR_DialInputMode, XR_ScrollBarPolicy, XR_TextWrap, XR_TextHorizontalAlignment, XR_TextVerticalAlignment, XR_TextOverflow, XR_InputType, XR_ColorScheme, XR_FileDialogMode, XR_MessageLevel, XR_MessageButtons, XR_CheckState, XR_DialogRole, XR_StandardButtonKind, XR_SwipeSide, XR_DragAction, XR_DrawerEdge, XR_PopupPlacement, XR_SelectionTarget, XR_Date, XR_Time]>;
 def XR_Stringifiable : AnyTypeOf<[XR_Int, XR_Float, XR_Bool, XR_Date, XR_Time]>;
 
 class XR_Op<string mnemonic, list<Trait> traits = []> : Op<Xrack_Dialect, mnemonic, traits>;
@@ -71,6 +76,9 @@ def XR_ComponentOp : XR_ScopeOp<"component", [HasParent<"::mlir::ModuleOp">]> {
 }
 def XR_RecordDeclOp : XR_Op<"record_decl", [HasParent<"::mlir::ModuleOp">]> {
   let arguments = (ins StrAttr:$sym_name, StrAttr:$fields);
+}
+def XR_FontOp : XR_Op<"font", [HasParent<"::mlir::ModuleOp">]> {
+  let arguments = (ins StrAttr:$path);
 }
 def XR_ElementOp : XR_ScopeOp<"element"> {
   let arguments = (ins StrAttr:$kind, StrAttr:$id, OptionalAttr<StrAttr>:$key);
@@ -110,7 +118,8 @@ def XR_RepeatOp : XR_Op<"repeat", [ParentOneOf<["ElementOp", "InstanceOp"]>]> {
                        StrAttr:$item, StrAttr:$index);
 }
 def XR_ControlLinkOp : XR_Op<"control_link", [HasParent<"ElementOp">]> {
-  let arguments = (ins AnyTypeOf<[XR_String, XR_Bool, XR_Float, XR_Int, XR_Date, XR_Time, XR_CheckState, XR_SwipeSide]>:$input, StrAttr:$name);
+  let arguments = (ins AnyTypeOf<[XR_String, XR_Bool, XR_Float, XR_Int, XR_Date, XR_Time,
+                                 XR_CheckState, XR_SwipeSide, XR_Color]>:$input, StrAttr:$name);
   let hasVerifier = 1;
 }
 def XR_RowLinkOp : XR_Op<"row_link", [HasParent<"ElementOp">]> {
@@ -124,7 +133,7 @@ def XR_LayoutBindOp : XR_Op<"layout_bind", [HasParent<"InstanceOp">]> {
 def XR_AssignOp : XR_Op<"assign"> {
   let arguments = (ins XR_Value:$input, StrAttr:$name, OptionalAttr<StrAttr>:$owner);
 }
-def XR_ReturnOp : XR_Op<"return", [HasParent<"CallbackOp">]> {
+def XR_ReturnOp : XR_Op<"return", [ParentOneOf<["CallbackOp", "HandlerOp"]>]> {
   let arguments = (ins XR_Value:$input, StrAttr:$name);
 }
 def XR_InvokeOp : XR_Op<"invoke"> {
@@ -140,6 +149,21 @@ def XR_TimerCommandOp : XR_Op<"timer_command"> {
 }
 def XR_PopupCommandOp : XR_Op<"popup_command"> {
   let arguments = (ins StrAttr:$owner, StrAttr:$open);
+  let hasVerifier = 1;
+}
+def XR_FileDialogOpenOp : XR_Op<"file_dialog_open"> {
+  let arguments = (ins StrAttr:$owner);
+  let hasVerifier = 1;
+}
+def XR_NativeDialogOpenOp : XR_Op<"native_dialog_open"> {
+  let arguments = (ins StrAttr:$owner);
+  let hasVerifier = 1;
+}
+def XR_WindowCloseOp : XR_Op<"window_close", [ParentOneOf<["CallbackOp", "HandlerOp"]>]> {
+  let hasVerifier = 1;
+}
+def XR_SecondaryWindowCommandOp : XR_Op<"secondary_window_command", [ParentOneOf<["CallbackOp", "HandlerOp"]>]> {
+  let arguments = (ins StrAttr:$owner, StrAttr:$command);
   let hasVerifier = 1;
 }
 

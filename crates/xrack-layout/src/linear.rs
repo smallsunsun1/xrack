@@ -1,7 +1,4 @@
-use crate::{
-    ButtonContent, Rect, Size, TextMeasurer, dialog_title_height, dimension, flow, font_size,
-    participates_in_flow,
-};
+use crate::{ButtonContent, Rect, Size, TextMeasurer, dimension, flow, participates_in_flow};
 use xrack_runtime::{
     ControlAction, CrossAxisAlignment, DialogCommand, DialogRole, LayoutAlignment, Node,
     Orientation, Value, dialog_button_action, is_modal_overlay, is_multiline_text_input,
@@ -283,9 +280,11 @@ pub(crate) fn measure_with_width(
     let metrics = if let Some(axis) = Axis::for_node(node) {
         let padding = Padding::read(node);
         let mut inner = padding.inner_size(available);
-        let group_title = crate::group_box::title_height(node);
-        let title_height =
-            crate::selection::radio_title_height(node) + dialog_title_height(node) + group_title;
+        let font_size = text.font_size(node);
+        let group_title = crate::group_box::title_height(node, font_size);
+        let title_height = crate::selection::radio_title_height(node, font_size)
+            + crate::modal::title_height(node, font_size)
+            + group_title;
         inner.height = (inner.height - title_height).max(0.0);
         let mut main = AxisInfo::fixed(0.0);
         let mut cross = AxisInfo::flexible(0.0);
@@ -330,9 +329,9 @@ pub(crate) fn measure_with_width(
         if group_title > 0.0 {
             let decoration = if node.group_checkable() { 31.0 } else { 0.0 };
             let title_width = text
-                .measure(
+                .measure_node(
+                    node,
                     node.text("title").unwrap_or(""),
-                    font_size(node),
                     (inner.width - decoration).max(0.0),
                 )
                 .width
@@ -401,22 +400,25 @@ pub(crate) fn measure_with_width(
             "Text" | "Label" if crate::uses_label_layout(node) => {
                 text.measure_label(node, available.width)
             }
-            "Text" => text.measure(
-                node.text("text").unwrap_or(""),
-                font_size(node),
-                available.width,
-            ),
-            "TextInput" | "LineEdit" => Size::new(180.0, (font_size(node) * 1.4 + 12.0).max(34.0)),
-            "SearchField" => Size::new(240.0, (font_size(node) * 1.4 + 12.0).max(34.0)),
-            "TextEdit" | "TextArea" => Size::new(240.0, font_size(node) * 5.6 + 12.0),
+            "Text" => text.measure_node(node, node.text("text").unwrap_or(""), available.width),
+            "TextInput" | "LineEdit" => {
+                Size::new(180.0, (text.font_size(node) * 1.4 + 12.0).max(34.0))
+            }
+            "SearchField" => Size::new(240.0, (text.font_size(node) * 1.4 + 12.0).max(34.0)),
+            "TextEdit" | "TextArea" => Size::new(240.0, text.font_size(node) * 5.6 + 12.0),
             "Slider" | "RangeSlider" if node.orientation() == Orientation::Vertical => {
                 Size::new(28.0, 160.0)
             }
             "Slider" | "RangeSlider" => Size::new(160.0, 28.0),
             "Dial" => Size::new(96.0, 96.0),
-            "SpinBox" => Size::new(116.0, 34.0),
-            "DoubleSpinBox" => Size::new(148.0, 34.0),
-            "ComboBox" => Size::new(156.0, 34.0),
+            "SpinBox" | "DoubleSpinBox" | "ComboBox" => {
+                let width = match node.kind {
+                    "SpinBox" => 116.0,
+                    "DoubleSpinBox" => 148.0,
+                    _ => 156.0,
+                };
+                Size::new(width, (text.font_size(node) * 1.4 + 10.0).max(34.0))
+            }
             "Calendar" => Size::new(294.0, 300.0),
             "Tumbler" => Size::new(112.0, 148.0),
             "TabWidget" | "SwipeView" | "StackView" => Size::new(240.0, 136.0),
@@ -429,22 +431,18 @@ pub(crate) fn measure_with_width(
             "TableView" => Size::new(280.0, 178.0),
             "SplitView" => Size::new(320.0, 180.0),
             "Menu" => Size::new(
-                text.measure(
-                    node.text("title").unwrap_or(""),
-                    font_size(node),
-                    available.width,
-                )
-                .width
+                text.measure_node(node, node.text("title").unwrap_or(""), available.width)
+                    .width
                     + 24.0,
-                32.0,
+                (text.font_size(node) * 1.4 + 8.0).max(32.0),
             ),
             "ProgressIndicator" => Size::new(160.0, 10.0),
             "BusyIndicator" | "Spinner" => Size::new(36.0, 36.0),
             "CheckBox" | "Switch" | "RadioButton" => {
                 let decoration = if node.kind == "Switch" { 50.0 } else { 30.0 };
-                let label = text.measure(
+                let label = text.measure_node(
+                    node,
                     node.text("text").unwrap_or(""),
-                    font_size(node),
                     (available.width - decoration).max(0.0),
                 );
                 Size::new(label.width + decoration, label.height.max(26.0))
@@ -457,9 +455,9 @@ pub(crate) fn measure_with_width(
                 let label = if button.label.is_empty() {
                     Size::default()
                 } else {
-                    text.measure(
+                    text.measure_node(
+                        node,
                         button.label,
-                        font_size(node),
                         (available.width - chrome - decoration).max(0.0),
                     )
                 };

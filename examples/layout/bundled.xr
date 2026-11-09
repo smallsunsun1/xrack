@@ -1,0 +1,9 @@
+import { FontSample } from "fonts/sample.xr";
+
+export component BundledFontsDemo inherits Window {
+    title: "XRack · 内嵌字体";
+    width: 420px; height: 190px;
+    default-font-family: "XRack Demo";
+    default-font-size: 20px;
+    sample := FontSample {}
+}

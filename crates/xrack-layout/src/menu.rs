@@ -1,5 +1,5 @@
 use crate::{LayoutNode, MenuShortcut, Point, Rect, Target, input::valid};
-use xrack_runtime::{ActionKey, Image, Node, is_window_overlay};
+use xrack_runtime::{Image, Node, is_window_overlay};
 
 const ROW_HEIGHT: f32 = 28.0;
 const MAX_VISIBLE_ROWS: usize = 14;
@@ -17,6 +17,7 @@ pub enum MenuKey {
 }
 
 pub struct MenuRow<'a> {
+    pub node: &'a Node,
     pub label: &'a str,
     pub icon: Option<Image>,
     pub shortcut: Option<String>,
@@ -25,7 +26,6 @@ pub struct MenuRow<'a> {
     pub submenu: bool,
     pub checked: Option<bool>,
     index: usize,
-    kind: &'static str,
 }
 
 pub struct MenuPanel<'a> {
@@ -60,7 +60,7 @@ impl MenuPanel<'_> {
         MenuEntry {
             path,
             label: row.label.to_owned(),
-            kind: row.kind,
+            kind: row.node.kind,
         }
     }
 
@@ -145,100 +145,80 @@ fn icon(row: &Node) -> Option<Image> {
     row.image("icon").filter(|image| !image.size().contains(&0))
 }
 
-struct ShortcutSearch {
-    key: MenuShortcut,
-    found: Option<(Option<ActionKey>, Vec<usize>)>,
-}
-
-impl ShortcutSearch {
-    // Presentations of the same Action count as one binding.
-    fn candidate(&mut self, node: &Node, path: &[usize]) -> bool {
-        if shortcut(node) != Some(self.key) {
-            return true;
-        }
-        if let Some((key, _)) = &self.found {
-            return key.is_some() && *key == node.action;
-        }
-        self.found = Some((node.action, path.to_vec()));
-        true
+fn visit_menu_shortcuts(
+    node: &Node,
+    path: &mut Vec<usize>,
+    visit: &mut impl FnMut(&Node, &[usize]),
+) {
+    if !node.is_visible() || !enabled(node) {
+        return;
     }
-
-    fn menu(&mut self, node: &Node, path: &mut Vec<usize>) -> bool {
-        if !node.is_visible() || !enabled(node) {
-            return true;
-        }
-        if node.kind == "MenuItem" {
-            return self.candidate(node, path);
-        }
-        rows(node).all(|(index, row)| {
-            path.push(index);
-            let unique = self.menu(row, path);
-            path.pop();
-            unique
-        })
+    if node.kind == "MenuItem" {
+        visit(node, path);
+        return;
     }
-
-    fn presentations(&mut self, node: &Node, layout: &LayoutNode, path: &mut Vec<usize>) -> bool {
-        let visible = layout.bounds.intersect(layout.clip);
-        if !layout.visible || !layout.enabled || visible.width <= 0.0 || visible.height <= 0.0 {
-            return true;
-        }
-        if matches!(node.kind, "Button" | "ToolButton")
-            && node.action.is_some()
-            && !self.candidate(node, path)
-        {
-            return false;
-        }
-        node.children
-            .iter()
-            .zip(&layout.children)
-            .enumerate()
-            .all(|(index, (child, item))| {
-                if is_window_overlay(child.kind) {
-                    return true;
-                }
-                path.push(index);
-                let unique = if node.kind == "MenuBar" {
-                    let visible = item.bounds.intersect(item.clip);
-                    !item.visible
-                        || !item.enabled
-                        || visible.width <= 0.0
-                        || visible.height <= 0.0
-                        || self.menu(child, path)
-                } else {
-                    self.presentations(child, item, path)
-                };
-                path.pop();
-                unique
-            })
+    for (index, row) in rows(node) {
+        path.push(index);
+        visit_menu_shortcuts(row, path, visit);
+        path.pop();
     }
 }
 
-pub(crate) fn shortcut_path(
+fn visit_presentations(
+    node: &Node,
+    layout: &LayoutNode,
+    path: &mut Vec<usize>,
+    visit: &mut impl FnMut(&Node, &[usize]),
+) {
+    if !layout.visible || !layout.enabled {
+        return;
+    }
+    if node.kind == "Shortcut" {
+        visit(node, path);
+        return;
+    }
+    let visible = layout.bounds.intersect(layout.clip);
+    if visible.width <= 0.0 || visible.height <= 0.0 {
+        return;
+    }
+    if matches!(node.kind, "Button" | "ToolButton") && node.action.is_some() {
+        visit(node, path);
+    }
+    for (index, (child, item)) in node.children.iter().zip(&layout.children).enumerate() {
+        if is_window_overlay(child.kind) {
+            continue;
+        }
+        path.push(index);
+        if node.kind == "MenuBar" {
+            let visible = item.bounds.intersect(item.clip);
+            if item.visible && item.enabled && visible.width > 0.0 && visible.height > 0.0 {
+                visit_menu_shortcuts(child, path, visit);
+            }
+        } else {
+            visit_presentations(child, item, path, visit);
+        }
+        path.pop();
+    }
+}
+
+pub(crate) fn visit_shortcut_presentations(
     scene: &Node,
     layout: &LayoutNode,
     scope: &[usize],
     popup: Option<&MenuPopup>,
-    key: MenuShortcut,
-) -> Option<Vec<usize>> {
-    let mut search = ShortcutSearch { key, found: None };
-    let unique = if let Some(popup) = popup.filter(|popup| popup.point.is_some()) {
-        if !popup.trigger.path.starts_with(scope) || !valid(&popup.trigger, scene, layout) {
-            return None;
+    mut visit: impl FnMut(&Node, &[usize]),
+) {
+    if let Some(popup) = popup.filter(|popup| popup.point.is_some()) {
+        if popup.trigger.path.starts_with(scope)
+            && valid(&popup.trigger, scene, layout)
+            && let Some(level) = popup.levels.first()
+            && let Some(node) = scene.interactive_at_path(&level.path)
+        {
+            visit_menu_shortcuts(node, &mut level.path.clone(), &mut visit);
         }
-        let root = &popup.levels.first()?.path;
-        search.menu(scene.interactive_at_path(root)?, &mut root.clone())
-    } else {
-        search.presentations(
-            scene.at_path(scope)?,
-            layout.at_path(scope)?,
-            &mut scope.to_vec(),
-        )
-    };
-    unique
-        .then_some(search.found)
-        .flatten()
-        .map(|(_, path)| path)
+    } else if let Some((node, item)) = scene.at_path(scope).zip(layout.at_path(scope)) {
+        visit_presentations(node, item, &mut scope.to_vec(), &mut visit);
+    }
 }
 
 fn panel_bounds(anchor: Rect, viewport: Rect, width: f32, height: f32, submenu: bool) -> Rect {
@@ -362,7 +342,7 @@ impl MenuPopup {
                     .take(visible)
                     .map(|(index, row)| MenuRow {
                         index,
-                        kind: row.kind,
+                        node: row,
                         label: label(row),
                         icon: icon(row),
                         shortcut: shortcut(row).map(|key| key.to_string()),
@@ -460,7 +440,7 @@ impl MenuPopup {
                 level,
                 index: row.index,
                 label: row.label.into(),
-                kind: row.kind,
+                kind: row.node.kind,
             });
         }
         true
@@ -478,7 +458,7 @@ impl MenuPopup {
         if !row.enabled
             || row.index != pressed.index
             || row.label != pressed.label
-            || row.kind != pressed.kind
+            || row.node.kind != pressed.kind
         {
             return None;
         }
@@ -529,7 +509,7 @@ impl MenuPopup {
                     row.enabled
                         && row.index == index
                         && row.label == entry.label
-                        && row.kind == entry.kind
+                        && row.node.kind == entry.kind
                 })
         })?;
         self.pressed = None;

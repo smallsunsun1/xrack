@@ -1,0 +1,8 @@
+import "demo.ttc";
+
+export component FontSample inherits VerticalLayout {
+    padding: 20px; spacing: 12px; cross-axis-alignment: start;
+    regular := Label { text: "XRACK WWWW"; }
+    bold := Label { text: "XRACK WWWW"; font-weight: 700; }
+    entry := LineEdit { width: 340px; text: "WWWWiiii"; }
+}

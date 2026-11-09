@@ -33,9 +33,10 @@ pub fn generate_rust(
     filename: &str,
     declared_assets: Option<&[PathBuf]>,
 ) -> Result<TokenStream, CompilerError> {
-    let images =
+    let assets =
         resources::resolve(module, filename, declared_assets).map_err(CompilerError::Resources)?;
-    codegen::generate_with_images(module, &images).map_err(CompilerError::Codegen)
+    codegen::generate_with_resource_plans(module, &assets.images, &assets.fonts, &assets.paths)
+        .map_err(CompilerError::Codegen)
 }
 
 pub fn check_resources(

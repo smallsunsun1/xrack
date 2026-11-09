@@ -15,8 +15,8 @@ use xrack_renderer_femtovg::TextSystem;
 use xrack_runtime::{
     CalendarAction, CalendarState, CheckState, ControlAction, DecimalSpinRange, IndicatorState,
     InputType, ListMetrics, Node, Orientation, RowKey, SliderInterval, SliderRange, SpinRange,
-    StandardButtonKind, SwipeSide, button_text, combo_editable, combo_index, group_index,
-    indicator_state, is_window_overlay, spin_editable, text_input_value,
+    StandardButtonKind, SwipeSide, Value, button_text, choice_identity, combo_editable, combo_text,
+    group_index, indicator_state, is_window_overlay, spin_editable, text_input_value,
 };
 
 const ROOT: NodeId = NodeId(0);
@@ -44,6 +44,7 @@ pub(crate) enum Route {
         target: Target,
         index: usize,
         value: String,
+        record: Option<(RowKey, Value)>,
     },
     ControlPart {
         target: Target,
@@ -588,7 +589,7 @@ impl Builder<'_> {
                 accessible.set_value(if combo_editable(node) {
                     text_input_value(node)
                 } else {
-                    combo_index(node).map_or("", |index| node.strings("model")[index].as_str())
+                    combo_text(node)
                 });
                 accessible.set_expanded(self.input.choice_is_open_for(path));
             }
@@ -875,7 +876,7 @@ impl Builder<'_> {
         path: &[usize],
         row: Option<(RowKey, usize)>,
     ) -> Option<NodeId> {
-        let rect = xrack_layout::group_header(node, item.bounds).intersect(item.clip);
+        let rect = item.group_header(node).intersect(item.clip);
         if rect.width <= 0.0 || rect.height <= 0.0 {
             return None;
         }
@@ -1089,26 +1090,31 @@ impl Builder<'_> {
             let index = menu.first + offset;
             let mut key = Key::element(node, &target.path, row);
             key.kind = "ChoiceOption";
-            let identity = if node.kind == "SearchField" {
-                format!("{}\0{value}", text_input_value(node))
+            let choice = choice_identity(node, index);
+            let identity = if let Some((row, key)) =
+                choice.as_ref().and_then(|choice| choice.record.as_ref())
+            {
+                (0, format!("{row:?}\0{key:?}\0{value}"))
+            } else if node.kind == "SearchField" {
+                (index, format!("{}\0{value}", text_input_value(node)))
             } else {
-                value.clone()
+                (index, value.clone())
             };
-            key.option = Some((index, identity));
+            key.option = Some(identity);
             let id = self.id(key);
             let mut option = AccessibleNode::new(Role::ListBoxOption);
             option.set_label(value.as_str());
             option.set_bounds(bounds(menu.row_bounds(offset), self.scale));
             option.set_selected(menu.selected == Some(index));
-            if node.kind != "SearchField" || xrack_runtime::search_suggestion(node, index).is_some()
-            {
+            if let Some(choice) = choice {
                 option.add_action(Action::Click);
                 self.routes.insert(
                     id,
                     Route::Choice {
                         target: target.clone(),
                         index,
-                        value: value.clone(),
+                        value: choice.label,
+                        record: choice.record,
                     },
                 );
             } else {

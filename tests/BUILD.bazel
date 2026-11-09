@@ -26,6 +26,7 @@ rust_test(
         "//examples/delegates:delegates_ui",
         "//examples/dialog:dialog_ui",
         "//examples/form:form_ui",
+        "//examples/layout:bundled_ui",
         "//examples/layout:layout_ui",
         "//examples/list:list_ui",
         "//examples/media:media_ui",
@@ -47,6 +48,7 @@ rust_test(
 rust_test(
     name = "compiler_test",
     srcs = ["compiler_test.rs"],
+    compile_data = ["//examples/layout:fonts/demo.ttc"],
     edition = "2024",
     deps = [
         "//crates/xrack-compiler:xrack_compiler",
@@ -102,6 +104,7 @@ rust_test(
     edition = "2024",
     deps = [
         ":expressions_ui",
+        "//crates/xrack-layout:xrack_layout",
         "//crates/xrack-runtime:xrack_runtime",
     ],
 )

@@ -256,3 +256,41 @@ export component LabelsDemo inherits Window {
         toggle-overflow := Button { text: "切换省略"; clicked() => { root.elided = !root.elided; } }
     }
 }
+
+export component FontsDemo inherits Window {
+    title: "XRack · 字体与排版";
+    width: 500px; height: 390px;
+    background: #101725;
+    in-out property <bool> mono: false;
+    in-out property <bool> large: false;
+    default-font-family: root.mono ? "monospace" : "";
+    default-font-size: root.large ? 26px : 18px;
+    default-font-weight: 400;
+
+    VerticalLayout {
+        padding: 20px; spacing: 10px; alignment: start; cross-axis-alignment: start;
+        sample := Label { text: "WWWW iiiii · 字体"; }
+        override-sample := Label {
+            text: "Bold italic · fixed size";
+            font-family: "monospace"; font-size: 16px;
+            font-weight: 700; font-italic: true;
+        }
+        entry := LineEdit { width: 360px; text: "WWWWiiii"; }
+        paragraph := TextArea {
+            width: 156px; height: 88px;
+            text: "iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii";
+            wrap: char-wrap;
+        }
+        HorizontalLayout {
+            spacing: 8px;
+            toggle-font := Button {
+                text: "切换等宽字体";
+                clicked() => { root.mono = !root.mono; }
+            }
+            toggle-size := Button {
+                text: "切换字号";
+                clicked() => { root.large = !root.large; }
+            }
+        }
+    }
+}

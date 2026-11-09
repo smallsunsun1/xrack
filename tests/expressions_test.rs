@@ -1,6 +1,6 @@
 use expressions_ui::{
-    EmbeddedList, Expressions, LazyList, LazyProperties, ModelBindings, RadioByValue,
-    SelectionByValue, SharedVisuals,
+    EmbeddedList, Expressions, GridPlans, LazyList, LazyProperties, ModelBindings, RadioByValue,
+    ScenePlans, SelectionByValue, SharedVisuals,
 };
 use std::{cell::Cell, rc::Rc};
 use xrack_runtime::{
@@ -10,26 +10,138 @@ use xrack_runtime::{
 #[test]
 fn shared_visual_bindings_invalidate_and_keep_repeat_rows_independent() {
     let mut ui = SharedVisuals::new();
-    let check = |ui: &SharedVisuals, count: &str, expected_rows: [&str; 2]| {
+    let reads = Rc::new(Cell::new(0));
+    let observed = reads.clone();
+    ui.on_describe(move || {
+        observed.set(observed.get() + 1);
+        "shared".into()
+    });
+    ui.set_items(Vec::new());
+    assert_eq!(ui.render_shared().at_path(&[2]).unwrap().kind, "Empty");
+    assert_eq!(reads.get(), 0);
+    ui.set_items(vec!["A".into(), "B".into()]);
+
+    let check = |ui: &SharedVisuals, count: &str, expected_rows: [&str; 2], caption: &str| {
         let scene = ui.render_shared();
         for id in ["first", "second"] {
             assert_eq!(scene.find(id).unwrap().text("text"), Some(count));
         }
         for (index, expected) in expected_rows.into_iter().enumerate() {
             let row = scene.at_path(&[2, index]).unwrap();
-            assert_eq!(row.children.len(), 2);
+            assert_eq!(row.children.len(), 3);
             assert!(
-                row.children
+                row.children[..2]
                     .iter()
                     .all(|node| node.text("text") == Some(expected))
             );
+            assert_eq!(row.children[2].text("text"), Some(caption));
         }
+        assert_eq!(scene.at_path(&[3]).unwrap().kind, "Empty");
+        assert_eq!(scene.at_path(&[4]).unwrap().id, Some("tail"));
     };
-    check(&ui, "Count 0", ["Row A", "Row B"]);
+    check(&ui, "Count 0", ["Row A", "Row B"], "Caption shared");
     ui.set_count(3);
-    check(&ui, "Count 3", ["Row A", "Row B"]);
+    check(&ui, "Count 3", ["Row A", "Row B"], "Caption shared");
     ui.set_items(vec!["C".into(), "D".into()]);
-    check(&ui, "Count 3", ["Row C", "Row D"]);
+    check(&ui, "Count 3", ["Row C", "Row D"], "Caption shared");
+    assert_eq!(reads.get(), 1);
+    ui.on_describe(|| "changed".into());
+    check(&ui, "Count 3", ["Row C", "Row D"], "Caption changed");
+}
+
+#[test]
+fn scene_plans_share_static_nodes_and_keep_hoisted_branches_lazy() {
+    let mut ui = ScenePlans::new();
+    let calls = Rc::new(Cell::new(0));
+    let observed = calls.clone();
+    ui.on_describe(move || {
+        observed.set(observed.get() + 1);
+        "shared".into()
+    });
+    let initial = ui.render_shared();
+    assert_eq!(initial.at_path(&[2, 0]).unwrap().text("text"), Some("A"));
+    assert_eq!(calls.get(), 0);
+
+    ui.set_tint(Color(0x112233ff));
+    let recolored = ui.render_shared();
+    assert!(!Rc::ptr_eq(&initial, &recolored));
+    assert!(initial.same_frame_inputs(&recolored));
+    assert!(
+        initial
+            .find("panel")
+            .unwrap()
+            .shares_storage_with(recolored.find("panel").unwrap())
+    );
+
+    let mut detached = recolored.find("panel").unwrap().clone();
+    detached.children[0]
+        .properties
+        .insert("text", Value::String("detached".into()));
+    assert!(!detached.shares_storage_with(recolored.find("panel").unwrap()));
+    assert!(detached.children[1].shares_storage_with(recolored.at_path(&[1, 1]).unwrap()));
+    assert_eq!(
+        recolored.at_path(&[1, 0]).unwrap().text("text"),
+        Some("static label")
+    );
+
+    ui.set_swatch_width(Length(70.0));
+    let resized = ui.render_shared();
+    assert!(!recolored.same_frame_inputs(&resized));
+    ui.set_show_caption(true);
+    let visible = ui.render_shared();
+    assert_eq!(calls.get(), 1);
+    assert_eq!(
+        visible.at_path(&[2, 0]).unwrap().text("text"),
+        Some("Caption shared: A")
+    );
+    assert_eq!(
+        visible.at_path(&[2, 1]).unwrap().text("text"),
+        Some("Caption shared: B")
+    );
+}
+
+#[test]
+fn generated_static_grid_matches_dynamic_placement_and_invalidates_on_edits() {
+    use xrack_layout::{Size, TextMeasurer, layout};
+
+    struct Measure;
+    impl TextMeasurer for Measure {
+        fn measure(&mut self, _: &str, _: f32, _: f32) -> Size {
+            Size::default()
+        }
+    }
+
+    let mut ui = GridPlans::new();
+    let scene = ui.render();
+    let plan = scene.children[0].static_grid().unwrap();
+    assert_eq!(plan.len(), 4);
+    assert_eq!(plan[0].position.rows, 2);
+    assert_eq!(plan[1].position.cols, 2);
+    assert_eq!(plan[2].child_index, Some(1));
+    assert_eq!((plan[2].position.row, plan[2].position.col), (1, 1));
+    assert!(scene.children[1].static_grid().is_none());
+
+    let viewport = Size::new(160.0, 200.0);
+    let expected = layout(&scene, viewport, &mut Measure);
+    let mut fallback = scene.clone();
+    fallback.children[0]
+        .properties
+        .insert("visible", Value::Bool(true));
+    assert!(fallback.children[0].static_grid().is_none());
+    assert_eq!(layout(&fallback, viewport, &mut Measure), expected);
+
+    let mut edited = scene.clone();
+    edited.children[0].children[0]
+        .properties
+        .insert("rowspan", Value::Int(1));
+    assert!(edited.children[0].static_grid().is_none());
+    let changed = layout(&edited, viewport, &mut Measure);
+    assert_ne!(
+        changed.at_path(&[0, 2, 1]).unwrap().bounds,
+        expected.at_path(&[0, 2, 1]).unwrap().bounds
+    );
+    ui.set_show_extra(false);
+    assert!(!ui.render().at_path(&[1, 0]).unwrap().is_visible());
 }
 
 #[test]

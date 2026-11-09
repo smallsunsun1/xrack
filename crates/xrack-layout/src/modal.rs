@@ -9,8 +9,12 @@ pub(crate) struct OverlayIndex {
 }
 
 pub fn dialog_title_height(node: &Node) -> f32 {
+    title_height(node, font_size(node))
+}
+
+pub(crate) fn title_height(node: &Node, size: f32) -> f32 {
     if is_modal_overlay(node.kind) && node.text("title").is_some_and(|title| !title.is_empty()) {
-        font_size(node) * 1.4 + 20.0
+        size * 1.4 + 20.0
     } else {
         0.0
     }

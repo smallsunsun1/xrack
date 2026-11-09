@@ -98,6 +98,15 @@ fn document(ctx: &DocumentContextAll<'_>) -> Document {
                 span: span(&**import),
             })
             .collect(),
+        fonts: ctx
+            .fontImport_all()
+            .iter()
+            .map(|font| FontImport {
+                path: font.STRING().expect("font path").get_text(),
+                span: span(&**font),
+                filename: None,
+            })
+            .collect(),
         records: ctx
             .recordDecl_all()
             .iter()
