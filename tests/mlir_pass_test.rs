@@ -56,8 +56,7 @@ fn static_gradient_plans_exclude_live_colors() {
         .children()
         .filter(|op| op.name() == "xr.element")
         .map(|element| {
-            definition(member(element, "xr.bind", "background"), 0)
-                .attribute("xr.static_gradient")
+            definition(member(element, "xr.bind", "background"), 0).attribute("xr.static_gradient")
         })
         .collect();
     assert_eq!(markers, [Some("true"), Some("true"), None, None]);

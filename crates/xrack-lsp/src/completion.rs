@@ -36,7 +36,10 @@ enum Role<'a> {
         kind: &'a str,
         id: Option<&'a str>,
     },
-    Record(&'a str),
+    Record {
+        name: &'a str,
+        exported: bool,
+    },
     RecordValue(&'a str),
     Handler,
     Animation,
@@ -63,6 +66,7 @@ struct Scope<'a> {
     statement: usize,
     brackets: usize,
     members: Vec<Member>,
+    repeat_model: Vec<&'a str>,
 }
 
 struct Index<'a> {
@@ -81,6 +85,7 @@ impl<'a> Index<'a> {
             statement: 0,
             brackets: 0,
             members: vec![],
+            repeat_model: vec![],
         }];
         let mut imports = Vec::new();
         let mut current = 0;
@@ -96,6 +101,7 @@ impl<'a> Index<'a> {
                         statement: i + 1,
                         brackets: 1,
                         members: vec![],
+                        repeat_model: vec![],
                     });
                     current = scopes.len() - 1;
                 }
@@ -134,6 +140,7 @@ impl<'a> Index<'a> {
                         statement: i + 1,
                         brackets: 0,
                         members,
+                        repeat_model: repeat_model(head),
                     });
                     current = scopes.len() - 1;
                 }
@@ -187,7 +194,7 @@ impl<'a> Index<'a> {
                         });
                     }
                 }
-                _ if matches!(scopes[current].role, Role::Record(_))
+                _ if matches!(scopes[current].role, Role::Record { .. })
                     && name(token.text)
                     && tokens.get(i + 1).is_some_and(|t| t.text == ":") =>
                 {
@@ -253,8 +260,46 @@ impl<'a> Index<'a> {
     fn record(&self, name: &str) -> &[Member] {
         self.scopes
             .iter()
-            .find(|s| matches!(s.role, Role::Record(n) if n == name))
+            .find(|s| matches!(s.role, Role::Record { name: n, .. } if n == name))
             .map_or(&[], |s| &s.members)
+    }
+
+    fn infer_repeat_items(&mut self) {
+        for i in 1..self.scopes.len() {
+            let scope = &self.scopes[i];
+            let parent = scope.parent;
+            let ty = match scope.repeat_model.as_slice() {
+                [owner, ".", field] => {
+                    let owner = match *owner {
+                        "root" => self.component(parent),
+                        "self" => self.element(parent),
+                        id => self.named_element(parent, id),
+                    };
+                    owner.and_then(|owner| self.member_type(owner, field))
+                }
+                [name] => self
+                    .ancestors(parent)
+                    .find_map(|i| self.member_type(i, name)),
+                _ => None,
+            };
+            let item_type = ty.and_then(|ty| match ty {
+                Type::Int => Some(Type::Int),
+                ty => ty.list_item(),
+            });
+            if let Some(item_type) = item_type
+                && let Some(item) = self.scopes[i].members.first_mut()
+            {
+                item.ty = Some(item_type);
+            }
+        }
+    }
+
+    fn member_type(&self, scope: usize, name: &str) -> Option<Type> {
+        self.members(scope, false)
+            .into_iter()
+            .find(|member| member.name == name)?
+            .ty
+            .clone()
     }
 
     fn members(&self, scope: usize, public: bool) -> Vec<&Member> {
@@ -295,7 +340,10 @@ fn role<'a>(head: &[&Token<'a>], top_level: bool) -> Role<'a> {
     if top_level {
         return match first {
             "import" => Role::Import,
-            "struct" => Role::Record(head.get(1).map_or("", |t| t.text)),
+            "struct" => Role::Record {
+                name: head.get(1).map_or("", |t| t.text),
+                exported,
+            },
             "component" => Role::Component {
                 name: head.get(1).map_or("", |t| t.text),
                 base: last,
@@ -332,12 +380,14 @@ fn role<'a>(head: &[&Token<'a>], top_level: bool) -> Role<'a> {
 }
 
 fn locals(head: &[&Token<'_>], role: Role<'_>) -> Vec<Member> {
+    let repeat =
+        matches!(role, Role::Element { .. }) && head.first().is_some_and(|t| t.text == "for");
     let names: &[&Token<'_>] = match role {
         Role::Handler => head
             .iter()
             .position(|t| t.text == "(")
             .map_or(&[], |start| &head[start + 1..]),
-        Role::Element { .. } if head.first().is_some_and(|t| t.text == "for") => head
+        _ if repeat => head
             .iter()
             .position(|t| t.text == "in")
             .map_or(&[], |end| &head[1..end]),
@@ -353,13 +403,35 @@ fn locals(head: &[&Token<'_>], role: Role<'_>) -> Vec<Member> {
     names
         .iter()
         .filter(|t| name(t.text))
-        .map(|t| Member {
+        .enumerate()
+        .map(|(i, t)| Member {
             name: t.text.into(),
-            ty: key_handler.then_some(Type::KeyEvent),
+            ty: if repeat && i == 1 {
+                Some(Type::Int)
+            } else {
+                key_handler.then_some(Type::KeyEvent)
+            },
             visibility: "private",
             kind: VARIABLE,
         })
         .collect()
+}
+
+fn repeat_model<'a>(head: &[&Token<'a>]) -> Vec<&'a str> {
+    if head.first().is_none_or(|token| token.text != "for") {
+        return vec![];
+    }
+    let start = head.iter().position(|t| t.text == "in");
+    let end = head.iter().rposition(|t| t.text == ":");
+    start
+        .zip(end)
+        .filter(|(start, end)| start < end)
+        .map_or_else(Vec::new, |(start, end)| {
+            head[start + 1..end]
+                .iter()
+                .map(|token| token.text)
+                .collect()
+        })
 }
 
 fn read_type(tokens: &[&Token<'_>]) -> Option<Type> {
@@ -442,7 +514,7 @@ impl<'a> Items<'a> {
     fn types(&mut self, index: &Index<'a>) {
         self.words(catalog::TYPES, CLASS, "XRack type");
         for scope in &index.scopes {
-            if let Role::Record(name) = scope.role {
+            if let Role::Record { name, .. } = scope.role {
                 self.add(name, STRUCT, "record");
             }
         }
@@ -472,24 +544,39 @@ pub(crate) fn complete(
     });
     let start = prefix.map_or(cursor, |t| t.range.start);
     let end = prefix.map_or(cursor, |t| t.range.end);
-    let prior = &code[..code.partition_point(|t| t.range.end <= start)];
-    let mut index = Index::new(&code, text.len());
-    if let Some(workspace) = workspace
-        && !index.imports.is_empty()
-    {
-        index.imported_members = workspace.imported_members(&tokens);
-    }
-    let scope = index.scope_at(cursor);
-    let head = &prior[prior
-        .iter()
-        .rposition(|t| matches!(t.text, "{" | "}" | ";"))
-        .map_or(0, |i| i + 1)..];
     let mut items = Items {
         prefix: &text[start..cursor],
         range: source.range(start, end),
         seen: BTreeSet::new(),
         values: vec![],
     };
+    let mut index = Index::new(&code, text.len());
+    let scope = index.scope_at(cursor);
+    if matches!(index.scopes[scope].role, Role::Import)
+        && let Some(symbols) =
+            workspace.and_then(|workspace| workspace.import_symbols(&tokens, cursor))
+    {
+        for (symbol, kind) in symbols {
+            let detail = if kind == STRUCT {
+                "exported record"
+            } else {
+                "exported component"
+            };
+            items.add(&symbol, kind, detail);
+        }
+        return items.values;
+    }
+    let prior = &code[..code.partition_point(|t| t.range.end <= start)];
+    if let Some(workspace) = workspace
+        && !index.imports.is_empty()
+    {
+        index.imported_members = workspace.imported_members(&tokens);
+    }
+    index.infer_repeat_items();
+    let head = &prior[prior
+        .iter()
+        .rposition(|t| matches!(t.text, "{" | "}" | ";"))
+        .map_or(0, |i| i + 1)..];
     suggest(&index, scope, head, &mut items);
     items.values
 }
@@ -500,7 +587,7 @@ fn suggest<'a>(index: &Index<'a>, scope: usize, head: &[&Token<'a>], items: &mut
         return;
     }
     let role = index.scopes[scope].role;
-    let head = if matches!(role, Role::Record(_) | Role::RecordValue(_)) {
+    let head = if matches!(role, Role::Record { .. } | Role::RecordValue(_)) {
         &head[head
             .iter()
             .rposition(|t| t.text == ",")
@@ -519,7 +606,7 @@ fn suggest<'a>(index: &Index<'a>, scope: usize, head: &[&Token<'a>], items: &mut
         return;
     }
     if last == "->"
-        || matches!(role, Role::Record(_)) && last == ":"
+        || matches!(role, Role::Record { .. }) && last == ":"
         || head.iter().any(|t| t.text == "property") && matches!(last, "<" | "[")
         || head.iter().any(|t| t.text == "callback") && last == ":"
     {
@@ -541,7 +628,7 @@ fn suggest<'a>(index: &Index<'a>, scope: usize, head: &[&Token<'a>], items: &mut
     let kind = match role {
         Role::Component { base, .. } => base,
         Role::Element { kind, .. } => kind,
-        Role::States => {
+        Role::States if !head.iter().any(|t| t.text == "when") => {
             items.add("when", KEYWORD, "state condition");
             return;
         }
@@ -589,7 +676,7 @@ fn suggest<'a>(index: &Index<'a>, scope: usize, head: &[&Token<'a>], items: &mut
         }
         _ => "",
     };
-    let expression = matches!(role, Role::Handler)
+    let expression = matches!(role, Role::Handler | Role::States)
         || matches!(first, "if" | "for")
         || head
             .iter()

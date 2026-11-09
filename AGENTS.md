@@ -7,7 +7,7 @@
 - 使用 Bazel 构建应用、编译器和测试。版本以 `.bazelversion`、`rust-toolchain.toml`、`Cargo.toml` 和 `MODULE.bazel` 为准。Rust 使用 edition 2024，原生 C++ 使用 C++20。升级时同步检查 `Cargo.lock` 和 `MODULE.bazel.lock`。
 - MLIR、TableGen 和 `rules_rust_bindgen` 共用 Bazel `llvm` 模块导出的 `@llvm-project`。原生 MLIR 依赖统一从该仓库解析，生成的 C bindings 通过 Bazel `rust_library` 提供给 `xrack-mlir`。
 - ANTLR grammar 位于 `grammar/Xrack.g4`。JDK 只在构建时运行生成器，`xrack-parser` 用 `antlr4rust` 从生成的 Rust 规则上下文直接构造 AST。修改 grammar 后由 Bazel 更新生成的源码。
-- 用 `bazel info bazel-bin` 定位构建产物。保留 `.bazelrc` 的磁盘缓存 `~/.cache/bazel/xrack`。Cargo 用于依赖管理、格式化和可选静态检查，沿用 `.cargo/config.toml` 的 `.tools/cargo-build/` 输出路径，避免在仓库根目录生成 `target/`。
+- 用 `bazel info bazel-bin` 定位构建产物。保留 `.bazelrc` 的磁盘缓存 `~/.cache/bazel/xrack`。Rust 格式检查和 Clippy 使用 Bazel。Cargo 用于依赖管理、打包和可选类型检查，沿用 `.cargo/config.toml` 的 `.tools/cargo-build/` 输出路径，避免在仓库根目录生成 `target/`。
 - 新增 crate 或依赖时同步检查 Cargo workspace 与相应的 `BUILD.bazel`。ANTLR Rust 源码、TableGen 输出和 MLIR C bindings 都由 Bazel 生成，改动写在生成规则或源文件中。
 
 ## Rust 模块与编译链
@@ -30,7 +30,8 @@
 ## 验证与编辑器
 
 ```sh
-cargo fmt --all --check
+bazel build --config=fmt //... //tests:gpu_test
+bazel build --config=lint //... //tests:gpu_test
 bazel test //...
 bazel test //tests:gpu_test
 bazel run //examples/counter:counter_headless

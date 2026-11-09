@@ -104,15 +104,24 @@ fn incomplete_source_and_imports_follow_the_frontend_boundaries() {
 }
 
 fn complete_at(marker: &str) -> Vec<Value> {
+    complete_in(marker, None)
+}
+
+fn complete_in(marker: &str, workspace: Option<&completion::Workspace<'_>>) -> Vec<Value> {
     let (before, after) = marker.split_once('|').expect("cursor marker");
     let line = before.bytes().filter(|&b| b == b'\n').count();
     let column = before.rsplit('\n').next().unwrap().encode_utf16().count();
-    completion::complete(&format!("{before}{after}"), line, column, None)
+    completion::complete(&format!("{before}{after}"), line, column, workspace)
+}
+
+fn fixture_uri(name: &str) -> String {
+    let drive = if cfg!(windows) { "C:/" } else { "" };
+    format!("file:///{drive}xrack-completion-fixture/{name}")
 }
 
 #[test]
 fn imported_aliases_resolve_exported_members_and_bases_from_open_buffers() {
-    let entry = "file:///xrack-completion-fixture/Main%20View.xr";
+    let entry = fixture_uri("Main%20View.xr");
     let shared = concat!(
         "import { Foundation as Parent } from \"base.xr\";\n",
         "export component Card inherits Parent {\n",
@@ -122,29 +131,32 @@ fn imported_aliases_resolve_exported_members_and_bases_from_open_buffers() {
     );
     let base = "export component Foundation inherits Rectangle { in-out property <int> enabled-count; callback reset; }";
     let unrelated = "export component Card inherits Rectangle { in property <int> different; }";
+    let buffers = [
+        (fixture_uri("Card%20%E4%B8%AD.xr"), shared),
+        (fixture_uri("base.xr"), base),
+        (fixture_uri("other.xr"), unrelated),
+    ];
     let workspace = completion::Workspace::new(
-        entry,
-        [
-            (
-                "file:///xrack-completion-fixture/Card%20%E4%B8%AD.xr",
-                shared,
-            ),
-            ("file:///xrack-completion-fixture/base.xr", base),
-            ("file:///xrack-completion-fixture/other.xr", unrelated),
-        ]
-        .into_iter(),
+        &entry,
+        buffers.iter().map(|(uri, text)| (uri.as_str(), *text)),
     )
     .unwrap();
     let prefix = concat!(
+        "import \"fonts/demo.ttc\";\n",
         "import { Card as Tile } from \"Card 中.xr\";\n",
         "import { Card as Other } from \"other.xr\";\n",
     );
     let labels_at = |line: &str| {
         let text = format!("{prefix}{line}");
-        completion::complete(&text, 2, line.encode_utf16().count(), Some(&workspace))
-            .into_iter()
-            .map(|item| item["label"].as_str().unwrap().to_owned())
-            .collect::<Vec<_>>()
+        completion::complete(
+            &text,
+            prefix.lines().count(),
+            line.encode_utf16().count(),
+            Some(&workspace),
+        )
+        .into_iter()
+        .map(|item| item["label"].as_str().unwrap().to_owned())
+        .collect::<Vec<_>>()
     };
     let labels = labels_at("component Demo inherits Window { card := Tile {} Text { text: card.");
     for member in ["title", "size", "activate", "enabled-count", "reset"] {
@@ -176,24 +188,24 @@ fn imported_aliases_resolve_exported_members_and_bases_from_open_buffers() {
 
 #[test]
 fn completion_ignores_non_exported_imports_and_terminates_on_inheritance_cycles() {
-    let uri = "file:///xrack-completion-fixture/main.xr";
+    let uri = fixture_uri("main.xr");
+    let buffers = [
+        (
+            fixture_uri("a.xr"),
+            concat!(
+                "import { B } from \"b.xr\"; ",
+                "export component A inherits B { in property <int> first; } ",
+                "component Hidden inherits Rectangle { in property <int> secret; }",
+            ),
+        ),
+        (
+            fixture_uri("b.xr"),
+            "import { A } from \"a.xr\"; export component B inherits A { callback call; }",
+        ),
+    ];
     let workspace = completion::Workspace::new(
-        uri,
-        [
-            (
-                "file:///xrack-completion-fixture/a.xr",
-                concat!(
-                    "import { B } from \"b.xr\"; ",
-                    "export component A inherits B { in property <int> first; } ",
-                    "component Hidden inherits Rectangle { in property <int> secret; }",
-                ),
-            ),
-            (
-                "file:///xrack-completion-fixture/b.xr",
-                "import { A } from \"a.xr\"; export component B inherits A { callback call; }",
-            ),
-        ]
-        .into_iter(),
+        &uri,
+        buffers.iter().map(|(uri, text)| (uri.as_str(), *text)),
     )
     .unwrap();
     let prefix = "import { A as Visible, Hidden } from \"a.xr\";\n";
@@ -210,6 +222,70 @@ fn completion_ignores_non_exported_imports_and_terminates_on_inheritance_cycles(
         ["first", "call"]
     );
     assert!(complete("Hidden").is_empty());
+}
+
+#[test]
+fn named_import_completion_offers_unused_exports_from_the_open_module() {
+    let entry = fixture_uri("main.xr");
+    let module = fixture_uri("widgets.xr");
+    let source = concat!(
+        "export component Card inherits Rectangle {}\n",
+        "export struct CardData { title: string }\n",
+        "component CardPrivate inherits Rectangle {}\n",
+        "struct CardInternal { id: int }",
+    );
+    let workspace =
+        completion::Workspace::new(&entry, [(module.as_str(), source)].into_iter()).unwrap();
+    let complete = |text| complete_in(text, Some(&workspace));
+    let items =
+        complete("import \"demo.ttc\";\nimport { Card as Tile, Ca|rdData } from \"widgets.xr\";");
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0]["label"], "CardData");
+    assert_eq!(items[0]["kind"], 22);
+    assert_eq!(
+        items[0]["textEdit"]["range"],
+        json!({
+            "start": { "line": 1, "character": 23 },
+            "end": { "line": 1, "character": 31 },
+        })
+    );
+    let items = complete("import { Ca| } from \"widgets.xr\"");
+    assert_eq!(
+        items
+            .iter()
+            .map(|item| item["label"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        ["Card", "CardData"]
+    );
+    assert!(complete("import { Card as Ca| } from \"widgets.xr\";").is_empty());
+}
+
+#[test]
+fn repeat_record_fields_and_indices_use_the_declared_model_types() {
+    let source = concat!(
+        "struct Address { city: string }\n",
+        "struct Person { address: Address, age: int }\n",
+        "component App inherits Window { in property <[Person]> people;\n",
+        "  for item[index] in root.people : VerticalLayout { Text { text: "
+    );
+    let labels = |suffix| complete_at(&format!("{source}{suffix}"));
+    assert!(
+        labels("item.address.ci|")
+            .iter()
+            .any(|item| item["label"] == "city" && item["detail"] == "string")
+    );
+    assert!(
+        labels("ind|")
+            .iter()
+            .any(|item| item["label"] == "index" && item["detail"] == "int")
+    );
+    assert!(
+        complete_at(
+            "component App inherits Window { in property <bool> mobile; states [ small when mo|"
+        )
+        .iter()
+        .any(|item| item["label"] == "mobile")
+    );
 }
 
 #[test]

@@ -31,11 +31,6 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y pkg-config libdbus-1-dev libwayland-dev libxkbcommon-dev
-      - name: Check formatting
-        if: runner.os == 'Linux'
-        run: |
-          cargo fmt --all --check
-          cargo fmt --manifest-path examples/cargo-consumer/Cargo.toml --check
       - name: Test Cargo runtime and desktop host
         run: >-
           cargo test --locked
@@ -44,7 +39,7 @@ jobs:
       - name: Verify publishable crates
         if: runner.os == 'Linux'
         run: >-
-          cargo package
+          cargo package --locked
           -p xrack-runtime -p xrack-assets -p xrack-layout
           -p xrack-renderer-femtovg -p xrack-platform-winit
       - name: Upload Cargo packages
@@ -85,12 +80,23 @@ jobs:
             - Cargo.lock
           disk-cache: true
           bazelrc: |
-            build --jobs=${{ runner.os == 'Linux' && '4' || '3' }}
+            build --jobs=${{ runner.os == 'macOS' && '3' || '4' }}
+      - name: Check Rust formatting through Bazel
+        if: runner.os == 'macOS'
+        run: |
+          bazel build --config=fmt --lockfile_mode=update //... //tests:gpu_test
+          bazel run @xrack_rust_host_tools//:rustfmt -- --check --edition 2024 \
+            "$GITHUB_WORKSPACE/examples/cargo-consumer/build.rs" \
+            "$GITHUB_WORKSPACE/examples/cargo-consumer/src/main.rs"
       - name: Test compiler, MLIR passes, and generated Rust
         # Bazel extension digests can differ between the local installation and hosted runners.
         run: >-
           bazel test --announce_rc --lockfile_mode=update
           //tests:compiler_test //tests:mlir_pass_test //tests:expressions_test
+          //crates/xrack-lsp:xrack_lsp_test
+      - name: Run Clippy through Bazel
+        if: runner.os == 'macOS'
+        run: bazel build --config=lint --lockfile_mode=error //... //tests:gpu_test
       - name: Check the Cargo dependency lock
         run: git diff --exit-code -- Cargo.lock
       - name: Package xrackc

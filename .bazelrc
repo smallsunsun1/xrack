@@ -1,7 +1,7 @@
 startup:windows --windows_enable_symlinks
 
 build --compilation_mode=opt
-build --jobs=8
+build --jobs=auto
 # Share action outputs across output bases/worktrees and Bazel restarts.
 # `~` is expanded by Bazel, so this remains portable across developer machines.
 # GitHub Actions overrides this local default from setup-bazel's home RC.
@@ -26,4 +26,11 @@ build:macos --features=-layering_check
 build:macos --host_features=-layering_check
 build:macos --macos_minimum_os=13.0
 build:macos --host_macos_minimum_os=13.0
+
+build:fmt --aspects=@rules_rust//rust:defs.bzl%rustfmt_aspect
+build:fmt --output_groups=rustfmt_checks
+build:lint --aspects=@rules_rust//rust:defs.bzl%rust_clippy_aspect
+build:lint --output_groups=clippy_checks
+build:lint --@rules_rust//rust/settings:clippy_flag=-Dclippy::correctness
+
 test --test_output=errors

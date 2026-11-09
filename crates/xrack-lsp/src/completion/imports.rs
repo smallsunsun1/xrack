@@ -1,9 +1,10 @@
-use crate::completion::{Index, Member, Role};
+use crate::completion::{CLASS, Index, Member, Role, STRUCT};
 use crate::editor_tokens::{self, Token, name};
 use std::{
     borrow::Cow,
     collections::{BTreeMap, BTreeSet},
     fs,
+    ops::Range,
     path::{Path, PathBuf},
 };
 
@@ -28,6 +29,52 @@ impl<'a> Workspace<'a> {
             .into_iter()
             .map(|(alias, target)| (alias, self.interface(target, &mut modules)))
             .collect()
+    }
+
+    pub(super) fn import_symbols(
+        &self,
+        tokens: &[Token<'_>],
+        cursor: usize,
+    ) -> Option<Vec<(String, u32)>> {
+        let code: Vec<_> = tokens.iter().filter(|t| t.code() || t.quoted()).collect();
+        let clause = named_imports(&code)
+            .find(|clause| clause.body.start <= cursor && cursor <= clause.body.end)?;
+        let before = &clause.names[..clause.names.partition_point(|t| t.range.end <= cursor)];
+        let active = before.iter().filter(|t| t.text == ",").count();
+        let used: BTreeSet<_> = clause
+            .names
+            .split(|t| t.text == ",")
+            .enumerate()
+            .filter_map(|(i, binding)| (i != active).then_some(binding.first()?.text))
+            .collect();
+        if before
+            .iter()
+            .rev()
+            .take_while(|t| t.text != ",")
+            .any(|t| t.text == "as" || t.range.end < cursor)
+        {
+            return Some(vec![]);
+        }
+        let file = module_path(&self.entry, clause.source.text);
+        let module = file.and_then(|file| {
+            self.load(&normalize(&file))
+                .map(|text| Module::new(&file, &text))
+        });
+        Some(module.map_or_else(Vec::new, |module| {
+            module
+                .components
+                .into_iter()
+                .filter(|(name, component)| component.exported && !used.contains(name.as_str()))
+                .map(|(name, _)| (name, CLASS))
+                .chain(
+                    module
+                        .records
+                        .into_iter()
+                        .filter(|name| !used.contains(name.as_str()))
+                        .map(|name| (name, STRUCT)),
+                )
+                .collect()
+        }))
     }
 
     fn load(&self, path: &Path) -> Option<Cow<'_, str>> {
@@ -90,6 +137,7 @@ struct Target {
 #[derive(Default)]
 struct Module {
     components: BTreeMap<String, Component>,
+    records: BTreeSet<String>,
     imports: BTreeMap<String, Target>,
 }
 
@@ -104,6 +152,17 @@ impl Module {
         let tokens = editor_tokens::scan(text);
         let code: Vec<_> = tokens.iter().filter(|t| t.code()).collect();
         let index = Index::new(&code, text.len());
+        let records = index
+            .scopes
+            .iter()
+            .filter_map(|scope| match scope.role {
+                Role::Record {
+                    name,
+                    exported: true,
+                } => Some(name.into()),
+                _ => None,
+            })
+            .collect();
         let components = index
             .scopes
             .into_iter()
@@ -128,42 +187,20 @@ impl Module {
             .collect();
         Self {
             components,
+            records,
             imports: import_targets(path, &tokens),
         }
     }
 }
 
 fn import_targets(path: &Path, tokens: &[Token<'_>]) -> BTreeMap<String, Target> {
-    let Some(directory) = path.parent() else {
-        return BTreeMap::new();
-    };
     let code: Vec<_> = tokens.iter().filter(|t| t.code() || t.quoted()).collect();
     let mut imports = BTreeMap::new();
-    let mut rest = code.as_slice();
-    // Imports precede declarations. Scan only that prefix so the rest of the file
-    // can contain unfinished expressions or missing braces during completion.
-    while let [keyword, open, tail @ ..] = rest {
-        if keyword.text != "import" || open.text != "{" {
-            break;
-        }
-        let Some(close) = tail.iter().position(|t| t.text == "}") else {
-            break;
-        };
-        let [from, source, semicolon, next @ ..] = &tail[close + 1..] else {
-            break;
-        };
-        if from.text != "from" || !source.quoted() || semicolon.text != ";" {
-            break;
-        }
-        rest = next;
-        let Ok(relative) = serde_json::from_str::<PathBuf>(source.text) else {
+    for clause in named_imports(&code) {
+        let Some(file) = module_path(path, clause.source.text) else {
             continue;
         };
-        if relative.is_absolute() || relative.extension().is_none_or(|ext| ext != "xr") {
-            continue;
-        }
-        let file = directory.join(relative);
-        for binding in tail[..close].split(|t| t.text == ",") {
+        for binding in clause.names.split(|t| t.text == ",") {
             let (original, alias) = match binding {
                 [original] => (original.text, original.text),
                 [original, as_token, alias] if as_token.text == "as" => (original.text, alias.text),
@@ -178,6 +215,59 @@ fn import_targets(path: &Path, tokens: &[Token<'_>]) -> BTreeMap<String, Target>
         }
     }
     imports
+}
+
+struct ImportClause<'a, 'source> {
+    body: Range<usize>,
+    names: &'a [&'a Token<'source>],
+    source: &'a Token<'source>,
+}
+
+fn named_imports<'a, 'source>(
+    code: &'a [&'a Token<'source>],
+) -> impl Iterator<Item = ImportClause<'a, 'source>> {
+    let mut rest = code;
+    // Imports precede declarations, and a font import may occur between named imports.
+    std::iter::from_fn(move || {
+        while let [keyword, open, tail @ ..] = rest {
+            if keyword.text != "import" {
+                break;
+            }
+            if open.quoted() && tail.first().is_some_and(|t| t.text == ";") {
+                rest = &tail[1..];
+                continue;
+            }
+            if open.text != "{" {
+                break;
+            }
+            let close = tail.iter().position(|t| t.text == "}")?;
+            let [from, source, next @ ..] = &tail[close + 1..] else {
+                break;
+            };
+            if from.text != "from" || !source.quoted() {
+                break;
+            }
+            rest = if next.first().is_some_and(|t| t.text == ";") {
+                &next[1..]
+            } else {
+                &[]
+            };
+            return Some(ImportClause {
+                body: open.range.end..tail[close].range.start,
+                names: &tail[..close],
+                source,
+            });
+        }
+        None
+    })
+}
+
+fn module_path(path: &Path, source: &str) -> Option<PathBuf> {
+    let relative: PathBuf = serde_json::from_str(source).ok()?;
+    if relative.is_absolute() || relative.extension().is_none_or(|ext| ext != "xr") {
+        return None;
+    }
+    Some(path.parent()?.join(relative))
 }
 
 fn file_path(uri: &str) -> Option<PathBuf> {

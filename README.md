@@ -59,8 +59,13 @@ bazel build //grammar:generate_rust //mlir:c_bindings_out_dir
 export XRACK_ANTLR_DIR="$(pwd)/bazel-bin/grammar/generated/rust"
 export OUT_DIR="$(pwd)/bazel-bin/mlir/c_bindings_out_dir"
 cargo check --workspace --locked
-cargo fmt --all --check
-cargo clippy --workspace --all-targets --no-deps --locked -- -D warnings
+```
+
+Rust 格式检查和 Clippy 使用 Bazel 的 Rust 工具链。Clippy 检查手写 Rust，并将 correctness 类诊断作为构建错误。生成的 UI 代码通过编译器测试验证。
+
+```sh
+bazel build --config=fmt //... //tests:gpu_test
+bazel build --config=lint //... //tests:gpu_test
 ```
 
 依赖 MLIR 原生库的可执行文件和测试通过 Bazel 构建。Cargo 可用于运行独立的 parser 测试，执行 `cargo test -p xrack-parser --locked` 前先按上文生成 Rust parser 并设置 `XRACK_ANTLR_DIR`。
@@ -85,11 +90,13 @@ cargo run --manifest-path examples/cargo-consumer/Cargo.toml \
 `python3 tools/package_xrackc.py` 用 Bazel 构建当前宿主平台的 `xrackc`，在 `.tools/dist/` 生成压缩包和 SHA-256 校验文件。解包后将 `XRACKC` 指向其中的可执行文件。压缩包包含编译器及其依赖的许可证。
 
 ```sh
-cargo package -p xrack-runtime -p xrack-assets -p xrack-layout \
+cargo package --locked -p xrack-runtime -p xrack-assets -p xrack-layout \
   -p xrack-renderer-femtovg -p xrack-platform-winit
 ```
 
-Cargo 会验证打包后的源码。正式发布按 `xrack-runtime`、`xrack-assets`、`xrack-layout`、`xrack-renderer-femtovg`、`xrack-platform-winit` 的顺序提交，等待前置依赖进入索引。Cargo 版桌面宿主使用上游 AccessKit，Bazel 版带有 macOS 三态复选框无障碍值修补。
+Cargo 会验证打包后的源码，并在发布时按依赖顺序上传这些 crate。Cargo 版桌面宿主使用上游 AccessKit，Bazel 版带有 macOS 三态复选框无障碍值修补。
+
+在 GitHub Actions 手动运行 [Release crates to crates.io](.github/workflows/release-crates.yml)，输入与 workspace 一致的版本号。默认执行 dry-run。正式发布时选择 `main`，勾选 `publish`，并为 GitHub 的 `crates-io` 环境配置 `CARGO_REGISTRY_TOKEN` secret。首次发布使用允许发布新 crate 的 token。上传中断后，可从同一次 workflow 运行重试，脚本会跳过同一提交已发布的版本。
 
 ### GitHub Actions
 
@@ -116,6 +123,8 @@ C++ 使用 clangd。运行 **Bazel: Generate compile_commands.json** 或 `python
 ## Bazel 磁盘缓存
 
 仓库 `.bazelrc` 默认启用 `--disk_cache=~/.cache/bazel/xrack`。此缓存保存构建动作输出，可以跨 Bazel 重启、不同 output base 和兼容的 worktree 复用；它与下载源码包的 repository cache、当前 output base 的增量缓存分开。
+
+本地并发数由 Bazel 根据宿主资源自动确定，需要临时调整时可传 `--jobs=N`。GitHub Actions 为 Linux 和 Windows runner 设置 4 个 job，为 macOS arm64 runner 设置 3 个。
 
 回收策略为 `--experimental_disk_cache_gc_max_size=30G` 和 `--experimental_disk_cache_gc_max_age=30d`，由 Bazel 在空闲时清理，并非构建期间的硬配额。缓存按输入和工具链签名匹配，修改 C++ 标准、Rust 版本或编译选项后可能需要重新预热。已有历史动作不会因为新增配置就保证全部出现在 disk cache 中，首次执行会逐步填充。
 
