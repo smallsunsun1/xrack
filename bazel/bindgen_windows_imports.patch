@@ -1,0 +1,15 @@
+--- a/3rdparty/crates/BUILD.windows-targets-0.52.6.bazel
++++ b/3rdparty/crates/BUILD.windows-targets-0.52.6.bazel
+@@ -41,6 +41,11 @@ rust_library(
+     ],
+     rustc_flags = [
+         "--cap-lints=allow",
+-    ],
++    ] + select({
++        # The vendored build omits Cargo's import-library search path.
++        # Let rustc generate the Windows import libraries instead.
++        "@platforms//os:windows": ["--cfg=windows_raw_dylib"],
++        "//conditions:default": [],
++    }),
+     tags = [
+         "cargo-bazel",

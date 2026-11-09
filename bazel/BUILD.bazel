@@ -1,4 +1,5 @@
 exports_files([
     "accesskit_macos_mixed_state.patch",
+    "bindgen_windows_imports.patch",
     "xrack.bzl",
 ])
