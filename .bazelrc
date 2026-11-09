@@ -1,7 +1,10 @@
+startup:windows --windows_enable_symlinks
+
 build --compilation_mode=opt
 build --jobs=8
 # Share action outputs across output bases/worktrees and Bazel restarts.
 # `~` is expanded by Bazel, so this remains portable across developer machines.
+# GitHub Actions overrides this local default from setup-bazel's home RC.
 build --disk_cache=~/.cache/bazel/xrack
 build --experimental_disk_cache_gc_max_size=30G
 build --experimental_disk_cache_gc_max_age=30d
