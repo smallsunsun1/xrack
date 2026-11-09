@@ -85,7 +85,6 @@ jobs:
             - Cargo.lock
           disk-cache: true
           bazelrc: |
-            ${{ runner.os == 'Windows' && 'startup --windows_enable_symlinks' || '' }}
             build --jobs=${{ runner.os == 'Linux' && '4' || '3' }}
       - name: Test compiler, MLIR passes, and generated Rust
         # Bazel extension digests can differ between the local installation and hosted runners.
