@@ -6,6 +6,12 @@ bazel_dep(name = "rules_rust_bindgen", version = "0.75.0")
 bazel_dep(name = "rules_cc", version = "0.2.27")
 bazel_dep(name = "rules_java", version = "9.3.0")
 
+single_version_override(
+    module_name = "rules_rust_bindgen",
+    patches = ["//bazel:bindgen_windows_imports.patch"],
+    patch_strip = 1,
+)
+
 # MLIR is built from the LLVM module's source repository. No system LLVM discovery.
 llvm = use_extension("@llvm//extensions:llvm.bzl", "llvm")
 llvm.version(llvm_version = "23.1.2")
