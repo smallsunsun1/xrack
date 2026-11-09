@@ -892,10 +892,12 @@ impl<'a> Generator<'a> {
         scope: &mut VisualScope<'a>,
     ) -> Result<(), String> {
         let definition = self.operand(binding, 0)?;
-        if !matches!(
-            definition.name(),
-            "xr.literal" | "xr.read" | "xr.image_url" | "xr.param"
-        ) {
+        if !self.static_gradient(definition)
+            && !matches!(
+                definition.name(),
+                "xr.literal" | "xr.read" | "xr.image_url" | "xr.param"
+            )
+        {
             let key = self.visual_cache_key(binding);
             if matches!(key, VisualCacheKey::RepeatInvariant(_)) && scope.row_index.is_some() {
                 return Ok(());
@@ -1084,23 +1086,31 @@ impl<'a> Generator<'a> {
                 let (color, offset) = (arg(0)?, arg(1)?);
                 quote!(::xrack_runtime::GradientStop { color: #color, offset: #offset })
             }
-            "xr.linear_gradient" => {
-                let angle = arg(0)?;
-                let stops = (1..op.operand_count())
+            "xr.linear_gradient" | "xr.radial_gradient" => {
+                let linear = op.name() == "xr.linear_gradient";
+                let stops = (usize::from(linear)..op.operand_count())
                     .map(arg)
                     .collect::<Result<Vec<_>, _>>()?;
-                quote!(::xrack_runtime::Brush::Linear {
-                    angle_degrees: #angle,
-                    stops: ::std::sync::Arc::from([#(#stops),*]),
-                })
-            }
-            "xr.radial_gradient" => {
-                let stops = (0..op.operand_count())
-                    .map(arg)
-                    .collect::<Result<Vec<_>, _>>()?;
-                quote!(::xrack_runtime::Brush::Radial {
-                    stops: ::std::sync::Arc::from([#(#stops),*]),
-                })
+                let brush = if linear {
+                    let angle = arg(0)?;
+                    quote!(::xrack_runtime::Brush::Linear {
+                        angle_degrees: #angle,
+                        stops: ::std::sync::Arc::from([#(#stops),*]),
+                    })
+                } else {
+                    quote!(::xrack_runtime::Brush::Radial {
+                        stops: ::std::sync::Arc::from([#(#stops),*]),
+                    })
+                };
+                if self.static_gradient(op) {
+                    quote!({
+                        static BRUSH: ::std::sync::OnceLock<::xrack_runtime::Brush> =
+                            ::std::sync::OnceLock::new();
+                        BRUSH.get_or_init(|| #brush).clone()
+                    })
+                } else {
+                    brush
+                }
             }
             "xr.unary" => {
                 let arg = arg(0)?;
@@ -1282,6 +1292,10 @@ impl<'a> Generator<'a> {
 
     fn static_subtree(&self, element: OperationRef<'a>) -> bool {
         self.use_visual_plan && element.attribute("xr.static_subtree") == Some("true")
+    }
+
+    fn static_gradient(&self, expression: OperationRef<'a>) -> bool {
+        self.use_visual_plan && expression.attribute("xr.static_gradient") == Some("true")
     }
 
     fn render(
@@ -3911,7 +3925,7 @@ impl<'a> Generator<'a> {
                 __state: ::std::rc::Rc<#state>,
             }
 
-            #[allow(non_camel_case_types)]
+            #[allow(non_camel_case_types, non_snake_case)]
             struct #state { #fields }
 
             #[allow(non_camel_case_types)]
@@ -4220,7 +4234,12 @@ pub fn generate_with_resource_plans(
     fonts: &[Vec<u8>],
     paths: &BTreeMap<String, EmbeddedPath>,
 ) -> Result<TokenStream, String> {
-    let mut out = TokenStream::new();
+    let mut out = quote! {
+        const _: () = assert!(
+            ::xrack_runtime::CODEGEN_ABI_VERSION == 1,
+            "xrackc and xrack-runtime have incompatible code generation interfaces"
+        );
+    };
     if !fonts.is_empty() {
         let bytes = fonts.iter().map(|font| Literal::byte_string(font));
         out.extend(quote! {

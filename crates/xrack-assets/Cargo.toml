@@ -4,6 +4,8 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
+repository.workspace = true
+description = "Image and vector asset support for XRack UI"
 
 [dependencies]
 png.workspace = true

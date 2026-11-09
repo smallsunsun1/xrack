@@ -1,4 +1,9 @@
 //! Renderer-independent scene snapshots produced by generated components.
+
+/// Compatibility level expected by the Rust code emitted by xrackc.
+#[doc(hidden)]
+pub const CODEGEN_ABI_VERSION: u32 = 1;
+
 mod animation;
 mod calendar;
 mod child_window;

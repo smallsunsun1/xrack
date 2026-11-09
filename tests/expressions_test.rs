@@ -1,6 +1,6 @@
 use expressions_ui::{
-    EmbeddedList, Expressions, GridPlans, LazyList, LazyProperties, ModelBindings, RadioByValue,
-    ScenePlans, SelectionByValue, SharedVisuals,
+    EmbeddedList, Expressions, GradientPlans, GridPlans, LazyList, LazyProperties, ModelBindings,
+    RadioByValue, ScenePlans, SelectionByValue, SharedVisuals,
 };
 use std::{cell::Cell, rc::Rc};
 use xrack_runtime::{
@@ -98,6 +98,36 @@ fn scene_plans_share_static_nodes_and_keep_hoisted_branches_lazy() {
         visible.at_path(&[2, 1]).unwrap().text("text"),
         Some("Caption shared: B")
     );
+}
+
+#[test]
+fn generated_gradients_reuse_fixed_stops_and_update_live_stops() {
+    use std::sync::Arc;
+    use xrack_runtime::Brush;
+
+    let mut ui = GradientPlans::new();
+    let before = ui.render();
+    let brush = |scene: &xrack_runtime::Node, id| scene.find(id).unwrap().properties["background"].clone();
+    let Value::Brush(Brush::Linear { stops: original, .. }) = brush(&before, "fixed") else {
+        panic!("expected a linear brush");
+    };
+    ui.set_swatch_width(Length(60.0));
+    ui.set_tint(Color(0x123456ff));
+    let after = ui.render();
+    assert_eq!(after.find("fixed").unwrap().length("width"), Some(60.0));
+    let Value::Brush(Brush::Linear { stops: resized, .. }) = brush(&after, "fixed") else {
+        panic!("expected a linear brush");
+    };
+    assert!(Arc::ptr_eq(&original, &resized));
+    let other = GradientPlans::new().render();
+    let Value::Brush(Brush::Linear { stops: other, .. }) = brush(&other, "fixed") else {
+        panic!("expected a linear brush");
+    };
+    assert!(Arc::ptr_eq(&original, &other));
+    let Value::Brush(Brush::Radial { stops }) = brush(&after, "live") else {
+        panic!("expected a radial brush");
+    };
+    assert_eq!(stops[1].color, Color(0x123456ff));
 }
 
 #[test]

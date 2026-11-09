@@ -1,0 +1,133 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  runtime:
+    name: Cargo runtime (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15, ubuntu-24.04, windows-2025]
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - name: Install Linux desktop build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libdbus-1-dev libwayland-dev libxkbcommon-dev
+      - name: Check formatting
+        if: runner.os == 'Linux'
+        run: |
+          cargo fmt --all --check
+          cargo fmt --manifest-path examples/cargo-consumer/Cargo.toml --check
+      - name: Test Cargo runtime and desktop host
+        run: >-
+          cargo test --locked
+          -p xrack-runtime -p xrack-assets -p xrack-layout
+          -p xrack-renderer-femtovg -p xrack-platform-winit
+      - name: Verify publishable crates
+        if: runner.os == 'Linux'
+        run: >-
+          cargo package
+          -p xrack-runtime -p xrack-assets -p xrack-layout
+          -p xrack-renderer-femtovg -p xrack-platform-winit
+      - name: Upload Cargo packages
+        if: runner.os == 'Linux'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: cargo-packages
+          path: .tools/cargo-build/package/*.crate
+          include-hidden-files: true
+          if-no-files-found: error
+
+  compiler:
+    name: Bazel compiler (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 120
+    env:
+      CARGO_BAZEL_ISOLATED: "false"
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15, ubuntu-24.04, windows-2025]
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - name: Configure Windows shell for Bazel genrules
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          "BAZEL_SH=C:/msys64/usr/bin/bash.exe" >> $env:GITHUB_ENV
+      - uses: bazel-contrib/setup-bazel@c5acdfb288317d0b5c0bbd7a396a3dc868bb0f86 # 0.19.0
+        with:
+          bazelisk-cache: true
+          repository-cache: true
+          disk-cache: true
+          bazelrc: |
+            ${{ runner.os == 'Windows' && 'startup --windows_enable_symlinks' || '' }}
+            build --jobs=3
+      - name: Test compiler, MLIR passes, and generated Rust
+        run: >-
+          bazel test --lockfile_mode=error
+          //tests:compiler_test //tests:mlir_pass_test //tests:expressions_test
+      - name: Package xrackc
+        run: python tools/package_xrackc.py
+      - name: Run the standalone Cargo consumer
+        shell: python
+        run: |
+          import json
+          import os
+          from pathlib import Path
+          import shutil
+          import subprocess
+          import tarfile
+          import tempfile
+          import tomllib
+
+          runtime = Path("crates/xrack-runtime").resolve()
+          toolchain = tomllib.loads(Path("rust-toolchain.toml").read_text())["toolchain"]["channel"]
+          archive, = Path(".tools/dist").glob("xrackc-*.tar.gz")
+          with tempfile.TemporaryDirectory() as directory:
+              stage = Path(directory)
+              with tarfile.open(archive) as bundle:
+                  bundle.extractall(stage, filter="data")
+              exe = "xrackc.exe" if os.name == "nt" else "xrackc"
+              compiler = stage / archive.name.removesuffix(".tar.gz") / exe
+              app = stage / "app"
+              shutil.copytree("examples/cargo-consumer", app)
+              result = subprocess.run(
+                  ["cargo", "run", "--config",
+                   f"patch.crates-io.xrack-runtime.path={json.dumps(runtime.as_posix())}"],
+                  cwd=app, check=True, text=True, stdout=subprocess.PIPE,
+                  env={**os.environ, "XRACKC": str(compiler), "RUSTUP_TOOLCHAIN": toolchain},
+              )
+              print(result.stdout, end="")
+              if result.stdout.strip() != "count=1, doubled=2":
+                  raise SystemExit("unexpected Cargo consumer output")
+      - name: Upload xrackc archive and checksum
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: xrackc-${{ matrix.os }}
+          path: |
+            .tools/dist/xrackc-*.tar.gz
+            .tools/dist/xrackc-*.sha256
+          include-hidden-files: true
+          if-no-files-found: error
+          compression-level: 0

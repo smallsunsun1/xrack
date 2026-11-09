@@ -134,6 +134,18 @@ export component ScenePlans inherits Window {
     }
 }
 
+export component GradientPlans inherits Window {
+    in-out property <color> tint: #abc;
+    in-out property <length> swatch-width: 40px;
+    fixed := Rectangle {
+        width: root.swatch-width;
+        background: @linear-gradient(90deg, #000, #fff);
+    }
+    live := Rectangle {
+        background: @radial-gradient(circle, #000, root.tint);
+    }
+}
+
 export component EmbeddedList inherits Window {
     in-out property <[string]> items: ["a", "b", "c"];
     records := StringRows { items: root.items; }
