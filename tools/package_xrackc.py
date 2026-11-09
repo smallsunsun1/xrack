@@ -4,6 +4,7 @@
 import hashlib
 import json
 from pathlib import Path
+import shutil
 import subprocess
 import tarfile
 import tempfile
@@ -61,11 +62,16 @@ def cargo_licenses(host):
 
 
 def main():
+    # Resolve the PATH entry explicitly so Windows can use a Bazelisk batch shim.
+    bazel = shutil.which("bazel")
+    if bazel is None:
+        raise SystemExit("Bazel was not found on PATH")
+    bazel = Path(bazel).absolute()
     host = next(line.removeprefix("host: ") for line in output("rustc", "-vV").splitlines()
                 if line.startswith("host: "))
-    subprocess.run(("bazel", "build", *BAZEL_OPTIONS, "//:xrackc"), cwd=ROOT, check=True)
-    bin_dir = Path(output("bazel", "info", *BAZEL_OPTIONS, "bazel-bin"))
-    external = Path(output("bazel", "info", *BAZEL_OPTIONS, "output_base")) / "external"
+    subprocess.run((bazel, "build", *BAZEL_OPTIONS, "//:xrackc"), cwd=ROOT, check=True)
+    bin_dir = Path(output(bazel, "info", *BAZEL_OPTIONS, "bazel-bin"))
+    external = Path(output(bazel, "info", *BAZEL_OPTIONS, "output_base")) / "external"
     exe = "xrackc.exe" if "windows" in host else "xrackc"
     compiler = bin_dir / "crates" / "xrack-compiler" / exe
     version = output(compiler, "--version").split()[1]
