@@ -5,6 +5,145 @@ component SearchLabel inherits BaseLabel {
     background: #304777;
 }
 
+export component FileDialogDemo inherits Window {
+    title: "XRack · 系统文件对话框";
+    width: 548px; height: 286px;
+
+    in-out property <string> start-directory: "";
+    in-out property <FileDialogMode> mode: FileDialogMode.open-file;
+    out property <[string]> paths: [];
+    out property <string> status: "请选择一个操作";
+
+    callback choose(next: FileDialogMode);
+    choose(next) => { root.mode = next; picker.open(); }
+
+    picker := FileDialog {
+        mode: root.mode;
+        title: "选择文件或目录";
+        directory: root.start-directory;
+        file-name: root.mode == FileDialogMode.save-file ? "notes.txt" : "";
+        name-filters: ["Text files (*.txt *.md)"];
+        accepted(selection) => { root.paths = selection; root.status = "已选择"; }
+        canceled => { root.status = "已取消"; }
+        failed(message) => { root.status = message; }
+    }
+
+    VerticalLayout {
+        padding: 20px; spacing: 12px; alignment: start;
+        Text { text: "系统文件对话框"; font-size: 22px; }
+        HorizontalLayout {
+            spacing: 8px;
+            open-one := Button { text: "打开文件"; clicked => { root.choose(FileDialogMode.open-file); } }
+            open-many := Button { text: "打开多个"; clicked => { root.choose(FileDialogMode.open-files); } }
+            save-as := Button { text: "另存为"; clicked => { root.choose(FileDialogMode.save-file); } }
+            select-folder := Button { text: "选择目录"; clicked => { root.choose(FileDialogMode.select-folder); } }
+        }
+        status := Text { text: root.status; }
+        ScrollView {
+            height: 112px;
+            VerticalLayout {
+                alignment: start;
+                for path in root.paths : Text { text: path; height: 24px; }
+            }
+        }
+    }
+}
+
+export component MessageDialogDemo inherits Window {
+    title: "XRack · 系统消息对话框";
+    width: 490px; height: 206px;
+
+    in-out property <bool> confirm-enabled: true;
+    out property <int> accepts: 0;
+    out property <int> rejects: 0;
+    out property <StandardButtonKind> answer: StandardButtonKind.cancel;
+    out property <string> status: "请选择一个操作";
+
+    callback ask;
+    ask => { confirmation.open(); }
+
+    confirmation := MessageDialog {
+        title: "恢复设置";
+        text: "要恢复默认设置吗？";
+        informative-text: "当前修改将在确认后清除。";
+        level: warning;
+        buttons: yes-no-cancel;
+        enabled: root.confirm-enabled;
+        accepted => { root.accepts += 1; }
+        rejected => { root.rejects += 1; }
+        finished(button) => {
+            root.answer = button;
+            root.status = button == StandardButtonKind.yes ? "已确认" :
+                          button == StandardButtonKind.no ? "已拒绝" : "已取消";
+        }
+        failed(message) => { root.status = message; }
+    }
+    notice := MessageDialog {
+        text: "设置已同步";
+        informative-text: "这条消息由系统对话框显示。";
+        finished(button) => { root.answer = button; root.status = "已知晓"; }
+        failed(message) => { root.status = message; }
+    }
+
+    VerticalLayout {
+        padding: 20px; spacing: 12px; alignment: start;
+        Text { text: "系统消息对话框"; font-size: 22px; }
+        HorizontalLayout {
+            spacing: 8px;
+            confirm := Button { text: "确认恢复设置"; clicked => { root.ask(); } }
+            show-notice := Button { text: "显示通知"; clicked => { notice.open(); } }
+        }
+        status := Text { text: root.status; }
+        Text { text: "确认 " + root.accepts + " 次 · 拒绝或取消 " + root.rejects + " 次"; }
+    }
+}
+
+export component CloseGuardDemo inherits Window {
+    title: "XRack · 草稿窗口";
+    width: 510px; height: 318px;
+
+    in-out property <bool> dirty: false;
+    in-out property <string> draft: "";
+    out property <string> status: "输入一些文字，再试着关闭窗口";
+    out property <int> requests: 0;
+    callback close-from-rust;
+    callback ask-discard() -> bool;
+    ask-discard() => { discard.open(); false }
+
+    close-requested() => {
+        root.requests += 1;
+        root.dirty ? root.ask-discard() : true
+    }
+
+    discard := MessageDialog {
+        title: "放弃未保存的草稿？";
+        text: "确认后关闭窗口。";
+        level: warning;
+        buttons: ok-cancel;
+        accepted => { root.dirty = false; root.close(); }
+        rejected => { root.status = "继续编辑"; }
+        failed(message) => { root.status = message; }
+    }
+
+    VerticalLayout {
+        padding: 20px; spacing: 12px; alignment: start;
+        Text { text: "关闭前确认"; font-size: 22px; }
+        entry := TextEdit {
+            height: 110px;
+            accessible-name: "草稿";
+            text <=> root.draft;
+            edited(value) => { root.dirty = true; root.status = "未保存"; }
+        }
+        status := Text { text: root.status; }
+        Text { text: "关闭请求 · " + root.requests; }
+        HorizontalLayout {
+            spacing: 8px;
+            close-window := Button { text: "关闭窗口"; clicked => { root.close(); } }
+            rust-close := Button { text: "Rust 请求关闭"; clicked => { root.close-from-rust(); } }
+        }
+    }
+}
+
 export component FormDemo inherits Window {
     in-out property <string> query: "";
     out property <int> edits: 0;
@@ -169,5 +308,156 @@ export component ValidationDemo inherits Window {
         x: 24px; y: 289px;
         text: "已提交金额：" + root.submitted-amount;
         color: #acc0db;
+    }
+}
+
+export component DragDropDemo inherits Window {
+    title: "XRack · 拖放";
+    width: 560px; height: 258px;
+    background: #141d2c;
+    in-out property <string> payload: "XR-42";
+    in-out property <bool> source-enabled: true;
+    in-out property <bool> target-enabled: true;
+    in-out property <bool> card-present: true;
+    out property <int> clicks: 0;
+    out property <string> received: "";
+    out property <string> trace: "";
+    out property <DragAction> result: DragAction.none;
+    out property <length> last-x: 0px;
+
+    Label {
+        x: 24px; y: 24px;
+        text: "拖动编号到右侧。按 Ctrl 复制，Esc 取消。";
+    }
+    source := DragArea {
+        x: 24px; y: 76px; width: 174px; height: 82px;
+        enabled: root.source-enabled;
+        visible: root.card-present;
+        data: root.payload;
+        drag-key: "inventory";
+        allow-copy: true; allow-move: true;
+        drag-started() => { root.trace = "start"; }
+        drag-finished(action) => {
+            root.result = action;
+            root.card-present = action != DragAction.move;
+            root.trace = root.trace + "-finish";
+        }
+        card := Button {
+            width: 100%; height: 100%;
+            text: root.payload;
+            clicked() => { root.clicks = root.clicks + 1; }
+        }
+    }
+    target := DropArea {
+        x: 326px; y: 76px; width: 210px; height: 82px;
+        enabled: root.target-enabled;
+        keys: ["inventory"];
+        entered(data, action) => { root.trace = root.trace + "-enter"; }
+        position-changed(x, y) => { root.last-x = x; }
+        exited() => { root.trace = root.trace + "-exit"; }
+        dropped(data, action) => {
+            root.received = data;
+            root.trace = root.trace + "-drop";
+        }
+        Rectangle {
+            width: 100%; height: 100%;
+            background: #28414e; border-radius: 8px;
+            Label { x: 14px; y: 28px; text: "接收区"; }
+        }
+        rejected-child := DropArea {
+            x: 24px; y: 18px; width: 158px; height: 50px;
+            keys: ["unrelated"];
+            dropped(data, action) => { root.received = "unexpected"; }
+        }
+    }
+    status := Label {
+        x: 24px; y: 182px;
+        text: root.received == "" ? "尚未接收" : root.result == DragAction.move
+            ? "已移动 " + root.received : "已复制 " + root.received;
+    }
+    reset-card := Button {
+        x: 400px; y: 174px; width: 136px; height: 40px;
+        text: "恢复编号";
+        clicked() => { root.card-present = true; root.received = ""; }
+    }
+}
+
+component DragInboxRow inherits DropArea {
+    in property <string> title;
+    property <string> received: "";
+    keys: ["inventory"];
+    dropped(data, action) => { root.received = data; }
+    Label { text: root.title + ":" + root.received; }
+}
+
+export component VirtualDragDemo inherits Window {
+    width: 360px; height: 180px;
+    in-out property <[string]> items: ["old", "new"];
+    source := DragArea {
+        x: 12px; y: 12px; width: 128px; height: 54px;
+        data: "ticket"; drag-key: "inventory"; allow-copy: true;
+        Rectangle { width: 100%; height: 100%; background: #314b80; }
+    }
+    inbox := ListView {
+        x: 156px; y: 12px; width: 172px; height: 78px;
+        row-height: 36px;
+        for item in root.items : DragInboxRow { title: item; }
+    }
+}
+
+export component FileDropDemo inherits Window {
+    title: "XRack · 拖入文件";
+    width: 536px; height: 310px;
+    in-out property <bool> images-enabled: true;
+    out property <[string]> paths: [];
+    out property <[string]> preview: [];
+    out property <int> batches: 0;
+    out property <string> zone: "";
+    Label { x: 24px; y: 24px; text: "从 Finder 拖入文件"; font-size: 20px; }
+    images := DropArea {
+        x: 24px; y: 72px; width: 234px; height: 82px;
+        enabled: root.images-enabled;
+        accept-files: true;
+        file-extensions: ["png", "jpeg", "jpg"];
+        files-entered(paths) => { root.preview = paths; }
+        exited() => { root.preview = []; }
+        files-dropped(paths) => {
+            root.preview = [];
+            root.paths = paths;
+            root.batches = root.batches + 1;
+            root.zone = "图片";
+        }
+        Rectangle {
+            width: 100%; height: 100%; background: #28414e; border-radius: 8px;
+            Label { x: 14px; y: 30px; text: "PNG / JPEG"; }
+        }
+    }
+    documents := DropArea {
+        x: 278px; y: 72px; width: 234px; height: 82px;
+        accept-files: true;
+        file-extensions: [".txt", "md"];
+        files-entered(paths) => { root.preview = paths; }
+        exited() => { root.preview = []; }
+        files-dropped(paths) => {
+            root.preview = [];
+            root.paths = paths;
+            root.batches = root.batches + 1;
+            root.zone = "文档";
+        }
+        Rectangle {
+            width: 100%; height: 100%; background: #34405e; border-radius: 8px;
+            Label { x: 14px; y: 30px; text: "TXT / Markdown"; }
+        }
+    }
+    Label {
+        x: 24px; y: 170px;
+        text: root.batches == 0 ? "尚未接收" : root.zone + " · 已接收 " + root.batches + " 批";
+    }
+    ScrollView {
+        x: 24px; y: 202px; width: 488px; height: 96px;
+        VerticalLayout {
+            alignment: start;
+            for path in root.paths : Label { text: path; height: 24px; }
+        }
     }
 }

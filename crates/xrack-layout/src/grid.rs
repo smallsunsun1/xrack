@@ -3,10 +3,7 @@ use crate::{
     linear::{AxisInfo, Metrics, Padding, fit_axis, measure as measure_node},
     participates_in_flow,
 };
-use std::collections::BTreeSet;
-use xrack_runtime::Node;
-
-const MAX_TRACKS: usize = 128;
+use xrack_runtime::{GridCellSlot, GridPlanner, GridTrackInput, Node};
 
 struct Cell<'a> {
     node: &'a Node,
@@ -18,71 +15,72 @@ struct Cell<'a> {
     cols: usize,
 }
 
+impl<'a> Cell<'a> {
+    fn from_slot(node: &'a Node, slot: GridCellSlot) -> Self {
+        Self {
+            node,
+            index: slot.index,
+            child_index: slot.child_index,
+            row: slot.position.row,
+            col: slot.position.col,
+            rows: slot.position.rows,
+            cols: slot.position.cols,
+        }
+    }
+}
+
 fn cells(node: &Node) -> Vec<Cell<'_>> {
-    let mut row = 0;
-    let mut col = 0;
-    let mut occupied = BTreeSet::new();
+    if let Some(plan) = node.static_grid()
+        && let Some(cells) = plan
+            .iter()
+            .map(|&slot| {
+                let mut child = node.children.get(slot.index)?;
+                if let Some(index) = slot.child_index {
+                    child = child.children.get(index)?;
+                }
+                Some(Cell::from_slot(child, slot))
+            })
+            .collect()
+    {
+        return cells;
+    }
+
+    let mut planner = GridPlanner::default();
     let mut cells = Vec::new();
-    let mut add = |node, index, child_index, row: &mut usize, col: &mut usize| {
+    let mut add = |planner: &mut GridPlanner, node, index, child_index| {
         let node: &Node = node;
         if !participates_in_flow(node) {
             return;
         }
-        let track = |name| {
-            node.int(name)
-                .and_then(|value| usize::try_from(value).ok())
-                .filter(|index| *index < MAX_TRACKS)
+        let input = GridTrackInput {
+            row: node.int("row"),
+            col: node.int("col"),
+            rowspan: node.int("rowspan"),
+            colspan: node.int("colspan"),
         };
-        if let Some(next) = track("row") {
-            if next != *row {
-                *col = 0;
-            }
-            *row = next;
+        if let Some(position) = planner.place(input) {
+            cells.push(Cell::from_slot(
+                node,
+                GridCellSlot {
+                    index,
+                    child_index,
+                    position,
+                },
+            ));
         }
-        if let Some(next) = track("col") {
-            *col = next;
-        } else {
-            while *col < MAX_TRACKS && occupied.contains(&(*row, *col)) {
-                *col += 1;
-            }
-        }
-        if *row >= MAX_TRACKS || *col >= MAX_TRACKS {
-            return;
-        }
-        let rows = track("rowspan").unwrap_or(1).max(1).min(MAX_TRACKS - *row);
-        let cols = track("colspan").unwrap_or(1).max(1).min(MAX_TRACKS - *col);
-        for r in *row..*row + rows {
-            for c in *col..*col + cols {
-                occupied.insert((r, c));
-            }
-        }
-        cells.push(Cell {
-            node,
-            index,
-            child_index,
-            row: *row,
-            col: *col,
-            rows,
-            cols,
-        });
-        *col += cols;
     };
     for (index, child) in node.children.iter().enumerate() {
         if child.kind == "Row" {
             if !child.boolean("visible", true) {
                 continue;
             }
-            if col != 0 {
-                row += 1;
-                col = 0;
-            }
+            planner.begin_row();
             for (child_index, node) in child.children.iter().enumerate() {
-                add(node, index, Some(child_index), &mut row, &mut col);
+                add(&mut planner, node, index, Some(child_index));
             }
-            row += 1;
-            col = 0;
+            planner.end_row();
         } else {
-            add(child, index, None, &mut row, &mut col);
+            add(&mut planner, child, index, None);
         }
     }
     cells

@@ -135,6 +135,153 @@ fn visual_cache_groups_are_separate_for_each_repeat_and_exclude_calls() {
 }
 
 #[test]
+fn row_invariant_bindings_share_a_component_cache_across_repeats() {
+    let input = raw(
+        r#"export component Demo inherits Window {
+            in-out property <string> caption: "shared";
+            for item in ["A", "B"] : VerticalLayout {
+                Text { text: "Caption " + root.caption; }
+                Text { text: "Row " + item; }
+            }
+            for item in ["X", "Y"] : VerticalLayout {
+                Text { text: "Caption " + root.caption; }
+                Text { text: "Row " + item; }
+            }
+        }"#,
+        "repeat-invariants.xr",
+    );
+    assert_eq!(visual_slots(&input), 4);
+    let optimized = input.optimize().unwrap();
+    let component = optimized.operations().next().unwrap();
+    let window = component
+        .children()
+        .find(|op| op.name() == "xr.element")
+        .unwrap();
+    let groups: Vec<_> = window
+        .children()
+        .filter(|op| op.name() == "xr.element")
+        .map(|repeat| {
+            let labels: Vec<_> = repeat
+                .children()
+                .filter(|op| op.name() == "xr.element")
+                .collect();
+            let invariant = member(labels[0], "xr.bind", "text");
+            assert_eq!(
+                member(labels[1], "xr.bind", "text").attribute("xr.repeat_invariant_group"),
+                None
+            );
+            invariant.attr("xr.repeat_invariant_group").unwrap()
+        })
+        .collect();
+    assert_eq!(groups.len(), 2);
+    assert_eq!(groups[0], groups[1]);
+    assert_eq!(visual_slots(&optimized), 3);
+    let rust = codegen::generate(&optimized).unwrap().to_string();
+    assert_eq!(
+        rust.matches("self . __state . __visuals . __visual_0 . get")
+            .count(),
+        2
+    );
+}
+
+#[test]
+fn scene_plans_mark_paint_static_subtrees_and_only_invariant_subexpressions() {
+    let optimized = raw(
+        r#"export component Demo inherits Window {
+            in-out property <string> caption: "shared";
+            in-out property <color> tint: #abc;
+            in-out property <length> size: 40px;
+            swatch := Rectangle { background: root.tint; width: root.size; }
+            panel := VerticalLayout { Text { text: "static"; } }
+            for item in ["A", "B"] : Text { text: ("Caption " + root.caption) + item; }
+        }"#,
+        "scene-plans.xr",
+    )
+    .optimize()
+    .unwrap();
+    let component = optimized.operations().next().unwrap();
+    let window = component
+        .children()
+        .find(|op| op.name() == "xr.element")
+        .unwrap();
+    let elements: Vec<_> = window
+        .children()
+        .filter(|op| op.name() == "xr.element")
+        .collect();
+    assert_eq!(
+        member(elements[0], "xr.bind", "background").attribute("xr.update_effect"),
+        Some("paint")
+    );
+    assert_eq!(
+        member(elements[0], "xr.bind", "width").attribute("xr.update_effect"),
+        None
+    );
+    assert_eq!(elements[0].attribute("xr.static_subtree"), None);
+    assert_eq!(elements[1].attribute("xr.static_subtree"), Some("true"));
+    let static_child = elements[1]
+        .children()
+        .find(|op| op.name() == "xr.element")
+        .unwrap();
+    assert_eq!(static_child.attribute("xr.static_subtree"), None);
+    let binding = member(elements[2], "xr.bind", "text");
+    let expression = definition(binding, 0);
+    assert_eq!(binding.attribute("xr.repeat_invariant_group"), None);
+    assert_eq!(expression.attribute("xr.repeat_subexpression_group"), None);
+    assert!(
+        definition(expression, 0)
+            .attribute("xr.repeat_subexpression_group")
+            .is_some()
+    );
+    assert_eq!(
+        definition(expression, 1).attribute("xr.repeat_subexpression_group"),
+        None
+    );
+    let rust = codegen::generate(&optimized).unwrap().to_string();
+    assert!(rust.contains("self . __state . __visuals . __visual_0 . get"));
+    assert!(rust.contains("get_or_init"));
+}
+
+#[test]
+fn precompiles_constant_paths_and_plans_only_fixed_grids() {
+    let module = raw(
+        r#"export component Demo inherits Window {
+            in-out property <string> path-source: "M0 0 L10 10";
+            in-out property <bool> show: true;
+            fixed-path := Path { commands: "M0 0 " + "L10 10"; }
+            live-path := Path { commands: root.path-source; }
+            fixed-grid := GridLayout {
+                Rectangle { rowspan: 2; }
+                Row { Text { colspan: 2; text: "fixed"; } }
+            }
+            live-grid := GridLayout { Rectangle { visible: root.show; } }
+        }"#,
+        "fixed-geometry.xr",
+    )
+    .optimize()
+    .unwrap();
+    let root = module
+        .operations()
+        .next()
+        .unwrap()
+        .children()
+        .find(|op| op.name() == "xr.element")
+        .unwrap();
+    let element = |id| {
+        root.children()
+            .find(|op| op.attribute("id") == Some(id))
+            .unwrap()
+    };
+    let path = |id| member(element(id), "xr.bind", "commands").attribute("xr.precompiled_path");
+    assert_eq!(path("fixed-path"), Some("true"));
+    assert_eq!(path("live-path"), None);
+    assert_eq!(
+        element("fixed-grid").attribute("xr.static_grid"),
+        Some("true")
+    );
+    assert_eq!(element("live-grid").attribute("xr.static_grid"), None);
+}
+
+#[test]
 fn optimization_preserves_stack_reads_on_each_side_of_navigation() {
     let optimized = raw(
         r#"
@@ -352,7 +499,7 @@ fn only_unconditional_visual_guards_are_removed() {
         r#"export component App inherits Window {
             in property <bool> show: true;
             if 1 + 2 == 3 : always := Button { clicked() => {} }
-            if false : hidden := Text { text: "hidden"; }
+            if false : hidden := Text { text: "not-rendered-marker"; }
             if root.show : dynamic := Text { text: "dynamic"; }
         }"#,
         "visual-guards.xr",
@@ -375,12 +522,22 @@ fn only_unconditional_visual_guards_are_removed() {
     assert!(has_guard("hidden"));
     assert!(has_guard("dynamic"));
     assert_eq!(
+        member(element("hidden"), "xr.show_if", "visible").attribute("xr.static_hidden"),
+        Some("true")
+    );
+    assert_eq!(
+        member(element("dynamic"), "xr.show_if", "visible").attribute("xr.static_hidden"),
+        None
+    );
+    assert_eq!(
         member(element("always"), "xr.handler", "clicked").name(),
         "xr.handler"
     );
     let rust = codegen::generate(&optimized).unwrap().to_string();
     assert_eq!(rust_before.matches("Node :: hidden").count(), 3);
     assert_eq!(rust.matches("Node :: hidden").count(), 2);
+    assert!(rust_before.contains("not-rendered-marker"));
+    assert!(!rust.contains("not-rendered-marker"));
 }
 
 #[test]

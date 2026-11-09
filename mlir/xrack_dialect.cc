@@ -1,5 +1,7 @@
 #include "mlir/xrack_dialect.h"
 
+#include <utility>
+
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/DialectImplementation.h"
 #include "mlir/IR/OpImplementation.h"
@@ -82,11 +84,27 @@ static bool isTimePicker(llvm::StringRef kind) {
 }
 
 static bool isPickerPopup(llvm::StringRef kind) {
-  return kind == "TimePickerPopup" || kind == "DatePickerPopup";
+  return kind == "TimePickerPopup" || kind == "DatePickerPopup" ||
+         kind == "ColorPickerPopup";
 }
 
 static bool isWindowOverlay(llvm::StringRef kind) {
   return kind == "Dialog" || kind == "Drawer" || kind == "PopupWindow" || isPickerPopup(kind);
+}
+
+static bool isNativeDialog(llvm::StringRef kind) {
+  return kind == "FileDialog" || kind == "MessageDialog";
+}
+
+static llvm::StringRef comboValueTypeName(Type type) {
+  return llvm::TypeSwitch<Type, llvm::StringRef>(type)
+      .Case<StringType>([](auto) { return "string"; })
+      .Case<IntType>([](auto) { return "int"; })
+      .Case<FloatType>([](auto) { return "float"; })
+      .Case<BoolType>([](auto) { return "bool"; })
+      .Case<DateType>([](auto) { return "Date"; })
+      .Case<TimeType>([](auto) { return "Time"; })
+      .Default(llvm::StringRef{});
 }
 
 static LogicalResult verifyStackRoute(Operation *op, ElementOp view,
@@ -191,6 +209,57 @@ LogicalResult ElementOp::verify() {
   auto parent = dyn_cast<ElementOp>((*this)->getParentOp());
   auto parentKind = parent ? parent.getKind() : llvm::StringRef{};
   auto &body = getBody().front();
+  if (kind == "SecondaryWindow") {
+    if (parentKind != "Window" || !isa<ComponentOp>(parent->getParentOp()) || getId().empty())
+      return emitOpError("SecondaryWindow requires a named declaration at the root Window");
+    if (!llvm::hasSingleElement(body.getOps<InstanceOp>()))
+      return emitOpError("SecondaryWindow requires one Window component instance");
+    bool visible = false;
+    for (Operation &child : body) {
+      if (auto bind = dyn_cast<BindOp>(child)) {
+        if (std::exchange(visible, true) || bind.getName() != "visible" ||
+            !isa<BoolType>(bind.getInput().getType()))
+          return child.emitOpError("SecondaryWindow requires a single boolean visibility binding");
+      } else if (auto link = dyn_cast<ControlLinkOp>(child)) {
+        if (std::exchange(visible, true) || link.getName() != "visible")
+          return child.emitOpError("SecondaryWindow requires a single visibility link");
+      } else if (!isa<InstanceOp, EndOp>(child) && !isExpression(child)) {
+        return child.emitOpError("SecondaryWindow only accepts visibility and a Window instance");
+      }
+    }
+    return success();
+  }
+  if (isNativeDialog(kind)) {
+    if (!parent || !isa<ComponentOp>(parent->getParentOp()) || getId().empty())
+      return emitOpError() << kind << " requires a named static declaration at the component root";
+    llvm::StringSet<> properties;
+    llvm::StringSet<> handlers;
+    for (Operation &child : body) {
+      if (auto bind = dyn_cast<BindOp>(child)) {
+        auto name = bind.getName();
+        auto type = bind.getInput().getType();
+        bool common = (name == "title" && isa<StringType>(type)) ||
+                      (name == "enabled" && isa<BoolType>(type));
+        bool specific = kind == "FileDialog"
+            ? (name == "mode" && isa<FileDialogModeType>(type)) ||
+                  ((name == "directory" || name == "file-name") && isa<StringType>(type)) ||
+                  (name == "name-filters" && isa<StringListType>(type))
+            : (name == "buttons" && isa<MessageButtonsType>(type)) ||
+                  (name == "level" && isa<MessageLevelType>(type)) ||
+                  ((name == "text" || name == "informative-text") && isa<StringType>(type));
+        if (!common && !specific)
+          return child.emitOpError() << "incorrect " << kind << " property or type";
+        if (!properties.insert(name).second)
+          return child.emitOpError() << "duplicate " << kind << " binding";
+      } else if (auto handler = dyn_cast<HandlerOp>(child)) {
+        if (!handlers.insert(handler.getName()).second)
+          return child.emitOpError() << "duplicate " << kind << " result handler";
+      } else if (!isa<EndOp>(child) && !isExpression(child)) {
+        return child.emitOpError() << kind << " only accepts bindings and result handlers";
+      }
+    }
+    return success();
+  }
   if (kind == "Timer") {
     if (!parent || !isa<ComponentOp>(parent->getParentOp()) || getId().empty())
       return emitOpError("Timer requires a named static declaration at the component root");
@@ -253,10 +322,10 @@ LogicalResult ElementOp::verify() {
   auto refs = body.getOps<ActionRefOp>();
   const bool linkedAction = !refs.empty();
   if (linkedAction &&
-      ((kind != "Button" && kind != "ToolButton" && kind != "MenuItem") ||
+      ((kind != "Button" && kind != "ToolButton" && kind != "MenuItem" && kind != "Shortcut") ||
        !llvm::hasSingleElement(refs)))
     return emitOpError(
-        "requires one Action reference on a Button, ToolButton or MenuItem");
+        "requires one Action reference on a Button, ToolButton, MenuItem or Shortcut");
   if (linkedAction)
     for (auto ancestor = *this; ancestor;
          ancestor = ancestor->getParentOfType<ElementOp>())
@@ -264,6 +333,28 @@ LogicalResult ElementOp::verify() {
           !ancestor.getBody().front().getOps<RepeatOp>().empty())
         return emitOpError(
             "Action presentations require a stable element path");
+
+  if (kind == "Shortcut") {
+    llvm::StringSet<> bindings;
+    for (Operation &child : body) {
+      if (auto bind = dyn_cast<BindOp>(child)) {
+        auto name = bind.getName();
+        auto type = bind.getInput().getType();
+        if (!((name == "sequence" && isa<StringType>(type)) ||
+              (name == "sequences" && isa<StringListType>(type)) ||
+              ((name == "enabled" || name == "visible" || name == "auto-repeat" ||
+                name == "focus-within") && isa<BoolType>(type))))
+          return child.emitOpError("incorrect Shortcut property or type");
+        if (!bindings.insert(name).second)
+          return child.emitOpError("duplicate Shortcut binding");
+      } else if (!isa<HandlerOp, ActionRefOp, ShowIfOp, EndOp>(child) &&
+                 !isExpression(child)) {
+        return child.emitOpError("Shortcut only accepts bindings and activation handlers");
+      }
+    }
+    if (bindings.contains("sequence") && bindings.contains("sequences"))
+      return emitOpError("Shortcut requires sequence or sequences");
+  }
   if (kind == "Tooltip" && (root || parentKind == "Tooltip"))
     return emitOpError("Tooltip requires a visual owner");
   if (kind == "PopupWindow" && root)
@@ -358,7 +449,8 @@ LogicalResult ElementOp::verify() {
           return child.emitOpError("CheckBox accepts checked or check-state/tristate");
       }
     if (auto element = dyn_cast<ElementOp>(child);
-        element && (element.getKind() == "Action" || element.getKind() == "Timer"))
+        element && (element.getKind() == "Action" || element.getKind() == "Timer" ||
+                    isNativeDialog(element.getKind())))
       continue;
     if (linkedAction && isa<HandlerOp, ControlLinkOp>(child))
       return child.emitOpError(
@@ -483,6 +575,46 @@ LogicalResult ElementOp::verify() {
       auto name = bind.getName();
       auto type = bind.getInput().getType();
       bool singleLine = kind == "TextInput" || kind == "LineEdit";
+      if ((kind == "DragArea" &&
+           (((name == "data" || name == "drag-key") && !isa<StringType>(type)) ||
+            ((name == "enabled" || name == "allow-copy" || name == "allow-move" ||
+              name == "allow-link") && !isa<BoolType>(type)))) ||
+          (kind == "DropArea" &&
+           (((name == "enabled" || name == "accept-files") && !isa<BoolType>(type)) ||
+            ((name == "keys" || name == "file-extensions") && !isa<StringListType>(type)) ||
+            (name == "drop-action" && !isa<DragActionType>(type)))))
+        return child.emitOpError("incorrect drag-and-drop property type");
+      if ((name == "color-scheme" && (kind != "Window" || !isa<ColorSchemeType>(type))) ||
+          (name == "accent-color" && (kind != "Window" || !isa<ColorType>(type))))
+        return child.emitOpError("incorrect window palette property or type");
+      if (name == "default-font-family" || name == "default-font-size" ||
+          name == "default-font-weight" || name == "default-font-italic") {
+        if (kind != "Window" ||
+            (name == "default-font-family" && !isa<StringType>(type)) ||
+            (name == "default-font-size" && !isa<LengthType>(type)) ||
+            (name == "default-font-weight" && !isa<IntType>(type)) ||
+            (name == "default-font-italic" && !isa<BoolType>(type)))
+          return child.emitOpError("incorrect window font property or type");
+      }
+      if (name == "font-family" || name == "font-italic" ||
+          name == "font-weight" || name == "font-size") {
+        const bool hasFont = singleLine ||
+            llvm::StringSwitch<bool>(kind)
+                .Cases({"Text", "Label", "TextArea", "TextEdit", "SearchField",
+                        "Button", "StandardButton", "ToolButton", "DelayButton",
+                        "DialogButton", "CheckBox", "Switch", "RadioButton",
+                        "RadioGroup", "GroupBox", "Dialog", "Drawer", "TableCell",
+                        "TreeCell", "Tooltip", "SpinBox", "DoubleSpinBox",
+                        "ComboBox", "Menu", "MenuItem", "Calendar",
+                        "DatePickerPopup", "Tumbler"},
+                       true)
+                .Default(false);
+        if (!hasFont || (name == "font-family" && !isa<StringType>(type)) ||
+            (name == "font-weight" && !isa<IntType>(type)) ||
+            (name == "font-size" && !isa<LengthType>(type)) ||
+            (name == "font-italic" && !isa<BoolType>(type)))
+          return child.emitOpError("incorrect text font property or type");
+      }
       if ((name == "input-type" && (!singleLine || !isa<InputModeType>(type))) ||
           (name == "password-visible" && (!singleLine || !isa<BoolType>(type))))
         return child.emitOpError("incorrect password input property or type");
@@ -627,9 +759,11 @@ LogicalResult ElementOp::verify() {
         auto type = bind.getInput().getType();
         if (((name == "editable" || name == "auto-complete") &&
              !isa<BoolType>(type)) ||
-            ((name == "edit-text" || name == "placeholder-text") &&
-             !isa<StringType>(type)))
+            ((name == "edit-text" || name == "placeholder-text") && !isa<StringType>(type)))
           return child.emitOpError("incorrect editable ComboBox property type");
+        if (((name == "text-role" || name == "value-role") && !isa<StringType>(type)) ||
+            (name == "model" && !isa<StringListType, RecordListType>(type)))
+          return child.emitOpError("incorrect ComboBox property type");
       }
       if (linkedAction) {
         if (name == "checked" || name == "checkable" || name == "shortcut")
@@ -697,6 +831,12 @@ LogicalResult ElementOp::verify() {
               name == "enabled") && !isa<BoolType>(type)))
           return child.emitOpError("incorrect time picker property type");
       }
+      if (kind == "ColorPickerPopup") {
+        auto type = bind.getInput().getType();
+        if ((name == "color" && !isa<ColorType>(type)) ||
+            ((name == "show-alpha" || name == "enabled") && !isa<BoolType>(type)))
+          return child.emitOpError("incorrect color picker property type");
+      }
       if ((kind == "TimePicker" || isPickerPopup(kind)) &&
           (name == "accept-text" || name == "cancel-text" || name == "title") &&
           (!isPickerPopup(kind) || !isa<StringType>(bind.getInput().getType())))
@@ -758,8 +898,7 @@ LogicalResult ElementOp::verify() {
         const auto type = bind.getInput().getType();
         if ((name == "text" && !isa<StringType>(type)) ||
             ((name == "delay" || name == "timeout") && !isa<IntType>(type)) ||
-            ((name == "font-size" || name == "padding") &&
-             !isa<LengthType>(type)) ||
+            (name == "padding" && !isa<LengthType>(type)) ||
             (name == "color" && !isa<ColorType>(type)) ||
             (name == "background" && !isa<BrushType>(type)))
           return child.emitOpError("incorrect Tooltip property type");
@@ -935,8 +1074,11 @@ LogicalResult InstanceOp::verify() {
   if (getKey().empty())
     return emitOpError("requires a nonempty instance key");
   llvm::StringMap<Operation *> bindings;
+  const bool secondary = cast<ElementOp>((*this)->getParentOp()).getKind() == "SecondaryWindow";
   bool repeated = false;
   for (Operation &child : getBody().front()) {
+    if (secondary && isa<LayoutBindOp, RepeatOp, ShowIfOp>(child))
+      return child.emitOpError("a secondary window instance only accepts input bindings");
     if (isa<BindOp, LayoutBindOp>(child)) {
       auto name = child.getAttrOfType<StringAttr>("name").getValue();
       if (!bindings.try_emplace(name, &child).second)
@@ -991,7 +1133,8 @@ LogicalResult ControlLinkOp::verify() {
         kind == "PageIndicator" || usesListTemplate(kind) || kind == "StandardListView" ||
         kind == "Tumbler") &&
        getName() == "current-index" && isa<IntType>(type)) ||
-      (valueChoice && getName() == "current-value" && isa<StringType>(type)) ||
+      (valueChoice && getName() == "current-value" &&
+       (kind == "ComboBox" ? !comboValueTypeName(type).empty() : isa<StringType>(type))) ||
       (kind == "TreeView" && getName() == "current-key" &&
        isa<IntType>(type)) ||
       (isTableView(kind) && getName() == "current-row" && isa<IntType>(type));
@@ -1002,10 +1145,12 @@ LogicalResult ControlLinkOp::verify() {
        (kind == "Calendar" && getName() == "display-month")) &&
       isa<DateType>(type);
   const bool time = isTimePicker(kind) && getName() == "time" && isa<TimeType>(type);
+  const bool color = kind == "ColorPickerPopup" && getName() == "color" && isa<ColorType>(type);
   const bool swipeSide = kind == "SwipeDelegate" && getName() == "open-side" && isa<SwipeSideType>(type);
   const bool running = kind == "Timer" && getName() == "running" && isa<BoolType>(type);
+  const bool visible = kind == "SecondaryWindow" && getName() == "visible" && isa<BoolType>(type);
   if ((!text && !checked && !checkState && !range && !spin && !choice && !opened &&
-       !comboText && !calendar && !time && !swipeSide && !running) ||
+       !comboText && !calendar && !time && !color && !swipeSide && !running && !visible) ||
       !getInput().getDefiningOp<ReadOp>())
     return emitOpError(
         "requires a writable property reference for the control");
@@ -1054,6 +1199,41 @@ LogicalResult PopupCommandOp::verify() {
     return emitOpError("popup commands are not allowed in a pure callback");
   if (getOpen() != "true" && getOpen() != "false")
     return emitOpError("requires a boolean open value");
+  return success();
+}
+
+static LogicalResult verifyNativeDialogOpen(Operation *op) {
+  auto *parent = op->getParentOp();
+  if (!isa_and_nonnull<HandlerOp, CallbackOp>(parent))
+    return op->emitOpError("requires a handler or callback parent");
+  if (auto callback = dyn_cast<CallbackOp>(parent);
+      callback && callback.getPure().value_or("false") == "true")
+    return op->emitOpError("native dialogs cannot be opened in a pure callback");
+  return success();
+}
+
+LogicalResult FileDialogOpenOp::verify() { return verifyNativeDialogOpen(*this); }
+LogicalResult NativeDialogOpenOp::verify() { return verifyNativeDialogOpen(*this); }
+
+LogicalResult WindowCloseOp::verify() {
+  auto component = (*this)->getParentOfType<ComponentOp>();
+  if (!component)
+    return emitOpError("requires a component with a root Window");
+  auto roots = component.getBody().front().getOps<ElementOp>();
+  if (!llvm::hasSingleElement(roots) || (*roots.begin()).getKind() != "Window")
+    return emitOpError("requires a component with a root Window");
+  if (auto callback = dyn_cast<CallbackOp>((*this)->getParentOp());
+      callback && callback.getPure().value_or("false") == "true")
+    return emitOpError("Window.close is not allowed in a pure callback");
+  return success();
+}
+
+LogicalResult SecondaryWindowCommandOp::verify() {
+  if (auto callback = dyn_cast<CallbackOp>((*this)->getParentOp());
+      callback && callback.getPure().value_or("false") == "true")
+    return emitOpError("secondary window commands are not allowed in a pure callback");
+  if (getCommand() != "show" && getCommand() != "hide" && getCommand() != "close")
+    return emitOpError("requires show, hide, or close");
   return success();
 }
 
@@ -1175,6 +1355,16 @@ static LogicalResult verifyCallback(Operation *op, Region &body,
   if (auto handler = dyn_cast<HandlerOp>(op)) {
     auto element = cast<ElementOp>(op->getParentOp());
     auto kind = element.getKind();
+    auto results = body.front().getOps<ReturnOp>();
+    if (handler.getName() == "close-requested") {
+      if (kind != "Window" || !isa<ComponentOp>(element->getParentOp()))
+        return handler.emitOpError("close-requested requires the component's root Window");
+      if (!args->empty() || !llvm::hasSingleElement(results) ||
+          !isa<BoolType>((*results.begin()).getInput().getType()))
+        return handler.emitOpError("close-requested requires no parameters and a bool result");
+    } else if (!results.empty()) {
+      return handler.emitOpError("only close-requested may return a value");
+    }
     if (kind == "Timer" && (handler.getName() != "triggered" || !args->empty()))
       return handler.emitOpError("Timer requires triggered() without parameters");
     if (kind == "SplitView" &&
@@ -1195,6 +1385,27 @@ static LogicalResult verifyCallback(Operation *op, Region &body,
     if ((kind == "MenuItem" || kind == "Action" || kind == "DelayButton") &&
         (!args->empty() || handler.getName() != "activated"))
       return handler.emitOpError("requires activated() without parameters");
+    if (kind == "Shortcut" && (!args->empty() ||
+        (handler.getName() != "activated" && handler.getName() != "activated-ambiguously")))
+      return handler.emitOpError("Shortcut requires an activation handler without parameters");
+    if (kind == "FileDialog") {
+      auto name = handler.getName();
+      auto *arg = args->size() == 1 ? args->front().getAsObject() : nullptr;
+      if (!(name == "canceled" && args->empty()) &&
+          !(arg && arg->getString("name") &&
+            ((name == "accepted" && arg->getString("ty") == "[string]") ||
+             (name == "failed" && arg->getString("ty") == "string"))))
+        return handler.emitOpError("FileDialog requires accepted([string]), canceled() or failed(string)");
+    }
+    if (kind == "MessageDialog") {
+      auto name = handler.getName();
+      auto *arg = args->size() == 1 ? args->front().getAsObject() : nullptr;
+      if (!((name == "accepted" || name == "rejected") && args->empty()) &&
+          !(arg && arg->getString("name") &&
+            ((name == "finished" && arg->getString("ty") == "StandardButtonKind") ||
+             (name == "failed" && arg->getString("ty") == "string"))))
+        return handler.emitOpError("invalid MessageDialog result handler or signature");
+    }
     if (kind == "GroupBox") {
       auto *arg = args->size() == 1 ? args->front().getAsObject() : nullptr;
       if (handler.getName() != "toggled" || !arg ||
@@ -1236,10 +1447,31 @@ static LogicalResult verifyCallback(Operation *op, Region &body,
           !(handler.getName() == "changed" && arg && arg->getString("ty") == "SwipeSide" && arg->getString("name")))
         return handler.emitOpError("SwipeDelegate requires clicked() or changed(SwipeSide)");
     }
+    if (kind == "DragArea" || kind == "DropArea") {
+      auto name = handler.getName();
+      auto argIs = [&](size_t index, llvm::StringRef type) {
+        if (index >= args->size())
+          return false;
+        auto *arg = (*args)[index].getAsObject();
+        return arg && arg->getString("ty") == type && arg->getString("name");
+      };
+      bool valid = kind == "DragArea"
+          ? (name == "drag-started" && args->empty()) ||
+                (name == "drag-finished" && args->size() == 1 && argIs(0, "DragAction"))
+          : (name == "exited" && args->empty()) ||
+                ((name == "entered" || name == "dropped") && args->size() == 2 &&
+                 argIs(0, "string") && argIs(1, "DragAction")) ||
+                ((name == "files-entered" || name == "files-dropped") &&
+                 args->size() == 1 && argIs(0, "[string]")) ||
+                (name == "position-changed" && args->size() == 2 &&
+                 argIs(0, "length") && argIs(1, "length"));
+      if (!valid)
+        return handler.emitOpError("invalid drag-and-drop event or signature");
+    }
     if (kind == "TimePicker" || isPickerPopup(kind)) {
       auto name = handler.getName();
       auto *arg = args->size() == 1 ? args->front().getAsObject() : nullptr;
-      auto type = kind == "DatePickerPopup" ? "Date" : "Time";
+      auto type = kind == "DatePickerPopup" ? "Date" : kind == "ColorPickerPopup" ? "color" : "Time";
       if (!(isPickerPopup(kind) && name == "canceled" && args->empty()) &&
           !((kind == "TimePicker" ? name == "changed" : name == "accepted") &&
             arg && arg->getString("ty") == type && arg->getString("name")))
@@ -1252,7 +1484,8 @@ static LogicalResult verifyCallback(Operation *op, Region &body,
     const bool indexView = kind == "TabWidget" || kind == "TabBar" || kind == "SwipeView" ||
                            kind == "PageIndicator" || usesListTemplate(kind) ||
                            kind == "StandardListView" || kind == "Tumbler";
-    if (scalarRange || spin || kind == "ComboBox" || table ||
+    if (scalarRange || spin ||
+        (kind == "ComboBox" && handler.getName() != "value-selected") || table ||
         kind == "RadioGroup" || indexView || multiline || tree || calendar || search) {
       auto *arg = args->size() == 1 ? args->front().getAsObject() : nullptr;
       auto name = handler.getName();
@@ -1283,7 +1516,9 @@ static LogicalResult verifyCallback(Operation *op, Region &body,
   for (Operation &child : body.front()) {
     if (isa<ReturnOp>(child) && !isa_and_nonnull<EndOp>(child.getNextNode()))
       return child.emitOpError("must be immediately before xr.end");
-    if (!isa<AssignOp, InvokeOp, NavigateOp, TimerCommandOp, PopupCommandOp, ReturnOp, EndOp>(child) &&
+    if (!isa<AssignOp, InvokeOp, NavigateOp, TimerCommandOp, PopupCommandOp,
+             FileDialogOpenOp, NativeDialogOpenOp, WindowCloseOp,
+             SecondaryWindowCommandOp, ReturnOp, EndOp>(child) &&
         !isExpression(child))
       return child.emitOpError("is not valid in a callback or event handler");
   }
@@ -1354,11 +1589,24 @@ LogicalResult LiteralOp::verify() {
   } else if (isa<InputModeType>(type)) {
     valid = spelling == "text" || spelling == "password" || spelling == "number" ||
             spelling == "decimal" || spelling == "search";
+  } else if (isa<ColorSchemeType>(type)) {
+    valid = spelling == "system" || spelling == "light" || spelling == "dark";
+  } else if (isa<FileDialogModeType>(type)) {
+    valid = spelling == "open-file" || spelling == "open-files" ||
+            spelling == "save-file" || spelling == "select-folder";
+  } else if (isa<MessageLevelType>(type)) {
+    valid = spelling == "info" || spelling == "warning" || spelling == "error";
+  } else if (isa<MessageButtonsType>(type)) {
+    valid = spelling == "ok" || spelling == "ok-cancel" ||
+            spelling == "yes-no" || spelling == "yes-no-cancel";
   } else if (isa<CheckStateType>(type)) {
     valid = spelling == "unchecked" || spelling == "partially-checked" ||
             spelling == "checked";
   } else if (isa<DialogRoleType>(type)) {
     valid = spelling == "accept" || spelling == "reject";
+  } else if (isa<DragActionType>(type)) {
+    valid = spelling == "none" || spelling == "copy" || spelling == "move" ||
+            spelling == "link";
   } else if (isa<SwipeSideType>(type)) {
     valid = spelling == "closed" || spelling == "left" || spelling == "right";
   } else if (isa<StandardButtonKindType>(type)) {
@@ -1642,6 +1890,18 @@ static LogicalResult verifyReferences(ComponentOp component,
       auto popup = dyn_cast_or_null<ElementOp>(owners.lookup(command.getOwner()));
       if (!popup || popup.getKind() != "PopupWindow")
         result = op->emitOpError("requires a PopupWindow owner in the same component");
+    } else if (auto open = dyn_cast<FileDialogOpenOp>(op)) {
+      auto dialog = dyn_cast_or_null<ElementOp>(owners.lookup(open.getOwner()));
+      if (!dialog || dialog.getKind() != "FileDialog")
+        result = op->emitOpError("requires a FileDialog owner in the same component");
+    } else if (auto open = dyn_cast<NativeDialogOpenOp>(op)) {
+      auto dialog = dyn_cast_or_null<ElementOp>(owners.lookup(open.getOwner()));
+      if (!dialog || !isNativeDialog(dialog.getKind()))
+        result = op->emitOpError("requires a native dialog owner in the same component");
+    } else if (auto command = dyn_cast<SecondaryWindowCommandOp>(op)) {
+      auto window = dyn_cast_or_null<ElementOp>(owners.lookup(command.getOwner()));
+      if (!window || window.getKind() != "SecondaryWindow")
+        result = op->emitOpError("requires a SecondaryWindow owner in the same component");
     } else if (auto link = dyn_cast<ControlLinkOp>(op)) {
       auto read = link.getInput().getDefiningOp<ReadOp>();
       if (!read)
@@ -1697,6 +1957,13 @@ static LogicalResult verifyInstanceTree(ComponentOp component,
     return component.emitOpError("cyclic component instantiation");
   auto result = component.walk([&](InstanceOp instance) -> WalkResult {
     auto child = components.lookup(instance.getComponent());
+    if (cast<ElementOp>(instance->getParentOp()).getKind() == "SecondaryWindow") {
+      auto roots = child.getBody().front().getOps<ElementOp>();
+      if (!llvm::hasSingleElement(roots) || (*roots.begin()).getKind() != "Window") {
+        instance.emitOpError("SecondaryWindow requires a component rooted in Window");
+        return WalkResult::interrupt();
+      }
+    }
     for (auto ancestor = instance->getParentOfType<ElementOp>(); ancestor;
          ancestor = ancestor->getParentOfType<ElementOp>()) {
       if (ancestor.getKind() != "Tooltip")
@@ -1746,8 +2013,8 @@ static bool recordScalarType(llvm::StringRef type) {
       .Cases({"int", "float", "bool", "string", "length", "color", "brush",
               "image", "ImageFit", "LayoutAlignment", "CrossAxisAlignment",
               "Orientation", "FlexboxLayoutDirection", "FlexboxLayoutWrap", "DialInputMode", "ScrollBarPolicy", "TextWrap",
-              "TextHorizontalAlignment", "TextVerticalAlignment", "TextOverflow", "InputType",
-              "DialogRole", "StandardButtonKind", "SwipeSide", "DrawerEdge", "PopupPlacement", "SelectionTarget", "Date", "Time", "CheckState"},
+              "TextHorizontalAlignment", "TextVerticalAlignment", "TextOverflow", "InputType", "ColorScheme", "FileDialogMode", "MessageLevel", "MessageButtons",
+              "DialogRole", "StandardButtonKind", "SwipeSide", "DragAction", "DrawerEdge", "PopupPlacement", "SelectionTarget", "Date", "Time", "CheckState"},
              true)
       .Default(false);
 }
@@ -1831,6 +2098,76 @@ static LogicalResult verifyStandardTable(ElementOp table, const Records &records
   return success();
 }
 
+static FailureOr<std::string> comboRole(BindOp binding, llvm::StringRef fallback) {
+  if (!binding)
+    return fallback.str();
+  if (auto literal = binding.getInput().getDefiningOp<LiteralOp>()) {
+    auto parsed = llvm::json::parse(literal.getValue());
+    if (parsed) {
+      if (auto role = parsed->getAsString())
+        return role->str();
+    } else {
+      llvm::consumeError(parsed.takeError());
+    }
+  }
+  binding.emitOpError("ComboBox role requires a constant string");
+  return failure();
+}
+
+static LogicalResult verifyComboModel(ElementOp combo, const Records &records) {
+  auto &body = combo.getBody().front();
+  BindOp model, textRole, valueRole;
+  for (auto bind : body.getOps<BindOp>()) {
+    if (bind.getName() == "model") model = bind;
+    if (bind.getName() == "text-role") textRole = bind;
+    if (bind.getName() == "value-role") valueRole = bind;
+  }
+  auto record = model ? dyn_cast<RecordListType>(model.getInput().getType()) : RecordListType();
+  if (!record && (textRole || valueRole))
+    return combo.emitOpError("ComboBox roles require a record model");
+
+  std::string expected = "string";
+  if (record) {
+    auto text = comboRole(textRole, "text");
+    if (failed(text)) return failure();
+    auto value = comboRole(valueRole, *text);
+    if (failed(value)) return failure();
+    auto schema = records.find(record.getName());
+    if (schema == records.end())
+      return model.emitOpError("unknown record type ") << record.getName();
+    if (!llvm::any_of(schema->second, [&](const auto &field) {
+          return field.first == *text && field.second == "string";
+        }))
+      return model.emitOpError("ComboBox text-role requires a string field named ") << *text;
+    auto field = llvm::find_if(schema->second, [&](const auto &entry) { return entry.first == *value; });
+    if (field == schema->second.end() ||
+        !llvm::StringSwitch<bool>(field->second).Cases({"string", "int", "float", "bool", "Date", "Time"}, true).Default(false))
+      return model.emitOpError("ComboBox value-role requires a scalar field named ") << *value;
+    expected = field->second;
+  }
+
+  for (Operation &child : body) {
+    if (isa<BindOp, ControlLinkOp>(child) &&
+        child.getAttrOfType<StringAttr>("name").getValue() == "current-value" &&
+        comboValueTypeName(child.getOperand(0).getType()) != expected)
+      return child.emitOpError("ComboBox current-value requires ") << expected;
+    if (auto handler = dyn_cast<HandlerOp>(child); handler && handler.getName() == "value-selected") {
+      if (!record)
+        return handler.emitOpError("value-selected requires a record ComboBox model");
+      auto parameters = llvm::json::parse(handler.getParameters());
+      if (!parameters) {
+        llvm::consumeError(parameters.takeError());
+        return handler.emitOpError("value-selected requires one parameter");
+      }
+      auto *args = parameters->getAsArray();
+      auto *arg = args && args->size() == 1 ? args->front().getAsObject() : nullptr;
+      if (!arg || !arg->getString("name") || arg->getString("ty") != expected)
+        return handler.emitOpError("ComboBox value-selected requires one ") << expected << " parameter";
+    }
+  }
+  return success();
+}
+
 static LogicalResult verifyRecords(ModuleOp module, const Records &records) {
   auto verified = module.walk([&](Operation *op) -> WalkResult {
     for (auto type : op->getResultTypes()) {
@@ -1849,6 +2186,9 @@ static LogicalResult verifyRecords(ModuleOp module, const Records &records) {
     if (auto element = dyn_cast<ElementOp>(op);
         element && element.getKind() == "StandardTableView" &&
         failed(verifyStandardTable(element, records)))
+      return WalkResult::interrupt();
+    if (auto element = dyn_cast<ElementOp>(op);
+        element && element.getKind() == "ComboBox" && failed(verifyComboModel(element, records)))
       return WalkResult::interrupt();
     if (auto element = dyn_cast<ElementOp>(op);
         element && element.getKind() == "StandardListView") {
@@ -1958,6 +2298,8 @@ LogicalResult verifyModule(ModuleOp module) {
   Components components;
   Records records;
   for (Operation &op : module.getBody()->getOperations()) {
+    if (isa<FontOp>(op))
+      continue;
     if (auto record = dyn_cast<RecordDeclOp>(op)) {
       if (failed(indexRecord(record, records)))
         return failure();
@@ -1966,7 +2308,7 @@ LogicalResult verifyModule(ModuleOp module) {
     auto component = dyn_cast<ComponentOp>(op);
     if (!component)
       return op.emitOpError(
-          "expected xr.component or xr.record_decl at module scope");
+          "expected xr.component, xr.record_decl or xr.font at module scope");
     if (!components.try_emplace(component.getSymName(), component).second)
       return op.emitOpError("duplicate component ") << component.getSymName();
   }

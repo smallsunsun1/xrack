@@ -52,6 +52,8 @@ pub enum ControlAction {
     StackBack { revision: u64 },
     ActivateMenuItem,
     ActivateAction,
+    ActivateShortcut,
+    AmbiguousShortcut,
     AcceptComboText,
     SubmitSearch,
     ClearSearch,
@@ -337,16 +339,6 @@ pub fn spin_text(node: &Node) -> String {
     }
 }
 
-pub fn combo_index(node: &Node) -> Option<usize> {
-    let model = node.strings("model");
-    if let Some(value) = node.text("current-value") {
-        model.iter().position(|item| item == value)
-    } else {
-        let index = usize::try_from(node.int("current-index").unwrap_or(0)).ok()?;
-        (index < model.len()).then_some(index)
-    }
-}
-
 pub fn combo_editable(node: &Node) -> bool {
     node.kind == "ComboBox" && node.boolean("editable", false)
 }
@@ -354,8 +346,7 @@ pub fn combo_editable(node: &Node) -> bool {
 pub fn text_input_value(node: &Node) -> &str {
     if combo_editable(node) {
         node.text("edit-text")
-            .or_else(|| combo_index(node).map(|index| node.strings("model")[index].as_str()))
-            .unwrap_or("")
+            .unwrap_or_else(|| crate::combo_text(node))
     } else {
         node.text("text").unwrap_or("")
     }

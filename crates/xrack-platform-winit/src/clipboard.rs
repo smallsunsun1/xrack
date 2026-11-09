@@ -1,4 +1,4 @@
-use crate::{ClipboardShortcut, UserEvent};
+use crate::{ClipboardShortcut, UserEvent, desktop::WindowEvents};
 use std::{
     ops::Range,
     sync::{
@@ -9,7 +9,6 @@ use std::{
     thread::{self, JoinHandle},
     time::Duration,
 };
-use winit::event_loop::EventLoopProxy;
 use xrack_layout::{Interaction, Target, TextPosition};
 use xrack_runtime::{Node, spin_editable};
 
@@ -26,6 +25,7 @@ pub(crate) enum ClipboardValue {
 struct Request {
     id: u64,
     operation: Operation,
+    events: WindowEvents,
 }
 
 pub(crate) struct Reply {
@@ -41,7 +41,7 @@ struct Worker {
 }
 
 impl Worker {
-    fn new(proxy: EventLoopProxy<UserEvent>) -> std::io::Result<Self> {
+    fn new() -> std::io::Result<Self> {
         let (send, receive) = sync_channel::<Request>(8);
         let (done, finished) = sync_channel(1);
         let stopped = Arc::new(AtomicBool::new(false));
@@ -57,13 +57,10 @@ impl Worker {
                     }
                     let result = perform(&mut clipboard, request.operation)
                         .map_err(|error| error.to_string());
-                    if proxy
-                        .send_event(UserEvent::Clipboard(Reply {
-                            id: request.id,
-                            result,
-                        }))
-                        .is_err()
-                    {
+                    if !request.events.post(UserEvent::Clipboard(Reply {
+                        id: request.id,
+                        result,
+                    })) {
                         break;
                     }
                 }
@@ -112,26 +109,28 @@ impl Drop for Worker {
 }
 
 pub(crate) struct ClipboardPort {
-    proxy: EventLoopProxy<UserEvent>,
     worker: Option<Worker>,
     next: u64,
 }
 
 impl ClipboardPort {
-    pub(crate) fn new(proxy: EventLoopProxy<UserEvent>) -> Self {
+    pub(crate) fn new() -> Self {
         Self {
-            proxy,
             worker: None,
             next: 0,
         }
     }
 
-    pub(crate) fn request(&mut self, operation: Operation) -> Result<u64, String> {
+    pub(crate) fn request(
+        &mut self,
+        events: &WindowEvents,
+        operation: Operation,
+    ) -> Result<u64, String> {
         let worker = match &mut self.worker {
             Some(worker) => worker,
             None => self
                 .worker
-                .insert(Worker::new(self.proxy.clone()).map_err(|error| error.to_string())?),
+                .insert(Worker::new().map_err(|error| error.to_string())?),
         };
         let id = self.next;
         self.next = id.checked_add(1).expect("clipboard request ID exhausted");
@@ -139,7 +138,11 @@ impl ClipboardPort {
             .send
             .as_ref()
             .unwrap()
-            .try_send(Request { id, operation })
+            .try_send(Request {
+                id,
+                operation,
+                events: events.clone(),
+            })
             .map_err(|error| error.to_string())?;
         Ok(id)
     }

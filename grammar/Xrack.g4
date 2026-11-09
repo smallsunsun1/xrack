@@ -1,7 +1,8 @@
 grammar Xrack;
 
-document: importDecl* (recordDecl | component)+ EOF;
+document: (importDecl | fontImport)* (recordDecl | component)+ EOF;
 importDecl: 'import' '{' importName (',' importName)* ','? '}' 'from' STRING ';';
+fontImport: 'import' STRING ';';
 importName: identifier ('as' identifier)?;
 recordDecl: 'export'? 'struct' identifier '{' recordField (',' recordField)* ','? '}';
 recordField: identifier ':' typeName;

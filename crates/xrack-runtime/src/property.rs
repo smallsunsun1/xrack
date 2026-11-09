@@ -162,6 +162,11 @@ impl<T> Property<T> {
         self.replace(Stored::Explicit(value), true);
     }
 
+    /// Inspect whether a cached binding needs reevaluation without tracking a read.
+    pub fn is_dirty(&self) -> bool {
+        self.dependency.dirty.get()
+    }
+
     pub fn reset(&self) {
         if matches!(*self.value.borrow(), Stored::Explicit(_)) {
             self.replace(Stored::Unset, true);

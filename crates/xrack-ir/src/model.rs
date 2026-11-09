@@ -47,6 +47,23 @@ pub enum Statement {
     Navigate(Navigation),
     Timer(TimerEffect),
     Popup(PopupEffect),
+    NativeDialogOpen(NativeDialogOpen),
+    WindowClose { window_close: Span },
+    SecondaryWindowCommand(SecondaryWindowCommand),
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SecondaryWindowCommand {
+    pub secondary_window: String,
+    pub command: String,
+    pub span: Span,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct NativeDialogOpen {
+    #[serde(alias = "file_dialog")]
+    pub dialog: String,
+    pub span: Span,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

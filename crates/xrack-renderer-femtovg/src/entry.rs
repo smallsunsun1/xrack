@@ -1,8 +1,13 @@
-use crate::{TextSystem, Theme, color};
+use crate::{
+    TextSystem, color,
+    theme::{Palette, PaletteRole as Role},
+};
 use femtovg::{Canvas, Color, Paint, Path, renderer::WGPURenderer};
 use std::{borrow::Cow, ops::Range};
-use xrack_layout::{PasswordMask, Point, Rect, TextAreaLayout, TextEdit, TextPosition, font_size};
-use xrack_runtime::{CheckState, Node, TextWrap};
+use xrack_layout::{
+    PasswordMask, Point, Rect, TextAreaLayout, TextEdit, TextMeasurer, TextPosition,
+};
+use xrack_runtime::{CheckState, Color as UiColor, Node, TextWrap};
 
 pub(crate) struct EntryText<'a> {
     pub value: &'a str,
@@ -80,9 +85,10 @@ impl TextSystem {
         editor: Option<&TextEdit>,
         value: &str,
     ) -> TextPosition {
-        let size = font_size(node);
+        let size = self.font_size(node);
         let area = bounds.inset(node.length("padding").unwrap_or(6.0).max(0.0));
-        let advance = |text: &str| self.advance(text, size);
+        let paint = self.paint_node(node, Color::white(), false);
+        let advance = |text: &str| self.advance_painted(text, &paint);
         let mask = node.password_masked().then(|| PasswordMask::new(value));
         let display = mask.as_ref().map_or(value, PasswordMask::display);
         let scroll = editor.map_or(0.0, |edit| {
@@ -128,7 +134,7 @@ impl TextSystem {
             .caret
             .filter(|_| !display.placeholder)
             .map_or(0.0, |caret| {
-                self.advance(&display.content[..caret.offset], font_size(node))
+                self.advance_node(node, &display.content[..caret.offset])
             });
         area.x + (advance - entry_scroll(advance, area.width)).clamp(0.0, area.width)
     }
@@ -143,7 +149,7 @@ impl TextSystem {
         let layout = self.text_area_layout(node, bounds, &display.content);
         let caret = display.caret.map(|position| {
             layout.caret_point(&display.content, position, |text| {
-                self.advance(text, font_size(node))
+                self.advance_node(node, text)
             })
         });
         (layout, caret)
@@ -157,7 +163,7 @@ fn entry_scroll(advance: f32, width: f32) -> f32 {
 pub(crate) fn draw(
     canvas: &mut Canvas<WGPURenderer>,
     text_system: &TextSystem,
-    theme: Theme,
+    theme: Palette,
     node: &Node,
     bounds: Rect,
     text: EntryText<'_>,
@@ -174,14 +180,14 @@ pub(crate) fn draw(
     if area.width <= 0.0 || area.height <= 0.0 {
         return Ok(false);
     }
-    let size = font_size(node);
+    let size = text_system.font_size(node);
     let height = size * 1.4;
     let y = bounds.y + ((bounds.height - height) * 0.5).max(0.0);
     let width_at = |offset: usize| {
         if offset == 0 || placeholder {
             0.0
         } else {
-            text_system.advance(&content[..offset], size)
+            text_system.advance_node(node, &content[..offset])
         }
     };
     let advance = caret.map(|caret| width_at(caret.offset));
@@ -199,7 +205,7 @@ pub(crate) fn draw(
             y,
             (width_at(selection.end) - start).max(0.0),
             height,
-            Color::rgba(78, 113, 192, 155),
+            color(theme.role(Role::TextSelection)),
         );
     }
     if !composition.is_empty() {
@@ -226,14 +232,14 @@ pub(crate) fn draw(
     } else {
         node.color("color").unwrap_or(theme.text)
     };
-    let paint = text_system.paint(size, color(foreground), false);
+    let paint = text_system.paint_node(node, color(foreground), false);
     canvas
         .fill_text(x, y, &content, &paint)
         .map_err(|error| format!("text input drawing failed: {error}"))?;
     if let Some((suffix, clip)) = text.completion {
         let start = x + width_at(content.len()) + 2.0;
         let clip = clip.intersect(Rect::new(area.x, bounds.y, area.width, bounds.height));
-        let width = text_system.advance(suffix, size);
+        let width = text_system.advance_node(node, suffix);
         if width > 0.0
             && clip.contains(Point {
                 x: start,
@@ -246,7 +252,7 @@ pub(crate) fn draw(
                     start,
                     y,
                     suffix,
-                    &text_system.paint(size, color(theme.disabled_text), false),
+                    &text_system.paint_node(node, color(theme.disabled_text), false),
                 )
                 .map_err(|error| format!("completion drawing failed: {error}"))?;
             return Ok(true);
@@ -264,7 +270,7 @@ fn fill_rect(canvas: &mut Canvas<WGPURenderer>, rect: Rect, tint: Color) {
 pub(crate) fn draw_area(
     canvas: &mut Canvas<WGPURenderer>,
     text_system: &TextSystem,
-    theme: Theme,
+    theme: Palette,
     node: &Node,
     bounds: Rect,
     text: EntryText<'_>,
@@ -277,16 +283,16 @@ pub(crate) fn draw_area(
         return Ok(());
     }
     let scroll = layout.clamp_scroll(text.scroll);
-    let size = font_size(node);
+    let size = text_system.font_size(node);
     let height = layout.line_height;
     let x = area.x - scroll.x;
-    let advance = |text: &str| text_system.advance(text, size);
+    let advance = |text: &str| text_system.advance_node(node, text);
     let foreground = if display.placeholder || !enabled {
         theme.disabled_text
     } else {
         node.color("color").unwrap_or(theme.text)
     };
-    let paint = text_system.paint(size, color(foreground), false);
+    let paint = text_system.paint_node(node, color(foreground), false);
     canvas.intersect_scissor(area.x, area.y, area.width, area.height);
     for index in layout.visible_lines(scroll) {
         let line = &layout.lines[index];
@@ -315,7 +321,7 @@ pub(crate) fn draw_area(
                         width + if newline { size * 0.45 } else { 0.0 },
                         height,
                     ),
-                    Color::rgba(78, 113, 192, 155),
+                    color(theme.role(Role::TextSelection)),
                 );
             }
         }
@@ -356,7 +362,7 @@ pub(crate) fn draw_area(
         fill_rect(
             canvas,
             Rect::new(area.x + area.width - 2.0, y, 2.0, thumb),
-            Color::rgba(155, 180, 227, 160),
+            color(theme.role(Role::Grip)),
         );
     }
     Ok(())
@@ -365,7 +371,7 @@ pub(crate) fn draw_area(
 pub(crate) fn toggle(
     canvas: &mut Canvas<WGPURenderer>,
     text_system: &TextSystem,
-    theme: Theme,
+    theme: Palette,
     node: &Node,
     bounds: Rect,
     enabled: bool,
@@ -384,7 +390,7 @@ pub(crate) fn toggle(
     } else if state != CheckState::Unchecked {
         theme.button
     } else {
-        xrack_runtime::Color(0x384761ff)
+        theme.role(Role::Control)
     };
     let width = if node.kind == "Switch" {
         box_size * 2.0
@@ -416,7 +422,11 @@ pub(crate) fn toggle(
         canvas.fill_path(
             &knob,
             &Paint::color(color(if enabled {
-                theme.text
+                if checked {
+                    theme.on_accent(theme.text)
+                } else {
+                    theme.text
+                }
             } else {
                 theme.disabled_text
             })),
@@ -430,17 +440,22 @@ pub(crate) fn toggle(
         } else {
             mark.line_to(x + box_size * 0.80, y + box_size * 0.50);
         }
-        let mut paint = Paint::color(Color::white());
+        let foreground = if !enabled && theme.is_light() {
+            theme.disabled_text
+        } else {
+            theme.on_accent(UiColor(0xffffffff))
+        };
+        let mut paint = Paint::color(color(foreground));
         paint.set_line_width(2.0);
         canvas.stroke_path(&mark, &paint);
     }
-    let size = font_size(node);
+    let size = text_system.font_size(node);
     let color = color(if enabled {
         node.color("color").unwrap_or(theme.text)
     } else {
         theme.disabled_text
     });
-    let paint = text_system.paint(size, color, false);
+    let paint = text_system.paint_node(node, color, false);
     canvas
         .fill_text(
             x + width + 7.0,

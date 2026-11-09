@@ -64,6 +64,7 @@ cc_library(
     name = "xrack_passes",
     srcs = [
         "xrack_passes.cc",
+        "xrack_scene_plan.cc",
         "xrack_visual_cache.cc",
     ],
     hdrs = ["xrack_passes.h"],

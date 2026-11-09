@@ -40,11 +40,11 @@ struct Args {
     #[arg(short, long, value_name = "FILE")]
     output: Option<PathBuf>,
 
-    /// Resolve images only from the declared assets.
+    /// Resolve images and fonts only from the declared assets.
     #[arg(long)]
     restrict_assets: bool,
 
-    /// Declare an image asset. May be supplied multiple times.
+    /// Declare an image or font asset. May be supplied multiple times.
     #[arg(long = "asset", value_name = "FILE")]
     assets: Vec<PathBuf>,
 

@@ -1,9 +1,16 @@
-use crate::{Theme, color};
+use crate::{
+    brush_paint, color,
+    theme::{Palette, PaletteRole as Role},
+};
 use femtovg::{Canvas, LineCap, Paint, Path, Solidity, renderer::WGPURenderer};
 use xrack_layout::{DialGeometry, Point, Rect, ScrollBarGeometry, SliderGeometry};
 use xrack_runtime::{Color, IndicatorState, Node, Orientation, SliderInterval, SliderRange};
 
 fn capsule(canvas: &mut Canvas<WGPURenderer>, bounds: Rect, tint: Color) {
+    painted_capsule(canvas, bounds, &Paint::color(color(tint)));
+}
+
+fn painted_capsule(canvas: &mut Canvas<WGPURenderer>, bounds: Rect, paint: &Paint) {
     if bounds.width <= 0.0 || bounds.height <= 0.0 {
         return;
     }
@@ -15,25 +22,29 @@ fn capsule(canvas: &mut Canvas<WGPURenderer>, bounds: Rect, tint: Color) {
         bounds.height,
         bounds.width.min(bounds.height) * 0.5,
     );
-    canvas.fill_path(&path, &Paint::color(color(tint)));
+    canvas.fill_path(&path, paint);
 }
 
 pub(crate) fn scroll_bar(
     canvas: &mut Canvas<WGPURenderer>,
-    theme: Theme,
+    theme: Palette,
     geometry: ScrollBarGeometry,
     enabled: bool,
     highlighted: bool,
 ) {
     let thickness = geometry.track.width.min(geometry.track.height);
     let inset = (thickness * 0.15).min(1.5);
-    capsule(canvas, geometry.track.inset(inset), Color(0x202c42d9));
+    capsule(
+        canvas,
+        geometry.track.inset(inset),
+        theme.role(Role::ScrollTrack),
+    );
     let tint = if !enabled || !geometry.scrollable() {
         theme.disabled_text
     } else if highlighted {
         theme.focus
     } else {
-        Color(0x9bb4e3d9)
+        theme.role(Role::ScrollThumb)
     };
     capsule(canvas, geometry.thumb.inset(inset), tint);
 }
@@ -54,7 +65,7 @@ fn track(from: Point, to: Point, width: f32, orientation: Orientation) -> Rect {
 
 pub(crate) fn slider(
     canvas: &mut Canvas<WGPURenderer>,
-    theme: Theme,
+    theme: Palette,
     node: &Node,
     bounds: Rect,
     enabled: bool,
@@ -71,18 +82,19 @@ pub(crate) fn slider(
     } else {
         theme.disabled
     };
-    capsule(
-        canvas,
-        track(start, end, thickness, orientation),
-        Color(0x35415bff),
-    );
-    capsule(canvas, track(start, thumb, thickness, orientation), fill);
+    let rail = track(start, end, thickness, orientation);
+    capsule(canvas, rail, theme.role(Role::Track));
+    if enabled && let Some(paint) = brush_paint(node, "__slider-track", rail, 0.0) {
+        painted_capsule(canvas, rail, &paint);
+    } else {
+        capsule(canvas, track(start, thumb, thickness, orientation), fill);
+    }
     knob(canvas, theme, thumb, geometry.radius, enabled, pressed);
 }
 
 fn knob(
     canvas: &mut Canvas<WGPURenderer>,
-    theme: Theme,
+    theme: Palette,
     thumb: Point,
     radius: f32,
     enabled: bool,
@@ -102,7 +114,7 @@ fn knob(
 
 pub(crate) fn interval(
     canvas: &mut Canvas<WGPURenderer>,
-    theme: Theme,
+    theme: Palette,
     node: &Node,
     bounds: Rect,
     enabled: bool,
@@ -122,7 +134,7 @@ pub(crate) fn interval(
             thickness,
             orientation,
         ),
-        Color(0x35415bff),
+        theme.role(Role::Track),
     );
     capsule(
         canvas,
@@ -148,7 +160,7 @@ pub(crate) fn interval(
 
 pub(crate) fn dial(
     canvas: &mut Canvas<WGPURenderer>,
-    theme: Theme,
+    theme: Palette,
     node: &Node,
     bounds: Rect,
     enabled: bool,
@@ -161,10 +173,10 @@ pub(crate) fn dial(
     let center = geometry.center;
     let mut face = Path::new();
     face.circle(center.x, center.y, geometry.face_radius - 1.0);
-    canvas.fill_path(&face, &Paint::color(color(Color(0x27354dff))));
+    canvas.fill_path(&face, &Paint::color(color(theme.role(Role::Surface))));
     let fraction = SliderRange::from_node(node).fraction();
     for (end, tint) in [
-        (1.0, Color(0x586582ff)),
+        (1.0, theme.role(Role::DialArc)),
         (
             fraction,
             if enabled {
@@ -204,7 +216,7 @@ pub(crate) fn dial(
 
 pub(crate) fn indicator(
     canvas: &mut Canvas<WGPURenderer>,
-    theme: Theme,
+    theme: Palette,
     node: &Node,
     bounds: Rect,
     state: IndicatorState,
@@ -226,7 +238,7 @@ pub(crate) fn indicator(
         .unwrap_or(if node.kind == "BusyIndicator" {
             Color(0)
         } else {
-            Color(0x35415bff)
+            theme.role(Role::Track)
         });
     if node.kind == "ProgressIndicator" {
         capsule(canvas, bounds, track);

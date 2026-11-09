@@ -4,9 +4,26 @@ use std::io::Cursor;
 use svgtypes::{SimplePathSegment, SimplifyingPathParser};
 pub use tiny_skia::{Path as VectorPath, PathSegment};
 pub use xrack_runtime::ImageFormat;
+use xrack_runtime::VectorSegment;
 
 pub const MAX_IMAGE_DIMENSION: u32 = 4096;
 pub const MAX_ASSET_BYTES: u64 = 16 * 1024 * 1024;
+
+pub fn vector_bounds(path: &VectorPath) -> [f32; 4] {
+    let bounds = path.compute_tight_bounds().unwrap_or_else(|| path.bounds());
+    [bounds.x(), bounds.y(), bounds.width(), bounds.height()]
+}
+
+pub fn vector_segments(path: &VectorPath) -> impl Iterator<Item = VectorSegment> + '_ {
+    let point = |p: tiny_skia::Point| [p.x, p.y];
+    path.segments().map(move |segment| match segment {
+        PathSegment::MoveTo(p) => VectorSegment::MoveTo(point(p)),
+        PathSegment::LineTo(p) => VectorSegment::LineTo(point(p)),
+        PathSegment::QuadTo(c, p) => VectorSegment::QuadTo(point(c), point(p)),
+        PathSegment::CubicTo(c1, c2, p) => VectorSegment::CubicTo(point(c1), point(c2), point(p)),
+        PathSegment::Close => VectorSegment::Close,
+    })
+}
 
 pub struct Raster {
     pub size: [u32; 2],

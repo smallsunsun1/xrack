@@ -6,17 +6,24 @@
 #include "mlir/Pass/PassManager.h"
 #include "mlir/xrack_dialect.h"
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/SmallVector.h"
 #include <string>
 
 namespace xrack::dialect {
 #define GEN_PASS_DEF_XRSHAREVISUALBINDINGS
+#define GEN_PASS_DEF_XRHOISTREPEATINVARIANTS
+#define GEN_PASS_DEF_XRHOISTREPEATSUBEXPRESSIONS
 #include "mlir/XrackPasses.h.inc"
 
 using namespace ::mlir;
 
 namespace {
 constexpr llvm::StringLiteral cacheGroup = "xr.visual_cache_group";
+constexpr llvm::StringLiteral repeatInvariantGroup =
+    "xr.repeat_invariant_group";
+constexpr llvm::StringLiteral repeatSubexpressionGroup =
+    "xr.repeat_subexpression_group";
 
 Operation *visualScope(Operation *binding) {
   auto *parent = binding->getParentOp();
@@ -38,6 +45,27 @@ Operation *visualScope(Operation *binding) {
       return op;
   }
   return nullptr;
+}
+
+Value cacheableInput(Operation *op) {
+  if (!isa<BindOp, LayoutBindOp, ShowIfOp>(op))
+    return {};
+  Value input = op->getOperand(0);
+  // These leaves already bypass the backend's visual binding cache.
+  if (isa_and_nonnull<LiteralOp, ReadOp, ParamOp>(input.getDefiningOp()))
+    return {};
+  return input;
+}
+
+bool insideStaticHiddenVisual(Operation *binding) {
+  for (auto *op = binding->getParentOp();
+       isa_and_nonnull<ElementOp, InstanceOp>(op); op = op->getParentOp()) {
+    for (auto guard : op->getRegion(0).front().getOps<ShowIfOp>()) {
+      if (guard->getDiscardableAttr("xr.static_hidden"))
+        return true;
+    }
+  }
+  return false;
 }
 
 struct ScopePlan {
@@ -101,14 +129,11 @@ struct ShareVisualBindings
       // Recompute annotations even when the input was previously optimized.
       if (op->getDiscardableAttr(attribute))
         op->removeDiscardableAttr(attribute);
-      if (!isa<BindOp, LayoutBindOp, ShowIfOp>(op))
+      Value input = cacheableInput(op);
+      if (!input || op->getDiscardableAttr(repeatInvariantGroup))
         return;
       auto *scope = visualScope(op);
       if (!scope)
-        return;
-      Value input = op->getOperand(0);
-      // These leaves already bypass the backend's visual binding cache.
-      if (isa_and_nonnull<LiteralOp, ReadOp, ParamOp>(input.getDefiningOp()))
         return;
       auto &plan = plans[scope];
       auto id = plan.classify(input, !isa<ComponentOp>(scope));
@@ -128,9 +153,80 @@ struct ShareVisualBindings
     });
   }
 };
+
+struct HoistRepeatInvariants
+    : impl::XrHoistRepeatInvariantsBase<HoistRepeatInvariants> {
+  void runOnOperation() override {
+    llvm::DenseMap<Operation *, ScopePlan> components;
+    auto attribute = StringAttr::get(&getContext(), repeatInvariantGroup);
+    getOperation()->walk([&](Operation *op) {
+      if (op->getDiscardableAttr(attribute))
+        op->removeDiscardableAttr(attribute);
+      Value input = cacheableInput(op);
+      if (!input)
+        return;
+      auto *scope = visualScope(op);
+      if (!scope || isa<ComponentOp>(scope) || insideStaticHiddenVisual(op))
+        return;
+      auto component = scope->getParentOfType<ComponentOp>();
+      if (!component)
+        return;
+      // Reject row parameters, local reads and calls anywhere in the graph.
+      // The backend will evaluate the shared cache only at a visual use site.
+      auto id = components[component.getOperation()].classify(input, false);
+      if (id)
+        op->setDiscardableAttr(
+            attribute, StringAttr::get(&getContext(), std::to_string(id)));
+    });
+  }
+};
+
+void markRepeatSubexpressions(Value value, ScopePlan &plan,
+                              llvm::DenseSet<Value> &visited, StringAttr name) {
+  auto *definition = value.getDefiningOp();
+  if (!isa_and_nonnull<UnaryOp, BinaryOp, CastOp, ToRatioOp, StringifyOp,
+                       SelectOp>(definition) ||
+      !visited.insert(value).second)
+    return;
+  if (auto id = plan.classify(value, false)) {
+    definition->setDiscardableAttr(
+        name, StringAttr::get(definition->getContext(), std::to_string(id)));
+    return;
+  }
+  // Keep the original use graph and visit children only when the entire
+  // expression is not invariant. The backend caches at the original use site.
+  for (Value operand : definition->getOperands())
+    markRepeatSubexpressions(operand, plan, visited, name);
+}
+
+struct HoistRepeatSubexpressions
+    : impl::XrHoistRepeatSubexpressionsBase<HoistRepeatSubexpressions> {
+  void runOnOperation() override {
+    llvm::DenseMap<Operation *, ScopePlan> components;
+    llvm::DenseSet<Value> visited;
+    auto attribute = StringAttr::get(&getContext(), repeatSubexpressionGroup);
+    getOperation()->walk([&](Operation *op) {
+      if (op->getDiscardableAttr(attribute))
+        op->removeDiscardableAttr(attribute);
+    });
+    getOperation()->walk([&](Operation *op) {
+      auto input = cacheableInput(op);
+      if (!input || op->getDiscardableAttr(repeatInvariantGroup))
+        return;
+      auto *scope = visualScope(op);
+      if (!scope || isa<ComponentOp>(scope) || insideStaticHiddenVisual(op))
+        return;
+      if (auto component = scope->getParentOfType<ComponentOp>())
+        markRepeatSubexpressions(input, components[component.getOperation()],
+                                 visited, attribute);
+    });
+  }
+};
 } // namespace
 
-void addShareVisualBindingsPass(OpPassManager &passes) {
+void addVisualCachePasses(OpPassManager &passes) {
+  passes.addPass(std::make_unique<HoistRepeatInvariants>());
+  passes.addPass(std::make_unique<HoistRepeatSubexpressions>());
   passes.addPass(std::make_unique<ShareVisualBindings>());
 }
 } // namespace xrack::dialect

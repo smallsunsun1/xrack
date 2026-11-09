@@ -39,6 +39,9 @@ pub fn builtin_property(kind: &str, name: &str) -> Option<Type> {
     if !is_builtin(kind) {
         return None;
     }
+    if kind == "SecondaryWindow" {
+        return (name == "visible").then_some(Type::Bool);
+    }
     if kind == "Action" {
         return match name {
             "text" | "shortcut" => Some(Type::String),
@@ -51,6 +54,32 @@ pub fn builtin_property(kind: &str, name: &str) -> Option<Type> {
         return match name {
             "interval" => Some(Type::Int),
             "running" | "repeat" | "triggered-on-start" => Some(Type::Bool),
+            _ => None,
+        };
+    }
+    if kind == "FileDialog" {
+        return match name {
+            "mode" => Some(Type::FileDialogMode),
+            "title" | "directory" | "file-name" => Some(Type::String),
+            "name-filters" => Some(Type::StringList),
+            "enabled" => Some(Type::Bool),
+            _ => None,
+        };
+    }
+    if kind == "MessageDialog" {
+        return match name {
+            "level" => Some(Type::MessageLevel),
+            "buttons" => Some(Type::MessageButtons),
+            "title" | "text" | "informative-text" => Some(Type::String),
+            "enabled" => Some(Type::Bool),
+            _ => None,
+        };
+    }
+    if kind == "Shortcut" {
+        return match name {
+            "sequence" => Some(Type::String),
+            "sequences" => Some(Type::StringList),
+            "enabled" | "visible" | "auto-repeat" | "focus-within" => Some(Type::Bool),
             _ => None,
         };
     }
@@ -74,6 +103,19 @@ pub fn builtin_property(kind: &str, name: &str) -> Option<Type> {
     }
     Some(match name {
         "accessible-name" | "accessible-description" => Type::String,
+        "color-scheme" if kind == "Window" => Type::ColorScheme,
+        "accent-color" if kind == "Window" => Type::Color,
+        "enabled" if matches!(kind, "DragArea" | "DropArea") => Type::Bool,
+        "data" | "drag-key" if kind == "DragArea" => Type::String,
+        "allow-copy" | "allow-move" | "allow-link" if kind == "DragArea" => Type::Bool,
+        "keys" if kind == "DropArea" => Type::StringList,
+        "accept-files" if kind == "DropArea" => Type::Bool,
+        "file-extensions" if kind == "DropArea" => Type::StringList,
+        "drop-action" if kind == "DropArea" => Type::DragAction,
+        "default-font-family" if kind == "Window" => Type::String,
+        "default-font-size" if kind == "Window" => Type::Length,
+        "default-font-weight" if kind == "Window" => Type::Int,
+        "default-font-italic" if kind == "Window" => Type::Bool,
         "background"
             if matches!(
                 kind,
@@ -97,6 +139,7 @@ pub fn builtin_property(kind: &str, name: &str) -> Option<Type> {
                     | "TimePicker"
                     | "TimePickerPopup"
                     | "DatePickerPopup"
+                    | "ColorPickerPopup"
                     | "Dialog"
                     | "Drawer"
                     | "PopupWindow"
@@ -128,6 +171,7 @@ pub fn builtin_property(kind: &str, name: &str) -> Option<Type> {
                     | "GroupBox"
                     | "TimePickerPopup"
                     | "DatePickerPopup"
+                    | "ColorPickerPopup"
             ) =>
         {
             Type::String
@@ -151,6 +195,7 @@ pub fn builtin_property(kind: &str, name: &str) -> Option<Type> {
         {
             Type::String
         }
+        "color" if kind == "ColorPickerPopup" => Type::Color,
         "color"
             if matches!(
                 kind,
@@ -181,30 +226,10 @@ pub fn builtin_property(kind: &str, name: &str) -> Option<Type> {
             Type::Color
         }
         "current-color" if kind == "PageIndicator" => Type::Color,
-        "font-size"
-            if matches!(
-                kind,
-                "Text"
-                    | "Button"
-                    | "ToolButton"
-                    | "DelayButton"
-                    | "DialogButton"
-                    | "GroupBox"
-                    | "Dialog"
-                    | "Drawer"
-                    | "TableCell"
-                    | "TreeCell"
-                    | "Tooltip"
-            ) || toggle(kind)
-                || text_input(kind)
-                || matches!(kind, "SpinBox" | "DoubleSpinBox" | "ComboBox")
-                || matches!(
-                    kind,
-                    "RadioButton" | "Calendar" | "DatePickerPopup" | "Tumbler"
-                ) =>
-        {
-            Type::Length
-        }
+        "font-size" if has_font(kind) => Type::Length,
+        "font-family" if has_font(kind) => Type::String,
+        "font-weight" if has_font(kind) => Type::Int,
+        "font-italic" if has_font(kind) => Type::Bool,
         "enabled"
             if matches!(
                 kind,
@@ -237,6 +262,7 @@ pub fn builtin_property(kind: &str, name: &str) -> Option<Type> {
                     | "TimePicker"
                     | "TimePickerPopup"
                     | "DatePickerPopup"
+                    | "ColorPickerPopup"
                     | "Tumbler"
                     | "ProgressIndicator"
                     | "BusyIndicator"
@@ -334,7 +360,8 @@ pub fn builtin_property(kind: &str, name: &str) -> Option<Type> {
             Type::Int
         }
         "model" if matches!(kind, "ComboBox" | "Tumbler" | "StandardListView") => Type::StringList,
-        "text-role" if kind == "StandardListView" => Type::String,
+        "text-role" if matches!(kind, "StandardListView" | "ComboBox") => Type::String,
+        "value-role" if kind == "ComboBox" => Type::String,
         "model" if kind == "StandardTableView" => Type::RecordList("Record".into()),
         "field" if kind == "TableColumn" => Type::String,
         "follow-current"
@@ -374,6 +401,7 @@ pub fn builtin_property(kind: &str, name: &str) -> Option<Type> {
         "time" if time_picker(kind) => Type::Time,
         "use-24-hour-format" | "show-seconds" if time_picker(kind) => Type::Bool,
         "accept-text" | "cancel-text" if picker_popup(kind) => Type::String,
+        "show-alpha" if kind == "ColorPickerPopup" => Type::Bool,
         "interactive" if matches!(kind, "SwipeView" | "PageIndicator") => Type::Bool,
         "open-side" if kind == "SwipeDelegate" => Type::SwipeSide,
         "initial-page" if kind == "StackView" => Type::String,
@@ -560,6 +588,10 @@ pub fn is_builtin(s: &str) -> bool {
                 | "StandardButton"
                 | "Action"
                 | "Timer"
+                | "FileDialog"
+                | "MessageDialog"
+                | "SecondaryWindow"
+                | "Shortcut"
                 | "ToolButton"
                 | "DelayButton"
                 | "DialogButton"
@@ -571,6 +603,8 @@ pub fn is_builtin(s: &str) -> bool {
                 | "MenuSeparator"
                 | "ContextMenuArea"
                 | "TouchArea"
+                | "DragArea"
+                | "DropArea"
                 | "Image"
                 | "Path"
                 | "GridLayout"
@@ -612,6 +646,7 @@ pub fn is_builtin(s: &str) -> bool {
                 | "Calendar"
                 | "TimePickerPopup"
                 | "DatePickerPopup"
+                | "ColorPickerPopup"
                 | "Tumbler"
                 | "SwipePage"
                 | "StackView"
@@ -630,8 +665,40 @@ fn toggle(kind: &str) -> bool {
     matches!(kind, "CheckBox" | "Switch")
 }
 
+fn has_font(kind: &str) -> bool {
+    text_input(kind)
+        || toggle(kind)
+        || matches!(
+            kind,
+            "Text"
+                | "Button"
+                | "ToolButton"
+                | "DelayButton"
+                | "DialogButton"
+                | "GroupBox"
+                | "Dialog"
+                | "Drawer"
+                | "TableCell"
+                | "TreeCell"
+                | "Tooltip"
+                | "SpinBox"
+                | "DoubleSpinBox"
+                | "ComboBox"
+                | "RadioButton"
+                | "RadioGroup"
+                | "Calendar"
+                | "DatePickerPopup"
+                | "Tumbler"
+                | "Menu"
+                | "MenuItem"
+        )
+}
+
 fn picker_popup(kind: &str) -> bool {
-    matches!(kind, "DatePickerPopup" | "TimePickerPopup")
+    matches!(
+        kind,
+        "DatePickerPopup" | "TimePickerPopup" | "ColorPickerPopup"
+    )
 }
 
 fn time_picker(kind: &str) -> bool {
@@ -665,7 +732,7 @@ fn control_event(kind: &str, event: &str) -> bool {
             && matches!(event, "changed" | "released")
         || matches!(kind, "SpinBox" | "DoubleSpinBox") && event == "edited"
         || matches!(kind, "ComboBox" | "RadioGroup") && event == "selected"
-        || kind == "ComboBox" && matches!(event, "edited" | "accepted")
+        || kind == "ComboBox" && matches!(event, "edited" | "accepted" | "value-selected")
         || matches!(
             kind,
             "TabWidget"
@@ -693,8 +760,24 @@ fn control_event(kind: &str, event: &str) -> bool {
         || kind == "TimePicker" && event == "changed"
         || kind == "SwipeDelegate" && matches!(event, "clicked" | "changed")
         || kind == "Timer" && event == "triggered"
+        || kind == "FileDialog" && matches!(event, "accepted" | "canceled" | "failed")
+        || kind == "MessageDialog"
+            && matches!(event, "accepted" | "rejected" | "finished" | "failed")
+        || kind == "Window" && event == "close-requested"
         || picker_popup(kind) && matches!(event, "accepted" | "canceled")
         || matches!(kind, "MenuItem" | "Action" | "DelayButton") && event == "activated"
+        || kind == "Shortcut" && matches!(event, "activated" | "activated-ambiguously")
+        || kind == "DragArea" && matches!(event, "drag-started" | "drag-finished")
+        || kind == "DropArea"
+            && matches!(
+                event,
+                "entered"
+                    | "position-changed"
+                    | "exited"
+                    | "dropped"
+                    | "files-entered"
+                    | "files-dropped"
+            )
 }
 
 /// Whether an element kind declares an event, independently of instance constraints.
@@ -1050,7 +1133,11 @@ fn swipe_slot(kind: &str) -> bool {
 }
 
 fn nonvisual_element(kind: &str) -> bool {
-    matches!(kind, "Action" | "Timer")
+    matches!(kind, "Action" | "Timer" | "SecondaryWindow") || native_dialog(kind)
+}
+
+fn native_dialog(kind: &str) -> bool {
+    matches!(kind, "FileDialog" | "MessageDialog")
 }
 
 fn validate_swipe_delegate(members: &[Member], span: Span) -> Result<()> {
@@ -1156,6 +1243,25 @@ impl<'a> Scope<'a> {
             return fail(span, format!("duplicate element id `{owner}`"));
         }
         if !instance {
+            if kind == "SecondaryWindow" {
+                let mut children = members.iter().filter_map(|member| match member {
+                    Member::Element(child) => Some(child),
+                    _ => None,
+                });
+                if !children.next().is_some_and(|child| {
+                    child.repeat.is_none()
+                        && child.condition.is_none()
+                        && definitions
+                            .get(child.ty.as_str())
+                            .is_some_and(|definition| definition.base == "Window")
+                }) || children.next().is_some()
+                {
+                    return fail(
+                        span,
+                        "SecondaryWindow requires one static instance of a Window component",
+                    );
+                }
+            }
             let tooltips = members
                 .iter()
                 .filter(
@@ -1188,6 +1294,7 @@ impl<'a> Scope<'a> {
                                     | "PopupWindow"
                                     | "TimePickerPopup"
                                     | "DatePickerPopup"
+                                    | "ColorPickerPopup"
                                     | "Menu"
                                     | "MenuBar"
                                     | "ListView"
@@ -1258,6 +1365,9 @@ impl<'a> Scope<'a> {
             for (index, m) in members.iter().enumerate() {
                 if let Member::Element(e) = m {
                     if nonvisual_element(&e.ty) {
+                        if e.ty == "SecondaryWindow" && (owner != "root" || kind != "Window") {
+                            return fail(e.span, "SecondaryWindow requires a root Window parent");
+                        }
                         let Some(id) = e.id.as_deref().filter(|_| {
                             owner == "root" && e.repeat.is_none() && e.condition.is_none()
                         }) else {
@@ -1626,6 +1736,73 @@ impl<'a> Scope<'a> {
             } else {
                 receiver
             };
+            if matches!(method, "show" | "hide" | "close")
+                && self
+                    .owners
+                    .get(owner)
+                    .is_some_and(|target| target.kind == "SecondaryWindow")
+            {
+                if !self.effects_allowed {
+                    return fail(
+                        call.span,
+                        "secondary window commands are not allowed in a pure callback",
+                    );
+                }
+                if !call.arguments.is_empty() {
+                    return fail(
+                        call.span,
+                        format!("SecondaryWindow.{method}() takes no arguments"),
+                    );
+                }
+                return Ok(ir::Statement::SecondaryWindowCommand(
+                    ir::SecondaryWindowCommand {
+                        secondary_window: owner.into(),
+                        command: method.into(),
+                        span: call.span,
+                    },
+                ));
+            }
+            if owner == "root"
+                && method == "close"
+                && self.owners["root"].kind == "Window"
+                && !self.owners["root"].callbacks.contains_key("close")
+            {
+                if !self.effects_allowed {
+                    return fail(
+                        call.span,
+                        "Window.close() is not allowed in a pure callback",
+                    );
+                }
+                if !call.arguments.is_empty() {
+                    return fail(call.span, "Window.close() takes no arguments");
+                }
+                return Ok(ir::Statement::WindowClose {
+                    window_close: call.span,
+                });
+            }
+            if method == "open"
+                && let Some(target) = self
+                    .owners
+                    .get(owner)
+                    .filter(|target| native_dialog(&target.kind))
+            {
+                if !self.effects_allowed {
+                    return fail(
+                        call.span,
+                        format!("{}.open() is not allowed in a pure callback", target.kind),
+                    );
+                }
+                if !call.arguments.is_empty() {
+                    return fail(
+                        call.span,
+                        format!("{}.open() takes no arguments", target.kind),
+                    );
+                }
+                return Ok(ir::Statement::NativeDialogOpen(ir::NativeDialogOpen {
+                    dialog: owner.into(),
+                    span: call.span,
+                }));
+            }
             if self
                 .owners
                 .get(owner)
@@ -1788,10 +1965,10 @@ fn component<'a>(
             "Action requires a named declaration inside a component",
         );
     }
-    if c.base == "Timer" {
+    if matches!(c.base.as_str(), "Timer" | "SecondaryWindow") || native_dialog(&c.base) {
         return fail(
             c.span,
-            "Timer requires a named declaration inside a component",
+            format!("{} requires a named declaration inside a component", c.base),
         );
     }
     if matches!(c.base.as_str(), "Menu" | "MenuItem" | "MenuSeparator") {
@@ -1835,7 +2012,9 @@ fn component<'a>(
             if let Some(ty) = &cb.return_type {
                 scope.checked_type(ty, cb.span)?;
             }
-            if builtin_property(&c.base, &cb.name).is_some() || !symbols.insert(rust_name(&cb.name))
+            if builtin_property(&c.base, &cb.name).is_some()
+                || c.base == "Window" && cb.name == "close-requested"
+                || !symbols.insert(rust_name(&cb.name))
             {
                 return fail(
                     cb.span,
@@ -1976,6 +2155,10 @@ fn element<'a>(
 ) -> Result<()> {
     let root = owner == "root";
     let instance = scope.owners[owner].instance;
+    let secondary_content = scope.owners[owner]
+        .parent
+        .as_deref()
+        .is_some_and(|parent| scope.owners[parent].kind == "SecondaryWindow");
     if kind == "TreeCell" && (scope.row_template != Some(RowTemplate::Tree) || repeat.is_some()) {
         return fail(
             span,
@@ -2074,7 +2257,12 @@ fn element<'a>(
     } else {
         None
     };
-    let has_action = matches!(kind, "Button" | "ToolButton" | "MenuItem")
+    let combo = if kind == "ComboBox" {
+        record_combo(members, scope, owner)?
+    } else {
+        None
+    };
+    let has_action = matches!(kind, "Button" | "ToolButton" | "MenuItem" | "Shortcut")
         && members
             .iter()
             .any(|member| matches!(member, Member::Binding(binding) if binding.name == "action"));
@@ -2089,6 +2277,24 @@ fn element<'a>(
             return fail(
                 m.span(),
                 "Timer only accepts property bindings and triggered()",
+            );
+        }
+        if native_dialog(kind) && !matches!(m, Member::Binding(_) | Member::Handler(_)) {
+            return fail(
+                m.span(),
+                format!("{kind} only accepts bindings and result handlers"),
+            );
+        }
+        if kind == "SecondaryWindow" && !matches!(m, Member::Binding(_) | Member::Element(_)) {
+            return fail(
+                m.span(),
+                "SecondaryWindow only accepts visibility and a Window instance",
+            );
+        }
+        if kind == "Shortcut" && !matches!(m, Member::Binding(_) | Member::Handler(_)) {
+            return fail(
+                m.span(),
+                "Shortcut only accepts bindings and activation handlers",
             );
         }
         if instance && !matches!(m, Member::Binding(_)) {
@@ -2111,7 +2317,9 @@ fn element<'a>(
                 if !bindings.insert(b.name.as_str()) {
                     return fail(b.span, format!("duplicate binding `{}`", b.name));
                 }
-                if b.name == "action" && matches!(kind, "Button" | "ToolButton" | "MenuItem") {
+                if b.name == "action"
+                    && matches!(kind, "Button" | "ToolButton" | "MenuItem" | "Shortcut")
+                {
                     if !b.two_way
                         && let ExprKind::Reference(reference) = &b.value.kind
                         && scope
@@ -2129,6 +2337,12 @@ fn element<'a>(
                         b.span,
                         "action requires the id of an Action in this component",
                     );
+                }
+                if kind == "Shortcut"
+                    && bindings.contains("sequence")
+                    && bindings.contains("sequences")
+                {
+                    return fail(b.span, "Shortcut requires sequence or sequences");
                 }
                 if has_action && matches!(b.name.as_str(), "checked" | "checkable" | "shortcut") {
                     return fail(
@@ -2208,20 +2422,23 @@ fn element<'a>(
                         ("MenuItem" | "Action" | "DelayButton" | "GroupBox", "checked") => {
                             Type::Bool
                         }
-                        (
-                            "Dialog" | "Drawer" | "PopupWindow" | "TimePickerPopup"
-                            | "DatePickerPopup",
-                            "open",
-                        ) => Type::Bool,
+                        (kind, "open")
+                            if matches!(kind, "Dialog" | "Drawer" | "PopupWindow")
+                                || picker_popup(kind) =>
+                        {
+                            Type::Bool
+                        }
                         ("TableView" | "StandardTableView", "current-row") => Type::Int,
                         ("TreeView", "current-key") => Type::Int,
                         ("SwipeDelegate", "open-side") => Type::SwipeSide,
                         ("Timer", "running") => Type::Bool,
+                        ("SecondaryWindow", "visible") => Type::Bool,
                         ("PageIndicator" | "Tumbler", "current-index") => Type::Int,
                         ("Calendar", "date" | "display-month") | ("DatePickerPopup", "date") => {
                             Type::Date
                         }
                         ("TimePicker" | "TimePickerPopup", "time") => Type::Time,
+                        ("ColorPickerPopup", "color") => Type::Color,
                         ("Slider" | "Dial" | "DoubleSpinBox", "value") => Type::Float,
                         ("RangeSlider", "lower-value" | "upper-value") => Type::Float,
                         ("SpinBox", "value")
@@ -2230,7 +2447,10 @@ fn element<'a>(
                             | "ListView" | "GridView" | "StandardListView",
                             "current-index",
                         ) => Type::Int,
-                        ("ComboBox" | "RadioGroup", "current-value") => Type::String,
+                        ("ComboBox", "current-value") => combo
+                            .as_ref()
+                            .map_or(Type::String, |combo| combo.value_type.clone()),
+                        ("RadioGroup", "current-value") => Type::String,
                         ("ComboBox", "edit-text") => Type::String,
                         _ => {
                             return fail(
@@ -2280,6 +2500,16 @@ fn element<'a>(
                     lowered.push(LoweredMember::ControlLink(ir::Binding {
                         name: b.name.clone(),
                         value: ir::Expr::read(target, ty, b.value.span),
+                        span: b.span,
+                    }));
+                    continue;
+                }
+                if b.name == "model"
+                    && let Some(combo) = &combo
+                {
+                    lowered.push(LoweredMember::Binding(ir::Binding {
+                        name: b.name.clone(),
+                        value: combo.model.clone(),
                         span: b.span,
                     }));
                     continue;
@@ -2345,12 +2575,16 @@ fn element<'a>(
                     }));
                     continue;
                 }
-                let placement = if instance {
+                let placement = if instance && !secondary_content {
                     layout_item_property(&b.name)
                 } else {
                     None
                 };
-                let ty = if let Some(ty) = &placement {
+                let ty = if b.name == "current-value"
+                    && let Some(combo) = &combo
+                {
+                    combo.value_type.clone()
+                } else if let Some(ty) = &placement {
                     ty.clone()
                 } else if instance {
                     let (_, ty) =
@@ -2421,8 +2655,16 @@ fn element<'a>(
                 if !builtin_event(kind, &h.name) {
                     return fail(h.span, format!("unknown event `{kind}.{}`", h.name));
                 }
+                let close_requested = kind == "Window" && h.name == "close-requested";
+                if close_requested && !root {
+                    return fail(
+                        h.span,
+                        "close-requested requires the component's root Window",
+                    );
+                }
                 if id.is_none()
-                    && kind != "MenuItem"
+                    && !matches!(kind, "MenuItem" | "Shortcut")
+                    && !close_requested
                     && !(root
                         && matches!(
                             kind,
@@ -2437,6 +2679,7 @@ fn element<'a>(
                                 | "TimePicker"
                                 | "TimePickerPopup"
                                 | "DatePickerPopup"
+                                | "ColorPickerPopup"
                                 | "StackView"
                                 | "TreeView"
                                 | "TableView"
@@ -2468,13 +2711,31 @@ fn element<'a>(
                     "TimePicker" => &[Type::Time],
                     "TimePickerPopup" if h.name == "accepted" => &[Type::Time],
                     "DatePickerPopup" if h.name == "accepted" => &[Type::Date],
+                    "ColorPickerPopup" if h.name == "accepted" => &[Type::Color],
+                    "FileDialog" if h.name == "accepted" => &[Type::StringList],
+                    "MessageDialog" if h.name == "finished" => &[Type::StandardButtonKind],
+                    kind if native_dialog(kind) && h.name == "failed" => &[Type::String],
                     "GroupBox" => &[Type::Bool],
                     "CheckBox" if h.name == "check-state-changed" => &[Type::CheckState],
                     "StackView" => &[Type::String, Type::Int],
                     "SwipeDelegate" if h.name == "changed" => &[Type::SwipeSide],
+                    "DragArea" if h.name == "drag-finished" => &[Type::DragAction],
+                    "DropArea" if matches!(h.name.as_str(), "entered" | "dropped") => {
+                        &[Type::String, Type::DragAction]
+                    }
+                    "DropArea" if h.name == "position-changed" => &[Type::Length, Type::Length],
+                    "DropArea" if matches!(h.name.as_str(), "files-entered" | "files-dropped") => {
+                        &[Type::StringList]
+                    }
                     "SpinBox" | "TabWidget" | "TabBar" | "SwipeView" | "PageIndicator"
                     | "ListView" | "GridView" | "StandardListView" | "TableView"
                     | "StandardTableView" | "TreeView" | "Tumbler" => &[Type::Int],
+                    "ComboBox" if h.name == "value-selected" => {
+                        let Some(combo) = &combo else {
+                            return fail(h.span, "value-selected requires a record ComboBox model");
+                        };
+                        std::slice::from_ref(&combo.value_type)
+                    }
                     "ComboBox" | "RadioGroup" | "SearchField" => &[Type::String],
                     "TextEdit" | "TextArea" => &[Type::String],
                     _ => &[],
@@ -2519,15 +2780,23 @@ fn element<'a>(
                     ..scope.clone()
                 };
                 let mut body = statements(h, &handler_scope, owner)?;
-                if let Some(expr) = &h.result {
-                    body.push(discarded_call(expr, &handler_scope, owner)?);
-                }
+                let result = if close_requested {
+                    let Some(expr) = &h.result else {
+                        return fail(h.span, "close-requested must return a bool");
+                    };
+                    Some(expression_as(expr, &handler_scope, owner, Type::Bool)?)
+                } else {
+                    if let Some(expr) = &h.result {
+                        body.push(discarded_call(expr, &handler_scope, owner)?);
+                    }
+                    None
+                };
                 lowered.push(LoweredMember::Handler(ir::Callback {
                     name: h.name.clone(),
                     parameters,
                     body,
                     span: h.span,
-                    result: None,
+                    result,
                     pure: false,
                 }));
             }
@@ -2577,6 +2846,98 @@ fn element<'a>(
     }
     lowered.push(LoweredMember::EndElement);
     Ok(())
+}
+
+struct RecordCombo {
+    model: ir::Expr,
+    value_type: Type,
+}
+
+fn record_combo(members: &[Member], scope: &Scope<'_>, owner: &str) -> Result<Option<RecordCombo>> {
+    let binding = |name| {
+        members.iter().find_map(|member| match member {
+            Member::Binding(binding) if binding.name == name => Some(binding),
+            _ => None,
+        })
+    };
+    let text_role = binding("text-role");
+    let value_role = binding("value-role");
+    let model = binding("model")
+        .map(|model| expression(&model.value, scope, owner))
+        .transpose()?;
+    let Some(model) = model else {
+        if let Some(role) = text_role.or(value_role) {
+            return fail(role.span, "ComboBox roles require a record model");
+        }
+        return Ok(None);
+    };
+    let Type::RecordList(name) = &model.ty else {
+        if let Some(role) = text_role.or(value_role) {
+            return fail(role.span, "ComboBox roles require a record model");
+        }
+        if model.ty != Type::StringList {
+            return fail(model.span, "ComboBox requires [string] or a record list");
+        }
+        return Ok(None);
+    };
+    let role_name = |role: &ast::Binding| {
+        if let ExprKind::Literal {
+            value,
+            ty: Type::String,
+        } = &role.value.kind
+            && !role.two_way
+        {
+            return serde_json::from_str::<String>(value).map_err(|error| Diagnostic {
+                span: role.span,
+                message: error.to_string(),
+            });
+        }
+        fail(
+            role.span,
+            format!(
+                "ComboBox {} requires a constant string field name",
+                role.name
+            ),
+        )
+    };
+    let text = text_role
+        .map(role_name)
+        .transpose()?
+        .unwrap_or_else(|| "text".into());
+    let value = value_role
+        .map(role_name)
+        .transpose()?
+        .unwrap_or_else(|| text.clone());
+    let record = &scope.records[name.as_ref()];
+    if !record
+        .fields
+        .iter()
+        .any(|field| field.name == text && field.ty == Type::String)
+    {
+        return fail(
+            model.span,
+            format!("ComboBox text-role requires a string field named `{text}`"),
+        );
+    }
+    let Some(field) = record.fields.iter().find(|field| field.name == value) else {
+        return fail(
+            model.span,
+            format!("ComboBox value-role has no record field named `{value}`"),
+        );
+    };
+    if !matches!(
+        field.ty,
+        Type::String | Type::Int | Type::Float | Type::Bool | Type::Date | Type::Time
+    ) {
+        return fail(
+            model.span,
+            "ComboBox value-role requires a string, int, float, bool, Date or Time field",
+        );
+    }
+    Ok(Some(RecordCombo {
+        model,
+        value_type: field.ty.clone(),
+    }))
 }
 
 fn standard_list_role(members: &[Member]) -> Result<Option<String>> {
@@ -2707,6 +3068,7 @@ fn validate_template(
                 | "Menu"
                 | "MenuItem"
                 | "MenuSeparator"
+                | "Shortcut"
                 | "ContextMenuArea"
                 | "TouchArea"
                 | "CheckBox"
@@ -2728,6 +3090,7 @@ fn validate_template(
                 | "TimePicker"
                 | "TimePickerPopup"
                 | "DatePickerPopup"
+                | "ColorPickerPopup"
                 | "Tumbler"
                 | "StackView"
                 | "ListView"
@@ -2870,10 +3233,15 @@ fn default(ty: Type, span: Span) -> ir::Expr {
         Type::TextVerticalAlignment => "top",
         Type::TextOverflow => "clip",
         Type::InputType => "text",
+        Type::ColorScheme => "system",
+        Type::FileDialogMode => "open-file",
+        Type::MessageLevel => "info",
+        Type::MessageButtons => "ok",
         Type::CheckState => "unchecked",
         Type::DialogRole => "accept",
         Type::StandardButtonKind => "ok",
         Type::SwipeSide => "closed",
+        Type::DragAction => "none",
         Type::DrawerEdge => "left",
         Type::PopupPlacement => "below",
         Type::SelectionTarget => "rows",
@@ -3161,10 +3529,15 @@ fn expression(e: &ast::Expr, scope: &Scope<'_>, owner: &str) -> Result<ir::Expr>
                         | "TextVerticalAlignment"
                         | "TextOverflow"
                         | "InputType"
+                        | "ColorScheme"
+                        | "FileDialogMode"
+                        | "MessageLevel"
+                        | "MessageButtons"
                         | "CheckState"
                         | "DialogRole"
                         | "StandardButtonKind"
                         | "SwipeSide"
+                        | "DragAction"
                         | "DrawerEdge"
                         | "PopupPlacement"
                         | "SelectionTarget"
@@ -3552,7 +3925,11 @@ fn collect_bindings(
                                 dependencies(page, &path, &mut deps);
                             }
                         }
-                        ir::Statement::Timer(_) | ir::Statement::Popup(_) => {}
+                        ir::Statement::Timer(_)
+                        | ir::Statement::Popup(_)
+                        | ir::Statement::NativeDialogOpen(_)
+                        | ir::Statement::SecondaryWindowCommand(_)
+                        | ir::Statement::WindowClose { .. } => {}
                     }
                 }
                 if let Some(result) = &callback.result {

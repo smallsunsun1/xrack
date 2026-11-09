@@ -1,15 +1,21 @@
 //! Renderer-independent scene snapshots produced by generated components.
 mod animation;
 mod calendar;
+mod child_window;
+mod color_picker;
+mod combo;
 mod controls;
 mod delegate;
 mod double_spin;
+mod drag;
 mod list;
 mod model;
+mod native_dialog;
 mod picker;
 mod property;
 mod range;
 mod repeat;
+mod scene_plan;
 mod split;
 mod stack;
 mod table_selection;
@@ -22,11 +28,21 @@ pub use animation::SceneTransition;
 pub use calendar::{CalendarAction, CalendarState, Date};
 #[doc(hidden)]
 pub use calendar::{DateBounds, DatePopupState};
+#[doc(hidden)]
+pub use child_window::{SecondaryWindowRegistration, SecondaryWindowSlot};
+#[doc(hidden)]
+pub use color_picker::ColorPopupState;
+pub use combo::{
+    ChoiceIdentity, choice_identity, combo_count, combo_find_label, combo_index, combo_label,
+    combo_labels, combo_row_index, combo_row_key, combo_text,
+};
+#[doc(hidden)]
+pub use combo::{ComboItems, ComboModel, combo_value};
 pub use controls::{
     ActionKey, ControlAction, DialogCommand, DialogRole, PopupPlacement, SpinAction, SpinRange,
     StandardButtonKind, SwipeSide, TableHeader, TableSort, button_text, combo_editable,
-    combo_index, delay_millis, dialog_button_action, group_index, group_item, is_button,
-    is_modal_overlay, is_spin_box, is_window_overlay, page_indicator_count, page_indicator_index,
+    delay_millis, dialog_button_action, group_index, group_item, is_button, is_modal_overlay,
+    is_spin_box, is_window_overlay, page_indicator_count, page_indicator_index,
     resizable_table_column, resolve_swipe_index, search_suggestion, search_suggestions,
     spin_editable, spin_text, spin_value_after, text_input_value,
 };
@@ -35,10 +51,19 @@ pub use delegate::{ComponentRepeater, RowContext};
 pub use double_spin::{
     DecimalSpinRange, SpinDecimal, decimal_separator, decimal_spin_value_after, spin_text_is_valid,
 };
+pub use drag::{DragAction, DragEvent, is_drag_area};
 pub use list::{ListMetrics, RowKey};
 #[doc(hidden)]
 pub use list::{ListModel, RowLifetime, standard_list_rows, standard_table_rows};
 pub use model::VecModel;
+pub use native_dialog::{
+    FileDialogMode, FileDialogOptions, MessageButtons, MessageDialogOptions, MessageLevel,
+};
+#[doc(hidden)]
+pub use native_dialog::{
+    NativeDialogOptions, NativeDialogPresentation, NativeDialogQueue, NativeDialogRegistration,
+    NativeDialogResult, NativeDialogSlot,
+};
 pub use property::{ChangeSignal, Property};
 pub use range::{
     DialInputMode, IndicatorState, RangeAction, SliderInterval, SliderRange, indicator_state,
@@ -46,6 +71,10 @@ pub use range::{
 };
 #[doc(hidden)]
 pub use repeat::Repeater;
+#[doc(hidden)]
+pub use scene_plan::{
+    GridCellPosition, GridCellSlot, GridPlanner, GridTrackInput, StaticVectorPath, VectorSegment,
+};
 pub use stack::{StackNavigation, StackSnapshot, StackState};
 use std::{collections::BTreeMap, rc::Rc, sync::Arc};
 pub use table_selection::{
@@ -92,6 +121,27 @@ pub trait Component {
         Rc::new(self.render())
     }
 
+    /// Report invalidation caused by a shared reactive dependency.
+    fn scene_dirty(&self) -> bool {
+        false
+    }
+
+    /// Decide whether the host may close this window.
+    fn close_requested(&mut self) -> bool {
+        true
+    }
+
+    /// Consume a close command emitted by the component.
+    fn take_window_close_request(&mut self) -> bool {
+        false
+    }
+
+    /// Native child windows currently requested by this component.
+    #[doc(hidden)]
+    fn secondary_windows(&self) -> Option<Rc<[SecondaryWindowRegistration]>> {
+        None
+    }
+
     /// Render the requested model rows of a virtual view in a base scene.
     fn list_rows(&self, _path: &[usize], _rows: std::ops::Range<usize>) -> Vec<Node> {
         Vec::new()
@@ -124,6 +174,11 @@ pub trait Component {
         false
     }
 
+    #[doc(hidden)]
+    fn drag_event_at(&mut self, _scene: &Node, _path: &[usize], _event: &DragEvent) -> bool {
+        false
+    }
+
     fn resize_split_at(
         &mut self,
         _scene: &Node,
@@ -142,6 +197,68 @@ pub trait Component {
     }
 }
 
+impl<T: Component + ?Sized> Component for Box<T> {
+    fn render(&self) -> Node {
+        (**self).render()
+    }
+    fn drag_event_at(&mut self, scene: &Node, path: &[usize], event: &DragEvent) -> bool {
+        (**self).drag_event_at(scene, path, event)
+    }
+    fn render_shared(&self) -> Rc<Node> {
+        (**self).render_shared()
+    }
+    fn scene_dirty(&self) -> bool {
+        (**self).scene_dirty()
+    }
+    fn close_requested(&mut self) -> bool {
+        (**self).close_requested()
+    }
+    fn take_window_close_request(&mut self) -> bool {
+        (**self).take_window_close_request()
+    }
+    fn secondary_windows(&self) -> Option<Rc<[SecondaryWindowRegistration]>> {
+        (**self).secondary_windows()
+    }
+
+    fn list_rows(&self, path: &[usize], rows: std::ops::Range<usize>) -> Vec<Node> {
+        (**self).list_rows(path, rows)
+    }
+
+    fn dispatch(&mut self, element_id: &str, event: &str) -> bool {
+        (**self).dispatch(element_id, event)
+    }
+
+    fn edit_at(&mut self, scene: &Node, path: &[usize], text: String) -> bool {
+        (**self).edit_at(scene, path, text)
+    }
+
+    fn commit_table_cell(
+        &mut self,
+        scene: &Node,
+        path: &[usize],
+        original: &str,
+        text: String,
+    ) -> bool {
+        (**self).commit_table_cell(scene, path, original, text)
+    }
+
+    fn adjust_range_at(&mut self, scene: &Node, path: &[usize], action: RangeAction) -> bool {
+        (**self).adjust_range_at(scene, path, action)
+    }
+
+    fn control_at(&mut self, scene: &Node, path: &[usize], action: ControlAction) -> bool {
+        (**self).control_at(scene, path, action)
+    }
+
+    fn resize_split_at(&mut self, scene: &Node, path: &[usize], weights: &[(usize, f32)]) -> bool {
+        (**self).resize_split_at(scene, path, weights)
+    }
+
+    fn dispatch_at(&mut self, scene: &Node, path: &[usize], event: &str) -> bool {
+        (**self).dispatch_at(scene, path, event)
+    }
+}
+
 #[doc(hidden)]
 pub enum RoutedEvent<'a> {
     Dispatch(&'a str),
@@ -149,6 +266,7 @@ pub enum RoutedEvent<'a> {
     CommitCell { original: &'a str, text: &'a str },
     Range(RangeAction),
     Control(ControlAction),
+    Drag(&'a DragEvent),
     ResizeSplit(&'a [(usize, f32)]),
 }
 
@@ -162,6 +280,7 @@ impl RoutedEvent<'_> {
             }
             Self::Range(action) => ui.adjust_range_at(scene, path, *action),
             Self::Control(action) => ui.control_at(scene, path, *action),
+            Self::Drag(event) => ui.drag_event_at(scene, path, event),
             Self::ResizeSplit(weights) => ui.resize_split_at(scene, path, weights),
         }
     }
@@ -175,6 +294,14 @@ pub struct Percent(pub f64);
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Color(pub u32);
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ColorScheme {
+    #[default]
+    System,
+    Light,
+    Dark,
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum ImageFormat {
@@ -199,6 +326,33 @@ impl Image {
             Self::Empty => [0, 0],
             Self::Embedded { size, .. } => size,
         }
+    }
+}
+
+/// Immutable font data shared by scenes from the same generated UI library.
+pub struct EmbeddedFonts(&'static [&'static [u8]]);
+
+impl EmbeddedFonts {
+    pub const fn new(fonts: &'static [&'static [u8]]) -> Self {
+        Self(fonts)
+    }
+
+    pub fn sources(&self) -> &'static [&'static [u8]] {
+        self.0
+    }
+}
+
+impl PartialEq for EmbeddedFonts {
+    fn eq(&self, other: &Self) -> bool {
+        std::ptr::eq(self, other)
+    }
+}
+
+impl std::fmt::Debug for EmbeddedFonts {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("EmbeddedFonts")
+            .field("count", &self.0.len())
+            .finish()
     }
 }
 
@@ -367,6 +521,7 @@ pub enum Value {
     Bool(bool),
     String(String),
     StringList(Vec<String>),
+    ComboModel(ComboModel),
     Length(Length),
     Percent(Percent),
     Color(Color),
@@ -385,10 +540,15 @@ pub enum Value {
     TextVerticalAlignment(TextVerticalAlignment),
     TextOverflow(TextOverflow),
     InputType(InputType),
+    ColorScheme(ColorScheme),
+    FileDialogMode(FileDialogMode),
+    MessageLevel(MessageLevel),
+    MessageButtons(MessageButtons),
     CheckState(CheckState),
     DialogRole(DialogRole),
     StandardButtonKind(StandardButtonKind),
     SwipeSide(SwipeSide),
+    DragAction(DragAction),
     DrawerEdge(DrawerEdge),
     PopupPlacement(PopupPlacement),
     SelectionTarget(SelectionTarget),
@@ -433,10 +593,15 @@ value_from!(TextHorizontalAlignment, TextHorizontalAlignment);
 value_from!(TextVerticalAlignment, TextVerticalAlignment);
 value_from!(TextOverflow, TextOverflow);
 value_from!(InputType, InputType);
+value_from!(ColorScheme, ColorScheme);
+value_from!(FileDialogMode, FileDialogMode);
+value_from!(MessageLevel, MessageLevel);
+value_from!(MessageButtons, MessageButtons);
 value_from!(CheckState, CheckState);
 value_from!(DialogRole, DialogRole);
 value_from!(StandardButtonKind, StandardButtonKind);
 value_from!(SwipeSide, SwipeSide);
+value_from!(DragAction, DragAction);
 value_from!(DrawerEdge, DrawerEdge);
 value_from!(PopupPlacement, PopupPlacement);
 value_from!(SelectionTarget, SelectionTarget);
@@ -452,15 +617,31 @@ impl From<Brush> for Value {
     }
 }
 
+#[derive(Clone, Debug)]
+pub struct Node(NodeStorage);
+
+#[derive(Clone, Debug)]
+#[allow(clippy::large_enum_variant)] // Keep ordinary dynamic nodes inline.
+enum NodeStorage {
+    Inline(NodeData),
+    Shared(Arc<NodeData>),
+}
+
+/// Scene data shared by clones of a node. Mutating a node detaches its data.
+#[doc(hidden)]
 #[derive(Clone, Debug, PartialEq)]
-pub struct Node {
+pub struct NodeData {
     pub kind: &'static str,
     pub id: Option<&'static str>,
     pub properties: BTreeMap<&'static str, Value>,
+    #[doc(hidden)]
+    pub fonts: Option<&'static EmbeddedFonts>,
     pub tumbler_items: Option<TumblerItems>,
     pub children: Vec<Node>,
     #[doc(hidden)]
     pub timers: Vec<TimerRegistration>,
+    #[doc(hidden)]
+    pub native_dialogs: Vec<NativeDialogRegistration>,
     pub animations: BTreeMap<&'static str, u64>,
     pub list: Option<ListMetrics>,
     /// Selection snapshot for model-backed views. Retains the generated field name.
@@ -475,6 +656,71 @@ pub struct Node {
     pub tree_selection: Option<Arc<BTreeMap<i64, RowKey>>>,
     pub split_weights: Option<Arc<[Option<f32>]>>,
     pub row_key: Option<RowKey>,
+    paint_only_background: bool,
+    precompiled_path: Option<&'static StaticVectorPath>,
+    static_grid: Option<&'static [GridCellSlot]>,
+}
+
+impl std::ops::Deref for Node {
+    type Target = NodeData;
+
+    fn deref(&self) -> &Self::Target {
+        match &self.0 {
+            NodeStorage::Inline(data) => data,
+            NodeStorage::Shared(data) => data,
+        }
+    }
+}
+
+impl std::ops::DerefMut for Node {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        let data = match &mut self.0 {
+            NodeStorage::Inline(data) => data,
+            NodeStorage::Shared(data) => Arc::make_mut(data),
+        };
+        // Public edits can change grid tracks, visibility or child order.
+        data.static_grid = None;
+        data
+    }
+}
+
+impl PartialEq for Node {
+    fn eq(&self, other: &Self) -> bool {
+        **self == **other
+    }
+}
+
+impl NodeData {
+    fn same_structure_and_state(&self, other: &Self) -> bool {
+        macro_rules! compare {
+            ($($field:ident),+ $(,)?) => {{
+                // An exhaustive pattern makes new scene fields opt in to comparison.
+                let Self { properties: _, children: _, paint_only_background: _, $($field: _,)+ } = self;
+                $(self.$field == other.$field)&&+
+            }};
+        }
+        compare!(
+            kind,
+            id,
+            fonts,
+            tumbler_items,
+            timers,
+            native_dialogs,
+            animations,
+            list,
+            standard_list_stamp,
+            table_header,
+            table_selection,
+            tree,
+            stack,
+            action,
+            tree_selection,
+            split_weights,
+            row_key,
+            precompiled_path,
+            static_grid,
+        )
+    }
 }
 
 pub fn is_text_input(kind: &str) -> bool {
@@ -496,6 +742,10 @@ pub fn is_toggle(kind: &str) -> bool {
 }
 
 impl Node {
+    #[doc(hidden)]
+    pub fn enables_children(&self) -> bool {
+        is_drag_area(self.kind) || self.boolean("enabled", true)
+    }
     pub fn check_state(&self) -> CheckState {
         match self.properties.get("check-state") {
             Some(Value::CheckState(state)) if self.kind == "CheckBox" => *state,
@@ -518,13 +768,15 @@ impl Node {
     }
 
     pub fn new(kind: &'static str, id: Option<&'static str>) -> Self {
-        Self {
+        Self(NodeStorage::Inline(NodeData {
             kind,
             id,
             properties: BTreeMap::new(),
+            fonts: None,
             tumbler_items: None,
             children: Vec::new(),
             timers: Vec::new(),
+            native_dialogs: Vec::new(),
             animations: BTreeMap::new(),
             list: None,
             standard_list_stamp: None,
@@ -536,7 +788,81 @@ impl Node {
             tree_selection: None,
             split_weights: None,
             row_key: None,
+            paint_only_background: false,
+            precompiled_path: None,
+            static_grid: None,
+        }))
+    }
+
+    /// Freeze a static subtree so subsequent snapshot clones share its storage.
+    #[doc(hidden)]
+    pub fn into_shared(self) -> Self {
+        match self.0 {
+            NodeStorage::Inline(mut data) => {
+                data.children = data.children.into_iter().map(Self::into_shared).collect();
+                Self(NodeStorage::Shared(Arc::new(data)))
+            }
+            NodeStorage::Shared(data) => Self(NodeStorage::Shared(data)),
         }
+    }
+
+    pub fn shares_storage_with(&self, other: &Self) -> bool {
+        std::ptr::eq(self, other)
+            || matches!((&self.0, &other.0), (NodeStorage::Shared(a), NodeStorage::Shared(b)) if Arc::ptr_eq(a, b))
+    }
+
+    #[doc(hidden)]
+    pub fn set_precompiled_path(&mut self, path: &'static StaticVectorPath) {
+        self.precompiled_path = Some(path);
+    }
+
+    #[doc(hidden)]
+    pub fn precompiled_path(&self, commands: &str) -> Option<&'static StaticVectorPath> {
+        self.precompiled_path
+            .filter(|path| path.commands == commands)
+    }
+
+    #[doc(hidden)]
+    pub fn set_static_grid(&mut self, cells: &'static [GridCellSlot]) {
+        self.static_grid = Some(cells);
+    }
+
+    #[doc(hidden)]
+    pub fn static_grid(&self) -> Option<&'static [GridCellSlot]> {
+        self.static_grid
+    }
+
+    /// Mark a generated Rectangle's background as independent of layout and input.
+    #[doc(hidden)]
+    pub fn mark_paint_only_background(&mut self) {
+        if self.kind == "Rectangle" {
+            self.paint_only_background = true;
+        }
+    }
+
+    /// Compare frame inputs, allowing only compiler-proven paint values to differ.
+    #[doc(hidden)]
+    pub fn same_frame_inputs(&self, other: &Self) -> bool {
+        if self.shares_storage_with(other) {
+            return true;
+        }
+        let ignore_background = self.kind == "Rectangle"
+            && other.kind == "Rectangle"
+            && self.paint_only_background
+            && other.paint_only_background;
+        let relevant = |(name, _): &(&&str, &Value)| !ignore_background || **name != "background";
+        self.same_structure_and_state(other)
+            && self
+                .properties
+                .iter()
+                .filter(relevant)
+                .eq(other.properties.iter().filter(relevant))
+            && self.children.len() == other.children.len()
+            && self
+                .children
+                .iter()
+                .zip(&other.children)
+                .all(|(child, other)| child.same_frame_inputs(other))
     }
     /// An empty slot keeps the generated event paths stable across conditional renders.
     pub fn hidden() -> Self {
@@ -727,6 +1053,13 @@ impl Node {
         }
     }
 
+    pub fn color_scheme(&self) -> Option<ColorScheme> {
+        match self.properties.get("color-scheme") {
+            Some(Value::ColorScheme(scheme)) => Some(*scheme),
+            _ => None,
+        }
+    }
+
     pub fn at_path(&self, path: &[usize]) -> Option<&Self> {
         let mut node = self;
         for &index in path {
@@ -738,8 +1071,7 @@ impl Node {
     pub fn interactive_at_path(&self, path: &[usize]) -> Option<&Self> {
         let mut node = self;
         for index in path {
-            if !node.is_visible() || !node.boolean("enabled", true) || !node.group_content_enabled()
-            {
+            if !node.is_visible() || !node.enables_children() || !node.group_content_enabled() {
                 return None;
             }
             let child = node.children.get(*index)?;

@@ -169,6 +169,30 @@ impl<T> VecModel<T> {
         }
     }
 
+    /// Locate a row after the caller has established the appropriate dependencies.
+    pub(crate) fn position_untracked(
+        &self,
+        mut predicate: impl FnMut(&T) -> bool,
+    ) -> Option<usize> {
+        self.0
+            .rows
+            .borrow()
+            .iter()
+            .position(|entry| predicate(&entry.value))
+    }
+
+    pub(crate) fn project_row_untracked<R>(
+        &self,
+        index: usize,
+        project: impl FnOnce(&T) -> R,
+    ) -> Option<R> {
+        self.0
+            .rows
+            .borrow()
+            .get(index)
+            .map(|entry| project(&entry.value))
+    }
+
     /// Subscribe to changes in the projected value of existing rows. The caller also tracks
     /// structure changes and keeps the returned signal alive for as long as it uses the projection.
     pub(crate) fn observe_projection<P: PartialEq>(

@@ -178,7 +178,7 @@ impl LocalExecutor {
         Scope(EXECUTOR.with(|current| current.replace(Some(self.clone()))))
     }
 
-    fn spawn<F: Future + 'static>(
+    pub(crate) fn spawn<F: Future + 'static>(
         &self,
         future: F,
     ) -> Result<LocalTask<F::Output>, SpawnLocalError> {

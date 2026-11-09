@@ -100,12 +100,17 @@ export component LazyList inherits Window {
 export component SharedVisuals inherits Window {
     in-out property <int> count: 0;
     in-out property <[string]> items: ["A", "B"];
+    pure callback describe() -> string;
+    out property <string> caption: root.describe();
     first := Text { text: "Count " + root.count; }
     second := Text { text: "Count " + root.count; }
     for item in root.items : VerticalLayout {
         Text { text: "Row " + item; }
         Text { text: "Row " + item; }
+        Text { text: "Caption " + root.caption; }
     }
+    if false : Text { text: "not-rendered-marker"; }
+    tail := Text { text: "tail"; }
 }
 
 component StringRows inherits ListView {
@@ -113,9 +118,44 @@ component StringRows inherits ListView {
     for item[index] in root.items : Text { text: index + ": " + item; }
 }
 
+export component ScenePlans inherits Window {
+    in-out property <color> tint: #aabbcc;
+    in-out property <length> swatch-width: 40px;
+    in-out property <bool> show-caption: false;
+    pure callback describe() -> string;
+    out property <string> caption: root.describe();
+    swatch := Rectangle { background: root.tint; width: root.swatch-width; }
+    panel := VerticalLayout {
+        Text { text: "static label"; }
+        Rectangle { background: #112233; }
+    }
+    for item in ["A", "B"] : Text {
+        text: root.show-caption ? ("Caption " + root.caption + ": ") + item : item;
+    }
+}
+
 export component EmbeddedList inherits Window {
     in-out property <[string]> items: ["a", "b", "c"];
     records := StringRows { items: root.items; }
+}
+
+export component GridPlans inherits Window {
+    in-out property <bool> show-extra: true;
+    fixed := GridLayout {
+        width: 150px; height: 100px; spacing: 4px;
+        Rectangle { rowspan: 2; min-width: 20px; min-height: 20px; }
+        Rectangle { colspan: 2; min-width: 30px; min-height: 20px; }
+        Row {
+            Rectangle { visible: false; }
+            Rectangle { min-width: 20px; min-height: 20px; }
+            Rectangle { min-width: 20px; min-height: 20px; }
+        }
+    }
+    live := GridLayout {
+        y: 104px; width: 150px; height: 80px;
+        Rectangle { visible: root.show-extra; }
+        Rectangle {}
+    }
 }
 
 export component ModelBindings inherits Window {

@@ -1,6 +1,11 @@
 use crate::{LayoutNode, Point, Rect, Target, input::valid};
+use std::borrow::Cow;
 use unicode_segmentation::UnicodeSegmentation;
-use xrack_runtime::{Node, combo_editable, combo_index, search_suggestion, search_suggestions};
+use xrack_runtime::{
+    ChoiceIdentity, Node, RowKey, choice_identity, combo_count, combo_editable, combo_find_label,
+    combo_index, combo_label, combo_labels, combo_row_index, combo_row_key, combo_text,
+    search_suggestion, search_suggestions,
+};
 
 const ROW_HEIGHT: f32 = 28.0;
 const MAX_ROWS: usize = 8;
@@ -19,18 +24,19 @@ impl ComboCompletion {
     }
 }
 
-pub(crate) fn completion_value<'a>(model: &'a [String], draft: &str) -> Option<&'a str> {
-    if draft.is_empty() || model.iter().any(|value| value == draft) {
+pub(crate) fn completion_value<'a>(node: &'a Node, draft: &str) -> Option<Cow<'a, str>> {
+    if draft.is_empty() || combo_find_label(node, |value| value == draft).is_some() {
         return None;
     }
-    model.iter().find_map(|value| {
-        let suffix = value.strip_prefix(draft)?;
-        (suffix.chars().all(|ch| !ch.is_control())
-            && value
-                .grapheme_indices(true)
-                .any(|(index, _)| index == draft.len()))
-        .then_some(value.as_str())
-    })
+    let index = combo_find_label(node, |value| {
+        value.strip_prefix(draft).is_some_and(|suffix| {
+            suffix.chars().all(|ch| !ch.is_control())
+                && value
+                    .grapheme_indices(true)
+                    .any(|(index, _)| index == draft.len())
+        })
+    })?;
+    combo_label(node, index)
 }
 
 #[cfg(test)]
@@ -39,10 +45,15 @@ mod tests {
 
     #[test]
     fn completion_skips_partial_graphemes_and_single_line_control_characters() {
-        let model = ["e\u{301}lan", "edit\n", "editor"].map(str::to_owned);
-        assert_eq!(completion_value(&model, "e"), Some("editor"));
-        let model = ["editor", "e"].map(str::to_owned);
-        assert_eq!(completion_value(&model, "e"), None);
+        let mut node = xrack_runtime::Node::new("ComboBox", None);
+        node.properties.insert(
+            "model",
+            vec!["e\u{301}lan".into(), "edit\n".into(), "editor".into()].into(),
+        );
+        assert_eq!(completion_value(&node, "e").as_deref(), Some("editor"));
+        node.properties
+            .insert("model", vec!["editor".into(), "e".into()].into());
+        assert_eq!(completion_value(&node, "e"), None);
     }
 }
 
@@ -76,8 +87,9 @@ impl ComboGeometry {
 }
 
 pub struct ChoiceMenu<'a> {
+    pub control: &'a Node,
     pub bounds: Rect,
-    pub rows: &'a [String],
+    pub rows: Cow<'a, [String]>,
     pub first: usize,
     pub highlighted: Option<usize>,
     pub selected: Option<usize>,
@@ -92,15 +104,6 @@ impl ChoiceMenu<'_> {
             self.bounds.width,
             height,
         )
-    }
-
-    pub(crate) fn pick(&self, point: Point) -> Option<usize> {
-        if !self.bounds.contains(point) {
-            return None;
-        }
-        let offset =
-            ((point.y - self.bounds.y) / self.bounds.height * self.rows.len() as f32) as usize;
-        (offset < self.rows.len()).then_some(self.first + offset)
     }
 }
 
@@ -142,8 +145,9 @@ pub(crate) struct ChoicePopup {
     kind: &'static str,
     highlight: Option<usize>,
     highlighted_value: Option<String>,
+    highlighted_row: Option<RowKey>,
     first: usize,
-    press: Option<(usize, String)>,
+    press: Option<(usize, ChoiceIdentity)>,
 }
 
 impl ChoicePopup {
@@ -157,28 +161,26 @@ impl ChoicePopup {
             kind,
             highlight: None,
             highlighted_value: None,
+            highlighted_row: None,
             first: 0,
             press: None,
         };
         let node = popup.node(scene, layout)?;
-        let model = choice_values(node);
         if node.kind == "SearchField" {
             return popup.reconcile(scene, layout).then_some(popup);
         }
         let current = combo_index(node);
-        popup.highlight = Some(
-            node.text("edit-text")
-                .filter(|draft| combo_editable(node) && !draft.is_empty())
-                .filter(|draft| current.is_none_or(|index| model[index] != *draft))
-                .and_then(|draft| {
-                    model
-                        .iter()
-                        .position(|item| item == draft)
-                        .or_else(|| model.iter().position(|item| item.starts_with(draft)))
-                })
-                .or(current)
-                .unwrap_or(0),
-        );
+        let index = node
+            .text("edit-text")
+            .filter(|draft| combo_editable(node) && !draft.is_empty())
+            .filter(|draft| combo_text(node) != *draft)
+            .and_then(|draft| {
+                combo_find_label(node, |item| item == draft)
+                    .or_else(|| combo_find_label(node, |item| item.starts_with(draft)))
+            })
+            .or(current)
+            .unwrap_or(0);
+        popup.highlight(node, index);
         popup.reconcile(scene, layout).then_some(popup)
     }
 
@@ -198,19 +200,21 @@ impl ChoicePopup {
     ) -> Option<(&'a Node, ChoiceGeometry)> {
         let node = self.node(scene, layout)?;
         let anchor = layout.at_path(&self.target.path)?.bounds;
-        Some((
-            node,
-            geometry(anchor, layout.bounds, choice_values(node).len())?,
-        ))
+        Some((node, geometry(anchor, layout.bounds, choice_count(node))?))
     }
 
     pub fn view<'a>(&self, scene: &'a Node, layout: &LayoutNode) -> Option<ChoiceMenu<'a>> {
         let (node, geo) = self.resolve(scene, layout)?;
-        let model = choice_values(node);
-        let first = self.first.min(model.len() - geo.visible);
+        let first = self.first.min(choice_count(node) - geo.visible);
+        let range = first..first + geo.visible;
         Some(ChoiceMenu {
+            control: node,
             bounds: geo.bounds,
-            rows: &model[first..first + geo.visible],
+            rows: if node.kind == "SearchField" {
+                Cow::Borrowed(&search_suggestions(node)[range])
+            } else {
+                combo_labels(node, range)
+            },
             first,
             highlighted: self.highlighted(node),
             selected: (node.kind == "ComboBox")
@@ -223,7 +227,7 @@ impl ChoicePopup {
         let Some((node, geo)) = self.resolve(scene, layout) else {
             return false;
         };
-        let len = choice_values(node).len();
+        let len = choice_count(node);
         self.highlight = self.highlighted(node);
         self.first = self.first.min(len - geo.visible);
         if let Some(highlight) = self.highlight {
@@ -242,8 +246,10 @@ impl ChoicePopup {
             (search_suggestion(node, index) == self.highlighted_value.as_deref()
                 && self.highlighted_value.is_some())
             .then_some(index)
+        } else if let Some(key) = self.highlighted_row {
+            combo_row_index(node, key)
         } else {
-            Some(index.min(choice_values(node).len().saturating_sub(1)))
+            Some(index.min(choice_count(node).saturating_sub(1)))
         }
     }
 
@@ -252,15 +258,28 @@ impl ChoicePopup {
             self.highlighted_value = search_suggestion(node, index).map(str::to_owned);
             self.highlight = self.highlighted_value.as_ref().map(|_| index);
         } else {
+            self.highlighted_row = combo_row_key(node, index);
             self.highlight = Some(index);
         }
     }
 
+    fn pick<'a>(
+        &self,
+        scene: &'a Node,
+        layout: &LayoutNode,
+        point: Point,
+    ) -> Option<(&'a Node, usize)> {
+        let (node, geo) = self.resolve(scene, layout)?;
+        if !geo.bounds.contains(point) {
+            return None;
+        }
+        let offset = ((point.y - geo.bounds.y) / geo.bounds.height * geo.visible as f32) as usize;
+        let first = self.first.min(choice_count(node) - geo.visible);
+        (offset < geo.visible).then_some((node, first + offset))
+    }
+
     pub fn hover(&mut self, scene: &Node, layout: &LayoutNode, point: Point) -> bool {
-        let Some(index) = self.view(scene, layout).and_then(|menu| menu.pick(point)) else {
-            return false;
-        };
-        let Some(node) = self.node(scene, layout) else {
+        let Some((node, index)) = self.pick(scene, layout, point) else {
             return false;
         };
         let previous = self.highlighted(node);
@@ -269,33 +288,26 @@ impl ChoicePopup {
     }
 
     pub fn press(&mut self, scene: &Node, layout: &LayoutNode, point: Point) -> bool {
-        let Some(menu) = self.view(scene, layout) else {
-            return false;
-        };
-        let Some(index) = menu.pick(point) else {
-            return false;
-        };
-        let value = menu.rows[index - menu.first].clone();
-        let Some(node) = self.node(scene, layout) else {
+        let Some((node, index)) = self.pick(scene, layout, point) else {
             return false;
         };
         self.highlight(node, index);
-        self.press = self.highlight.map(|index| (index, value));
+        self.press = choice_identity(node, index).map(|identity| (index, identity));
         self.press.is_some()
     }
 
     pub fn release(&mut self, scene: &Node, layout: &LayoutNode, point: Point) -> Option<usize> {
         let (pressed, previous) = self.press.take()?;
-        let menu = self.view(scene, layout)?;
-        let index = menu.pick(point)?;
-        (index == pressed && menu.rows[index - menu.first] == previous).then_some(index)
+        let (node, index) = self.pick(scene, layout, point)?;
+        (index == pressed && choice_identity(node, index).as_ref() == Some(&previous))
+            .then_some(index)
     }
 
     pub fn move_highlight(&mut self, scene: &Node, layout: &LayoutNode, key: ChoiceKey) {
         let Some((node, geo)) = self.resolve(scene, layout) else {
             return;
         };
-        let last = choice_values(node).len() - 1;
+        let last = choice_count(node) - 1;
         let highlight = self.highlighted(node);
         let next = match key {
             ChoiceKey::Up => highlight.map_or(last, |index| index.saturating_sub(1)),
@@ -327,7 +339,7 @@ impl ChoicePopup {
     }
 
     pub fn selected(&self, scene: &Node, layout: &LayoutNode) -> Option<usize> {
-        self.view(scene, layout).and_then(|menu| menu.highlighted)
+        self.highlighted(self.resolve(scene, layout)?.0)
     }
 
     pub fn scroll(&mut self, scene: &Node, layout: &LayoutNode, rows: isize) {
@@ -337,7 +349,7 @@ impl ChoicePopup {
         self.first = self
             .first
             .saturating_add_signed(rows)
-            .min(choice_values(node).len() - geo.visible);
+            .min(choice_count(node) - geo.visible);
         if let Some(highlight) = self.highlighted(node) {
             self.highlight(
                 node,
@@ -348,10 +360,10 @@ impl ChoicePopup {
     }
 }
 
-fn choice_values(node: &Node) -> &[String] {
+fn choice_count(node: &Node) -> usize {
     if node.kind == "SearchField" {
-        search_suggestions(node)
+        search_suggestions(node).len()
     } else {
-        node.strings("model")
+        combo_count(node)
     }
 }

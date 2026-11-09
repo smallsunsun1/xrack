@@ -3,8 +3,8 @@ use accesskit::{Node as AccessibleNode, NodeId, Role, TextDirection, TextSelecti
 use std::ops::Range;
 use unicode_segmentation::UnicodeSegmentation;
 use xrack_layout::{
-    ComboGeometry, Interaction, PasswordMask, Point, Rect, TextAreaLayout, TextEdit, TextPosition,
-    font_size,
+    ComboGeometry, Interaction, PasswordMask, Point, Rect, TextAreaLayout, TextEdit, TextMeasurer,
+    TextPosition, font_size,
 };
 use xrack_renderer_femtovg::TextSystem;
 use xrack_runtime::{
@@ -148,7 +148,7 @@ pub(crate) fn project_text(
     };
     let editor = focused_editor(input, path);
     let scroll = input.text_scroll(path);
-    let size = font_size(node);
+    let size = text_system.map_or_else(|| font_size(node), |system| system.font_size(node));
     let rect = if combo_editable(node) {
         ComboGeometry::new(rect).entry
     } else if node.kind == "SearchField" {
@@ -177,7 +177,7 @@ pub(crate) fn project_text(
     let lines = layout
         .as_ref()
         .map_or(std::slice::from_ref(&single), |layout| &layout.lines);
-    let advance = |text: &str| text_system.map_or(0.0, |system| system.advance(text, size));
+    let advance = |text: &str| text_system.map_or(0.0, |system| system.advance_node(node, text));
     let (origin, height) = if let Some(layout) = &layout {
         let scroll = layout.clamp_scroll(scroll);
         (

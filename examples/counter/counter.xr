@@ -35,3 +35,81 @@ export component Counter inherits Window {
         }
     }
 }
+
+export component DesktopCounter inherits Window {
+    in property <string> caption;
+    in property <[string]> activity: [];
+    in-out property <int> count: 0;
+    in-out property <string> note: "";
+    callback open-window;
+    callback close-window;
+    callback add-later;
+    callback publish;
+
+    title: root.caption;
+    width: 418px; height: 236px;
+    color-scheme: system;
+
+    VerticalLayout {
+        padding: 16px; spacing: 10px; alignment: start;
+        Text { text: root.caption; font-size: 21px; }
+        Text { text: "窗口计数 · " + root.count; }
+        for message in root.activity : Text { text: message; }
+        entry := LineEdit { placeholder-text: "每个窗口各自保存输入内容"; text <=> root.note; }
+        HorizontalLayout {
+            spacing: 8px;
+            add := Button { text: "加一"; clicked => { root.count += 1; root.publish(); } }
+            async-add := Button { text: "异步加十"; clicked => { root.add-later(); } }
+            launch := Button { text: "新窗口"; clicked => { root.open-window(); } }
+            close := Button { text: "关闭窗口"; clicked => { root.close-window(); } }
+        }
+    }
+}
+
+component InspectorWindow inherits Window {
+    in property <int> shared-count;
+    in-out property <string> note: "";
+    in-out property <bool> allow-close: true;
+    out property <int> close-requests: 0;
+
+    title: "XRack · 辅助窗口";
+    width: 380px; height: 212px;
+    color-scheme: system;
+
+    close-requested() => { root.close-requests += 1; root.allow-close }
+
+    VerticalLayout {
+        padding: 16px; spacing: 10px; alignment: start;
+        shared := Text { text: "共享计数 · " + root.shared-count; font-size: 20px; }
+        note := LineEdit { accessible-name: "辅助窗口草稿"; text <=> root.note; }
+        allow := CheckBox { text: "允许关闭"; checked <=> root.allow-close; }
+        Text { text: "关闭请求 · " + root.close-requests; }
+    }
+}
+
+export component SecondaryWindowDemo inherits Window {
+    in-out property <bool> inspecting: false;
+    in-out property <int> count: 0;
+
+    title: "XRack · 声明式多窗口";
+    width: 500px; height: 238px;
+    color-scheme: system;
+
+    inspector := SecondaryWindow {
+        visible <=> root.inspecting;
+        details := InspectorWindow { shared-count: root.count; }
+    }
+
+    VerticalLayout {
+        padding: 16px; spacing: 10px; alignment: start;
+        Text { text: "声明式多窗口"; font-size: 22px; }
+        Text { text: root.inspecting ? "辅助窗口已显示" : "辅助窗口已隐藏"; }
+        add := Button { text: "增加共享计数"; clicked => { root.count += 1; } }
+        HorizontalLayout {
+            spacing: 8px;
+            show-inspector := Button { text: "打开辅助窗口"; clicked => { inspector.show(); } }
+            hide-inspector := Button { text: "隐藏辅助窗口"; clicked => { inspector.hide(); } }
+            close-inspector := Button { text: "请求关闭辅助窗口"; clicked => { inspector.close(); } }
+        }
+    }
+}

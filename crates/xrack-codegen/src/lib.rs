@@ -1,6 +1,9 @@
 //! Rust token generation from the typed UI operations exported from MLIR.
+mod scene_plan;
+
 use proc_macro2::{Ident, Literal, Span, TokenStream};
 use quote::{format_ident, quote};
+pub use scene_plan::EmbeddedPath;
 use std::collections::{BTreeMap, HashMap};
 use xrack_ir::semantic::rust_name;
 use xrack_mlir::{Module, OperationRef, ValueRef};
@@ -55,10 +58,15 @@ fn ty(t: &Type) -> TokenStream {
         Type::TextVerticalAlignment => quote!(::xrack_runtime::TextVerticalAlignment),
         Type::TextOverflow => quote!(::xrack_runtime::TextOverflow),
         Type::InputType => quote!(::xrack_runtime::InputType),
+        Type::ColorScheme => quote!(::xrack_runtime::ColorScheme),
+        Type::FileDialogMode => quote!(::xrack_runtime::FileDialogMode),
+        Type::MessageLevel => quote!(::xrack_runtime::MessageLevel),
+        Type::MessageButtons => quote!(::xrack_runtime::MessageButtons),
         Type::CheckState => quote!(::xrack_runtime::CheckState),
         Type::DialogRole => quote!(::xrack_runtime::DialogRole),
         Type::StandardButtonKind => quote!(::xrack_runtime::StandardButtonKind),
         Type::SwipeSide => quote!(::xrack_runtime::SwipeSide),
+        Type::DragAction => quote!(::xrack_runtime::DragAction),
         Type::DrawerEdge => quote!(::xrack_runtime::DrawerEdge),
         Type::PopupPlacement => quote!(::xrack_runtime::PopupPlacement),
         Type::SelectionTarget => quote!(::xrack_runtime::SelectionTarget),
@@ -169,10 +177,15 @@ fn literal(value: &str, ty: Type) -> Result<TokenStream, String> {
         | Type::TextVerticalAlignment
         | Type::TextOverflow
         | Type::InputType
+        | Type::ColorScheme
+        | Type::FileDialogMode
+        | Type::MessageLevel
+        | Type::MessageButtons
         | Type::CheckState
         | Type::DialogRole
         | Type::StandardButtonKind
         | Type::SwipeSide
+        | Type::DragAction
         | Type::DrawerEdge
         | Type::PopupPlacement
         | Type::SelectionTarget => {
@@ -243,6 +256,18 @@ fn timer_member(key: &str, member: &str) -> Ident {
     format_ident!("__timer_{}_{}", member, rust_key(key))
 }
 
+fn native_dialog_member(key: &str, member: &str) -> Ident {
+    format_ident!("__native_dialog_{}_{}", member, rust_key(key))
+}
+
+fn native_dialog(element: OperationRef<'_>) -> bool {
+    matches!(element.attr("kind"), Ok("FileDialog" | "MessageDialog"))
+}
+
+fn secondary_window_member(key: &str, member: &str) -> Ident {
+    format_ident!("__secondary_window_{}_{}", member, rust_key(key))
+}
+
 fn popup_method(key: &str) -> Ident {
     format_ident!("__popup_{}", rust_key(key))
 }
@@ -255,6 +280,7 @@ fn picker_value(kind: &str) -> Option<(&'static str, Type)> {
     match kind {
         "TimePickerPopup" => Some(("time", Type::Time)),
         "DatePickerPopup" => Some(("date", Type::Date)),
+        "ColorPickerPopup" => Some(("color", Type::Color)),
         _ => None,
     }
 }
@@ -324,6 +350,8 @@ fn controlled_property(element: OperationRef<'_>) -> Option<(&'static str, Type)
         None
     } else if text_item(element) {
         Some(("text", Type::String))
+    } else if element.attr("kind") == Ok("SecondaryWindow") {
+        Some(("visible", Type::Bool))
     } else if check_state_control(element) {
         check_state_binding(element)
             .is_none()
@@ -337,8 +365,9 @@ fn controlled_property(element: OperationRef<'_>) -> Option<(&'static str, Type)
         Some(("checked", Type::Bool))
     } else if matches!(
         element.attr("kind"),
-        Ok("Dialog" | "Drawer" | "PopupWindow" | "TimePickerPopup" | "DatePickerPopup")
-    ) {
+        Ok("Dialog" | "Drawer" | "PopupWindow")
+    ) || element.attribute("kind").and_then(picker_value).is_some()
+    {
         Some(("open", Type::Bool))
     } else if element.attr("kind") == Ok("TimePicker") {
         Some(("time", Type::Time))
@@ -372,11 +401,14 @@ fn controlled_property(element: OperationRef<'_>) -> Option<(&'static str, Type)
             | "GridView"
             | "StandardListView")
     ) {
-        if element.children().any(|binding| {
+        if let Some(binding) = element.children().find(|binding| {
             matches!(binding.name(), "xr.bind" | "xr.control_link")
                 && binding.attr("name") == Ok("current-value")
         }) {
-            Some(("current-value", Type::String))
+            Some((
+                "current-value",
+                operand_type(binding).expect("verified choice value type"),
+            ))
         } else {
             Some(("current-index", Type::Int))
         }
@@ -413,6 +445,22 @@ fn model_binding(element: OperationRef<'_>) -> Option<OperationRef<'_>> {
     children(element, "xr.bind").find(|binding| binding.attr("name") == Ok("model"))
 }
 
+fn operand_type(binding: OperationRef<'_>) -> Option<Type> {
+    let name = binding.operand(0)?.type_name();
+    Type::parse(name.strip_prefix("!xr.")?)
+}
+
+fn record_combo_binding(element: OperationRef<'_>) -> Option<OperationRef<'_>> {
+    (element.attr("kind") == Ok("ComboBox"))
+        .then(|| model_binding(element))
+        .flatten()
+        .filter(|binding| matches!(operand_type(*binding), Some(Type::RecordList(_))))
+}
+
+fn combo_field(key: &str, name: &str) -> Ident {
+    format_ident!("__combo_{}_{}", name, rust_key(key))
+}
+
 fn table_columns(element: OperationRef<'_>) -> impl Iterator<Item = OperationRef<'_>> {
     scene_children(element).filter(|column| column.attr("kind") == Ok("TableColumn"))
 }
@@ -443,6 +491,7 @@ fn typed_events(element: OperationRef<'_>) -> bool {
             | "TimePicker"
             | "TimePickerPopup"
             | "DatePickerPopup"
+            | "ColorPickerPopup"
             | "ListView"
             | "GridView"
             | "StandardListView"
@@ -454,7 +503,10 @@ fn typed_events(element: OperationRef<'_>) -> bool {
             | "Drawer"
             | "PopupWindow"
             | "MenuItem"
+            | "Shortcut"
             | "DelayButton"
+            | "DragArea"
+            | "DropArea"
             | "GroupBox")
     ) || element.attr("kind").is_ok_and(is_multiline_text_input)
 }
@@ -526,7 +578,10 @@ fn element_children(op: OperationRef<'_>) -> impl Iterator<Item = OperationRef<'
 }
 
 fn scene_children(op: OperationRef<'_>) -> impl Iterator<Item = OperationRef<'_>> {
-    element_children(op).filter(|op| !matches!(op.attr("kind"), Ok("Action" | "Timer")))
+    element_children(op).filter(|op| {
+        !matches!(op.attr("kind"), Ok("Action" | "Timer" | "SecondaryWindow"))
+            && !native_dialog(*op)
+    })
 }
 
 fn static_children(op: OperationRef<'_>) -> impl Iterator<Item = (usize, OperationRef<'_>)> {
@@ -562,6 +617,8 @@ fn row_editor_paths<'a>(
 enum VisualCacheKey<'a> {
     Operand(ValueRef<'a>),
     Group(&'a str),
+    RepeatInvariant(&'a str),
+    RepeatSubexpression(&'a str),
 }
 
 #[derive(Default)]
@@ -588,6 +645,7 @@ impl RepeatScope<'_> {
 struct ExpressionContext<'a> {
     receiver: &'a TokenStream,
     repeat_parameters: bool,
+    hoist_repeat_subexpressions: bool,
 }
 
 impl<'a> ExpressionContext<'a> {
@@ -595,11 +653,24 @@ impl<'a> ExpressionContext<'a> {
         Self {
             receiver,
             repeat_parameters: false,
+            hoist_repeat_subexpressions: false,
         }
     }
 }
 
-impl VisualScope<'_> {
+impl<'a> VisualScope<'a> {
+    fn index_value(
+        &mut self,
+        key: VisualCacheKey<'a>,
+        definition: OperationRef<'a>,
+    ) -> Result<(), String> {
+        if let std::collections::hash_map::Entry::Vacant(entry) = self.bindings.entry(key) {
+            entry.insert(self.binding_types.len());
+            self.binding_types.push(value_type(definition)?);
+        }
+        Ok(())
+    }
+
     fn receiver(&self) -> TokenStream {
         if let Some(index) = self.row_index {
             let row = row_local(index);
@@ -651,6 +722,7 @@ struct Generator<'a> {
     instances: BTreeMap<&'a str, OperationRef<'a>>,
     element_properties: Vec<(&'a str, OperationRef<'a>)>,
     unlinked_controls: Vec<(&'a str, &'static str, Type)>,
+    record_combos: Vec<&'a str>,
     picker_popups: Vec<(&'a str, Type)>,
     tables: Vec<&'a str>,
     splits: Vec<&'a str>,
@@ -658,10 +730,16 @@ struct Generator<'a> {
     stacks: BTreeMap<&'a str, OperationRef<'a>>,
     actions: BTreeMap<&'a str, OperationRef<'a>>,
     timers: Vec<OperationRef<'a>>,
+    native_dialogs: Vec<OperationRef<'a>>,
+    secondary_windows: Vec<OperationRef<'a>>,
     popups: Vec<OperationRef<'a>>,
     visuals: VisualScope<'a>,
-    share_visual_bindings: bool,
+    repeat_invariants: Vec<OperationRef<'a>>,
+    repeat_subexpressions: Vec<(&'a str, OperationRef<'a>)>,
+    use_visual_plan: bool,
     images: &'a BTreeMap<&'a str, Ident>,
+    paths: &'a BTreeMap<&'a str, Ident>,
+    with_fonts: bool,
 }
 
 impl<'a> Generator<'a> {
@@ -672,6 +750,9 @@ impl<'a> Generator<'a> {
             }
             "xr.element" => {
                 let key = element_key(op)?;
+                if record_combo_binding(op).is_some() {
+                    self.record_combos.push(key);
+                }
                 if let Some((_, ty)) = op.attribute("kind").and_then(picker_value) {
                     self.picker_popups.push((key, ty));
                 }
@@ -693,6 +774,12 @@ impl<'a> Generator<'a> {
                 if op.attr("kind") == Ok("Timer") {
                     self.timers.push(op);
                 }
+                if native_dialog(op) {
+                    self.native_dialogs.push(op);
+                }
+                if op.attr("kind") == Ok("SecondaryWindow") {
+                    self.secondary_windows.push(op);
+                }
                 if op.attr("kind") == Ok("PopupWindow") {
                     self.popups.push(op);
                 }
@@ -706,8 +793,22 @@ impl<'a> Generator<'a> {
             }
             _ => {}
         }
-        for child in element_children(op) {
-            self.index(child)?;
+        for child in op.children() {
+            match child.name() {
+                "xr.element" | "xr.instance" => self.index(child)?,
+                "xr.bind" | "xr.layout_bind" | "xr.show_if"
+                    if self.use_visual_plan
+                        && child.attribute("xr.repeat_invariant_group").is_some() =>
+                {
+                    self.repeat_invariants.push(child);
+                }
+                _ if self.use_visual_plan => {
+                    if let Some(group) = child.attribute("xr.repeat_subexpression_group") {
+                        self.repeat_subexpressions.push((group, child));
+                    }
+                }
+                _ => {}
+            }
         }
         Ok(())
     }
@@ -727,6 +828,9 @@ impl<'a> Generator<'a> {
         scope: &mut VisualScope<'a>,
         next: &mut usize,
     ) -> Result<(), String> {
+        if self.static_subtree(element) {
+            return Ok(());
+        }
         if let Some(repeat) = children(element, "xr.repeat").next() {
             let model = value_type(self.operand(repeat, 0)?)?;
             if model != Type::Int && model.list_item().is_none() {
@@ -793,19 +897,22 @@ impl<'a> Generator<'a> {
             "xr.literal" | "xr.read" | "xr.image_url" | "xr.param"
         ) {
             let key = self.visual_cache_key(binding);
-            if let std::collections::hash_map::Entry::Vacant(entry) = scope.bindings.entry(key) {
-                entry.insert(scope.binding_types.len());
-                scope.binding_types.push(value_type(definition)?);
+            if matches!(key, VisualCacheKey::RepeatInvariant(_)) && scope.row_index.is_some() {
+                return Ok(());
             }
+            scope.index_value(key, definition)?;
         }
         Ok(())
     }
 
     fn visual_cache_key(&self, binding: OperationRef<'a>) -> VisualCacheKey<'a> {
-        if self.share_visual_bindings
-            && let Some(group) = binding.attribute("xr.visual_cache_group")
-        {
-            return VisualCacheKey::Group(group);
+        if self.use_visual_plan {
+            if let Some(group) = binding.attribute("xr.repeat_invariant_group") {
+                return VisualCacheKey::RepeatInvariant(group);
+            }
+            if let Some(group) = binding.attribute("xr.visual_cache_group") {
+                return VisualCacheKey::Group(group);
+            }
         }
         VisualCacheKey::Operand(binding.operand(0).expect("verified binding operand"))
     }
@@ -816,9 +923,15 @@ impl<'a> Generator<'a> {
         scope: &VisualScope<'_>,
     ) -> Result<TokenStream, String> {
         let value = self.visual_expr(self.operand(binding, 0)?, scope)?;
-        if let Some(&id) = scope.bindings.get(&self.visual_cache_key(binding)) {
+        let key = self.visual_cache_key(binding);
+        let cache = if matches!(key, VisualCacheKey::RepeatInvariant(_)) {
+            &self.visuals
+        } else {
+            scope
+        };
+        if let Some(&id) = cache.bindings.get(&key) {
             let field = visual_field(id);
-            let receiver = scope.receiver();
+            let receiver = cache.receiver();
             Ok(quote!(#receiver.#field.get(|| #value)))
         } else {
             Ok(value)
@@ -841,6 +954,7 @@ impl<'a> Generator<'a> {
             ExpressionContext {
                 receiver: &quote!(self),
                 repeat_parameters: scope.row_index.is_some(),
+                hoist_repeat_subexpressions: scope.row_index.is_some(),
             },
         )
     }
@@ -850,6 +964,25 @@ impl<'a> Generator<'a> {
         op: OperationRef<'a>,
         context: ExpressionContext<'_>,
     ) -> Result<TokenStream, String> {
+        if self.use_visual_plan
+            && context.hoist_repeat_subexpressions
+            && let Some(group) = op.attribute("xr.repeat_subexpression_group")
+            && let Some(&id) = self
+                .visuals
+                .bindings
+                .get(&VisualCacheKey::RepeatSubexpression(group))
+        {
+            let value = self.expr_in(
+                op,
+                ExpressionContext {
+                    hoist_repeat_subexpressions: false,
+                    ..context
+                },
+            )?;
+            let field = visual_field(id);
+            let receiver = self.visuals.receiver();
+            return Ok(quote!(#receiver.#field.get(|| #value)));
+        }
         let receiver = context.receiver;
         let value = op.attr("value")?;
         let arg = |i| self.expr_in(self.operand(op, i)?, context);
@@ -1119,10 +1252,36 @@ impl<'a> Generator<'a> {
                     let open = statement.attr("open")? == "true";
                     statements.extend(quote!(let _ = self.#method(#open);));
                 }
+                "xr.file_dialog_open" | "xr.native_dialog_open" => {
+                    let open = native_dialog_member(statement.attr("owner")?, "open");
+                    statements.extend(quote!(self.#open();));
+                }
+                "xr.window_close" => {
+                    statements.extend(quote!(self.__state.__window_close.set(true);));
+                }
+                "xr.secondary_window_command" => {
+                    let owner = statement.attr("owner")?;
+                    match statement.attr("command")? {
+                        "show" | "hide" => {
+                            let method = secondary_window_member(owner, "visible");
+                            let visible = statement.attr("command")? == "show";
+                            statements.extend(quote!(self.#method(#visible);));
+                        }
+                        "close" => {
+                            let method = secondary_window_member(owner, "close");
+                            statements.extend(quote!(self.#method();));
+                        }
+                        _ => return Err("unknown secondary window command".into()),
+                    }
+                }
                 _ => {}
             }
         }
         Ok(statements)
+    }
+
+    fn static_subtree(&self, element: OperationRef<'a>) -> bool {
+        self.use_visual_plan && element.attribute("xr.static_subtree") == Some("true")
     }
 
     fn render(
@@ -1132,6 +1291,21 @@ impl<'a> Generator<'a> {
         out: &mut TokenStream,
         next: &mut usize,
     ) -> Result<Ident, String> {
+        if self.static_subtree(element) {
+            let mut body = TokenStream::new();
+            let name =
+                self.render_element(element, &VisualScope::default(), &mut body, next, None)?;
+            out.extend(quote! {
+                let #name = {
+                    ::std::thread_local! {
+                        static CACHE: ::std::cell::OnceCell<::xrack_runtime::Node> =
+                            const { ::std::cell::OnceCell::new() };
+                    }
+                    CACHE.with(|cache| cache.get_or_init(|| { #body #name.into_shared() }).clone())
+                };
+            });
+            return Ok(name);
+        }
         if let Some(model) = children(element, "xr.repeat").next() {
             let key = element_key(element)?;
             let repeat = &scope.repeats[key];
@@ -1146,15 +1320,23 @@ impl<'a> Generator<'a> {
             });
             Ok(name)
         } else if let Some(guard) = children(element, "xr.show_if").next() {
-            let condition = self.visual_value(guard, scope)?;
-            let mut body = TokenStream::new();
-            let name = self.render_element(element, scope, &mut body, next, None)?;
             let close = if element.attribute("kind").and_then(picker_value).is_some() {
                 let popup = picker_field(element_key(element)?);
                 quote!(self.__state.#popup.close();)
             } else {
                 TokenStream::new()
             };
+            if self.use_visual_plan && guard.attribute("xr.static_hidden") == Some("true") {
+                let name = format_ident!("__xr_hidden_{}", *next);
+                *next += 1;
+                out.extend(quote! {
+                    let #name = { #close ::xrack_runtime::Node::hidden() };
+                });
+                return Ok(name);
+            }
+            let condition = self.visual_value(guard, scope)?;
+            let mut body = TokenStream::new();
+            let name = self.render_element(element, scope, &mut body, next, None)?;
             out.extend(quote! {
                 let #name = if #condition {
                     #body
@@ -1492,6 +1674,7 @@ impl<'a> Generator<'a> {
             }
             None if ty == Type::Date => quote!(::xrack_runtime::Date::default()),
             None if ty == Type::Time => quote!(::xrack_runtime::Time::default()),
+            None if ty == Type::Color => quote!(::xrack_runtime::Color(0xffffffff)),
             None if ty == Type::SwipeSide => quote!(::xrack_runtime::SwipeSide::Closed),
             None if ty == Type::CheckState => quote!(::xrack_runtime::CheckState::Unchecked),
             None if ty == Type::Bool && element.attr("kind") == Ok("GroupBox") => quote!(true),
@@ -1633,6 +1816,71 @@ impl<'a> Generator<'a> {
         Ok(())
     }
 
+    fn combo_roles(
+        &self,
+        element: OperationRef<'a>,
+        binding: OperationRef<'a>,
+    ) -> Result<(String, String, Type), String> {
+        let Some(Type::RecordList(record)) = operand_type(binding) else {
+            return Err("expected a record ComboBox model".into());
+        };
+        let role = |name, default: &str| -> Result<String, String> {
+            if let Some(role) =
+                children(element, "xr.bind").find(|binding| binding.attr("name") == Ok(name))
+            {
+                serde_json::from_str(self.operand(role, 0)?.attr("value")?)
+                    .map_err(|error| error.to_string())
+            } else {
+                Ok(default.into())
+            }
+        };
+        let text = role("text-role", "text")?;
+        let value = role("value-role", &text)?;
+        let ty = self.records[record.as_ref()]
+            .iter()
+            .find(|field| field.name == value)
+            .ok_or("missing verified ComboBox value field")?
+            .ty
+            .clone();
+        Ok((text, value, ty))
+    }
+
+    fn render_combo_model(
+        &self,
+        element: OperationRef<'a>,
+        binding: OperationRef<'a>,
+        scope: &VisualScope<'_>,
+        node: &Ident,
+        out: &mut TokenStream,
+    ) -> Result<(), String> {
+        let (text, value, _) = self.combo_roles(element, binding)?;
+        let label = ident(&text);
+        let value = ident(&value);
+        let key = element_key(element)?;
+        let items = combo_field(key, "items");
+        let snapshot = combo_field(key, "snapshot");
+        let model = self.visual_value(binding, scope)?;
+        let (property, ty) = controlled_property(element).ok_or("missing ComboBox selection")?;
+        let selection = self.control_value(element, property, ty)?;
+        let selection = if property == "current-value" {
+            quote!(__xr_items.snapshot(0, Some(&::xrack_runtime::Value::from(#selection))))
+        } else {
+            quote!(__xr_items.snapshot(#selection, None))
+        };
+        out.extend(quote! {
+            let __xr_combo = self.__state.#snapshot.get(|| {
+                let __xr_items = self.__state.#items.get(|| ::xrack_runtime::ComboItems::new(
+                    #model,
+                    |record| record.#label.as_str(),
+                    |record| ::xrack_runtime::Value::from(record.#value.clone()),
+                ));
+                #selection
+            });
+            #node.properties.insert("model", ::xrack_runtime::Value::ComboModel(__xr_combo));
+        });
+        Ok(())
+    }
+
     fn render_element(
         &self,
         element: OperationRef<'a>,
@@ -1664,12 +1912,15 @@ impl<'a> Generator<'a> {
         } else {
             let kind = element.attr("kind")?;
             let kind = match kind {
-                "TimePickerPopup" | "DatePickerPopup" => "Dialog",
+                kind if picker_value(kind).is_some() => "Dialog",
                 "StandardTableView" => "TableView",
                 "StandardButton" => "Button",
                 kind => kind,
             };
             out.extend(quote!(let mut #name = ::xrack_runtime::Node::new(#kind, #id);));
+            if self.with_fonts && element.attr("id")? == "root" {
+                out.extend(quote!(#name.fonts = ::core::option::Option::Some(&__XR_FONTS);));
+            }
             "xr.bind"
         };
         let action = action_ref(element);
@@ -1679,6 +1930,11 @@ impl<'a> Generator<'a> {
         }
         for binding in children(element, binding_op) {
             let key = binding.attr("name")?;
+            if record_combo_binding(element).is_some()
+                && matches!(key, "model" | "text-role" | "value-role")
+            {
+                continue;
+            }
             if element.attr("kind") == Ok("StandardListView")
                 && matches!(key, "model" | "text-role")
             {
@@ -1705,6 +1961,17 @@ impl<'a> Generator<'a> {
             out.extend(quote! {
                 #name.properties.insert(#key, ::xrack_runtime::Value::from(#value));
             });
+            if self.use_visual_plan && binding.attribute("xr.update_effect") == Some("paint") {
+                out.extend(quote!(#name.mark_paint_only_background();));
+            }
+            if self.use_visual_plan && binding.attribute("xr.precompiled_path") == Some("true") {
+                let commands: String =
+                    serde_json::from_str(self.operand(binding, 0)?.attr("value")?)
+                        .map_err(|error| error.to_string())?;
+                if let Some(path) = self.paths.get(commands.as_str()) {
+                    out.extend(quote!(#name.set_precompiled_path(&#path);));
+                }
+            }
         }
         if let Some(link) = children(element, "xr.row_link").next() {
             let property = link.attr("name")?;
@@ -1741,6 +2008,9 @@ impl<'a> Generator<'a> {
                 #name.properties.insert(#property, ::xrack_runtime::Value::from(#value));
             });
         }
+        if let Some(binding) = record_combo_binding(element) {
+            self.render_combo_model(element, binding, scope, &name, out)?;
+        }
         for animation in children(element, "xr.animate") {
             let key = animation.attr("name")?;
             let duration = self.visual_expr(self.operand(animation, 0)?, scope)?;
@@ -1752,6 +2022,10 @@ impl<'a> Generator<'a> {
         for timer in element_children(element).filter(|child| child.attr("kind") == Ok("Timer")) {
             let register = timer_member(element_key(timer)?, "register");
             out.extend(quote! { #name.timers.extend(self.#register()); });
+        }
+        for dialog in element_children(element).filter(|child| native_dialog(*child)) {
+            let register = native_dialog_member(element_key(dialog)?, "register");
+            out.extend(quote!(#name.native_dialogs.extend(self.#register());));
         }
         if kind == Some("StandardButton") {
             out.extend(quote! {
@@ -1893,7 +2167,7 @@ impl<'a> Generator<'a> {
                 self.render(child, scope, &mut content, next)?
             };
             if repeated_option {
-                content.extend(quote!(#name.children.extend(#child.children);));
+                content.extend(quote!(#name.children.extend(#child.children.iter().cloned());));
             } else {
                 content.extend(quote!(#name.children.push(#child);));
             }
@@ -1924,6 +2198,9 @@ impl<'a> Generator<'a> {
                 #name.add_split_handles();
             });
         }
+        if self.use_visual_plan && element.attribute("xr.static_grid") == Some("true") {
+            out.extend(scene_plan::static_grid(element, &name)?);
+        }
         Ok(name)
     }
 
@@ -1943,7 +2220,11 @@ impl<'a> Generator<'a> {
         }
         let id = element.attr("id")?;
         let dispatchable = |handler: OperationRef<'_>| {
-            (!typed_events(element) && handler.attr("name") != Ok("check-state-changed"))
+            (!typed_events(element)
+                && !matches!(
+                    handler.attr("name"),
+                    Ok("check-state-changed" | "close-requested")
+                ))
                 || (element.attr("kind") == Ok("SwipeDelegate")
                     && handler.attr("name") == Ok("clicked"))
         };
@@ -2119,6 +2400,75 @@ impl<'a> Generator<'a> {
         Ok(quote!(let (#(#names,)*) = (#(#values,)*); #body))
     }
 
+    fn drag_arms(
+        &self,
+        element: OperationRef<'a>,
+        path: &mut Vec<usize>,
+        out: &mut TokenStream,
+    ) -> Result<(), String> {
+        if element.name() == "xr.instance" {
+            let instance = instance_field(element_key(element)?);
+            out.extend(
+                quote!([#(#path,)* rest @ ..] => self.__state.#instance.__drag_path(rest, event),),
+            );
+            return Ok(());
+        }
+        match element.attr("kind")? {
+            "DragArea" => {
+                let started = self.typed_event_values(element, "drag-started", &[])?;
+                let finished =
+                    self.typed_event_values(element, "drag-finished", &[quote!(*__action)])?;
+                out.extend(quote! {
+                    [#(#path),*] => {
+                        match event {
+                            ::xrack_runtime::DragEvent::Started => { #started }
+                            ::xrack_runtime::DragEvent::Finished(__action) => { #finished }
+                            _ => return false,
+                        }
+                        true
+                    },
+                });
+            }
+            "DropArea" => {
+                let args = &[quote!(__data.clone()), quote!(*__action)];
+                let entered = self.typed_event_values(element, "entered", args)?;
+                let dropped = self.typed_event_values(element, "dropped", args)?;
+                let files = &[quote!(::xrack_runtime::VecModel::from(
+                    __paths.as_ref().to_vec()
+                ))];
+                let files_entered = self.typed_event_values(element, "files-entered", files)?;
+                let files_dropped = self.typed_event_values(element, "files-dropped", files)?;
+                let moved = self.typed_event_values(
+                    element,
+                    "position-changed",
+                    &[quote!(*__x), quote!(*__y)],
+                )?;
+                let exited = self.typed_event_values(element, "exited", &[])?;
+                out.extend(quote! {
+                    [#(#path),*] => {
+                        match event {
+                            ::xrack_runtime::DragEvent::Entered { data: __data, action: __action } => { #entered }
+                            ::xrack_runtime::DragEvent::Dropped { data: __data, action: __action } => { #dropped }
+                            ::xrack_runtime::DragEvent::FilesEntered(__paths) => { #files_entered }
+                            ::xrack_runtime::DragEvent::FilesDropped(__paths) => { #files_dropped }
+                            ::xrack_runtime::DragEvent::Moved { x: __x, y: __y } => { #moved }
+                            ::xrack_runtime::DragEvent::Exited => { #exited }
+                            _ => return false,
+                        }
+                        true
+                    },
+                });
+            }
+            _ => {}
+        }
+        for (index, child) in static_children(element) {
+            path.push(index);
+            self.drag_arms(child, path, out)?;
+            path.pop();
+        }
+        Ok(())
+    }
+
     fn range_arms(
         &self,
         element: OperationRef<'a>,
@@ -2147,6 +2497,13 @@ impl<'a> Generator<'a> {
                     }
                     true
                 },
+            });
+        } else if element.attr("kind") == Ok("ColorPickerPopup") {
+            let popup = picker_field(element_key(element)?);
+            let open = self.control_value(element, "open", Type::Bool)?;
+            let show_alpha = self.binding_value_or(element, "show-alpha", quote!(false))?;
+            out.extend(quote! {
+                [#(#path,)* 0, ..] => (#open) && self.__state.#popup.slide(#show_alpha, node, action),
             });
         } else if element.attr("kind") == Ok("RangeSlider") {
             let lower = self.control_value(element, "lower-value", Type::Float)?;
@@ -2186,6 +2543,90 @@ impl<'a> Generator<'a> {
         Ok(())
     }
 
+    fn record_combo_actions(
+        &self,
+        element: OperationRef<'a>,
+        binding: OperationRef<'a>,
+    ) -> Result<TokenStream, String> {
+        let (_, _, ty) = self.combo_roles(element, binding)?;
+        let variant = match ty {
+            Type::String => quote!(String),
+            Type::Int => quote!(Int),
+            Type::Float => quote!(Float),
+            Type::Bool => quote!(Bool),
+            Type::Date => quote!(Date),
+            Type::Time => quote!(Time),
+            _ => return Err("unsupported ComboBox value-role type".into()),
+        };
+        let by_value =
+            controlled_property(element).is_some_and(|(name, _)| name == "current-value");
+        let selection = if by_value {
+            quote!(__xr_value.clone())
+        } else {
+            quote!(__xr_index as ::core::primitive::i64)
+        };
+        let set = self.set_control(element, &selection)?;
+        let select_value = quote! {
+            let Some(::xrack_runtime::Value::#variant(__xr_value)) = ::xrack_runtime::combo_value(node, __xr_index) else { return false; };
+            #set
+        };
+        let selected = self.typed_event(element, "selected", &quote!(__xr_label))?;
+        let value_selected = self.typed_event(element, "value-selected", &quote!(__xr_value))?;
+        let (select_text, accept) = if combo_editor(element) {
+            let field = control_field(element_key(element)?, "edit-text");
+            let default = default_combo_edit_text(element);
+            let select_text = if default {
+                quote!(self.__state.#field.reset();)
+            } else {
+                self.set_control_property(element, "edit-text", &quote!(__xr_label.clone()))?
+            };
+            let reset = default.then(|| quote!(self.__state.#field.reset();));
+            let keep_draft =
+                default.then(|| quote!(self.__state.#field.set_if_changed(__xr_draft.clone());));
+            let clear = if by_value {
+                TokenStream::new()
+            } else {
+                self.set_control(element, &quote!(-1_i64))?
+            };
+            let accepted = self.typed_event(element, "accepted", &quote!(__xr_draft))?;
+            (
+                quote!(if ::xrack_runtime::combo_editable(node) { #select_text }),
+                quote! {
+                    if action == ::xrack_runtime::ControlAction::AcceptComboText {
+                        if !::xrack_runtime::combo_editable(node) { return false; }
+                        let __xr_draft = ::xrack_runtime::text_input_value(node).to_owned();
+                        let matching = ::xrack_runtime::combo_index(node)
+                            .filter(|_| ::xrack_runtime::combo_text(node) == __xr_draft)
+                            .or_else(|| ::xrack_runtime::combo_find_label(node, |label| label == __xr_draft));
+                        if let Some(__xr_index) = matching {
+                            #select_value
+                            #reset
+                            #value_selected
+                        } else {
+                            #clear
+                            #keep_draft
+                        }
+                        #accepted
+                        return true;
+                    }
+                },
+            )
+        } else {
+            (TokenStream::new(), TokenStream::new())
+        };
+        Ok(quote! {
+            #accept
+            let ::xrack_runtime::ControlAction::Select(__xr_index) = action else { return false; };
+            let Some(__xr_label) = ::xrack_runtime::combo_label(node, __xr_index) else { return false; };
+            let __xr_label = __xr_label.into_owned();
+            #select_value
+            #select_text
+            #selected
+            #value_selected
+            true
+        })
+    }
+
     fn control_arms(
         &self,
         element: OperationRef<'a>,
@@ -2198,16 +2639,32 @@ impl<'a> Generator<'a> {
             return Ok(());
         }
         match element.attr("kind")? {
-            kind @ ("MenuItem" | "Button" | "ToolButton") if action_ref(element).is_some() => {
+            kind @ ("MenuItem" | "Button" | "ToolButton" | "Shortcut")
+                if action_ref(element).is_some() =>
+            {
                 let activate = action_activate_method(action_ref(element).unwrap());
-                let expected = if kind == "MenuItem" {
-                    quote!(ActivateMenuItem)
-                } else {
-                    quote!(ActivateAction)
+                let expected = match kind {
+                    "MenuItem" => quote!(ActivateMenuItem),
+                    "Shortcut" => quote!(ActivateShortcut),
+                    _ => quote!(ActivateAction),
                 };
                 out.extend(quote! {
                     [#(#path),*] => action == ::xrack_runtime::ControlAction::#expected
                         && self.#activate(),
+                });
+            }
+            "Shortcut" => {
+                let activated = self.typed_event_values(element, "activated", &[])?;
+                let ambiguous = self.typed_event_values(element, "activated-ambiguously", &[])?;
+                out.extend(quote! {
+                    [#(#path),*] => {
+                        match action {
+                            ::xrack_runtime::ControlAction::ActivateShortcut => { #activated }
+                            ::xrack_runtime::ControlAction::AmbiguousShortcut => { #ambiguous }
+                            _ => return false,
+                        }
+                        true
+                    },
                 });
             }
             "MenuItem" => {
@@ -2649,7 +3106,7 @@ impl<'a> Generator<'a> {
                     },
                 });
             }
-            kind @ ("TimePickerPopup" | "DatePickerPopup") => {
+            kind @ ("TimePickerPopup" | "DatePickerPopup" | "ColorPickerPopup") => {
                 let popup = picker_field(element_key(element)?);
                 let open = self.control_value(element, "open", Type::Bool)?;
                 let close = self.set_control_property(element, "open", &quote!(false))?;
@@ -2657,18 +3114,32 @@ impl<'a> Generator<'a> {
                 let set = self.set_control_property(element, property, &quote!(__xr_value))?;
                 let accepted = self.typed_event(element, "accepted", &quote!(__xr_value))?;
                 let canceled = self.typed_event_values(element, "canceled", &[])?;
-                let finish = if kind == "TimePickerPopup" {
-                    let options = self.time_picker_options(element)?;
-                    out.extend(quote! {
-                        [#(#path,)* 0, slot] => (#open) && self.__state.#popup.edit(#options, *slot, node, action),
-                    });
-                    quote!(self.__state.#popup.finish(node))
-                } else {
-                    let bounds = self.date_picker_bounds(element)?;
-                    out.extend(quote! {
-                        [#(#path,)* 0] => (#open) && self.__state.#popup.edit(#bounds, node, action),
-                    });
-                    quote!(self.__state.#popup.finish(#bounds, node))
+                let finish = match kind {
+                    "TimePickerPopup" => {
+                        let options = self.time_picker_options(element)?;
+                        out.extend(quote! {
+                            [#(#path,)* 0, slot] => (#open) && self.__state.#popup.edit(#options, *slot, node, action),
+                        });
+                        quote!(self.__state.#popup.finish(node))
+                    }
+                    "DatePickerPopup" => {
+                        let bounds = self.date_picker_bounds(element)?;
+                        out.extend(quote! {
+                            [#(#path,)* 0] => (#open) && self.__state.#popup.edit(#bounds, node, action),
+                        });
+                        quote!(self.__state.#popup.finish(#bounds, node))
+                    }
+                    _ => {
+                        let show_alpha =
+                            self.binding_value_or(element, "show-alpha", quote!(false))?;
+                        out.extend(quote! {
+                            [#(#path,)* 0, ..] => {
+                                let ::xrack_runtime::ControlAction::Spin(action) = action else { return false; };
+                                (#open) && self.__state.#popup.spin(#show_alpha, node, action)
+                            },
+                        });
+                        quote!(self.__state.#popup.finish(node))
+                    }
                 };
                 out.extend(quote! {
                     [#(#path),*] => {
@@ -2683,6 +3154,11 @@ impl<'a> Generator<'a> {
                         true
                     },
                 });
+            }
+            "ComboBox" if record_combo_binding(element).is_some() => {
+                let binding = record_combo_binding(element).expect("record combo binding");
+                let body = self.record_combo_actions(element, binding)?;
+                out.extend(quote!([#(#path),*] => { #body },));
             }
             "ComboBox" => {
                 let mode = controlled_property(element).map(|(property, _)| property);
@@ -2822,6 +3298,7 @@ impl<'a> Generator<'a> {
                 ExpressionContext {
                     receiver: &quote!(__ui),
                     repeat_parameters: repeat.is_some(),
+                    hoist_repeat_subexpressions: false,
                 },
             )?;
             inputs.extend(quote! {
@@ -2935,6 +3412,18 @@ impl<'a> Generator<'a> {
             }
         }
 
+        for key in &self.record_combos {
+            let items = combo_field(key, "items");
+            let snapshot = combo_field(key, "snapshot");
+            fields.extend(quote! {
+                #items: ::xrack_runtime::Property<::xrack_runtime::ComboItems>,
+                #snapshot: ::xrack_runtime::Property<::xrack_runtime::ComboModel>,
+            });
+            defaults.extend(quote! {
+                #items: ::core::default::Default::default(),
+                #snapshot: ::core::default::Default::default(),
+            });
+        }
         for (key, property, value_type) in &self.unlinked_controls {
             let field = control_field(key, property);
             let rust_type = ty(value_type);
@@ -2976,6 +3465,109 @@ impl<'a> Generator<'a> {
                     if !(#enabled) { return false; }
                     if #checkable { #toggle }
                     #activated
+                    true
+                }
+            });
+        }
+        for &dialog in &self.native_dialogs {
+            let key = element_key(dialog)?;
+            let slot = native_dialog_member(key, "slot");
+            let register = native_dialog_member(key, "register");
+            let open = native_dialog_member(key, "open");
+            let finish = native_dialog_member(key, "finish");
+            let enabled = self.binding_value_or(dialog, "enabled", quote!(true))?;
+            let string =
+                |name| self.binding_value_or(dialog, name, quote!(::std::string::String::new()));
+            let title = string("title")?;
+            let (options, handlers) = if dialog.attr("kind") == Ok("FileDialog") {
+                let mode = self.binding_value_or(
+                    dialog,
+                    "mode",
+                    quote!(::xrack_runtime::FileDialogMode::OpenFile),
+                )?;
+                let directory = string("directory")?;
+                let file_name = string("file-name")?;
+                let name_filters = self.binding_value_or(
+                    dialog,
+                    "name-filters",
+                    quote!(::xrack_runtime::VecModel::<::std::string::String>::default()),
+                )?;
+                let accepted = self.typed_event(
+                    dialog,
+                    "accepted",
+                    &quote!(::xrack_runtime::VecModel::from(paths)),
+                )?;
+                let canceled = self.typed_event_values(dialog, "canceled", &[])?;
+                (
+                    quote!(::xrack_runtime::NativeDialogOptions::File(::xrack_runtime::FileDialogOptions {
+                        mode: #mode,
+                        title: #title,
+                        directory: #directory,
+                        file_name: #file_name,
+                        name_filters: (#name_filters).snapshot(),
+                    })),
+                    quote! {
+                        ::xrack_runtime::NativeDialogResult::Files(paths) => { #accepted }
+                        ::xrack_runtime::NativeDialogResult::Canceled => { #canceled }
+                    },
+                )
+            } else {
+                let level = self.binding_value_or(
+                    dialog,
+                    "level",
+                    quote!(::xrack_runtime::MessageLevel::Info),
+                )?;
+                let buttons = self.binding_value_or(
+                    dialog,
+                    "buttons",
+                    quote!(::xrack_runtime::MessageButtons::Ok),
+                )?;
+                let text = string("text")?;
+                let informative_text = string("informative-text")?;
+                let accepted = self.typed_event_values(dialog, "accepted", &[])?;
+                let rejected = self.typed_event_values(dialog, "rejected", &[])?;
+                let finished = self.typed_event(dialog, "finished", &quote!(__xr_button))?;
+                (
+                    quote!(::xrack_runtime::NativeDialogOptions::Message(::xrack_runtime::MessageDialogOptions {
+                        level: #level,
+                        buttons: #buttons,
+                        title: #title,
+                        text: #text,
+                        informative_text: #informative_text,
+                    })),
+                    quote! {
+                        ::xrack_runtime::NativeDialogResult::Button(__xr_button) => {
+                            if ::core::matches!(__xr_button, ::xrack_runtime::StandardButtonKind::Ok | ::xrack_runtime::StandardButtonKind::Yes) {
+                                #accepted
+                            } else {
+                                #rejected
+                            }
+                            #finished
+                        }
+                    },
+                )
+            };
+            let failed = self.typed_event(dialog, "failed", &quote!(message))?;
+            fields.extend(quote!(#slot: ::xrack_runtime::NativeDialogSlot,));
+            defaults.extend(quote!(#slot: ::core::default::Default::default(),));
+            methods.extend(quote! {
+                fn #open(&self) {
+                    if #enabled {
+                        self.__state.#slot.open(|| #options);
+                    }
+                }
+                fn #register(&self) -> Option<::xrack_runtime::NativeDialogRegistration> {
+                    let weak = self.as_weak();
+                    self.__state.#slot.register(move |id, result| weak.upgrade().is_some_and(|ui| ui.#finish(id, result)))
+                }
+                fn #finish(&self, id: u64, result: ::xrack_runtime::NativeDialogResult) -> bool {
+                    if !self.__state.#slot.finish(id) { return false; }
+                    match result {
+                        #handlers
+                        ::xrack_runtime::NativeDialogResult::Failed(message) => { #failed }
+                        ::xrack_runtime::NativeDialogResult::Abandoned => {}
+                        _ => return false,
+                    }
                     true
                 }
             });
@@ -3055,10 +3647,11 @@ impl<'a> Generator<'a> {
         }
         for (key, ty) in &self.picker_popups {
             let field = picker_field(key);
-            let state = if *ty == Type::Date {
-                quote!(::xrack_runtime::DatePopupState)
-            } else {
-                quote!(::xrack_runtime::TimePopupState)
+            let state = match ty {
+                Type::Date => quote!(::xrack_runtime::DatePopupState),
+                Type::Time => quote!(::xrack_runtime::TimePopupState),
+                Type::Color => quote!(::xrack_runtime::ColorPopupState),
+                _ => return Err("unsupported picker state".into()),
             };
             fields.extend(quote!(#field: #state,));
             defaults.extend(quote!(#field: ::core::default::Default::default(),));
@@ -3214,6 +3807,85 @@ impl<'a> Generator<'a> {
             });
         }
 
+        let secondary_windows = if self.secondary_windows.is_empty() {
+            TokenStream::new()
+        } else {
+            let mut registrations = TokenStream::new();
+            for &window in &self.secondary_windows {
+                let key = element_key(window)?;
+                let child = children(window, "xr.instance")
+                    .next()
+                    .ok_or("missing secondary window component")?;
+                let child = instance_field(element_key(child)?);
+                let slot = secondary_window_member(key, "slot");
+                let register = secondary_window_member(key, "register");
+                let visibility = secondary_window_member(key, "visible");
+                let close = secondary_window_member(key, "close");
+                let visible = self.control_value(window, "visible", Type::Bool)?;
+                let set = self.set_control_property(window, "visible", &quote!(visible))?;
+                fields.extend(quote!(#slot: ::xrack_runtime::SecondaryWindowSlot,));
+                defaults.extend(quote!(#slot: ::core::default::Default::default(),));
+                methods.extend(quote! {
+                    fn #visibility(&self, visible: ::core::primitive::bool) { #set }
+
+                    fn #close(&self) {
+                        if #visible { self.__state.#child.__state.__window_close.set(true); }
+                    }
+
+                    fn #register(&self) -> Option<::xrack_runtime::SecondaryWindowRegistration> {
+                        if !(#visible) { return None; }
+                        let child = self.__state.#child.as_weak();
+                        let owner = self.as_weak();
+                        Some(self.__state.#slot.register(
+                            move || child.upgrade().map(|child| ::std::boxed::Box::new(child) as ::std::boxed::Box<dyn ::xrack_runtime::Component>),
+                            move || { if let Some(owner) = owner.upgrade() { owner.#visibility(false); } },
+                        ))
+                    }
+                });
+                registrations.extend(quote!(windows.extend(self.#register());));
+            }
+            fields.extend(quote!(__secondary_windows: ::xrack_runtime::Property<::std::rc::Rc<[::xrack_runtime::SecondaryWindowRegistration]>>,));
+            defaults.extend(quote!(__secondary_windows: ::core::default::Default::default(),));
+            quote! {
+                fn secondary_windows(&self) -> Option<::std::rc::Rc<[::xrack_runtime::SecondaryWindowRegistration]>> {
+                    Some(self.__state.__secondary_windows.get(|| {
+                        let mut windows = ::std::vec::Vec::new();
+                        #registrations
+                        windows.into()
+                    }))
+                }
+            }
+        };
+
+        let window_lifecycle = if root.attr("kind") == Ok("Window") {
+            fields.extend(quote!(__window_close: ::core::cell::Cell<::core::primitive::bool>,));
+            defaults.extend(quote!(__window_close: ::core::default::Default::default(),));
+            let close = if let Some(handler) = children(root, "xr.handler")
+                .find(|handler| handler.attr("name") == Ok("close-requested"))
+            {
+                let statements = self.statements(handler)?;
+                let result = children(handler, "xr.return")
+                    .next()
+                    .ok_or("missing close-requested result")?;
+                let value = self.expr(self.operand(result, 0)?)?;
+                quote!(#statements #value)
+            } else {
+                quote!(true)
+            };
+            quote! {
+                #[allow(unused_parens)]
+                fn close_requested(&mut self) -> ::core::primitive::bool {
+                    #close
+                }
+
+                fn take_window_close_request(&mut self) -> ::core::primitive::bool {
+                    self.__state.__window_close.replace(false)
+                }
+            }
+        } else {
+            TokenStream::new()
+        };
+
         let mut render = TokenStream::new();
         let node = self.render(root, &self.visuals, &mut render, &mut 0)?;
         let mut dispatch = TokenStream::new();
@@ -3225,6 +3897,8 @@ impl<'a> Generator<'a> {
         self.range_arms(root, &mut Vec::new(), &mut ranges)?;
         let mut controls = TokenStream::new();
         self.control_arms(root, &mut Vec::new(), &mut controls)?;
+        let mut drag = TokenStream::new();
+        self.drag_arms(root, &mut Vec::new(), &mut drag)?;
         let mut lists = TokenStream::new();
         self.list_arms(root, &mut Vec::new(), &mut lists)?;
         let mut delegate_events = TokenStream::new();
@@ -3350,6 +4024,10 @@ impl<'a> Generator<'a> {
                     }
                 }
 
+                fn __drag_path(&self, path: &[::core::primitive::usize], event: &::xrack_runtime::DragEvent) -> ::core::primitive::bool {
+                    match path { #drag _ => false }
+                }
+
                 fn __range_path(&self, path: &[::core::primitive::usize], node: &::xrack_runtime::Node, action: ::xrack_runtime::RangeAction) -> ::core::primitive::bool {
                     match path {
                         #ranges
@@ -3377,12 +4055,19 @@ impl<'a> Generator<'a> {
             }
 
             impl ::xrack_runtime::Component for #name {
+                #window_lifecycle
+                #secondary_windows
+
                 fn render(&self) -> ::xrack_runtime::Node {
                     #name::render(self)
                 }
 
                 fn render_shared(&self) -> ::std::rc::Rc<::xrack_runtime::Node> {
                     self.__render_shared()
+                }
+
+                fn scene_dirty(&self) -> ::core::primitive::bool {
+                    self.__state.__scene.is_dirty()
                 }
 
                 fn list_rows(
@@ -3435,6 +4120,13 @@ impl<'a> Generator<'a> {
                         self.__route_delegate(scene, path, &::xrack_runtime::RoutedEvent::Control(action))
                             .unwrap_or_else(|| self.__control_path(path, node, action))
                     })
+                }
+
+                fn drag_event_at(&mut self, scene: &::xrack_runtime::Node, path: &[::core::primitive::usize], event: &::xrack_runtime::DragEvent) -> ::core::primitive::bool {
+                    let target = if event.is_terminal() { scene.at_path(path) } else { scene.interactive_at_path(path) };
+                    target.is_some_and(|node| node.kind == event.target_kind()) && self
+                        .__route_delegate(scene, path, &::xrack_runtime::RoutedEvent::Drag(event))
+                        .unwrap_or_else(|| self.__drag_path(path, event))
                 }
 
                 fn resize_split_at(
@@ -3511,7 +4203,33 @@ pub fn generate_with_images(
     module: &Module,
     images: &BTreeMap<String, EmbeddedImage>,
 ) -> Result<TokenStream, String> {
+    generate_with_assets(module, images, &[])
+}
+
+pub fn generate_with_assets(
+    module: &Module,
+    images: &BTreeMap<String, EmbeddedImage>,
+    fonts: &[Vec<u8>],
+) -> Result<TokenStream, String> {
+    generate_with_resource_plans(module, images, fonts, &BTreeMap::new())
+}
+
+pub fn generate_with_resource_plans(
+    module: &Module,
+    images: &BTreeMap<String, EmbeddedImage>,
+    fonts: &[Vec<u8>],
+    paths: &BTreeMap<String, EmbeddedPath>,
+) -> Result<TokenStream, String> {
     let mut out = TokenStream::new();
+    if !fonts.is_empty() {
+        let bytes = fonts.iter().map(|font| Literal::byte_string(font));
+        out.extend(quote! {
+            static __XR_FONTS: ::xrack_runtime::EmbeddedFonts =
+                ::xrack_runtime::EmbeddedFonts::new(&[#(#bytes),*]);
+        });
+    } else if let Some(font) = module.operations().find(|op| op.name() == "xr.font") {
+        return Err(format!("unresolved font {:?}", font.attr("path")?));
+    }
     let mut image_names = BTreeMap::new();
     for (index, (path, image)) in images.iter().enumerate() {
         let name = format_ident!("__XR_IMAGE_{index}");
@@ -3529,6 +4247,12 @@ pub fn generate_with_images(
             };
         });
         image_names.insert(path.as_str(), name);
+    }
+    let mut path_names = BTreeMap::new();
+    for (index, (commands, path)) in paths.iter().enumerate() {
+        let name = format_ident!("__XR_PATH_{index}");
+        out.extend(scene_plan::path_declaration(&name, commands, path));
+        path_names.insert(commands.as_str(), name);
     }
     let mut records = BTreeMap::new();
     for op in module
@@ -3550,13 +4274,14 @@ pub fn generate_with_images(
     }
     for op in module
         .operations()
-        .filter(|op| op.name() != "xr.record_decl")
+        .filter(|op| !matches!(op.name(), "xr.record_decl" | "xr.font"))
     {
         let mut generator = Generator {
             records: &records,
             instances: BTreeMap::new(),
             element_properties: Vec::new(),
             unlinked_controls: Vec::new(),
+            record_combos: Vec::new(),
             picker_popups: Vec::new(),
             tables: Vec::new(),
             splits: Vec::new(),
@@ -3564,10 +4289,16 @@ pub fn generate_with_images(
             stacks: BTreeMap::new(),
             actions: BTreeMap::new(),
             timers: Vec::new(),
+            native_dialogs: Vec::new(),
+            secondary_windows: Vec::new(),
             popups: Vec::new(),
             visuals: VisualScope::default(),
-            share_visual_bindings: module.has_visual_cache_plan(),
+            repeat_invariants: Vec::new(),
+            repeat_subexpressions: Vec::new(),
+            use_visual_plan: module.has_visual_cache_plan(),
             images: &image_names,
+            paths: &path_names,
+            with_fonts: !fonts.is_empty(),
         };
         generator.index(op)?;
         if let Some(root) = children(op, "xr.element").next() {
@@ -3578,6 +4309,12 @@ pub fn generate_with_images(
             }
             for &timer in &generator.timers {
                 generator.index_visual_bindings(timer, &mut visuals, &mut 0)?;
+            }
+            for &binding in &generator.repeat_invariants {
+                generator.index_visual_binding(binding, &mut visuals)?;
+            }
+            for &(group, definition) in &generator.repeat_subexpressions {
+                visuals.index_value(VisualCacheKey::RepeatSubexpression(group), definition)?;
             }
             generator.visuals = visuals;
         }

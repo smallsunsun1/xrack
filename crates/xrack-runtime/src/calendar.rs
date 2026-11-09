@@ -243,7 +243,14 @@ impl DatePopupState {
         };
         let state = CalendarState::with_bounds(date, Some(month), bounds);
         let mut calendar = Node::new("Calendar", None);
-        for key in ["week-start", "weekday-labels", "font-size"] {
+        for key in [
+            "week-start",
+            "weekday-labels",
+            "font-size",
+            "font-family",
+            "font-weight",
+            "font-italic",
+        ] {
             if let Some(value) = dialog.properties.get(key) {
                 calendar.properties.insert(key, value.clone());
             }

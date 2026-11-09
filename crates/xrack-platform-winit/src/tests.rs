@@ -13,6 +13,62 @@ use std::{
 use xrack_runtime::Value;
 
 #[test]
+fn paint_only_updates_replace_the_scene_without_resolving_layout() {
+    use xrack_layout::{TextMeasurer, layout};
+    use xrack_runtime::{Color, Length};
+
+    struct Measure;
+    impl TextMeasurer for Measure {
+        fn measure(&mut self, _: &str, _: f32, _: f32) -> Size {
+            Size::default()
+        }
+    }
+
+    let scene = |color, width| {
+        let mut rectangle = Node::new("Rectangle", Some("swatch"));
+        rectangle.mark_paint_only_background();
+        rectangle
+            .properties
+            .insert("background", Value::Color(Color(color)));
+        rectangle
+            .properties
+            .insert("width", Value::Length(Length(width)));
+        Rc::new(rectangle)
+    };
+    let viewport = Size::new(160.0, 100.0);
+    let input = Interaction::default();
+    let resolves = Cell::new(0);
+    let prepare = |cache: &mut FrameCache, base, materialize| {
+        cache.prepare(base, viewport, &input, |base| {
+            resolves.set(resolves.get() + 1);
+            let geometry = layout(&base, viewport, &mut Measure);
+            let prepared = if materialize {
+                Rc::new(base.as_ref().clone())
+            } else {
+                base
+            };
+            (prepared, geometry)
+        })
+    };
+    let mut cache = FrameCache::default();
+    let (_, original) = prepare(&mut cache, scene(0x112233ff, 40.0), false);
+    let recolored = scene(0x445566ff, 40.0);
+    let (painted, reused) = prepare(&mut cache, recolored.clone(), false);
+    assert!(Rc::ptr_eq(&painted, &recolored));
+    assert!(Rc::ptr_eq(&original, &reused));
+    assert_eq!(resolves.get(), 1);
+    let (_, resized) = prepare(&mut cache, scene(0x445566ff, 80.0), false);
+    assert!(!Rc::ptr_eq(&original, &resized));
+    assert_eq!(resolves.get(), 2);
+
+    let mut materialized = FrameCache::default();
+    let (_, original) = prepare(&mut materialized, scene(0x112233ff, 40.0), true);
+    let (_, updated) = prepare(&mut materialized, recolored, true);
+    assert!(!Rc::ptr_eq(&original, &updated));
+    assert_eq!(resolves.get(), 4);
+}
+
+#[test]
 fn tumbler_frame_tracks_visible_labels_only() {
     use xrack_layout::{TextMeasurer, layout_with_input};
     use xrack_runtime::{TumblerItems, VecModel};
@@ -391,6 +447,100 @@ fn native_touch_adapter_activates_taps_and_keeps_pans_out_of_click_dispatch() {
 }
 
 #[test]
+fn touch_drag_claims_one_contact_and_dispatches_drop_or_cancel() {
+    use xrack_layout::{TextMeasurer, layout};
+    use xrack_runtime::{DragEvent, Length};
+
+    #[derive(Default)]
+    struct View(Vec<DragEvent>);
+    impl Component for View {
+        fn render(&self) -> Node {
+            let mut window = Node::new("Window", None);
+            let area = |kind, x| {
+                let mut node = Node::new(kind, None);
+                for (property, value) in [("x", x), ("width", 80.0), ("height", 60.0)] {
+                    node.properties.insert(property, Length(value).into());
+                }
+                node
+            };
+            let mut source = area("DragArea", 0.0);
+            source.properties.insert("allow-copy", true.into());
+            source.properties.insert("data", "touch".to_owned().into());
+            window.children.extend([source, area("DropArea", 100.0)]);
+            window
+        }
+        fn dispatch(&mut self, _: &str, _: &str) -> bool {
+            false
+        }
+        fn drag_event_at(&mut self, _: &Node, _: &[usize], event: &DragEvent) -> bool {
+            self.0.push(event.clone());
+            true
+        }
+    }
+    struct Measure;
+    impl TextMeasurer for Measure {
+        fn measure(&mut self, _: &str, _: f32, _: f32) -> Size {
+            Size::default()
+        }
+    }
+    let mut app = Application::new(
+        View::default(),
+        LocalExecutor::new(|| {}),
+        Inbox::<()>::new(|| {}),
+        |_: &mut View, _| {},
+    );
+    app.layout = Some(Rc::new(layout(
+        &app.scene,
+        Size::new(200.0, 100.0),
+        &mut Measure,
+    )));
+    let start = Point { x: 20.0, y: 22.0 };
+    let end = Point { x: 120.0, y: 22.0 };
+    let now = Instant::now();
+    let device = DeviceId::dummy();
+    app.update_touch(device, 1, TouchPhase::Started, start, now);
+    app.update_touch(device, 2, TouchPhase::Moved, end, now);
+    assert!(app.component.0.is_empty());
+    app.update_touch(device, 1, TouchPhase::Moved, end, now);
+    app.update_touch(device, 1, TouchPhase::Ended, end, now);
+    assert_eq!(
+        app.component.0,
+        [
+            DragEvent::Started,
+            DragEvent::Entered {
+                data: "touch".into(),
+                action: DragAction::Copy
+            },
+            DragEvent::Moved {
+                x: Length(20.0),
+                y: Length(22.0)
+            },
+            DragEvent::Dropped {
+                data: "touch".into(),
+                action: DragAction::Copy
+            },
+            DragEvent::Finished(DragAction::Copy),
+        ]
+    );
+    assert!(app.scroll_contact.is_none());
+    app.component.0.clear();
+    app.update_touch(device, 3, TouchPhase::Started, start, now);
+    app.update_touch(device, 3, TouchPhase::Moved, end, now);
+    app.update_touch(device, 3, TouchPhase::Cancelled, end, now);
+    assert!(
+        app.component
+            .0
+            .ends_with(&[DragEvent::Exited, DragEvent::Finished(DragAction::None)])
+    );
+    assert!(
+        !app.component
+            .0
+            .iter()
+            .any(|event| matches!(event, DragEvent::Dropped { .. }))
+    );
+}
+
+#[test]
 fn clipboard_reply_commits_only_for_the_current_selection() {
     struct Editor(String);
     impl Component for Editor {
@@ -457,6 +607,94 @@ fn clipboard_reply_commits_only_for_the_current_selection() {
         result: Ok(ClipboardValue::Text("过期粘贴".into())),
     }));
     assert_eq!(app.component.0, "后台更新");
+}
+
+#[test]
+fn vetoed_close_refreshes_the_scene_and_consumes_synchronous_retries() {
+    #[derive(Default)]
+    struct Editor {
+        close: bool,
+        can_close: bool,
+        requests: i64,
+    }
+    impl Component for Editor {
+        fn render(&self) -> Node {
+            let mut root = Node::new("Window", None);
+            root.properties.insert("requests", self.requests.into());
+            root
+        }
+
+        fn dispatch(&mut self, _: &str, _: &str) -> bool {
+            false
+        }
+
+        fn close_requested(&mut self) -> bool {
+            self.requests += 1;
+            self.close = true;
+            self.can_close
+        }
+
+        fn take_window_close_request(&mut self) -> bool {
+            std::mem::take(&mut self.close)
+        }
+    }
+
+    let mut app = Application::new(
+        Editor::default(),
+        LocalExecutor::new(|| {}),
+        Inbox::new(|| {}),
+        |_: &mut Editor, _: ()| {},
+    );
+    assert!(!app.request_close());
+    assert_eq!(app.base_scene.int("requests"), Some(1));
+    assert!(!app.take_close_request());
+    app.component.can_close = true;
+    assert!(app.request_close());
+    assert_eq!(app.component.requests, 2);
+    assert!(!app.take_close_request());
+}
+
+#[test]
+fn closing_one_window_cancels_its_tasks_and_mailbox_without_affecting_another() {
+    let make = || {
+        let (notify, events) = mpsc::channel();
+        let task_notify = notify.clone();
+        let tasks = LocalExecutor::new(move || {
+            let _ = task_notify.send(UserEvent::PollTasks);
+        });
+        let inbox = Inbox::new(move || {
+            let _ = notify.send(UserEvent::ApplyMessages);
+        });
+        let sender = inbox.sender();
+        let window = Application::new(TestUi::default(), tasks, inbox, |ui: &mut TestUi, delta| {
+            let value = ui.value.clone();
+            spawn_local(async move {
+                value.set(value.get() + delta);
+            })
+            .unwrap();
+        });
+        (window, sender, events)
+    };
+    let (mut first, first_sender, first_events) = make();
+    let (mut second, second_sender, second_events) = make();
+    first_sender.try_send(10).unwrap();
+    second_sender.try_send(20).unwrap();
+    first.user_event(first_events.recv_timeout(Duration::from_secs(1)).unwrap());
+    second.user_event(second_events.recv_timeout(Duration::from_secs(1)).unwrap());
+
+    first.close();
+    assert!(matches!(
+        first_sender.try_send(5),
+        Err(std::sync::mpsc::TrySendError::Disconnected(5))
+    ));
+    first.user_event(first_events.recv_timeout(Duration::from_secs(1)).unwrap());
+    second.user_event(second_events.recv_timeout(Duration::from_secs(1)).unwrap());
+    assert_eq!(first.component.value.get(), 0);
+    assert_eq!(second.component.value.get(), 20);
+    assert!(
+        spawn_local(async {}).is_err(),
+        "window executor scope should be restored"
+    );
 }
 
 #[test]
@@ -618,7 +856,7 @@ fn window_timer_schedule_tracks_the_active_component_layout() {
             Size::new(300.0, 60.0),
             &mut Measure,
         )));
-        app.sync_timers(at(time));
+        app.sync_window_effects(at(time));
         assert_eq!(app.timers.deadline(), expected);
     }
     assert!(app.timers.next_due(at(280)).unwrap().fire());

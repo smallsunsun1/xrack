@@ -127,7 +127,7 @@ impl Module {
         Ok(self)
     }
 
-    /// Only use cache groups created by this module's optimization pipeline.
+    /// Only use visual annotations created by this module's optimization pipeline.
     pub fn has_visual_cache_plan(&self) -> bool {
         self.visual_cache_plan
     }
@@ -336,6 +336,18 @@ impl<'m> OperationRef<'m> {
             }
         }
         Span { line: 1, column: 1 }
+    }
+
+    pub fn source_file(self) -> Option<&'m str> {
+        // File locations and their names are immutable and owned by the module context.
+        let name = unsafe {
+            let location = ffi::mlirOperationGetLocation(self.raw);
+            if !ffi::mlirLocationIsAFileLineColRange(location) {
+                return None;
+            }
+            ffi::mlirIdentifierStr(ffi::mlirLocationFileLineColRangeGetFilename(location))
+        };
+        std::str::from_utf8(unsafe { bytes(name) }).ok()
     }
 }
 
