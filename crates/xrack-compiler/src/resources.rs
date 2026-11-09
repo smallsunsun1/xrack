@@ -17,6 +17,7 @@ pub struct Resolved {
     pub images: BTreeMap<String, EmbeddedImage>,
     pub fonts: Vec<Vec<u8>>,
     pub paths: BTreeMap<String, EmbeddedPath>,
+    pub inputs: BTreeSet<PathBuf>,
 }
 
 fn walk<'m>(
@@ -85,13 +86,14 @@ pub fn resolve(
             if url.is_empty() || assets.images.contains_key(url) {
                 return Ok(());
             }
-            let image = load_image(base, url, declared.as_ref()).map_err(|error| {
+            let (path, image) = load_image(base, url, declared.as_ref()).map_err(|error| {
                 let span = op.span();
                 format!(
                     "{filename}:{}:{}: image {url:?}: {error}",
                     span.line, span.column
                 )
             })?;
+            assets.inputs.insert(path);
             assets.images.insert(url.to_owned(), image);
         } else if op.name() == "xr.element" && op.attr("kind")? == "Path" {
             for binding in op.children() {
@@ -137,6 +139,7 @@ pub fn resolve(
     for op in module.operations() {
         walk(op, &mut visit)?;
     }
+    assets.inputs.extend(seen_fonts);
     Ok(assets)
 }
 
@@ -144,7 +147,7 @@ fn load_image(
     base: &Path,
     url: &str,
     declared: Option<&BTreeSet<PathBuf>>,
-) -> Result<EmbeddedImage, String> {
+) -> Result<(PathBuf, EmbeddedImage), String> {
     let relative = local_path(url)?;
     let extension = relative
         .extension()
@@ -160,11 +163,14 @@ fn load_image(
     let path = asset_path(base, relative, declared, "image")?;
     let bytes = read_asset(&path, "image")?;
     let size = image_size(format, &bytes)?;
-    Ok(EmbeddedImage {
-        format,
-        size,
-        bytes,
-    })
+    Ok((
+        path,
+        EmbeddedImage {
+            format,
+            size,
+            bytes,
+        },
+    ))
 }
 
 fn local_path(url: &str) -> Result<&Path, String> {

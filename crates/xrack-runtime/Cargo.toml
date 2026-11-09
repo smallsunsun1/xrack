@@ -4,6 +4,8 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
+repository.workspace = true
+description = "Runtime types, properties, models, and controls for generated XRack UI"
 
 [dependencies]
 unicode-segmentation.workspace = true

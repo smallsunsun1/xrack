@@ -10,12 +10,20 @@ pub fn parse_document(
     filename: &str,
     declared_sources: Option<&[PathBuf]>,
 ) -> Result<ast::Document, CompilerError> {
+    parse_document_with_inputs(source, filename, declared_sources).map(|(document, _)| document)
+}
+
+pub(crate) fn parse_document_with_inputs(
+    source: &str,
+    filename: &str,
+    declared_sources: Option<&[PathBuf]>,
+) -> Result<(ast::Document, BTreeSet<PathBuf>), CompilerError> {
     let entry = parse(source).map_err(|diagnostics| CompilerError::Diagnostics {
         filename: filename.into(),
         diagnostics,
     })?;
     if entry.imports.is_empty() {
-        return Ok(entry);
+        return Ok((entry, BTreeSet::new()));
     }
     let file = Path::new(filename);
     let directory = file
@@ -56,12 +64,15 @@ pub fn parse_document(
         loader.active.insert(canonical);
     }
     loader.resolve(entry, file, true)?;
-    Ok(ast::Document {
-        imports: Vec::new(),
-        fonts: loader.fonts,
-        records: loader.records,
-        components: loader.components,
-    })
+    Ok((
+        ast::Document {
+            imports: Vec::new(),
+            fonts: loader.fonts,
+            records: loader.records,
+            components: loader.components,
+        },
+        loader.exports.into_keys().collect(),
+    ))
 }
 
 struct Loader {
@@ -315,7 +326,11 @@ fn rebase_asset(spelling: &mut String, prefix: &Path) {
         && Path::new(&url).is_relative()
         && !url.contains(':')
     {
-        *spelling = serde_json::to_string(&prefix.join(url).to_string_lossy()).unwrap();
+        let path = prefix.join(url);
+        let path = path.to_string_lossy();
+        #[cfg(windows)]
+        let path = path.replace('\\', "/");
+        *spelling = serde_json::to_string(&path).unwrap();
     }
 }
 

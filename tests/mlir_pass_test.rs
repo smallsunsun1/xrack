@@ -33,6 +33,49 @@ fn visual_slots(module: &Module) -> usize {
 }
 
 #[test]
+fn static_gradient_plans_exclude_live_colors() {
+    let input = raw(
+        r#"export component Demo inherits Window {
+            in-out property <color> tint: #abc;
+            Rectangle { background: @linear-gradient(90deg, #000, #fff); }
+            Rectangle { background: @radial-gradient(circle, #000, #fff); }
+            Rectangle { background: @radial-gradient(circle, #000, root.tint); }
+            Rectangle { background: @linear-gradient(90deg, root.tint, #fff); }
+        }"#,
+        "gradient-plans.xr",
+    );
+    let optimized = input.optimize().unwrap();
+    let window = optimized
+        .operations()
+        .next()
+        .unwrap()
+        .children()
+        .find(|op| op.name() == "xr.element")
+        .unwrap();
+    let markers: Vec<_> = window
+        .children()
+        .filter(|op| op.name() == "xr.element")
+        .map(|element| {
+            definition(member(element, "xr.bind", "background"), 0)
+                .attribute("xr.static_gradient")
+        })
+        .collect();
+    assert_eq!(markers, [Some("true"), Some("true"), None, None]);
+    let cache_count = |module| {
+        codegen::generate(module)
+            .unwrap()
+            .to_string()
+            .matches("OnceLock")
+            .count()
+    };
+    assert_eq!(cache_count(&optimized), 4);
+    assert_eq!(
+        cache_count(&Module::parse(&optimized.to_mlir()).unwrap()),
+        0
+    );
+}
+
+#[test]
 fn equivalent_visual_bindings_share_one_cache_across_sibling_elements() {
     let input = raw(
         r#"export component Demo inherits Window {

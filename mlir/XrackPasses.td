@@ -47,3 +47,7 @@ def XrPrecompileStaticPaths : Pass<"xr-precompile-static-paths", "::mlir::Module
 def XrPlanStaticGrid : Pass<"xr-plan-static-grid", "::mlir::ModuleOp"> {
   let summary = "Identify grids with a fixed cell placement plan";
 }
+
+def XrCacheStaticGradients : Pass<"xr-cache-static-gradients", "::mlir::ModuleOp"> {
+  let summary = "Reuse immutable gradient stops for constant brushes";
+}

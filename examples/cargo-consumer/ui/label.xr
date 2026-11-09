@@ -1,0 +1,4 @@
+export component CounterLabel inherits Label {
+    in property <int> count: 0;
+    text: "Count: " + root.count;
+}

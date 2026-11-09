@@ -152,7 +152,7 @@ fn window_and_control_fonts_keep_typed_bindings_through_mlir() {
 #[test]
 fn font_imports_are_verified_in_the_declaring_module_and_embedded_once() {
     use std::{fs, path::PathBuf};
-    use xrack_compiler::{check_resources, generate_rust, parse_document};
+    use xrack_compiler::{check_resources, compile_with_inputs, generate_rust, parse_document};
 
     let directory = std::env::var_os("TEST_TMPDIR")
         .map(PathBuf::from)
@@ -187,6 +187,17 @@ fn font_imports_are_verified_in_the_declaring_module_and_embedded_once() {
         .unwrap()
         .to_string();
     assert_eq!(rust.matches("b\"ttcf").count(), 1);
+    let (_, inputs) = compile_with_inputs(source, filename, None, None).unwrap();
+    assert_eq!(
+        inputs,
+        [
+            PathBuf::from(filename),
+            dependency.canonicalize().unwrap(),
+            font.canonicalize().unwrap(),
+        ]
+        .into_iter()
+        .collect()
+    );
     let missing = check_resources(&module, filename, Some(&[]))
         .unwrap_err()
         .to_string();

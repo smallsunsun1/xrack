@@ -1,6 +1,6 @@
 //! Compiler orchestration: ANTLR4 → AST → XR dialect → Rust.
 use proc_macro2::TokenStream;
-use std::path::PathBuf;
+use std::{collections::BTreeSet, path::PathBuf};
 
 mod error;
 mod modules;
@@ -35,6 +35,31 @@ pub fn generate_rust(
 ) -> Result<TokenStream, CompilerError> {
     let assets =
         resources::resolve(module, filename, declared_assets).map_err(CompilerError::Resources)?;
+    emit_rust(module, &assets)
+}
+
+/// Compile a UI for a Cargo build script and report all source and asset files read.
+pub fn compile_with_inputs(
+    source: &str,
+    filename: &str,
+    declared_sources: Option<&[PathBuf]>,
+    declared_assets: Option<&[PathBuf]>,
+) -> Result<(TokenStream, BTreeSet<PathBuf>), CompilerError> {
+    let (document, mut inputs) =
+        modules::parse_document_with_inputs(source, filename, declared_sources)?;
+    let module = lower(&document, filename)?;
+    let assets =
+        resources::resolve(&module, filename, declared_assets).map_err(CompilerError::Resources)?;
+    let rust = emit_rust(&module, &assets)?;
+    inputs.insert(filename.into());
+    inputs.extend(assets.inputs);
+    Ok((rust, inputs))
+}
+
+fn emit_rust(
+    module: &mlir::Module,
+    assets: &resources::Resolved,
+) -> Result<TokenStream, CompilerError> {
     codegen::generate_with_resource_plans(module, &assets.images, &assets.fonts, &assets.paths)
         .map_err(CompilerError::Codegen)
 }

@@ -65,6 +65,36 @@ cargo clippy --workspace --all-targets --no-deps --locked -- -D warnings
 
 依赖 MLIR 原生库的可执行文件和测试通过 Bazel 构建。Cargo 可用于运行独立的 parser 测试，执行 `cargo test -p xrack-parser --locked` 前先按上文生成 Rust parser 并设置 `XRACK_ANTLR_DIR`。
 
+## 在 Cargo 项目中使用 XRack
+
+生成的组件只依赖 `xrack-runtime`。需要开原生窗口时，应用另加 `xrack-platform-winit`，并调用 `xrack_platform_winit::run(MyComponent::new())`。桌面宿主会通过 Cargo 拉入布局、渲染和资源 crate。编译器 `xrackc` 是单独安装的宿主工具，生成 Rust 时使用。Cargo 不会构建 LLVM、MLIR 或 ANTLR 生成器。
+
+[Cargo 示例](examples/cargo-consumer) 用只依赖 Rust 标准库的 `build.rs` 调用 `xrackc --cargo ui/counter.xr -o "$OUT_DIR/ui.rs"`。编译器输出 Cargo 的文件变更指令，覆盖入口、间接导入的 `.xr`、内嵌图像和字体。使用同一版本的 `xrackc` 和运行时，示例固定为 `0.1.0`。也可以预生成 `.rs` 并随应用源码提交，此时构建应用无需安装 `xrackc`。
+
+以下命令用本地运行时运行示例，适合 crate 尚未发布时验证。
+
+```sh
+bazel build --repo_env=CARGO_BAZEL_ISOLATED=false //:xrackc
+export XRACKC="$(bazel info bazel-bin)/crates/xrack-compiler/xrackc"
+cargo run --manifest-path examples/cargo-consumer/Cargo.toml \
+  --config "patch.crates-io.xrack-runtime.path=\"$(pwd)/crates/xrack-runtime\""
+```
+
+### 准备发布包
+
+`python3 tools/package_xrackc.py` 用 Bazel 构建当前宿主平台的 `xrackc`，在 `.tools/dist/` 生成压缩包和 SHA-256 校验文件。解包后将 `XRACKC` 指向其中的可执行文件。压缩包包含编译器及其依赖的许可证。
+
+```sh
+cargo package -p xrack-runtime -p xrack-assets -p xrack-layout \
+  -p xrack-renderer-femtovg -p xrack-platform-winit
+```
+
+Cargo 会验证打包后的源码。正式发布按 `xrack-runtime`、`xrack-assets`、`xrack-layout`、`xrack-renderer-femtovg`、`xrack-platform-winit` 的顺序提交，等待前置依赖进入索引。Cargo 版桌面宿主使用上游 AccessKit，Bazel 版带有 macOS 三态复选框无障碍值修补。
+
+### GitHub Actions
+
+[CI](.github/workflows/ci.yml) 在 macOS arm64、Linux x64 和 Windows x64 上分别测试 Cargo 桌面依赖栈与 Bazel 编译器。每个平台用归档中的 `xrackc` 运行仓库外 Cargo 示例。成功的任务上传对应的编译器归档和校验文件，Linux 任务额外上传通过 Cargo 验证的 5 个 `.crate`。真实 GPU 测试使用本地显式目标 `//tests:gpu_test`。
+
 ## VS Code
 
 打开仓库根目录，安装推荐的 Rust Analyzer 和 CodeLLDB 扩展。用 **Terminal → Run Task → Bazel: Generate rust-project.json** 生成本机项目图，或在终端运行：
@@ -421,6 +451,7 @@ xr_ui_library(
     → xr-fold-constants → xr-simplify-expressions → xr-simplify-visuals
     → canonicalize → CSE → xr-prune-expressions
     → xr-specialize-hidden-visuals → xr-precompile-static-paths → xr-plan-static-grid
+    → xr-cache-static-gradients
     → xr-plan-update-effects → xr-cache-static-subtrees
     → xr-hoist-repeat-invariants → xr-hoist-repeat-subexpressions
     → xr-share-visual-bindings → verify
@@ -445,6 +476,8 @@ xr_ui_library(
 `xr-hoist-repeat-subexpressions` 也能提升混合绑定中的公共前缀，例如 `("Caption " + root.caption) + item` 的左侧。生成的缓存仍在原来的分支使用点读取。`xr-plan-update-effects` 标记 `Rectangle.background` 只影响绘制。若帧输入只有已标记的背景变化，且上次布局直接使用原始场景，窗口宿主用新场景绘制并复用原有布局。`xr-cache-static-subtrees` 标记仅包含静态视觉元素的子树，生成代码按线程复用场景节点。静态节点克隆共享底层数据，修改副本时再复制受影响的节点。普通动态节点仍直接持有数据。
 
 `xr-precompile-static-paths` 标记常量 `Path.commands`，资源阶段复用已有解析器生成线段和源坐标边界，并嵌入 Rust。绘制阶段仍根据实际尺寸、`fit`、描边和填色变换路径。动态命令继续按运行时值解析。`xr-plan-static-grid` 对子项结构、可见性和跨度固定的 `GridLayout` 预计算单元格占位。布局仍测量文字、分配轨道大小并保留原场景索引。手写节点、动态网格及被编辑的网格快照继续使用同一套运行时占位算法。
+
+`xr-cache-static-gradients` 标记色标和角度都为常量的渐变。生成的 Rust 在首次使用时分配色标数组，同一绑定的各个组件实例共享这份只读数组，省去各实例的响应式缓存槽。依赖响应式属性的渐变仍随属性变化更新。
 
 Bazel 使用 `rules_rust_bindgen` 和同一份 LLVM 23 的 clang/libclang 生成 `c_bindings.rs`。`xrack_mlir_bindings` 将它作为 crate 根文件，供 `xrack-mlir` 和 Rust Analyzer 的项目图使用。Rust 持有原生模块，构建和优化都在这个模块上完成。C++ 接口负责注册方言、调用生成的 builder、配置 pass 和跨操作校验。
 

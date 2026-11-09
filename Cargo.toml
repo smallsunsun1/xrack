@@ -6,6 +6,7 @@ members = ["crates/*"]
 version = "0.1.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
+repository = "https://github.com/smallsunsun1/xrack"
 rust-version = "1.99.1"
 
 [workspace.dependencies]
@@ -17,15 +18,15 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 thiserror = "2.0"
 xrack-parser = { path = "crates/xrack-parser" }
-xrack-runtime = { path = "crates/xrack-runtime" }
-xrack-assets = { path = "crates/xrack-assets" }
+xrack-runtime = { path = "crates/xrack-runtime", version = "0.1.0" }
+xrack-assets = { path = "crates/xrack-assets", version = "0.1.0" }
 xrack-syntax = { path = "crates/xrack-syntax" }
 xrack-ir = { path = "crates/xrack-ir" }
 xrack-mlir = { path = "crates/xrack-mlir" }
 xrack-codegen = { path = "crates/xrack-codegen" }
-xrack-layout = { path = "crates/xrack-layout" }
-xrack-renderer-femtovg = { path = "crates/xrack-renderer-femtovg" }
-xrack-platform-winit = { path = "crates/xrack-platform-winit" }
+xrack-layout = { path = "crates/xrack-layout", version = "0.1.0" }
+xrack-renderer-femtovg = { path = "crates/xrack-renderer-femtovg", version = "0.1.0" }
+xrack-platform-winit = { path = "crates/xrack-platform-winit", version = "0.1.0" }
 femtovg = { version = "=0.28.0", default-features = false, features = ["wgpu", "textlayout"] }
 wgpu = { version = "=30.0.0", default-features = false, features = ["std", "wgsl", "metal", "vulkan", "dx12"] }
 winit = "=0.30.13"

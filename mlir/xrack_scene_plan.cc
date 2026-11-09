@@ -12,6 +12,7 @@ namespace xrack::dialect {
 #define GEN_PASS_DEF_XRCACHESTATICSUBTREES
 #define GEN_PASS_DEF_XRPRECOMPILESTATICPATHS
 #define GEN_PASS_DEF_XRPLANSTATICGRID
+#define GEN_PASS_DEF_XRCACHESTATICGRADIENTS
 #include "mlir/XrackPasses.h.inc"
 
 using namespace ::mlir;
@@ -130,6 +131,22 @@ bool staticValue(Value value, llvm::DenseMap<Value, bool> &known) {
   return result;
 }
 
+struct CacheStaticGradients
+    : impl::XrCacheStaticGradientsBase<CacheStaticGradients> {
+  void runOnOperation() override {
+    auto name = StringAttr::get(&getContext(), "xr.static_gradient");
+    auto marker = StringAttr::get(&getContext(), "true");
+    llvm::DenseMap<Value, bool> values;
+    getOperation()->walk([&](Operation *op) {
+      if (!isa<LinearGradientOp, RadialGradientOp>(op))
+        return;
+      clearMarker(op, name);
+      if (staticValue(op->getResult(0), values))
+        op->setDiscardableAttr(name, marker);
+    });
+  }
+};
+
 struct CacheStaticSubtrees
     : impl::XrCacheStaticSubtreesBase<CacheStaticSubtrees> {
   void runOnOperation() override {
@@ -169,6 +186,7 @@ struct CacheStaticSubtrees
 void addScenePlanPasses(OpPassManager &passes) {
   passes.addPass(std::make_unique<PrecompileStaticPaths>());
   passes.addPass(std::make_unique<PlanStaticGrid>());
+  passes.addPass(std::make_unique<CacheStaticGradients>());
   passes.addPass(std::make_unique<PlanUpdateEffects>());
   passes.addPass(std::make_unique<CacheStaticSubtrees>());
 }
