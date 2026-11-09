@@ -392,6 +392,7 @@ struct ScrollFling {
 pub struct Interaction {
     pub hovered: Option<Target>,
     pub focused: Option<Target>,
+    focus_reason: xrack_runtime::FocusReason,
     pub pressed: Option<Target>,
     drag: Option<crate::drag::DragSession>,
     file_drag: crate::file_drop::FileDrag,
@@ -447,6 +448,7 @@ pub struct Interaction {
     text_offsets: BTreeMap<Vec<usize>, (Option<RowKey>, Point)>,
     dialogs: Vec<DialogFocus>,
     stack_focus: BTreeMap<StackFocusKey, Target>,
+    scope_focus: crate::focus_scope::FocusHistory,
     transitioning_stacks: BTreeSet<Vec<usize>>,
     pointer_on_stack_slide: bool,
     dialog_backdrop: Option<Vec<usize>>,
@@ -462,7 +464,7 @@ enum Hit {
     ScrollBar(ScrollTarget),
 }
 
-fn focusable(node: &Node) -> bool {
+pub(crate) fn focusable(node: &Node) -> bool {
     let kind = node.kind;
     if kind == "GroupBox" {
         return node.group_checkable();
@@ -476,6 +478,7 @@ fn focusable(node: &Node) -> bool {
     matches!(
         kind,
         "Button"
+            | "FocusScope"
             | "ToolButton"
             | "DelayButton"
             | "DialogButton"
@@ -735,6 +738,7 @@ fn hit(
     if matches!(node.kind, "Tab" | "GroupBox")
         || is_window_overlay(node.kind)
         || !interactive(node)
+        || node.kind == "FocusScope" && !node.boolean("focus-on-click", true)
         || node.kind == "TreeCell" && !editable_table_cell(node)
     {
         return Hit::None;
@@ -776,7 +780,11 @@ fn split_target<'a, 'b>(
     Some((path, geometry, geometry.handle(slot)?))
 }
 
-fn moved_row_target(target: &Target, scene: &Node, layout: &LayoutNode) -> Option<Target> {
+pub(crate) fn moved_row_target(
+    target: &Target,
+    scene: &Node,
+    layout: &LayoutNode,
+) -> Option<Target> {
     let key = target.row_key?;
     for depth in (0..target.path.len()).rev() {
         let Some(node) = scene.at_path(&target.path[..depth]) else {
@@ -799,7 +807,7 @@ fn moved_row_target(target: &Target, scene: &Node, layout: &LayoutNode) -> Optio
     None
 }
 
-fn eligible(node: &Node, layout: &LayoutNode) -> bool {
+pub(crate) fn eligible(node: &Node, layout: &LayoutNode) -> bool {
     let hitbox = if node.kind == "Tab" {
         layout.tab_header
     } else if layout.visible && node.kind == "GroupBox" {
@@ -883,7 +891,7 @@ fn group_focus(node: &Node, layout: &LayoutNode, path: &[usize]) -> Option<Targe
         .map(|(_, target)| target)
 }
 
-fn focus_targets(scene: &Node, layout: &LayoutNode, scope: &[usize]) -> Vec<Target> {
+pub(crate) fn focus_targets(scene: &Node, layout: &LayoutNode, scope: &[usize]) -> Vec<Target> {
     fn collect(node: &Node, layout: &LayoutNode, path: &mut Vec<usize>, out: &mut Vec<Target>) {
         if !layout.visible || !layout.enabled {
             return;
@@ -892,6 +900,7 @@ fn focus_targets(scene: &Node, layout: &LayoutNode, scope: &[usize]) -> Vec<Targ
         if clip.width <= 0.0 || clip.height <= 0.0 {
             return;
         }
+        let before_children = out.len();
         if matches!(node.kind, "TabWidget" | "TabBar" | "RadioGroup") {
             if let Some(target) = group_focus(node, layout, path) {
                 out.push(target);
@@ -899,7 +908,7 @@ fn focus_targets(scene: &Node, layout: &LayoutNode, scope: &[usize]) -> Vec<Targ
             if node.kind != "TabWidget" {
                 return;
             }
-        } else if !matches!(node.kind, "Tab" | "TreeCell")
+        } else if !matches!(node.kind, "Tab" | "TreeCell" | "FocusScope")
             && !is_window_overlay(node.kind)
             && focusable(node)
             && (node.kind != "GroupBox" || eligible(node, layout))
@@ -934,6 +943,17 @@ fn focus_targets(scene: &Node, layout: &LayoutNode, scope: &[usize]) -> Vec<Targ
             for index in crate::child_reading_order(node) {
                 visit(index);
             }
+        }
+        if node.kind == "FocusScope"
+            && out.len() == before_children
+            && node.boolean("focus-on-tab-navigation", true)
+        {
+            out.push(Target {
+                path: path.clone(),
+                id: node.id,
+                focusable: true,
+                row_key: None,
+            });
         }
     }
     let mut targets = Vec::new();
@@ -1419,7 +1439,12 @@ impl Interaction {
     }
 
     fn set_focus(&mut self, focus: Option<Target>) {
+        self.set_focus_with_reason(focus, xrack_runtime::FocusReason::KeyboardNavigation);
+    }
+
+    fn set_focus_with_reason(&mut self, focus: Option<Target>, reason: xrack_runtime::FocusReason) {
         if self.focused != focus {
+            self.focus_reason = reason;
             self.cancel_shortcut_sequence();
             self.cancel_delay();
             self.history.break_group();
@@ -3719,6 +3744,29 @@ impl Interaction {
         self.hovered.take().is_some() || bar || tooltip_was_visible || cancelled_delay
     }
     pub fn pointer_press(&mut self) {
+        self.press(None);
+    }
+
+    pub fn pointer_press_in_scene(&mut self, scene: &Node, layout: &LayoutNode) {
+        self.remember_focus_scope(scene, layout);
+        let proxy = self
+            .hovered
+            .as_ref()
+            .filter(|target| {
+                scene
+                    .at_path(&target.path)
+                    .is_some_and(|node| node.kind == "FocusScope")
+                    && valid(target, scene, layout)
+            })
+            .map(|target| {
+                self.scope_focus
+                    .choose(scene, layout, target.clone(), false, false)
+            });
+        self.press(proxy);
+        self.remember_focus_scope(scene, layout);
+    }
+
+    fn press(&mut self, proxy: Option<Target>) {
         self.cancel_shortcut_sequence();
         self.cancel_delay();
         self.delay_pointer_claimed = false;
@@ -3758,7 +3806,7 @@ impl Interaction {
             }
             target.focusable.then_some(target)
         });
-        self.set_focus(focus);
+        self.set_focus_with_reason(proxy.or(focus), xrack_runtime::FocusReason::PointerClick);
         self.key_pressed = None;
     }
 
@@ -4927,6 +4975,8 @@ impl Interaction {
         }
     }
     pub fn reconcile(&mut self, scene: &Node, layout: &LayoutNode) {
+        self.scope_focus.reconcile(scene, layout);
+        self.remember_focus_scope(scene, layout);
         self.reconcile_dialogs(scene, layout);
         self.stack_focus.retain(|key, _| {
             scene
@@ -4999,7 +5049,7 @@ impl Interaction {
         {
             let current = self.focused.as_ref().unwrap().clone();
             if let Some(next) = self.restore_stack_focus(&current, scene, layout) {
-                self.set_focus(Some(next));
+                self.set_focus_with_reason(Some(next), xrack_runtime::FocusReason::LayoutChange);
             } else if let Some(moved) = moved_row_target(&current, scene, layout) {
                 if let Some(offset) = self.text_offsets.remove(&current.path) {
                     self.text_offsets.insert(moved.path.clone(), offset);
@@ -5036,12 +5086,17 @@ impl Interaction {
                         }
                         "TabWidget" | "TabBar" | "RadioGroup" => group_focus(node, item, path)?,
                         "Dialog" | "Drawer" => dialog_entry_focus(scene, layout, path)?,
+                        "FocusScope" => {
+                            let target = crate::focus_scope::target_at(scene, layout, path)?;
+                            self.scope_focus.choose(scene, layout, target, false, false)
+                        }
+
                         _ => return None,
                     };
                     target.row_key = scene.row_key_at(&target.path);
                     Some(target)
                 });
-                self.set_focus(fallback);
+                self.set_focus_with_reason(fallback, xrack_runtime::FocusReason::LayoutChange);
             }
             self.key_pressed = None;
         }
@@ -5221,19 +5276,21 @@ impl Interaction {
         self.dismiss_menu();
         self.cancel_press();
         self.cancel_shortcut_sequence();
-        self.set_focus(focus);
+        self.set_focus_with_reason(focus, xrack_runtime::FocusReason::PopupActivation);
     }
     /// Move focus, returning whether revealing the focused tab requires layout.
     pub fn focus_next(&mut self, scene: &Node, layout: &LayoutNode, reverse: bool) -> bool {
+        self.remember_focus_scope(scene, layout);
         self.tooltip.focus_source();
         let scope = self
             .focused_popup(layout)
             .or_else(|| self.active_dialog(layout))
             .unwrap_or_default();
+        let boundary = scope.len();
         let mut targets = focus_targets(scene, layout, scope);
         self.key_pressed = None;
         if targets.is_empty() {
-            self.set_focus(None);
+            self.set_focus_with_reason(None, xrack_runtime::FocusReason::TabNavigation);
             return false;
         }
         let current = self.focused.as_ref().and_then(|target| {
@@ -5271,13 +5328,20 @@ impl Interaction {
             None => 0,
         };
         let next = targets.swap_remove(index);
+        let next = self
+            .scope_focus
+            .entered_scope(scene, layout, self.focused.as_ref(), &next, boundary, true)
+            .map_or(next, |scope| {
+                self.scope_focus.choose(scene, layout, scope, reverse, true)
+            });
         let revealed = next.path.split_last().is_some_and(|(&index, path)| {
             scene
                 .at_path(path)
                 .zip(layout.at_path(path))
                 .is_some_and(|(group, item)| self.reveal_tab(group, item, path, index))
         });
-        self.set_focus(Some(next));
+        self.set_focus_with_reason(Some(next), xrack_runtime::FocusReason::TabNavigation);
+        self.remember_focus_scope(scene, layout);
         revealed
     }
 
@@ -5314,10 +5378,159 @@ impl Interaction {
         })
     }
 
+    pub(crate) fn focus_reason(&self) -> xrack_runtime::FocusReason {
+        self.focus_reason
+    }
+
+    pub(crate) fn focus_entries(
+        &self,
+        scene: &Node,
+        layout: &LayoutNode,
+    ) -> Vec<crate::focus_observers::FocusEntry> {
+        let Some(focus) = self
+            .focused
+            .as_ref()
+            .filter(|target| valid(target, scene, layout))
+        else {
+            return Vec::new();
+        };
+        let boundary = self
+            .focused_popup(layout)
+            .or_else(|| self.active_dialog(layout))
+            .unwrap_or_default();
+        if !focus.path.starts_with(boundary) {
+            return Vec::new();
+        }
+        (boundary.len()..=focus.path.len())
+            .filter_map(|depth| {
+                let path = &focus.path[..depth];
+                let node = scene.at_path(path)?;
+                Some(crate::focus_observers::FocusEntry {
+                    handle: node.focus_handle.clone()?,
+                    direct: depth == focus.path.len(),
+                    target: Target {
+                        path: path.to_vec(),
+                        id: node.id,
+                        focusable: true,
+                        row_key: scene.row_key_at(path),
+                    },
+                })
+            })
+            .collect()
+    }
+
+    pub fn remember_focus_scope(&mut self, scene: &Node, layout: &LayoutNode) {
+        self.scope_focus
+            .remember(scene, layout, self.focused.as_ref());
+    }
+
+    pub fn key_route(&self, scene: &Node, layout: &LayoutNode) -> Option<crate::KeyRoute> {
+        if self.menu_open()
+            || self
+                .editor
+                .as_ref()
+                .is_some_and(|editor| !editor.preedit.is_empty())
+        {
+            return None;
+        }
+        let focus = self
+            .focused
+            .as_ref()
+            .filter(|target| valid(target, scene, layout))?;
+        let boundary = self
+            .focused_popup(layout)
+            .or_else(|| self.active_dialog(layout))
+            .unwrap_or_default();
+        if !focus.path.starts_with(boundary) {
+            return None;
+        }
+        let scopes = (boundary.len()..=focus.path.len())
+            .filter_map(|depth| {
+                let path = &focus.path[..depth];
+                let node = scene.at_path(path)?;
+                if node.kind != "FocusScope" || node.key_handlers == 0 {
+                    return None;
+                }
+                crate::focus_scope::target_at(scene, layout, path)
+            })
+            .collect();
+        crate::KeyRoute::new(focus.clone(), scopes)
+    }
+
+    pub fn discard_range_key(&mut self, key: SliderKey) {
+        self.range_keys.remove(&key);
+    }
+
+    /// A focus request uses the same scene eligibility and modal gate as native input.
+    pub fn focus_target(&mut self, scene: &Node, layout: &LayoutNode, target: Target) {
+        self.focus_target_with_reason(
+            scene,
+            layout,
+            target,
+            xrack_runtime::FocusReason::Accessibility,
+        );
+    }
+
+    fn focus_target_with_reason(
+        &mut self,
+        scene: &Node,
+        layout: &LayoutNode,
+        target: Target,
+        reason: xrack_runtime::FocusReason,
+    ) {
+        if !valid(&target, scene, layout)
+            || self
+                .active_dialog(layout)
+                .is_some_and(|modal| !target.path.starts_with(modal))
+        {
+            return;
+        }
+        self.remember_focus_scope(scene, layout);
+        let target = self.scope_focus.choose(scene, layout, target, false, false);
+        self.tooltip.focus_source();
+        self.set_focus_with_reason(Some(target), reason);
+        self.remember_focus_scope(scene, layout);
+    }
+
+    pub fn apply_focus_requests(
+        &mut self,
+        scene: &Node,
+        layout: &LayoutNode,
+        requests: impl IntoIterator<Item = xrack_runtime::FocusRequest>,
+    ) {
+        for request in requests {
+            let modal = self.active_dialog(layout).unwrap_or_default();
+            let Some(target) =
+                crate::focus_scope::handle_target(scene, layout, modal, &request.target)
+            else {
+                continue;
+            };
+            match request.action {
+                xrack_runtime::FocusAction::Focus => self.focus_target_with_reason(
+                    scene,
+                    layout,
+                    target,
+                    xrack_runtime::FocusReason::Programmatic,
+                ),
+                xrack_runtime::FocusAction::Clear => {
+                    let scope = scene
+                        .at_path(&target.path)
+                        .is_some_and(|node| node.kind == "FocusScope");
+                    if self.focused.as_ref().is_some_and(|focused| {
+                        *focused == target || scope && focused.path.starts_with(&target.path)
+                    }) {
+                        self.remember_focus_scope(scene, layout);
+                        self.set_focus_with_reason(None, xrack_runtime::FocusReason::Programmatic);
+                    }
+                }
+            }
+        }
+    }
+
     pub fn accessibility_focus(&mut self, target: Target) {
         if target.focusable {
             self.tooltip.focus_source();
-            self.set_focus(Some(target));
+            self.set_focus_with_reason(Some(target), xrack_runtime::FocusReason::Accessibility);
         }
     }
     pub fn key_press(&mut self, key: ActivationKey) {

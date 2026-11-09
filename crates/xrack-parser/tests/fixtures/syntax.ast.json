@@ -511,7 +511,16 @@
         {
           "Animation": {
             "property": "width",
-            "duration_ms": "200",
+            "options": [
+              {
+                "name": "duration",
+                "value": "200",
+                "span": {
+                  "line": 12,
+                  "column": 21
+                }
+              }
+            ],
             "span": {
               "line": 12,
               "column": 5

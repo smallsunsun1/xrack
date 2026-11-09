@@ -3,6 +3,7 @@ mod controls;
 mod entry;
 mod image;
 mod range;
+mod styled_text;
 mod text;
 mod theme;
 mod vector;
@@ -667,7 +668,7 @@ impl Renderer {
             || is_cell
             || matches!(
                 node.kind,
-                "Slider" | "RadioButton" | "SwipeView" | "PageIndicator"
+                "Slider" | "RadioButton" | "SwipeView" | "PageIndicator" | "FocusScope"
             ))
             && input.is_focused(path)
             && layout.enabled
@@ -949,20 +950,32 @@ impl Renderer {
             } else {
                 theme.disabled_text
             };
-            let paint = self.text.paint_node(node, color(tint), false);
-            let label = self
-                .text
-                .label_layout(node, Size::new(bounds.width, bounds.height));
-            for line in label.lines {
-                if !line.text.is_empty() {
-                    self.canvas
-                        .fill_text(
-                            bounds.x + line.origin.x,
-                            bounds.y + line.origin.y,
-                            &*line.text,
-                            &paint,
-                        )
-                        .map_err(|error| format!("text drawing failed: {error}"))?;
+            if let Some(styled) = node.styled_text("text") {
+                styled_text::draw(
+                    &mut self.canvas,
+                    &self.text,
+                    node,
+                    styled,
+                    bounds,
+                    tint,
+                    layout.enabled,
+                )?;
+            } else {
+                let paint = self.text.paint_node(node, color(tint), false);
+                let label = self
+                    .text
+                    .label_layout(node, Size::new(bounds.width, bounds.height));
+                for line in label.lines {
+                    if !line.text.is_empty() {
+                        self.canvas
+                            .fill_text(
+                                bounds.x + line.origin.x,
+                                bounds.y + line.origin.y,
+                                &*line.text,
+                                &paint,
+                            )
+                            .map_err(|error| format!("text drawing failed: {error}"))?;
+                    }
                 }
             }
         } else if node.kind == "Text" || is_button {

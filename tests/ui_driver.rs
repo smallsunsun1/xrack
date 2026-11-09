@@ -132,7 +132,7 @@ impl<C: Component, T: TextMeasurer> UiDriver<C, T> {
             self.refresh();
             self.move_to(&path);
         }
-        self.input.pointer_press();
+        self.input.pointer_press_in_scene(&self.scene, &self.layout);
         let target = self
             .input
             .pointer_release_target()

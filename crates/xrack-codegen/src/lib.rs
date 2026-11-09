@@ -1,10 +1,11 @@
 //! Rust token generation from the typed UI operations exported from MLIR.
 mod scene_plan;
+mod styled_text;
 
 use proc_macro2::{Ident, Literal, Span, TokenStream};
 use quote::{format_ident, quote};
 pub use scene_plan::EmbeddedPath;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use xrack_ir::semantic::rust_name;
 use xrack_mlir::{Module, OperationRef, ValueRef};
 use xrack_runtime::{ImageFormat, is_multiline_text_input, is_text_input, is_toggle};
@@ -33,6 +34,7 @@ fn ty(t: &Type) -> TokenStream {
         Type::Float => quote!(::core::primitive::f64),
         Type::Bool => quote!(::core::primitive::bool),
         Type::String => quote!(::std::string::String),
+        Type::StyledText => quote!(::xrack_runtime::StyledText),
         Type::StringList => quote!(::xrack_runtime::VecModel<::std::string::String>),
         Type::Record(name) => {
             let name = ident(name);
@@ -67,6 +69,10 @@ fn ty(t: &Type) -> TokenStream {
         Type::StandardButtonKind => quote!(::xrack_runtime::StandardButtonKind),
         Type::SwipeSide => quote!(::xrack_runtime::SwipeSide),
         Type::DragAction => quote!(::xrack_runtime::DragAction),
+        Type::KeyEvent => quote!(::xrack_runtime::KeyEvent),
+        Type::KeyModifiers => quote!(::xrack_runtime::KeyModifiers),
+        Type::EventResult => quote!(::xrack_runtime::EventResult),
+        Type::FocusReason => quote!(::xrack_runtime::FocusReason),
         Type::DrawerEdge => quote!(::xrack_runtime::DrawerEdge),
         Type::PopupPlacement => quote!(::xrack_runtime::PopupPlacement),
         Type::SelectionTarget => quote!(::xrack_runtime::SelectionTarget),
@@ -186,6 +192,8 @@ fn literal(value: &str, ty: Type) -> Result<TokenStream, String> {
         | Type::StandardButtonKind
         | Type::SwipeSide
         | Type::DragAction
+        | Type::EventResult
+        | Type::FocusReason
         | Type::DrawerEdge
         | Type::PopupPlacement
         | Type::SelectionTarget => {
@@ -200,12 +208,17 @@ fn literal(value: &str, ty: Type) -> Result<TokenStream, String> {
             let enum_type = self::ty(&ty);
             quote!(#enum_type::#variant)
         }
+        Type::KeyEvent | Type::KeyModifiers => {
+            let ty = self::ty(&ty);
+            quote!(<#ty as ::core::default::Default>::default())
+        }
         Type::Brush
         | Type::GradientStop
         | Type::Image
         | Type::Date
         | Type::Time
         | Type::StringList
+        | Type::StyledText
         | Type::Record(_)
         | Type::RecordList(_) => {
             return Err(format!("{} does not have literal syntax", ty.name()));
@@ -469,6 +482,26 @@ fn control_link<'a>(element: OperationRef<'a>, property: &str) -> Option<Operati
     children(element, "xr.control_link").find(|link| link.attr("name") == Ok(property))
 }
 
+fn focus_handler(name: &str) -> bool {
+    matches!(
+        name,
+        "focus-gained" | "focus-lost" | "focus-changed-event" | "focus-within-changed"
+    )
+}
+
+fn key_phase(name: &str) -> Option<Ident> {
+    Some(format_ident!(
+        "{}",
+        match name {
+            "capture-key-pressed" => "CapturePressed",
+            "capture-key-released" => "CaptureReleased",
+            "key-pressed" => "Pressed",
+            "key-released" => "Released",
+            _ => return None,
+        }
+    ))
+}
+
 fn typed_events(element: OperationRef<'_>) -> bool {
     matches!(
         element.attr("kind"),
@@ -505,6 +538,7 @@ fn typed_events(element: OperationRef<'_>) -> bool {
             | "MenuItem"
             | "Shortcut"
             | "DelayButton"
+            | "FocusScope"
             | "DragArea"
             | "DropArea"
             | "GroupBox")
@@ -552,6 +586,16 @@ fn property_field(owner: &str, name: &str) -> Ident {
         rust_key(owner),
         rust_name(name)
     )
+}
+
+fn state_selector_name(owner: &str) -> Ident {
+    let encoded: String = owner.bytes().map(|byte| format!("{byte:02x}")).collect();
+    format_ident!("__xr_state_{encoded}")
+}
+
+fn focus_handle(owner: &str) -> Ident {
+    let encoded: String = owner.bytes().map(|byte| format!("{byte:02x}")).collect();
+    format_ident!("__xr_focus_{encoded}")
 }
 
 fn getter(owner: &str, name: &str, value_type: &Type) -> Ident {
@@ -731,6 +775,7 @@ struct Generator<'a> {
     actions: BTreeMap<&'a str, OperationRef<'a>>,
     timers: Vec<OperationRef<'a>>,
     native_dialogs: Vec<OperationRef<'a>>,
+    focus_targets: BTreeSet<&'a str>,
     secondary_windows: Vec<OperationRef<'a>>,
     popups: Vec<OperationRef<'a>>,
     visuals: VisualScope<'a>,
@@ -738,6 +783,7 @@ struct Generator<'a> {
     repeat_subexpressions: Vec<(&'a str, OperationRef<'a>)>,
     use_visual_plan: bool,
     images: &'a BTreeMap<&'a str, Ident>,
+    markdown: &'a BTreeMap<&'a str, Ident>,
     paths: &'a BTreeMap<&'a str, Ident>,
     with_fonts: bool,
 }
@@ -750,6 +796,11 @@ impl<'a> Generator<'a> {
             }
             "xr.element" => {
                 let key = element_key(op)?;
+                if children(op, "xr.handler")
+                    .any(|handler| handler.attribute("name").is_some_and(focus_handler))
+                {
+                    self.focus_targets.insert(key);
+                }
                 if record_combo_binding(op).is_some() {
                     self.record_combos.push(key);
                 }
@@ -796,6 +847,25 @@ impl<'a> Generator<'a> {
         for child in op.children() {
             match child.name() {
                 "xr.element" | "xr.instance" => self.index(child)?,
+                "xr.focus_target" => {
+                    self.focus_targets.insert(child.attr("target")?);
+                }
+                "xr.focus_read" => {
+                    self.focus_targets.insert(child.attr("owner")?);
+                }
+                "xr.callback" | "xr.handler" => {
+                    for effect in child.children() {
+                        match effect.name() {
+                            "xr.focus_command" => {
+                                self.focus_targets.insert(effect.attr("target")?);
+                            }
+                            "xr.focus_read" => {
+                                self.focus_targets.insert(effect.attr("owner")?);
+                            }
+                            _ => {}
+                        }
+                    }
+                }
                 "xr.bind" | "xr.layout_bind" | "xr.show_if"
                     if self.use_visual_plan
                         && child.attribute("xr.repeat_invariant_group").is_some() =>
@@ -1023,10 +1093,17 @@ impl<'a> Generator<'a> {
                 let (hour, minute, second) = (arg(0)?, arg(1)?, arg(2)?);
                 quote!((::xrack_runtime::Time { hour: #hour, minute: #minute, second: #second }).normalized())
             }
-            "xr.get_field" | "xr.date_field" | "xr.time_field" => {
+            "xr.get_field" | "xr.date_field" | "xr.time_field" | "xr.key_field" => {
                 let record = arg(0)?;
                 let field = ident(value);
                 quote!((#record).#field)
+            }
+            "xr.markdown" => {
+                let name = self
+                    .markdown
+                    .get(value)
+                    .ok_or_else(|| "missing compiled Markdown literal".to_string())?;
+                quote!(#name.clone())
             }
             "xr.image_url" if value.is_empty() => quote!(::xrack_runtime::Image::Empty),
             "xr.image_url" => {
@@ -1046,6 +1123,15 @@ impl<'a> Generator<'a> {
                     let getter = getter(owner, value, &value_type(op)?);
                     quote!(#receiver.#getter())
                 }
+            }
+            "xr.focus_read" => {
+                let handle = focus_handle(owner(op));
+                let getter = match value {
+                    "has-focus" => quote!(has_focus),
+                    "focus-within" => quote!(focus_within),
+                    _ => return Err("unknown focus state property".into()),
+                };
+                quote!(#receiver.__state.#handle.#getter())
             }
             "xr.stack_read" => {
                 let snapshot = stack_snapshot_method(owner(op));
@@ -1268,6 +1354,15 @@ impl<'a> Generator<'a> {
                 }
                 "xr.window_close" => {
                     statements.extend(quote!(self.__state.__window_close.set(true);));
+                }
+                "xr.focus_command" => {
+                    let handle = focus_handle(statement.attr("target")?);
+                    let action = if statement.attr("action")? == "clear" {
+                        quote!(Clear)
+                    } else {
+                        quote!(Focus)
+                    };
+                    statements.extend(quote!(self.__state.#handle.request(::xrack_runtime::FocusAction::#action);));
                 }
                 "xr.secondary_window_command" => {
                     let owner = statement.attr("owner")?;
@@ -1895,6 +1990,135 @@ impl<'a> Generator<'a> {
         Ok(())
     }
 
+    fn animation_timing(
+        &self,
+        op: OperationRef<'a>,
+        offset: usize,
+        scope: &VisualScope<'_>,
+    ) -> Result<TokenStream, String> {
+        let duration = self.visual_expr(self.operand(op, offset)?, scope)?;
+        let delay = op.integer_attribute("delay").unwrap_or(0) as u64;
+        let easing = match op.f64_array_attribute("curve") {
+            Some([x1, y1, x2, y2]) => {
+                quote!(::xrack_runtime::Easing::cubic_bezier(#x1, #y1, #x2, #y2).unwrap())
+            }
+            None => quote!(::xrack_runtime::Easing::LINEAR),
+        };
+        let timing = quote!(::xrack_runtime::Animation::new(#duration as ::core::primitive::u64, #delay, #easing));
+        if let Some(enabled) = op
+            .operand(offset + 1)
+            .and_then(|value| value.defining_operation())
+        {
+            let enabled = self.visual_expr(enabled, scope)?;
+            Ok(quote!(if #enabled { Some(#timing) } else { None }))
+        } else {
+            Ok(quote!(Some(#timing)))
+        }
+    }
+
+    fn state_selector(&self, op: OperationRef<'a>) -> Result<Ident, String> {
+        Ok(state_selector_name(self.operand(op, 0)?.attr("owner")?))
+    }
+
+    fn render_state_selection(
+        &self,
+        element: OperationRef<'a>,
+        scope: &VisualScope<'_>,
+        out: &mut TokenStream,
+    ) -> Result<(), String> {
+        if let Some(selector) = children(element, "xr.state_select").next() {
+            let name = state_selector_name(selector.attr("owner")?);
+            let mut conditions = Vec::new();
+            for index in 0.. {
+                let Some(value) = selector.operand(index) else {
+                    break;
+                };
+                let definition = value
+                    .defining_operation()
+                    .ok_or("state condition has no definition")?;
+                conditions.push(self.visual_expr(definition, scope)?);
+            }
+            let mut value = quote!(-1i64);
+            for (index, condition) in conditions.into_iter().enumerate().rev() {
+                let index = index as i64;
+                value = quote!(if #condition { #index } else { #value });
+            }
+            out.extend(quote!(let #name = #value;));
+        }
+        Ok(())
+    }
+
+    fn render_state_overrides(
+        &self,
+        element: OperationRef<'a>,
+        scope: &VisualScope<'_>,
+        node: &Ident,
+        overrides: &BTreeMap<&str, Vec<OperationRef<'a>>>,
+        out: &mut TokenStream,
+    ) -> Result<(), String> {
+        let action = action_ref(element).is_some();
+        for (&key, cases) in overrides {
+            let selected = self.state_selector(cases[0])?;
+            let wrap = |value: TokenStream| {
+                if key == "enabled" && action {
+                    quote!(Some(::xrack_runtime::Value::from(#node.boolean("enabled", true) && (#value))))
+                } else {
+                    quote!(Some(::xrack_runtime::Value::from(#value)))
+                }
+            };
+            let mut choices = TokenStream::new();
+            for &case in cases {
+                let index = case
+                    .integer_attribute("case_index")
+                    .ok_or("state case missing an index")?;
+                let value = wrap(self.visual_expr(self.operand(case, 1)?, scope)?);
+                choices.extend(quote!(#index => #value,));
+            }
+            let base = children(element, "xr.bind")
+                .find(|binding| binding.attribute("name") == Some(key))
+                .map(|binding| self.visual_value(binding, scope).map(wrap))
+                .transpose()?
+                .unwrap_or_else(|| quote!(None));
+            out.extend(quote! {
+                if let Some(value) = match #selected { #choices _ => #base } {
+                    #node.properties.insert(#key, value);
+                }
+            });
+        }
+        let mut timings = BTreeMap::<_, Vec<_>>::new();
+        for timing in children(element, "xr.state_timing") {
+            timings
+                .entry(timing.attr("name")?)
+                .or_default()
+                .push(timing);
+        }
+        for (key, timings) in timings {
+            let selected = self.state_selector(timings[0])?;
+            let mut enter = TokenStream::new();
+            let mut exit = TokenStream::new();
+            for timing in timings {
+                let index = timing
+                    .integer_attribute("case_index")
+                    .ok_or("state timing missing an index")?;
+                let value = self.animation_timing(timing, 1, scope)?;
+                let cases = if timing.attr("direction")? == "in" {
+                    &mut enter
+                } else {
+                    &mut exit
+                };
+                cases.extend(quote!(#index => #value,));
+            }
+            out.extend(quote! {
+                #node.state_timings.get_or_insert_with(Default::default).insert(#key, ::xrack_runtime::StateTiming {
+                    case: #selected,
+                    enter: match #selected { #enter _ => None },
+                    exit: match #selected { #exit _ => None },
+                });
+            });
+        }
+        Ok(())
+    }
+
     fn render_element(
         &self,
         element: OperationRef<'a>,
@@ -1937,6 +2161,32 @@ impl<'a> Generator<'a> {
             }
             "xr.bind"
         };
+        self.render_state_selection(element, scope, out)?;
+        if element.attribute("kind") == Some("FocusScope") {
+            for handler in children(element, "xr.handler") {
+                if let Some(phase) = key_phase(handler.attr("name")?) {
+                    out.extend(
+                        quote!(#name.key_handlers |= ::xrack_runtime::KeyPhase::#phase.mask();),
+                    );
+                }
+            }
+        }
+        let key = element_key(element)?;
+        if self.focus_targets.contains(key) {
+            let handle = focus_handle(key);
+            out.extend(quote!(#name.focus_handle = Some(self.__state.#handle.clone());));
+        }
+        if let Some(target) = children(element, "xr.focus_target").next() {
+            let handle = focus_handle(target.attr("target")?);
+            out.extend(quote!(#name.initial_focus = Some(self.__state.#handle.clone());));
+        }
+        let mut state_overrides = BTreeMap::<_, Vec<_>>::new();
+        for binding in children(element, "xr.state_set") {
+            state_overrides
+                .entry(binding.attr("name")?)
+                .or_default()
+                .push(binding);
+        }
         let action = action_ref(element);
         if let Some(action) = action {
             let render = action_render_method(action);
@@ -1944,6 +2194,9 @@ impl<'a> Generator<'a> {
         }
         for binding in children(element, binding_op) {
             let key = binding.attr("name")?;
+            if state_overrides.contains_key(key) {
+                continue;
+            }
             if record_combo_binding(element).is_some()
                 && matches!(key, "model" | "text-role" | "value-role")
             {
@@ -2025,11 +2278,14 @@ impl<'a> Generator<'a> {
         if let Some(binding) = record_combo_binding(element) {
             self.render_combo_model(element, binding, scope, &name, out)?;
         }
+        self.render_state_overrides(element, scope, &name, &state_overrides, out)?;
         for animation in children(element, "xr.animate") {
             let key = animation.attr("name")?;
-            let duration = self.visual_expr(self.operand(animation, 0)?, scope)?;
+            let timing = self.animation_timing(animation, 0, scope)?;
             out.extend(quote! {
-                #name.animations.insert(#key, #duration as ::core::primitive::u64);
+                if let Some(timing) = #timing {
+                    #name.animations.insert(#key, timing);
+                }
             });
         }
         let kind = element.attribute("kind");
@@ -2412,6 +2668,101 @@ impl<'a> Generator<'a> {
             return Ok(body);
         }
         Ok(quote!(let (#(#names,)*) = (#(#values,)*); #body))
+    }
+
+    fn focus_arms(
+        &self,
+        element: OperationRef<'a>,
+        path: &mut Vec<usize>,
+        out: &mut TokenStream,
+    ) -> Result<(), String> {
+        if element.name() == "xr.instance" {
+            let instance = instance_field(element_key(element)?);
+            out.extend(
+                quote!([#(#path,)* rest @ ..] => self.__state.#instance.__focus_path(rest, event),),
+            );
+            return Ok(());
+        }
+        if element.attr("kind")? == "FocusScope"
+            && children(element, "xr.handler")
+                .any(|handler| handler.attribute("name").is_some_and(focus_handler))
+        {
+            let reason = &[quote!(__reason)];
+            let gained = self.typed_event_values(element, "focus-gained", reason)?;
+            let lost = self.typed_event_values(element, "focus-lost", reason)?;
+            let changed = self.typed_event_values(element, "focus-changed-event", reason)?;
+            let within = self.typed_event_values(
+                element,
+                "focus-within-changed",
+                &[quote!(__focused), quote!(__reason)],
+            )?;
+            let handles_gain = !gained.is_empty() || !changed.is_empty();
+            let handles_loss = !lost.is_empty() || !changed.is_empty();
+            let handles_within = !within.is_empty();
+            out.extend(quote! {
+                [#(#path),*] => match event {
+                    ::xrack_runtime::FocusEvent::Gained(__reason) => { #gained #changed #handles_gain }
+                    ::xrack_runtime::FocusEvent::Lost(__reason) => { #lost #changed #handles_loss }
+                    ::xrack_runtime::FocusEvent::Within { focused: __focused, reason: __reason } => { #within #handles_within }
+                },
+            });
+        }
+        for (index, child) in static_children(element) {
+            path.push(index);
+            self.focus_arms(child, path, out)?;
+            path.pop();
+        }
+        Ok(())
+    }
+
+    fn key_arms(
+        &self,
+        element: OperationRef<'a>,
+        path: &mut Vec<usize>,
+        out: &mut TokenStream,
+    ) -> Result<(), String> {
+        if element.name() == "xr.instance" {
+            let instance = instance_field(element_key(element)?);
+            out.extend(quote!([#(#path,)* rest @ ..] => self.__state.#instance.__key_path(rest, phase, event),));
+            return Ok(());
+        }
+        if element.attr("kind")? == "FocusScope" {
+            let mut phases = TokenStream::new();
+            for handler in children(element, "xr.handler") {
+                let Some(phase) = key_phase(handler.attr("name")?) else {
+                    continue;
+                };
+                let params: Vec<Parameter> = serde_json::from_str(handler.attr("parameters")?)
+                    .map_err(|error| error.to_string())?;
+                let [parameter] = params.as_slice() else {
+                    return Err("key handler requires an event parameter".into());
+                };
+                let name = ident(&parameter.name);
+                let body = self.statements(handler)?;
+                let result = children(handler, "xr.return")
+                    .next()
+                    .ok_or("key handler requires a result")?;
+                let result = self.expr(self.operand(result, 0)?)?;
+                phases.extend(quote! {
+                    ::xrack_runtime::KeyPhase::#phase => {
+                        let #name = event.clone();
+                        #body
+                        #result
+                    },
+                });
+            }
+            if !phases.is_empty() {
+                out.extend(quote! {
+                    [#(#path),*] => match phase { #phases _ => ::xrack_runtime::EventResult::Reject },
+                });
+            }
+        }
+        for (index, child) in static_children(element) {
+            path.push(index);
+            self.key_arms(child, path, out)?;
+            path.pop();
+        }
+        Ok(())
     }
 
     fn drag_arms(
@@ -3366,6 +3717,12 @@ impl<'a> Generator<'a> {
         };
         let mut methods = TokenStream::new();
 
+        for &target in &self.focus_targets {
+            let handle = focus_handle(target);
+            fields.extend(quote!(#handle: ::xrack_runtime::FocusHandle,));
+            defaults.extend(quote!(#handle: ::core::default::Default::default(),));
+        }
+
         let mut input_fields = TokenStream::new();
         let properties = children(component, "xr.property")
             .map(|p| ("root", p))
@@ -3911,6 +4268,10 @@ impl<'a> Generator<'a> {
         self.range_arms(root, &mut Vec::new(), &mut ranges)?;
         let mut controls = TokenStream::new();
         self.control_arms(root, &mut Vec::new(), &mut controls)?;
+        let mut focus = TokenStream::new();
+        self.focus_arms(root, &mut Vec::new(), &mut focus)?;
+        let mut keys = TokenStream::new();
+        self.key_arms(root, &mut Vec::new(), &mut keys)?;
         let mut drag = TokenStream::new();
         self.drag_arms(root, &mut Vec::new(), &mut drag)?;
         let mut lists = TokenStream::new();
@@ -4038,6 +4399,14 @@ impl<'a> Generator<'a> {
                     }
                 }
 
+                fn __focus_path(&self, path: &[::core::primitive::usize], event: ::xrack_runtime::FocusEvent) -> ::core::primitive::bool {
+                    match path { #focus _ => false }
+                }
+
+                fn __key_path(&self, path: &[::core::primitive::usize], phase: ::xrack_runtime::KeyPhase, event: &::xrack_runtime::KeyEvent) -> ::xrack_runtime::EventResult {
+                    match path { #keys _ => ::xrack_runtime::EventResult::Reject }
+                }
+
                 fn __drag_path(&self, path: &[::core::primitive::usize], event: &::xrack_runtime::DragEvent) -> ::core::primitive::bool {
                     match path { #drag _ => false }
                 }
@@ -4136,6 +4505,32 @@ impl<'a> Generator<'a> {
                     })
                 }
 
+                fn focus_event_at(&mut self, scene: &::xrack_runtime::Node, path: &[::core::primitive::usize], event: ::xrack_runtime::FocusEvent) -> ::core::primitive::bool {
+                    let target = if event.is_loss() { scene.at_path(path) } else { scene.interactive_at_path(path) };
+                    target.is_some_and(|node| node.kind == "FocusScope") && self
+                        .__route_delegate(scene, path, &::xrack_runtime::RoutedEvent::Focus(event))
+                        .unwrap_or_else(|| self.__focus_path(path, event))
+                }
+
+                fn key_event_at(
+                    &mut self,
+                    scene: &::xrack_runtime::Node,
+                    path: &[::core::primitive::usize],
+                    phase: ::xrack_runtime::KeyPhase,
+                    event: &::xrack_runtime::KeyEvent,
+                ) -> ::xrack_runtime::EventResult {
+                    if !scene.interactive_at_path(path).is_some_and(|node| {
+                        node.kind == "FocusScope" && node.key_handlers & phase.mask() != 0
+                    }) {
+                        return ::xrack_runtime::EventResult::Reject;
+                    }
+                    if let Some(accepted) = self.__route_delegate(scene, path, &::xrack_runtime::RoutedEvent::Key(phase, event)) {
+                        if accepted { ::xrack_runtime::EventResult::Accept } else { ::xrack_runtime::EventResult::Reject }
+                    } else {
+                        self.__key_path(path, phase, event)
+                    }
+                }
+
                 fn drag_event_at(&mut self, scene: &::xrack_runtime::Node, path: &[::core::primitive::usize], event: &::xrack_runtime::DragEvent) -> ::core::primitive::bool {
                     let target = if event.is_terminal() { scene.at_path(path) } else { scene.interactive_at_path(path) };
                     target.is_some_and(|node| node.kind == event.target_kind()) && self
@@ -4228,6 +4623,10 @@ pub fn generate_with_assets(
     generate_with_resource_plans(module, images, fonts, &BTreeMap::new())
 }
 
+pub fn check_markdown(module: &Module) -> Result<(), String> {
+    styled_text::collect(module).map(|_| ())
+}
+
 pub fn generate_with_resource_plans(
     module: &Module,
     images: &BTreeMap<String, EmbeddedImage>,
@@ -4248,6 +4647,12 @@ pub fn generate_with_resource_plans(
         });
     } else if let Some(font) = module.operations().find(|op| op.name() == "xr.font") {
         return Err(format!("unresolved font {:?}", font.attr("path")?));
+    }
+    let mut markdown = BTreeMap::new();
+    for (index, (source, text)) in styled_text::collect(module)?.into_iter().enumerate() {
+        let name = format_ident!("__XR_MARKDOWN_{index}");
+        out.extend(styled_text::declaration(&name, &text));
+        markdown.insert(source, name);
     }
     let mut image_names = BTreeMap::new();
     for (index, (path, image)) in images.iter().enumerate() {
@@ -4309,6 +4714,7 @@ pub fn generate_with_resource_plans(
             actions: BTreeMap::new(),
             timers: Vec::new(),
             native_dialogs: Vec::new(),
+            focus_targets: BTreeSet::new(),
             secondary_windows: Vec::new(),
             popups: Vec::new(),
             visuals: VisualScope::default(),
@@ -4316,6 +4722,7 @@ pub fn generate_with_resource_plans(
             repeat_subexpressions: Vec::new(),
             use_visual_plan: module.has_visual_cache_plan(),
             images: &image_names,
+            markdown: &markdown,
             paths: &path_names,
             with_fonts: !fonts.is_empty(),
         };

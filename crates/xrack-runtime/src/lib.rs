@@ -13,6 +13,8 @@ mod controls;
 mod delegate;
 mod double_spin;
 mod drag;
+mod focus;
+mod keyboard;
 mod list;
 mod model;
 mod native_dialog;
@@ -23,13 +25,14 @@ mod repeat;
 mod scene_plan;
 mod split;
 mod stack;
+mod styled_text;
 mod table_selection;
 mod text_input;
 mod time_picker;
 mod timer;
 mod tree;
 mod tumbler;
-pub use animation::SceneTransition;
+pub use animation::{Animation, Easing, SceneTransition, StateTiming};
 pub use calendar::{CalendarAction, CalendarState, Date};
 #[doc(hidden)]
 pub use calendar::{DateBounds, DatePopupState};
@@ -57,6 +60,10 @@ pub use double_spin::{
     DecimalSpinRange, SpinDecimal, decimal_separator, decimal_spin_value_after, spin_text_is_valid,
 };
 pub use drag::{DragAction, DragEvent, is_drag_area};
+pub use focus::{
+    FocusAction, FocusContext, FocusEvent, FocusHandle, FocusReason, FocusRequest, FocusRequests,
+};
+pub use keyboard::{EventResult, KeyEvent, KeyModifiers, KeyPhase};
 pub use list::{ListMetrics, RowKey};
 #[doc(hidden)]
 pub use list::{ListModel, RowLifetime, standard_list_rows, standard_table_rows};
@@ -82,6 +89,7 @@ pub use scene_plan::{
 };
 pub use stack::{StackNavigation, StackSnapshot, StackState};
 use std::{collections::BTreeMap, rc::Rc, sync::Arc};
+pub use styled_text::{StyledRun, StyledText, StyledTextError, TextStyle};
 pub use table_selection::{
     RowSelection, SelectionTarget, TableSelection, TableSelectionAction, TableSelectionSnapshot,
 };
@@ -184,6 +192,22 @@ pub trait Component {
         false
     }
 
+    #[doc(hidden)]
+    fn key_event_at(
+        &mut self,
+        _scene: &Node,
+        _path: &[usize],
+        _phase: KeyPhase,
+        _event: &KeyEvent,
+    ) -> EventResult {
+        EventResult::Reject
+    }
+
+    #[doc(hidden)]
+    fn focus_event_at(&mut self, _scene: &Node, _path: &[usize], _event: FocusEvent) -> bool {
+        false
+    }
+
     fn resize_split_at(
         &mut self,
         _scene: &Node,
@@ -206,8 +230,20 @@ impl<T: Component + ?Sized> Component for Box<T> {
     fn render(&self) -> Node {
         (**self).render()
     }
+    fn focus_event_at(&mut self, scene: &Node, path: &[usize], event: FocusEvent) -> bool {
+        (**self).focus_event_at(scene, path, event)
+    }
     fn drag_event_at(&mut self, scene: &Node, path: &[usize], event: &DragEvent) -> bool {
         (**self).drag_event_at(scene, path, event)
+    }
+    fn key_event_at(
+        &mut self,
+        scene: &Node,
+        path: &[usize],
+        phase: KeyPhase,
+        event: &KeyEvent,
+    ) -> EventResult {
+        (**self).key_event_at(scene, path, phase, event)
     }
     fn render_shared(&self) -> Rc<Node> {
         (**self).render_shared()
@@ -272,6 +308,8 @@ pub enum RoutedEvent<'a> {
     Range(RangeAction),
     Control(ControlAction),
     Drag(&'a DragEvent),
+    Key(KeyPhase, &'a KeyEvent),
+    Focus(FocusEvent),
     ResizeSplit(&'a [(usize, f32)]),
 }
 
@@ -286,6 +324,10 @@ impl RoutedEvent<'_> {
             Self::Range(action) => ui.adjust_range_at(scene, path, *action),
             Self::Control(action) => ui.control_at(scene, path, *action),
             Self::Drag(event) => ui.drag_event_at(scene, path, event),
+            Self::Key(phase, event) => {
+                ui.key_event_at(scene, path, *phase, event) == EventResult::Accept
+            }
+            Self::Focus(event) => ui.focus_event_at(scene, path, *event),
             Self::ResizeSplit(weights) => ui.resize_split_at(scene, path, weights),
         }
     }
@@ -297,7 +339,7 @@ pub struct Length(pub f64);
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Percent(pub f64);
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, Hash, PartialEq, Eq)]
 pub struct Color(pub u32);
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -525,6 +567,7 @@ pub enum Value {
     Float(f64),
     Bool(bool),
     String(String),
+    StyledText(StyledText),
     StringList(Vec<String>),
     ComboModel(ComboModel),
     Length(Length),
@@ -574,6 +617,7 @@ value_from!(i64, Int);
 value_from!(f64, Float);
 value_from!(bool, Bool);
 value_from!(String, String);
+value_from!(StyledText, StyledText);
 value_from!(Vec<String>, StringList);
 
 impl From<VecModel<String>> for Value {
@@ -647,7 +691,15 @@ pub struct NodeData {
     pub timers: Vec<TimerRegistration>,
     #[doc(hidden)]
     pub native_dialogs: Vec<NativeDialogRegistration>,
-    pub animations: BTreeMap<&'static str, u64>,
+    pub animations: BTreeMap<&'static str, Animation>,
+    #[doc(hidden)]
+    pub state_timings: Option<Box<BTreeMap<&'static str, StateTiming>>>,
+    #[doc(hidden)]
+    pub focus_handle: Option<FocusHandle>,
+    #[doc(hidden)]
+    pub initial_focus: Option<FocusHandle>,
+    #[doc(hidden)]
+    pub key_handlers: u8,
     pub list: Option<ListMetrics>,
     /// Selection snapshot for model-backed views. Retains the generated field name.
     #[doc(hidden)]
@@ -712,6 +764,10 @@ impl NodeData {
             timers,
             native_dialogs,
             animations,
+            state_timings,
+            focus_handle,
+            initial_focus,
+            key_handlers,
             list,
             standard_list_stamp,
             table_header,
@@ -783,6 +839,10 @@ impl Node {
             timers: Vec::new(),
             native_dialogs: Vec::new(),
             animations: BTreeMap::new(),
+            state_timings: None,
+            focus_handle: None,
+            initial_focus: None,
+            key_handlers: 0,
             list: None,
             standard_list_stamp: None,
             table_header: None,
@@ -911,6 +971,14 @@ impl Node {
     pub fn text(&self, name: &str) -> Option<&str> {
         match self.properties.get(name) {
             Some(Value::String(value)) => Some(value),
+            Some(Value::StyledText(value)) => Some(value.text()),
+            _ => None,
+        }
+    }
+
+    pub fn styled_text(&self, name: &str) -> Option<&StyledText> {
+        match self.properties.get(name) {
+            Some(Value::StyledText(value)) => Some(value),
             _ => None,
         }
     }

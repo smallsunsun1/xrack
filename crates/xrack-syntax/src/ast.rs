@@ -89,6 +89,7 @@ pub enum Member {
     Handler(Handler),
     Element(Element),
     Animation(Animation),
+    States(StateBlock),
 }
 
 impl Member {
@@ -100,6 +101,7 @@ impl Member {
             Self::Handler(x) => x.span,
             Self::Element(x) => x.span,
             Self::Animation(x) => x.span,
+            Self::States(x) => x.span,
         }
     }
 }
@@ -107,8 +109,43 @@ impl Member {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Animation {
     pub property: String,
-    pub duration_ms: String,
+    pub options: Vec<AnimationOption>,
     pub span: Span,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct AnimationOption {
+    pub name: String,
+    pub value: AnimationValue,
+    pub span: Span,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum AnimationValue {
+    Milliseconds(String),
+    Expression(Expr),
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct StateBlock {
+    pub states: Vec<State>,
+    pub span: Span,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct State {
+    pub name: String,
+    pub when: Option<Expr>,
+    pub changes: Vec<Binding>,
+    pub transitions: Vec<StateTransition>,
+    pub span: Span,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct StateTransition {
+    pub direction: String,
+    pub animations: Vec<Animation>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -117,6 +154,7 @@ pub enum Type {
     Float,
     Bool,
     String,
+    StyledText,
     StringList,
     Record(Box<str>),
     RecordList(Box<str>),
@@ -147,6 +185,10 @@ pub enum Type {
     StandardButtonKind,
     SwipeSide,
     DragAction,
+    KeyEvent,
+    KeyModifiers,
+    EventResult,
+    FocusReason,
     DrawerEdge,
     PopupPlacement,
     SelectionTarget,
@@ -158,6 +200,17 @@ pub enum Type {
 }
 
 impl Type {
+    pub fn key_field(&self, field: &str) -> Option<Self> {
+        match (self, field) {
+            (Self::KeyEvent, "key" | "text") => Some(Self::String),
+            (Self::KeyEvent, "repeat") => Some(Self::Bool),
+            (Self::KeyEvent, "modifiers") => Some(Self::KeyModifiers),
+            (Self::KeyModifiers, "control" | "shift" | "alt" | "meta" | "primary") => {
+                Some(Self::Bool)
+            }
+            _ => None,
+        }
+    }
     /// Interpret a type name from the source grammar, including unresolved records.
     pub fn from_source(spelling: &str) -> Self {
         Self::parse(spelling).unwrap_or_else(|| {
@@ -174,6 +227,7 @@ impl Type {
             Self::Float => "float",
             Self::Bool => "bool",
             Self::String => "string",
+            Self::StyledText => "styledtext",
             Self::StringList => "stringlist",
             Self::Record(name) => return Cow::Owned(format!("record<\"{name}\">")),
             Self::RecordList(name) => return Cow::Owned(format!("recordlist<\"{name}\">")),
@@ -204,6 +258,10 @@ impl Type {
             Self::StandardButtonKind => "standardbuttonkind",
             Self::SwipeSide => "swipeside",
             Self::DragAction => "dragaction",
+            Self::KeyEvent => "keyevent",
+            Self::KeyModifiers => "keymodifiers",
+            Self::EventResult => "eventresult",
+            Self::FocusReason => "focusreason",
             Self::DrawerEdge => "draweredge",
             Self::PopupPlacement => "popupplacement",
             Self::SelectionTarget => "selectiontarget",
@@ -218,6 +276,7 @@ impl Type {
             "float" => Self::Float,
             "bool" => Self::Bool,
             "string" => Self::String,
+            "styled-text" | "styledtext" => Self::StyledText,
             "stringlist" | "[string]" => Self::StringList,
             "length" => Self::Length,
             "percent" => Self::Percent,
@@ -246,6 +305,10 @@ impl Type {
             "standardbuttonkind" | "StandardButtonKind" => Self::StandardButtonKind,
             "swipeside" | "SwipeSide" => Self::SwipeSide,
             "dragaction" | "DragAction" => Self::DragAction,
+            "keyevent" | "KeyEvent" => Self::KeyEvent,
+            "keymodifiers" | "KeyModifiers" => Self::KeyModifiers,
+            "eventresult" | "EventResult" => Self::EventResult,
+            "focusreason" | "FocusReason" => Self::FocusReason,
             "draweredge" | "DrawerEdge" => Self::DrawerEdge,
             "popupplacement" | "PopupPlacement" => Self::PopupPlacement,
             "selectiontarget" | "SelectionTarget" => Self::SelectionTarget,
@@ -305,6 +368,17 @@ impl Type {
             Self::DialogRole => &["accept", "reject"],
             Self::SwipeSide => &["closed", "left", "right"],
             Self::DragAction => &["none", "copy", "move", "link"],
+            Self::EventResult => &["accept", "reject"],
+            Self::FocusReason => &[
+                "programmatic",
+                "tab-navigation",
+                "pointer-click",
+                "popup-activation",
+                "window-activation",
+                "accessibility",
+                "layout-change",
+                "keyboard-navigation",
+            ],
             Self::StandardButtonKind => &[
                 "ok",
                 "open",
@@ -338,6 +412,7 @@ impl Serialize for Type {
         match self {
             Self::Record(name) => serializer.serialize_str(name),
             Self::RecordList(name) => serializer.serialize_str(&format!("[{name}]")),
+            Self::StyledText => serializer.serialize_str("styled-text"),
             Self::StringList => serializer.serialize_str("[string]"),
             Self::ImageFit => serializer.serialize_str("ImageFit"),
             Self::LayoutAlignment => serializer.serialize_str("LayoutAlignment"),
@@ -361,6 +436,10 @@ impl Serialize for Type {
             Self::StandardButtonKind => serializer.serialize_str("StandardButtonKind"),
             Self::SwipeSide => serializer.serialize_str("SwipeSide"),
             Self::DragAction => serializer.serialize_str("DragAction"),
+            Self::KeyEvent => serializer.serialize_str("KeyEvent"),
+            Self::KeyModifiers => serializer.serialize_str("KeyModifiers"),
+            Self::EventResult => serializer.serialize_str("EventResult"),
+            Self::FocusReason => serializer.serialize_str("FocusReason"),
             Self::DrawerEdge => serializer.serialize_str("DrawerEdge"),
             Self::PopupPlacement => serializer.serialize_str("PopupPlacement"),
             Self::SelectionTarget => serializer.serialize_str("SelectionTarget"),
@@ -477,6 +556,7 @@ pub enum ExprKind {
         ty: Type,
     },
     ImageUrl(String),
+    Markdown(String),
     Array(Vec<Expr>),
     Record {
         name: String,

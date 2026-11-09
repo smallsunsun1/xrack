@@ -9,7 +9,9 @@ use counter_ui::Counter;
 use delegates_ui::{DelegatesDemo, SwipeDemo};
 use dialog_ui::{DialogDemo, PopupDemo, StandardDialogDemo};
 use form_ui::{DragDropDemo, FileDropDemo, FormDemo, PasswordDemo};
-use layout_ui::{FlexDemo, FlowDemo, FontsDemo, LabelsDemo, LayoutDemo};
+use layout_ui::{
+    AnimationsDemo, FlexDemo, FlowDemo, FontsDemo, LabelsDemo, LayoutDemo, StatesDemo,
+};
 use list_ui::{DirectoryItem, GridDemo, ListDemo, StandardListDemo};
 use media_ui::MediaDemo;
 use menu_ui::MenuDemo;
@@ -28,6 +30,157 @@ use xrack_layout::{
     RangeInput, Size, SliderGeometry, SliderKey, SpinGeometry, TextAreaMotion, TextEdit,
     TextPosition, font_size,
 };
+
+#[test]
+fn focus_observation_repaints_the_active_scope_and_clears_on_window_blur() {
+    use layout_ui::FocusScopesDemo;
+    use xrack_layout::FocusObservers;
+
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))
+    .unwrap();
+    let mut ui = FocusScopesDemo::new();
+    let mut input = Interaction::default();
+    let mut observers = FocusObservers::default();
+    let scene = ui.render_shared();
+    let before = renderer.snapshot(&scene, 492, 272, 1.0, &input).unwrap();
+    input.focus_next(&scene, &before.layout, false);
+    for event in observers.sync(&input, &scene, &before.layout, true) {
+        event.apply(&mut ui, &scene);
+    }
+    let active = ui.render_shared();
+    let focused = renderer.snapshot(&active, 492, 272, 1.0, &input).unwrap();
+    assert_eq!(before.pixel(25, 55), Some([0x26, 0x36, 0x4e, 0xff]));
+    assert_eq!(focused.pixel(25, 55), Some([0x35, 0x53, 0x72, 0xff]));
+    assert_eq!(focused.pixel(263, 55), before.pixel(263, 55));
+    for event in observers.sync(&input, &active, &focused.layout, false) {
+        event.apply(&mut ui, &active);
+    }
+    let blurred = renderer
+        .snapshot(&ui.render(), 492, 272, 1.0, &input)
+        .unwrap();
+    assert_eq!(blurred.pixel(25, 55), before.pixel(25, 55));
+}
+
+#[test]
+fn state_exit_retargets_from_the_current_frame_and_restores_the_live_base() {
+    use std::time::Duration;
+    use xrack_runtime::{Length, SceneTransition};
+
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))
+    .unwrap();
+    let input = Interaction::default();
+    let mut ui = StatesDemo::new();
+    let start = ui.render();
+    let tile = [start
+        .children
+        .iter()
+        .position(|node| node.id == Some("tile"))
+        .unwrap()];
+    ui.set_level(2);
+    let alarm = ui.render();
+    let mut timeline = SceneTransition::between(&start, &alarm);
+    let time = Duration::from_millis;
+    let inside = renderer
+        .snapshot(&timeline.frame(&alarm, time(200)), 518, 234, 1.0, &input)
+        .unwrap();
+    assert_eq!(inside.layout.at_path(&tile).unwrap().bounds.width, 188.0);
+    assert_eq!(inside.pixel(36, 70), Some([0xba, 0x4b, 0x5d, 0xff]));
+    ui.set_baseline(Length(124.0));
+    ui.set_level(0);
+    let normal = ui.render();
+    timeline.retarget(&alarm, &normal, time(200));
+    assert_eq!(
+        timeline
+            .frame(&normal, time(200))
+            .find("tile")
+            .unwrap()
+            .length("width"),
+        Some(188.0)
+    );
+    let exit = renderer
+        .snapshot(&timeline.frame(&normal, time(300)), 518, 234, 1.0, &input)
+        .unwrap();
+    assert_eq!(exit.layout.at_path(&tile).unwrap().bounds.width, 156.0);
+    assert_eq!(
+        timeline
+            .frame(&normal, time(400))
+            .find("tile")
+            .unwrap()
+            .length("width"),
+        Some(124.0)
+    );
+    assert!(!timeline.running(time(400)));
+}
+
+#[test]
+fn easing_delay_and_independent_updates_render_on_one_scene_clock() {
+    use std::time::Duration;
+    use xrack_runtime::SceneTransition;
+
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))
+    .unwrap();
+    let mut ui = AnimationsDemo::new();
+    let input = Interaction::default();
+    let start = ui.render();
+    let find = |id| {
+        [start
+            .children
+            .iter()
+            .position(|node| node.id == Some(id))
+            .unwrap()]
+    };
+    let linear = find("linear");
+    let eased = find("eased");
+    ui.set_expanded(true);
+    let expanded = ui.render();
+    let mut timeline = SceneTransition::between(&start, &expanded);
+    let time = Duration::from_millis;
+    let delayed = renderer
+        .snapshot(&timeline.frame(&expanded, time(100)), 546, 288, 1.0, &input)
+        .unwrap();
+    assert_eq!(delayed.layout.at_path(&eased).unwrap().bounds.width, 80.0);
+    assert!((delayed.layout.at_path(&linear).unwrap().bounds.width - 120.0).abs() < 0.01);
+
+    ui.set_changes(1);
+    let updated = ui.render();
+    timeline.retarget(&expanded, &updated, time(250));
+    let middle = renderer
+        .snapshot(&timeline.frame(&updated, time(420)), 546, 288, 1.0, &input)
+        .unwrap();
+    let bounds = middle.layout.at_path(&eased).unwrap().bounds;
+    assert!((bounds.width - 254.0).abs() < 0.01);
+    assert!((bounds.x - 53.0).abs() < 0.01);
+    assert_ne!(middle.pixel(73, 160), delayed.pixel(73, 160));
+
+    ui.set_expanded(false);
+    let reversed = ui.render();
+    timeline.retarget(&updated, &reversed, time(420));
+    let immediate = timeline.frame(&reversed, time(420));
+    assert!(
+        (immediate.find("eased").unwrap().length("width").unwrap() - bounds.width).abs() < 0.01
+    );
+    ui.set_motion(false);
+    let disabled = ui.render();
+    timeline.retarget(&reversed, &disabled, time(450));
+    assert!(!timeline.running(time(450)));
+    assert_eq!(
+        timeline
+            .frame(&disabled, time(450))
+            .find("eased")
+            .unwrap()
+            .length("width"),
+        Some(80.0)
+    );
+}
 
 #[test]
 fn accepting_drop_area_paints_above_its_child_and_clears_on_cancel() {
@@ -4409,4 +4562,76 @@ fn media_renders_embedded_images_and_vector_paths() {
             .save_png(std::path::Path::new(&path).join("media-demo.png"))
             .unwrap();
     }
+}
+
+#[test]
+fn styled_text_shapes_bidi_spans_and_elides_without_losing_the_source_text() {
+    use layout_ui::StyledTextDemo;
+    use xrack_layout::Rect;
+    use xrack_renderer_femtovg::Snapshot;
+    use xrack_runtime::{Color, StyledRun, StyledText, TextStyle};
+
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))
+    .unwrap();
+    let mut ui = StyledTextDemo::new();
+    let initial = ui.get_body();
+    assert!(initial.text().contains("粗体、斜体、xrackc"));
+    assert!(initial.runs().iter().any(|run| run.style.monospace));
+
+    let body = "א ב\n\nHIDDEN";
+    let start_of_tail = body.find("HIDDEN").unwrap();
+    let span = |start, end, rgba| StyledRun {
+        start,
+        end,
+        style: TextStyle {
+            color: Some(Color(rgba)),
+            bold: true,
+            ..Default::default()
+        },
+    };
+    ui.set_body(
+        StyledText::from_runs(
+            body,
+            vec![
+                span(0, "א".len(), 0xff0000ff),
+                span("א ".len(), "א ב".len(), 0x00ff00ff),
+                span(start_of_tail, body.len(), 0x0050ffff),
+            ],
+        )
+        .unwrap(),
+    );
+
+    let colored_x = |snapshot: &Snapshot, rect: Rect, channel: usize| {
+        (rect.x as u32..(rect.x + rect.width) as u32).find(|&x| {
+            (rect.y as u32..(rect.y + rect.height) as u32).any(|y| {
+                let pixel = snapshot.pixel(x, y).unwrap();
+                pixel[channel] > 100
+                    && (0..3)
+                        .filter(|&other| other != channel)
+                        .all(|other| u16::from(pixel[channel]) > u16::from(pixel[other]) + 48)
+            })
+        })
+    };
+    let input = Interaction::default();
+    let scene = ui.render_shared();
+    let full = renderer.snapshot(&scene, 460, 268, 1.0, &input).unwrap();
+    let bounds = full.layout.at_path(&[1]).unwrap().bounds;
+    let red = colored_x(&full, bounds, 0).expect("red alef");
+    let green = colored_x(&full, bounds, 1).expect("green bet");
+    assert!(green < red, "right-to-left style order");
+    assert!(
+        colored_x(&full, bounds, 2).is_some(),
+        "visible second paragraph"
+    );
+
+    ui.set_compact(true);
+    let scene = ui.render_shared();
+    let clipped = renderer.snapshot(&scene, 460, 268, 1.0, &input).unwrap();
+    let visible = clipped.layout.at_path(&[1]).unwrap().bounds;
+    assert!(visible.height < bounds.height);
+    assert_eq!(colored_x(&clipped, visible, 2), None);
+    assert_eq!(scene.at_path(&[1]).unwrap().text("text"), Some(body));
 }

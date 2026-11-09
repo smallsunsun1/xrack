@@ -2,7 +2,7 @@ use crate::{
     Point, Size, font_size,
     text_area::{fitting_prefix, grapheme_boundaries, paragraphs},
 };
-use std::borrow::Cow;
+use std::{borrow::Cow, ops::Range};
 use unicode_bidi::{Direction, get_base_direction};
 use unicode_segmentation::UnicodeSegmentation;
 use xrack_runtime::{
@@ -10,7 +10,7 @@ use xrack_runtime::{
 };
 
 pub fn uses_label_layout(node: &Node) -> bool {
-    node.kind == "Label"
+    matches!(node.kind, "Label" | "StyledText")
         || node.kind == "Text"
             && [
                 "horizontal-alignment",
@@ -63,6 +63,53 @@ impl<'a> LabelLayout<'a> {
         size: f32,
         mut advance: impl FnMut(&str) -> f32,
     ) -> Self {
+        let text = node.text("text").unwrap_or("");
+        let plan = LabelPlan::with_font_size(node, available, size, |range, ellipsis| {
+            advance(&line_text(text, range, ellipsis))
+        });
+        Self {
+            size: plan.size,
+            lines: plan
+                .lines
+                .into_iter()
+                .map(|line| LabelLine {
+                    text: line_text(text, line.range, line.ellipsis),
+                    origin: line.origin,
+                })
+                .collect(),
+        }
+    }
+}
+
+fn line_text(text: &str, range: Range<usize>, ellipsis: bool) -> Cow<'_, str> {
+    if ellipsis {
+        let mut shown = text[range].to_owned();
+        shown.push('…');
+        Cow::Owned(shown)
+    } else {
+        Cow::Borrowed(&text[range])
+    }
+}
+
+pub struct PlannedLabelLine {
+    pub range: Range<usize>,
+    pub ellipsis: bool,
+    pub origin: Point,
+}
+
+/// Text ranges shared by plain and styled labels, independent of the shaping backend.
+pub struct LabelPlan {
+    pub size: Size,
+    pub lines: Vec<PlannedLabelLine>,
+}
+
+impl LabelPlan {
+    pub fn with_font_size(
+        node: &Node,
+        available: Size,
+        size: f32,
+        mut advance: impl FnMut(Range<usize>, bool) -> f32,
+    ) -> Self {
         use TextHorizontalAlignment as Horizontal;
         use TextVerticalAlignment as Vertical;
 
@@ -72,7 +119,7 @@ impl<'a> LabelLayout<'a> {
             node.properties.get("overflow") == Some(&Value::TextOverflow(TextOverflow::Elide));
         let horizontal = match node.properties.get("horizontal-alignment") {
             Some(Value::TextHorizontalAlignment(alignment)) => *alignment,
-            _ if node.kind == "Label" => Horizontal::Start,
+            _ if matches!(node.kind, "Label" | "StyledText") => Horizontal::Start,
             _ => Horizontal::Left,
         };
         let vertical = match node.properties.get("vertical-alignment") {
@@ -86,7 +133,8 @@ impl<'a> LabelLayout<'a> {
             .unwrap_or(usize::MAX);
         let by_height = available.height / line_height;
         let by_height = if elide {
-            by_height.floor()
+            // The measured height is a rounded product of the line count and height.
+            by_height.next_up().floor()
         } else {
             by_height.ceil()
         } as usize;
@@ -101,11 +149,11 @@ impl<'a> LabelLayout<'a> {
         let mut raw = Vec::new();
         let wrap = wrap(node);
         'paragraphs: for range in paragraphs(text) {
-            let content = &text[range];
+            let content = &text[range.clone()];
             let rtl = matches!(horizontal, Horizontal::Start | Horizontal::End)
                 && get_base_direction(content) == Direction::Rtl;
             if wrap == TextWrap::NoWrap || content.is_empty() {
-                raw.push((content, rtl));
+                raw.push((range, rtl));
                 if raw.len() > limit {
                     break;
                 }
@@ -124,7 +172,9 @@ impl<'a> LabelLayout<'a> {
             let mut start = 0;
             while start < last {
                 let fit = fitting_prefix(start, last, |index| {
-                    advance(&content[graphemes[start]..graphemes[index]]) <= available.width
+                    let from = range.start + graphemes[start];
+                    let to = range.start + graphemes[index];
+                    advance(from..to, false) <= available.width
                 })
                 .max(start + 1);
                 let word_end = words.partition_point(|&byte| byte <= graphemes[fit]);
@@ -133,7 +183,9 @@ impl<'a> LabelLayout<'a> {
                     .and_then(|index| graphemes.binary_search(&words[index]).ok())
                     .filter(|&index| index > start)
                     .unwrap_or(fit);
-                raw.push((content[graphemes[start]..graphemes[next]].trim_end(), rtl));
+                let from = range.start + graphemes[start];
+                let to = range.start + graphemes[next];
+                raw.push((trim_trailing_space(text, from..to), rtl));
                 if raw.len() > limit {
                     break 'paragraphs;
                 }
@@ -166,15 +218,13 @@ impl<'a> LabelLayout<'a> {
         let lines = raw
             .into_iter()
             .enumerate()
-            .map(|(index, (content, rtl))| {
-                let mut span = advance(content);
-                let text = if elide && (span > available.width || truncated && index == last) {
-                    let shown = elided(content, available.width, &mut advance);
-                    span = advance(&shown);
-                    Cow::Owned(shown)
-                } else {
-                    Cow::Borrowed(content)
-                };
+            .map(|(index, (mut range, rtl))| {
+                let mut span = advance(range.clone(), false);
+                let mut ellipsis = false;
+                if elide && (span > available.width || truncated && index == last) {
+                    (range, ellipsis) = elided(text, range, available.width, &mut advance);
+                    span = advance(range.clone(), ellipsis);
+                }
                 width = width.max(span);
                 let free = available.width - span;
                 let x = match horizontal {
@@ -184,8 +234,9 @@ impl<'a> LabelLayout<'a> {
                     Horizontal::End if !rtl => free,
                     _ => 0.0,
                 };
-                LabelLine {
-                    text,
+                PlannedLabelLine {
+                    range,
+                    ellipsis,
                     origin: Point {
                         x,
                         y: top + index as f32 * line_height,
@@ -200,21 +251,29 @@ impl<'a> LabelLayout<'a> {
     }
 }
 
-fn elided(text: &str, width: f32, advance: &mut impl FnMut(&str) -> f32) -> String {
-    const ELLIPSIS: char = '…';
-    if advance("…") > width {
-        return String::new();
+fn trim_trailing_space(text: &str, range: Range<usize>) -> Range<usize> {
+    range.start..range.start + text[range.clone()].trim_end().len()
+}
+
+fn elided(
+    text: &str,
+    range: Range<usize>,
+    width: f32,
+    advance: &mut impl FnMut(Range<usize>, bool) -> f32,
+) -> (Range<usize>, bool) {
+    let start = range.start;
+    if advance(start..start, true) > width {
+        return (start..start, false);
     }
-    let boundaries = grapheme_boundaries(text);
-    let mut candidate = String::new();
+    let boundaries = grapheme_boundaries(&text[range]);
     let end = fitting_prefix(0, boundaries.len() - 1, |index| {
-        candidate.clear();
-        candidate.push_str(text[..boundaries[index]].trim_end());
-        candidate.push(ELLIPSIS);
-        advance(&candidate) <= width
+        advance(
+            trim_trailing_space(text, start..start + boundaries[index]),
+            true,
+        ) <= width
     });
-    candidate.clear();
-    candidate.push_str(text[..boundaries[end]].trim_end());
-    candidate.push(ELLIPSIS);
-    candidate
+    (
+        trim_trailing_space(text, start..start + boundaries[end]),
+        true,
+    )
 }

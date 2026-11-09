@@ -314,10 +314,41 @@ fn rewrite_members(
                     rewrite_record_type(result, names);
                 }
             }
-            ast::Member::Animation(_) => {}
+            ast::Member::Animation(animation) => {
+                rewrite_animation(animation, asset_prefix, names);
+            }
+            ast::Member::States(block) => {
+                for state in &mut block.states {
+                    if let Some(condition) = &mut state.when {
+                        rewrite_expr(condition, asset_prefix, names);
+                    }
+                    for change in &mut state.changes {
+                        rewrite_expr(&mut change.value, asset_prefix, names);
+                    }
+                    for animation in state
+                        .transitions
+                        .iter_mut()
+                        .flat_map(|transition| &mut transition.animations)
+                    {
+                        rewrite_animation(animation, asset_prefix, names);
+                    }
+                }
+            }
         }
     }
     Ok(())
+}
+
+fn rewrite_animation(
+    animation: &mut ast::Animation,
+    prefix: &Path,
+    names: &BTreeMap<String, String>,
+) {
+    for option in &mut animation.options {
+        if let ast::AnimationValue::Expression(value) = &mut option.value {
+            rewrite_expr(value, prefix, names);
+        }
+    }
 }
 
 fn rebase_asset(spelling: &mut String, prefix: &Path) {
@@ -371,6 +402,6 @@ fn rewrite_expr(expr: &mut ast::Expr, prefix: &Path, names: &BTreeMap<String, St
                 rewrite_expr(&mut stop.color, prefix, names);
             }
         }
-        Literal { .. } | Reference(_) => {}
+        Literal { .. } | Reference(_) | Markdown(_) => {}
     }
 }

@@ -93,8 +93,14 @@ pub fn builtin_property(kind: &str, name: &str) -> Option<Type> {
             _ => builtin_property("Button", name),
         };
     }
-    if kind == "Label" {
+    if kind == "StyledText" && name == "text" {
+        return Some(Type::StyledText);
+    }
+    if matches!(kind, "Label" | "StyledText") {
         return builtin_property("Text", name);
+    }
+    if focus_property(kind, name) {
+        return Some(Type::Bool);
     }
     if kind == "StackView"
         && let Some(ty) = stack_read_type(name)
@@ -105,6 +111,12 @@ pub fn builtin_property(kind: &str, name: &str) -> Option<Type> {
         "accessible-name" | "accessible-description" => Type::String,
         "color-scheme" if kind == "Window" => Type::ColorScheme,
         "accent-color" if kind == "Window" => Type::Color,
+        "initial-focus" if kind == "FocusScope" => Type::String,
+        "focus-on-click" | "focus-on-tab-navigation" | "restore-focus" | "enabled"
+            if kind == "FocusScope" =>
+        {
+            Type::Bool
+        }
         "enabled" if matches!(kind, "DragArea" | "DropArea") => Type::Bool,
         "data" | "drag-key" if kind == "DragArea" => Type::String,
         "allow-copy" | "allow-move" | "allow-link" if kind == "DragArea" => Type::Bool,
@@ -121,6 +133,7 @@ pub fn builtin_property(kind: &str, name: &str) -> Option<Type> {
                 kind,
                 "Window"
                     | "Rectangle"
+                    | "FocusScope"
                     | "Page"
                     | "PageHeader"
                     | "PageFooter"
@@ -584,6 +597,7 @@ pub fn is_builtin(s: &str) -> bool {
                 | "Page"
                 | "Text"
                 | "Label"
+                | "StyledText"
                 | "Button"
                 | "StandardButton"
                 | "Action"
@@ -603,6 +617,7 @@ pub fn is_builtin(s: &str) -> bool {
                 | "MenuSeparator"
                 | "ContextMenuArea"
                 | "TouchArea"
+                | "FocusScope"
                 | "DragArea"
                 | "DropArea"
                 | "Image"
@@ -661,6 +676,41 @@ fn text_input(kind: &str) -> bool {
     )
 }
 
+fn focus_target_kind(kind: &str) -> bool {
+    text_input(kind)
+        || toggle(kind)
+        || matches!(
+            kind,
+            "FocusScope"
+                | "Button"
+                | "ToolButton"
+                | "DelayButton"
+                | "DialogButton"
+                | "StandardButton"
+                | "Slider"
+                | "Dial"
+                | "SpinBox"
+                | "DoubleSpinBox"
+                | "ComboBox"
+                | "Calendar"
+                | "RadioButton"
+                | "Tab"
+                | "TabButton"
+                | "SwipeView"
+                | "SwipeDelegate"
+                | "StackView"
+                | "ListView"
+                | "GridView"
+                | "StandardListView"
+                | "TreeView"
+                | "TableView"
+                | "StandardTableView"
+                | "GroupBox"
+                | "PageIndicator"
+                | "Tumbler"
+        )
+}
+
 fn toggle(kind: &str) -> bool {
     matches!(kind, "CheckBox" | "Switch")
 }
@@ -707,6 +757,25 @@ fn time_picker(kind: &str) -> bool {
 
 fn table_view(kind: &str) -> bool {
     matches!(kind, "TableView" | "StandardTableView")
+}
+
+pub fn focus_property(kind: &str, property: &str) -> bool {
+    property == "has-focus" && focus_target_kind(kind)
+        || property == "focus-within" && kind == "FocusScope"
+}
+
+fn focus_handler(event: &str) -> bool {
+    matches!(
+        event,
+        "focus-gained" | "focus-lost" | "focus-changed-event" | "focus-within-changed"
+    )
+}
+
+fn key_handler(event: &str) -> bool {
+    matches!(
+        event,
+        "capture-key-pressed" | "capture-key-released" | "key-pressed" | "key-released"
+    )
 }
 
 fn control_event(kind: &str, event: &str) -> bool {
@@ -767,6 +836,7 @@ fn control_event(kind: &str, event: &str) -> bool {
         || picker_popup(kind) && matches!(event, "accepted" | "canceled")
         || matches!(kind, "MenuItem" | "Action" | "DelayButton") && event == "activated"
         || kind == "Shortcut" && matches!(event, "activated" | "activated-ambiguously")
+        || kind == "FocusScope" && (key_handler(event) || focus_handler(event))
         || kind == "DragArea" && matches!(event, "drag-started" | "drag-finished")
         || kind == "DropArea"
             && matches!(
@@ -809,7 +879,14 @@ pub enum LoweredMember<'a> {
     Condition(ir::Expr),
     ControlLink(ir::Binding),
     RowLink(ir::Binding),
-    Animation(ir::Binding),
+    Animation(ir::Animation),
+    StateSelection(ir::StateSelection),
+    StateBinding(ir::StateBinding),
+    StateTiming(ir::StateTiming),
+    InitialFocus {
+        target: String,
+        span: Span,
+    },
     Repeat {
         model: ir::Expr,
         item: String,
@@ -999,6 +1076,14 @@ struct Owner<'a> {
     parent: Option<String>,
     instance: bool,
     kind: String,
+    members: &'a [Member],
+    repeated: bool,
+}
+
+#[derive(Clone, Default)]
+struct StateTarget {
+    bindings: Vec<ir::StateBinding>,
+    timings: Vec<ir::StateTiming>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -1015,6 +1100,7 @@ struct Scope<'a> {
     writable_row: Option<String>,
     row_template: Option<RowTemplate>,
     records: BTreeMap<&'a str, &'a ast::RecordDef>,
+    state_targets: BTreeMap<String, StateTarget>,
 }
 
 fn key(e: &ast::Element, parent: &str, index: usize) -> String {
@@ -1236,6 +1322,8 @@ impl<'a> Scope<'a> {
                     parent: parent.map(str::to_owned),
                     instance,
                     kind: kind.into(),
+                    members,
+                    repeated: false,
                 },
             )
             .is_some()
@@ -1541,14 +1629,12 @@ impl<'a> Scope<'a> {
                     if let Some(id) = &e.id {
                         check_name(id, e.span)?;
                     }
-                    self.register(
-                        definitions,
-                        &e.members,
-                        &e.ty,
-                        &key(e, owner, index),
-                        Some(owner),
-                        e.span,
-                    )?;
+                    let child = key(e, owner, index);
+                    self.register(definitions, &e.members, &e.ty, &child, Some(owner), e.span)?;
+                    self.owners
+                        .get_mut(&child)
+                        .expect("registered child")
+                        .repeated = e.repeat.is_some();
                 }
             }
         }
@@ -1591,7 +1677,10 @@ impl<'a> Scope<'a> {
         write: bool,
         span: Span,
     ) -> Result<(ir::PropertyRef, Type)> {
-        if write && self.stack_read(current, reference, span).is_some() {
+        if write
+            && (self.stack_read(current, reference, span).is_some()
+                || self.focus_read(current, reference, span)?.is_some())
+        {
             return fail(span, format!("property `{reference}` is read-only"));
         }
         let (owner, name) =
@@ -1622,6 +1711,40 @@ impl<'a> Scope<'a> {
             },
             p.ty.clone(),
         ))
+    }
+
+    fn focus_read(&self, current: &str, reference: &str, span: Span) -> Result<Option<ir::Expr>> {
+        let Ok((owner, property)) =
+            self.member_owner(current, reference, "property", span, |element, name| {
+                element.properties.contains_key(name) || focus_property(&element.kind, name)
+            })
+        else {
+            return Ok(None);
+        };
+        let mut element = &self.owners[owner];
+        if element.instance || !focus_property(&element.kind, property) {
+            return Ok(None);
+        }
+        loop {
+            if element.repeated {
+                return fail(
+                    span,
+                    "focus bindings on repeated elements require a component delegate",
+                );
+            }
+            let Some(parent) = &element.parent else {
+                break;
+            };
+            element = &self.owners[parent];
+        }
+        Ok(Some(ir::Expr {
+            op: "focus_read".into(),
+            owner: Some(owner.into()),
+            value: property.into(),
+            ty: Type::Bool,
+            args: Vec::new(),
+            span,
+        }))
     }
 
     fn stack_read(&self, current: &str, reference: &str, span: Span) -> Option<ir::Expr> {
@@ -1736,6 +1859,40 @@ impl<'a> Scope<'a> {
             } else {
                 receiver
             };
+            if matches!(method, "focus" | "clear-focus")
+                && let Some(target) = self.owners.get(owner)
+                && !target.instance
+                && focus_target_kind(&target.kind)
+                && !target.callbacks.contains_key(method)
+            {
+                if !self.effects_allowed {
+                    return fail(
+                        call.span,
+                        "focus commands are not allowed in a pure callback",
+                    );
+                }
+                if !call.arguments.is_empty() {
+                    return fail(call.span, format!("{method}() takes no arguments"));
+                }
+                let mut element = target;
+                loop {
+                    if element.repeated {
+                        return fail(
+                            call.span,
+                            "focus commands require a statically addressed element",
+                        );
+                    }
+                    let Some(parent) = &element.parent else {
+                        break;
+                    };
+                    element = &self.owners[parent];
+                }
+                return Ok(ir::Statement::FocusCommand(ir::FocusCommand {
+                    focus_owner: owner.into(),
+                    clear: method == "clear-focus",
+                    span: call.span,
+                }));
+            }
             if matches!(method, "show" | "hide" | "close")
                 && self
                     .owners
@@ -2246,6 +2403,36 @@ fn element<'a>(
     } else {
         scope
     };
+    let state_scope;
+    let scope = if let Some((selection, targets)) = lower_states(members, scope, owner, span)? {
+        lowered.push(LoweredMember::StateSelection(selection));
+        let mut nested = scope.clone();
+        for (owner, state) in targets {
+            let target = nested.state_targets.entry(owner).or_default();
+            target.bindings.extend(state.bindings);
+            target.timings.extend(state.timings);
+        }
+        state_scope = nested;
+        &state_scope
+    } else {
+        scope
+    };
+    if let Some(state) = scope.state_targets.get(owner) {
+        lowered.extend(
+            state
+                .bindings
+                .iter()
+                .cloned()
+                .map(LoweredMember::StateBinding),
+        );
+        lowered.extend(
+            state
+                .timings
+                .iter()
+                .cloned()
+                .map(LoweredMember::StateTiming),
+        );
+    }
     let mut bindings = BTreeSet::new();
     let mut handlers = BTreeSet::new();
     let mut animations = BTreeSet::new();
@@ -2308,6 +2495,9 @@ fn element<'a>(
                 if kind == "StackPage" && b.name == "visible" {
                     return fail(b.span, "StackView manages StackPage visibility");
                 }
+                if focus_property(kind, &b.name) {
+                    return fail(b.span, format!("property `{kind}.{}` is read-only", b.name));
+                }
                 if kind == "StackView" && stack_read_type(&b.name).is_some() {
                     return fail(
                         b.span,
@@ -2316,6 +2506,48 @@ fn element<'a>(
                 }
                 if !bindings.insert(b.name.as_str()) {
                     return fail(b.span, format!("duplicate binding `{}`", b.name));
+                }
+                if b.name == "initial-focus" && kind == "FocusScope" {
+                    let ExprKind::Reference(target) = &b.value.kind else {
+                        return fail(b.span, "initial-focus requires a descendant element id");
+                    };
+                    let Some(element) = scope
+                        .owners
+                        .get(target)
+                        .filter(|element| !element.instance && focus_target_kind(&element.kind))
+                    else {
+                        return fail(
+                            b.span,
+                            "initial-focus requires a focusable descendant element",
+                        );
+                    };
+                    let mut current = element;
+                    if target == owner {
+                        return fail(b.span, "initial-focus cannot refer to the scope itself");
+                    }
+                    loop {
+                        if current.repeated || current.instance {
+                            return fail(
+                                b.span,
+                                "initial-focus cannot cross a component or repetition boundary",
+                            );
+                        }
+                        let Some(parent) = &current.parent else {
+                            return fail(b.span, "initial-focus requires a descendant element");
+                        };
+                        if parent == owner {
+                            break;
+                        }
+                        current = &scope.owners[parent];
+                    }
+                    if b.two_way {
+                        return fail(b.span, "initial-focus cannot be two-way");
+                    }
+                    lowered.push(LoweredMember::InitialFocus {
+                        target: target.clone(),
+                        span: b.span,
+                    });
+                    continue;
                 }
                 if b.name == "action"
                     && matches!(kind, "Button" | "ToolButton" | "MenuItem" | "Shortcut")
@@ -2596,20 +2828,7 @@ fn element<'a>(
                         message: format!("unknown property `{}.{}`", kind, b.name),
                     })?
                 };
-                let relative_size = ty == Type::Length
-                    && (matches!(
-                        b.name.as_str(),
-                        "width"
-                            | "height"
-                            | "min-width"
-                            | "min-height"
-                            | "max-width"
-                            | "max-height"
-                            | "preferred-width"
-                            | "preferred-height"
-                    ) || kind == "ScrollView"
-                        && matches!(b.name.as_str(), "content-width" | "content-height"));
-                let value = if relative_size {
+                let value = if relative_size(kind, &b.name, &ty) {
                     let value = expression(&b.value, scope, owner)?;
                     if value.ty == Type::Percent {
                         value
@@ -2656,6 +2875,7 @@ fn element<'a>(
                     return fail(h.span, format!("unknown event `{kind}.{}`", h.name));
                 }
                 let close_requested = kind == "Window" && h.name == "close-requested";
+                let key_handler = kind == "FocusScope" && key_handler(&h.name);
                 if close_requested && !root {
                     return fail(
                         h.span,
@@ -2697,6 +2917,7 @@ fn element<'a>(
                                 | "DelayButton"
                                 | "CheckBox"
                                 | "GroupBox"
+                                | "FocusScope"
                         ))
                 {
                     return fail(
@@ -2705,6 +2926,11 @@ fn element<'a>(
                     );
                 }
                 let parameter_types: &[Type] = match kind {
+                    "FocusScope" if key_handler => &[Type::KeyEvent],
+                    "FocusScope" if h.name == "focus-within-changed" => {
+                        &[Type::Bool, Type::FocusReason]
+                    }
+                    "FocusScope" if focus_handler(&h.name) => &[Type::FocusReason],
                     "Slider" | "Dial" | "DoubleSpinBox" => &[Type::Float],
                     "RangeSlider" => &[Type::Float, Type::Float],
                     "Calendar" => &[Type::Date],
@@ -2785,6 +3011,19 @@ fn element<'a>(
                         return fail(h.span, "close-requested must return a bool");
                     };
                     Some(expression_as(expr, &handler_scope, owner, Type::Bool)?)
+                } else if key_handler {
+                    let Some(expr) = &h.result else {
+                        return fail(
+                            h.span,
+                            "key handlers must return EventResult.accept or EventResult.reject",
+                        );
+                    };
+                    Some(expression_as(
+                        expr,
+                        &handler_scope,
+                        owner,
+                        Type::EventResult,
+                    )?)
                 } else {
                     if let Some(expr) = &h.result {
                         body.push(discarded_call(expr, &handler_scope, owner)?);
@@ -2826,26 +3065,397 @@ fn element<'a>(
                 ) {
                     return fail(animation.span, format!("cannot animate `{kind}.{target}`"));
                 }
-                let duration = animation
-                    .duration_ms
-                    .parse::<u32>()
-                    .ok()
-                    .filter(|duration| *duration <= 60_000)
-                    .ok_or_else(|| Diagnostic {
-                        span: animation.span,
-                        message: "animation duration must be 0–60000ms".into(),
-                    })?;
-                lowered.push(LoweredMember::Animation(ir::Binding {
-                    name: target.clone(),
-                    value: ir::Expr::literal(Type::Int, duration.to_string(), animation.span),
-                    span: animation.span,
-                }));
+                lowered.push(LoweredMember::Animation(lower_animation(
+                    animation, scope, owner,
+                )?));
             }
             _ => {}
         }
     }
     lowered.push(LoweredMember::EndElement);
     Ok(())
+}
+
+fn state_target<'a>(
+    reference: &'a str,
+    owner: &'a str,
+    scope: &Scope<'_>,
+    span: Span,
+) -> Result<(&'a str, &'a str, Type)> {
+    let (target, property) = reference.split_once('.').unwrap_or((owner, reference));
+    let target = if target == "self" { owner } else { target };
+    let Some(element) = scope.owners.get(target) else {
+        return fail(span, format!("unknown state target `{target}`"));
+    };
+    let mut path = target;
+    while path != owner {
+        let current = &scope.owners[path];
+        if current.instance || current.repeated {
+            return fail(
+                span,
+                "state targets cannot cross a component or repetition boundary",
+            );
+        }
+        let Some(parent) = current.parent.as_deref() else {
+            return fail(
+                span,
+                "state targets must belong to the declaring element or its descendants",
+            );
+        };
+        path = parent;
+    }
+    if element.instance || nonvisual_element(&element.kind) || element.kind == "TableColumn" {
+        return fail(span, "state targets must be built-in visual elements");
+    }
+    if element.members.iter().any(|member| {
+        matches!(member, Member::Binding(binding)
+        if binding.name == property && binding.two_way)
+    }) {
+        return fail(
+            span,
+            format!("state cannot override two-way property `{reference}`"),
+        );
+    }
+    let kind = element.kind.as_str();
+    let Some(ty) = state_property(kind, property) else {
+        return fail(span, format!("state cannot override `{kind}.{property}`"));
+    };
+    Ok((target, property, ty))
+}
+
+pub fn state_property(kind: &str, property: &str) -> Option<Type> {
+    let visual = layout_item_property(property).is_some()
+        || matches!(
+            property,
+            "x" | "y"
+                | "width"
+                | "height"
+                | "background"
+                | "color"
+                | "border-width"
+                | "border-color"
+                | "border-radius"
+                | "border-top-left-radius"
+                | "border-top-right-radius"
+                | "border-bottom-left-radius"
+                | "border-bottom-right-radius"
+                | "visible"
+                | "enabled"
+                | "font-family"
+                | "font-weight"
+                | "font-italic"
+                | "font-size"
+                | "accessible-name"
+                | "accessible-description"
+                | "title"
+                | "source"
+                | "fill"
+                | "stroke"
+                | "stroke-width"
+        )
+        || property == "text"
+            && matches!(
+                kind,
+                "Text"
+                    | "Label"
+                    | "StyledText"
+                    | "Button"
+                    | "ToolButton"
+                    | "DialogButton"
+                    | "DelayButton"
+                    | "StandardButton"
+                    | "CheckBox"
+                    | "RadioButton"
+                    | "Switch"
+                    | "MenuItem"
+            );
+    builtin_property(kind, property).filter(|_| visual)
+}
+
+fn lower_states(
+    members: &[Member],
+    scope: &Scope<'_>,
+    owner: &str,
+    span: Span,
+) -> Result<Option<(ir::StateSelection, BTreeMap<String, StateTarget>)>> {
+    let mut selection = ir::StateSelection {
+        owner: owner.into(),
+        cases: Vec::new(),
+        span,
+    };
+    let mut targets: BTreeMap<String, StateTarget> = BTreeMap::new();
+    let mut names = BTreeSet::new();
+    for state in members
+        .iter()
+        .filter_map(|member| {
+            if let Member::States(block) = member {
+                Some(block.states.as_slice())
+            } else {
+                None
+            }
+        })
+        .flatten()
+    {
+        if scope.owners[owner].instance || nonvisual_element(&scope.owners[owner].kind) {
+            return fail(state.span, "states require a built-in visual element");
+        }
+        check_name(&state.name, state.span)?;
+        if !names.insert(&state.name) {
+            return fail(state.span, format!("duplicate state `{}`", state.name));
+        }
+        let when = state.when.as_ref().map_or_else(
+            || Ok(ir::Expr::literal(Type::Bool, "false", state.span)),
+            |value| expression_as(value, scope, owner, Type::Bool),
+        )?;
+        let case = selection.cases.len() as i64;
+        selection.cases.push((state.name.clone(), when));
+        let mut changes = BTreeMap::new();
+        for change in &state.changes {
+            let (target, name, ty) = state_target(&change.name, owner, scope, change.span)?;
+            if changes.insert((target, name), ty.clone()).is_some() {
+                return fail(
+                    change.span,
+                    format!("duplicate state binding for `{}`", change.name),
+                );
+            }
+            if scope.state_targets.get(target).is_some_and(|state| {
+                state
+                    .bindings
+                    .iter()
+                    .any(|binding| binding.binding.name == name)
+            }) {
+                return fail(
+                    change.span,
+                    format!("`{}` already belongs to another state group", change.name),
+                );
+            }
+            let value = if relative_size(&scope.owners[target].kind, name, &ty) {
+                let value = expression(&change.value, scope, owner)?;
+                if value.ty == Type::Percent {
+                    value
+                } else {
+                    coerce(value, ty)?
+                }
+            } else {
+                expression_as(&change.value, scope, owner, ty)?
+            };
+            targets
+                .entry(target.into())
+                .or_default()
+                .bindings
+                .push(ir::StateBinding {
+                    owner: owner.into(),
+                    case,
+                    binding: ir::Binding {
+                        name: name.into(),
+                        value,
+                        span: change.span,
+                    },
+                });
+        }
+        let mut timing_keys = BTreeSet::new();
+        for wildcard in [false, true] {
+            for transition in &state.transitions {
+                let directions: &[&str] = match transition.direction.as_str() {
+                    "in" => &["in"],
+                    "out" => &["out"],
+                    "in-out" => &["in", "out"],
+                    _ => return fail(state.span, "invalid transition direction"),
+                };
+                for animation in transition
+                    .animations
+                    .iter()
+                    .filter(|animation| (animation.property == "*") == wildcard)
+                {
+                    let properties = if wildcard {
+                        changes
+                            .iter()
+                            .filter(|(_, ty)| animatable(ty))
+                            .map(|(&key, _)| key)
+                            .collect()
+                    } else {
+                        let (target, name, ty) =
+                            state_target(&animation.property, owner, scope, animation.span)?;
+                        if !changes.contains_key(&(target, name)) || !animatable(&ty) {
+                            return fail(
+                                animation.span,
+                                "transitions require an animatable property changed by this state",
+                            );
+                        }
+                        vec![(target, name)]
+                    };
+                    let config = lower_animation(animation, scope, owner)?;
+                    for (target, property) in properties {
+                        let element = &scope.owners[target];
+                        if target == "root" && element.kind == "Window" {
+                            return fail(
+                                animation.span,
+                                "animate a visual child instead of the Window",
+                            );
+                        }
+                        if element.members.iter().any(|member| matches!(member, Member::Animation(existing) if existing.property == property)) {
+                            return fail(animation.span, format!("`{property}` already has a property animation"));
+                        }
+                        if !element.members.iter().any(|member| matches!(member, Member::Binding(binding) if binding.name == property)) {
+                            return fail(animation.span, format!("transition for `{property}` requires a base binding"));
+                        }
+                        for &direction in directions {
+                            if !timing_keys.insert((target, property, direction)) {
+                                if wildcard {
+                                    continue;
+                                }
+                                return fail(
+                                    animation.span,
+                                    format!("duplicate `{direction}` transition for `{property}`"),
+                                );
+                            }
+                            let mut animation = config.clone();
+                            animation.property = property.into();
+                            targets.entry(target.into()).or_default().timings.push(
+                                ir::StateTiming {
+                                    owner: owner.into(),
+                                    case,
+                                    direction: direction.into(),
+                                    animation,
+                                },
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+    Ok((!selection.cases.is_empty()).then_some((selection, targets)))
+}
+
+fn animatable(ty: &Type) -> bool {
+    matches!(
+        ty,
+        Type::Length | Type::Color | Type::Brush | Type::Float | Type::Int
+    )
+}
+
+fn relative_size(kind: &str, name: &str, ty: &Type) -> bool {
+    *ty == Type::Length
+        && (matches!(
+            name,
+            "width"
+                | "height"
+                | "min-width"
+                | "min-height"
+                | "max-width"
+                | "max-height"
+                | "preferred-width"
+                | "preferred-height"
+        ) || kind == "ScrollView" && matches!(name, "content-width" | "content-height"))
+}
+
+fn lower_animation(
+    animation: &xrack_syntax::ast::Animation,
+    scope: &Scope<'_>,
+    owner: &str,
+) -> Result<ir::Animation> {
+    use xrack_syntax::ast::AnimationValue;
+    let mut timing = ir::Animation {
+        property: animation.property.clone(),
+        duration_ms: 0,
+        delay_ms: 0,
+        curve: None,
+        enabled: None,
+        span: animation.span,
+    };
+    let mut seen = BTreeSet::new();
+    for option in &animation.options {
+        let name = option.name.as_str();
+        if !seen.insert(name) {
+            return fail(option.span, format!("duplicate animation option `{name}`"));
+        }
+        match (name, &option.value) {
+            ("duration" | "delay", AnimationValue::Milliseconds(value)) => {
+                let value = value
+                    .parse::<u32>()
+                    .ok()
+                    .filter(|ms| *ms <= 60_000)
+                    .ok_or_else(|| Diagnostic {
+                        span: option.span,
+                        message: format!("animation {name} must be 0–60000ms"),
+                    })?;
+                if name == "duration" {
+                    timing.duration_ms = value;
+                } else {
+                    timing.delay_ms = value;
+                }
+            }
+            ("duration" | "delay", _) => {
+                return fail(
+                    option.span,
+                    format!("animation {name} requires an integer duration in ms"),
+                );
+            }
+            ("easing", AnimationValue::Expression(value)) => timing.curve = easing_curve(value)?,
+            ("enabled", AnimationValue::Expression(value)) => {
+                timing.enabled = Some(expression_as(value, scope, owner, Type::Bool)?)
+            }
+            ("easing" | "enabled", _) => {
+                return fail(option.span, format!("invalid animation {name}"));
+            }
+            _ => return fail(option.span, format!("unknown animation option `{name}`")),
+        }
+    }
+    Ok(timing)
+}
+
+fn easing_curve(value: &xrack_syntax::ast::Expr) -> Result<Option<[f64; 4]>> {
+    use xrack_syntax::ast::ExprKind;
+    fn number(value: &xrack_syntax::ast::Expr) -> Option<f64> {
+        let (value, sign) = match &value.kind {
+            ExprKind::Unary { op, value } if op == "-" => (value.as_ref(), -1.0),
+            ExprKind::Unary { op, value } if op == "+" => (value.as_ref(), 1.0),
+            _ => (value, 1.0),
+        };
+        match &value.kind {
+            ExprKind::Literal {
+                value,
+                ty: Type::Int | Type::Float,
+            } => value
+                .parse::<f64>()
+                .ok()
+                .filter(|v| v.is_finite())
+                .map(|v| v * sign),
+            _ => None,
+        }
+    }
+    match &value.kind {
+        ExprKind::Reference(name) => {
+            let name = name.strip_prefix("Easing.").unwrap_or(name);
+            Ok(Some(match name {
+                "linear" => return Ok(None),
+                "ease" => [0.25, 0.1, 0.25, 1.0],
+                "ease-in" => [0.42, 0.0, 1.0, 1.0],
+                "ease-out" => [0.0, 0.0, 0.58, 1.0],
+                "ease-in-out" => [0.42, 0.0, 0.58, 1.0],
+                _ => return fail(value.span, format!("unknown easing `{name}`")),
+            }))
+        }
+        ExprKind::Call(call) if call.callee == "cubic-bezier" => {
+            if let [x1, y1, x2, y2] = call.arguments.as_slice()
+                && let [Some(x1), Some(y1), Some(x2), Some(y2)] =
+                    [number(x1), number(y1), number(x2), number(y2)]
+                && (0.0..=1.0).contains(&x1)
+                && (0.0..=1.0).contains(&x2)
+            {
+                return Ok(Some([x1, y1, x2, y2]));
+            }
+            fail(
+                value.span,
+                "cubic-bezier requires four finite numbers with both x coordinates in [0, 1]",
+            )
+        }
+        _ => fail(
+            value.span,
+            "easing requires a named curve or cubic-bezier(x1, y1, x2, y2)",
+        ),
+    }
 }
 
 struct RecordCombo {
@@ -3108,7 +3718,7 @@ fn validate_template(
     }
     for member in members {
         match member {
-            Member::Binding(_) | Member::Animation(_) => {}
+            Member::Binding(_) | Member::Animation(_) | Member::States(_) => {}
             Member::Element(child) => {
                 if (kind == "TableRow" || tree)
                     && let Some((property, _)) = row_editor_binding(&child.ty)
@@ -3205,6 +3815,9 @@ fn default(ty: Type, span: Span) -> ir::Expr {
     if matches!(ty, Type::Record(_)) {
         return ir::Expr::operation("default_record", ty, vec![], span);
     }
+    if ty == Type::StyledText {
+        return ir::Expr::operation("markdown", ty, vec![], span);
+    }
     if ty == Type::Image {
         return ir::Expr::operation("image_url", Type::Image, vec![], span);
     }
@@ -3242,6 +3855,9 @@ fn default(ty: Type, span: Span) -> ir::Expr {
         Type::StandardButtonKind => "ok",
         Type::SwipeSide => "closed",
         Type::DragAction => "none",
+        Type::KeyEvent | Type::KeyModifiers => "",
+        Type::EventResult => "reject",
+        Type::FocusReason => "programmatic",
         Type::DrawerEdge => "left",
         Type::PopupPlacement => "below",
         Type::SelectionTarget => "rows",
@@ -3256,6 +3872,19 @@ fn expression_as(
     owner: &str,
     expected: Type,
 ) -> Result<ir::Expr> {
+    if let ExprKind::Conditional { condition, yes, no } = &e.kind
+        && !expected.enum_variants().is_empty()
+    {
+        let condition = expression_as(condition, scope, owner, Type::Bool)?;
+        let yes = expression_as(yes, scope, owner, expected.clone())?;
+        let no = expression_as(no, scope, owner, expected.clone())?;
+        return Ok(ir::Expr::operation(
+            "select",
+            expected,
+            vec![condition, yes, no],
+            e.span,
+        ));
+    }
     if let ExprKind::Array(items) = &e.kind
         && let Type::RecordList(name) = &expected
     {
@@ -3395,6 +4024,16 @@ fn expression(e: &ast::Expr, scope: &Scope<'_>, owner: &str) -> Result<ir::Expr>
                 _ => {}
             }
             ir::Expr::literal(ty.clone(), value.clone(), span)
+        }
+        ExprKind::Markdown(markdown) => {
+            let value = serde_json::from_str::<String>(markdown).map_err(|e| Diagnostic {
+                span,
+                message: format!("invalid Markdown string: {e}"),
+            })?;
+            ir::Expr {
+                value,
+                ..ir::Expr::operation("markdown", Type::StyledText, vec![], span)
+            }
         }
         ExprKind::ImageUrl(url) => {
             let value = serde_json::from_str::<String>(url).map_err(|e| Diagnostic {
@@ -3538,6 +4177,8 @@ fn expression(e: &ast::Expr, scope: &Scope<'_>, owner: &str) -> Result<ir::Expr>
                         | "StandardButtonKind"
                         | "SwipeSide"
                         | "DragAction"
+                        | "EventResult"
+                        | "FocusReason"
                         | "DrawerEdge"
                         | "PopupPlacement"
                         | "SelectionTarget"
@@ -3550,8 +4191,13 @@ fn expression(e: &ast::Expr, scope: &Scope<'_>, owner: &str) -> Result<ir::Expr>
                 return Ok(ir::Expr::literal(ty, name, span));
             }
             if let Some((base, field)) = s.rsplit_once('.') {
-                let record = if let Some(ty @ (Type::Record(_) | Type::Date | Type::Time)) =
-                    scope.parameters.get(base)
+                let record = if let Some(
+                    ty @ (Type::Record(_)
+                    | Type::Date
+                    | Type::Time
+                    | Type::KeyEvent
+                    | Type::KeyModifiers),
+                ) = scope.parameters.get(base)
                 {
                     Some(ir::Expr {
                         op: "param".into(),
@@ -3561,14 +4207,44 @@ fn expression(e: &ast::Expr, scope: &Scope<'_>, owner: &str) -> Result<ir::Expr>
                         args: vec![],
                         span,
                     })
-                } else if let Ok((property, ty @ (Type::Record(_) | Type::Date | Type::Time))) =
-                    scope.property(owner, base, false, span)
+                } else if let Ok((
+                    property,
+                    ty @ (Type::Record(_)
+                    | Type::Date
+                    | Type::Time
+                    | Type::KeyEvent
+                    | Type::KeyModifiers),
+                )) = scope.property(owner, base, false, span)
                 {
                     Some(ir::Expr::read(property, ty, span))
                 } else {
                     None
                 };
+                let record = record.or_else(|| {
+                    if base.ends_with(".modifiers") {
+                        let base = ast::Expr {
+                            kind: ExprKind::Reference(base.into()),
+                            span,
+                        };
+                        return expression(&base, scope, owner)
+                            .ok()
+                            .filter(|value| value.ty == Type::KeyModifiers);
+                    }
+                    None
+                });
                 if let Some(record) = record {
+                    if matches!(record.ty, Type::KeyEvent | Type::KeyModifiers) {
+                        let Some(ty) = record.ty.key_field(field) else {
+                            return fail(
+                                span,
+                                format!("{} has no field `{field}`", record.ty.name()),
+                            );
+                        };
+                        return Ok(ir::Expr {
+                            value: field.into(),
+                            ..ir::Expr::operation("key_field", ty, vec![record], span)
+                        });
+                    }
                     let civil = match record.ty {
                         Type::Date => Some(("date_field", ["year", "month", "day"])),
                         Type::Time => Some(("time_field", ["hour", "minute", "second"])),
@@ -3617,6 +4293,9 @@ fn expression(e: &ast::Expr, scope: &Scope<'_>, owner: &str) -> Result<ir::Expr>
                     args: vec![],
                     span,
                 });
+            }
+            if let Some(read) = scope.focus_read(owner, s, span)? {
+                return Ok(read);
             }
             if let Some(read) = scope.stack_read(owner, s, span) {
                 return Ok(read);
@@ -3864,6 +4543,10 @@ fn collect_bindings(
     };
 
     fn dependencies(e: &ir::Expr, path: &impl Fn(&str, &str) -> String, out: &mut Vec<String>) {
+        // Focus is published by the host, so it is an input to the graph.
+        if e.op == "focus_read" {
+            return;
+        }
         if let Some(owner) = &e.owner {
             let name = if e.op == "stack_read" {
                 "@stack"
@@ -3929,6 +4612,7 @@ fn collect_bindings(
                         | ir::Statement::Popup(_)
                         | ir::Statement::NativeDialogOpen(_)
                         | ir::Statement::SecondaryWindowCommand(_)
+                        | ir::Statement::FocusCommand(_)
                         | ir::Statement::WindowClose { .. } => {}
                     }
                 }

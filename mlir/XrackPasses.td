@@ -9,7 +9,7 @@ def XrSimplifyExpressions : Pass<"xr-simplify-expressions", "::mlir::ModuleOp"> 
 }
 
 def XrSimplifyVisuals : Pass<"xr-simplify-visuals", "::mlir::ModuleOp"> {
-  let summary = "Remove unconditional visual guards while preserving node identity";
+  let summary = "Remove redundant visual guards and animations while preserving node identity";
 }
 
 def XrPruneExpressions : Pass<"xr-prune-expressions", "::mlir::ModuleOp"> {

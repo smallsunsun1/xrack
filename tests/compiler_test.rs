@@ -24,6 +24,246 @@ fn compiler_errors_retain_source_diagnostics() {
 }
 
 #[test]
+fn focus_reads_are_read_only_and_events_have_typed_reasons() {
+    let source = r#"export component App inherits Window {
+        out property <bool> observing: pane.focus-within;
+        pane := FocusScope {
+            background: self.focus-within ? #fff : #000;
+            focus-within-changed(active, reason) => {}
+            field := LineEdit { background: self.has-focus ? #123 : #456; }
+        }
+    }"#;
+    let compiled = compile(source, "focus-state.xr").unwrap();
+    assert!(compiled.mlir.contains("\"xr.focus_read\""));
+    assert!(compiled.mlir.contains("FocusReason"));
+    assert!(compiled.rust.to_string().contains("FocusEvent :: Within"));
+    let bad = source.replace(
+        "background: self.focus-within ? #fff : #000;",
+        "focus-within: false;",
+    );
+    assert!(
+        compile(&bad, "focus-state.xr")
+            .err()
+            .unwrap()
+            .contains("read-only")
+    );
+    let raw = lower(source, "focus-state.xr");
+    let bad = raw.replace("value = \"has-focus\"", "value = \"focus-within\"");
+    assert!(
+        mlir::process(&bad)
+            .unwrap_err()
+            .contains("requires a focus state property")
+    );
+}
+
+#[test]
+fn focus_scope_keys_have_typed_fields_and_a_verified_result() {
+    let source = r#"export component App inherits Window {
+        scope := FocusScope {
+            capture-key-pressed(event) => {
+                event.modifiers.primary && !event.repeat && event.key == "k" ? accept : reject
+            }
+        }
+    }"#;
+    let compiled = compile(source, "keys.xr").unwrap();
+    assert!(compiled.mlir.contains("!xr.keyevent"));
+    assert!(compiled.mlir.contains("!xr.keymodifiers"));
+    assert!(compiled.mlir.contains("!xr.eventresult"));
+    assert!(
+        compiled
+            .rust
+            .to_string()
+            .contains("KeyPhase :: CapturePressed")
+    );
+    let invalid = source.replace("event.modifiers.primary", "event.modifiers.other");
+    assert!(
+        compile(&invalid, "keys.xr")
+            .err()
+            .unwrap()
+            .contains("has no field")
+    );
+    let invalid = source.replace("? accept : reject", "? true : false");
+    assert!(
+        compile(&invalid, "keys.xr")
+            .err()
+            .unwrap()
+            .contains("type mismatch")
+    );
+    let raw = lower(source, "keys.xr");
+    let invalid = raw.replace("value = \"primary\"", "value = \"unknown\"");
+    assert!(
+        mlir::process(&invalid)
+            .unwrap_err()
+            .contains("incorrect key event field")
+    );
+}
+
+#[test]
+fn focus_scope_commands_and_initial_targets_are_checked_in_both_stages() {
+    let source = r#"export component App inherits Window {
+        outside := Button {}
+        pane := FocusScope {
+            initial-focus: query;
+            focus-on-click: false;
+            query := LineEdit {}
+        }
+        jump := Button { clicked() => { pane.focus(); } }
+    }"#;
+    let compiled = compile(source, "focus.xr").unwrap();
+    assert!(compiled.mlir.contains("\"xr.focus_target\""));
+    assert!(compiled.mlir.contains("\"xr.focus_command\""));
+    assert!(compiled.rust.to_string().contains("FocusAction :: Focus"));
+    let raw = lower(source, "focus.xr");
+    let invalid = raw.replace("target = \"query\"", "target = \"outside\"");
+    assert!(
+        mlir::process(&invalid)
+            .unwrap_err()
+            .contains("requires a descendant")
+    );
+    let invalid = source.replace("focus-on-click: false", "focus-on-click: 5");
+    assert!(
+        compile(&invalid, "focus.xr")
+            .err()
+            .unwrap()
+            .contains("type mismatch")
+    );
+    let invalid = source.replace("pane.focus()", "pane.focus(1)");
+    assert!(
+        compile(&invalid, "focus.xr")
+            .err()
+            .unwrap()
+            .contains("takes no arguments")
+    );
+    let invalid = source.replace(
+        "outside := Button {}",
+        "pure callback helper; helper => { pane.focus(); }",
+    );
+    assert!(
+        compile(&invalid, "focus.xr")
+            .err()
+            .unwrap()
+            .contains("not allowed in a pure callback")
+    );
+}
+
+#[test]
+fn states_use_scoped_selectors_and_reject_invalid_property_changes() {
+    let source = r#"export component App inherits Window {
+        in property <bool> open: false;
+        panel := Rectangle { width: 48px; visible: true; }
+        states [ expanded when root.open: {
+            panel.width: 96px;
+            panel.visible: false;
+            in-out { animate * { duration: 160ms; } }
+        } ]
+    }"#;
+    let compiled = compile(source, "states.xr").unwrap();
+    assert_eq!(compiled.mlir.matches("\"xr.state_select\"").count(), 1);
+    assert_eq!(compiled.mlir.matches("\"xr.state_set\"").count(), 2);
+    assert_eq!(compiled.mlir.matches("\"xr.state_timing\"").count(), 2);
+    let invalid_case =
+        lower(source, "states.xr").replace("case_index = 0 : i64", "case_index = 4 : i64");
+    assert!(
+        mlir::process(&invalid_case)
+            .unwrap_err()
+            .contains("state case")
+    );
+    for (invalid, diagnostic) in [
+        (
+            source.replace("panel.width: 96px", "panel.width: false"),
+            "type mismatch",
+        ),
+        (
+            source.replace("panel.width: 96px", "missing.width: 96px"),
+            "unknown state target",
+        ),
+        (
+            source.replace("animate *", "animate panel.visible"),
+            "animatable property",
+        ),
+        (
+            source.replace("width: 48px;", ""),
+            "requires a base binding",
+        ),
+        (
+            source.replace(
+                "width: 48px;",
+                "width: 48px; animate width { duration: 10ms; }",
+            ),
+            "already has a property animation",
+        ),
+    ] {
+        let error = compile(&invalid, "states.xr").err().unwrap();
+        assert!(error.contains(diagnostic), "{error}");
+    }
+    let two_way = r#"component App inherits Window {
+        in-out property <string> value;
+        editor := LineEdit { text <=> root.value; }
+        states [ alert when true: { editor.text: "alert"; } ]
+    }"#;
+    assert!(
+        compile(two_way, "states.xr")
+            .err()
+            .unwrap()
+            .contains("cannot override two-way property")
+    );
+}
+
+#[test]
+fn grouped_animation_has_typed_timing_and_an_enabled_operand() {
+    let source = r#"export component App inherits Window {
+        in property <bool> motion: true;
+        Rectangle {
+            x: 20px; width: 120px;
+            animate x, width { duration: 400ms; delay: 120ms; easing: cubic-bezier(0.2, -0.3, 0.8, 1.2); enabled: root.motion; }
+        }
+    }"#;
+    let compiled = compile(source, "animation.xr").unwrap();
+    assert_eq!(compiled.mlir.matches("\"xr.animate\"").count(), 2);
+    assert!(compiled.mlir.contains("curve = array<f64:"));
+    assert!(compiled.mlir.contains("delay = 120 : i64"));
+    assert!(compiled.rust.to_string().contains("Animation :: new"));
+    let raw = lower(source, "animation.xr");
+    let invalid = raw.replace("delay = 120 : i64", "delay = 60001 : i64");
+    assert!(
+        mlir::process(&invalid)
+            .unwrap_err()
+            .contains("requires a delay")
+    );
+    let invalid = raw.replace("curve = array<f64: ", "curve = array<f64: 1.1, ");
+    assert!(
+        mlir::process(&invalid)
+            .unwrap_err()
+            .contains("curve coordinates")
+    );
+    for (invalid, diagnostic) in [
+        (
+            source.replace("enabled: root.motion", "enabled: 1"),
+            "type mismatch",
+        ),
+        (
+            source.replace("delay: 120ms", "duration: 120ms"),
+            "duplicate animation option",
+        ),
+        (
+            source.replace("animate x, width", "animate x, x"),
+            "duplicate animation for",
+        ),
+        (
+            source.replace("0.8, 1.2", "1.1, 1.2"),
+            "x coordinates in [0, 1]",
+        ),
+    ] {
+        assert!(
+            compile(&invalid, "animation.xr")
+                .err()
+                .unwrap()
+                .contains(diagnostic)
+        );
+    }
+}
+
+#[test]
 fn drag_areas_verify_action_types_and_generate_typed_event_routes() {
     let source = r#"export component App inherits Window {
         out property <DragAction> result: none;
@@ -2935,4 +3175,42 @@ fn native_frontend_and_mlir_are_safe_to_call_from_multiple_threads() {
     for t in threads {
         t.join().unwrap();
     }
+}
+
+#[test]
+fn markdown_literals_are_typed_in_mlir_and_compiled_to_static_style_ranges() {
+    let source = r#"export component App inherits Window {
+        in property <styled-text> body: @markdown("**bold** `code`");
+        StyledText { text: root.body; }
+    }"#;
+    let compiled = compile(source, "markdown.xr").unwrap();
+    assert!(compiled.mlir.contains("\"xr.markdown\""));
+    assert!(compiled.mlir.contains("!xr.styledtext"));
+    let tokens = compiled.rust.to_string();
+    assert!(tokens.contains("StyledText :: from_compiled (\"bold code\""));
+    assert!(tokens.contains("bold : true"));
+    assert!(tokens.contains("monospace : true"));
+    let invalid = source.replace("StyledText {", "Label {");
+    assert!(
+        compile(&invalid, "markdown.xr")
+            .err()
+            .unwrap()
+            .contains("type mismatch")
+    );
+
+    let invalid = source.replace("**bold** `code`", "[link](https://example.test)");
+    let error = compile(&invalid, "markdown.xr").err().unwrap();
+    assert!(error.contains("markdown.xr:2:"), "{error}");
+    assert!(
+        error.contains("unsupported Markdown syntax: links"),
+        "{error}"
+    );
+
+    let raw = lower(source, "markdown.xr");
+    let malformed = raw.replace("kind = \"StyledText\"", "kind = \"Label\"");
+    assert!(
+        mlir::process(&malformed)
+            .unwrap_err()
+            .contains("incorrect text layout property type")
+    );
 }

@@ -40,3 +40,4 @@ imgref = "1.12"
 rgb = "0.8"
 unicode-segmentation = "1.13"
 unicode-bidi = "0.3.18"
+pulldown-cmark = { version = "=0.13.6", default-features = false }

@@ -41,11 +41,24 @@ void XrackDialect::initialize() {
 }
 
 static bool isExpression(Operation &op) {
-  return isa<LiteralOp, ReadOp, StackReadOp, ParamOp, UnaryOp, CastOp,
+  return isa<LiteralOp, ReadOp, StackReadOp, FocusReadOp, ParamOp, UnaryOp, CastOp,
              StringifyOp, BinaryOp, SelectOp, SolidBrushOp, GradientStopOp,
-             LinearGradientOp, RadialGradientOp, ImageUrlOp, ArrayOp, CallOp,
+             LinearGradientOp, RadialGradientOp, ImageUrlOp, MarkdownOp, ArrayOp, CallOp,
              ToRatioOp, MakeRecordOp, DefaultRecordOp, RecordArrayOp,
-             GetFieldOp, MakeDateOp, DateFieldOp, MakeTimeOp, TimeFieldOp>(op);
+             GetFieldOp, KeyFieldOp, MakeDateOp, DateFieldOp, MakeTimeOp, TimeFieldOp>(op);
+}
+
+LogicalResult KeyFieldOp::verify() {
+  auto field = getValue();
+  auto input = getInput().getType();
+  auto result = getResult().getType();
+  bool valid = isa<KeyEventType>(input)
+      ? ((field == "key" || field == "text") && isa<StringType>(result)) ||
+        (field == "repeat" && isa<BoolType>(result)) ||
+        (field == "modifiers" && isa<KeyModifiersType>(result))
+      : llvm::StringSwitch<bool>(field).Cases({"control", "shift", "alt", "meta", "primary"}, true).Default(false)
+        && isa<BoolType>(result);
+  return valid ? success() : emitOpError("incorrect key event field or type");
 }
 
 LogicalResult DateFieldOp::verify() {
@@ -200,6 +213,8 @@ LogicalResult ComponentOp::verify() {
     return emitOpError("requires exactly one root xr.element");
   return success();
 }
+
+static bool focusTargetKind(llvm::StringRef kind);
 
 LogicalResult ElementOp::verify() {
   const bool root = isa<ComponentOp>((*this)->getParentOp());
@@ -434,12 +449,19 @@ LogicalResult ElementOp::verify() {
   llvm::StringSet<> intervalEndpoints;
   llvm::StringSet<> pageSlots;
   llvm::StringSet<> swipeSlots;
+  llvm::StringSet<> animations;
   ReadOp intervalTarget;
   ReadOp comboTextTarget;
   ReadOp calendarTarget;
   bool checkboxBoolean = false;
   bool checkboxState = false;
   for (Operation &child : body) {
+    if (auto animation = dyn_cast<AnimateOp>(child)) {
+      if (root && kind == "Window")
+        return child.emitOpError("animate a visual child instead of the Window");
+      if (animation.getName().empty() || !animations.insert(animation.getName()).second)
+        return child.emitOpError("animation requires a nonempty, unique property name");
+    }
     if (kind == "CheckBox" && isa<BindOp, ControlLinkOp, RowLinkOp>(child))
       if (auto attr = child.getAttrOfType<StringAttr>("name")) {
         auto name = attr.getValue();
@@ -575,6 +597,16 @@ LogicalResult ElementOp::verify() {
       auto name = bind.getName();
       auto type = bind.getInput().getType();
       bool singleLine = kind == "TextInput" || kind == "LineEdit";
+      if ((name == "has-focus" && focusTargetKind(kind)) ||
+          (name == "focus-within" && kind == "FocusScope"))
+        return child.emitOpError("focus state is read-only");
+      if (kind == "FocusScope" &&
+          (name == "enabled" || name == "focus-on-click" ||
+           name == "focus-on-tab-navigation" || name == "restore-focus") &&
+          !isa<BoolType>(type))
+        return child.emitOpError("FocusScope policy requires a boolean");
+      if (kind == "FocusScope" && name == "initial-focus")
+        return child.emitOpError("initial-focus requires an xr.focus_target reference");
       if ((kind == "DragArea" &&
            (((name == "data" || name == "drag-key") && !isa<StringType>(type)) ||
             ((name == "enabled" || name == "allow-copy" || name == "allow-move" ||
@@ -600,7 +632,7 @@ LogicalResult ElementOp::verify() {
           name == "font-weight" || name == "font-size") {
         const bool hasFont = singleLine ||
             llvm::StringSwitch<bool>(kind)
-                .Cases({"Text", "Label", "TextArea", "TextEdit", "SearchField",
+                .Cases({"Text", "Label", "StyledText", "TextArea", "TextEdit", "SearchField",
                         "Button", "StandardButton", "ToolButton", "DelayButton",
                         "DialogButton", "CheckBox", "Switch", "RadioButton",
                         "RadioGroup", "GroupBox", "Dialog", "Drawer", "TableCell",
@@ -664,9 +696,11 @@ LogicalResult ElementOp::verify() {
       if ((name == "accessible-name" || name == "accessible-description") &&
           !isa<StringType>(bind.getInput().getType()))
         return child.emitOpError("accessibility labels require strings");
-      if (kind == "Text" || kind == "Label") {
+      if (kind == "Text" || kind == "Label" || kind == "StyledText") {
         auto type = bind.getInput().getType();
-        if ((name == "wrap" && !isa<TextWrapType>(type)) ||
+        if ((name == "text" &&
+             !(kind == "StyledText" ? isa<StyledTextType>(type) : isa<StringType>(type))) ||
+            (name == "wrap" && !isa<TextWrapType>(type)) ||
             (name == "overflow" && !isa<TextOverflowType>(type)) ||
             (name == "max-lines" && !isa<IntType>(type)) ||
             (name == "horizontal-alignment" && !isa<TextHorizontalAlignmentType>(type)) ||
@@ -984,7 +1018,7 @@ LogicalResult ElementOp::verify() {
         return child.emitOpError("incorrect Drawer property type");
     }
     if (textCell) {
-      if (!isa<BindOp, RowLinkOp, AnimateOp, ShowIfOp, EndOp>(child) &&
+      if (!isa<BindOp, RowLinkOp, AnimateOp, StateSelectOp, StateSetOp, StateTimingOp, ShowIfOp, EndOp>(child) &&
           !isExpression(child))
         return child.emitOpError("invalid cell member");
       if (isa<RowLinkOp>(child))
@@ -1036,8 +1070,8 @@ LogicalResult ElementOp::verify() {
     if (isa<PropertyOp>(child) && (root || getKey().value_or(getId()).empty()))
       return child.emitOpError("requires a keyed non-root element");
     if (!isa<BindOp, ActionRefOp, AnimateOp, ShowIfOp, RepeatOp, ControlLinkOp,
-             RowLinkOp, HandlerOp, ElementOp, InstanceOp, PropertyOp, EndOp>(
-            child) &&
+             RowLinkOp, HandlerOp, ElementOp, InstanceOp, PropertyOp, StateSelectOp,
+             StateSetOp, StateTimingOp, FocusTargetOp, EndOp>(child) &&
         !isExpression(child))
       return child.emitOpError("is not valid in an element body");
   }
@@ -1096,13 +1130,104 @@ LogicalResult InstanceOp::verify() {
   return success();
 }
 
-LogicalResult AnimateOp::verify() {
-  auto duration = getInput().getDefiningOp<LiteralOp>();
+template <typename Op> static LogicalResult verifyTiming(Op animation) {
+  auto duration = animation.getInput().template getDefiningOp<LiteralOp>();
   int64_t milliseconds;
   if (!duration || duration.getValue().getAsInteger(10, milliseconds) ||
       milliseconds < 0 || milliseconds > 60000)
-    return emitOpError("requires a constant duration between 0 and 60000ms");
+    return animation.emitOpError("requires a constant duration between 0 and 60000ms");
+  if (auto delay = animation.getDelayAttr(); delay && (delay.getInt() < 0 || delay.getInt() > 60000))
+    return animation.emitOpError("requires a delay between 0 and 60000ms");
+  if (auto curve = animation.getCurveAttr()) {
+    auto coordinates = curve.asArrayRef();
+    if (coordinates.size() != 4 ||
+        !llvm::all_of(coordinates, [](double value) { return std::isfinite(value); }) ||
+        coordinates[0] < 0 || coordinates[0] > 1 ||
+        coordinates[2] < 0 || coordinates[2] > 1)
+      return animation.emitOpError("requires four finite curve coordinates with both x coordinates in [0, 1]");
+  }
   return success();
+}
+
+LogicalResult AnimateOp::verify() { return verifyTiming(*this); }
+
+LogicalResult StateSelectOp::verify() {
+  auto element = cast<ElementOp>((*this)->getParentOp());
+  if (getOwner() != element.getKey().value_or(element.getId()) ||
+      getNames().empty() || getNames().size() != getConditions().size() ||
+      !llvm::hasSingleElement(element.getBody().front().getOps<StateSelectOp>()))
+    return emitOpError("requires one ordered state group on its owning element");
+  llvm::StringSet<> names;
+  for (auto attribute : getNames()) {
+    auto name = dyn_cast<StringAttr>(attribute);
+    if (!name || name.getValue().empty() || !names.insert(name.getValue()).second)
+      return emitOpError("requires nonempty, unique state names");
+  }
+  return success();
+}
+
+static bool stateCase(Operation *use, Value selector, int64_t index) {
+  auto state = selector.getDefiningOp<StateSelectOp>();
+  if (!state || index < 0 || static_cast<uint64_t>(index) >= state.getNames().size())
+    return false;
+  for (auto element = use->getParentOfType<ElementOp>(); element;
+       element = element->getParentOfType<ElementOp>()) {
+    if (element.getOperation() == state->getParentOp())
+      return true;
+    if (!element.getBody().front().getOps<RepeatOp>().empty())
+      return false;
+  }
+  return false;
+}
+
+static bool sameVisualType(Type a, Type b) {
+  return a == b ||
+      (isa<LengthType, PercentType>(a) && isa<LengthType, PercentType>(b));
+}
+
+LogicalResult StateSetOp::verify() {
+  if (!stateCase(*this, getSelector(), getCaseIndexAttr().getInt()) || getName().empty())
+    return emitOpError("requires a property and a state case in scope");
+  auto &body = cast<ElementOp>((*this)->getParentOp()).getBody().front();
+  for (auto binding : body.getOps<BindOp>())
+    if (binding.getName() == getName() &&
+        !sameVisualType(binding.getInput().getType(), getInput().getType()))
+      return emitOpError("must preserve the base binding type");
+  for (auto &op : body)
+    if (isa<ControlLinkOp, RowLinkOp>(op))
+      if (auto name = op.getAttrOfType<StringAttr>("name"); name && name.getValue() == getName())
+        return emitOpError("cannot override a two-way property");
+  for (auto binding : body.getOps<StateSetOp>())
+    if (binding != *this && binding.getName() == getName() &&
+        (binding.getSelector() != getSelector() ||
+         binding.getCaseIndexAttr().getInt() == getCaseIndexAttr().getInt() ||
+         !sameVisualType(binding.getInput().getType(), getInput().getType())))
+      return emitOpError("requires one state group and one value per case");
+  return success();
+}
+
+LogicalResult StateTimingOp::verify() {
+  if (!stateCase(*this, getSelector(), getCaseIndexAttr().getInt()) ||
+      (getDirection() != "in" && getDirection() != "out"))
+    return emitOpError("requires a state case and an in or out direction");
+  auto element = cast<ElementOp>((*this)->getParentOp());
+  auto &body = element.getBody().front();
+  if (element.getKind() == "Window" ||
+      llvm::any_of(body.getOps<AnimateOp>(), [&](AnimateOp op) { return op.getName() == getName(); }))
+    return emitOpError("requires a visual property without a standalone animation");
+  if (!llvm::any_of(body.getOps<BindOp>(), [&](BindOp op) { return op.getName() == getName(); }) ||
+      !llvm::any_of(body.getOps<StateSetOp>(), [&](StateSetOp op) {
+        return op.getName() == getName() && op.getSelector() == getSelector() &&
+               op.getCaseIndexAttr().getInt() == getCaseIndexAttr().getInt() &&
+               isa<IntType, FloatType, LengthType, PercentType, ColorType, BrushType>(op.getInput().getType());
+      }))
+    return emitOpError("requires a base binding and an animatable property in the state");
+  for (auto timing : body.getOps<StateTimingOp>())
+    if (timing != *this && timing.getName() == getName() &&
+        timing.getSelector() == getSelector() && timing.getDirection() == getDirection() &&
+        timing.getCaseIndexAttr().getInt() == getCaseIndexAttr().getInt())
+      return emitOpError("duplicate state transition direction");
+  return verifyTiming(*this);
 }
 
 LogicalResult ControlLinkOp::verify() {
@@ -1215,6 +1340,23 @@ static LogicalResult verifyNativeDialogOpen(Operation *op) {
 LogicalResult FileDialogOpenOp::verify() { return verifyNativeDialogOpen(*this); }
 LogicalResult NativeDialogOpenOp::verify() { return verifyNativeDialogOpen(*this); }
 
+LogicalResult FocusTargetOp::verify() {
+  auto parent = cast<ElementOp>((*this)->getParentOp());
+  if (parent.getKind() != "FocusScope" || getTarget().empty() ||
+      !llvm::hasSingleElement(parent.getBody().front().getOps<FocusTargetOp>()))
+    return emitOpError("requires one initial-focus reference on a FocusScope");
+  return success();
+}
+
+LogicalResult FocusCommandOp::verify() {
+  if (getAction() != "focus" && getAction() != "clear")
+    return emitOpError("requires a focus or clear action");
+  if (auto callback = (*this)->getParentOfType<CallbackOp>();
+      callback && callback.getPure().value_or("false") == "true")
+    return emitOpError("focus commands are not allowed in pure callbacks");
+  return success();
+}
+
 LogicalResult WindowCloseOp::verify() {
   auto component = (*this)->getParentOfType<ComponentOp>();
   if (!component)
@@ -1235,6 +1377,11 @@ LogicalResult SecondaryWindowCommandOp::verify() {
   if (getCommand() != "show" && getCommand() != "hide" && getCommand() != "close")
     return emitOpError("requires show, hide, or close");
   return success();
+}
+
+LogicalResult FocusReadOp::verify() {
+  return getValue() == "has-focus" || getValue() == "focus-within"
+      ? success() : emitOpError("requires a focus state property");
 }
 
 LogicalResult StackReadOp::verify() {
@@ -1362,8 +1509,29 @@ static LogicalResult verifyCallback(Operation *op, Region &body,
       if (!args->empty() || !llvm::hasSingleElement(results) ||
           !isa<BoolType>((*results.begin()).getInput().getType()))
         return handler.emitOpError("close-requested requires no parameters and a bool result");
+    } else if (llvm::StringSwitch<bool>(handler.getName())
+                   .Cases({"capture-key-pressed", "capture-key-released", "key-pressed", "key-released"}, true)
+                   .Default(false)) {
+      auto *arg = args->size() == 1 ? args->front().getAsObject() : nullptr;
+      if (kind != "FocusScope" || !arg || arg->getString("ty") != "KeyEvent" ||
+          !arg->getString("name") || !llvm::hasSingleElement(results) ||
+          !isa<EventResultType>((*results.begin()).getInput().getType()))
+        return handler.emitOpError("FocusScope key handlers require (KeyEvent) -> EventResult");
     } else if (!results.empty()) {
-      return handler.emitOpError("only close-requested may return a value");
+      return handler.emitOpError("only close-requested may return a value outside FocusScope key handlers");
+    }
+    if (llvm::StringSwitch<bool>(handler.getName())
+            .Cases({"focus-gained", "focus-lost", "focus-changed-event", "focus-within-changed"}, true)
+            .Default(false)) {
+      bool within = handler.getName() == "focus-within-changed";
+      auto argIs = [&](size_t index, llvm::StringRef type) {
+        if (index >= args->size()) return false;
+        auto *arg = (*args)[index].getAsObject();
+        return arg && arg->getString("name") && arg->getString("ty") == type;
+      };
+      if (kind != "FocusScope" || args->size() != (within ? 2u : 1u) ||
+          !argIs(within ? 1 : 0, "FocusReason") || (within && !argIs(0, "bool")))
+        return handler.emitOpError("incorrect FocusScope focus event signature");
     }
     if (kind == "Timer" && (handler.getName() != "triggered" || !args->empty()))
       return handler.emitOpError("Timer requires triggered() without parameters");
@@ -1518,7 +1686,7 @@ static LogicalResult verifyCallback(Operation *op, Region &body,
       return child.emitOpError("must be immediately before xr.end");
     if (!isa<AssignOp, InvokeOp, NavigateOp, TimerCommandOp, PopupCommandOp,
              FileDialogOpenOp, NativeDialogOpenOp, WindowCloseOp,
-             SecondaryWindowCommandOp, ReturnOp, EndOp>(child) &&
+             SecondaryWindowCommandOp, FocusCommandOp, ReturnOp, EndOp>(child) &&
         !isExpression(child))
       return child.emitOpError("is not valid in a callback or event handler");
   }
@@ -1603,6 +1771,15 @@ LogicalResult LiteralOp::verify() {
     valid = spelling == "unchecked" || spelling == "partially-checked" ||
             spelling == "checked";
   } else if (isa<DialogRoleType>(type)) {
+    valid = spelling == "accept" || spelling == "reject";
+  } else if (isa<KeyEventType, KeyModifiersType>(type)) {
+    valid = spelling.empty();
+  } else if (isa<FocusReasonType>(type)) {
+    valid = llvm::StringSwitch<bool>(spelling)
+                .Cases({"programmatic", "tab-navigation", "pointer-click", "popup-activation",
+                        "window-activation", "accessibility", "layout-change", "keyboard-navigation"}, true)
+                .Default(false);
+  } else if (isa<EventResultType>(type)) {
     valid = spelling == "accept" || spelling == "reject";
   } else if (isa<DragActionType>(type)) {
     valid = spelling == "none" || spelling == "copy" || spelling == "move" ||
@@ -1787,6 +1964,18 @@ static LogicalResult verifyCall(Operation *op, const Owners &owners,
   return op->emitOpError("unknown callback ") << owner << "." << name;
 }
 
+static bool focusTargetKind(llvm::StringRef kind) {
+  return llvm::StringSwitch<bool>(kind)
+      .Cases({"FocusScope", "TextInput", "LineEdit", "TextEdit", "TextArea", "SearchField",
+              "Button", "ToolButton", "DelayButton", "DialogButton", "StandardButton",
+              "Slider", "Dial", "SpinBox", "DoubleSpinBox", "ComboBox", "Calendar",
+              "CheckBox", "Switch", "RadioButton", "Tab", "TabButton", "SwipeView",
+              "SwipeDelegate", "StackView", "ListView", "GridView", "StandardListView",
+              "TreeView", "TableView", "StandardTableView", "GroupBox", "PageIndicator",
+              "Tumbler"}, true)
+      .Default(false);
+}
+
 static LogicalResult verifyReferences(ComponentOp component,
                                       const Components &components) {
   Owners owners;
@@ -1828,7 +2017,7 @@ static LogicalResult verifyReferences(ComponentOp component,
     }
   }
 
-  auto stackOwner = [&](llvm::StringRef name) -> ElementOp {
+  auto elementOwner = [&](llvm::StringRef name) -> ElementOp {
     auto *target = owners.lookup(name);
     auto view = dyn_cast_or_null<ElementOp>(target);
     if (target == component.getOperation()) {
@@ -1836,6 +2025,10 @@ static LogicalResult verifyReferences(ComponentOp component,
       if (!roots.empty())
         view = *roots.begin();
     }
+    return view;
+  };
+  auto stackOwner = [&](llvm::StringRef name) -> ElementOp {
+    auto view = elementOwner(name);
     return view && view.getKind() == "StackView" ? view : ElementOp{};
   };
   auto references = component.walk([&](Operation *op) -> WalkResult {
@@ -1847,6 +2040,41 @@ static LogicalResult verifyReferences(ComponentOp component,
     else if (auto read = dyn_cast<StackReadOp>(op)) {
       if (!stackOwner(read.getOwner()))
         result = op->emitOpError("requires a StackView owner");
+    } else if (auto focus = dyn_cast<FocusReadOp>(op)) {
+      auto target = elementOwner(focus.getOwner());
+      if (!target || !focusTargetKind(target.getKind()) ||
+          (focus.getValue() == "focus-within" && target.getKind() != "FocusScope")) {
+        result = op->emitOpError("requires a focus state property on its owning element");
+      } else {
+        for (auto current = target; current; current = current->getParentOfType<ElementOp>())
+          if (!current.getBody().front().getOps<RepeatOp>().empty()) {
+            result = op->emitOpError("focus bindings on repeated elements require a component delegate");
+            break;
+          }
+      }
+    } else if (auto focus = dyn_cast<FocusTargetOp>(op)) {
+      auto target = elementOwner(focus.getTarget());
+      auto parent = cast<ElementOp>(op->getParentOp());
+      if (!target || !focusTargetKind(target.getKind()) || target == parent) {
+        result = op->emitOpError("requires a focusable descendant");
+      } else {
+        while (target && target != parent &&
+               target.getBody().front().getOps<RepeatOp>().empty())
+          target = target->getParentOfType<ElementOp>();
+        if (target != parent)
+          result = op->emitOpError("requires a descendant in the same repetition");
+      }
+    } else if (auto focus = dyn_cast<FocusCommandOp>(op)) {
+      auto target = elementOwner(focus.getTarget());
+      if (!target || !focusTargetKind(target.getKind())) {
+        result = op->emitOpError("requires a focusable target");
+      } else {
+        for (auto current = target; current; current = current->getParentOfType<ElementOp>())
+          if (!current.getBody().front().getOps<RepeatOp>().empty()) {
+            result = op->emitOpError("requires a statically addressed focus target");
+            break;
+          }
+      }
     } else if (auto action = dyn_cast<ActionRefOp>(op)) {
       auto target =
           dyn_cast_or_null<ElementOp>(owners.lookup(action.getOwner()));
@@ -2010,11 +2238,11 @@ static bool recordIdentifier(llvm::StringRef name) {
 
 static bool recordScalarType(llvm::StringRef type) {
   return llvm::StringSwitch<bool>(type)
-      .Cases({"int", "float", "bool", "string", "length", "color", "brush",
+      .Cases({"int", "float", "bool", "string", "styled-text", "length", "color", "brush",
               "image", "ImageFit", "LayoutAlignment", "CrossAxisAlignment",
               "Orientation", "FlexboxLayoutDirection", "FlexboxLayoutWrap", "DialInputMode", "ScrollBarPolicy", "TextWrap",
               "TextHorizontalAlignment", "TextVerticalAlignment", "TextOverflow", "InputType", "ColorScheme", "FileDialogMode", "MessageLevel", "MessageButtons",
-              "DialogRole", "StandardButtonKind", "SwipeSide", "DragAction", "DrawerEdge", "PopupPlacement", "SelectionTarget", "Date", "Time", "CheckState"},
+              "DialogRole", "StandardButtonKind", "SwipeSide", "DragAction", "KeyEvent", "KeyModifiers", "EventResult", "FocusReason", "DrawerEdge", "PopupPlacement", "SelectionTarget", "Date", "Time", "CheckState"},
              true)
       .Default(false);
 }

@@ -76,6 +76,79 @@ fn static_gradient_plans_exclude_live_colors() {
 }
 
 #[test]
+fn state_overrides_keep_grid_placement_and_subtree_values_live() {
+    let module = raw(
+        r#"export component Demo inherits Window {
+            in property <bool> compact: false;
+            grid := GridLayout { tile := Rectangle { col: 0; width: 16px; height: 16px; } }
+            states [ small when root.compact: { tile.col: 1; tile.width: 12px; } ]
+        }"#,
+        "state-plan.xr",
+    )
+    .optimize()
+    .unwrap();
+    let window = module
+        .operations()
+        .next()
+        .unwrap()
+        .children()
+        .find(|op| op.name() == "xr.element")
+        .unwrap();
+    let grid = window
+        .children()
+        .find(|op| op.attribute("id") == Some("grid"))
+        .unwrap();
+    let tile = grid
+        .children()
+        .find(|op| op.attribute("id") == Some("tile"))
+        .unwrap();
+    assert!(grid.attribute("xr.static_grid").is_none());
+    assert!(tile.attribute("xr.static_subtree").is_none());
+    let col = member(tile, "xr.state_set", "col");
+    assert_eq!(definition(col, 0).name(), "xr.state_select");
+}
+
+#[test]
+fn simplify_visuals_removes_disabled_timing_and_preserves_delayed_jumps() {
+    let input = raw(
+        r#"export component Demo inherits Window {
+            in property <bool> motion: true;
+            Rectangle {
+                animate width { duration: 200ms; enabled: false; }
+                animate height { duration: 200ms; enabled: true; }
+                animate x { delay: 100ms; }
+                animate y { duration: 200ms; enabled: root.motion; }
+            }
+        }"#,
+        "animation-pass.xr",
+    );
+    let optimized = input.optimize().unwrap();
+    let component = optimized.operations().next().unwrap();
+    let window = component
+        .children()
+        .find(|op| op.name() == "xr.element")
+        .unwrap();
+    let item = window
+        .children()
+        .find(|op| op.attribute("kind") == Some("Rectangle"))
+        .unwrap();
+    let animations: Vec<_> = item
+        .children()
+        .filter(|op| op.name() == "xr.animate")
+        .collect();
+    assert_eq!(animations.len(), 3);
+    assert!(member(item, "xr.animate", "height").operand(1).is_none());
+    assert_eq!(
+        member(item, "xr.animate", "x").integer_attribute("delay"),
+        Some(100)
+    );
+    assert_eq!(
+        definition(member(item, "xr.animate", "y"), 1).name(),
+        "xr.read"
+    );
+}
+
+#[test]
 fn equivalent_visual_bindings_share_one_cache_across_sibling_elements() {
     let input = raw(
         r#"export component Demo inherits Window {

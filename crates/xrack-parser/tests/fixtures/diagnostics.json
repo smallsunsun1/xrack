@@ -31,7 +31,7 @@
           "line": 1,
           "column": 40
         },
-        "message": "mismatched input ';' expecting {'from', 'as', 'struct', 'duration', 'ms', '[', 'pure', '(', '+', '-', '!', 'true', 'false', '@image-url', '@linear-gradient', '@radial-gradient', 'circle', 'deg', 'root', 'self', 'int', 'float', 'bool', 'string', 'length', 'color', 'brush', 'image', 'ImageFit', 'LayoutAlignment', 'CrossAxisAlignment', 'Orientation', 'DialInputMode', 'ScrollBarPolicy', 'TextWrap', 'DialogRole', 'DrawerEdge', 'SelectionTarget', COLOR, NUMBER, STRING, IDENT}"
+        "message": "mismatched input ';' expecting {'from', 'as', 'struct', 'duration', 'ms', 'states', '[', 'when', 'pure', '(', '+', '-', '!', 'true', 'false', '@image-url', '@markdown', '@linear-gradient', '@radial-gradient', 'circle', 'deg', 'root', 'self', 'int', 'float', 'bool', 'string', 'length', 'color', 'brush', 'image', 'ImageFit', 'LayoutAlignment', 'CrossAxisAlignment', 'Orientation', 'DialInputMode', 'ScrollBarPolicy', 'TextWrap', 'DialogRole', 'DrawerEdge', 'SelectionTarget', COLOR, NUMBER, STRING, IDENT}"
       }
     ]
   ],
@@ -62,7 +62,7 @@
           "line": 1,
           "column": 50
         },
-        "message": "mismatched input '<EOF>' expecting {'from', 'as', 'struct', 'duration', 'ms', '[', 'pure', '(', '+', '-', '!', 'true', 'false', '@image-url', '@linear-gradient', '@radial-gradient', 'circle', 'deg', 'root', 'self', 'int', 'float', 'bool', 'string', 'length', 'color', 'brush', 'image', 'ImageFit', 'LayoutAlignment', 'CrossAxisAlignment', 'Orientation', 'DialInputMode', 'ScrollBarPolicy', 'TextWrap', 'DialogRole', 'DrawerEdge', 'SelectionTarget', COLOR, NUMBER, STRING, IDENT}"
+        "message": "mismatched input '<EOF>' expecting {'from', 'as', 'struct', 'duration', 'ms', 'states', '[', 'when', 'pure', '(', '+', '-', '!', 'true', 'false', '@image-url', '@markdown', '@linear-gradient', '@radial-gradient', 'circle', 'deg', 'root', 'self', 'int', 'float', 'bool', 'string', 'length', 'color', 'brush', 'image', 'ImageFit', 'LayoutAlignment', 'CrossAxisAlignment', 'Orientation', 'DialInputMode', 'ScrollBarPolicy', 'TextWrap', 'DialogRole', 'DrawerEdge', 'SelectionTarget', COLOR, NUMBER, STRING, IDENT}"
       }
     ]
   ],
@@ -81,7 +81,7 @@
           "line": 1,
           "column": 53
         },
-        "message": "mismatched input ';' expecting {'from', 'as', 'struct', 'duration', 'ms', '[', 'pure', '(', '+', '-', '!', 'true', 'false', '@image-url', '@linear-gradient', '@radial-gradient', 'circle', 'deg', 'root', 'self', 'int', 'float', 'bool', 'string', 'length', 'color', 'brush', 'image', 'ImageFit', 'LayoutAlignment', 'CrossAxisAlignment', 'Orientation', 'DialInputMode', 'ScrollBarPolicy', 'TextWrap', 'DialogRole', 'DrawerEdge', 'SelectionTarget', COLOR, NUMBER, STRING, IDENT}"
+        "message": "mismatched input ';' expecting {'from', 'as', 'struct', 'duration', 'ms', 'states', '[', 'when', 'pure', '(', '+', '-', '!', 'true', 'false', '@image-url', '@markdown', '@linear-gradient', '@radial-gradient', 'circle', 'deg', 'root', 'self', 'int', 'float', 'bool', 'string', 'length', 'color', 'brush', 'image', 'ImageFit', 'LayoutAlignment', 'CrossAxisAlignment', 'Orientation', 'DialInputMode', 'ScrollBarPolicy', 'TextWrap', 'DialogRole', 'DrawerEdge', 'SelectionTarget', COLOR, NUMBER, STRING, IDENT}"
       }
     ]
   ],
@@ -93,7 +93,7 @@
           "line": 2,
           "column": 12
         },
-        "message": "mismatched input ';' expecting {'from', 'as', 'struct', 'duration', 'ms', '[', 'pure', '(', '+', '-', '!', 'true', 'false', '@image-url', '@linear-gradient', '@radial-gradient', 'circle', 'deg', 'root', 'self', 'int', 'float', 'bool', 'string', 'length', 'color', 'brush', 'image', 'ImageFit', 'LayoutAlignment', 'CrossAxisAlignment', 'Orientation', 'DialInputMode', 'ScrollBarPolicy', 'TextWrap', 'DialogRole', 'DrawerEdge', 'SelectionTarget', COLOR, NUMBER, STRING, IDENT}"
+        "message": "mismatched input ';' expecting {'from', 'as', 'struct', 'duration', 'ms', 'states', '[', 'when', 'pure', '(', '+', '-', '!', 'true', 'false', '@image-url', '@markdown', '@linear-gradient', '@radial-gradient', 'circle', 'deg', 'root', 'self', 'int', 'float', 'bool', 'string', 'length', 'color', 'brush', 'image', 'ImageFit', 'LayoutAlignment', 'CrossAxisAlignment', 'Orientation', 'DialInputMode', 'ScrollBarPolicy', 'TextWrap', 'DialogRole', 'DrawerEdge', 'SelectionTarget', COLOR, NUMBER, STRING, IDENT}"
       }
     ]
   ],
@@ -105,7 +105,7 @@
           "line": 1,
           "column": 40
         },
-        "message": "mismatched input ';' expecting {'from', 'as', 'struct', 'duration', 'ms', '[', 'pure', '(', '+', '-', '!', 'true', 'false', '@image-url', '@linear-gradient', '@radial-gradient', 'circle', 'deg', 'root', 'self', 'int', 'float', 'bool', 'string', 'length', 'color', 'brush', 'image', 'ImageFit', 'LayoutAlignment', 'CrossAxisAlignment', 'Orientation', 'DialInputMode', 'ScrollBarPolicy', 'TextWrap', 'DialogRole', 'DrawerEdge', 'SelectionTarget', COLOR, NUMBER, STRING, IDENT}"
+        "message": "mismatched input ';' expecting {'from', 'as', 'struct', 'duration', 'ms', 'states', '[', 'when', 'pure', '(', '+', '-', '!', 'true', 'false', '@image-url', '@markdown', '@linear-gradient', '@radial-gradient', 'circle', 'deg', 'root', 'self', 'int', 'float', 'bool', 'string', 'length', 'color', 'brush', 'image', 'ImageFit', 'LayoutAlignment', 'CrossAxisAlignment', 'Orientation', 'DialInputMode', 'ScrollBarPolicy', 'TextWrap', 'DialogRole', 'DrawerEdge', 'SelectionTarget', COLOR, NUMBER, STRING, IDENT}"
       }
     ]
   ],
@@ -124,7 +124,7 @@
           "line": 1,
           "column": 42
         },
-        "message": "extraneous input ';' expecting {'from', 'as', 'struct', 'duration', 'ms', '[', 'pure', '(', '+', '-', '!', 'true', 'false', '@image-url', '@linear-gradient', '@radial-gradient', 'circle', 'deg', 'root', 'self', 'int', 'float', 'bool', 'string', 'length', 'color', 'brush', 'image', 'ImageFit', 'LayoutAlignment', 'CrossAxisAlignment', 'Orientation', 'DialInputMode', 'ScrollBarPolicy', 'TextWrap', 'DialogRole', 'DrawerEdge', 'SelectionTarget', COLOR, NUMBER, STRING, IDENT}"
+        "message": "extraneous input ';' expecting {'from', 'as', 'struct', 'duration', 'ms', 'states', '[', 'when', 'pure', '(', '+', '-', '!', 'true', 'false', '@image-url', '@markdown', '@linear-gradient', '@radial-gradient', 'circle', 'deg', 'root', 'self', 'int', 'float', 'bool', 'string', 'length', 'color', 'brush', 'image', 'ImageFit', 'LayoutAlignment', 'CrossAxisAlignment', 'Orientation', 'DialInputMode', 'ScrollBarPolicy', 'TextWrap', 'DialogRole', 'DrawerEdge', 'SelectionTarget', COLOR, NUMBER, STRING, IDENT}"
       },
       {
         "span": {

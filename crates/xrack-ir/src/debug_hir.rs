@@ -29,6 +29,11 @@ pub fn analyze(doc: &Document) -> Result<ir::Module, Vec<Diagnostic>> {
                     span,
                     properties: vec![],
                     bindings: vec![],
+                    animations: vec![],
+                    states: None,
+                    state_bindings: vec![],
+                    state_timings: vec![],
+                    initial_focus: None,
                     handlers: vec![],
                     children: vec![],
                 }),
@@ -41,7 +46,21 @@ pub fn analyze(doc: &Document) -> Result<ir::Module, Vec<Diagnostic>> {
                 LoweredMember::ControlLink(b) | LoweredMember::RowLink(b) => {
                     elements.last_mut().unwrap().bindings.push(b)
                 }
-                LoweredMember::Animation(b) => elements.last_mut().unwrap().bindings.push(b),
+                LoweredMember::Animation(animation) => {
+                    elements.last_mut().unwrap().animations.push(animation)
+                }
+                LoweredMember::StateSelection(state) => {
+                    elements.last_mut().unwrap().states = Some(state)
+                }
+                LoweredMember::StateBinding(binding) => {
+                    elements.last_mut().unwrap().state_bindings.push(binding)
+                }
+                LoweredMember::StateTiming(timing) => {
+                    elements.last_mut().unwrap().state_timings.push(timing)
+                }
+                LoweredMember::InitialFocus { target, .. } => {
+                    elements.last_mut().unwrap().initial_focus = Some(target)
+                }
                 LoweredMember::Condition(value) => {
                     elements.last_mut().unwrap().bindings.push(ir::Binding {
                         name: "if".into(),
