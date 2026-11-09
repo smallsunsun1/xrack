@@ -286,6 +286,35 @@ impl<'m> OperationRef<'m> {
             .ok_or_else(|| format!("{} missing or invalid `{name}`", self.name()))
     }
 
+    pub fn integer_attribute(self, name: &str) -> Option<i64> {
+        // Only read the value of a valid, context-owned integer attribute.
+        let attr = unsafe { ffi::mlirOperationGetAttributeByName(self.raw, string_ref(name)) };
+        if attr.ptr.is_null() || !unsafe { ffi::mlirAttributeIsAInteger(attr) } {
+            return None;
+        }
+        let ty = unsafe { ffi::mlirAttributeGetType(attr) };
+        if !unsafe { ffi::mlirTypeIsAInteger(ty) }
+            || unsafe { ffi::mlirIntegerTypeGetWidth(ty) } > 64
+        {
+            return None;
+        }
+        Some(unsafe { ffi::mlirIntegerAttrGetValueInt(attr) })
+    }
+
+    pub fn f64_array_attribute<const N: usize>(self, name: &str) -> Option<[f64; N]> {
+        // Check the element type and length before reading any values.
+        let attr = unsafe { ffi::mlirOperationGetAttributeByName(self.raw, string_ref(name)) };
+        if attr.ptr.is_null()
+            || !unsafe { ffi::mlirAttributeIsADenseF64Array(attr) }
+            || unsafe { ffi::mlirDenseArrayGetNumElements(attr) } != N as isize
+        {
+            return None;
+        }
+        Some(std::array::from_fn(|index| unsafe {
+            ffi::mlirDenseF64ArrayGetElement(attr, index as isize)
+        }))
+    }
+
     pub fn operand_count(self) -> usize {
         unsafe { ffi::mlirOperationGetNumOperands(self.raw) as usize }
     }

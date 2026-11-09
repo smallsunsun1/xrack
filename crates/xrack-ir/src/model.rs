@@ -50,6 +50,14 @@ pub enum Statement {
     NativeDialogOpen(NativeDialogOpen),
     WindowClose { window_close: Span },
     SecondaryWindowCommand(SecondaryWindowCommand),
+    FocusCommand(FocusCommand),
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct FocusCommand {
+    pub focus_owner: String,
+    pub clear: bool,
+    pub span: Span,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -118,9 +126,51 @@ pub struct Element {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub properties: Vec<Property>,
     pub bindings: Vec<Binding>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub animations: Vec<Animation>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub states: Option<StateSelection>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub state_bindings: Vec<StateBinding>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub state_timings: Vec<StateTiming>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub initial_focus: Option<String>,
     pub handlers: Vec<Callback>,
     pub children: Vec<Element>,
     pub span: Span,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Animation {
+    pub property: String,
+    pub duration_ms: u32,
+    pub delay_ms: u32,
+    pub curve: Option<[f64; 4]>,
+    pub enabled: Option<Expr>,
+    pub span: Span,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct StateSelection {
+    pub owner: String,
+    pub cases: Vec<(String, Expr)>,
+    pub span: Span,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct StateBinding {
+    pub owner: String,
+    pub case: i64,
+    pub binding: Binding,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct StateTiming {
+    pub owner: String,
+    pub case: i64,
+    pub direction: String,
+    pub animation: Animation,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

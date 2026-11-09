@@ -12,7 +12,7 @@
 
 ## Rust 模块与编译链
 
-- 手写模块使用 Rust 的常规模块路径。在 `lib.rs` 声明同级模块，在父模块中声明其目录下的子模块。用 `crate::...` 引用同一 crate 内的其他模块，跨 crate 使用的接口由 `lib.rs` 导出。避免用 `#[path]` 或 `include!` 引入手写模块。
+- 手写模块使用 Rust 的常规模块路径。在 `lib.rs` 声明同级模块，在父模块中声明其目录下的子模块。用 `crate::...` 引用同一 crate 内的其他模块，跨 crate 使用的接口由 `lib.rs` 导出。避免用 `#[path]` 或 `include!` 引入手写模块。Bazel 生成的 ANTLR 源码和 MLIR 绑定可以用 `include!` 接入。
 - 例如，`xrack-platform-winit/src/lib.rs` 声明 `mod accessibility_text;`，`accessibility.rs` 用 `crate::accessibility_text` 访问所需符号。移动或新增模块时，检查 Bazel 的 `srcs` 是否覆盖新路径，尤其是只匹配 `src/*.rs` 的规则。
 - 编译器 CLI 参数沿用 `clap` derive，编译错误沿用 `thiserror`。解析和语义诊断保留源码位置。
 - 编译链为 `.xr → ANTLR 解析树 → Rust AST → 语义分析 → xr MLIR → 优化 pass → Rust TokenStream`。`xr` 方言承载 UI IR。操作和类型在 `mlir/Xrack.td` 定义，通过 TableGen 生成的 builder 构造原生模块。`xrack-codegen` 通过 MLIR C API 读取优化后的操作和 SSA 值，用 `quote!` 生成 `proc_macro2::TokenStream`，由 `xrackc` 输出 Rust 源码。

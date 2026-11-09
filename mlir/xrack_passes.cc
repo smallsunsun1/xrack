@@ -418,6 +418,18 @@ struct SimplifyExpressions
 
 struct SimplifyVisuals : impl::XrSimplifyVisualsBase<SimplifyVisuals> {
   void runOnOperation() override {
+    getOperation()->walk([&](AnimateOp animation) {
+      auto enabled = animation.getEnabled();
+      if (enabled && isBoolLiteral(enabled, false)) {
+        animation.erase();
+        return;
+      }
+      if (enabled && isBoolLiteral(enabled, true))
+        animation.getEnabledMutable().clear();
+      if (!animation.getEnabled() && isIntLiteral(animation.getInput(), 0) &&
+          (!animation.getDelayAttr() || animation.getDelayAttr().getInt() == 0))
+        animation.erase();
+    });
     getOperation()->walk([&](ShowIfOp guard) {
       // Keep the element and its event path. A false guard also preserves its
       // hidden slot, so only erase a sole guard known to be true.

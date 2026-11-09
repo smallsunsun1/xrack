@@ -141,7 +141,109 @@ fn document(ctx: &DocumentContextAll<'_>) -> Document {
 }
 
 fn members(contexts: Vec<Rc<MemberContextAll<'_>>>) -> Vec<Member> {
-    contexts.iter().map(|ctx| member(ctx)).collect()
+    let mut result = Vec::new();
+    for ctx in contexts {
+        if let Some(animation) = ctx.animation() {
+            let options = animation_options(&animation.animationBody().expect("animation body"));
+            result.extend(animation.identifier_all().into_iter().map(|target| {
+                Member::Animation(Animation {
+                    property: target.get_text(),
+                    options: options.clone(),
+                    span: span(&*animation),
+                })
+            }));
+        } else {
+            result.push(member(&ctx));
+        }
+    }
+    result
+}
+
+fn animation_options(body: &AnimationBodyContextAll<'_>) -> Vec<AnimationOption> {
+    body.animationField_all()
+        .into_iter()
+        .map(|field| {
+            let value = if let Some(value) = field.NUMBER() {
+                AnimationValue::Milliseconds(value.get_text())
+            } else {
+                AnimationValue::Expression(expression(
+                    &field.expression().expect("animation option"),
+                ))
+            };
+            AnimationOption {
+                name: field
+                    .identifier()
+                    .map_or_else(|| "duration".into(), |name| name.get_text()),
+                value,
+                span: span(&*field),
+            }
+        })
+        .collect()
+}
+
+fn state_block(block: &StateBlockContextAll<'_>) -> StateBlock {
+    let states = block
+        .stateDecl_all()
+        .into_iter()
+        .map(|state| {
+            let changes = state
+                .stateBinding_all()
+                .into_iter()
+                .map(|binding| Binding {
+                    name: binding.reference().expect("state target").get_text(),
+                    value: expression(&binding.expression().expect("state binding")),
+                    span: span(&*binding),
+                    two_way: false,
+                })
+                .collect();
+            let transitions = state
+                .stateTransition_all()
+                .into_iter()
+                .map(|transition| {
+                    let animations = transition
+                        .transitionAnimation_all()
+                        .into_iter()
+                        .flat_map(|animation| {
+                            let options = animation_options(
+                                &animation
+                                    .animationBody()
+                                    .expect("transition animation body"),
+                            );
+                            let span = span(&*animation);
+                            let mut targets: Vec<_> = animation
+                                .reference_all()
+                                .into_iter()
+                                .map(|target| target.get_text())
+                                .collect();
+                            if targets.is_empty() {
+                                targets.push("*".into());
+                            }
+                            targets.into_iter().map(move |property| Animation {
+                                property,
+                                options: options.clone(),
+                                span,
+                            })
+                        })
+                        .collect();
+                    StateTransition {
+                        direction: child_text(&*transition, 0),
+                        animations,
+                    }
+                })
+                .collect();
+            State {
+                name: state.identifier().expect("state name").get_text(),
+                when: state.expression().as_deref().map(expression),
+                changes,
+                transitions,
+                span: span(&*state),
+            }
+        })
+        .collect();
+    StateBlock {
+        states,
+        span: span(block),
+    }
 }
 
 fn member(ctx: &MemberContextAll<'_>) -> Member {
@@ -228,16 +330,10 @@ fn member(ctx: &MemberContextAll<'_>) -> Member {
                 model: expression(&repeat.expression().expect("repeat model")),
             }),
         })
+    } else if let Some(block) = ctx.stateBlock() {
+        Member::States(state_block(&block))
     } else {
-        let animation = ctx.animation().expect("member alternative");
-        Member::Animation(Animation {
-            property: animation
-                .identifier()
-                .expect("animated property")
-                .get_text(),
-            duration_ms: animation.NUMBER().expect("animation duration").get_text(),
-            span: span(&*animation),
-        })
+        unreachable!("non-animation member alternative")
     }
 }
 
@@ -362,6 +458,8 @@ fn primary_expr(ctx: &PrimaryContextAll<'_>) -> Expr {
         ExprKind::Call(call(&invocation))
     } else if let Some(url) = ctx.imageUrl() {
         ExprKind::ImageUrl(url.STRING().expect("image URL").get_text())
+    } else if let Some(markdown) = ctx.markdown() {
+        ExprKind::Markdown(markdown.STRING().expect("Markdown string").get_text())
     } else if let Some(array) = ctx.arrayLiteral() {
         ExprKind::Array(
             array

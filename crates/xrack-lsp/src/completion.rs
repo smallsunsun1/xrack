@@ -7,7 +7,10 @@ use crate::{
 };
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
-use xrack_ir::semantic::{builtin_event, builtin_property, is_builtin, layout_item_property};
+use xrack_ir::semantic::{
+    builtin_event, builtin_property, focus_property, is_builtin, layout_item_property,
+    state_property,
+};
 use xrack_parser::ast::Type;
 
 pub(crate) use imports::Workspace;
@@ -37,6 +40,9 @@ enum Role<'a> {
     RecordValue(&'a str),
     Handler,
     Animation,
+    States,
+    State,
+    StateTransition,
     Import,
     Block,
 }
@@ -55,6 +61,7 @@ struct Scope<'a> {
     body: usize,
     close: usize,
     statement: usize,
+    brackets: usize,
     members: Vec<Member>,
 }
 
@@ -72,15 +79,52 @@ impl<'a> Index<'a> {
             body: 0,
             close: end,
             statement: 0,
+            brackets: 0,
             members: vec![],
         }];
         let mut imports = Vec::new();
         let mut current = 0;
         for (i, token) in tokens.iter().enumerate() {
             match token.text {
+                "[" if matches!(&tokens[scopes[current].statement..i], [name] if name.text == "states") =>
+                {
+                    scopes.push(Scope {
+                        role: Role::States,
+                        parent: current,
+                        body: token.range.end,
+                        close: end,
+                        statement: i + 1,
+                        brackets: 1,
+                        members: vec![],
+                    });
+                    current = scopes.len() - 1;
+                }
+                "[" if matches!(scopes[current].role, Role::States) => {
+                    scopes[current].brackets += 1
+                }
+                "]" if matches!(scopes[current].role, Role::States) => {
+                    let scope = &mut scopes[current];
+                    scope.brackets -= 1;
+                    if scope.brackets == 0 {
+                        scope.close = token.range.start;
+                        current = scope.parent;
+                        scopes[current].statement = i + 1;
+                    }
+                }
                 "{" => {
                     let head = &tokens[scopes[current].statement..i];
-                    let role = role(head, current == 0);
+                    let role = match scopes[current].role {
+                        Role::States
+                            if scopes[current].brackets == 1
+                                && head.last().is_some_and(|token| token.text == ":") =>
+                        {
+                            Role::State
+                        }
+                        Role::State if matches!(head, [name] if matches!(name.text, "in" | "out" | "in-out")) => {
+                            Role::StateTransition
+                        }
+                        _ => role(head, current == 0),
+                    };
                     let members = locals(head, role);
                     scopes.push(Scope {
                         role,
@@ -88,6 +132,7 @@ impl<'a> Index<'a> {
                         body: token.range.end,
                         close: end,
                         statement: i + 1,
+                        brackets: 0,
                         members,
                     });
                     current = scopes.len() - 1;
@@ -298,12 +343,19 @@ fn locals(head: &[&Token<'_>], role: Role<'_>) -> Vec<Member> {
             .map_or(&[], |end| &head[1..end]),
         _ => &[],
     };
+    let key_handler = matches!(role, Role::Handler)
+        && head.first().is_some_and(|token| {
+            matches!(
+                token.text,
+                "capture-key-pressed" | "capture-key-released" | "key-pressed" | "key-released"
+            )
+        });
     names
         .iter()
         .filter(|t| name(t.text))
         .map(|t| Member {
             name: t.text.into(),
-            ty: None,
+            ty: key_handler.then_some(Type::KeyEvent),
             visibility: "private",
             kind: VARIABLE,
         })
@@ -489,8 +541,50 @@ fn suggest<'a>(index: &Index<'a>, scope: usize, head: &[&Token<'a>], items: &mut
     let kind = match role {
         Role::Component { base, .. } => base,
         Role::Element { kind, .. } => kind,
+        Role::States => {
+            items.add("when", KEYWORD, "state condition");
+            return;
+        }
+        Role::State | Role::StateTransition if !head.iter().any(|token| token.text == ":") => {
+            let timing = matches!(role, Role::StateTransition);
+            if timing && first != "animate" {
+                items.add("animate", KEYWORD, "state transition");
+                return;
+            }
+            if timing {
+                items.add("*", PROPERTY, "all animatable state properties");
+            } else {
+                items.words("in out in-out", KEYWORD, "transition direction");
+            }
+            if let Some(element) = index.element(scope) {
+                add_state_properties(index.scopes[element].role, timing, items);
+            }
+            if let Some(component) = index.component(scope) {
+                for (i, candidate) in index.scopes.iter().enumerate() {
+                    if let Role::Element { id: Some(id), .. } = candidate.role
+                        && index.component(i) == Some(component)
+                    {
+                        items.add(id, VARIABLE, "state target");
+                    }
+                }
+            }
+            return;
+        }
+        Role::Animation if first == "enabled" && head.iter().any(|token| token.text == ":") => "",
         Role::Animation => {
-            items.add("duration", PROPERTY, "animation duration");
+            if first == "easing" && head.iter().any(|token| token.text == ":") {
+                items.words(
+                    "linear ease ease-in ease-out ease-in-out cubic-bezier",
+                    ENUM_MEMBER,
+                    "easing curve",
+                );
+            } else {
+                items.words(
+                    "duration delay easing enabled",
+                    PROPERTY,
+                    "animation option",
+                );
+            }
             return;
         }
         _ => "",
@@ -533,7 +627,9 @@ fn suggest<'a>(index: &Index<'a>, scope: usize, head: &[&Token<'a>], items: &mut
     if !kind.is_empty() {
         let animation = first == "animate";
         for property in catalog::PROPERTIES.split_ascii_whitespace() {
-            if (kind == "StackView" && matches!(property, "current-page" | "depth" | "can-go-back"))
+            if focus_property(kind, property)
+                || (kind == "StackView"
+                    && matches!(property, "current-page" | "depth" | "can-go-back"))
                 || (kind == "StackPage" && property == "visible")
             {
                 continue;
@@ -576,7 +672,7 @@ fn suggest<'a>(index: &Index<'a>, scope: usize, head: &[&Token<'a>], items: &mut
             }
             items.elements(index);
             items.words(
-                "property callback pure in out in-out private if for animate",
+                "property callback pure in out in-out private if for animate states",
                 KEYWORD,
                 "XRack member",
             );
@@ -600,6 +696,24 @@ fn expected_type(index: &Index<'_>, scope: usize, head: &[&Token<'_>], kind: &st
         .or_else(|| members.into_iter().find(|m| m.name == name)?.ty.clone())
 }
 
+fn add_state_properties(role: Role<'_>, timing: bool, items: &mut Items<'_>) {
+    let kind = match role {
+        Role::Element { kind, .. } | Role::Component { base: kind, .. } => kind,
+        _ => return,
+    };
+    for property in catalog::PROPERTIES.split_ascii_whitespace() {
+        if let Some(ty) = state_property(kind, property)
+            && (!timing
+                || matches!(
+                    ty,
+                    Type::Int | Type::Float | Type::Length | Type::Color | Type::Brush
+                ))
+        {
+            items.add(property, PROPERTY, &ty.name());
+        }
+    }
+}
+
 fn qualified<'a>(index: &Index<'a>, scope: usize, head: &[&Token<'a>], items: &mut Items<'a>) {
     let mut receiver = Vec::new();
     for pair in head.rchunks_exact(2) {
@@ -618,11 +732,70 @@ fn qualified<'a>(index: &Index<'a>, scope: usize, head: &[&Token<'a>], items: &m
             items.add(variant, ENUM_MEMBER, first);
         }
     }
+    if let Some(mut ty @ (Type::KeyEvent | Type::KeyModifiers)) =
+        index.ancestors(scope).find_map(|scope| {
+            index
+                .members(scope, false)
+                .into_iter()
+                .find(|member| member.name == first)?
+                .ty
+                .clone()
+        })
+    {
+        for field in receiver.iter().rev() {
+            let Some(next) = ty.key_field(field) else {
+                return;
+            };
+            ty = next;
+        }
+        for field in [
+            "key",
+            "text",
+            "modifiers",
+            "repeat",
+            "control",
+            "shift",
+            "alt",
+            "meta",
+            "primary",
+        ] {
+            if let Some(field_type) = ty.key_field(field) {
+                items.add(field, FIELD, &field_type.name());
+            }
+        }
+        return;
+    }
     let owner = match first {
         "root" => index.component(scope),
         "self" => index.element(scope),
         id => index.named_element(scope, id),
     };
+    let role = index.scopes[scope].role;
+    if receiver.is_empty()
+        && let Some(owner) = owner
+    {
+        let kind = match index.scopes[owner].role {
+            Role::Element { kind, .. } | Role::Component { base: kind, .. } => kind,
+            _ => "",
+        };
+        for property in ["has-focus", "focus-within"] {
+            if focus_property(kind, property) {
+                items.add(property, PROPERTY, "read-only bool");
+            }
+        }
+    }
+    if receiver.is_empty()
+        && let Some(owner) = owner
+        && matches!(role, Role::State | Role::StateTransition)
+        && !head.iter().any(|token| token.text == ":")
+    {
+        add_state_properties(
+            index.scopes[owner].role,
+            matches!(role, Role::StateTransition),
+            items,
+        );
+        return;
+    }
     if receiver.is_empty()
         && let Some(owner) = owner
         && matches!(
@@ -676,5 +849,41 @@ fn qualified<'a>(index: &Index<'a>, scope: usize, head: &[&Token<'a>], items: &m
     }
     for member in members {
         items.member(member);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::complete;
+
+    #[test]
+    fn key_handler_completes_nested_modifier_fields() {
+        let source = "component App inherits Window { focus := FocusScope { key-pressed(event) => { event.modifiers.";
+        let labels = complete(source, 0, source.len(), None)
+            .into_iter()
+            .map(|item| item["label"].as_str().unwrap().to_owned())
+            .collect::<Vec<_>>();
+        assert!(labels.iter().any(|label| label == "primary"));
+        assert!(labels.iter().any(|label| label == "shift"));
+        assert!(!labels.iter().any(|label| label == "text"));
+    }
+
+    #[test]
+    fn state_targets_offer_visual_properties_and_filter_transition_types() {
+        let source =
+            "component App inherits Window { tile := Rectangle {} states [ expanded when true: { ";
+        let labels = |suffix| {
+            let text = format!("{source}{suffix}");
+            complete(&text, 0, text.len(), None)
+                .into_iter()
+                .map(|item| item["label"].as_str().unwrap().to_owned())
+                .collect::<Vec<_>>()
+        };
+        let properties = labels("tile.");
+        assert!(properties.iter().any(|label| label == "width"));
+        assert!(properties.iter().any(|label| label == "visible"));
+        let transitions = labels("in { animate tile.");
+        assert!(transitions.iter().any(|label| label == "width"));
+        assert!(!transitions.iter().any(|label| label == "visible"));
     }
 }

@@ -7,11 +7,14 @@ mod drag;
 mod edit;
 mod file_drop;
 mod flow;
+mod focus_observers;
+mod focus_scope;
 mod geometry;
 mod grid;
 mod group_box;
 mod history;
 mod input;
+mod keyboard;
 mod label;
 mod linear;
 mod menu;
@@ -42,6 +45,7 @@ pub use choice::{ChoiceKey, ChoiceMenu, ComboCompletion, ComboGeometry};
 pub use drag::{DragDispatch, DragUpdate};
 pub use edit::{EditAction, TextEdit, TextPosition};
 pub use file_drop::{FileDragInput, FileDropScope};
+pub use focus_observers::{FocusDelivery, FocusObservers};
 pub use geometry::{Point, Rect, Size};
 pub use group_box::group_header;
 pub use history::EditSource;
@@ -49,7 +53,8 @@ pub use input::{
     ActivationKey, ControlInput, Interaction, NavigationKey, RangeInput, SliderKey, SplitResize,
     TableSelectionKey, Target,
 };
-pub use label::{LabelLayout, LabelLine, uses_label_layout};
+pub use keyboard::KeyRoute;
+pub use label::{LabelLayout, LabelLine, LabelPlan, PlannedLabelLine, uses_label_layout};
 pub use menu::{MenuEntry, MenuKey, MenuPanel, MenuRow};
 pub use modal::{dialog_title_height, drawer_grip};
 pub use page_indicator::{PageIndicatorGeometry, PageMarker};

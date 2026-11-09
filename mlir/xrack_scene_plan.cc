@@ -41,7 +41,7 @@ struct PlanUpdateEffects : impl::XrPlanUpdateEffectsBase<PlanUpdateEffects> {
 
 bool passiveElement(llvm::StringRef kind) {
   return llvm::StringSwitch<bool>(kind)
-      .Cases({"Rectangle", "Text", "Image", "Path", "HorizontalBox",
+      .Cases({"Rectangle", "Text", "StyledText", "Image", "Path", "HorizontalBox",
               "VerticalBox", "HorizontalLayout", "VerticalLayout", "GridLayout",
               "FlowLayout", "FlexboxLayout", "Row"},
              true)
@@ -90,6 +90,9 @@ bool fixedGridChild(ElementOp element, bool allowRow) {
     if (auto animation = dyn_cast<AnimateOp>(op);
         animation && gridTrack(animation.getName()))
       return false;
+    if (auto binding = dyn_cast<StateSetOp>(op);
+        binding && gridTrack(binding.getName()))
+      return false;
     if (kind == "Row" && isa<ElementOp, InstanceOp>(op)) {
       auto child = dyn_cast<ElementOp>(op);
       if (!child || !fixedGridChild(child, false))
@@ -123,7 +126,7 @@ bool staticValue(Value value, llvm::DenseMap<Value, bool> &known) {
     return found->second;
   auto *definition = value.getDefiningOp();
   bool result =
-      isa_and_nonnull<LiteralOp, ImageUrlOp, SolidBrushOp, GradientStopOp,
+      isa_and_nonnull<LiteralOp, ImageUrlOp, MarkdownOp, SolidBrushOp, GradientStopOp,
                       LinearGradientOp, RadialGradientOp>(definition) &&
       llvm::all_of(definition->getOperands(),
                    [&](Value operand) { return staticValue(operand, known); });

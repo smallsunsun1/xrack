@@ -81,6 +81,7 @@ rust_test(
         "//examples/delegates:delegates_ui",
         "//examples/dialog:dialog_ui",
         "//examples/form:form_ui",
+        "//examples/layout:layout_ui",
         "//examples/list:list_ui",
         "//examples/menu:menu_ui",
         "//examples/navigation:navigation_ui",

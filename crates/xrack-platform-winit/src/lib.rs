@@ -44,17 +44,18 @@ use winit::{
 };
 use xrack_layout::{
     ActivationKey, ChoiceKey, ComboGeometry, ControlInput, DragUpdate, EditAction, EditSource,
-    Interaction, LayoutNode, MenuKey, MenuShortcut, NavigationKey, Point, RangeInput, Rect,
-    ScrollGestureKind, ShortcutKey, ShortcutModifiers, ShortcutOutcome, Size, SpinGeometry,
-    SplitResize, StackTransitions, TableSelectionKey, Target, TextAreaMotion, TumblerScroll,
+    FocusObservers, Interaction, LayoutNode, MenuKey, MenuShortcut, NavigationKey, Point,
+    RangeInput, Rect, ScrollGestureKind, ShortcutKey, ShortcutModifiers, ShortcutOutcome, Size,
+    SpinGeometry, SplitResize, StackTransitions, TableSelectionKey, Target, TextAreaMotion,
+    TumblerScroll,
 };
 use xrack_renderer_femtovg::Renderer;
 use xrack_runtime::{
-    ColorScheme, Component, ControlAction, DragAction, NativeDialogQueue, NativeDialogRegistration,
-    NativeDialogResult, Node, Orientation, RangeAction, RowSelection, SceneTransition,
-    SecondaryWindowRegistration, SpinAction, SpinDecimal, TimerQueue, TimerRegistration,
-    combo_editable, decimal_separator, is_multiline_text_input, is_spin_box, spin_editable,
-    text_input_value,
+    ColorScheme, Component, ControlAction, DragAction, EventResult, FocusRequests, KeyPhase,
+    NativeDialogQueue, NativeDialogRegistration, NativeDialogResult, Node, Orientation,
+    RangeAction, RowSelection, SceneTransition, SecondaryWindowRegistration, SpinAction,
+    SpinDecimal, TimerQueue, TimerRegistration, combo_editable, decimal_separator,
+    is_multiline_text_input, is_spin_box, spin_editable, text_input_value,
 };
 
 struct WindowState {
@@ -70,6 +71,28 @@ struct WindowState {
     owner: WindowOwner,
     window: Arc<Window>,
     frame: FrameCache,
+}
+
+fn activation_key_value(key: &Key) -> Option<ActivationKey> {
+    match key {
+        Key::Named(NamedKey::Enter) => Some(ActivationKey::Enter),
+        Key::Named(NamedKey::Space) => Some(ActivationKey::Space),
+        _ => None,
+    }
+}
+
+fn navigation_key_value(key: &Key) -> Option<NavigationKey> {
+    Some(match key {
+        Key::Named(NamedKey::ArrowLeft) => NavigationKey::Left,
+        Key::Named(NamedKey::ArrowRight) => NavigationKey::Right,
+        Key::Named(NamedKey::ArrowUp) => NavigationKey::Up,
+        Key::Named(NamedKey::ArrowDown) => NavigationKey::Down,
+        Key::Named(NamedKey::Home) => NavigationKey::Home,
+        Key::Named(NamedKey::End) => NavigationKey::End,
+        Key::Named(NamedKey::PageUp) => NavigationKey::PageUp,
+        Key::Named(NamedKey::PageDown) => NavigationKey::PageDown,
+        _ => return None,
+    })
 }
 
 fn color_scheme(theme: Option<NativeTheme>) -> ColorScheme {
@@ -193,12 +216,16 @@ struct Application<C, M, R> {
     base_scene: Rc<Node>,
     scene: Rc<Node>,
     transition: SceneTransition,
-    transition_start: Instant,
+    transition_epoch: Instant,
+    animation_wake: Option<Instant>,
     timers: TimerQueue,
     native_dialogs: NativeDialogQueue,
     stack_transitions: StackTransitions,
     layout: Option<Rc<LayoutNode>>,
     input: Interaction,
+    focus_requests: FocusRequests,
+    focus_observers: FocusObservers,
+    focus_active: bool,
     scroll_contact: Option<ScrollContact>,
     modifiers: ModifiersState,
     state: Option<WindowState>,
@@ -231,12 +258,16 @@ impl<C: Component, M, R: FnMut(&mut C, M)> Application<C, M, R> {
             base_scene: scene.clone(),
             scene,
             transition: SceneTransition::default(),
-            transition_start: Instant::now(),
+            transition_epoch: Instant::now(),
+            animation_wake: None,
             timers: TimerQueue::default(),
             native_dialogs: NativeDialogQueue::default(),
             stack_transitions: StackTransitions::default(),
             layout: None,
             input: Interaction::default(),
+            focus_requests: FocusRequests::default(),
+            focus_observers: FocusObservers::default(),
+            focus_active: false,
             scroll_contact: None,
             modifiers: ModifiersState::default(),
             state: None,
@@ -477,7 +508,7 @@ impl<C: Component, M, R: FnMut(&mut C, M)> Application<C, M, R> {
                 .action
             {
                 AccessibleAction::Focus => {
-                    self.input.accessibility_focus(target);
+                    self.input.focus_target(&self.scene, layout, target);
                     self.update_editor();
                 }
                 AccessibleAction::Expand | AccessibleAction::Collapse
@@ -739,7 +770,7 @@ impl<C: Component, M, R: FnMut(&mut C, M)> Application<C, M, R> {
     }
 
     fn relayout_with_caret(&mut self, follow_caret: bool) {
-        self.prepare_frame(self.transition_start.elapsed());
+        self.prepare_frame(self.transition_epoch.elapsed());
         self.layout_changed(follow_caret);
     }
 
@@ -888,6 +919,7 @@ impl<C: Component, M, R: FnMut(&mut C, M)> Application<C, M, R> {
 
     fn refresh_dependencies(&mut self) {
         if self.component.scene_dirty()
+            || !self.focus_requests.is_empty()
             || self
                 .state
                 .as_ref()
@@ -900,20 +932,18 @@ impl<C: Component, M, R: FnMut(&mut C, M)> Application<C, M, R> {
     fn refresh_after_update(&mut self, redraw_input: bool) {
         let target = self.component.render_shared();
         if Rc::ptr_eq(&self.base_scene, &target) {
-            if self.prepare_frame(self.transition_start.elapsed()) {
+            if self.prepare_frame(self.transition_epoch.elapsed()) {
                 self.layout_changed(true);
-            } else if redraw_input {
+            } else if redraw_input || !self.focus_requests.is_empty() {
                 self.update_editor();
             }
             return;
         }
         let previous_width = self.base_scene.length("width");
         let previous_height = self.base_scene.length("height");
-        let previous = self
-            .transition
-            .frame(&self.base_scene, self.transition_start.elapsed());
-        self.transition = SceneTransition::between(&previous, &target);
-        self.transition_start = Instant::now();
+        self.transition
+            .retarget(&self.base_scene, &target, self.transition_epoch.elapsed());
+        self.animation_wake = None;
         self.base_scene = target;
         if let Some(state) = &self.state {
             state
@@ -947,7 +977,34 @@ impl<C: Component, M, R: FnMut(&mut C, M)> Application<C, M, R> {
         self.refresh_editor(true);
     }
 
+    fn publish_focus(&mut self) {
+        let Some(layout) = &self.layout else {
+            return;
+        };
+        let events = self
+            .focus_observers
+            .sync(&self.input, &self.scene, layout, self.focus_active);
+        if events.is_empty() {
+            return;
+        }
+        for event in events {
+            event.apply(&mut self.component, &self.scene);
+        }
+        if (self.component.scene_dirty() || !self.focus_requests.is_empty())
+            && let Some(state) = &self.state
+        {
+            state.window.request_redraw();
+        }
+    }
+
     fn refresh_editor(&mut self, follow_caret: bool) {
+        let requests = self.focus_requests.drain();
+        if let Some(layout) = &self.layout {
+            self.input
+                .apply_focus_requests(&self.scene, layout, requests);
+            self.input.remember_focus_scope(&self.scene, layout);
+        }
+        self.publish_focus();
         #[cfg(target_os = "macos")]
         self.sync_file_drop();
         self.input.sync_editor(&self.scene);
@@ -1324,14 +1381,16 @@ impl<C: Component, M, R: FnMut(&mut C, M)> Application<C, M, R> {
             return false;
         };
         let spin = is_spin_box(node.kind);
-        if event.state != ElementState::Pressed
-            || self
-                .input
-                .editor
-                .as_ref()
-                .is_some_and(|edit| !edit.preedit.is_empty())
+        if self
+            .input
+            .editor
+            .as_ref()
+            .is_some_and(|edit| !edit.preedit.is_empty())
         {
             return true;
+        }
+        if event.state != ElementState::Pressed {
+            return false;
         }
         if combo_editable(node)
             && event.logical_key == Key::Named(NamedKey::ArrowRight)
@@ -1382,12 +1441,12 @@ impl<C: Component, M, R: FnMut(&mut C, M)> Application<C, M, R> {
             Key::Named(NamedKey::Escape) if spin => {
                 self.input.discard_spin_draft();
                 self.update_editor();
-                None
+                return true;
             }
             Key::Named(NamedKey::Enter) if spin => {
                 self.commit_spin();
                 self.update_editor();
-                None
+                return true;
             }
             Key::Named(NamedKey::Enter) if multiline => Some(EditAction::Insert("\n")),
             Key::Named(NamedKey::Enter) => {
@@ -1410,15 +1469,21 @@ impl<C: Component, M, R: FnMut(&mut C, M)> Application<C, M, R> {
                         self.apply_control(action);
                     }
                 }
-                None
+                return true;
             }
-            _ if !shortcut => event.text.as_deref().map(EditAction::Insert),
+            _ if !shortcut
+                && !matches!(event.logical_key, Key::Named(key) if key != NamedKey::Space) =>
+            {
+                event.text.as_deref().map(EditAction::Insert)
+            }
             _ => None,
         };
         if let Some(action) = action {
             self.edit_text(action);
+            true
+        } else {
+            false
         }
-        true
     }
     fn apply_control(&mut self, input: ControlInput) {
         if matches!(input.action, ControlAction::Spin(_)) {
@@ -1855,22 +1920,191 @@ impl<C: Component, M, R: FnMut(&mut C, M)> Application<C, M, R> {
         }
     }
 
+    fn keyboard_input(&mut self, event: &KeyEvent, is_synthetic: bool) {
+        let route = (!is_synthetic)
+            .then(|| self.input.key_route(&self.scene, self.layout.as_deref()?))
+            .flatten();
+        let Some(route) = route else {
+            self.default_key_input(event, is_synthetic);
+            return;
+        };
+        let (capture, bubble) = if event.state == ElementState::Pressed {
+            (KeyPhase::CapturePressed, KeyPhase::Pressed)
+        } else {
+            (KeyPhase::CaptureReleased, KeyPhase::Released)
+        };
+        let key = xrack_runtime::KeyEvent {
+            key: match &event.logical_key {
+                Key::Character(text) => text.to_string(),
+                Key::Named(key) => format!("{key:?}"),
+                Key::Dead(_) => "Dead".into(),
+                Key::Unidentified(_) => "Unidentified".into(),
+            },
+            text: event.text.as_deref().unwrap_or_default().to_owned(),
+            repeat: event.repeat,
+            modifiers: xrack_runtime::KeyModifiers {
+                control: self.modifiers.control_key(),
+                shift: self.modifiers.shift_key(),
+                alt: self.modifiers.alt_key(),
+                meta: self.modifiers.super_key(),
+                primary: if cfg!(target_os = "macos") {
+                    self.modifiers.super_key()
+                } else {
+                    self.modifiers.control_key()
+                },
+            },
+        };
+        if let Some(result) = self.layout.as_ref().and_then(|layout| {
+            route.dispatch(&mut self.component, &self.scene, layout, capture, &key)
+        }) {
+            if result == EventResult::Accept {
+                self.input.cancel_shortcut_sequence();
+                if event.state == ElementState::Released {
+                    if let Some(key) = activation_key_value(&event.logical_key) {
+                        self.input.key_release_target(key);
+                    }
+                    if let Some(key) = navigation_key_value(&event.logical_key) {
+                        self.input.discard_range_key(key);
+                    }
+                }
+                self.refresh_scene();
+                return;
+            }
+            self.refresh_after_update(false);
+        }
+        if self.input.focused.as_ref() != Some(route.focused())
+            || self.default_key_input(event, is_synthetic)
+            || self.input.focused.as_ref() != Some(route.focused())
+        {
+            return;
+        }
+        if self
+            .layout
+            .as_ref()
+            .and_then(|layout| {
+                route.dispatch(&mut self.component, &self.scene, layout, bubble, &key)
+            })
+            .is_some()
+        {
+            self.refresh_after_update(false);
+        }
+    }
+
+    fn default_key_input(&mut self, event: &KeyEvent, is_synthetic: bool) -> bool {
+        if event.state == ElementState::Pressed
+            && matches!(
+                event.logical_key,
+                Key::Named(NamedKey::Tab | NamedKey::Escape)
+            )
+        {
+            self.input.cancel_shortcut_sequence();
+        }
+        if event.state == ElementState::Pressed
+            && event.logical_key == Key::Named(NamedKey::Escape)
+            && self.cancel_drag()
+        {
+            return true;
+        }
+        if event.state == ElementState::Pressed
+            && event.logical_key == Key::Named(NamedKey::Escape)
+            && self.input.cancel_delay()
+        {
+            self.cancel_direct_scroll();
+            self.update_editor();
+            return true;
+        }
+        self.cancel_direct_scroll();
+        if event.state == ElementState::Pressed && event.logical_key != Key::Named(NamedKey::Tab) {
+            let dismissed = self.dismiss_tooltip();
+            if dismissed && event.logical_key == Key::Named(NamedKey::Escape) {
+                return true;
+            }
+        }
+        if event.logical_key == Key::Named(NamedKey::Tab)
+            && event.state == ElementState::Pressed
+            && !event.repeat
+        {
+            self.pending_clipboard = None;
+            self.commit_spin();
+            if self
+                .input
+                .focused
+                .as_ref()
+                .is_some_and(|target| self.input.table_cell_editing(&target.path))
+            {
+                if self
+                    .input
+                    .editor
+                    .as_ref()
+                    .is_none_or(|editor| editor.preedit.is_empty())
+                {
+                    self.commit_table_edit();
+                } else {
+                    self.input.cancel_table_edit();
+                }
+            }
+            self.input.dismiss_choice();
+            self.input.dismiss_menu();
+            if self.layout.as_ref().is_some_and(|layout| {
+                self.input
+                    .focus_next(&self.scene, layout, self.modifiers.shift_key())
+            }) {
+                self.relayout();
+            } else {
+                self.update_editor();
+            }
+            return true;
+        }
+        if self.context_menu_key(event)
+            || !is_synthetic && self.shortcut_key(event)
+            || self.menu_key(event)
+            || self.choice_key(event)
+            || self.table_edit_key(event)
+            || self.selection_key(event)
+            || self.tree_toggle_key(event)
+            || self.dialog_key(event)
+            || self.spin_key(event)
+            || self.text_key(event)
+            || self.navigation_key(event)
+        {
+            return true;
+        }
+        let Some(key) = activation_key_value(&event.logical_key).filter(|_| !event.repeat) else {
+            return false;
+        };
+        if !self.input.focused.as_ref().is_some_and(|target| {
+            self.scene.at_path(&target.path).is_some_and(|node| {
+                node.kind != "FocusScope"
+                    && !self.input.is_text_editor(node, target)
+                    && !spin_editable(node)
+            })
+        }) {
+            return false;
+        }
+        if event.state == ElementState::Pressed {
+            self.input.key_press_with_scene(&self.scene, key);
+            if let Some(layout) = &self.layout {
+                self.input
+                    .begin_key_delay(&self.scene, layout, key, Instant::now());
+            }
+            if let Some(state) = &self.state {
+                state.window.request_redraw();
+            }
+        } else {
+            let target = self.input.key_release_with_scene(&self.scene, key);
+            self.activate(target);
+        }
+        true
+    }
+
     fn navigation_key(&mut self, event: &KeyEvent) -> bool {
         if event.logical_key == Key::Named(NamedKey::BrowserBack)
             || self.modifiers.alt_key() && event.logical_key == Key::Named(NamedKey::ArrowLeft)
         {
             return event.state == ElementState::Pressed && !event.repeat && self.back_in_stack();
         }
-        let key = match event.logical_key {
-            Key::Named(NamedKey::ArrowLeft) => NavigationKey::Left,
-            Key::Named(NamedKey::ArrowRight) => NavigationKey::Right,
-            Key::Named(NamedKey::ArrowUp) => NavigationKey::Up,
-            Key::Named(NamedKey::ArrowDown) => NavigationKey::Down,
-            Key::Named(NamedKey::Home) => NavigationKey::Home,
-            Key::Named(NamedKey::End) => NavigationKey::End,
-            Key::Named(NamedKey::PageUp) => NavigationKey::PageUp,
-            Key::Named(NamedKey::PageDown) => NavigationKey::PageDown,
-            _ => return false,
+        let Some(key) = navigation_key_value(&event.logical_key) else {
+            return false;
         };
         if event.state == ElementState::Pressed
             && let Some(input) = self
@@ -2042,7 +2276,11 @@ impl<C: Component, M, R: FnMut(&mut C, M)> Application<C, M, R> {
             if self.input.focused != self.input.hovered {
                 self.commit_spin();
             }
-            self.input.pointer_press();
+            if let Some(layout) = &self.layout {
+                self.input.pointer_press_in_scene(&self.scene, layout);
+            } else {
+                self.input.pointer_press();
+            }
             if let Some(point) = self.input.pointer_position() {
                 if let Some(layout) = &self.layout {
                     self.input.arm_drag(&self.scene, layout, point);
@@ -2407,7 +2645,7 @@ impl<C: Component, M, R: FnMut(&mut C, M)> Application<C, M, R> {
     fn redraw(&mut self) -> Result<(), String> {
         self.tick_delay(Instant::now());
         let animating = self.transition.running(Duration::ZERO);
-        let elapsed = self.transition_start.elapsed();
+        let elapsed = self.transition_epoch.elapsed();
         if self.layout.as_ref().is_some_and(|layout| {
             self.input
                 .advance_scroll_motion(&self.scene, layout, Instant::now())
@@ -2469,11 +2707,17 @@ impl<C: Component, M, R: FnMut(&mut C, M)> Application<C, M, R> {
             &self.stack_transitions,
         )?;
         if animating {
-            if self.transition.running(elapsed) {
-                state.window.request_redraw();
-            } else {
-                self.transition = SceneTransition::default();
-            }
+            self.animation_wake = match self.transition.next_frame(elapsed) {
+                Some(next) if next > elapsed => self.transition_epoch.checked_add(next),
+                Some(_) => {
+                    state.window.request_redraw();
+                    None
+                }
+                None => {
+                    self.transition = SceneTransition::default();
+                    None
+                }
+            };
         }
         state.window.pre_present_notify();
         state.renderer.queue.present(frame);
@@ -2499,6 +2743,7 @@ impl<C: Component, M, R: FnMut(&mut C, M)> Application<C, M, R> {
 impl<C: Component, M, R: FnMut(&mut C, M)> HostedWindow for Application<C, M, R> {
     fn user_event(&mut self, event: UserEvent) {
         let _scope = self.tasks.enter();
+        let _focus = self.focus_requests.enter();
         self.process_user_event(event);
     }
 
@@ -2514,6 +2759,7 @@ impl<C: Component, M, R: FnMut(&mut C, M)> HostedWindow for Application<C, M, R>
 
     fn request_close(&mut self) -> bool {
         let _scope = self.tasks.enter();
+        let _focus = self.focus_requests.enter();
         self.component.take_window_close_request();
         let accepted = self.component.close_requested();
         // Synchronous requests made during the decision belong to that decision.
@@ -2555,6 +2801,7 @@ impl<C: Component, M, R: FnMut(&mut C, M)> HostedWindow for Application<C, M, R>
         owner: Option<&Window>,
     ) -> Result<WindowId, String> {
         let _scope = self.tasks.enter();
+        let _focus = self.focus_requests.enter();
         if let Some(id) = self.window_id() {
             return Ok(id);
         }
@@ -2583,11 +2830,16 @@ impl<C: Component, M, R: FnMut(&mut C, M)> HostedWindow for Application<C, M, R>
         let state = WindowState::new(window, adapter, graphics, owner)?;
         let id = state.window.id();
         state.set_visible(self.base_scene.boolean("visible", true));
+        self.focus_active = state.window.has_focus();
         self.state = Some(state);
         self.relayout();
         Ok(id)
     }
     fn suspend(&mut self) {
+        self.focus_requests.drain();
+        self.focus_observers.clear();
+        self.focus_active = false;
+        self.animation_wake = None;
         self.cancel_direct_scroll();
         self.pending_clipboard = None;
         self.input.dismiss_tooltip();
@@ -2604,6 +2856,7 @@ impl<C: Component, M, R: FnMut(&mut C, M)> HostedWindow for Application<C, M, R>
     }
     fn tick(&mut self, now: Instant) {
         let _scope = self.tasks.enter();
+        let _focus = self.focus_requests.enter();
         self.refresh_dependencies();
         self.tick_delay(now);
         self.tick_timers(now);
@@ -2611,8 +2864,10 @@ impl<C: Component, M, R: FnMut(&mut C, M)> HostedWindow for Application<C, M, R>
 
     fn refresh_deadline(&mut self, now: Instant) -> Option<Instant> {
         let _scope = self.tasks.enter();
+        let _focus = self.focus_requests.enter();
         self.refresh_dependencies();
         self.present_native_dialog();
+        self.publish_focus();
         self.update_accessibility();
         let deadline = if let Some(state) = &self.state
             && state.window.has_focus()
@@ -2625,8 +2880,15 @@ impl<C: Component, M, R: FnMut(&mut C, M)> HostedWindow for Application<C, M, R>
         } else {
             None
         };
+        if self.animation_wake.is_some_and(|wake| now >= wake) {
+            self.animation_wake = None;
+            if let Some(state) = &self.state {
+                state.window.request_redraw();
+            }
+        }
         [
             deadline,
+            self.animation_wake,
             self.input.delay_deadline(),
             self.timers.deadline(),
         ]
@@ -2637,6 +2899,7 @@ impl<C: Component, M, R: FnMut(&mut C, M)> HostedWindow for Application<C, M, R>
 
     fn window_event(&mut self, id: WindowId, event: WindowEvent) {
         let _scope = self.tasks.enter();
+        let _focus = self.focus_requests.enter();
         let Some(state) = self.state.as_mut().filter(|state| state.window.id() == id) else {
             return;
         };
@@ -2898,106 +3161,7 @@ impl<C: Component, M, R: FnMut(&mut C, M)> HostedWindow for Application<C, M, R>
                 is_synthetic,
                 ..
             } => {
-                if event.state == ElementState::Pressed
-                    && matches!(
-                        event.logical_key,
-                        Key::Named(NamedKey::Tab | NamedKey::Escape)
-                    )
-                {
-                    self.input.cancel_shortcut_sequence();
-                }
-                if event.state == ElementState::Pressed
-                    && event.logical_key == Key::Named(NamedKey::Escape)
-                    && self.cancel_drag()
-                {
-                    return;
-                }
-                if event.state == ElementState::Pressed
-                    && event.logical_key == Key::Named(NamedKey::Escape)
-                    && self.input.cancel_delay()
-                {
-                    self.cancel_direct_scroll();
-                    self.update_editor();
-                    return;
-                }
-                self.cancel_direct_scroll();
-                if event.state == ElementState::Pressed
-                    && event.logical_key != Key::Named(NamedKey::Tab)
-                {
-                    let dismissed = self.dismiss_tooltip();
-                    if dismissed && event.logical_key == Key::Named(NamedKey::Escape) {
-                        return;
-                    }
-                }
-                if event.logical_key == Key::Named(NamedKey::Tab)
-                    && event.state == ElementState::Pressed
-                    && !event.repeat
-                {
-                    self.pending_clipboard = None;
-                    self.commit_spin();
-                    if self
-                        .input
-                        .focused
-                        .as_ref()
-                        .is_some_and(|target| self.input.table_cell_editing(&target.path))
-                    {
-                        if self
-                            .input
-                            .editor
-                            .as_ref()
-                            .is_none_or(|editor| editor.preedit.is_empty())
-                        {
-                            self.commit_table_edit();
-                        } else {
-                            self.input.cancel_table_edit();
-                        }
-                    }
-                    self.input.dismiss_choice();
-                    self.input.dismiss_menu();
-                    if self.layout.as_ref().is_some_and(|layout| {
-                        self.input
-                            .focus_next(&self.scene, layout, self.modifiers.shift_key())
-                    }) {
-                        self.relayout();
-                    } else {
-                        self.update_editor();
-                    }
-                } else if !self.context_menu_key(&event)
-                    && (is_synthetic || !self.shortcut_key(&event))
-                    && !self.menu_key(&event)
-                    && !self.choice_key(&event)
-                    && !self.table_edit_key(&event)
-                    && !self.selection_key(&event)
-                    && !self.tree_toggle_key(&event)
-                    && !self.dialog_key(&event)
-                    && !self.spin_key(&event)
-                    && !self.text_key(&event)
-                    && !self.navigation_key(&event)
-                    && !event.repeat
-                {
-                    let key = match event.logical_key {
-                        Key::Named(NamedKey::Enter) => Some(ActivationKey::Enter),
-                        Key::Named(NamedKey::Space) => Some(ActivationKey::Space),
-                        _ => None,
-                    };
-                    if let Some(key) = key {
-                        if event.state == ElementState::Pressed {
-                            self.input.key_press_with_scene(&self.scene, key);
-                            if let Some(layout) = &self.layout {
-                                self.input.begin_key_delay(
-                                    &self.scene,
-                                    layout,
-                                    key,
-                                    Instant::now(),
-                                );
-                            }
-                            self.state.as_ref().unwrap().window.request_redraw();
-                        } else {
-                            let target = self.input.key_release_with_scene(&self.scene, key);
-                            self.activate(target);
-                        }
-                    }
-                }
+                self.keyboard_input(&event, is_synthetic);
             }
             WindowEvent::Ime(Ime::Commit(value)) if !self.input.menu_open() => {
                 self.edit_text_from(EditAction::Insert(&value), EditSource::Atomic)
@@ -3022,6 +3186,7 @@ impl<C: Component, M, R: FnMut(&mut C, M)> HostedWindow for Application<C, M, R>
                 self.state.as_ref().unwrap().window.request_redraw();
             }
             WindowEvent::Focused(focused) => {
+                self.focus_active = focused;
                 if !focused {
                     self.cancel_drag();
                     self.input.cancel_shortcut_sequence();

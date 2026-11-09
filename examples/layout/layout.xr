@@ -294,3 +294,270 @@ export component FontsDemo inherits Window {
         }
     }
 }
+
+export component AnimationsDemo inherits Window {
+    title: "XRack · 控件过渡";
+    width: 546px; height: 288px;
+    background: #141d2c;
+    in-out property <bool> expanded: false;
+    in-out property <bool> motion: true;
+    in-out property <int> changes: 0;
+
+    Label { x: 24px; y: 18px; text: "同一目标，不同过渡时间线"; font-size: 20px; }
+    Label { x: 24px; y: 57px; text: "线性 · 600ms"; }
+    linear := Rectangle {
+        x: 24px; y: 84px; height: 27px;
+        width: root.expanded ? 320px : 80px;
+        accessible-name: "线性进度条";
+        background: #3a6fa4;
+        animate width { duration: 600ms; enabled: root.motion; }
+    }
+    Label { x: 24px; y: 122px; text: "缓动 · 先等待 120ms"; }
+    eased := Rectangle {
+        x: root.expanded ? 64px : 24px;
+        y: 149px; height: 27px;
+        width: root.expanded ? 320px : 80px;
+        accessible-name: "缓动进度条";
+        background: root.expanded ? @linear-gradient(90deg, #b82c69, #dc805a) : @linear-gradient(0deg, #316b78, #54bdab);
+        animate x, width, background {
+            duration: 600ms;
+            delay: 120ms;
+            easing: cubic-bezier(0, 0.8, 1, 0.8);
+            enabled: root.motion;
+        }
+    }
+    toggle := Button {
+        x: 24px; y: 202px; width: 112px; height: 38px;
+        text: "反转目标";
+        clicked() => { root.expanded = !root.expanded; }
+    }
+    motion := CheckBox {
+        x: 151px; y: 202px; width: 126px; height: 38px;
+        text: "播放过渡";
+        checked <=> root.motion;
+    }
+    change-label := Button {
+        x: 296px; y: 202px; width: 174px; height: 38px;
+        text: "只更新计数";
+        clicked() => { root.changes = root.changes + 1; }
+    }
+    Label { x: 24px; y: 253px; text: "独立状态更新 " + root.changes + " 次"; }
+}
+
+export component StatesDemo inherits Window {
+    title: "XRack · 声明式状态";
+    width: 518px; height: 234px;
+    background: #141d2c;
+    in-out property <int> level: 0;
+    in-out property <length> baseline: 96px;
+    pure callback base-width() -> length;
+    base-width() => { root.baseline }
+
+    tile := Rectangle {
+        x: 24px; y: 60px; height: 54px;
+        width: root.base-width();
+        background: #3a6fa4;
+        accessible-name: "状态指示块";
+        border-radius: 6px;
+    }
+    caption := Label { x: 24px; y: 24px; text: "正常"; font-size: 20px; }
+    badge := Rectangle {
+        x: 340px; y: 60px; width: 16px; height: 16px;
+        visible: false; background: #e97c71; border-radius: 8px;
+    }
+    states [
+        alarm when root.level >= 2: {
+            tile.width: 280px;
+            tile.background: #ba4b5d;
+            caption.text: "告警";
+            badge.visible: true;
+            in {
+                animate tile.width { duration: 400ms; }
+                animate tile.background { duration: 180ms; }
+            }
+            out { animate tile.width { duration: 200ms; } }
+        }
+        warm when root.level >= 1: {
+            tile.width: 168px;
+            tile.background: #b08346;
+            caption.text: "预警";
+            in-out {
+                animate tile.width { duration: 300ms; easing: ease-out; }
+            }
+        }
+    ]
+    normal := Button { x: 24px; y: 150px; width: 116px; height: 42px; text: "正常"; clicked() => { root.level = 0; } }
+    warning := Button { x: 151px; y: 150px; width: 116px; height: 42px; text: "预警"; clicked() => { root.level = 1; } }
+    critical := Button { x: 278px; y: 150px; width: 116px; height: 42px; text: "告警"; clicked() => { root.level = 2; } }
+    status-leds := VerticalLayout {
+        x: 428px; y: 150px; width: 16px; height: 42px; alignment: start;
+        for index in 3 : Rectangle {
+            width: 12px; height: 12px; background: #314051; border-radius: 6px;
+            states [ lit when index == root.level: { background: #9adcb7; } ]
+        }
+    }
+}
+
+component EditorPane inherits FocusScope {
+    width: 218px; height: 148px;
+    background: root.focus-within ? #355372 : #26364e;
+    in property <string> name;
+    in property <bool> query-enabled: true;
+    out property <bool> active: root.focus-within;
+    out property <int> visits: 0;
+    out property <FocusReason> last-focus-reason: programmatic;
+    callback enter-pane();
+    callback clear-pane();
+    enter-pane() => { root.focus(); }
+    clear-pane() => { root.clear-focus(); }
+    initial-focus: query;
+    focus-within-changed(focused, reason) => {
+        root.visits = focused ? root.visits + 1 : root.visits;
+        root.last-focus-reason = reason;
+    }
+    Label { x: 12px; y: 9px; text: root.name; }
+    notes := LineEdit {
+        x: 12px; y: 43px; width: 194px; height: 34px;
+        accessible-name: root.name + " 备注";
+        placeholder-text: "备注";
+        background: self.has-focus ? #203a52 : #19293c;
+    }
+    query := LineEdit {
+        x: 12px; y: 87px; width: 194px; height: 34px;
+        accessible-name: root.name + " 查询";
+        enabled: root.query-enabled;
+        placeholder-text: "查询";
+        background: self.has-focus ? #203a52 : #19293c;
+    }
+    clear-shortcut := Shortcut { sequence: "Escape"; focus-within: true; activated() => { root.clear-focus(); } }
+}
+
+export component FocusScopesDemo inherits Window {
+    title: "XRack · 焦点作用域";
+    width: 492px; height: 272px;
+    background: #141d2c;
+    in-out property <bool> left-query-enabled: true;
+    in-out property <bool> left-visible: true;
+    out property <bool> left-active: left.active;
+    out property <bool> right-active: right.active;
+    out property <int> left-visits: left.visits;
+    out property <int> right-visits: right.visits;
+    out property <FocusReason> right-focus-reason: right.last-focus-reason;
+    callback clear-left();
+    clear-left() => { left.clear-pane(); }
+
+    left := EditorPane {
+        x: 18px; y: 18px; name: "左侧";
+        query-enabled: root.left-query-enabled;
+        visible: root.left-visible;
+    }
+    right := EditorPane { x: 254px; y: 18px; name: "右侧"; }
+    jump-left := Button {
+        x: 18px; y: 186px; width: 150px; height: 38px; text: "进入左侧";
+        clicked() => { left.enter-pane(); }
+    }
+    jump-right := Button {
+        x: 179px; y: 186px; width: 150px; height: 38px; text: "进入右侧";
+        clicked() => { right.enter-pane(); }
+    }
+    disable-left := Button {
+        x: 340px; y: 186px; width: 134px; height: 38px; text: "禁用查询";
+        clicked() => { root.left-query-enabled = false; left.enter-pane(); }
+    }
+    Label {
+        x: 18px; y: 241px;
+        text: root.left-active ? "左区有焦点" : root.right-active ? "右区有焦点" : "编辑区无焦点";
+    }
+}
+
+export component ScopedKeysDemo inherits Window {
+    title: "XRack · 键盘事件路由";
+    width: 512px; height: 254px;
+    background: #141d2c;
+    in-out property <bool> block-x: true;
+    in-out property <string> text: "";
+    in-out property <string> trace: "";
+    out property <int> accepted-releases: 0;
+
+    outer := FocusScope {
+        x: 24px; y: 20px; width: 464px; height: 138px;
+        background: #25334a;
+        initial-focus: inner;
+        capture-key-pressed(event) => {
+            root.trace = root.trace + "外层捕获 ";
+            event.modifiers.primary && event.key == "k" ? EventResult.accept : EventResult.reject
+        }
+        key-pressed(event) => {
+            root.trace = root.trace + "外层冒泡 ";
+            event.key == "F2" ? accept : reject
+        }
+        key-released(event) => {
+            root.trace = root.trace + "外层释放 ";
+            event.key == "F2" ? accept : reject
+        }
+        inner := FocusScope {
+            x: 12px; y: 12px; width: 440px; height: 110px;
+            initial-focus: field;
+            capture-key-pressed(event) => {
+                root.trace = root.trace + "内层捕获 ";
+                event.text == "x" && root.block-x ? accept : reject
+            }
+            capture-key-released(event) => {
+                root.accepted-releases = event.key == "x" && root.block-x
+                    ? root.accepted-releases + 1 : root.accepted-releases;
+                event.key == "x" && root.block-x ? accept : reject
+            }
+            key-pressed(event) => {
+                root.trace = root.trace + "内层冒泡 ";
+                reject
+            }
+            field := LineEdit {
+                x: 12px; y: 12px; width: 400px; height: 36px;
+                text <=> root.text;
+                placeholder-text: "输入 a，尝试 x 和 F2";
+                accessible-name: "键盘路由输入框";
+            }
+        }
+    }
+    enable-block := CheckBox {
+        x: 24px; y: 174px; width: 190px; height: 36px;
+        text: "拦截 x";
+        checked <=> root.block-x;
+    }
+    start-typing := Button {
+        x: 258px; y: 174px; width: 210px; height: 36px;
+        text: "聚焦输入框";
+        clicked() => { root.trace = ""; outer.focus(); }
+    }
+    status := Label {
+        x: 24px; y: 220px; width: 464px;
+        text: root.trace;
+        overflow: elide;
+    }
+}
+
+export component StyledTextDemo inherits Window {
+    title: "XRack · 富文本";
+    width: 460px; height: 268px;
+    background: #141d2c;
+    in-out property <styled-text> body: @markdown("# 发布说明\n\n**粗体**、*斜体*、`xrackc` 和 ~~已弃用~~。\n\n**مرحبا** بكم في XRack");
+    in-out property <bool> compact: false;
+
+    Label {
+        x: 24px; y: 20px; text: "带内联样式的文字";
+        font-size: 15px; color: #acc1d9;
+    }
+    body-label := StyledText {
+        x: 24px; y: 52px; width: 412px;
+        font-size: 22px;
+        color: #e8f2ff;
+        max-lines: root.compact ? 2 : 5;
+        overflow: elide;
+        text: root.body;
+    }
+    CheckBox {
+        x: 24px; y: 220px; width: 412px; height: 36px;
+        text: "只显示两行";
+        checked <=> root.compact;
+    }
+}

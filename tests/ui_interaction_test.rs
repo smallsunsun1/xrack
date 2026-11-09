@@ -12,6 +12,7 @@ use form_ui::{
     CloseGuardDemo, DragDropDemo, FileDialogDemo, FileDropDemo, MessageDialogDemo, ValidationDemo,
     VirtualDragDemo,
 };
+use layout_ui::{FocusScopesDemo, ScopedKeysDemo, StatesDemo};
 use list_ui::{DirectoryItem, GridDemo, StandardListDemo};
 use menu_ui::{MenuDemo, ShortcutDemo};
 use navigation_ui::{PageDemo, StackDemo, TabBarDemo};
@@ -36,6 +37,384 @@ use xrack_runtime::{
 };
 
 struct FixedText;
+
+#[test]
+fn focus_observers_publish_both_sides_before_callbacks_and_keep_within_stable() {
+    use xrack_layout::FocusObservers;
+    use xrack_runtime::{FocusEvent, FocusReason, Node};
+
+    let mut ui = FocusScopesDemo::new();
+    let mut input = Interaction::default();
+    let mut observers = FocusObservers::default();
+    let scene = ui.render_shared();
+    let layout = xrack_layout::layout(&scene, Size::new(492.0, 272.0), &mut FixedText);
+    let locate = |scene: &Node, pane: &str, field: &str| {
+        let index = scene
+            .children
+            .iter()
+            .position(|node| node.id == Some(pane))
+            .unwrap();
+        let child = scene.children[index]
+            .children
+            .iter()
+            .position(|node| node.id == Some(field))
+            .unwrap();
+        [index, child]
+    };
+    assert!(observers.sync(&input, &scene, &layout, true).is_empty());
+    input.focus_next(&scene, &layout, false);
+    let events = observers.sync(&input, &scene, &layout, true);
+    assert!(ui.get_left_active());
+    assert_eq!(ui.get_left_visits(), 0);
+    for event in events {
+        event.apply(&mut ui, &scene);
+    }
+    assert_eq!(ui.get_left_visits(), 1);
+    let updated = ui.render_shared();
+    assert_eq!(
+        updated.find("left").unwrap().color("background"),
+        Some(Color(0x355372ff))
+    );
+    let query = locate(&scene, "left", "query");
+    assert_eq!(
+        updated.at_path(&query).unwrap().color("background"),
+        Some(Color(0x203a52ff))
+    );
+
+    let notes = locate(&scene, "left", "notes");
+    let target = input.accessibility_target(&scene, &layout, &notes).unwrap();
+    input.focus_target(&scene, &layout, target);
+    let events = observers.sync(&input, &scene, &layout, true);
+    assert_eq!(
+        events.iter().map(|event| event.event).collect::<Vec<_>>(),
+        [
+            FocusEvent::Lost(FocusReason::Accessibility),
+            FocusEvent::Within {
+                focused: false,
+                reason: FocusReason::Accessibility
+            },
+            FocusEvent::Within {
+                focused: true,
+                reason: FocusReason::Accessibility
+            },
+            FocusEvent::Gained(FocusReason::Accessibility),
+        ]
+    );
+    for event in events {
+        event.apply(&mut ui, &scene);
+    }
+    assert!(ui.get_left_active());
+    assert_eq!(ui.get_left_visits(), 1);
+    let updated = ui.render_shared();
+    assert_eq!(
+        updated.at_path(&notes).unwrap().color("background"),
+        Some(Color(0x203a52ff))
+    );
+    assert_eq!(
+        updated.at_path(&query).unwrap().color("background"),
+        Some(Color(0x19293cff))
+    );
+
+    let right = locate(&scene, "right", "query");
+    let target = input.accessibility_target(&scene, &layout, &right).unwrap();
+    input.focus_target(&scene, &layout, target);
+    let events = observers.sync(&input, &scene, &layout, true);
+    assert!(!ui.get_left_active());
+    assert!(ui.get_right_active());
+    for event in events {
+        event.apply(&mut ui, &scene);
+    }
+    assert_eq!(ui.get_right_focus_reason(), FocusReason::Accessibility);
+    assert_eq!(ui.get_right_visits(), 1);
+
+    for event in observers.sync(&input, &scene, &layout, false) {
+        event.apply(&mut ui, &scene);
+    }
+    assert!(!ui.get_right_active());
+    assert_eq!(ui.get_right_focus_reason(), FocusReason::WindowActivation);
+    assert_eq!(input.focused.as_ref().unwrap().path, right);
+    for event in observers.sync(&input, &scene, &layout, true) {
+        event.apply(&mut ui, &scene);
+    }
+    assert!(ui.get_right_active());
+    assert_eq!(ui.get_right_visits(), 2);
+}
+
+#[test]
+fn focused_key_route_captures_outer_first_and_bubbles_inner_first() {
+    use xrack_runtime::{EventResult, KeyEvent, KeyModifiers, KeyPhase};
+
+    let mut ui = ScopedKeysDemo::new();
+    let scene = ui.render_shared();
+    let layout = xrack_layout::layout(&scene, Size::new(512.0, 254.0), &mut FixedText);
+    let mut input = Interaction::default();
+    input.focus_next(&scene, &layout, false);
+    assert_eq!(
+        input.focused.as_ref().and_then(|target| target.id),
+        Some("field")
+    );
+    let route = input.key_route(&scene, &layout).unwrap();
+    let key = |key: &str, text: &str| KeyEvent {
+        key: key.into(),
+        text: text.into(),
+        ..Default::default()
+    };
+    let dispatch = |ui: &mut ScopedKeysDemo, phase, event: &KeyEvent| {
+        route.dispatch(ui, &scene, &layout, phase, event).unwrap()
+    };
+
+    let blocked = key("x", "x");
+    assert_eq!(
+        dispatch(&mut ui, KeyPhase::CapturePressed, &blocked),
+        EventResult::Accept
+    );
+    assert_eq!(ui.get_trace(), "外层捕获 内层捕获 ");
+    assert_eq!(
+        dispatch(&mut ui, KeyPhase::CaptureReleased, &blocked),
+        EventResult::Accept
+    );
+    assert_eq!(ui.get_accepted_releases(), 1);
+
+    ui.set_trace("".into());
+    let f2 = key("F2", "");
+    assert_eq!(
+        dispatch(&mut ui, KeyPhase::CapturePressed, &f2),
+        EventResult::Reject
+    );
+    assert_eq!(
+        dispatch(&mut ui, KeyPhase::Pressed, &f2),
+        EventResult::Accept
+    );
+    assert_eq!(ui.get_trace(), "外层捕获 内层捕获 内层冒泡 外层冒泡 ");
+    assert_eq!(
+        dispatch(&mut ui, KeyPhase::Released, &f2),
+        EventResult::Accept
+    );
+    assert!(ui.get_trace().ends_with("外层释放 "));
+
+    ui.set_trace("".into());
+    let primary = KeyEvent {
+        modifiers: KeyModifiers {
+            primary: true,
+            ..Default::default()
+        },
+        ..key("k", "")
+    };
+    assert_eq!(
+        dispatch(&mut ui, KeyPhase::CapturePressed, &primary),
+        EventResult::Accept
+    );
+    assert_eq!(ui.get_trace(), "外层捕获 ");
+
+    input.sync_editor(&scene);
+    input
+        .editor
+        .as_mut()
+        .unwrap()
+        .set_preedit("ni".into(), Some((2, 2)));
+    assert!(input.key_route(&scene, &layout).is_none());
+}
+
+#[test]
+fn key_capture_stays_inside_the_active_modal_overlay() {
+    use xrack_runtime::{EventResult, KeyEvent, KeyPhase, Length, Node};
+
+    #[derive(Default)]
+    struct Recorder(Vec<&'static str>);
+    impl Component for Recorder {
+        fn render(&self) -> Node {
+            Node::new("Window", None)
+        }
+        fn dispatch(&mut self, _: &str, _: &str) -> bool {
+            false
+        }
+        fn key_event_at(
+            &mut self,
+            scene: &Node,
+            path: &[usize],
+            _: KeyPhase,
+            _: &KeyEvent,
+        ) -> EventResult {
+            self.0.push(scene.at_path(path).unwrap().id.unwrap());
+            EventResult::Reject
+        }
+    }
+    let box_node = |kind, id, width, height| {
+        let mut node = Node::new(kind, Some(id));
+        node.properties.insert("width", Length(width).into());
+        node.properties.insert("height", Length(height).into());
+        node
+    };
+    let mut scene = Node::new("Window", None);
+    let mut background = box_node("FocusScope", "background", 480.0, 280.0);
+    background.key_handlers = KeyPhase::CapturePressed.mask();
+    let mut modal = box_node("Dialog", "modal", 320.0, 180.0);
+    modal.properties.insert("open", true.into());
+    let mut inside = box_node("FocusScope", "inside", 200.0, 80.0);
+    inside.key_handlers = KeyPhase::CapturePressed.mask();
+    inside
+        .children
+        .push(box_node("Button", "action", 100.0, 42.0));
+    modal.children.push(inside);
+    background.children.push(modal);
+    scene.children.push(background);
+    let layout = xrack_layout::layout(&scene, Size::new(480.0, 280.0), &mut FixedText);
+    let mut input = Interaction::default();
+    input.reconcile(&scene, &layout);
+    assert_eq!(
+        input.focused.as_ref().and_then(|target| target.id),
+        Some("action")
+    );
+    let route = input.key_route(&scene, &layout).unwrap();
+    let mut recorder = Recorder::default();
+    assert_eq!(
+        route.dispatch(
+            &mut recorder,
+            &scene,
+            &layout,
+            KeyPhase::CapturePressed,
+            &KeyEvent::default()
+        ),
+        Some(EventResult::Reject)
+    );
+    assert_eq!(recorder.0, ["inside"]);
+}
+
+#[test]
+fn focus_scopes_use_instance_identity_and_restore_only_eligible_children() {
+    use xrack_runtime::FocusRequests;
+    fn focused_name<'a>(input: &Interaction, scene: &'a xrack_runtime::Node) -> Option<&'a str> {
+        scene
+            .at_path(&input.focused.as_ref()?.path)?
+            .text("accessible-name")
+    }
+
+    let mut ui = FocusScopesDemo::new();
+    let mut input = Interaction::default();
+    let queue = FocusRequests::default();
+    let prepare = |ui: &FocusScopesDemo, input: &mut Interaction| {
+        let scene = ui.render_shared();
+        let layout = xrack_layout::layout(&scene, Size::new(492.0, 272.0), &mut FixedText);
+        input.reconcile(&scene, &layout);
+        (scene, layout)
+    };
+    let dispatch = |ui: &mut FocusScopesDemo, id| {
+        let _scope = queue.enter();
+        assert!(ui.dispatch(id, "clicked"));
+    };
+
+    let (scene, layout) = prepare(&ui, &mut input);
+    input.focus_next(&scene, &layout, false);
+    assert_eq!(focused_name(&input, &scene), Some("左侧 查询"));
+    input.focus_next(&scene, &layout, false);
+    assert_eq!(focused_name(&input, &scene), Some("右侧 查询"));
+    input.focus_next(&scene, &layout, true);
+    assert_eq!(focused_name(&input, &scene), Some("右侧 备注"));
+
+    dispatch(&mut ui, "jump-left");
+    input.apply_focus_requests(&scene, &layout, queue.drain());
+    assert_eq!(focused_name(&input, &scene), Some("左侧 查询"));
+    input.pointer_move(&scene, &layout, Point { x: 44.0, y: 75.0 });
+    input.pointer_press_in_scene(&scene, &layout);
+    assert_eq!(focused_name(&input, &scene), Some("左侧 备注"));
+    dispatch(&mut ui, "jump-right");
+    input.apply_focus_requests(&scene, &layout, queue.drain());
+    assert_eq!(focused_name(&input, &scene), Some("右侧 备注"));
+    dispatch(&mut ui, "jump-left");
+    input.apply_focus_requests(&scene, &layout, queue.drain());
+    assert_eq!(focused_name(&input, &scene), Some("左侧 备注"));
+
+    {
+        let _scope = queue.enter();
+        ui.invoke_clear_left();
+    }
+    input.apply_focus_requests(&scene, &layout, queue.drain());
+    assert!(input.focused.is_none());
+
+    let mut fresh = Interaction::default();
+    dispatch(&mut ui, "disable-left");
+    let (scene, layout) = prepare(&ui, &mut fresh);
+    fresh.apply_focus_requests(&scene, &layout, queue.drain());
+    assert_eq!(focused_name(&fresh, &scene), Some("左侧 备注"));
+    dispatch(&mut ui, "jump-right");
+    fresh.apply_focus_requests(&scene, &layout, queue.drain());
+    dispatch(&mut ui, "jump-left");
+    ui.set_left_visible(false);
+    let (scene, layout) = prepare(&ui, &mut fresh);
+    fresh.apply_focus_requests(&scene, &layout, queue.drain());
+    assert_eq!(focused_name(&fresh, &scene), Some("右侧 查询"));
+    ui.set_left_visible(true);
+    ui.set_left_query_enabled(true);
+    let (scene, layout) = prepare(&ui, &mut fresh);
+    fresh.apply_focus_requests(&scene, &layout, queue.drain());
+    assert_eq!(focused_name(&fresh, &scene), Some("右侧 查询"));
+    dispatch(&mut ui, "jump-left");
+    fresh.apply_focus_requests(&scene, &layout, queue.drain());
+    assert_eq!(focused_name(&fresh, &scene), Some("左侧 备注"));
+
+    let mut modal_scene = scene.as_ref().clone();
+    let mut dialog = xrack_runtime::Node::new("Dialog", Some("modal"));
+    dialog.properties.insert("open", true.into());
+    modal_scene.children.push(dialog);
+    let modal_layout = xrack_layout::layout(&modal_scene, Size::new(492.0, 272.0), &mut FixedText);
+    fresh.reconcile(&modal_scene, &modal_layout);
+    assert_eq!(
+        fresh.focused.as_ref().and_then(|target| target.id),
+        Some("modal")
+    );
+    dispatch(&mut ui, "jump-left");
+    fresh.apply_focus_requests(&modal_scene, &modal_layout, queue.drain());
+    assert_eq!(
+        fresh.focused.as_ref().and_then(|target| target.id),
+        Some("modal")
+    );
+}
+
+#[test]
+fn states_choose_the_first_condition_and_only_evaluate_the_selected_binding() {
+    use std::{cell::Cell, rc::Rc};
+    use xrack_runtime::Length;
+
+    let mut ui = StatesDemo::new();
+    let calls = Rc::new(Cell::new(0));
+    let called = calls.clone();
+    ui.on_base_width(move || {
+        called.set(called.get() + 1);
+        Length(96.0)
+    });
+    ui.set_level(2);
+    let alert = ui.render_shared();
+    assert_eq!(alert.find("tile").unwrap().length("width"), Some(280.0));
+    assert_eq!(alert.find("caption").unwrap().text("text"), Some("告警"));
+    assert!(alert.find("badge").unwrap().is_visible());
+    let leds = &alert.find("status-leds").unwrap().children[0].children;
+    assert_eq!(leds[0].color("background"), Some(Color(0x314051ff)));
+    assert_eq!(leds[2].color("background"), Some(Color(0x9adcb7ff)));
+    assert_eq!(calls.get(), 0);
+    ui.set_level(1);
+    let warning = ui.render_shared();
+    assert_eq!(warning.find("tile").unwrap().length("width"), Some(168.0));
+    assert!(!warning.find("badge").unwrap().is_visible());
+    assert_eq!(calls.get(), 0);
+    ui.set_level(0);
+    let normal = ui.render_shared();
+    assert_eq!(normal.find("tile").unwrap().length("width"), Some(96.0));
+    assert_eq!(normal.find("caption").unwrap().text("text"), Some("正常"));
+    assert_eq!(calls.get(), 1);
+    assert!(Rc::ptr_eq(&normal, &ui.render_shared()));
+    assert_eq!(calls.get(), 1);
+
+    let mut bound = StatesDemo::new();
+    bound.set_level(2);
+    let previous = bound.render_shared();
+    bound.set_baseline(Length(124.0));
+    assert!(Rc::ptr_eq(&previous, &bound.render_shared()));
+    bound.set_level(0);
+    assert_eq!(
+        bound.render().find("tile").unwrap().length("width"),
+        Some(124.0)
+    );
+}
 
 #[test]
 fn native_file_drop_filters_a_whole_batch_and_revalidates_the_release_route() {

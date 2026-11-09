@@ -69,9 +69,8 @@ pub fn check_resources(
     filename: &str,
     declared_assets: Option<&[PathBuf]>,
 ) -> Result<(), CompilerError> {
-    resources::resolve(module, filename, declared_assets)
-        .map(|_| ())
-        .map_err(CompilerError::Resources)
+    resources::resolve(module, filename, declared_assets).map_err(CompilerError::Resources)?;
+    codegen::check_markdown(module).map_err(CompilerError::Codegen)
 }
 
 /// Validate the source and run the native MLIR pass pipeline.

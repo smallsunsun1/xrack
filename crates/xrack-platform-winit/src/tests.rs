@@ -13,6 +13,60 @@ use std::{
 use xrack_runtime::Value;
 
 #[test]
+fn a_deferred_focus_command_is_consumed_with_an_unchanged_scene() {
+    use xrack_layout::{TextMeasurer, layout};
+    use xrack_runtime::{FocusAction, FocusHandle, Length};
+
+    struct View(Rc<Node>);
+    impl Component for View {
+        fn render(&self) -> Node {
+            self.0.as_ref().clone()
+        }
+        fn render_shared(&self) -> Rc<Node> {
+            self.0.clone()
+        }
+        fn dispatch(&mut self, _: &str, _: &str) -> bool {
+            false
+        }
+    }
+    struct Measure;
+    impl TextMeasurer for Measure {
+        fn measure(&mut self, _: &str, _: f32, _: f32) -> Size {
+            Size::default()
+        }
+    }
+    let handle = FocusHandle::default();
+    let mut scene = Node::new("Window", None);
+    let mut target = Node::new("Button", Some("target"));
+    target.focus_handle = Some(handle.clone());
+    target.properties.insert("width", Length(100.0).into());
+    target.properties.insert("height", Length(48.0).into());
+    scene.children.push(target);
+    let mut app = Application::new(
+        View(Rc::new(scene)),
+        LocalExecutor::new(|| {}),
+        Inbox::<()>::new(|| {}),
+        |_: &mut View, _| {},
+    );
+    app.layout = Some(Rc::new(layout(
+        &app.scene,
+        Size::new(200.0, 100.0),
+        &mut Measure,
+    )));
+    {
+        let _focus = app.focus_requests.enter();
+        handle.request(FocusAction::Focus);
+    }
+    assert!(app.input.focused.is_none());
+    app.refresh_after_update(false);
+    assert_eq!(
+        app.input.focused.as_ref().and_then(|target| target.id),
+        Some("target")
+    );
+    assert!(app.focus_requests.is_empty());
+}
+
+#[test]
 fn paint_only_updates_replace_the_scene_without_resolving_layout() {
     use xrack_layout::{TextMeasurer, layout};
     use xrack_runtime::{Color, Length};

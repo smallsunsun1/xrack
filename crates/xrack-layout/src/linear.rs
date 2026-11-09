@@ -155,6 +155,7 @@ pub(crate) fn intrinsic_item(kind: &str) -> bool {
         kind,
         "Text"
             | "Label"
+            | "StyledText"
             | "Button"
             | "ToolButton"
             | "DelayButton"
@@ -397,7 +398,7 @@ pub(crate) fn measure_with_width(
                     let metrics = measure(content, available, text);
                     Size::new(metrics.x.preferred, metrics.y.preferred)
                 }),
-            "Text" | "Label" if crate::uses_label_layout(node) => {
+            "Text" | "Label" | "StyledText" if crate::uses_label_layout(node) => {
                 text.measure_label(node, available.width)
             }
             "Text" => text.measure_node(node, node.text("text").unwrap_or(""), available.width),
@@ -494,6 +495,7 @@ pub(crate) fn measure_with_width(
                 node.kind,
                 "Text"
                     | "Label"
+                    | "StyledText"
                     | "Button"
                     | "ToolButton"
                     | "DialogButton"

@@ -1252,7 +1252,7 @@ fn role(node: &Node, view: Option<&str>) -> Role {
         "Switch" => Role::Switch,
         "RadioButton" => Role::RadioButton,
         "RadioGroup" => Role::RadioGroup,
-        "Text" | "Label" => Role::Label,
+        "Text" | "Label" | "StyledText" => Role::Label,
         "TextInput" | "LineEdit" if node.is_password() => Role::PasswordInput,
         "TextInput" | "LineEdit" if node.input_type() == InputType::Search => Role::SearchInput,
         "TextInput" | "LineEdit" => Role::TextInput,
@@ -1514,6 +1514,29 @@ mod tests {
                 .nodes
                 .iter()
                 .any(|(_, node)| node.role() == Role::Label && node.value() == Some(value))
+        );
+    }
+
+    #[test]
+    fn styled_text_exposes_full_plain_text_through_the_label_role() {
+        let mut label = Node::new("StyledText", Some("rich"));
+        length(&mut label, "width", 30.0);
+        label
+            .properties
+            .insert("overflow", xrack_runtime::TextOverflow::Elide.into());
+        let text = xrack_runtime::StyledText::from_markdown("**Full** `text`").unwrap();
+        label.properties.insert("text", text.into());
+        let mut window = Node::new("Window", None);
+        window.children.push(label);
+        let scene = Rc::new(window);
+        let frame = Rc::new(layout(&scene, Size::new(200.0, 100.0), &mut Text));
+        let update = Projection::default()
+            .update(&scene, &frame, &Interaction::default(), 1.0, None)
+            .unwrap();
+        assert!(
+            update.nodes.iter().any(|(_, node)| {
+                node.role() == Role::Label && node.value() == Some("Full text")
+            })
         );
     }
 

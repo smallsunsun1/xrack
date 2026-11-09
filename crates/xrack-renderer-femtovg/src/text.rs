@@ -1,8 +1,8 @@
-use femtovg::{Align, Baseline, Color, FontId, Paint, TextContext, TextMetrics};
+use femtovg::{Align, Baseline, Color, FontId, Paint, TextContext, TextDecoration, TextMetrics};
 use fontdb::{Database, Family, Query, Style, Weight};
 use std::{cell::RefCell, collections::HashMap, ops::Range, rc::Rc, sync::Arc};
 use xrack_layout::{LabelLayout, Rect, Size, TextAreaLayout, TextMeasurer};
-use xrack_runtime::{EmbeddedFonts, Node, TextWrap};
+use xrack_runtime::{EmbeddedFonts, Node, TextStyle, TextWrap};
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 struct FontRequest {
@@ -359,7 +359,7 @@ impl TextSystem {
         &self.font_context().identity
     }
 
-    fn face(&self, node: Option<&Node>) -> Option<StyledFace> {
+    fn face(&self, node: Option<&Node>, style: TextStyle) -> Option<StyledFace> {
         let family = node
             .and_then(|node| node.text("font-family"))
             .map(str::trim)
@@ -372,6 +372,9 @@ impl TextSystem {
         let italic = node.map_or(self.default_italic, |node| {
             node.boolean("font-italic", self.default_italic)
         });
+        let family = if style.monospace { "monospace" } else { family };
+        let weight = if style.bold { weight.max(700) } else { weight };
+        let italic = italic || style.italic;
         let fonts = self.font_context();
         if family.is_empty() && weight == 400 && !italic && !fonts.fallback.is_empty() {
             return None;
@@ -400,7 +403,12 @@ impl TextSystem {
     }
 
     pub fn paint(&self, font_size: f32, color: Color, centered: bool) -> Paint {
-        self.paint_face(self.face(None), font_size, color, centered)
+        self.paint_face(
+            self.face(None, TextStyle::default()),
+            font_size,
+            color,
+            centered,
+        )
     }
 
     pub(crate) fn paint_node(&self, node: &Node, color: Color, centered: bool) -> Paint {
@@ -414,7 +422,28 @@ impl TextSystem {
         color: Color,
         centered: bool,
     ) -> Paint {
-        self.paint_face(self.face(Some(node)), size, color, centered)
+        self.paint_face(
+            self.face(Some(node), TextStyle::default()),
+            size,
+            color,
+            centered,
+        )
+    }
+
+    pub(crate) fn paint_styled(&self, node: &Node, tint: Color, style: TextStyle) -> Paint {
+        let mut paint = self.paint_face(
+            self.face(Some(node), style),
+            self.font_size(node),
+            tint,
+            false,
+        );
+        paint.set_text_baseline(Baseline::Alphabetic);
+        paint.set_text_decoration(TextDecoration {
+            underline: style.underline,
+            strikethrough: style.strikethrough,
+            ..Default::default()
+        });
+        paint
     }
 
     fn paint_face(
@@ -479,7 +508,7 @@ impl TextSystem {
     pub fn text_area_layout(&self, node: &Node, bounds: Rect, text: &str) -> TextAreaLayout {
         let area = bounds.inset(node.length("padding").unwrap_or(6.0).max(0.0));
         let size = self.font_size(node);
-        let face = self.face(Some(node));
+        let face = self.face(Some(node), TextStyle::default());
         let wrap = node.text_wrap();
         if let Some(last) = &*self.edit_layout.borrow()
             && last.layout.area.width == area.width
@@ -561,8 +590,12 @@ impl TextMeasurer for TextSystem {
     }
 
     fn measure_label(&mut self, node: &Node, max_width: f32) -> Size {
-        self.label_layout(node, Size::new(max_width, f32::INFINITY))
-            .size
+        let available = Size::new(max_width, f32::INFINITY);
+        if let Some(text) = node.styled_text("text") {
+            crate::styled_text::measure(self, node, text, available)
+        } else {
+            self.label_layout(node, available).size
+        }
     }
 
     fn measure_node(&mut self, node: &Node, text: &str, max_width: f32) -> Size {
