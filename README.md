@@ -234,7 +234,19 @@ Markdown 链接用 `[文案](目标)` 声明，默认显示下划线并可配置
 
 `ScrollView`、`ListView`、`TreeView` 和 `TableView` 在内容溢出时显示可拖动的纵向滚动条。`ScrollView` 和 `TableView` 也提供横向滚动条。拖动滑块定位，点击轨道按视口大小翻页。滚动条覆盖在内容边缘并共享滚轮的滚动位置，表头与表身继续同步。可通过 `vertical-scroll-bar-policy` 和 `horizontal-scroll-bar-policy` 设置各滚动轴的 `as-needed`、`always-on` 或 `always-off`。拖动滚动条保留当前焦点，虚拟视图继续只创建视口内的行。
 
+`ScrollBar { target: canvas; orientation: horizontal; }` 和 `ScrollIndicator { target: canvas; }` 可以在视口外独立布局，`target` 引用同组件中的视口 ID。方向默认为纵向，`policy` 默认为 `as-needed`，也可设为 `always-on` 或 `always-off`。滚动条支持鼠标、触摸、Tab 焦点、方向键、PageUp/PageDown、Home/End 和原生无障碍操作。指示器只绘制滑块，指针事件可以穿过它。内建滚动条、外置滚动条和指示器共享视口偏移，用户移动外置滚动条时照常写回 `content-x/y` 绑定并触发 `scrolled()`。运行 `bazel run //examples/list:list -- --scroll-bars` 体验。
+
+附着模式的 `position` 和 `size` 是只读的归一化视口数据，分别为实际偏移和可见长度占内容总长度的比例。没有溢出时返回 `0` 和 `1`，视口尚未布局或被隐藏时都返回 `0`。滚动条的显示策略和最小滑块尺寸独立于这两个值。可以用这些读数驱动文本、颜色或另一个滚动指示器。编译器会检查它们流入当前布局阶段的尺寸或位置时是否形成反馈。
+
+省略 `target` 即可使用独立滚动控件。`size` 是可见部分占总内容的比例，取值为 `0..1`，`position` 的有效范围为 `0..1-size`。用 `position <=> root.offset` 接收滚动条输入，或者在表达式中读取 `bar.position` 和 `bar.size` 来移动自定义内容或驱动指示器。`size` 改变时，有效位置会重新夹紧，原绑定值会保留。用户移动滑块时会写回位置并触发 `changed(position)`。`step-size` 控制方向键和无障碍增减的步长，默认 `0.1`。两种模式都支持 `minimum-size` 设置最小滑块比例，滚动条可用 `interactive: false` 切换为被动显示。运行 `bazel run //examples/list:list -- --standalone-scroll` 体验。
+
+两种滚动条都支持 `snap-mode: ScrollSnapMode.always` 和 `ScrollSnapMode.on-release`，默认值是 `none`。设置正的 `step-size` 后，滑块拖动按可移动行程的比例吸附，起点和终点始终可达。附着式滚动条的方向键和无障碍增减会把显式 `step-size` 换算为总内容长度的比例，省略时仍以 28 逻辑像素为步长。轨道点击保留翻页行为，滚轮和程序定位继续使用视口偏移。取消拖动时保留已经提交的位置。可在 `--standalone-scroll` 示例中勾选 **Snap on release** 体验。
+
 `ScrollView` 根据直接子项的位置和布局尺寸计算内容范围。`content-width` 和 `content-height` 可以用长度或视口百分比指定最小内容尺寸。子项的百分比尺寸以显式内容尺寸或视口为基准。`viewport-height` 仍可用于既有的最小内容高度绑定。`Shift` 加滚轮可横向滚动，嵌套视图会将各轴剩余滚动量交给外层。运行 `bazel run //examples/layout:layout` 可体验二维画布。
+
+`Flickable` 是可拖动并带惯性的底层视口。它默认裁剪内容，滚动条可通过 `ScrollBar { target: canvas; }` 独立放置。`content-width` 和 `content-height` 给出各轴的显式内容范围，省略时按子项推导。`flick-direction` 可设为 `both`、`horizontal` 或 `vertical`，`interactive: false` 暂停拖动和惯性输入，子控件、滚轮和 `scroll-to()` 仍可操作。`dragging`、`flicking` 和 `moving` 反映当前消费位移的视口。`flicked()` 在用户改变偏移时触发，`cancel-flick()` 停止该视口正在参与的惯性滚动。运行 `bazel run //examples/layout:layout -- --flickable` 体验。
+
+`bounds-behavior` 默认是 `FlickBoundsBehavior.stop-at-bounds`。可分别启用拖动越界 `drag-over-bounds`、惯性越界 `overshoot-bounds`，或同时启用 `drag-and-overshoot-bounds`。嵌套视口先消费合法范围内的位移，剩余部分才交给最外层启用弹性的视口。`horizontal-overshoot` 和 `vertical-overshoot` 是带符号的逻辑像素，`content-x/y` 仍表示合法的内容偏移。设 `bounds-movement: FlickBoundsMovement.stop-at-bounds` 可让内容停在边界，用读数驱动自定义效果。`rebound-duration` 默认 180 毫秒，`rebounding` 和 `moving` 在回弹期间为真。也可调用 `return-to-bounds()` 主动开始回弹。示例中的 **Elastic content** 切换内容是否随越界移动。
 
 `ScrollView` 和虚拟视图可以在回调中调用 `view.scroll-to(96px, 60px)`，参数为从内容原点量起的逻辑像素。列表、网格、树和表格也可用 `view.position-view-at-index(9000, ScrollAlignment.center)`。索引从零开始，树视图使用当前展开后的可见行序列。对齐方式有 `beginning`、`center`、`end`、`visible` 和 `contain`。`visible` 在目标已有一部分可见时保留位置，`contain` 尽量完整显示目标行。
 
@@ -406,6 +418,8 @@ Markdown 链接用 `[文案](目标)` 声明，默认显示下划线并可配置
 
 用 `bazel run //examples/table:table -- --cells` 或 `bazel run //examples/table:table -- --columns` 体验两种选择方式。
 
+表格同时设置 `multi-select: true;` 和 `drag-select: true;` 后，可从表身用鼠标拖出选区。预览随 `selection-target` 显示行、单元格或列范围，靠近边缘时会继续滚动到离屏内容。松手后一次提交，按住 Ctrl 或 Command 可保留原选区。Escape、移出窗口、失去焦点或拖动期间改变行结构和列顺序会取消本次选择。已进入编辑状态的单元格和独立的交互控件仍处理自己的拖动。
+
 表格设置 `copyable: true;` 后，可用 Ctrl 或 Command 加 C 复制选区到系统剪贴板。复制按当前显示列顺序读取模型，包括离屏的已选行和列。单元格选区输出最小矩形，选区内的空洞保留为空字段。文本中的制表符、换行和引号会转义。自定义表格默认复制直接文本和双向绑定的模型值，也可在直接单元格上用 `clipboard-text` 指定导出文本。编辑中的文本选区优先。一次复制最多 100 万个字段或 8 MiB。
 
 `TableCell { text <=> item; }` 可编辑 `for item in root.records` 中可写 `[string]` 模型的一行。双击单元格，或在聚焦后按 Enter / F2 开始编辑。Enter 提交，Tab 提交并移动焦点，Escape 或切换到其他控件会丢弃草稿。应用在编辑期间重排模型时，仍可见的记录会按行标识保留草稿。滚出视口、删除记录或外部改值会结束编辑。文本输入、IME、剪贴板和撤销在草稿上工作，提交时才修改模型。
@@ -435,6 +449,10 @@ Markdown 链接用 `[文案](目标)` 声明，默认显示下划线并可配置
 `Rectangle { clip: true; }` 按边框内侧的圆角裁剪子树。显式设置 `clip: false;` 允许子控件溢出矩形，仍受更外层的裁剪和窗口范围约束。省略 `clip` 时沿用原有矩形裁剪。绘制和指针命中共用圆角几何，无障碍按其矩形投影报告可见边界。运行 `bazel run //examples/layout:layout -- --clipping`。
 
 普通视觉节点支持 `transform-rotation`、`transform-scale`、`transform-scale-x` 和 `transform-scale-y`。旋转值用顺时针角度，逐轴值可覆盖统一缩放，负值可镜像。`transform-origin-x` 和 `transform-origin-y` 接受长度或百分比，省略时以节点中心为原点。变换作用于已完成布局的子树，绘制、指针定位和裁剪共用变换矩阵。窗口级弹出层继续以窗口坐标定位。运行 `bazel run //examples/layout:layout -- --transforms`。
+
+`ScaleRotateGestureHandler` 把触屏双指手势和 macOS 触控板手势统一成 `started()`、`updated()`、`ended()` 和 `cancelled()`。在 `started()` 保存初始状态，在 `updated()` 读取累计 `scale`、顺时针角度 `rotation` 和局部逻辑像素中心 `center-x/y`，再更新内容变换。手势结束或取消时，`active` 变回 `false`，读数回到默认值。两指须从同一个可用区域开始。第二指接管待提交的单指输入时，会取消原来的点击候选。关闭 `enabled` 会取消该区域的手势，子控件仍可接收单指操作。运行 `bazel run //examples/layout:layout -- --scale-rotate`。
+
+`SwipeGestureHandler` 用 `handle-swipe-left/right/up/down` 选择接收的方向，默认全部关闭。鼠标左键或单指触屏移动达到 8 逻辑像素后，最内层接受主方向的区域接管输入。其他方向可继续由滚动视图处理。`moved()` 中可读 `swiping` 与 `pressed-x/y`、`current-x/y`。坐标以按下时的局部坐标系计算。松手触发 `swiped()`，此时可以读取最终坐标。滑动期间调用 `cancel()`、禁用区域或失去窗口焦点会触发 `cancelled()`。轻触仍可点击内部按钮。运行 `bazel run //examples/layout:layout -- --swipe-gesture`，横拖移动卡片，竖拖滚动画布。
 
 `Image` 的 `source: @image-url("assets/icon.svg");` 引用相对于 `.xr` 的本地 PNG 或 SVG。图片以 `!xr.image` 通过 MLIR，编译器检查资源后把编码字节嵌入 Rust。支持 `image-fit: fill | contain | cover | preserve`。布局内默认 `contain`，其他位置默认 `fill`。SVG 支持独立的矢量图形，由 resvg 按显示尺寸和 DPI 栅格化。SVG 文本和外链资源暂未支持。
 
@@ -541,13 +559,23 @@ macOS 上，`DropArea { accept-files: true; }` 也可接收 Finder 或其他应�
 
 回调可以调用 `root.minimize()`、`root.maximize()`、`root.restore()`、`root.toggle-maximized()`、`root.set-full-screen(bool)` 和 `root.toggle-full-screen()`。`restore()` 请求恢复普通窗口。窗口的 `window-active`、`minimized`、`maximized` 和 `full-screen` 是只读的响应式状态，由宿主从原生窗口采样。`minimized-known` 表示当前后端能否报告最小化，例如 Wayland 上该值为 `false`。同一批切换请求按发出顺序解析，退出全屏后需要调整最大化状态时，宿主会等待退出确认。自定义标题栏可用这些属性更新按钮文字和无障碍名称。
 
-`xrack_platform_winit::run_desktop` 在同一个 winit 事件循环中运行多个顶层组件。通过 `Desktop::open` 可在启动时或任意窗口的 UI 回调中创建新窗口。`open_with_messages` 为每个窗口提供独立的 `UiSender` 和 reducer。`DesktopWindow::close` 关闭指定窗口，最后一个窗口关闭后事件循环退出。
+`xrack_platform_winit::run_desktop` 在同一个 winit 事件循环中运行多个顶层组件。通过 `Desktop::open` 可在启动时或任意窗口的 UI 回调中创建新窗口。`open_with_messages` 为每个窗口提供独立的 `UiSender` 和 reducer。`DesktopWindow::close` 关闭指定窗口。所有窗口关闭、所有托盘图标隐藏或移除后，事件循环退出。
 
 顶层 `.xr` `Window` 可实现 `close-requested() => { … }`，返回 `true` 允许关闭，返回 `false` 保留窗口。标题栏、Rust 的 `DesktopWindow::close()` 和 `.xr` 的 `root.close()` 都经过这个处理器。`root.close()` 在当前回调结束后提交关闭请求。处理器可先拒绝，再打开 `MessageDialog`，由确认回调清除未保存标记并重新请求关闭。运行 `bazel run //examples/form:form -- --close-guard` 体验。
 
 在根 `Window` 下声明命名的 `SecondaryWindow`，并在其中放一个继承 `Window` 的组件实例。`visible <=> root.show-inspector;` 把显示状态和父组件同步，`show()`、`hide()` 控制显示，`close()` 提交子窗口的关闭请求。子窗口批准关闭后会将 `visible` 写回 `false`。隐藏会释放原生窗口并保留子组件实例，重新显示时可继续编辑。父窗口退出时，宿主先释放它拥有的辅助窗口。运行 `bazel run //examples/counter:counter -- --secondary` 体验。
 
 每个窗口维护自己的焦点、编辑状态、计时器、原生对话框和本地任务。共享的响应式模型变化后，宿主在同一轮事件中刷新依赖失效的窗口，并合并各窗口的唤醒时间。兼容的 surface 复用 GPU 设备。运行 `bazel run //examples/counter:counter -- --windows` 可验证独立计数、共享状态、异步更新、动态开窗和关闭。
+
+### 系统托盘
+
+Linux、macOS 和 Windows 桌面宿主可用 `Desktop::register_tray` 注册继承 `SystemTrayIcon` 的顶层组件。托盘应用可以独立运行，也可从菜单打开窗口。`icon` 接收 PNG 或 SVG 图像，`title` 和 `tooltip` 支持响应式绑定。`visible: false` 隐藏图标，组件和本地任务仍保留，`DesktopTray::close()` 释放它。最后一个窗口和托盘都关闭后，桌面事件循环退出。
+
+托盘可声明一个静态 `Menu`，菜单内容支持子菜单、分隔线、动态可见性、勾选状态和共享 `Action`。在 macOS 上，`icon-template` 启用 AppKit 模板图标，带菜单的图标打开原生菜单，纯图标可处理 `clicked()`。在 Windows 上，左键激活触发 `clicked()`，右键或键盘菜单键打开原生菜单，空的 `tooltip` 使用 `title`，Explorer 重启后会重新注册图标。
+
+Linux 使用会话 D-Bus 上的 StatusNotifierItem 和 DBusMenu，需要支持该协议的面板或桌面扩展。面板请求激活时触发 `clicked()`，菜单由面板呈现。面板稍后启动或重启时，应用会重新注册图标。D-Bus 回调通过事件队列交给 UI 线程，面板缓存的旧菜单命令会在菜单更新后失效。
+
+托盘回调可通过 `spawn_local` 调度 UI 线程任务。运行 `bazel run //examples/tray:tray`，在系统托盘打开 **XRack** 菜单。Linux 可用 `dbus-run-session -- bazel run //crates/xrack-platform-winit:async_test -- status_notifier_round_trip --ignored` 在独立会话中运行协议测试。
 
 ## Bazel 中使用 UI 文件
 

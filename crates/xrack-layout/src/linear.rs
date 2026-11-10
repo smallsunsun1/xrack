@@ -412,6 +412,10 @@ pub(crate) fn measure_with_width(
                 Size::new(28.0, 160.0)
             }
             "Slider" | "RangeSlider" => Size::new(160.0, 28.0),
+            "ScrollBar" | "ScrollIndicator" if node.orientation() == Orientation::Vertical => {
+                Size::new(12.0, 160.0)
+            }
+            "ScrollBar" | "ScrollIndicator" => Size::new(160.0, 12.0),
             "Dial" => Size::new(96.0, 96.0),
             "SpinBox" | "DoubleSpinBox" | "ComboBox" => {
                 let width = match node.kind {

@@ -10,6 +10,14 @@ mod local_task;
 mod messages;
 mod native_dialog;
 mod queue;
+mod scale_rotate;
+mod system_tray;
+#[cfg(target_os = "linux")]
+mod system_tray_linux;
+#[cfg(target_os = "macos")]
+mod system_tray_macos;
+#[cfg(target_os = "windows")]
+mod system_tray_windows;
 #[cfg(test)]
 mod tests;
 mod window_chrome;
@@ -19,7 +27,7 @@ mod window_presentation;
 use accessibility::{Projection, Route};
 use accesskit::{Action as AccessibleAction, ActionData, ActionRequest, TreeId};
 use clipboard::{ClipboardPort, ClipboardValue, EditContext, Reply as ClipboardReply};
-pub use desktop::{Desktop, DesktopWindow, run_desktop};
+pub use desktop::{Desktop, DesktopTray, DesktopWindow, run_desktop};
 use desktop::{DesktopGraphics, HostedWindow, WindowEvents};
 use frame::FrameCache;
 use local_task::LocalExecutor;
@@ -49,9 +57,9 @@ use winit::{
 use xrack_layout::{
     ActivationKey, ChoiceKey, ComboGeometry, ControlInput, DragUpdate, EditAction, EditSource,
     FocusObservers, Interaction, LayoutNode, MenuKey, MenuShortcut, NavigationKey, Point,
-    RangeInput, Rect, ScrollGestureKind, ShortcutKey, ShortcutModifiers, ShortcutOutcome, Size,
-    SpinGeometry, SplitResize, StackTransitions, TablePasteDestination, TableSelectionKey, Target,
-    TextAreaMotion, TumblerScroll, ViewportObservers,
+    RangeInput, Rect, ScrollBarUpdate, ScrollGestureKind, ShortcutKey, ShortcutModifiers,
+    ShortcutOutcome, Size, SpinGeometry, SplitResize, StackTransitions, TablePasteDestination,
+    TableSelectionKey, Target, TextAreaMotion, TumblerScroll, ViewportObservers,
 };
 use xrack_renderer_femtovg::Renderer;
 use xrack_runtime::{
@@ -290,6 +298,7 @@ struct Application<C, M, R> {
     stack_transitions: StackTransitions,
     layout: Option<Rc<LayoutNode>>,
     input: Interaction,
+    scale_rotate: scale_rotate::Gestures,
     focus_requests: FocusRequests,
     focus_observers: FocusObservers,
     scroll_requests: ScrollRequests,
@@ -335,6 +344,7 @@ impl<C: Component, M, R: FnMut(&mut C, M)> Application<C, M, R> {
             stack_transitions: StackTransitions::default(),
             layout: None,
             input: Interaction::default(),
+            scale_rotate: scale_rotate::Gestures::default(),
             focus_requests: FocusRequests::default(),
             focus_observers: FocusObservers::default(),
             scroll_requests: ScrollRequests::default(),
@@ -770,7 +780,23 @@ impl<C: Component, M, R: FnMut(&mut C, M)> Application<C, M, R> {
                 | AccessibleAction::ScrollDown
                 | AccessibleAction::ScrollLeft
                 | AccessibleAction::ScrollRight
-                | AccessibleAction::SetScrollOffset => {
+                | AccessibleAction::SetScrollOffset
+                | AccessibleAction::SetValue
+                | AccessibleAction::Increment
+                | AccessibleAction::Decrement => {
+                    if kind == "ScrollBar" && node.scroll_target.is_none() {
+                        if let Some(action) = accessibility::requested_standalone_scroll(
+                            request.action,
+                            request.data.as_ref(),
+                            node,
+                        ) {
+                            self.adjust_range(RangeInput {
+                                path: target.path,
+                                action,
+                            });
+                        }
+                        return;
+                    }
                     let Some(item) = layout.at_path(&target.path) else {
                         return;
                     };
@@ -828,7 +854,11 @@ impl<C: Component, M, R: FnMut(&mut C, M)> Application<C, M, R> {
             Cow::Borrowed(_) => self.base_scene.clone(),
             Cow::Owned(frame) => Rc::new(frame),
         };
-        let (scene, layout) = state.frame.prepare(base, viewport, &self.input, |base| {
+        let elastic_input = self
+            .input
+            .has_overscroll()
+            .then(|| (base.clone(), self.input.overscroll_frame()));
+        let (mut scene, mut layout) = state.frame.prepare(base, viewport, &self.input, |base| {
             state
                 .renderer
                 .prepare_scene(&self.component, base, viewport, &self.input)
@@ -838,8 +868,18 @@ impl<C: Component, M, R: FnMut(&mut C, M)> Application<C, M, R> {
             .as_ref()
             .is_some_and(|previous| Rc::ptr_eq(previous, &layout))
         {
-            self.scene = scene;
-            return false;
+            let cancelled = self.scale_rotate.reconcile(&scale_rotate::Context {
+                scene: &scene,
+                layout: &layout,
+                input: &self.input,
+            });
+            let previous = std::mem::replace(&mut self.scene, scene);
+            let swiped = self.flush_swipe_events(Some(&previous));
+            if let Some(event) = cancelled {
+                self.dispatch_scale_rotate(&previous, event);
+                return true;
+            }
+            return swiped;
         }
         if let Some(previous) = &self.layout {
             self.stack_transitions.update(
@@ -850,18 +890,41 @@ impl<C: Component, M, R: FnMut(&mut C, M)> Application<C, M, R> {
             self.input.sync_stack_transitions(&self.stack_transitions);
         }
         self.input.reconcile(&scene, &layout);
+        if let Some((base, offsets)) = elastic_input
+            && offsets != self.input.overscroll_frame()
+        {
+            let state = self.state.as_mut().unwrap();
+            (scene, layout) = state.frame.prepare(base, viewport, &self.input, |base| {
+                state
+                    .renderer
+                    .prepare_scene(&self.component, base, viewport, &self.input)
+            });
+            self.input.reconcile(&scene, &layout);
+        }
         let requested = self.requested_drag_action();
         let drag = self.input.reconcile_drag(&scene, &layout, requested);
         let files = self.input.reconcile_file_drag(&scene, &layout);
+        let cancelled_gesture = self
+            .scale_rotate
+            .reconcile(&scale_rotate::Context {
+                scene: &scene,
+                layout: &layout,
+                input: &self.input,
+            })
+            .map(|event| (self.scene.clone(), event));
         if self.scroll_requests.is_empty() {
             self.viewport_observers.sync(&scene, &layout);
         }
-        self.scene = scene;
+        let previous = std::mem::replace(&mut self.scene, scene);
         self.layout = Some(layout);
+        self.flush_swipe_events(Some(&previous));
         #[cfg(target_os = "macos")]
         self.install_file_drop();
         self.dispatch_drag(drag);
         self.dispatch_drag(files);
+        if let Some((previous, event)) = cancelled_gesture {
+            self.dispatch_scale_rotate(&previous, event);
+        }
         self.sync_window_effects(Instant::now());
         true
     }
@@ -1068,6 +1131,7 @@ impl<C: Component, M, R: FnMut(&mut C, M)> Application<C, M, R> {
 
     fn refresh_dependencies(&mut self) {
         if self.component.scene_dirty()
+            || self.input.has_pending_swipe_events()
             || !self.focus_requests.is_empty()
             || !self.scroll_requests.is_empty()
             || self
@@ -1080,6 +1144,7 @@ impl<C: Component, M, R: FnMut(&mut C, M)> Application<C, M, R> {
     }
 
     fn refresh_after_update(&mut self, redraw_input: bool) {
+        self.flush_swipe_events(None);
         if self.sync_base_scene() {
             self.relayout();
         } else if self.prepare_frame(self.transition_epoch.elapsed()) {
@@ -1186,6 +1251,7 @@ impl<C: Component, M, R: FnMut(&mut C, M)> Application<C, M, R> {
     }
 
     fn refresh_editor(&mut self, follow_caret: bool) {
+        self.flush_swipe_events(None);
         // Capture the result of input before applying queued programmatic moves.
         let scrolled = self.layout.as_ref().map_or_else(Vec::new, |layout| {
             self.input.take_scroll_events(&self.scene, layout)
@@ -2359,6 +2425,15 @@ impl<C: Component, M, R: FnMut(&mut C, M)> Application<C, M, R> {
         }
     }
 
+    fn apply_scroll_bar(&mut self, update: ScrollBarUpdate, refresh_focus: bool) {
+        match update {
+            ScrollBarUpdate::ViewportMoved => self.relayout_with_caret(false),
+            ScrollBarUpdate::Range(input) => self.adjust_range(input),
+            ScrollBarUpdate::Unchanged if refresh_focus => self.refresh_editor(false),
+            ScrollBarUpdate::Unchanged => {}
+        }
+    }
+
     fn keyboard_input(&mut self, event: &KeyEvent, is_synthetic: bool) {
         let route = (!is_synthetic)
             .then(|| self.input.key_route(&self.scene, self.layout.as_deref()?))
@@ -2438,19 +2513,16 @@ impl<C: Component, M, R: FnMut(&mut C, M)> Application<C, M, R> {
         {
             self.input.cancel_shortcut_sequence();
         }
-        if event.state == ElementState::Pressed
-            && event.logical_key == Key::Named(NamedKey::Escape)
-            && self.cancel_drag()
+        if event.state == ElementState::Pressed && event.logical_key == Key::Named(NamedKey::Escape)
         {
-            return true;
-        }
-        if event.state == ElementState::Pressed
-            && event.logical_key == Key::Named(NamedKey::Escape)
-            && self.input.cancel_delay()
-        {
-            self.cancel_direct_scroll();
-            self.update_editor();
-            return true;
+            if self.cancel_drag() {
+                return true;
+            }
+            if self.input.cancel_table_drag_selection() || self.input.cancel_delay() {
+                self.cancel_direct_scroll();
+                self.update_editor();
+                return true;
+            }
         }
         self.cancel_direct_scroll();
         if event.state == ElementState::Pressed && event.logical_key != Key::Named(NamedKey::Tab) {
@@ -2546,6 +2618,15 @@ impl<C: Component, M, R: FnMut(&mut C, M)> Application<C, M, R> {
         let Some(key) = navigation_key_value(&event.logical_key) else {
             return false;
         };
+        if event.state == ElementState::Pressed
+            && let Some(update) = self
+                .layout
+                .as_ref()
+                .and_then(|layout| self.input.scroll_bar_key(&self.scene, layout, key))
+        {
+            self.apply_scroll_bar(update, false);
+            return true;
+        }
         if event.state == ElementState::Pressed
             && let Some(input) = self
                 .layout
@@ -2690,6 +2771,19 @@ impl<C: Component, M, R: FnMut(&mut C, M)> Application<C, M, R> {
     }
 
     fn left_pointer(&mut self, state: ElementState) {
+        if state == ElementState::Released && self.input.table_drag_selection_claimed() {
+            let action = self
+                .layout
+                .as_ref()
+                .and_then(|layout| self.input.finish_table_drag_selection(&self.scene, layout));
+            if let Some(action) = action {
+                self.apply_control(action);
+            } else {
+                self.input.cancel_table_drag_selection();
+                self.update_editor();
+            }
+            return;
+        }
         if state == ElementState::Released
             && let Some(point) = self.input.drag_position()
             && self.finish_drag(point)
@@ -2715,16 +2809,12 @@ impl<C: Component, M, R: FnMut(&mut C, M)> Application<C, M, R> {
             {
                 self.apply_control(action);
             }
-            if let Some(moved) = self
+            if let Some(update) = self
                 .layout
                 .as_ref()
                 .and_then(|layout| self.input.scroll_bar_press(&self.scene, layout))
             {
-                if moved {
-                    self.relayout_with_caret(false);
-                } else {
-                    self.refresh_editor(false);
-                }
+                self.apply_scroll_bar(update, true);
                 return;
             }
             if self
@@ -2746,6 +2836,11 @@ impl<C: Component, M, R: FnMut(&mut C, M)> Application<C, M, R> {
             if let Some(point) = self.input.pointer_position() {
                 if let Some(layout) = &self.layout {
                     self.input.arm_drag(&self.scene, layout, point);
+                    self.input.arm_table_drag_selection(
+                        &self.scene,
+                        layout,
+                        self.modifiers.control_key() || self.modifiers.super_key(),
+                    );
                 }
                 if !self.input.table_row_resize_cursor() {
                     self.place_text_caret(point, self.modifiers.shift_key());
@@ -2765,8 +2860,16 @@ impl<C: Component, M, R: FnMut(&mut C, M)> Application<C, M, R> {
                 self.adjust_range(input);
             }
             self.update_editor();
-        } else if self.input.finish_scroll_bar() {
-            self.refresh_editor(false);
+        } else if self.input.scroll_bar_captured() {
+            let update = if let Some(layout) = &self.layout {
+                self.input
+                    .release_scroll_bar(&self.scene, layout)
+                    .unwrap_or(ScrollBarUpdate::Unchanged)
+            } else {
+                self.input.finish_scroll_bar();
+                ScrollBarUpdate::Unchanged
+            };
+            self.apply_scroll_bar(update, true);
         } else if self.input.menu_open() {
             if let Some(action) = self
                 .layout
@@ -2857,13 +2960,18 @@ impl<C: Component, M, R: FnMut(&mut C, M)> Application<C, M, R> {
                 unreachable!("a viewport pan starts with an ordinary press")
             }
         };
+        let overscroll = self.input.overscroll_frame();
         if self.layout.as_ref().is_some_and(|layout| {
             self.input
                 .begin_scroll_gesture(&self.scene, layout, point, now, kind)
         }) {
             self.scroll_contact = Some(contact);
             self.pending_clipboard = None;
-            self.layout_changed(false);
+            if overscroll != self.input.overscroll_frame() {
+                self.relayout_with_caret(false);
+            } else {
+                self.layout_changed(false);
+            }
         }
     }
 
@@ -2923,6 +3031,28 @@ impl<C: Component, M, R: FnMut(&mut C, M)> Application<C, M, R> {
         self.apply_drag(update)
     }
 
+    fn flush_swipe_events(&mut self, previous: Option<&Node>) -> bool {
+        let mut delivered = false;
+        loop {
+            if let Some(layout) = &self.layout {
+                self.input.reconcile_swipe(&self.scene, layout);
+            }
+            let events = self.input.take_swipe_events();
+            if events.is_empty() {
+                return delivered;
+            }
+            delivered = true;
+            for event in events {
+                let scene = if event.matches(&self.scene) {
+                    &*self.scene
+                } else {
+                    previous.unwrap_or(&self.scene)
+                };
+                event.apply(&mut self.component, scene);
+            }
+        }
+    }
+
     fn move_direct_scroll(&mut self, point: Point, now: Instant) -> bool {
         let was_claimed = self.input.mouse_viewport_pan_claimed();
         let moved = self.layout.as_ref().is_some_and(|layout| {
@@ -2930,12 +3060,21 @@ impl<C: Component, M, R: FnMut(&mut C, M)> Application<C, M, R> {
                 .move_scroll_gesture(&self.scene, layout, point, now)
         });
         let claimed = self.input.mouse_viewport_pan_claimed();
-        if moved {
-            self.relayout_with_caret(false);
+        if self.input.has_pending_swipe_events() {
+            self.refresh_after_update(false);
+        } else if moved {
+            self.relayout_after_scroll();
         } else if claimed && !was_claimed {
             self.update_editor();
         }
         claimed
+    }
+
+    fn relayout_after_scroll(&mut self) {
+        if self.component.scene_dirty() {
+            self.sync_base_scene();
+        }
+        self.relayout_with_caret(false);
     }
 
     fn end_direct_scroll(&mut self, point: Point, now: Instant) {
@@ -2947,8 +3086,11 @@ impl<C: Component, M, R: FnMut(&mut C, M)> Application<C, M, R> {
         let outcome = self
             .input
             .end_scroll_gesture(&self.scene, layout, point, now);
+        if self.input.has_pending_swipe_events() {
+            self.refresh_after_update(false);
+        }
         if outcome.scrolled {
-            self.relayout_with_caret(false);
+            self.relayout_after_scroll();
         }
         if let Some(control) = outcome.control {
             self.apply_control(control);
@@ -2975,11 +3117,18 @@ impl<C: Component, M, R: FnMut(&mut C, M)> Application<C, M, R> {
     }
 
     fn cancel_direct_scroll(&mut self) {
+        if matches!(self.scroll_contact, Some(ScrollContact::Touch(..))) {
+            self.input.finish_touch_scroll_bar();
+        }
         self.scroll_contact = None;
-        let preview = self.input.tumbler_preview().is_some() || self.input.has_swipe_preview();
+        let preview = self.input.tumbler_preview().is_some()
+            || self.input.has_swipe_preview()
+            || self.input.has_overscroll();
         self.input.cancel_scroll_gesture();
-        if preview {
-            self.relayout_with_caret(false);
+        if self.input.has_pending_swipe_events() {
+            self.refresh_after_update(false);
+        } else if preview {
+            self.relayout_after_scroll();
         }
     }
 
@@ -3011,14 +3160,40 @@ impl<C: Component, M, R: FnMut(&mut C, M)> Application<C, M, R> {
         point: Point,
         now: Instant,
     ) {
+        if let Some(layout) = &self.layout {
+            let (consumed, events) = self.scale_rotate.touch(
+                &scale_rotate::Context {
+                    scene: &self.scene,
+                    layout,
+                    input: &self.input,
+                },
+                scale_rotate::ContactId(device, id),
+                phase,
+                point,
+            );
+            self.apply_scale_rotate_batch(events);
+            if consumed {
+                return;
+            }
+        }
         let owned = matches!(
             self.scroll_contact,
             Some(ScrollContact::Touch(current_device, current_id)) if current_device == device && current_id == id
         );
         match phase {
             TouchPhase::Started
-                if self.scroll_contact.is_none() && self.input.drag_position().is_none() =>
+                if self.scroll_contact.is_none()
+                    && self.input.drag_position().is_none()
+                    && !self.input.scroll_bar_captured() =>
             {
+                if let Some(update) = self.layout.as_ref().and_then(|layout| {
+                    self.input
+                        .touch_scroll_bar_press(&self.scene, layout, point)
+                }) {
+                    self.scroll_contact = Some(ScrollContact::Touch(device, id));
+                    self.apply_scroll_bar(update, true);
+                    return;
+                }
                 self.begin_direct_scroll(ScrollContact::Touch(device, id), point, now);
                 if self.scroll_contact.is_some()
                     && let Some(layout) = &self.layout
@@ -3026,9 +3201,36 @@ impl<C: Component, M, R: FnMut(&mut C, M)> Application<C, M, R> {
                     self.input.arm_drag(&self.scene, layout, point);
                 }
             }
+            TouchPhase::Moved if owned && self.input.scroll_bar_captured() => {
+                if let Some(update) = self
+                    .layout
+                    .as_ref()
+                    .map(|layout| self.input.touch_scroll_bar_drag(&self.scene, layout, point))
+                {
+                    self.apply_scroll_bar(update, false);
+                }
+            }
             TouchPhase::Moved if owned => {
                 if !self.move_drag(point) {
                     self.move_direct_scroll(point, now);
+                }
+            }
+            TouchPhase::Ended if owned && self.input.scroll_bar_captured() => {
+                self.scroll_contact = None;
+                let update = if let Some(layout) = &self.layout {
+                    self.input
+                        .release_touch_scroll_bar(&self.scene, layout, point)
+                        .unwrap_or(ScrollBarUpdate::Unchanged)
+                } else {
+                    self.input.finish_touch_scroll_bar();
+                    ScrollBarUpdate::Unchanged
+                };
+                self.apply_scroll_bar(update, true);
+            }
+            TouchPhase::Cancelled if owned && self.input.finish_touch_scroll_bar() => {
+                self.scroll_contact = None;
+                if let Some(state) = &self.state {
+                    state.window.request_redraw();
                 }
             }
             TouchPhase::Ended if owned => {
@@ -3044,6 +3246,79 @@ impl<C: Component, M, R: FnMut(&mut C, M)> Application<C, M, R> {
             }
             _ => {}
         }
+    }
+
+    fn dispatch_scale_rotate(&mut self, scene: &Node, event: scale_rotate::Delivery) {
+        event.target.handle.publish(event.sample);
+        if scene
+            .at_path(&event.target.path)
+            .and_then(|node| node.scale_rotate_handle.as_ref())
+            == Some(&event.target.handle)
+        {
+            self.component
+                .dispatch_at(scene, &event.target.path, event.event);
+        }
+    }
+
+    fn apply_scale_rotate(&mut self, event: scale_rotate::Delivery) {
+        let scene = self.scene.clone();
+        self.apply_scale_rotate_in(&scene, event);
+    }
+
+    fn apply_scale_rotate_in(&mut self, scene: &Node, event: scale_rotate::Delivery) {
+        if event.event == "started" {
+            self.scroll_contact = None;
+            self.pending_clipboard = None;
+            self.input.cancel_press();
+        }
+        self.dispatch_scale_rotate(scene, event);
+        self.refresh_after_update(false);
+    }
+
+    fn apply_scale_rotate_batch(&mut self, events: [Option<scale_rotate::Delivery>; 2]) {
+        if events.iter().all(Option::is_none) {
+            return;
+        }
+        let starting = events[0]
+            .as_ref()
+            .is_some_and(|event| event.event == "started");
+        let scene = self.scene.clone();
+        for event in events.into_iter().flatten() {
+            if !starting || event.event != "updated" || self.scale_rotate.is_active() {
+                self.apply_scale_rotate_in(&scene, event);
+            }
+        }
+    }
+
+    fn cancel_scale_rotate(&mut self) {
+        if let Some(event) = self.scale_rotate.reset() {
+            self.apply_scale_rotate(event);
+        }
+    }
+
+    fn update_trackpad_gesture(
+        &mut self,
+        device: DeviceId,
+        phase: TouchPhase,
+        delta: scale_rotate::TrackpadDelta,
+    ) {
+        let Some(layout) = &self.layout else {
+            return;
+        };
+        if self.scroll_contact.is_some() && !self.scale_rotate.is_active() {
+            return;
+        }
+        let deliveries = self.scale_rotate.trackpad(
+            &scale_rotate::Context {
+                scene: &self.scene,
+                layout,
+                input: &self.input,
+            },
+            device,
+            phase,
+            delta,
+        );
+        self.apply_scale_rotate_batch(deliveries);
     }
 
     fn tick_delay(&mut self, now: Instant) {
@@ -3169,9 +3444,11 @@ impl<C: Component, M, R: FnMut(&mut C, M)> Application<C, M, R> {
                 || self
                     .input
                     .advance_table_column_move(&self.scene, layout, now)
+                || self
+                    .input
+                    .advance_table_drag_selection(&self.scene, layout, now)
         }) {
-            self.prepare_frame(elapsed);
-            self.layout_changed(false);
+            self.relayout_after_scroll();
         } else if animating || self.layout.is_none() {
             self.prepare_frame(elapsed);
         }
@@ -3326,6 +3603,9 @@ impl<C: Component, M, R: FnMut(&mut C, M)> HostedWindow for Application<C, M, R>
         if let Some(id) = self.window_id() {
             return Ok(id);
         }
+        if self.base_scene.kind == "SystemTrayIcon" {
+            return Err("use Desktop::register_tray for a SystemTrayIcon component".into());
+        }
         let attrs = Window::default_attributes()
             .with_title(self.base_scene.text("title").unwrap_or("XRack"))
             .with_visible(false);
@@ -3351,6 +3631,10 @@ impl<C: Component, M, R: FnMut(&mut C, M)> HostedWindow for Application<C, M, R>
         Ok(id)
     }
     fn suspend(&mut self) {
+        if let Some(event) = self.scale_rotate.reset() {
+            let scene = self.scene.clone();
+            self.dispatch_scale_rotate(&scene, event);
+        }
         self.focus_requests.drain();
         self.focus_observers.clear();
         self.scroll_requests.drain();
@@ -3423,6 +3707,10 @@ impl<C: Component, M, R: FnMut(&mut C, M)> HostedWindow for Application<C, M, R>
                     .chain(self.layout.as_ref().and_then(|layout| {
                         self.input.table_column_move_deadline(&self.scene, layout)
                     }))
+                    .chain(self.layout.as_ref().and_then(|layout| {
+                        self.input
+                            .table_drag_selection_deadline(&self.scene, layout)
+                    }))
                     .min()?;
             if now >= wake {
                 state.window.request_redraw();
@@ -3463,7 +3751,10 @@ impl<C: Component, M, R: FnMut(&mut C, M)> HostedWindow for Application<C, M, R>
                     state.window.request_redraw();
                 }
             }
-            WindowEvent::Resized(_) | WindowEvent::ScaleFactorChanged { .. } => {
+            change @ (WindowEvent::Resized(_) | WindowEvent::ScaleFactorChanged { .. }) => {
+                if matches!(change, WindowEvent::ScaleFactorChanged { .. }) {
+                    self.cancel_scale_rotate();
+                }
                 if let Err(error) = self.state.as_mut().unwrap().resize() {
                     self.fail(error);
                     return;
@@ -3476,6 +3767,28 @@ impl<C: Component, M, R: FnMut(&mut C, M)> HostedWindow for Application<C, M, R>
                 }
             }
             WindowEvent::Touch(touch) => self.touch_event(touch),
+            WindowEvent::PinchGesture {
+                device_id,
+                delta,
+                phase,
+            } => {
+                self.update_trackpad_gesture(
+                    device_id,
+                    phase,
+                    scale_rotate::TrackpadDelta::Scale(delta),
+                );
+            }
+            WindowEvent::RotationGesture {
+                device_id,
+                delta,
+                phase,
+            } => {
+                self.update_trackpad_gesture(
+                    device_id,
+                    phase,
+                    scale_rotate::TrackpadDelta::Rotation(f64::from(delta)),
+                );
+            }
             WindowEvent::CursorMoved { position, .. } => {
                 #[cfg(target_os = "macos")]
                 if state.resize_drag.is_some()
@@ -3519,19 +3832,26 @@ impl<C: Component, M, R: FnMut(&mut C, M)> HostedWindow for Application<C, M, R>
                 if let Some(layout) = &self.layout {
                     let before_resize = self.window_resize_cursor();
                     let changed = self.input.pointer_move(&self.scene, layout, point);
+                    let drag_was_claimed = self.input.table_drag_selection_claimed();
+                    if self.input.move_table_drag_selection(layout, Instant::now()) {
+                        if drag_was_claimed {
+                            state.window.request_redraw();
+                        } else {
+                            self.update_editor();
+                        }
+                        return;
+                    }
                     if changed || before_resize != self.window_resize_cursor() {
                         state.window.set_cursor(self.pointer_cursor());
                         state.window.request_redraw();
                     }
                 }
-                if let Some(moved) = self
+                if let Some(update) = self
                     .layout
                     .as_ref()
                     .and_then(|layout| self.input.scroll_bar_drag(&self.scene, layout))
                 {
-                    if moved {
-                        self.relayout_with_caret(false);
-                    }
+                    self.apply_scroll_bar(update, false);
                     return;
                 }
                 if let Some(input) = self
@@ -3729,8 +4049,9 @@ impl<C: Component, M, R: FnMut(&mut C, M)> HostedWindow for Application<C, M, R>
                     }
                     if self.scroll_contact.is_none() {
                         self.left_pointer(state);
-                        if let (Some(layout), Some(point)) =
-                            (&self.layout, self.input.pointer_position())
+                        if !self.input.table_drag_selection_armed()
+                            && let (Some(layout), Some(point)) =
+                                (&self.layout, self.input.pointer_position())
                         {
                             self.input.arm_mouse_viewport_pan(
                                 &self.scene,
@@ -3796,6 +4117,7 @@ impl<C: Component, M, R: FnMut(&mut C, M)> HostedWindow for Application<C, M, R>
             WindowEvent::Focused(focused) => {
                 self.focus_active = focused;
                 if !focused {
+                    self.cancel_scale_rotate();
                     self.state.as_mut().unwrap().finish_client_resize();
                     self.cancel_drag();
                     self.input.cancel_shortcut_sequence();
@@ -3817,11 +4139,13 @@ impl<C: Component, M, R: FnMut(&mut C, M)> HostedWindow for Application<C, M, R>
             }
             WindowEvent::Occluded(occluded) => {
                 if occluded {
+                    self.cancel_scale_rotate();
                     self.state.as_mut().unwrap().finish_client_resize();
                     self.input.cancel_window_move();
                     self.cancel_drag();
                     self.input.set_painted_combo_completion(None);
                     self.cancel_direct_scroll();
+                    self.input.finish_scroll_bar();
                 } else {
                     self.state.as_ref().unwrap().window.request_redraw();
                 }

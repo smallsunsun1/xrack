@@ -1,14 +1,18 @@
 use bundled_ui::BundledFontsDemo;
 use layout_ui::{
-    AnimationsDemo, ClippingDemo, ComponentStatesDemo, CompositingDemo, FlexDemo, FlowDemo,
-    FocusScopesDemo, FontsDemo, FramelessDemo, GeometryDemo, LabelsDemo, LayoutDemo,
-    RectangleShadowDemo, ScopedKeysDemo, StatesDemo, StyledTextDemo, TransformDemo,
+    AnimationsDemo, ClippingDemo, ComponentStatesDemo, CompositingDemo, FlexDemo, FlickableDemo,
+    FlowDemo, FocusScopesDemo, FontsDemo, FramelessDemo, GeometryDemo, LabelsDemo, LayoutDemo,
+    RectangleShadowDemo, ScaleRotateDemo, ScopedKeysDemo, StatesDemo, StyledTextDemo,
+    SwipeGestureDemo, TransformDemo,
 };
 
 fn main() -> std::process::ExitCode {
     let result = match std::env::args().nth(1).as_deref() {
         Some("--geometry") => xrack_platform_winit::run(GeometryDemo::new()),
         Some("--transforms") => xrack_platform_winit::run(TransformDemo::new()),
+        Some("--flickable") => xrack_platform_winit::run(FlickableDemo::new()),
+        Some("--scale-rotate") => xrack_platform_winit::run(ScaleRotateDemo::new()),
+        Some("--swipe-gesture") => xrack_platform_winit::run(SwipeGestureDemo::new()),
         Some("--clipping") => xrack_platform_winit::run(ClippingDemo::new()),
         Some("--shadows") => xrack_platform_winit::run(RectangleShadowDemo::new()),
         Some("--compositing") => xrack_platform_winit::run(CompositingDemo::new()),

@@ -4,7 +4,7 @@ use std::io::Cursor;
 use svgtypes::{SimplePathSegment, SimplifyingPathParser};
 pub use tiny_skia::{Path as VectorPath, PathSegment};
 pub use xrack_runtime::ImageFormat;
-use xrack_runtime::VectorSegment;
+use xrack_runtime::{Image, VectorSegment};
 
 pub const MAX_IMAGE_DIMENSION: u32 = 4096;
 pub const MAX_ASSET_BYTES: u64 = 16 * 1024 * 1024;
@@ -97,6 +97,90 @@ pub fn rasterize_svg(bytes: &[u8], size: [u32; 2]) -> Result<Raster, String> {
     rasterize_svg_region(bytes, size, None)
 }
 
+/// Fit an embedded image into an icon canvas with transparent padding and premultiplied RGBA.
+pub fn rasterize_icon(image: Image, size: [u32; 2]) -> Result<Option<Raster>, String> {
+    let (format, bytes, intrinsic) = match image.frame(0) {
+        Image::Embedded {
+            format,
+            bytes,
+            size,
+        }
+        | Image::NineSliced {
+            format,
+            bytes,
+            size,
+            ..
+        } => (format, bytes, size),
+        Image::Empty | Image::Animated(_) => return Ok(None),
+    };
+    let [width, height] = validate_image_size(size)?;
+    let fit = |[source_width, source_height]: [u32; 2]| {
+        let scale = (f64::from(width) / f64::from(source_width))
+            .min(f64::from(height) / f64::from(source_height));
+        [
+            (f64::from(source_width) * scale)
+                .round()
+                .clamp(1.0, f64::from(width)) as u32,
+            (f64::from(source_height) * scale)
+                .round()
+                .clamp(1.0, f64::from(height)) as u32,
+        ]
+    };
+    let (source, fitted) = match format {
+        ImageFormat::Svg => {
+            let fitted = fit(validate_image_size(intrinsic)?);
+            (rasterize_svg(bytes, fitted)?, fitted)
+        }
+        ImageFormat::Png => {
+            let mut source = decode_png(bytes)?;
+            for pixel in source.rgba.chunks_exact_mut(4) {
+                let alpha = u16::from(pixel[3]);
+                for channel in &mut pixel[..3] {
+                    *channel = ((u16::from(*channel) * alpha + 127) / 255) as u8;
+                }
+            }
+            let fitted = fit(source.size);
+            (source, fitted)
+        }
+    };
+    let [source_width, source_height] = source.size;
+    let source_size = tiny_skia::IntSize::from_wh(source_width, source_height)
+        .ok_or("invalid icon source size")?;
+    let source =
+        tiny_skia::Pixmap::from_vec(source.rgba, source_size).ok_or("invalid icon pixel buffer")?;
+    let mut canvas = tiny_skia::Pixmap::new(width, height).ok_or("invalid icon canvas size")?;
+    let transform = tiny_skia::Transform::from_row(
+        fitted[0] as f32 / source_width as f32,
+        0.0,
+        0.0,
+        fitted[1] as f32 / source_height as f32,
+        ((width - fitted[0]) / 2) as f32,
+        ((height - fitted[1]) / 2) as f32,
+    );
+    let paint = tiny_skia::PixmapPaint {
+        quality: tiny_skia::FilterQuality::Bicubic,
+        ..Default::default()
+    };
+    canvas.draw_pixmap(0, 0, source.as_ref(), &paint, transform, None);
+    Ok(Some(Raster {
+        size,
+        rgba: canvas.take(),
+    }))
+}
+
+/// Encode a fitted icon for native menus that accept PNG data.
+pub fn rasterize_icon_png(image: Image, size: [u32; 2]) -> Result<Vec<u8>, String> {
+    let Some(raster) = rasterize_icon(image, size)? else {
+        return Ok(Vec::new());
+    };
+    let size =
+        tiny_skia::IntSize::from_wh(raster.size[0], raster.size[1]).ok_or("invalid icon size")?;
+    tiny_skia::Pixmap::from_vec(raster.rgba, size)
+        .ok_or("invalid icon pixel buffer")?
+        .encode_png()
+        .map_err(|error| error.to_string())
+}
+
 /// Rasterize a clipped SVG view in the same integer source coordinates as
 /// `image_size`. Only the selected region is allocated at the requested density.
 pub fn rasterize_svg_region(
@@ -183,4 +267,49 @@ pub fn parse_path(commands: &str) -> Result<Option<VectorPath>, String> {
         }
     }
     Ok(path.finish())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn png_icon_premultiplies_pixels_and_preserves_padding() {
+        let mut bytes = Vec::new();
+        let mut encoder = png::Encoder::new(&mut bytes, 2, 1);
+        encoder.set_color(png::ColorType::Rgba);
+        encoder
+            .write_header()
+            .unwrap()
+            .write_image_data(&[255, 0, 0, 128, 23, 142, 255, 0])
+            .unwrap();
+        let image = Image::Embedded {
+            format: ImageFormat::Png,
+            bytes: bytes.leak(),
+            size: [2, 1],
+        };
+        let icon = rasterize_icon(image, [2, 3]).unwrap().unwrap();
+        assert_eq!(icon.size, [2, 3]);
+        assert_eq!(&icon.rgba[..8], &[0; 8]);
+        assert_eq!(&icon.rgba[8..16], &[128, 0, 0, 128, 0, 0, 0, 0]);
+        assert_eq!(&icon.rgba[16..], &[0; 8]);
+    }
+
+    #[test]
+    fn svg_icon_preserves_aspect_ratio_and_premultiplied_alpha() {
+        let image = Image::Embedded {
+            format: ImageFormat::Svg,
+            bytes: br#"<svg xmlns="http://www.w3.org/2000/svg" width="8" height="4">
+                <rect width="8" height="4" fill="red" fill-opacity="0.5"/>
+            </svg>"#,
+            size: [8, 4],
+        };
+        let icon = rasterize_icon(image, [16, 16]).unwrap().unwrap();
+        assert_eq!(icon.size, [16, 16]);
+        let rows = icon.rgba.chunks_exact(64).collect::<Vec<_>>();
+        assert_eq!(rows[3], &[0; 64]);
+        assert_eq!(rows[12], &[0; 64]);
+        assert_eq!(&rows[4][..4], &[128, 0, 0, 128]);
+        assert_eq!(&rows[11][60..], &[128, 0, 0, 128]);
+    }
 }

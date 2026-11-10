@@ -1,5 +1,5 @@
 load("@crates//:defs.bzl", "aliases", "all_crate_deps")
-load("@rules_rust//rust:defs.bzl", "rust_library")
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
 
 rust_library(
     name = "xrack_assets",
@@ -11,4 +11,10 @@ rust_library(
     version = "0.1.0",
     visibility = ["//visibility:public"],
     deps = ["//crates/xrack-runtime:xrack_runtime"] + all_crate_deps(normal = True),
+)
+
+rust_test(
+    name = "assets_test",
+    size = "small",
+    crate = ":xrack_assets",
 )

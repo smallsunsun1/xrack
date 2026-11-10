@@ -6,7 +6,8 @@ use std::{
 };
 use xrack_layout::{
     ChoiceKey, EditAction, EditSource, Interaction, LayoutNode, MenuKey, MenuPanel, MenuShortcut,
-    NavigationKey, Point, Size, TextMeasurer, ViewportObservers, prepare_scene_with_input,
+    NavigationKey, Point, ScrollBarUpdate, Size, TextMeasurer, ViewportObservers,
+    prepare_scene_with_input,
 };
 use xrack_runtime::{Component, ControlAction, Node, ScrollRequests, TextCommand};
 
@@ -86,6 +87,119 @@ impl<C: Component, T: TextMeasurer> UiDriver<C, T> {
         let path = self.path(id);
         self.move_to(&path);
         let moved = self.input.scroll_wheel(&self.layout, delta, false);
+        if moved {
+            self.refresh();
+        }
+        moved
+    }
+
+    pub fn scroll_bar(&self, id: &str) -> Option<xrack_layout::ScrollBarGeometry> {
+        let path = self.path(id);
+        self.layout
+            .at_path(&path)?
+            .scroll_control_geometry(self.scene.at_path(&path)?)
+    }
+
+    pub fn drag_scroll_bar(&mut self, id: &str, fraction: f32, touch: bool) -> bool {
+        self.drag_scroll_bar_with(id, fraction, touch, |_| true)
+    }
+
+    /// Inspect the committed move before release. Returning false cancels the capture.
+    pub fn drag_scroll_bar_with(
+        &mut self,
+        id: &str,
+        fraction: f32,
+        touch: bool,
+        finish: impl FnOnce(&mut Self) -> bool,
+    ) -> bool {
+        let Some(bar) = self.scroll_bar(id) else {
+            return false;
+        };
+        let start = Point {
+            x: bar.thumb.x + bar.thumb.width * 0.5,
+            y: bar.thumb.y + bar.thumb.height * 0.5,
+        };
+        // Drag past the end stops so rounding the grab point cannot miss an endpoint.
+        let overrun = if fraction <= 0.0 {
+            -1.0
+        } else if fraction >= 1.0 {
+            1.0
+        } else {
+            0.0
+        };
+        let mut end = start;
+        match bar.orientation {
+            xrack_runtime::Orientation::Horizontal => {
+                end.x = bar.track.x
+                    + bar.thumb.width * 0.5
+                    + (bar.track.width - bar.thumb.width) * fraction
+                    + overrun;
+            }
+            xrack_runtime::Orientation::Vertical => {
+                end.y = bar.track.y
+                    + bar.thumb.height * 0.5
+                    + (bar.track.height - bar.thumb.height) * fraction
+                    + overrun;
+            }
+        }
+        let _scroll = self.scroll_requests.enter();
+        let update = if touch {
+            if self
+                .input
+                .touch_scroll_bar_press(&self.scene, &self.layout, start)
+                .is_none()
+            {
+                return false;
+            }
+            self.input
+                .touch_scroll_bar_drag(&self.scene, &self.layout, end)
+        } else {
+            self.input.pointer_move(&self.scene, &self.layout, start);
+            if self
+                .input
+                .scroll_bar_press(&self.scene, &self.layout)
+                .is_none()
+            {
+                return false;
+            }
+            self.input.pointer_move(&self.scene, &self.layout, end);
+            self.input
+                .scroll_bar_drag(&self.scene, &self.layout)
+                .unwrap_or(ScrollBarUpdate::Unchanged)
+        };
+        let moved = self.apply_scroll_bar(update);
+        if !finish(self) {
+            if touch {
+                self.input.finish_touch_scroll_bar();
+            } else {
+                self.input.finish_scroll_bar();
+            }
+            return moved;
+        }
+        let release = if touch {
+            self.input
+                .release_touch_scroll_bar(&self.scene, &self.layout, end)
+        } else {
+            self.input.release_scroll_bar(&self.scene, &self.layout)
+        };
+        moved | release.is_some_and(|update| self.apply_scroll_bar(update))
+    }
+
+    pub fn scroll_bar_key(&mut self, key: NavigationKey) -> Option<bool> {
+        let _scroll = self.scroll_requests.enter();
+        let update = self.input.scroll_bar_key(&self.scene, &self.layout, key)?;
+        Some(self.apply_scroll_bar(update))
+    }
+
+    fn apply_scroll_bar(&mut self, update: ScrollBarUpdate) -> bool {
+        let moved = match update {
+            ScrollBarUpdate::Unchanged => false,
+            ScrollBarUpdate::ViewportMoved => true,
+            ScrollBarUpdate::Range(input) => {
+                self.component
+                    .adjust_range_at(&self.scene, &input.path, input.action)
+            }
+        };
         if moved {
             self.refresh();
         }
@@ -219,6 +333,13 @@ impl<C: Component, T: TextMeasurer> UiDriver<C, T> {
             );
             self.refresh();
             self.move_to(&path);
+        }
+        if let Some(update) = self.input.scroll_bar_press(&self.scene, &self.layout) {
+            self.apply_scroll_bar(update);
+            if let Some(update) = self.input.release_scroll_bar(&self.scene, &self.layout) {
+                self.apply_scroll_bar(update);
+            }
+            return;
         }
         self.input.pointer_press_in_scene(&self.scene, &self.layout);
         let target = self

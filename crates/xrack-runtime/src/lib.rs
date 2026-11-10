@@ -26,10 +26,12 @@ mod property;
 mod range;
 mod repeat;
 mod row_heights;
+mod scale_rotate;
 mod scene_plan;
 mod split;
 mod stack;
 mod styled_text;
+mod swipe_gesture;
 mod table_clipboard;
 mod table_history;
 mod table_selection;
@@ -98,13 +100,14 @@ pub use native_dialog::{
 };
 pub use property::{ChangeSignal, InputProperty, Property};
 pub use range::{
-    DialInputMode, IndicatorState, RangeAction, SliderInterval, SliderRange, indicator_state,
-    progress_value,
+    DialInputMode, IndicatorState, RangeAction, ScrollBarRange, ScrollSnapMode, SliderInterval,
+    SliderRange, indicator_state, progress_value,
 };
 #[doc(hidden)]
 pub use repeat::Repeater;
 #[doc(hidden)]
 pub use row_heights::{RowHeightOverrides, RowHeightProjection, RowHeights};
+pub use scale_rotate::{ScaleRotateHandle, ScaleRotateSample};
 #[doc(hidden)]
 pub use scene_plan::{
     GridCellPosition, GridCellSlot, GridPlanner, GridTrackInput, StaticVectorPath, VectorSegment,
@@ -112,6 +115,7 @@ pub use scene_plan::{
 pub use stack::{StackNavigation, StackSnapshot, StackState};
 use std::{collections::BTreeMap, rc::Rc, sync::Arc};
 pub use styled_text::{StyledLink, StyledRun, StyledText, StyledTextError, TextStyle};
+pub use swipe_gesture::{SwipeHandle, SwipeSample};
 #[doc(hidden)]
 pub use table_clipboard::{
     TablePaste, TablePasteInput, paste_table_text, table_paste_bool, table_paste_check_state,
@@ -134,6 +138,7 @@ pub use tree::{TreeAction, TreeItem, TreeSelectionAction, TreeSnapshot, TreeStat
 pub use tumbler::{Tumbler, TumblerItems};
 pub use viewport::{
     ScrollAction, ScrollAlignment, ScrollContext, ScrollRequest, ScrollRequests, ViewportHandle,
+    ViewportMotion,
 };
 pub use window_status::{WindowCommand, WindowStatus};
 #[doc(hidden)]
@@ -634,6 +639,52 @@ pub enum Orientation {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum FlickDirection {
+    #[default]
+    Both,
+    Horizontal,
+    Vertical,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum FlickBoundsBehavior {
+    #[default]
+    StopAtBounds,
+    DragOverBounds,
+    OvershootBounds,
+    DragAndOvershootBounds,
+}
+
+impl FlickBoundsBehavior {
+    pub fn allows_overshoot(self, flick: bool) -> bool {
+        matches!(
+            (self, flick),
+            (Self::DragAndOvershootBounds, _)
+                | (Self::DragOverBounds, false)
+                | (Self::OvershootBounds, true)
+        )
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum FlickBoundsMovement {
+    #[default]
+    FollowBoundsBehavior,
+    StopAtBounds,
+}
+
+impl FlickDirection {
+    pub fn allows(self, axis: Orientation) -> bool {
+        matches!(
+            (self, axis),
+            (Self::Both, _)
+                | (Self::Horizontal, Orientation::Horizontal)
+                | (Self::Vertical, Orientation::Vertical)
+        )
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum FlexboxLayoutDirection {
     #[default]
     Row,
@@ -775,10 +826,14 @@ pub enum Value {
     LayoutAlignment(LayoutAlignment),
     CrossAxisAlignment(CrossAxisAlignment),
     Orientation(Orientation),
+    FlickDirection(FlickDirection),
+    FlickBoundsBehavior(FlickBoundsBehavior),
+    FlickBoundsMovement(FlickBoundsMovement),
     FlexboxLayoutDirection(FlexboxLayoutDirection),
     FlexboxLayoutWrap(FlexboxLayoutWrap),
     DialInputMode(DialInputMode),
     ScrollBarPolicy(ScrollBarPolicy),
+    ScrollSnapMode(ScrollSnapMode),
     ScrollAlignment(ScrollAlignment),
     TextWrap(TextWrap),
     TextHorizontalAlignment(TextHorizontalAlignment),
@@ -834,10 +889,14 @@ value_from!(ImageRendering, ImageRendering);
 value_from!(LayoutAlignment, LayoutAlignment);
 value_from!(CrossAxisAlignment, CrossAxisAlignment);
 value_from!(Orientation, Orientation);
+value_from!(FlickDirection, FlickDirection);
+value_from!(FlickBoundsBehavior, FlickBoundsBehavior);
+value_from!(FlickBoundsMovement, FlickBoundsMovement);
 value_from!(FlexboxLayoutDirection, FlexboxLayoutDirection);
 value_from!(FlexboxLayoutWrap, FlexboxLayoutWrap);
 value_from!(DialInputMode, DialInputMode);
 value_from!(ScrollBarPolicy, ScrollBarPolicy);
+value_from!(ScrollSnapMode, ScrollSnapMode);
 value_from!(ScrollAlignment, ScrollAlignment);
 value_from!(TextWrap, TextWrap);
 value_from!(TextHorizontalAlignment, TextHorizontalAlignment);
@@ -901,7 +960,13 @@ pub struct NodeData {
     #[doc(hidden)]
     pub focus_handle: Option<FocusHandle>,
     #[doc(hidden)]
+    pub scale_rotate_handle: Option<ScaleRotateHandle>,
+    #[doc(hidden)]
+    pub swipe_handle: Option<SwipeHandle>,
+    #[doc(hidden)]
     pub viewport_handle: Option<ViewportHandle>,
+    #[doc(hidden)]
+    pub scroll_target: Option<ViewportHandle>,
     #[doc(hidden)]
     pub geometry_handle: Option<GeometryHandle>,
     #[doc(hidden)]
@@ -985,7 +1050,10 @@ impl NodeData {
             animations,
             state_timings,
             focus_handle,
+            scale_rotate_handle,
+            swipe_handle,
             viewport_handle,
+            scroll_target,
             geometry_handle,
             instance_geometry_handle,
             initial_focus,
@@ -1031,7 +1099,12 @@ pub fn is_toggle(kind: &str) -> bool {
 impl Node {
     #[doc(hidden)]
     pub fn enables_children(&self) -> bool {
-        is_drag_area(self.kind) || self.kind == "WindowMoveArea" || self.boolean("enabled", true)
+        is_drag_area(self.kind)
+            || matches!(
+                self.kind,
+                "WindowMoveArea" | "ScaleRotateGestureHandler" | "SwipeGestureHandler"
+            )
+            || self.boolean("enabled", true)
     }
     pub fn check_state(&self) -> CheckState {
         match self.properties.get("check-state") {
@@ -1068,7 +1141,10 @@ impl Node {
             animations: BTreeMap::new(),
             state_timings: None,
             focus_handle: None,
+            scale_rotate_handle: None,
+            swipe_handle: None,
             viewport_handle: None,
+            scroll_target: None,
             geometry_handle: None,
             instance_geometry_handle: None,
             initial_focus: None,
@@ -1268,6 +1344,7 @@ impl Node {
     pub fn orientation(&self) -> Orientation {
         match self.properties.get("orientation") {
             Some(Value::Orientation(value)) => *value,
+            _ if matches!(self.kind, "ScrollBar" | "ScrollIndicator") => Orientation::Vertical,
             _ => Orientation::Horizontal,
         }
     }

@@ -33,6 +33,58 @@ fn visual_slots(module: &Module) -> usize {
 }
 
 #[test]
+fn optimized_scroll_targets_keep_viewport_identity_and_reject_foreign_ids() {
+    let optimized = raw(
+        r#"
+        component App inherits Window {
+            canvas := ScrollView { content-height: 400px; }
+            panel := Rectangle {}
+            ScrollBar { target: canvas; }
+            ScrollIndicator { target: canvas; }
+        }
+        "#,
+        "scroll-targets.xr",
+    )
+    .optimize()
+    .unwrap();
+    let text = optimized.to_mlir();
+    let corrupted = text.replacen("target = \"canvas\"", "target = \"panel\"", 1);
+    assert_ne!(text, corrupted);
+    let result = Module::parse(&corrupted).and_then(|module| module.verify());
+    assert!(result.unwrap_err().contains("requires a static viewport"));
+    assert_eq!(text.matches("\"xr.scroll_target\"").count(), 2);
+}
+
+#[test]
+fn scroll_range_reads_remain_live_across_writes() {
+    let optimized = raw(
+        r#"component Demo inherits Window {
+            in-out property <float> offset: 0;
+            out property <float> before: 0;
+            out property <float> after: 0;
+            bar := ScrollBar { position <=> root.offset; size: 0.25; }
+            callback jump();
+            jump() => {
+                root.before = bar.position;
+                root.offset = 0.5;
+                root.after = bar.position;
+            }
+        }"#,
+        "scroll-range-effects.xr",
+    )
+    .optimize()
+    .unwrap();
+    let component = optimized.operations().next().unwrap();
+    let jump = member(component, "xr.callback", "jump");
+    assert_eq!(
+        jump.children()
+            .filter(|op| op.name() == "xr.scroll_control_read")
+            .count(),
+        2
+    );
+}
+
+#[test]
 fn cse_preserves_scroll_command_order_and_live_viewport_reads() {
     let optimized = raw(
         r#"export component Demo inherits Window {

@@ -1,3 +1,4 @@
+use crate::system_tray::{self, TrayActivation, TrayHost};
 use crate::{Application, ClipboardPort, Inbox, LocalExecutor, UiSender, UserEvent};
 use std::{
     cell::{Cell, RefCell},
@@ -20,6 +21,48 @@ type WindowKey = u64;
 pub(crate) enum DesktopEvent {
     Commands,
     Window(WindowKey, UserEvent),
+    Tray(WindowKey, TrayEvent),
+}
+
+pub(crate) enum TrayEvent {
+    #[cfg_attr(
+        not(any(target_os = "linux", target_os = "macos", target_os = "windows")),
+        allow(dead_code)
+    )]
+    Activated(TrayActivation),
+    PollTasks,
+    #[cfg(target_os = "linux")]
+    Failed {
+        mount: u64,
+        error: String,
+    },
+    #[cfg(target_os = "windows")]
+    ContextMenu {
+        mount: u64,
+        anchor: (i32, i32),
+    },
+    #[cfg(target_os = "windows")]
+    Restore {
+        mount: u64,
+        taskbar_created: bool,
+    },
+}
+
+#[derive(Clone)]
+pub(crate) struct TrayEvents {
+    key: WindowKey,
+    proxy: EventLoopProxy<DesktopEvent>,
+}
+
+impl TrayEvents {
+    #[cfg(target_os = "linux")]
+    pub fn key(&self) -> WindowKey {
+        self.key
+    }
+
+    pub fn post(&self, event: TrayEvent) {
+        let _ = self.proxy.send_event(DesktopEvent::Tray(self.key, event));
+    }
 }
 
 #[derive(Clone)]
@@ -149,6 +192,8 @@ type WindowFactory = Box<dyn FnOnce(WindowEvents, SharedClipboard) -> Box<dyn Ho
 enum Command {
     Open(WindowKey, WindowFactory),
     Close(WindowKey),
+    OpenTray(WindowKey, TrayHost),
+    CloseTray(WindowKey),
 }
 
 struct Commands {
@@ -208,6 +253,34 @@ impl Desktop {
         self.open_with_messages(component, |_, _: UiSender<()>| |_: &mut C, _: ()| {})
     }
 
+    /// Register a windowless SystemTrayIcon component with the desktop.
+    pub fn register_tray<C: Component + 'static>(
+        &self,
+        component: C,
+    ) -> Result<DesktopTray, String> {
+        if !cfg!(any(
+            target_os = "linux",
+            target_os = "macos",
+            target_os = "windows"
+        )) {
+            return Err(system_tray::unsupported());
+        }
+        let commands = self.0.upgrade().ok_or("the XRack desktop is closed")?;
+        let key = commands.key();
+        let events = TrayEvents {
+            key,
+            proxy: commands.proxy.clone(),
+        };
+        commands.enqueue(Command::OpenTray(
+            key,
+            TrayHost::new(Box::new(component), events)?,
+        ))?;
+        Ok(DesktopTray {
+            desktop: self.clone(),
+            key,
+        })
+    }
+
     /// Register a window and initialize its typed mailbox on the UI thread.
     pub fn open_with_messages<C, M, R>(
         &self,
@@ -231,6 +304,23 @@ impl Desktop {
             desktop: self.clone(),
             key,
         })
+    }
+}
+
+/// A UI-thread handle for removing a system tray component from the desktop.
+#[derive(Clone)]
+pub struct DesktopTray {
+    desktop: Desktop,
+    key: WindowKey,
+}
+
+impl DesktopTray {
+    pub fn close(&self) -> Result<(), String> {
+        self.desktop
+            .0
+            .upgrade()
+            .ok_or("the XRack desktop is closed")?
+            .enqueue(Command::CloseTray(self.key))
     }
 }
 
@@ -283,6 +373,7 @@ struct DesktopRuntime<'a> {
     commands: Rc<Commands>,
     clipboard: SharedClipboard,
     windows: BTreeMap<WindowKey, Box<dyn HostedWindow + 'a>>,
+    trays: BTreeMap<WindowKey, TrayHost>,
     owned: BTreeMap<WindowKey, OwnedWindow>,
     native: HashMap<WindowId, WindowKey>,
     graphics: Option<DesktopGraphics>,
@@ -307,6 +398,7 @@ impl<'a> DesktopRuntime<'a> {
             }),
             clipboard: Rc::new(RefCell::new(ClipboardPort::new())),
             windows: BTreeMap::new(),
+            trays: BTreeMap::new(),
             owned: BTreeMap::new(),
             native: HashMap::new(),
             graphics: None,
@@ -367,7 +459,10 @@ impl<'a> DesktopRuntime<'a> {
     }
 
     fn exit_if_empty(&self, event_loop: &ActiveEventLoop) {
-        if self.windows.is_empty() && self.commands.pending.borrow().is_empty() {
+        if self.windows.is_empty()
+            && self.trays.is_empty()
+            && self.commands.pending.borrow().is_empty()
+        {
             event_loop.exit();
         }
     }
@@ -381,6 +476,12 @@ impl<'a> DesktopRuntime<'a> {
                     self.windows.insert(key, window);
                 }
                 Command::Close(key) => self.request_close(key),
+                Command::OpenTray(key, tray) => {
+                    self.trays.insert(key, tray);
+                }
+                Command::CloseTray(key) => {
+                    self.trays.remove(&key);
+                }
             }
         }
         self.consume_close_requests();
@@ -390,8 +491,31 @@ impl<'a> DesktopRuntime<'a> {
                 self.mount_window(event_loop, key);
             }
             self.sync_secondary_windows(event_loop);
+            self.sync_trays();
         }
         self.exit_if_empty(event_loop);
+    }
+
+    fn sync_tray(&mut self, key: WindowKey) -> bool {
+        let Some(tray) = self.trays.get_mut(&key) else {
+            return false;
+        };
+        if let Err(error) = tray.sync() {
+            self.error.get_or_insert(error);
+            self.trays.remove(&key);
+            false
+        } else {
+            true
+        }
+    }
+
+    fn sync_trays(&mut self) {
+        if self.resumed {
+            let keys: Vec<_> = self.trays.keys().copied().collect();
+            for key in keys {
+                self.sync_tray(key);
+            }
+        }
     }
 
     fn mount_window(&mut self, event_loop: &ActiveEventLoop, key: WindowKey) {
@@ -409,8 +533,7 @@ impl<'a> DesktopRuntime<'a> {
         };
         let graphics = self
             .graphics
-            .as_mut()
-            .expect("resumed desktop has graphics");
+            .get_or_insert_with(|| DesktopGraphics::new(event_loop));
         match window.resume(event_loop, graphics, owner.as_deref()) {
             Ok(id) => {
                 self.native.insert(id, key);
@@ -481,14 +604,15 @@ impl<'a> DesktopRuntime<'a> {
 impl ApplicationHandler<DesktopEvent> for DesktopRuntime<'_> {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         self.resumed = true;
-        self.graphics
-            .get_or_insert_with(|| DesktopGraphics::new(event_loop));
         self.apply_commands(event_loop);
     }
 
     fn suspended(&mut self, _: &ActiveEventLoop) {
         self.resumed = false;
         self.native.clear();
+        for tray in self.trays.values_mut() {
+            tray.suspend();
+        }
         for window in self.windows.values_mut().rev() {
             window.suspend();
         }
@@ -497,6 +621,7 @@ impl ApplicationHandler<DesktopEvent> for DesktopRuntime<'_> {
     fn exiting(&mut self, _: &ActiveEventLoop) {
         self.commands.closed.set(true);
         self.commands.pending.take();
+        self.trays.clear();
         for window in self.windows.values_mut().rev() {
             window.close();
         }
@@ -509,6 +634,56 @@ impl ApplicationHandler<DesktopEvent> for DesktopRuntime<'_> {
                 return;
             }
             DesktopEvent::Window(key, event) => (key, event),
+            DesktopEvent::Tray(key, event) => {
+                match event {
+                    TrayEvent::Activated(event) if self.resumed && self.sync_tray(key) => {
+                        self.trays.get_mut(&key).unwrap().activate(event);
+                        self.sync_tray(key);
+                    }
+                    TrayEvent::PollTasks => {
+                        if let Some(tray) = self.trays.get(&key) {
+                            tray.poll_tasks();
+                        }
+                        if self.resumed {
+                            self.sync_tray(key);
+                        }
+                    }
+                    #[cfg(target_os = "linux")]
+                    TrayEvent::Failed { mount, error }
+                        if self
+                            .trays
+                            .get(&key)
+                            .is_some_and(|tray| tray.has_mount(mount)) =>
+                    {
+                        self.error.get_or_insert(error);
+                        self.trays.remove(&key);
+                        self.exit_if_empty(event_loop);
+                    }
+                    #[cfg(target_os = "windows")]
+                    TrayEvent::ContextMenu { mount, anchor }
+                        if self.resumed && self.sync_tray(key) =>
+                    {
+                        self.trays.get(&key).unwrap().request_menu(mount, anchor);
+                    }
+                    #[cfg(target_os = "windows")]
+                    TrayEvent::Restore {
+                        mount,
+                        taskbar_created,
+                    } if self.resumed && self.sync_tray(key) => {
+                        if let Err(error) = self
+                            .trays
+                            .get_mut(&key)
+                            .unwrap()
+                            .restore(mount, taskbar_created)
+                        {
+                            self.error.get_or_insert(error);
+                            self.trays.remove(&key);
+                        }
+                    }
+                    _ => {}
+                }
+                return;
+            }
         };
         if let Some(window) = self.windows.get_mut(&key) {
             window.user_event(event);
@@ -530,6 +705,7 @@ impl ApplicationHandler<DesktopEvent> for DesktopRuntime<'_> {
                 self.finish_close(key);
             }
         }
+        self.sync_trays();
         self.exit_if_empty(event_loop);
     }
 
@@ -546,6 +722,7 @@ impl ApplicationHandler<DesktopEvent> for DesktopRuntime<'_> {
             .filter_map(|window| window.refresh_deadline(now))
             .min();
         self.sync_secondary_windows(event_loop);
+        self.sync_trays();
         event_loop.set_control_flow(if closes {
             // A close handler can request closure of another window.
             ControlFlow::Poll
@@ -562,7 +739,7 @@ fn event_loop() -> Result<EventLoop<DesktopEvent>, String> {
         .map_err(|error| error.to_string())
 }
 
-/// Run multiple windows on one UI thread. Closing the last window ends the event loop.
+/// Run windows and system tray components on one UI thread.
 pub fn run_desktop(setup: impl FnOnce(&Desktop) -> Result<(), String>) -> Result<(), String> {
     let event_loop = event_loop()?;
     let mut desktop = DesktopRuntime::new(event_loop.create_proxy());

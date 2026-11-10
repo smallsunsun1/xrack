@@ -891,6 +891,156 @@ export component ClippingDemo inherits Window {
     Label { x: 24px; y: 233px; color: #a7b6ce; text: "点击计数 " + root.hits; }
 }
 
+export component FlickableDemo inherits Window {
+    width: 360px;
+    height: 280px;
+    title: "XRack · Flickable canvas";
+    background: #192438;
+    in-out property <bool> pan-enabled: true;
+    in-out property <bool> shift-content: true;
+    in property <FlickBoundsBehavior> edge-behavior: FlickBoundsBehavior.drag-and-overshoot-bounds;
+    in property <FlickDirection> pan-direction: FlickDirection.both;
+    in-out property <length> x-offset: 0px;
+    in-out property <length> y-offset: 0px;
+    out property <int> flicks: 0;
+    out property <int> taps: 0;
+    out property <bool> dragging: canvas.dragging;
+    out property <bool> flicking: canvas.flicking;
+    out property <bool> moving: canvas.moving;
+    out property <bool> rebounding: canvas.rebounding;
+    out property <length> overshoot-x: canvas.horizontal-overshoot;
+    out property <length> overshoot-y: canvas.vertical-overshoot;
+    callback stop();
+    stop() => { canvas.cancel-flick(); }
+    callback reset();
+    reset() => { canvas.scroll-to(0px, 0px); }
+    callback return-to-edge();
+    return-to-edge() => { canvas.return-to-bounds(); }
+
+    canvas := Flickable {
+        x: 16px; y: 16px; width: 268px; height: 196px;
+        content-width: 536px;
+        content-x <=> root.x-offset;
+        content-y <=> root.y-offset;
+        interactive: root.pan-enabled;
+        flick-direction: root.pan-direction;
+        bounds-behavior: root.edge-behavior;
+        bounds-movement: root.shift-content ? FlickBoundsMovement.follow-bounds-behavior : FlickBoundsMovement.stop-at-bounds;
+        flicked() => { root.flicks += 1; }
+        Rectangle { width: 536px; height: 392px; background: #25334c; }
+        Rectangle { x: 110px; y: 40px; width: 100px; height: 72px; background: #77d6b3; }
+        Rectangle { x: 365px; y: 40px; width: 100px; height: 72px; background: #f0b667; }
+        Rectangle { x: 110px; y: 252px; width: 100px; height: 72px; background: #8ab3fc; }
+        tap := Button { x: 8px; y: 8px; text: "Tap"; clicked() => { root.taps += 1; } }
+    }
+    ScrollBar {
+        target: canvas; orientation: horizontal;
+        x: 16px; y: 222px; width: 268px; height: 12px;
+        accessible-name: "Canvas horizontal position";
+    }
+    ScrollIndicator { target: canvas; x: 304px; y: 16px; width: 8px; height: 196px; }
+    CheckBox { x: 16px; y: 244px; width: 110px; height: 26px; text: "Pan"; checked <=> root.pan-enabled; }
+    CheckBox { x: 232px; y: 244px; width: 110px; height: 26px; text: "Elastic content"; checked <=> root.shift-content; }
+    Text { x: 132px; y: 248px; color: #e5edff; text: canvas.rebounding ? "Rebound" : (canvas.flicking ? "Flicking" : (canvas.dragging ? "Dragging" : "Idle")); }
+}
+
+export component SwipeGestureDemo inherits Window {
+    width: 360px;
+    height: 280px;
+    title: "XRack · Directional swipe";
+    background: #192438;
+    in property <bool> gestures-enabled: true;
+    out property <length> shift: 0px;
+    out property <int> swipes: 0;
+    out property <int> taps: 0;
+    out property <int> cancellations: 0;
+    out property <bool> swiping: swipe.swiping;
+    out property <length> scroll-y: view.content-y;
+    callback cancel-swipe();
+    cancel-swipe() => { swipe.cancel(); }
+
+    view := ScrollView {
+        x: 16px; y: 16px; width: 328px; height: 220px;
+        content-height: 440px;
+        mouse-drag-pan-enabled: true;
+        swipe := SwipeGestureHandler {
+            width: 100%; height: 440px;
+            enabled: root.gestures-enabled;
+            handle-swipe-left: true;
+            handle-swipe-right: true;
+            swiped() => {
+                root.shift += self.current-x - self.pressed-x;
+                root.swipes += 1;
+            }
+            cancelled() => { root.cancellations += 1; }
+
+            Rectangle { width: 100%; height: 440px; background: #25334c; }
+            card := Rectangle {
+                x: 80px + root.shift + (swipe.swiping ? swipe.current-x - swipe.pressed-x : 0px);
+                y: 64px; width: 112px; height: 74px;
+                border-radius: 8px; background: #77d6b3;
+            }
+            tap := Button { x: 12px; y: 12px; text: "Tap"; clicked() => { root.taps += 1; } }
+            Text { x: 24px; y: 284px; color: #e5edff; text: "Vertical scrolling"; }
+        }
+    }
+    Text { x: 16px; y: 244px; color: #e5edff; text: "Drag sideways to move the card"; }
+}
+
+export component ScaleRotateDemo inherits Window {
+    width: 360px;
+    height: 280px;
+    title: "XRack · Pinch and rotate";
+    background: #192438;
+    in property <bool> gestures-enabled: true;
+    out property <float> zoom: 1;
+    out property <float> angle: 0;
+    out property <int> taps: 0;
+    out property <int> starts: 0;
+    out property <int> ends: 0;
+    out property <int> cancellations: 0;
+    out property <bool> recognizing: gesture.active;
+    out property <length> gesture-center-x: gesture.center-x;
+    out property <length> gesture-center-y: gesture.center-y;
+    property <float> initial-zoom: 1;
+    property <float> initial-angle: 0;
+
+    gesture := ScaleRotateGestureHandler {
+        x: 16px; y: 16px; width: 328px; height: 220px;
+        enabled: root.gestures-enabled;
+        started() => {
+            root.initial-zoom = root.zoom;
+            root.initial-angle = root.angle;
+            root.starts += 1;
+        }
+        updated() => {
+            root.zoom = root.initial-zoom * self.scale;
+            root.angle = root.initial-angle + self.rotation;
+        }
+        ended() => { root.ends += 1; }
+        cancelled() => { root.cancellations += 1; }
+        Rectangle {
+            width: 100%; height: 100%; clip: true; background: #25334c;
+            artwork := Rectangle {
+                x: 124px; y: 70px; width: 80px; height: 80px;
+                background: #77d6b3;
+                transform-scale-x: root.zoom;
+                transform-scale-y: root.zoom;
+                transform-rotation: root.angle;
+                Rectangle { x: 10px; y: 10px; width: 20px; height: 20px; background: #f0b667; }
+            }
+            tap := Button {
+                x: 12px; y: 12px; text: "Tap";
+                clicked() => { root.taps += 1; }
+            }
+        }
+    }
+    Text {
+        x: 16px; y: 244px; color: #e5edff;
+        text: gesture.active ? "Gesture active" : "Pinch or rotate with two fingers";
+    }
+}
+
 export component TransformDemo inherits Window {
     title: "XRack · 视觉变换";
     width: 460px; height: 286px;

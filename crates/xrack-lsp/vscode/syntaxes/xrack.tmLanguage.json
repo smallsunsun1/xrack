@@ -294,7 +294,7 @@
           "match": "(?<=\\.)[A-Za-z_][A-Za-z_0-9]*(?:-[A-Za-z_0-9]+)*"
         },
         {
-          "match": "(?<![A-Za-z_0-9-])(int|float|bool|string|length|percent|color|brush|image|ImageFit|ImageTileMode|ImageHorizontalAlignment|ImageVerticalAlignment|ImageRendering|LayoutAlignment|CrossAxisAlignment|Orientation|DialInputMode|ScrollBarPolicy|TextWrap|DialogRole|DrawerEdge|SelectionTarget)(\\.)(?:(space-between|space-around|space-evenly|always-off|horizontal|always-on|as-needed|char-wrap|word-wrap|circular|pixelated|smooth|repeat|round|preserve|vertical|columns|contain|no-wrap|stretch|accept|bottom|center|reject|cells|cover|right|start|auto|fill|left|rows|end|top))?(?![A-Za-z_0-9-])",
+          "match": "(?<![A-Za-z_0-9-])(int|float|bool|string|length|percent|color|brush|image|ImageFit|ImageTileMode|ImageHorizontalAlignment|ImageVerticalAlignment|ImageRendering|LayoutAlignment|CrossAxisAlignment|Orientation|DialInputMode|ScrollBarPolicy|ScrollSnapMode|TextWrap|DialogRole|DrawerEdge|SelectionTarget)(\\.)(?:(space-between|space-around|space-evenly|always-off|stop-at-bounds|drag-over-bounds|overshoot-bounds|drag-and-overshoot-bounds|follow-bounds-behavior|both|always|on-release|none|horizontal|always-on|as-needed|char-wrap|word-wrap|circular|pixelated|smooth|repeat|round|preserve|vertical|columns|contain|no-wrap|stretch|accept|bottom|center|reject|cells|cover|right|start|auto|fill|left|rows|end|top))?(?![A-Za-z_0-9-])",
           "captures": {
             "1": {
               "name": "support.type.xrack"
@@ -309,7 +309,7 @@
         },
         {
           "name": "constant.other.enum.xrack",
-          "match": "(?<![A-Za-z_0-9-])(?:space-between|space-around|space-evenly|always-off|horizontal|always-on|as-needed|char-wrap|word-wrap|circular|pixelated|smooth|repeat|round|preserve|vertical|columns|contain|no-wrap|stretch|accept|bottom|center|reject|cells|cover|right|start|auto|fill|left|rows|end|top|circle)(?![A-Za-z_0-9-])"
+          "match": "(?<![A-Za-z_0-9-])(?:space-between|space-around|space-evenly|always-off|stop-at-bounds|drag-over-bounds|overshoot-bounds|drag-and-overshoot-bounds|follow-bounds-behavior|both|always|on-release|none|horizontal|always-on|as-needed|char-wrap|word-wrap|circular|pixelated|smooth|repeat|round|preserve|vertical|columns|contain|no-wrap|stretch|accept|bottom|center|reject|cells|cover|right|start|auto|fill|left|rows|end|top|circle)(?![A-Za-z_0-9-])"
         }
       ]
     },
@@ -333,7 +333,7 @@
       "patterns": [
         {
           "name": "support.type.xrack",
-          "match": "(?<![A-Za-z_0-9-])(?:int|float|bool|string|length|percent|color|brush|image|ImageFit|ImageTileMode|ImageHorizontalAlignment|ImageVerticalAlignment|ImageRendering|LayoutAlignment|CrossAxisAlignment|Orientation|DialInputMode|ScrollBarPolicy|TextWrap|DialogRole|DrawerEdge|SelectionTarget)(?![A-Za-z_0-9-])"
+          "match": "(?<![A-Za-z_0-9-])(?:int|float|bool|string|length|percent|color|brush|image|ImageFit|ImageTileMode|ImageHorizontalAlignment|ImageVerticalAlignment|ImageRendering|LayoutAlignment|CrossAxisAlignment|Orientation|DialInputMode|ScrollBarPolicy|ScrollSnapMode|TextWrap|DialogRole|DrawerEdge|SelectionTarget)(?![A-Za-z_0-9-])"
         },
         {
           "name": "entity.name.type.xrack",

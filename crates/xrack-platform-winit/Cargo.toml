@@ -11,6 +11,7 @@ description = "Native winit windows, input, and accessibility for XRack UI"
 accesskit = "=0.25.2"
 accesskit_winit = "=0.34.2"
 xrack-runtime.workspace = true
+xrack-assets.workspace = true
 xrack-layout.workspace = true
 xrack-renderer-femtovg.workspace = true
 winit.workspace = true
@@ -24,8 +25,16 @@ rfd = "=0.18.0"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "=0.6.5"
-objc2-app-kit = { version = "=0.3.2", default-features = false, features = ["NSDragging", "NSGraphics", "NSPasteboard", "NSPasteboardItem", "NSView", "NSWindow"] }
-objc2-foundation = { version = "=0.3.2", default-features = false, features = ["NSArray", "NSString", "NSURL"] }
+objc2-app-kit = { version = "=0.3.2", default-features = false, features = ["NSBitmapImageRep", "NSButton", "NSCell", "NSControl", "NSDragging", "NSGraphics", "NSImage", "NSImageRep", "NSMenu", "NSMenuItem", "NSPasteboard", "NSPasteboardItem", "NSResponder", "NSStatusBar", "NSStatusBarButton", "NSStatusItem", "NSView", "NSWindow", "objc2-core-foundation"] }
+objc2-foundation = { version = "=0.3.2", default-features = false, features = ["NSArray", "NSData", "NSGeometry", "NSString", "NSURL"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+futures-lite = "=2.6.1"
+tokio = { version = "=1.54.1", features = ["sync"] }
+zbus = { version = "=5.19.0", default-features = false, features = ["async-io"] }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_System_LibraryLoader", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
 
 [dev-dependencies]
 tokio = { version = "=1.54.1", features = ["rt-multi-thread", "sync", "time"] }

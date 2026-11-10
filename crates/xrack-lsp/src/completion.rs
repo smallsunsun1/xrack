@@ -8,9 +8,10 @@ use crate::{
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 use xrack_ir::semantic::{
-    builtin_event, builtin_property, control_alias_type, focus_property, geometry_owner,
-    geometry_property, is_builtin, layout_item_property, state_property, viewport_kind,
-    viewport_offset_property, window_status_property,
+    builtin_event, builtin_property, content_viewport, control_alias_type, focus_property,
+    geometry_owner, geometry_property, is_builtin, layout_item_property, scale_rotate_property,
+    state_property, swipe_property, viewport_kind, viewport_offset_property,
+    window_status_property,
 };
 use xrack_parser::ast::Type;
 
@@ -801,6 +802,9 @@ fn suggest<'a>(index: &Index<'a>, scope: usize, head: &[&Token<'a>], items: &mut
             if matches!(kind, "Button" | "ToolButton" | "MenuItem") {
                 items.add("action", PROPERTY, "Action id");
             }
+            if matches!(kind, "ScrollBar" | "ScrollIndicator") {
+                items.add("target", PROPERTY, "Viewport id");
+            }
             for member in index.members(scope, false) {
                 if instance
                     && member.visibility == "in-out"
@@ -1042,8 +1046,46 @@ fn qualified<'a>(index: &Index<'a>, scope: usize, head: &[&Token<'a>], items: &m
             Role::Element { kind, .. } | Role::Component { base: kind, .. } => kind,
             _ => "",
         };
+        if matches!(kind, "ScrollBar" | "ScrollIndicator") {
+            items.words(
+                "position size",
+                PROPERTY,
+                "effective float · normalized range",
+            );
+        }
+        for metric in ["active", "scale", "rotation", "center-x", "center-y"] {
+            if let Some(ty) = scale_rotate_property(kind, metric) {
+                items.add(metric, PROPERTY, &format!("read-only {}", ty.name()));
+            }
+        }
+        for metric in [
+            "swiping",
+            "pressed-x",
+            "pressed-y",
+            "current-x",
+            "current-y",
+        ] {
+            if let Some(ty) = swipe_property(kind, metric) {
+                items.add(metric, PROPERTY, &format!("read-only {}", ty.name()));
+            }
+        }
+        if kind == "SwipeGestureHandler" && matches!(role, Role::Handler) {
+            items.add("cancel", FUNCTION, "()");
+        }
         if viewport_kind(kind) {
             items.words("visible-width visible-height", PROPERTY, "read-only length");
+            if kind == "Flickable" {
+                items.words(
+                    "dragging flicking moving rebounding",
+                    PROPERTY,
+                    "read-only bool",
+                );
+                items.words(
+                    "horizontal-overshoot vertical-overshoot",
+                    PROPERTY,
+                    "read-only length",
+                );
+            }
             for property in ["content-x", "content-y"] {
                 let description = if viewport_offset_property(kind, property) {
                     "effective length · supports two-way binding"
@@ -1054,8 +1096,12 @@ fn qualified<'a>(index: &Index<'a>, scope: usize, head: &[&Token<'a>], items: &m
             }
             if matches!(role, Role::Handler) {
                 items.add("scroll-to", FUNCTION, "(length, length)");
-                if kind != "ScrollView" {
+                if !content_viewport(kind) {
                     items.add("position-view-at-index", FUNCTION, "(int, ScrollAlignment)");
+                }
+                if kind == "Flickable" {
+                    items.add("cancel-flick", FUNCTION, "()");
+                    items.add("return-to-bounds", FUNCTION, "()");
                 }
                 if matches!(kind, "TableView" | "StandardTableView") {
                     items.add("move-column", FUNCTION, "(int, int)");
@@ -1143,6 +1189,30 @@ mod tests {
     use super::complete;
 
     #[test]
+    fn flickable_completes_motion_metrics_and_scoped_cancellation() {
+        let source = "component App inherits Window { canvas := Flickable {} button := Button { clicked() => { canvas.";
+        let entries = complete(source, 0, source.len(), None);
+        for label in [
+            "dragging",
+            "flicking",
+            "moving",
+            "rebounding",
+            "vertical-overshoot",
+            "cancel-flick",
+            "return-to-bounds",
+            "scroll-to",
+            "content-x",
+        ] {
+            assert!(entries.iter().any(|item| item["label"] == label));
+        }
+        assert!(
+            !entries
+                .iter()
+                .any(|item| item["label"] == "position-view-at-index")
+        );
+    }
+
+    #[test]
     fn qualified_viewport_completion_separates_metrics_and_commands() {
         let source = "component App inherits Window { view := ScrollView {} jump := Button { clicked() => { view.";
         let entries = complete(source, 0, source.len(), None);
@@ -1151,6 +1221,57 @@ mod tests {
         assert!(has("visible-height"));
         assert!(has("scroll-to"));
         assert!(!has("position-view-at-index"));
+    }
+
+    #[test]
+    fn qualified_swipe_completion_includes_metrics_and_cancellation() {
+        let source =
+            "component App inherits Window { swipe := SwipeGestureHandler { moved() => { swipe.";
+        let entries = complete(source, 0, source.len(), None);
+        for label in [
+            "swiping",
+            "pressed-x",
+            "pressed-y",
+            "current-x",
+            "current-y",
+            "cancel",
+        ] {
+            assert!(entries.iter().any(|item| item["label"] == label));
+        }
+    }
+
+    #[test]
+    fn qualified_scale_rotate_completion_includes_live_metrics() {
+        let source = "component App inherits Window { area := ScaleRotateGestureHandler {} out property <float> zoom: area.";
+        let entries = complete(source, 0, source.len(), None);
+        for label in ["scale", "rotation", "center-x", "center-y", "active"] {
+            assert!(entries.iter().any(|item| item["label"] == label));
+        }
+    }
+
+    #[test]
+    fn scroll_snap_mode_completion_uses_the_typed_enum() {
+        let source = "component App inherits Window { ScrollBar { snap-mode: ";
+        let entries = complete(source, 0, source.len(), None);
+        for label in ["none", "always", "on-release"] {
+            assert!(entries.iter().any(|item| item["label"] == label));
+        }
+    }
+
+    #[test]
+    fn qualified_scroll_control_completion_includes_effective_range() {
+        for declaration in [
+            "ScrollBar { target: view; }",
+            "ScrollIndicator { size: 0.25; }",
+        ] {
+            let source = format!(
+                "component App inherits Window {{ view := ScrollView {{}} bar := {declaration} out property <float> progress: bar."
+            );
+            let entries = complete(&source, 0, source.len(), None);
+            for label in ["position", "size"] {
+                assert!(entries.iter().any(|item| item["label"] == label));
+            }
+        }
     }
 
     #[test]

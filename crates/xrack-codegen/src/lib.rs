@@ -62,10 +62,14 @@ fn ty(t: &Type) -> TokenStream {
         Type::ImageVerticalAlignment => quote!(::xrack_runtime::ImageVerticalAlignment),
         Type::ImageRendering => quote!(::xrack_runtime::ImageRendering),
         Type::Orientation => quote!(::xrack_runtime::Orientation),
+        Type::FlickDirection => quote!(::xrack_runtime::FlickDirection),
+        Type::FlickBoundsBehavior => quote!(::xrack_runtime::FlickBoundsBehavior),
+        Type::FlickBoundsMovement => quote!(::xrack_runtime::FlickBoundsMovement),
         Type::FlexboxLayoutDirection => quote!(::xrack_runtime::FlexboxLayoutDirection),
         Type::FlexboxLayoutWrap => quote!(::xrack_runtime::FlexboxLayoutWrap),
         Type::DialInputMode => quote!(::xrack_runtime::DialInputMode),
         Type::ScrollBarPolicy => quote!(::xrack_runtime::ScrollBarPolicy),
+        Type::ScrollSnapMode => quote!(::xrack_runtime::ScrollSnapMode),
         Type::ScrollAlignment => quote!(::xrack_runtime::ScrollAlignment),
         Type::TextWrap => quote!(::xrack_runtime::TextWrap),
         Type::TextHorizontalAlignment => quote!(::xrack_runtime::TextHorizontalAlignment),
@@ -190,10 +194,14 @@ fn literal(value: &str, ty: Type) -> Result<TokenStream, String> {
         | Type::LayoutAlignment
         | Type::CrossAxisAlignment
         | Type::Orientation
+        | Type::FlickDirection
+        | Type::FlickBoundsBehavior
+        | Type::FlickBoundsMovement
         | Type::FlexboxLayoutDirection
         | Type::FlexboxLayoutWrap
         | Type::DialInputMode
         | Type::ScrollBarPolicy
+        | Type::ScrollSnapMode
         | Type::ScrollAlignment
         | Type::TextWrap
         | Type::TextHorizontalAlignment
@@ -435,6 +443,10 @@ fn controlled_property(element: OperationRef<'_>) -> Option<(&'static str, Type)
         Ok("Slider" | "Dial" | "DoubleSpinBox")
     ) {
         Some(("value", Type::Float))
+    } else if element.attr("kind") == Ok("ScrollBar")
+        && children(element, "xr.scroll_target").next().is_none()
+    {
+        Some(("position", Type::Float))
     } else if element.attr("kind") == Ok("SpinBox") {
         Some(("value", Type::Int))
     } else if element.attr("kind") == Ok("SwipeDelegate") {
@@ -565,6 +577,7 @@ fn typed_events(element: OperationRef<'_>) -> bool {
         element.attr("kind"),
         Ok("Slider"
             | "Dial"
+            | "ScrollBar"
             | "RangeSlider"
             | "SpinBox"
             | "DoubleSpinBox"
@@ -698,9 +711,24 @@ fn focus_handle(owner: &str) -> Ident {
     format_ident!("__xr_focus_{encoded}")
 }
 
+fn scale_rotate_handle(owner: &str) -> Ident {
+    let encoded: String = owner.bytes().map(|byte| format!("{byte:02x}")).collect();
+    format_ident!("__xr_scale_rotate_{encoded}")
+}
+
+fn swipe_handle(owner: &str) -> Ident {
+    let encoded: String = owner.bytes().map(|byte| format!("{byte:02x}")).collect();
+    format_ident!("__xr_swipe_{encoded}")
+}
+
 fn viewport_handle(owner: &str) -> Ident {
     let encoded: String = owner.bytes().map(|byte| format!("{byte:02x}")).collect();
     format_ident!("__xr_viewport_{encoded}")
+}
+
+fn scroll_control_getter(owner: &str, property: &str) -> Ident {
+    let encoded: String = owner.bytes().map(|byte| format!("{byte:02x}")).collect();
+    format_ident!("__xr_scroll_{encoded}_{property}")
 }
 
 fn geometry_handle(owner: &str) -> Ident {
@@ -1131,6 +1159,12 @@ impl<'a> Generator<'a> {
             "xr.element" => {
                 let key = element_key(op)?;
                 self.elements.insert(key, op);
+                if op.attr("kind") == Ok("Flickable")
+                    && children(op, "xr.bind")
+                        .any(|bind| bind.attr("name") == Ok("bounds-behavior"))
+                {
+                    self.viewport_targets.insert(key);
+                }
                 if row_height_binding(op).is_some() {
                     self.row_height_views.insert(key);
                 }
@@ -1143,7 +1177,8 @@ impl<'a> Generator<'a> {
                         }
                     }
                 }
-                if children(op, "xr.handler").any(|handler| handler.attr("name") == Ok("scrolled"))
+                if children(op, "xr.handler")
+                    .any(|handler| matches!(handler.attr("name"), Ok("scrolled" | "flicked")))
                 {
                     self.viewport_targets.insert(key);
                     self.scroll_observers.insert(key);
@@ -1217,8 +1252,11 @@ impl<'a> Generator<'a> {
                 "xr.focus_read" => {
                     self.focus_targets.insert(child.attr("owner")?);
                 }
-                "xr.viewport_read" => {
+                "xr.viewport_read" | "xr.flick_motion_read" => {
                     self.viewport_targets.insert(child.attr("owner")?);
+                }
+                "xr.scroll_target" => {
+                    self.viewport_targets.insert(child.attr("target")?);
                 }
                 "xr.geometry_read" => {
                     self.geometry_targets.insert(child.attr("owner")?);
@@ -1232,7 +1270,11 @@ impl<'a> Generator<'a> {
                             "xr.focus_read" | "xr.text_command" => {
                                 self.focus_targets.insert(effect.attr("owner")?);
                             }
-                            "xr.viewport_read" | "xr.scroll_command" => {
+                            "xr.viewport_read"
+                            | "xr.scroll_command"
+                            | "xr.flick_motion_read"
+                            | "xr.cancel_flick"
+                            | "xr.return_to_bounds" => {
                                 self.viewport_targets.insert(effect.attr("owner")?);
                             }
                             "xr.geometry_read" => {
@@ -1533,6 +1575,34 @@ impl<'a> Generator<'a> {
                     .ok_or("unknown alias control")?;
                 self.control_value(element, value, value_type(op)?)?
             }
+            "xr.scroll_control_read" => {
+                let getter = scroll_control_getter(owner(op), value);
+                quote!(#receiver.#getter())
+            }
+            "xr.scale_rotate_read" => {
+                let handle = scale_rotate_handle(owner(op));
+                let metric = match value {
+                    "active" => quote!(active),
+                    "scale" => quote!(scale),
+                    "rotation" => quote!(rotation),
+                    "center-x" => quote!(center_x),
+                    "center-y" => quote!(center_y),
+                    _ => return Err("unknown scale/rotate metric".into()),
+                };
+                quote!(#receiver.__state.#handle.#metric())
+            }
+            "xr.swipe_read" => {
+                let handle = swipe_handle(owner(op));
+                let metric = match value {
+                    "swiping" => quote!(swiping),
+                    "pressed-x" => quote!(pressed_x),
+                    "pressed-y" => quote!(pressed_y),
+                    "current-x" => quote!(current_x),
+                    "current-y" => quote!(current_y),
+                    _ => return Err("unknown swipe metric".into()),
+                };
+                quote!(#receiver.__state.#handle.#metric())
+            }
             "xr.focus_read" => {
                 let handle = focus_handle(owner(op));
                 let getter = match value {
@@ -1562,7 +1632,7 @@ impl<'a> Generator<'a> {
                 let read = check_group_method(owner(op), "state");
                 quote!(#receiver.#read())
             }
-            "xr.viewport_read" => {
+            "xr.viewport_read" | "xr.flick_motion_read" => {
                 let handle = viewport_handle(owner(op));
                 let getter = ident(value);
                 quote!(#receiver.__state.#handle.#getter())
@@ -1877,6 +1947,19 @@ impl<'a> Generator<'a> {
                         quote!(Focus)
                     };
                     statements.extend(quote!(self.__state.#handle.request(::xrack_runtime::FocusAction::#action);));
+                }
+                "xr.swipe_cancel" => {
+                    let handle = swipe_handle(statement.attr("owner")?);
+                    statements.extend(quote!(self.__state.#handle.cancel();));
+                }
+                "xr.cancel_flick" | "xr.return_to_bounds" => {
+                    let handle = viewport_handle(statement.attr("owner")?);
+                    let action = if statement.name() == "xr.cancel_flick" {
+                        quote!(CancelFlick)
+                    } else {
+                        quote!(ReturnToBounds)
+                    };
+                    statements.extend(quote!(self.__state.#handle.request(::xrack_runtime::ScrollAction::#action);));
                 }
                 "xr.text_command" => {
                     let handle = focus_handle(statement.attr("owner")?);
@@ -2372,6 +2455,7 @@ impl<'a> Generator<'a> {
             None if ty == Type::CheckState => quote!(::xrack_runtime::CheckState::Unchecked),
             None if ty == Type::Bool && element.attr("kind") == Ok("GroupBox") => quote!(true),
             None if ty == Type::Bool => quote!(false),
+            None if ty == Type::Float && name == "position" => quote!(0.0_f64),
             None if ty == Type::Float => {
                 let bound = if name == "upper-value" {
                     "maximum"
@@ -3279,9 +3363,21 @@ impl<'a> Generator<'a> {
             let handle = focus_handle(key);
             out.extend(quote!(#name.focus_handle = Some(self.__state.#handle.clone());));
         }
+        if element.attr("kind") == Ok("ScaleRotateGestureHandler") {
+            let handle = scale_rotate_handle(key);
+            out.extend(quote!(#name.scale_rotate_handle = Some(self.__state.#handle.clone());));
+        }
+        if element.attr("kind") == Ok("SwipeGestureHandler") {
+            let handle = swipe_handle(key);
+            out.extend(quote!(#name.swipe_handle = Some(self.__state.#handle.clone());));
+        }
         if self.viewport_targets.contains(key) {
             let handle = viewport_handle(key);
             out.extend(quote!(#name.viewport_handle = Some(self.__state.#handle.clone());));
+        }
+        if let Some(target) = children(element, "xr.scroll_target").next() {
+            let handle = viewport_handle(target.attr("target")?);
+            out.extend(quote!(#name.scroll_target = Some(self.__state.#handle.clone());));
         }
         if self.geometry_targets.contains(key) {
             let handle = geometry_handle(key);
@@ -3729,7 +3825,7 @@ impl<'a> Generator<'a> {
         }
         let id = element.attr("id")?;
         let dispatchable = |handler: OperationRef<'_>| {
-            handler.attr("name") == Ok("scrolled")
+            matches!(handler.attr("name"), Ok("scrolled" | "flicked"))
                 || (!typed_events(element)
                     && !matches!(
                         handler.attr("name"),
@@ -4100,6 +4196,21 @@ impl<'a> Generator<'a> {
                         #set
                         #changed
                     }
+                    true
+                },
+            });
+        } else if element.attr("kind") == Ok("ScrollBar")
+            && children(element, "xr.scroll_target").next().is_none()
+        {
+            let set = self.set_control(element, &quote!(value))?;
+            let changed = self.typed_event(element, "changed", &quote!(value))?;
+            out.extend(quote! {
+                [#(#path),*] => {
+                    if !node.boolean("interactive", true) { return false; }
+                    let range = ::xrack_runtime::ScrollBarRange::from_node(node);
+                    let Some(value) = range.apply(action) else { return false; };
+                    #set
+                    #changed
                     true
                 },
             });
@@ -4574,6 +4685,8 @@ impl<'a> Generator<'a> {
                                 ::xrack_runtime::ControlAction::TableSelection(action) => action,
                                 _ => return false,
                             };
+                            if matches!(action, ::xrack_runtime::TableSelectionAction::DragRange { .. })
+                                && !node.boolean("drag-select", false) { return false; }
                             let current = node.int("current-row").and_then(|value| <::core::primitive::usize as ::core::convert::TryFrom<_>>::try_from(value).ok());
                             let Some(change) = self.__state.#selection.apply(#model, view, current, action) else { return false; };
                             if let Some(index) = change.current { #set #event }
@@ -5418,10 +5531,31 @@ impl<'a> Generator<'a> {
             fields.extend(quote!(#handle: ::xrack_runtime::FocusHandle,));
             defaults.extend(quote!(#handle: ::core::default::Default::default(),));
         }
+        for (&key, &element) in &self.elements {
+            if element.attr("kind") == Ok("ScaleRotateGestureHandler") {
+                let handle = scale_rotate_handle(key);
+                fields.extend(quote!(#handle: ::xrack_runtime::ScaleRotateHandle,));
+                defaults.extend(quote!(#handle: ::core::default::Default::default(),));
+            }
+            if element.attr("kind") == Ok("SwipeGestureHandler") {
+                let handle = swipe_handle(key);
+                fields.extend(quote!(#handle: ::xrack_runtime::SwipeHandle,));
+                defaults.extend(quote!(#handle: ::core::default::Default::default(),));
+            }
+        }
         for &target in &self.viewport_targets {
             let handle = viewport_handle(target);
             fields.extend(quote!(#handle: ::xrack_runtime::ViewportHandle,));
-            if self.scroll_observers.contains(target) {
+            let notify = self.scroll_observers.contains(target);
+            if self
+                .elements
+                .get(target)
+                .is_some_and(|element| element.attr("kind") == Ok("Flickable"))
+            {
+                defaults.extend(
+                    quote!(#handle: ::xrack_runtime::ViewportHandle::for_flickable(#notify),),
+                );
+            } else if notify {
                 defaults.extend(
                     quote!(#handle: ::xrack_runtime::ViewportHandle::with_scroll_notifications(),),
                 );
@@ -5468,6 +5602,48 @@ impl<'a> Generator<'a> {
             }
         }
 
+        for (&key, &element) in &self.elements {
+            if !matches!(element.attr("kind"), Ok("ScrollBar" | "ScrollIndicator")) {
+                continue;
+            }
+            let size_getter = scroll_control_getter(key, "size");
+            let position_getter = scroll_control_getter(key, "position");
+            if let Some(target) = children(element, "xr.scroll_target").next() {
+                let viewport = viewport_handle(target.attr("target")?);
+                let orientation = self.binding_value_or(
+                    element,
+                    "orientation",
+                    quote!(::xrack_runtime::Orientation::Vertical),
+                )?;
+                methods.extend(quote! {
+                    fn #size_getter(&self) -> ::core::primitive::f64 {
+                        self.__state.#viewport.scroll_size(#orientation)
+                    }
+                    fn #position_getter(&self) -> ::core::primitive::f64 {
+                        self.__state.#viewport.scroll_position(#orientation)
+                    }
+                });
+                continue;
+            }
+            let size = self.binding_value_or(
+                element,
+                "size",
+                quote!(::xrack_runtime::ScrollBarRange::DEFAULT_SIZE),
+            )?;
+            let position = if element.attr("kind") == Ok("ScrollBar") {
+                self.control_value(element, "position", Type::Float)?
+            } else {
+                self.binding_value_or(element, "position", quote!(0.0_f64))?
+            };
+            methods.extend(quote! {
+                fn #size_getter(&self) -> ::core::primitive::f64 {
+                    ::xrack_runtime::ScrollBarRange::new(0.0, #size, 0.0).size
+                }
+                fn #position_getter(&self) -> ::core::primitive::f64 {
+                    ::xrack_runtime::ScrollBarRange::new(#position, self.#size_getter(), 0.0).position
+                }
+            });
+        }
         let mut input_fields = TokenStream::new();
         let properties = children(component, "xr.property")
             .map(|p| ("root", p))
@@ -6446,7 +6622,7 @@ impl<'a> Generator<'a> {
                         return false;
                     };
                     let node = match target.kind {
-                        "Slider" | "Dial" => target,
+                        "Slider" | "Dial" | "ScrollBar" => target,
                         "RangeThumb" => {
                             let Some((_, parent)) = path.split_last() else { return false; };
                             let Some(node) = scene.at_path(parent).filter(|node| node.kind == "RangeSlider") else { return false; };
@@ -6554,7 +6730,14 @@ impl<'a> Generator<'a> {
                     path: &[::core::primitive::usize],
                     event: &::core::primitive::str,
                 ) -> ::core::primitive::bool {
-                    scene.interactive_at_path(path).is_some_and(|node| {
+                    let terminal = scene.at_path(path).is_some_and(|node| matches!((node.kind, event),
+                        ("ScaleRotateGestureHandler", "ended" | "cancelled") | ("SwipeGestureHandler", "swiped" | "cancelled")));
+                    let target = if terminal {
+                        scene.at_path(path)
+                    } else {
+                        scene.interactive_at_path(path)
+                    };
+                    target.is_some_and(|node| {
                         event != "accepted" || !::xrack_runtime::is_text_input(node.kind) || node.accepts_text_submission()
                     }) && self.__route_delegate(scene, path, &::xrack_runtime::RoutedEvent::Dispatch(event))
                         .unwrap_or_else(|| self.__dispatch_path(path, event))

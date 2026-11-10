@@ -3,7 +3,7 @@ load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
 
 rust_library(
     name = "xrack_platform_winit",
-    srcs = glob(["src/*.rs"]),
+    srcs = glob(["src/**/*.rs"]),
     aliases = aliases(),
     crate_name = "xrack_platform_winit",
     crate_root = "src/lib.rs",
@@ -12,6 +12,7 @@ rust_library(
     visibility = ["//visibility:public"],
     deps = [
         "//crates/xrack-runtime:xrack_runtime",
+        "//crates/xrack-assets:xrack_assets",
         "//crates/xrack-layout:xrack_layout",
         "//crates/xrack-renderer-femtovg:xrack_renderer_femtovg",
     ] + all_crate_deps(normal = True),

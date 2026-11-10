@@ -39,6 +39,11 @@ pub enum TableSelectionAction {
         column: usize,
         operation: RowSelection,
     },
+    DragRange {
+        anchor: (usize, usize),
+        end: (usize, usize),
+        additive: bool,
+    },
     All,
     Clear,
 }
@@ -176,6 +181,11 @@ impl TableSelectionSnapshot {
 
     pub fn multiple(&self) -> bool {
         self.multiple
+    }
+
+    #[doc(hidden)]
+    pub fn structure_stamp(&self) -> (u64, u64) {
+        self.stamp
     }
 
     /// Number of selected rows, cells, or columns, depending on the target.
@@ -490,18 +500,49 @@ impl Selection {
         column: usize,
         view: &'a TableSelectionSnapshot,
     ) -> impl Iterator<Item = usize> + use<'a> {
-        let index = |column| view.order.visual_index(view.column_count, column);
         let anchor = self
             .column_anchor
             .or(self.current_column)
             .filter(|&column| column < view.column_count)
             .unwrap_or(column);
         self.column_anchor = Some(anchor);
-        let range = span(index(anchor).unwrap_or(0), index(column).unwrap_or(0));
-        view.order
-            .iter(view.column_count)
-            .skip(range.start)
-            .take(range.len())
+        column_span(view, anchor, column)
+    }
+}
+
+fn column_span(
+    view: &TableSelectionSnapshot,
+    anchor: usize,
+    column: usize,
+) -> impl Iterator<Item = usize> + use<'_> {
+    let index = |column| view.order.visual_index(view.column_count, column);
+    let range = span(index(anchor).unwrap_or(0), index(column).unwrap_or(0));
+    view.order
+        .iter(view.column_count)
+        .skip(range.start)
+        .take(range.len())
+}
+
+fn select_cells(
+    cells: &mut Arc<ColumnCells>,
+    columns: impl Iterator<Item = usize>,
+    rows: RowKeys,
+    additive: bool,
+) {
+    if !additive {
+        *cells = Arc::new(columns.map(|column| (column, rows.clone())).collect());
+        return;
+    }
+    let cells = Arc::make_mut(cells);
+    let mut merged = HashMap::<_, RowKeys>::new();
+    for column in columns {
+        let keys = cells.entry(column).or_insert_with(|| rows.clone());
+        if !rows.is_subset(keys) {
+            *keys = merged
+                .entry(Arc::as_ptr(keys))
+                .or_insert_with(|| Arc::new(keys.union(&rows).copied().collect()))
+                .clone();
+        }
     }
 }
 
@@ -656,27 +697,54 @@ impl TableSelection {
                     RowSelection::Extend | RowSelection::AddRange => {
                         let range = state.column_range(column, view);
                         let rows = Arc::new(row_keys(model, state.row_range(model, current, row)));
-                        if operation == RowSelection::Extend {
-                            *cells = Arc::new(range.map(|column| (column, rows.clone())).collect());
-                        } else {
-                            let cells = Arc::make_mut(cells);
-                            let mut merged = HashMap::<_, RowKeys>::new();
-                            for column in range {
-                                let keys = cells.entry(column).or_insert_with(|| rows.clone());
-                                if !rows.is_subset(keys) {
-                                    *keys = merged
-                                        .entry(Arc::as_ptr(keys))
-                                        .or_insert_with(|| {
-                                            Arc::new(keys.union(&rows).copied().collect())
-                                        })
-                                        .clone();
-                                }
-                            }
-                        }
+                        select_cells(cells, range, rows, operation == RowSelection::AddRange);
                     }
                     RowSelection::Move => {}
                 }
                 state.current_column = Some(column);
+            }
+            TableSelectionAction::DragRange {
+                anchor: (first_row, first_column),
+                end: (row, column),
+                additive,
+            } if view.multiple
+                && first_row < count
+                && row < count
+                && first_column < column_count
+                && column < column_count =>
+            {
+                match &mut next {
+                    Selected::Rows(rows) => {
+                        let range = row_keys(model, span(first_row, row));
+                        if additive {
+                            Arc::make_mut(rows).extend(range);
+                        } else {
+                            *rows = Arc::new(range);
+                        }
+                    }
+                    Selected::Columns(columns) => {
+                        let range = column_span(view, first_column, column);
+                        if additive {
+                            Arc::make_mut(columns).extend(range);
+                        } else {
+                            *columns = Arc::new(range.collect());
+                        }
+                    }
+                    Selected::Cells(cells) => select_cells(
+                        cells,
+                        column_span(view, first_column, column),
+                        Arc::new(row_keys(model, span(first_row, row))),
+                        additive,
+                    ),
+                }
+                if view.target != SelectionTarget::Columns {
+                    state.row_anchor = Some((first_row, model.row_key(first_row)));
+                    cursor = Some(row);
+                }
+                if view.target != SelectionTarget::Rows {
+                    state.column_anchor = Some(first_column);
+                    state.current_column = Some(column);
+                }
             }
             TableSelectionAction::All if view.multiple => {
                 let total = match view.target {
@@ -734,6 +802,40 @@ impl TableSelection {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn drag_ranges_use_the_explicit_anchor_in_each_selection_mode() {
+        let selection = TableSelection::default();
+        let model = 6_i64;
+        let rows = selection.snapshot(&model, Some(0), SelectionTarget::Rows, 3, true);
+        let action = TableSelectionAction::DragRange {
+            anchor: (4, 2),
+            end: (1, 0),
+            additive: false,
+        };
+        let change = selection.apply(&model, &rows, Some(0), action).unwrap();
+        assert_eq!(change.current, Some(1));
+        assert_eq!(change.selected_count, Some(4));
+        assert_eq!(
+            selection
+                .snapshot(&model, Some(1), SelectionTarget::Rows, 3, true)
+                .indices(&model),
+            [1, 2, 3, 4],
+        );
+
+        let (_, order) = crate::TableColumnOrder::default().moved(3, 2, 0).unwrap();
+        let columns = selection
+            .snapshot(&model, Some(1), SelectionTarget::Columns, 3, true)
+            .with_column_order(order);
+        let change = selection.apply(&model, &columns, Some(1), action).unwrap();
+        assert_eq!(change.current, None);
+        assert_eq!(change.selected_count, Some(2));
+        let view = selection.snapshot(&model, Some(1), SelectionTarget::Columns, 3, true);
+        assert_eq!(view.columns().iter().copied().collect::<Vec<_>>(), [0, 2]);
+        assert_eq!(view.current_column(), Some(0));
+        let single = selection.snapshot(&model, Some(1), SelectionTarget::Columns, 3, false);
+        assert!(selection.apply(&model, &single, Some(1), action).is_none());
+    }
 
     #[test]
     fn whole_column_copy_is_ordered_and_checks_the_budget_before_projecting() {

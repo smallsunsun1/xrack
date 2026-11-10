@@ -14,9 +14,10 @@ use xrack_layout::{
 use xrack_renderer_femtovg::TextSystem;
 use xrack_runtime::{
     CalendarAction, CalendarState, CheckState, ControlAction, DecimalSpinRange, IndicatorState,
-    InputType, ListMetrics, Node, Orientation, RowKey, SliderInterval, SliderRange, SpinRange,
-    StandardButtonKind, SwipeSide, Value, button_text, choice_identity, combo_editable, combo_text,
-    group_index, indicator_state, is_window_overlay, spin_editable, text_input_value,
+    InputType, ListMetrics, Node, Orientation, RangeAction, RowKey, ScrollBarRange, SliderInterval,
+    SliderRange, SpinRange, StandardButtonKind, SwipeSide, Value, button_text, choice_identity,
+    combo_editable, combo_text, group_index, indicator_state, is_window_overlay, spin_editable,
+    text_input_value,
 };
 
 const ROOT: NodeId = NodeId(0);
@@ -470,7 +471,11 @@ impl Builder<'_> {
         );
         let has_bounds = rect.width > 0.0 && rect.height > 0.0;
         if !has_bounds && !item.allows_overflow()
-            || matches!(node.kind, "Tooltip" | "StandardListItem")
+            || matches!(
+                node.kind,
+                "Tooltip" | "StandardListItem" | "ScrollIndicator"
+            )
+            || node.kind == "ScrollBar" && item.scroll_control_geometry(node).is_none()
             || matches!(node.kind, "SwipeLeft" | "SwipeRight") && !item.enabled
         {
             return None;
@@ -503,6 +508,7 @@ impl Builder<'_> {
                 Role::Group if matches!(node.kind, "GroupBox" | "Page") => node.text("title"),
                 Role::ProgressIndicator if node.kind == "BusyIndicator" => Some("Loading"),
                 Role::ProgressIndicator => Some("Progress"),
+                Role::ScrollBar => Some("Scroll bar"),
                 Role::ListBoxOption if view == Some("StandardListView") => {
                     node.children.first().and_then(|label| label.text("text"))
                 }
@@ -734,6 +740,33 @@ impl Builder<'_> {
                     accessible.set_read_only();
                 }
             }
+            Role::ScrollBar => {
+                if let Some(bar) = item.scroll_control_geometry(node) {
+                    let (value, maximum, step, page) = if node.scroll_target.is_none() {
+                        let range = ScrollBarRange::from_node(node);
+                        (range.position, range.maximum(), range.step, range.size)
+                    } else {
+                        (
+                            f64::from(bar.scroll.offset),
+                            f64::from(bar.scroll.max_offset),
+                            f64::from(bar.step),
+                            f64::from(bar.page),
+                        )
+                    };
+                    accessible.set_orientation(match bar.orientation {
+                        Orientation::Horizontal => accesskit::Orientation::Horizontal,
+                        Orientation::Vertical => accesskit::Orientation::Vertical,
+                    });
+                    accessible.set_min_numeric_value(0.0);
+                    accessible.set_max_numeric_value(maximum);
+                    accessible.set_numeric_value(value);
+                    accessible.set_numeric_value_step(step);
+                    accessible.set_numeric_value_jump(page);
+                    if !node.boolean("interactive", true) || maximum == 0.0 {
+                        accessible.set_read_only();
+                    }
+                }
+            }
             Role::Slider => {
                 let range_node = if node.kind == "RangeThumb" {
                     self.scene
@@ -859,6 +892,11 @@ impl Builder<'_> {
             }
             if role == Role::Slider || role == Role::SpinButton && !node.boolean("read-only", false)
             {
+                accessible.add_action(Action::Increment);
+                accessible.add_action(Action::Decrement);
+            }
+            if role == Role::ScrollBar {
+                accessible.add_action(Action::SetValue);
                 accessible.add_action(Action::Increment);
                 accessible.add_action(Action::Decrement);
             }
@@ -1443,7 +1481,8 @@ fn role(node: &Node, view: Option<&str>) -> Role {
         "Tab" | "TabButton" => Role::Tab,
         "Tumbler" | "StandardListView" => Role::ListBox,
         "ListView" | "GridView" => Role::List,
-        "ScrollView" => Role::ScrollView,
+        "ScrollView" | "Flickable" => Role::ScrollView,
+        "ScrollBar" => Role::ScrollBar,
         "TableView" => Role::Table,
         "TreeView" => Role::Tree,
         "ListRow" if view == Some("TableView") => Role::Row,
@@ -1456,9 +1495,14 @@ fn role(node: &Node, view: Option<&str>) -> Role {
 }
 
 fn scroll_actions(node: &mut AccessibleNode, item: &LayoutNode, scale: f64) {
-    if let Some(scroll) = item
-        .scroll_on(Orientation::Horizontal)
-        .filter(|scroll| scroll.max_offset > 0.0)
+    let scroll_on = |axis| {
+        item.attached_scroll_geometry()
+            .filter(|bar| bar.orientation == axis)
+            .map(|bar| bar.scroll)
+            .or_else(|| item.scroll_on(axis))
+    };
+    if let Some(scroll) =
+        scroll_on(Orientation::Horizontal).filter(|scroll| scroll.max_offset > 0.0)
     {
         node.set_scroll_x_min(0.0);
         node.set_scroll_x_max(f64::from(scroll.max_offset) * scale);
@@ -1471,9 +1515,7 @@ fn scroll_actions(node: &mut AccessibleNode, item: &LayoutNode, scale: f64) {
         }
         node.add_action(Action::SetScrollOffset);
     }
-    if let Some(scroll) = item
-        .scroll_on(Orientation::Vertical)
-        .filter(|scroll| scroll.max_offset > 0.0)
+    if let Some(scroll) = scroll_on(Orientation::Vertical).filter(|scroll| scroll.max_offset > 0.0)
     {
         node.set_scroll_y_min(0.0);
         node.set_scroll_y_max(f64::from(scroll.max_offset) * scale);
@@ -1495,6 +1537,34 @@ pub(crate) fn requested_scroll(
     item: &LayoutNode,
     scale: f64,
 ) -> [Option<f32>; 2] {
+    if let Some(bar) = item.attached_scroll_geometry() {
+        let index = usize::from(bar.orientation == Orientation::Vertical);
+        let current = f64::from(bar.scroll.offset);
+        let line = f64::from(bar.step);
+        let step = if matches!(data, Some(ActionData::ScrollUnit(ScrollUnit::Item))) {
+            line
+        } else {
+            f64::from(bar.page)
+        };
+        let value = match (action, data, bar.orientation) {
+            (Action::SetValue, Some(ActionData::NumericValue(value)), _) => *value,
+            (Action::SetScrollOffset, Some(ActionData::SetScrollOffset(point)), _) => {
+                [point.x, point.y][index] / scale
+            }
+            (Action::Increment, _, _) => current + line,
+            (Action::Decrement, _, _) => current - line,
+            (Action::ScrollLeft, _, Orientation::Horizontal)
+            | (Action::ScrollUp, _, Orientation::Vertical) => current - step,
+            (Action::ScrollRight, _, Orientation::Horizontal)
+            | (Action::ScrollDown, _, Orientation::Vertical) => current + step,
+            _ => return [None, None],
+        };
+        let mut offsets = [None, None];
+        offsets[index] = value
+            .is_finite()
+            .then(|| value.clamp(0.0, f64::from(bar.scroll.max_offset)) as f32);
+        return offsets;
+    }
     if action == Action::SetScrollOffset {
         return match data {
             Some(ActionData::SetScrollOffset(point)) => [point.x, point.y].map(|value| {
@@ -1536,6 +1606,26 @@ pub(crate) fn requested_scroll(
     let mut offsets = [None, None];
     offsets[index] = Some((scroll.offset + direction * step).clamp(0.0, scroll.max_offset));
     offsets
+}
+
+pub(crate) fn requested_standalone_scroll(
+    action: Action,
+    data: Option<&ActionData>,
+    node: &Node,
+) -> Option<RangeAction> {
+    let range = ScrollBarRange::from_node(node);
+    match (action, data) {
+        (Action::SetValue, Some(ActionData::NumericValue(value)))
+            if value.is_finite() && range.maximum() > 0.0 =>
+        {
+            Some(RangeAction::SetFraction(
+                value.clamp(0.0, range.maximum()) / range.maximum(),
+            ))
+        }
+        (Action::Increment, _) => Some(RangeAction::Increase),
+        (Action::Decrement, _) => Some(RangeAction::Decrease),
+        _ => None,
+    }
 }
 
 pub(crate) fn supports_click(kind: &str) -> bool {
@@ -1596,6 +1686,118 @@ mod tests {
             .iter()
             .find_map(|(id, node)| (node.label() == Some(label)).then_some((*id, node)))
             .unwrap()
+    }
+
+    #[test]
+    fn standalone_scroll_bar_uses_normalized_accessibility_values_at_any_scale() {
+        let mut window = Node::new("Window", None);
+        let mut bar = Node::new("ScrollBar", Some("position"));
+        length(&mut bar, "width", 12.0);
+        length(&mut bar, "height", 120.0);
+        bar.properties
+            .insert("accessible-name", "Position".to_owned().into());
+        bar.properties.insert("position", 0.25_f64.into());
+        bar.properties.insert("size", 0.25_f64.into());
+        bar.properties.insert("step-size", 0.125_f64.into());
+        window.children.push(bar);
+        let scene = Rc::new(window);
+        let frame = Rc::new(layout(&scene, Size::new(200.0, 150.0), &mut Text));
+        let input = Interaction::default();
+        let update = Projection::default()
+            .update(&scene, &frame, &input, 2.0, None)
+            .unwrap();
+        let (_, bar) = named(&update, "Position");
+        assert_eq!(bar.role(), Role::ScrollBar);
+        assert_eq!(bar.numeric_value(), Some(0.25));
+        assert_eq!(bar.max_numeric_value(), Some(0.75));
+        assert_eq!(bar.numeric_value_step(), Some(0.125));
+        assert!(bar.supports_action(Action::SetValue));
+        assert!(!bar.supports_action(Action::SetScrollOffset));
+        let node = &scene.children[0];
+        let range = ScrollBarRange::from_node(node);
+        let set = requested_standalone_scroll(
+            Action::SetValue,
+            Some(&ActionData::NumericValue(0.5)),
+            node,
+        )
+        .unwrap();
+        assert_eq!(range.apply(set), Some(0.5));
+        let increment = requested_standalone_scroll(Action::Increment, None, node).unwrap();
+        assert_eq!(range.apply(increment), Some(0.375));
+    }
+
+    #[test]
+    fn external_scroll_bar_projects_its_range_and_routes_to_the_viewport() {
+        let mut window = Node::new("Window", None);
+        let handle = xrack_runtime::ViewportHandle::default();
+        let mut view = Node::new("ScrollView", Some("view"));
+        view.viewport_handle = Some(handle.clone());
+        length(&mut view, "width", 100.0);
+        length(&mut view, "height", 100.0);
+        length(&mut view, "content-height", 300.0);
+        window.children.push(view);
+        for (kind, label, x) in [
+            ("ScrollBar", "Bar", 120.0),
+            ("ScrollIndicator", "Indicator", 140.0),
+        ] {
+            let mut control = Node::new(kind, Some(label));
+            control.scroll_target = Some(handle.clone());
+            if kind == "ScrollBar" {
+                control.properties.insert("step-size", 0.25_f64.into());
+            }
+            control
+                .properties
+                .insert("accessible-name", label.to_owned().into());
+            length(&mut control, "x", x);
+            length(&mut control, "width", 12.0);
+            length(&mut control, "height", 100.0);
+            window.children.push(control);
+        }
+        let scene = Rc::new(window);
+        let frame = Rc::new(layout(&scene, Size::new(200.0, 150.0), &mut Text));
+        let mut input = Interaction::default();
+        let update = Projection::default()
+            .update(&scene, &frame, &input, 2.0, None)
+            .unwrap();
+        let (_, bar) = named(&update, "Bar");
+        assert_eq!(bar.role(), Role::ScrollBar);
+        assert_eq!(bar.orientation(), Some(accesskit::Orientation::Vertical));
+        assert_eq!(bar.max_numeric_value(), Some(200.0));
+        assert_eq!(bar.numeric_value_step(), Some(75.0));
+        assert_eq!(bar.scroll_y_max(), Some(400.0));
+        assert!(bar.supports_action(Action::Focus));
+        assert!(bar.supports_action(Action::SetValue));
+        assert!(
+            !update
+                .nodes
+                .iter()
+                .any(|(_, node)| node.label() == Some("Indicator"))
+        );
+        let offsets = requested_scroll(
+            Action::SetValue,
+            Some(&ActionData::NumericValue(140.0)),
+            &scene.children[1],
+            &frame.children[1],
+            2.0,
+        );
+        assert_eq!(offsets, [None, Some(140.0)]);
+        assert_eq!(
+            requested_scroll(
+                Action::Increment,
+                None,
+                &scene.children[1],
+                &frame.children[1],
+                2.0
+            ),
+            [None, Some(75.0)]
+        );
+        assert!(input.accessibility_scroll_to(
+            &frame,
+            &[1],
+            Orientation::Vertical,
+            offsets[1].unwrap()
+        ));
+        assert_eq!(input.scroll_offsets().get(&[0][..]), Some(&140.0));
     }
 
     #[test]

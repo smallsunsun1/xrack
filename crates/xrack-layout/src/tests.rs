@@ -24,10 +24,301 @@ fn button(id: &'static str) -> Node {
 }
 
 #[test]
+fn fractional_interior_flick_keeps_inertia_without_elastic_residue() {
+    use std::time::{Duration, Instant};
+    use xrack_runtime::{FlickBoundsBehavior, Orientation, ViewportHandle};
+    let handle = ViewportHandle::for_flickable(false);
+    let mut root = node("Flickable", "view");
+    root.viewport_handle = Some(handle.clone());
+    root.properties.insert(
+        "bounds-behavior",
+        FlickBoundsBehavior::DragAndOvershootBounds.into(),
+    );
+    length(&mut root, "content-height", 600.0);
+    let viewport = Size::new(120.0, 100.0);
+    let mut input = Interaction::default();
+    let frame = layout(&root, viewport, &mut Text);
+    assert!(input.set_viewport_offset(&[], &frame, Orientation::Vertical, 130.0));
+    let frame = layout_with_input(&root, viewport, &mut Text, &input);
+    let now = Instant::now();
+    let start = Point { x: 50.0, y: 80.0 };
+    let end = Point { x: 50.0, y: 62.13 };
+    assert!(input.begin_scroll_gesture(&root, &frame, start, now, ScrollGestureKind::Touch));
+    assert!(input.move_scroll_gesture(&root, &frame, end, now + Duration::from_millis(20)));
+    assert_eq!(handle.vertical_overshoot(), Length(0.0));
+    let frame = layout_with_input(&root, viewport, &mut Text, &input);
+    input.end_scroll_gesture(&root, &frame, end, now + Duration::from_millis(25));
+    assert!(handle.flicking());
+    assert!(input.advance_scroll_motion(&root, &frame, now + Duration::from_millis(60)));
+    assert!(handle.flicking());
+    assert_eq!(handle.vertical_overshoot(), Length(0.0));
+}
+
+#[test]
+fn elastic_drag_bubbles_first_and_rebounds_on_the_outer_viewport() {
+    use std::time::{Duration, Instant};
+    use xrack_runtime::{FlickBoundsBehavior, ViewportHandle};
+
+    let outer = ViewportHandle::for_flickable(true);
+    let inner = ViewportHandle::for_flickable(true);
+    let mut root = node("Flickable", "outer");
+    root.viewport_handle = Some(outer.clone());
+    root.properties.insert(
+        "bounds-behavior",
+        FlickBoundsBehavior::DragAndOvershootBounds.into(),
+    );
+    length(&mut root, "content-height", 190.0);
+    let mut child = node("Flickable", "inner");
+    child.viewport_handle = Some(inner.clone());
+    child.properties.insert(
+        "bounds-behavior",
+        FlickBoundsBehavior::DragAndOvershootBounds.into(),
+    );
+    for (name, value) in [
+        ("x", 10.0),
+        ("y", 20.0),
+        ("width", 120.0),
+        ("height", 80.0),
+        ("content-height", 100.0),
+    ] {
+        length(&mut child, name, value);
+    }
+    root.children.push(child);
+    let viewport = Size::new(240.0, 160.0);
+    let frame = layout(&root, viewport, &mut Text);
+    let mut input = Interaction::default();
+    let now = Instant::now();
+    let start = Point { x: 50.0, y: 65.0 };
+    let end = Point { x: 50.0, y: -25.0 };
+    assert!(input.begin_scroll_gesture(&root, &frame, start, now, ScrollGestureKind::Touch));
+    assert!(input.move_scroll_gesture(&root, &frame, end, now + Duration::from_millis(20)));
+    assert_eq!(input.scroll_offsets()[&[0][..]], 20.0);
+    assert_eq!(input.scroll_offsets()[&[][..]], 30.0);
+    assert_eq!(inner.vertical_overshoot(), Length(0.0));
+    let peak = outer.vertical_overshoot().0;
+    assert!(peak > 0.0);
+
+    let frame = layout_with_input(&root, viewport, &mut Text, &input);
+    let reverse = Point { x: 50.0, y: -12.0 };
+    assert!(input.move_scroll_gesture(&root, &frame, reverse, now + Duration::from_millis(30)));
+    assert_eq!(input.scroll_offsets()[&[0][..]], 20.0);
+    assert_eq!(input.scroll_offsets()[&[][..]], 30.0);
+    let remaining = outer.vertical_overshoot().0;
+    assert!(remaining > 0.0 && remaining < peak);
+    let frame = layout_with_input(&root, viewport, &mut Text, &input);
+    input.end_scroll_gesture(&root, &frame, reverse, now + Duration::from_millis(35));
+    assert!(outer.rebounding() && outer.moving() && !outer.flicking());
+    assert!(!inner.moving());
+    assert!(input.advance_scroll_motion(&root, &frame, now + Duration::from_millis(100)));
+    assert!(outer.vertical_overshoot().0 < remaining);
+    let held = outer.vertical_overshoot();
+    let frame = layout_with_input(&root, viewport, &mut Text, &input);
+    let grab = Point { x: 180.0, y: 90.0 };
+    assert!(input.begin_scroll_gesture(
+        &root,
+        &frame,
+        grab,
+        now + Duration::from_millis(110),
+        ScrollGestureKind::Touch
+    ));
+    assert_eq!(outer.vertical_overshoot(), held);
+    assert!(!outer.rebounding());
+    assert!(
+        !input
+            .end_scroll_gesture(&root, &frame, grab, now + Duration::from_millis(120))
+            .tap
+    );
+    assert!(outer.rebounding());
+    assert!(input.advance_scroll_motion(&root, &frame, now + Duration::from_millis(340)));
+    assert_eq!(outer.vertical_overshoot(), Length(0.0));
+    assert!(!outer.rebounding() && !outer.moving() && !input.scroll_motion_active());
+    assert_eq!(input.scroll_offsets()[&[][..]], 30.0);
+}
+
+#[test]
+fn flick_only_overshoot_starts_at_the_inertial_boundary() {
+    use std::time::{Duration, Instant};
+    use xrack_runtime::{FlickBoundsBehavior, Orientation, ViewportHandle};
+
+    for (behavior, expect_rebound) in [
+        (FlickBoundsBehavior::OvershootBounds, true),
+        (FlickBoundsBehavior::DragOverBounds, false),
+    ] {
+        let handle = ViewportHandle::for_flickable(false);
+        let mut root = node("Flickable", "view");
+        root.viewport_handle = Some(handle.clone());
+        root.properties.insert("bounds-behavior", behavior.into());
+        length(&mut root, "content-height", 300.0);
+        let viewport = Size::new(120.0, 100.0);
+        let mut input = Interaction::default();
+        let frame = layout(&root, viewport, &mut Text);
+        assert!(input.set_viewport_offset(&[], &frame, Orientation::Vertical, 190.0));
+        let frame = layout_with_input(&root, viewport, &mut Text, &input);
+        let now = Instant::now();
+        let start = Point { x: 50.0, y: 80.0 };
+        let end = Point { x: 50.0, y: 62.0 };
+        assert!(input.begin_scroll_gesture(&root, &frame, start, now, ScrollGestureKind::Touch));
+        assert!(input.move_scroll_gesture(&root, &frame, end, now + Duration::from_millis(20)));
+        assert_eq!(handle.vertical_overshoot(), Length(0.0));
+        let frame = layout_with_input(&root, viewport, &mut Text, &input);
+        input.end_scroll_gesture(&root, &frame, end, now + Duration::from_millis(25));
+        assert!(handle.flicking());
+        assert_eq!(
+            input.advance_scroll_motion(&root, &frame, now + Duration::from_millis(55)),
+            expect_rebound
+        );
+        assert_eq!(handle.rebounding(), expect_rebound);
+        assert_eq!(handle.vertical_overshoot().0 > 0.0, expect_rebound);
+        assert_eq!(input.scroll_offsets()[&[][..]], 200.0);
+        assert!(!handle.flicking());
+        input.cancel_scroll_gesture();
+        assert!(!handle.moving() && !input.has_overscroll());
+    }
+}
+
+#[test]
+fn flickable_clip_and_mouse_pan_are_independent_of_touch() {
+    use std::time::{Duration, Instant};
+
+    let mut root = node("Window", "root");
+    let mut view = node("Flickable", "view");
+    for (name, value) in [("x", 20.0), ("y", 20.0), ("width", 100.0), ("height", 80.0)] {
+        length(&mut view, name, value);
+    }
+    boolean(&mut view, "mouse-drag-pan-enabled", false);
+    let mut content = node("Rectangle", "content");
+    length(&mut content, "width", 260.0);
+    length(&mut content, "height", 240.0);
+    view.children.push(content);
+    root.children.push(view);
+    let viewport = Size::new(200.0, 180.0);
+    let frame = layout(&root, viewport, &mut Text);
+    assert_eq!(
+        frame.children[0].children[0].clip,
+        Rect::new(20.0, 20.0, 100.0, 80.0)
+    );
+    let now = Instant::now();
+    let mut input = Interaction::default();
+    let start = Point { x: 70.0, y: 60.0 };
+    assert!(!input.arm_mouse_viewport_pan(&root, &frame, start, now));
+    assert!(!input.begin_scroll_gesture(&root, &frame, start, now, ScrollGestureKind::MousePan));
+    assert!(input.begin_scroll_gesture(&root, &frame, start, now, ScrollGestureKind::Touch));
+    assert!(input.move_scroll_gesture(
+        &root,
+        &frame,
+        Point { x: 70.0, y: 20.0 },
+        now + Duration::from_millis(25)
+    ));
+    assert_eq!(input.scroll_offsets()[&[0][..]], 32.0);
+    boolean(&mut root.children[0], "clip", false);
+    let frame = layout(&root, viewport, &mut Text);
+    assert_eq!(
+        frame.children[0].children[0].clip,
+        Rect::new(0.0, 0.0, 200.0, 180.0)
+    );
+    assert_eq!(frame.children[0].scroll.unwrap().max_offset, 160.0);
+}
+
+#[test]
+fn flickable_motion_follows_nested_handoff_and_cancel_targets_the_owner() {
+    use std::time::{Duration, Instant};
+    use xrack_runtime::{FlickDirection, Orientation, ScrollAction, ScrollRequest, ViewportHandle};
+
+    let outer = ViewportHandle::for_flickable(true);
+    let inner = ViewportHandle::for_flickable(true);
+    let mut root = node("Flickable", "outer");
+    root.viewport_handle = Some(outer.clone());
+    length(&mut root, "content-height", 420.0);
+    let mut child = node("Flickable", "inner");
+    child.viewport_handle = Some(inner.clone());
+    child
+        .properties
+        .insert("flick-direction", FlickDirection::Vertical.into());
+    for (name, value) in [
+        ("x", 10.0),
+        ("y", 20.0),
+        ("width", 120.0),
+        ("height", 80.0),
+        ("content-height", 100.0),
+    ] {
+        length(&mut child, name, value);
+    }
+    let mut content = node("Rectangle", "content");
+    length(&mut content, "width", 240.0);
+    length(&mut content, "height", 240.0);
+    child.children.push(content);
+    root.children.push(child);
+
+    let viewport = Size::new(240.0, 160.0);
+    let mut input = Interaction::default();
+    let frame = layout(&root, viewport, &mut Text);
+    assert_eq!(frame.children[0].scroll.unwrap().max_offset, 20.0);
+    assert_eq!(
+        frame.children[0]
+            .scroll_on(Orientation::Horizontal)
+            .unwrap()
+            .max_offset,
+        120.0
+    );
+    assert!(
+        frame.children[0]
+            .scroll_bars(&root.children[0])
+            .next()
+            .is_none()
+    );
+    let now = Instant::now();
+    assert!(input.begin_scroll_gesture(
+        &root,
+        &frame,
+        Point { x: 50.0, y: 60.0 },
+        now,
+        ScrollGestureKind::Touch
+    ));
+    assert!(input.move_scroll_gesture(
+        &root,
+        &frame,
+        Point { x: 30.0, y: 20.0 },
+        now + Duration::from_millis(20)
+    ));
+    assert!(inner.dragging() && outer.dragging());
+    assert_eq!(input.scroll_offsets()[&[0][..]], 20.0);
+    assert!(input.horizontal_scroll_offsets().is_empty());
+
+    let frame = layout_with_input(&root, viewport, &mut Text, &input);
+    let end = Point { x: 30.0, y: 0.0 };
+    assert!(input.move_scroll_gesture(&root, &frame, end, now + Duration::from_millis(40)));
+    assert!(!inner.moving() && outer.dragging());
+    let frame = layout_with_input(&root, viewport, &mut Text, &input);
+    input.end_scroll_gesture(&root, &frame, end, now + Duration::from_millis(45));
+    assert!(outer.flicking() && !outer.dragging());
+    assert!(!input.apply_scroll_requests(
+        &root,
+        &frame,
+        [ScrollRequest {
+            target: inner,
+            action: ScrollAction::CancelFlick
+        }]
+    ));
+    assert!(input.advance_scroll_motion(&root, &frame, now + Duration::from_millis(70)));
+    assert!(input.apply_scroll_requests(
+        &root,
+        &frame,
+        [ScrollRequest {
+            target: outer.clone(),
+            action: ScrollAction::CancelFlick
+        }]
+    ));
+    assert!(!outer.moving());
+    assert!(!input.advance_scroll_motion(&root, &frame, now + Duration::from_millis(100)));
+}
+
+#[test]
 fn frozen_columns_follow_visual_order_and_leave_room_for_the_scrollable_pane() {
-    use xrack_runtime::{Orientation, TableHeader};
+    use xrack_runtime::{Orientation, TableHeader, ViewportHandle};
 
     let mut table = node("TableView", "table");
+    let handle = ViewportHandle::default();
+    table.viewport_handle = Some(handle.clone());
     table.properties.insert("frozen-columns", 2_i64.into());
     boolean(&mut table, "resizable-columns", true);
     let columns = (0..4)
@@ -48,6 +339,10 @@ fn frozen_columns_follow_visual_order_and_leave_room_for_the_scrollable_pane() {
     assert!(input.accessibility_scroll_to(&before, &[], Orientation::Horizontal, 100.0));
     let scrolled = layout_with_input(&table, viewport, &mut Text, &input);
     let geometry = scrolled.table.as_ref().unwrap();
+    ViewportObservers::default().sync(&table, &scrolled);
+    assert_eq!(handle.visible_width(), Length(300.0));
+    assert_eq!(handle.scroll_size(Orientation::Horizontal), 0.5);
+    assert_eq!(handle.scroll_position(Orientation::Horizontal), 0.5);
     assert_eq!(geometry.horizontal.offset, 100.0);
     assert_eq!(geometry.frozen_boundary(), Some(200.0));
     assert_eq!(geometry.columns[0].x, 0.0);
@@ -86,6 +381,52 @@ fn frozen_columns_follow_visual_order_and_leave_room_for_the_scrollable_pane() {
     let fitted = layout(&table, Size::new(420.0, 180.0), &mut Text);
     assert!(fitted.table.as_ref().unwrap().is_frozen(0));
     assert_eq!(fitted.table.as_ref().unwrap().scrollable_body().width, 0.0);
+}
+
+#[test]
+fn release_snapping_uses_the_last_drag_point_after_pointer_leave() {
+    use xrack_runtime::{RangeAction, ScrollSnapMode};
+
+    let mut root = node("ScrollBar", "bar");
+    root.properties.insert("size", 0.25_f64.into());
+    root.properties.insert("step-size", 0.3_f64.into());
+    root.properties
+        .insert("snap-mode", ScrollSnapMode::OnRelease.into());
+    let layout = layout(&root, Size::new(12.0, 120.0), &mut Text);
+    let start = Point { x: 6.0, y: 15.0 };
+    let mut input = Interaction::default();
+    input.pointer_move(&root, &layout, start);
+    assert_eq!(
+        input.scroll_bar_press(&root, &layout),
+        Some(ScrollBarUpdate::Unchanged)
+    );
+    assert_eq!(
+        input.release_scroll_bar(&root, &layout),
+        Some(ScrollBarUpdate::Unchanged)
+    );
+    input.scroll_bar_press(&root, &layout).unwrap();
+    input.pointer_move(
+        &root,
+        &layout,
+        Point {
+            x: start.x,
+            y: 45.6,
+        },
+    );
+    assert!(matches!(
+        input.scroll_bar_drag(&root, &layout),
+        Some(ScrollBarUpdate::Range(_))
+    ));
+    input.pointer_leave();
+    let update = input.release_scroll_bar(&root, &layout).unwrap();
+    assert_eq!(
+        update,
+        ScrollBarUpdate::Range(RangeInput {
+            path: vec![],
+            action: RangeAction::SetFraction(0.3)
+        })
+    );
+    assert!(!input.scroll_bar_captured());
 }
 
 #[test]
@@ -524,7 +865,10 @@ fn scroll_bar_captures_drag_and_preserves_focus_when_policy_changes() {
     );
     assert!(input.hovered.is_none());
     assert!(input.scroll_bar_highlighted(&[1], Orientation::Vertical));
-    assert_eq!(input.scroll_bar_press(&root, &layout), Some(true));
+    assert_eq!(
+        input.scroll_bar_press(&root, &layout),
+        Some(ScrollBarUpdate::ViewportMoved)
+    );
     assert_eq!(input.scroll_offsets().get(&[1][..]), Some(&90.0));
     assert_eq!(input.focused, opener);
     assert!(input.pointer_release_target().is_none());
@@ -540,9 +884,15 @@ fn scroll_bar_captures_drag_and_preserves_focus_when_policy_changes() {
             y: thumb.y + 5.0,
         },
     );
-    assert_eq!(input.scroll_bar_press(&root, &layout), Some(false));
+    assert_eq!(
+        input.scroll_bar_press(&root, &layout),
+        Some(ScrollBarUpdate::Unchanged)
+    );
     input.pointer_move(&root, &layout, Point { x: 0.0, y: 300.0 });
-    assert_eq!(input.scroll_bar_drag(&root, &layout), Some(true));
+    assert_eq!(
+        input.scroll_bar_drag(&root, &layout),
+        Some(ScrollBarUpdate::ViewportMoved)
+    );
     assert_eq!(input.scroll_offsets().get(&[1][..]), Some(&410.0));
     let layout = render(&root, &input);
     assert_eq!(input.take_scroll_events(&root, &layout).len(), 1);
@@ -573,7 +923,10 @@ fn scroll_bar_captures_drag_and_preserves_focus_when_policy_changes() {
             y: track.y + 2.0,
         },
     );
-    assert_eq!(input.scroll_bar_drag(&root, &layout), Some(false));
+    assert_eq!(
+        input.scroll_bar_drag(&root, &layout),
+        Some(ScrollBarUpdate::Unchanged)
+    );
     assert_eq!(input.scroll_offsets().get(&[1][..]), Some(&410.0));
     assert!(input.finish_scroll_bar());
     assert_eq!(input.focused, opener);

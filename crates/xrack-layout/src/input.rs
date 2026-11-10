@@ -1,7 +1,7 @@
 use crate::{
     CalendarGeometry, ChoiceKey, ChoiceMenu, ComboCompletion, ComboGeometry, DialGeometry,
     EditAction, EditSource, LayoutNode, MenuEntry, MenuKey, MenuPanel, MenuShortcut,
-    PageIndicatorGeometry, Point, ScrollBarGeometry, ScrollGestureEnd, ScrollGestureKind,
+    PageIndicatorGeometry, Point, Rect, ScrollBarGeometry, ScrollGestureEnd, ScrollGestureKind,
     SearchGeometry, ShortcutOutcome, SliderGeometry, SpinGeometry, SplitGeometry, SplitHandle,
     StackTransitions, TextEdit, TextPosition, TreeRowGeometry, TumblerScroll, WindowResizeEdge,
     choice::{ChoicePopup, ChoiceTypeahead, MAX_ROWS as CHOICE_PAGE, next_choice},
@@ -10,14 +10,17 @@ use crate::{
     list_anchor::{ListAnchor, capture_list_anchors},
     menu::{MenuPopup, TextMenu},
     modal,
-    scroll_gesture::{DragMotion, FlingMotion, SCROLL_FRAME_INTERVAL},
+    overscroll::Overscroll,
+    scroll_bar::snap_fraction,
+    scroll_gesture::{DRAG_THRESHOLD, DragMotion, FlingMotion, PanDevice, SCROLL_FRAME_INTERVAL},
     shortcut::{self, PendingShortcut},
     split::axis_point,
     swipe_delegate::SwipeDrag,
+    swipe_gesture::{SwipeDelivery, SwipePhase, SwipeTarget, has_swipe_directions},
     tooltip::{self, Source as TooltipSource, TooltipState},
     tumbler::{TumblerDrag, TumblerWheel},
     view_cells::ViewCells,
-    viewport::UserScrollChange,
+    viewport::{MotionOwners, MotionState, UserScrollChange, record_motion, record_motion_owner},
 };
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
@@ -25,13 +28,14 @@ use std::time::{Duration, Instant};
 use xrack_runtime::{
     ButtonGroupMembership, CalendarAction, CalendarState, Component, ControlAction, Date,
     DialInputMode, DialogRole, DrawerEdge, ListMetrics, Node, Orientation, RangeAction, RowKey,
-    RowSelection, SelectionTarget, SliderInterval, SliderRange, SpinAction, SpinDecimal,
-    StandardButtonKind, SwipeSide, TableSelectionAction, TextCommand, TreeAction,
-    TreeSelectionAction, Tumbler, combo_editable, combo_index, decimal_separator, delay_millis,
-    dialog_button_action, editable_table_cell, group_index, group_item, is_multiline_text_input,
-    is_spin_box, is_text_input, is_toggle, is_window_overlay, page_indicator_count,
-    page_indicator_index, radio_value, resizable_table_column, search_suggestion, spin_editable,
-    spin_text, spin_text_is_valid, text_input_value,
+    RowSelection, ScrollBarRange, ScrollSnapMode, SelectionTarget, SliderInterval, SliderRange,
+    SpinAction, SpinDecimal, StandardButtonKind, SwipeSide, TableSelectionAction, TextCommand,
+    TreeAction, TreeSelectionAction, Tumbler, Value, ViewportHandle, ViewportMotion,
+    combo_editable, combo_index, decimal_separator, delay_millis, dialog_button_action,
+    editable_table_cell, group_index, group_item, is_multiline_text_input, is_spin_box,
+    is_text_input, is_toggle, is_window_overlay, page_indicator_count, page_indicator_index,
+    radio_value, resizable_table_column, search_suggestion, spin_editable, spin_text,
+    spin_text_is_valid, text_input_value,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -108,9 +112,17 @@ pub enum TableSelectionKey {
     Clear,
 }
 
+#[derive(Clone, Debug, PartialEq)]
 pub struct RangeInput {
     pub path: Vec<usize>,
     pub action: RangeAction,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum ScrollBarUpdate {
+    Unchanged,
+    ViewportMoved,
+    Range(RangeInput),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -329,7 +341,20 @@ impl ScrollTarget {
 #[derive(Clone, Debug)]
 struct ScrollBarPress {
     target: ScrollTarget,
+    source: (&'static str, Option<&'static str>),
+    viewport: Option<xrack_runtime::ViewportHandle>,
     grab: Option<f32>,
+    start: Point,
+    last: Point,
+    dragged: bool,
+}
+
+impl ScrollBarPress {
+    fn node<'a>(&self, scene: &'a Node) -> Option<&'a Node> {
+        scene.at_path(&self.target.path).filter(|node| {
+            (node.kind, node.id) == self.source && node.scroll_target == self.viewport
+        })
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -338,6 +363,7 @@ struct ScrollRoute {
     scope_row: Option<RowKey>,
     axes: [Option<ScrollTarget>; 2],
     mouse_viewport: bool,
+    pan_device: PanDevice,
 }
 
 #[derive(Clone, Debug)]
@@ -350,7 +376,24 @@ struct ScrollGesture {
     pages: Vec<PageSwipe>,
     tumbler: Option<TumblerDrag>,
     swipe_delegate: Option<SwipeDrag>,
+    swipe: Option<SwipeRoute>,
     delay_touch: bool,
+}
+
+#[derive(Clone, Debug)]
+enum SwipeRoute {
+    Pending(Vec<SwipeTarget>),
+    Captured(SwipeTarget),
+    Cancelled,
+}
+
+impl SwipeRoute {
+    fn cancel(self) -> Option<SwipeDelivery> {
+        match self {
+            Self::Captured(target) => Some(target.delivery(SwipePhase::Cancelled)),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -457,6 +500,27 @@ struct ScrollFling {
     transformed: bool,
 }
 
+enum ScrollInput<'a> {
+    Wheel,
+    Pan {
+        device: PanDevice,
+        owners: &'a mut MotionOwners,
+        flicking: bool,
+    },
+}
+
+#[derive(Clone, Copy, Default)]
+struct AxisMotion {
+    bounded: bool,
+    elastic: bool,
+}
+
+impl AxisMotion {
+    fn changed(self) -> bool {
+        self.bounded || self.elastic
+    }
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct Interaction {
     pub hovered: Option<Target>,
@@ -468,8 +532,11 @@ pub struct Interaction {
     hovered_scroll_bar: Option<ScrollTarget>,
     scroll_bar_press: Option<ScrollBarPress>,
     scroll_gesture: Option<ScrollGesture>,
+    swipe_events: Vec<SwipeDelivery>,
     tumbler_wheel: Option<TumblerWheel>,
     scroll_fling: Option<ScrollFling>,
+    viewport_motion: MotionState,
+    overscroll: Overscroll,
     key_pressed: Option<(ActivationKey, Target)>,
     key_standard_button: Option<StandardButtonKind>,
     delay_hold: Option<DelayHold>,
@@ -510,6 +577,7 @@ pub struct Interaction {
     table_resize: Option<TableResize>,
     table_row_resize: Option<TableRowResize>,
     table_column_move: Option<TableColumnMove>,
+    table_drag_selection: Option<crate::table_drag_selection::TableDragSelection>,
     split_drag: Option<SplitDrag>,
     table_edit: Option<TableEdit>,
     last_table_click: Option<(Target, Instant)>,
@@ -564,6 +632,7 @@ pub(crate) fn focusable(node: &Node) -> bool {
             | "Drawer"
             | "PopupWindow"
             | "Slider"
+            | "ScrollBar"
             | "Dial"
             | "RangeThumb"
             | "SpinBox"
@@ -657,6 +726,7 @@ fn hit(
     window: Point,
     path: &mut Vec<usize>,
     transitioning_stacks: &BTreeSet<Vec<usize>>,
+    gesture_kind: Option<&str>,
 ) -> Hit {
     let Some(point) = layout.map_from_window(window) else {
         return Hit::None;
@@ -681,8 +751,20 @@ fn hit(
     if !layout.contains_subtree_point(window) {
         return Hit::None;
     }
+    if node.kind == "ScrollIndicator"
+        || node.kind == "ScrollBar" && !node.boolean("interactive", true)
+    {
+        return Hit::None;
+    }
     if !layout.bounds.contains(point) {
-        return hit_children(node, layout, window, path, transitioning_stacks);
+        return hit_children(
+            node,
+            layout,
+            window,
+            path,
+            transitioning_stacks,
+            gesture_kind,
+        );
     }
     if transitioning_stacks.contains(path) {
         return Hit::StackSlide;
@@ -815,6 +897,9 @@ fn hit(
             Hit::Blocked(path.clone())
         };
     }
+    if node.kind == "ScrollBar" {
+        return Hit::None;
+    }
     if let Some(slot) = layout
         .table
         .as_ref()
@@ -835,7 +920,14 @@ fn hit(
             Hit::Blocked(path.clone())
         };
     }
-    let child = hit_children(node, layout, window, path, transitioning_stacks);
+    let child = hit_children(
+        node,
+        layout,
+        window,
+        path,
+        transitioning_stacks,
+        gesture_kind,
+    );
     if !matches!(child, Hit::None) {
         return child;
     }
@@ -858,6 +950,14 @@ fn hit(
             focusable: false,
             row_key: None,
         });
+    }
+    if gesture_kind == Some(node.kind)
+        && (node.scale_rotate_handle.is_some()
+            || node.swipe_handle.is_some() && has_swipe_directions(node))
+        && layout.enabled
+        && node.boolean("enabled", true)
+    {
+        return Hit::Blocked(path.clone());
     }
     if matches!(node.kind, "Tab" | "GroupBox")
         || is_window_overlay(node.kind)
@@ -885,13 +985,21 @@ fn hit_children(
     point: Point,
     path: &mut Vec<usize>,
     transitioning_stacks: &BTreeSet<Vec<usize>>,
+    gesture_kind: Option<&str>,
 ) -> Hit {
     for (i, child, child_layout) in layout.children_in_paint_order(node).rev() {
         if is_window_overlay(child.kind) {
             continue;
         }
         path.push(i);
-        let found = hit(child, child_layout, point, path, transitioning_stacks);
+        let found = hit(
+            child,
+            child_layout,
+            point,
+            path,
+            transitioning_stacks,
+            gesture_kind,
+        );
         path.pop();
         if !matches!(found, Hit::None) {
             return found;
@@ -979,6 +1087,14 @@ pub(crate) fn moved_row_target(
 }
 
 pub(crate) fn eligible(node: &Node, layout: &LayoutNode) -> bool {
+    if node.kind == "ScrollBar"
+        && (!node.boolean("interactive", true)
+            || !layout
+                .scroll_control_geometry(node)
+                .is_some_and(ScrollBarGeometry::scrollable))
+    {
+        return false;
+    }
     let hitbox = if node.kind == "Tab" {
         layout.tab_header
     } else if layout.visible && node.kind == "GroupBox" {
@@ -1299,6 +1415,7 @@ impl Interaction {
         let blocked = self.menu_open()
             || self.choice_open()
             || self.pressed.is_some()
+            || self.table_drag_selection_claimed()
             || self.dialog_backdrop.is_some();
         self.tooltip.advance(scene, key, self.pointer, blocked, now)
     }
@@ -1858,6 +1975,7 @@ impl Interaction {
             point,
             &mut scope.to_vec(),
             &self.transitioning_stacks,
+            None,
         );
         if matches!(result, Hit::None) && node.kind == "PopupWindow" && item.bounds.contains(point)
         {
@@ -1872,6 +1990,58 @@ impl Interaction {
             _ => {}
         }
         result
+    }
+
+    pub fn scale_rotate_target_at(
+        &self,
+        scene: &Node,
+        layout: &LayoutNode,
+        point: Point,
+    ) -> Option<crate::ScaleRotateTarget> {
+        if self.menu_open()
+            || self.choice_open()
+            || self.scroll_bar_captured()
+            || self.drag_position().is_some()
+            || self
+                .scroll_gesture
+                .as_ref()
+                .is_some_and(|gesture| gesture.motion.dragging)
+        {
+            return None;
+        }
+        let (path, scope_len) =
+            self.gesture_hit_path(scene, layout, point, "ScaleRotateGestureHandler")?;
+        (scope_len..=path.len()).rev().find_map(|depth| {
+            let target = crate::ScaleRotateTarget::new(scene, &path[..depth])?;
+            let item = layout.at_path(&target.path)?;
+            (item.contains_clip_point(point)
+                && item.bounds.contains(item.map_from_window(point)?)
+                && target.is_live(scene, layout, self))
+            .then_some(target)
+        })
+    }
+
+    fn gesture_hit_path(
+        &self,
+        scene: &Node,
+        layout: &LayoutNode,
+        point: Point,
+        kind: &str,
+    ) -> Option<(Vec<usize>, usize)> {
+        let scope = self.pointer_scope(layout, point);
+        let path = match hit(
+            scene.at_path(scope)?,
+            layout.at_path(scope)?,
+            point,
+            &mut scope.to_vec(),
+            &self.transitioning_stacks,
+            Some(kind),
+        ) {
+            Hit::Target(target) | Hit::ControlPart(target, _) => target.path,
+            Hit::Blocked(path) => path,
+            _ => return None,
+        };
+        Some((path, scope.len()))
     }
 
     pub fn window_gestures_allowed(&self, scene: &Node, layout: &LayoutNode) -> bool {
@@ -2351,6 +2521,16 @@ impl Interaction {
         orientation: Orientation,
         offset: f32,
     ) -> bool {
+        self.scroll_to_user_offset(layout, path, orientation, offset)
+    }
+
+    fn scroll_to_user_offset(
+        &mut self,
+        layout: &LayoutNode,
+        path: &[usize],
+        orientation: Orientation,
+        offset: f32,
+    ) -> bool {
         if !offset.is_finite()
             || self
                 .active_dialog(layout)
@@ -2358,12 +2538,26 @@ impl Interaction {
         {
             return false;
         }
-        let Some(item) = layout
+        let Some(mut item) = layout
             .at_path(path)
             .filter(|item| scroll_target_visible(item))
         else {
             return false;
         };
+        let mut path = path;
+        if let Some(bar) = &item.attached_scroll_bar {
+            if bar.geometry.orientation != orientation || !self.allows_popup(layout, &bar.target) {
+                return false;
+            }
+            path = &bar.target;
+            let Some(viewport) = layout
+                .at_path(path)
+                .filter(|viewport| viewport.visible && viewport.enabled)
+            else {
+                return false;
+            };
+            item = viewport;
+        }
         let Some(scroll) = item.scroll_on(orientation) else {
             return false;
         };
@@ -2392,6 +2586,7 @@ impl Interaction {
         let Some(scroll) = item.scroll_on(orientation) else {
             return false;
         };
+        let had_overscroll = self.overscroll.has_offset();
         self.cancel_scroll_gesture();
         let offsets = match orientation {
             Orientation::Horizontal => &mut self.horizontal_scroll_offsets,
@@ -2404,7 +2599,7 @@ impl Interaction {
             .clamp(0.0, scroll.max_offset);
         let next = offset.clamp(0.0, f64::from(scroll.max_offset)) as f32;
         if next == previous {
-            return false;
+            return had_overscroll;
         }
         offsets.insert(path.to_vec(), next);
         item.write_bound_offset(orientation, next);
@@ -2421,82 +2616,302 @@ impl Interaction {
         if !path.starts_with(self.active_dialog(layout).unwrap_or_default()) {
             return None;
         }
-        let (node, item) = target.resolve(scene, layout)?;
+        let item = layout.at_path(path)?;
+        let node = scene.interactive_at_path(path)?;
+        if !item.visible || !item.enabled || scene.row_key_at(path) != target.row_key {
+            return None;
+        }
+        if node.kind == "ScrollBar" && !node.boolean("interactive", true) {
+            return None;
+        }
+        if let Some(bar) = &item.attached_scroll_bar
+            && !self.allows_popup(layout, &bar.target)
+        {
+            return None;
+        }
         item.scroll_bars(node)
             .find(|bar| bar.orientation == target.orientation && bar.scrollable())
     }
 
-    /// Returns Some when the scroll bar captures the press, with whether it scrolled.
-    pub fn scroll_bar_press(&mut self, scene: &Node, layout: &LayoutNode) -> Option<bool> {
+    /// Returns Some when the scroll bar captures the press.
+    pub fn scroll_bar_press(
+        &mut self,
+        scene: &Node,
+        layout: &LayoutNode,
+    ) -> Option<ScrollBarUpdate> {
+        let target = self.hovered_scroll_bar.clone()?;
+        self.press_scroll_bar(scene, layout, target, self.pointer?)
+    }
+
+    fn press_scroll_bar(
+        &mut self,
+        scene: &Node,
+        layout: &LayoutNode,
+        target: ScrollTarget,
+        point: Point,
+    ) -> Option<ScrollBarUpdate> {
         if self.menu_open() || self.choice_open() {
             return None;
         }
-        let target = self.hovered_scroll_bar.clone()?;
         let item = layout.at_path(&target.path)?;
-        let point = item.map_from_window(self.pointer?)?;
+        let start = point;
+        let point = item.map_from_window(point)?;
         let bar = self.scroll_bar_for_target(scene, layout, &target)?;
         if !bar.track.contains(point) {
             return None;
         }
+        self.cancel_scroll_gesture();
         self.cancel_press();
         self.tooltip.dismiss();
+        let node = scene.at_path(&target.path)?;
+        if node.kind == "ScrollBar" {
+            self.set_focus_with_reason(
+                Some(Target {
+                    path: target.path.clone(),
+                    id: node.id,
+                    focusable: true,
+                    row_key: target.row_key,
+                    text_link: None,
+                }),
+                xrack_runtime::FocusReason::PointerClick,
+            );
+            self.remember_focus_scope(scene, layout);
+        }
         let grab = bar.grab(point);
-        let moved = grab.is_none()
-            && self.set_scroll_bar_offset(&target, item, bar, bar.page_toward(point));
-        self.scroll_bar_press = Some(ScrollBarPress { target, grab });
-        Some(moved)
+        let update = if grab.is_none() {
+            self.move_scroll_bar(node, layout, &target.path, bar, bar.page_toward(point))
+        } else {
+            ScrollBarUpdate::Unchanged
+        };
+        self.scroll_bar_press = Some(ScrollBarPress {
+            target,
+            source: (node.kind, node.id),
+            viewport: node.scroll_target.clone(),
+            grab,
+            start,
+            last: start,
+            dragged: false,
+        });
+        Some(update)
     }
 
     /// Continue handling movement after the cursor leaves a captured thumb's track.
-    pub fn scroll_bar_drag(&mut self, scene: &Node, layout: &LayoutNode) -> Option<bool> {
-        let press = self.scroll_bar_press.as_ref()?;
-        let (Some(grab), Some(point)) = (press.grab, self.pointer) else {
-            return Some(false);
-        };
-        let target = press.target.clone();
-        let Some(bar) = self.scroll_bar_for_target(scene, layout, &target) else {
-            self.scroll_bar_press.as_mut().unwrap().grab = None;
-            return Some(false);
-        };
-        let item = layout.at_path(&target.path)?;
-        let point = item.map_from_window(point)?;
-        Some(self.set_scroll_bar_offset(&target, item, bar, bar.drag(point, grab)))
+    pub fn scroll_bar_drag(
+        &mut self,
+        scene: &Node,
+        layout: &LayoutNode,
+    ) -> Option<ScrollBarUpdate> {
+        self.update_scroll_bar_capture(scene, layout, self.pointer, false)
     }
 
-    fn set_scroll_bar_offset(
+    pub fn release_scroll_bar(
         &mut self,
-        target: &ScrollTarget,
-        item: &LayoutNode,
+        scene: &Node,
+        layout: &LayoutNode,
+    ) -> Option<ScrollBarUpdate> {
+        let point = self
+            .pointer
+            .or_else(|| self.scroll_bar_press.as_ref().map(|press| press.last));
+        self.update_scroll_bar_capture(scene, layout, point, true)
+    }
+
+    fn update_scroll_bar_capture(
+        &mut self,
+        scene: &Node,
+        layout: &LayoutNode,
+        point: Option<Point>,
+        released: bool,
+    ) -> Option<ScrollBarUpdate> {
+        let mut press = self.scroll_bar_press.take()?;
+        let update = point.map_or(ScrollBarUpdate::Unchanged, |point| {
+            self.update_scroll_bar_drag(scene, layout, &mut press, point, released)
+        });
+        if !released {
+            self.scroll_bar_press = Some(press);
+        }
+        Some(update)
+    }
+
+    fn update_scroll_bar_drag(
+        &mut self,
+        scene: &Node,
+        layout: &LayoutNode,
+        press: &mut ScrollBarPress,
+        point: Point,
+        released: bool,
+    ) -> ScrollBarUpdate {
+        let Some(grab) = press.grab else {
+            return ScrollBarUpdate::Unchanged;
+        };
+        let target = &press.target;
+        let Some(node) = press.node(scene) else {
+            press.grab = None;
+            return ScrollBarUpdate::Unchanged;
+        };
+        let Some(bar) = self.scroll_bar_for_target(scene, layout, target) else {
+            press.grab = None;
+            return ScrollBarUpdate::Unchanged;
+        };
+        let mode = match node.properties.get("snap-mode") {
+            Some(Value::ScrollSnapMode(mode)) => *mode,
+            _ => ScrollSnapMode::None,
+        };
+        if released && mode == ScrollSnapMode::None {
+            return ScrollBarUpdate::Unchanged;
+        }
+        let Some(item) = layout.at_path(&target.path) else {
+            return ScrollBarUpdate::Unchanged;
+        };
+        let window_point = point;
+        let (Some(point), Some(start)) = (
+            item.map_from_window(point),
+            item.map_from_window(press.start),
+        ) else {
+            return ScrollBarUpdate::Unchanged;
+        };
+        let mut fraction = bar.drag_fraction(point, grab);
+        if !fraction.is_finite() {
+            return ScrollBarUpdate::Unchanged;
+        }
+        press.last = window_point;
+        press.dragged |= fraction != bar.drag_fraction(start, grab);
+        if !press.dragged {
+            return ScrollBarUpdate::Unchanged;
+        }
+        if mode == ScrollSnapMode::Always || released && mode == ScrollSnapMode::OnRelease {
+            fraction = snap_fraction(fraction, node.number("step-size").unwrap_or(0.0));
+        }
+        self.move_scroll_bar_fraction(node, layout, &target.path, bar, fraction)
+    }
+
+    pub fn scroll_bar_key(
+        &mut self,
+        scene: &Node,
+        layout: &LayoutNode,
+        key: NavigationKey,
+    ) -> Option<ScrollBarUpdate> {
+        let target = self.focused.as_ref()?;
+        let node = scene.interactive_at_path(&target.path)?;
+        if node.kind != "ScrollBar"
+            || !valid(target, scene, layout)
+            || !self.allows_popup(layout, &target.path)
+        {
+            return None;
+        }
+        let item = layout.at_path(&target.path)?;
+        let bar = item.scroll_control_geometry(node)?;
+        let page = if bar.page > 0.0 { bar.page } else { bar.step };
+        let offset = match (key, bar.orientation) {
+            (NavigationKey::Home, _) => 0.0,
+            (NavigationKey::End, _) => bar.scroll.max_offset,
+            (NavigationKey::PageUp, _) => bar.scroll.offset - page,
+            (NavigationKey::PageDown, _) => bar.scroll.offset + page,
+            (NavigationKey::Left, Orientation::Horizontal)
+            | (NavigationKey::Up, Orientation::Vertical) => bar.scroll.offset - bar.step,
+            (NavigationKey::Right, Orientation::Horizontal)
+            | (NavigationKey::Down, Orientation::Vertical) => bar.scroll.offset + bar.step,
+            _ => return None,
+        };
+        let path = target.path.clone();
+        Some(self.move_scroll_bar(node, layout, &path, bar, offset))
+    }
+
+    fn move_scroll_bar(
+        &mut self,
+        node: &Node,
+        layout: &LayoutNode,
+        path: &[usize],
         bar: ScrollBarGeometry,
         offset: f32,
-    ) -> bool {
-        if !offset.is_finite() {
-            return false;
+    ) -> ScrollBarUpdate {
+        if !bar.scrollable() {
+            return ScrollBarUpdate::Unchanged;
         }
-        let offsets = match bar.orientation {
-            Orientation::Horizontal => &mut self.horizontal_scroll_offsets,
-            Orientation::Vertical => &mut self.scroll_offsets,
-        };
-        let current = offsets
-            .get(&target.path)
-            .copied()
-            .unwrap_or(bar.scroll.offset);
-        if current == offset {
-            return false;
-        }
-        offsets.insert(target.path.clone(), offset);
-        UserScrollChange::commit(
-            &mut self.user_scroll_changes,
-            item,
+        let fraction =
+            f64::from(offset.clamp(0.0, bar.scroll.max_offset)) / f64::from(bar.scroll.max_offset);
+        self.move_scroll_bar_fraction(node, layout, path, bar, fraction)
+    }
+
+    fn move_scroll_bar_fraction(
+        &mut self,
+        node: &Node,
+        layout: &LayoutNode,
+        path: &[usize],
+        bar: ScrollBarGeometry,
+        fraction: f64,
+    ) -> ScrollBarUpdate {
+        if node.kind == "ScrollBar" && node.scroll_target.is_none() {
+            let action = RangeAction::SetFraction(fraction);
+            if ScrollBarRange::from_node(node).apply(action).is_some() {
+                return ScrollBarUpdate::Range(RangeInput {
+                    path: path.to_vec(),
+                    action,
+                });
+            }
+        } else if self.scroll_to_user_offset(
+            layout,
+            path,
             bar.orientation,
-            bar.scroll.offset,
-            offset,
-        );
-        true
+            (fraction * f64::from(bar.scroll.max_offset)) as f32,
+        ) {
+            return ScrollBarUpdate::ViewportMoved;
+        }
+        ScrollBarUpdate::Unchanged
     }
 
     pub fn finish_scroll_bar(&mut self) -> bool {
         self.scroll_bar_press.take().is_some()
+    }
+
+    pub fn scroll_bar_captured(&self) -> bool {
+        self.scroll_bar_press.is_some()
+    }
+
+    pub fn touch_scroll_bar_press(
+        &mut self,
+        scene: &Node,
+        layout: &LayoutNode,
+        point: Point,
+    ) -> Option<ScrollBarUpdate> {
+        let Hit::ScrollBar(target) = self.hit_at(scene, layout, point) else {
+            return None;
+        };
+        let moved = self.press_scroll_bar(scene, layout, target.clone(), point)?;
+        self.pointer = Some(point);
+        self.hovered_scroll_bar = Some(target);
+        Some(moved)
+    }
+
+    pub fn touch_scroll_bar_drag(
+        &mut self,
+        scene: &Node,
+        layout: &LayoutNode,
+        point: Point,
+    ) -> ScrollBarUpdate {
+        self.pointer = Some(point);
+        self.scroll_bar_drag(scene, layout)
+            .unwrap_or(ScrollBarUpdate::Unchanged)
+    }
+
+    pub fn finish_touch_scroll_bar(&mut self) -> bool {
+        if !self.finish_scroll_bar() {
+            return false;
+        }
+        self.hovered_scroll_bar = None;
+        self.pointer = None;
+        true
+    }
+
+    pub fn release_touch_scroll_bar(
+        &mut self,
+        scene: &Node,
+        layout: &LayoutNode,
+        point: Point,
+    ) -> Option<ScrollBarUpdate> {
+        let update = self.update_scroll_bar_capture(scene, layout, Some(point), true)?;
+        self.hovered_scroll_bar = None;
+        self.pointer = None;
+        Some(update)
     }
 
     pub fn scroll_bar_highlighted(&self, path: &[usize], orientation: Orientation) -> bool {
@@ -2525,7 +2940,17 @@ impl Interaction {
             item.scroll_on(orientation)
                 .is_some_and(|scroll| scroll.max_offset > 0.0)
         })?;
-        Some(self.consume_scroll(layout, &path, scope_len, delta, orientation, false))
+        Some(
+            self.consume_scroll(
+                layout,
+                &path,
+                scope_len,
+                delta,
+                orientation,
+                ScrollInput::Wheel,
+            )
+            .changed(),
+        )
     }
 
     fn scroll_path(
@@ -2567,21 +2992,37 @@ impl Interaction {
         scope_len: usize,
         delta: f32,
         orientation: Orientation,
-        mouse_viewport: bool,
-    ) -> bool {
+        mut input: ScrollInput<'_>,
+    ) -> AxisMotion {
+        let mut result = AxisMotion::default();
+        let mut delta = f64::from(delta);
+        if let ScrollInput::Pan {
+            owners,
+            flicking: false,
+            ..
+        } = &mut input
+        {
+            let (remaining, owner) = self.overscroll.unwind(orientation, delta);
+            delta = remaining;
+            if let Some(owner) = owner {
+                record_motion_owner(owners, &owner, orientation);
+                result.elastic = true;
+            }
+        }
         let offsets = match orientation {
             Orientation::Horizontal => &mut self.horizontal_scroll_offsets,
             Orientation::Vertical => &mut self.scroll_offsets,
         };
-        let mut delta = f64::from(delta);
-        let mut moved = false;
+        let mut elastic_owner = None;
         // Only the portion the inner viewport could not consume reaches its ancestors.
         for depth in (scope_len..=path.len()).rev() {
             let path = &path[..depth];
             let Some(item) = layout.at_path(path) else {
                 continue;
             };
-            if mouse_viewport && !item.mouse_drag_pan {
+            if let ScrollInput::Pan { device, .. } = &input
+                && (!item.visible || !item.enabled || !item.accepts_pan(orientation, *device))
+            {
                 continue;
             }
             let Some(scroll) = item.scroll_on(orientation) else {
@@ -2592,30 +3033,54 @@ impl Interaction {
                 .copied()
                 .unwrap_or(scroll.offset)
                 .clamp(0.0, scroll.max_offset);
-            let next = (f64::from(current) + delta).clamp(0.0, f64::from(scroll.max_offset)) as f32;
-            if next == current {
-                continue;
+            let wanted = f64::from(current) + delta;
+            let bounded = wanted.clamp(0.0, f64::from(scroll.max_offset));
+            // Measure the residual before rounding the committed offset to layout precision.
+            delta = wanted - bounded;
+            if let ScrollInput::Pan { flicking, .. } = &input
+                && delta != 0.0
+                && scroll.max_offset > 0.0
+                && item.viewport_handle.is_some()
+                && item
+                    .elastic
+                    .is_some_and(|options| options.behavior.allows_overshoot(*flicking))
+            {
+                elastic_owner = Some(item);
             }
-            offsets.insert(path.to_vec(), next);
-            UserScrollChange::commit(
-                &mut self.user_scroll_changes,
-                item,
-                orientation,
-                scroll.offset,
-                next,
-            );
-            moved = true;
-            let remaining = delta - (f64::from(next) - f64::from(current));
-            delta = if delta > 0.0 {
-                remaining.max(0.0)
-            } else {
-                remaining.min(0.0)
-            };
+            let next = bounded as f32;
+            if next != current {
+                offsets.insert(path.to_vec(), next);
+                UserScrollChange::commit(
+                    &mut self.user_scroll_changes,
+                    item,
+                    orientation,
+                    scroll.offset,
+                    next,
+                );
+                if let ScrollInput::Pan { owners, .. } = &mut input {
+                    record_motion(owners, item, orientation);
+                }
+                result.bounded = true;
+            }
             if delta == 0.0 {
                 break;
             }
         }
-        moved
+        if let Some(item) = elastic_owner
+            && !self.overscroll.is_rebounding(orientation)
+            && self.overscroll.pull(item, orientation, delta)
+        {
+            result.elastic = true;
+            if let ScrollInput::Pan {
+                owners,
+                flicking: false,
+                ..
+            } = &mut input
+            {
+                record_motion(owners, item, orientation);
+            }
+        }
+        result
     }
 
     /// Arm a left-button pan after ordinary press handling. The press stays
@@ -2665,7 +3130,7 @@ impl Interaction {
         let scope = self.pointer_scope(layout, point).to_vec();
         let orientations = [Orientation::Horizontal, Orientation::Vertical];
         let can_pan = |item: &LayoutNode, axis| {
-            item.mouse_drag_pan
+            item.accepts_pan(axis, PanDevice::LeftMouse)
                 && item
                     .scroll_on(axis)
                     .is_some_and(|scroll| scroll.max_offset > 0.0)
@@ -2693,6 +3158,7 @@ impl Interaction {
                 scope,
                 axes,
                 mouse_viewport: true,
+                pan_device: PanDevice::LeftMouse,
             },
             motion: DragMotion::new(point, now),
             tap: None,
@@ -2701,6 +3167,7 @@ impl Interaction {
             pages: Vec::new(),
             tumbler: None,
             swipe_delegate: None,
+            swipe: None,
             delay_touch: false,
         });
         true
@@ -2721,7 +3188,11 @@ impl Interaction {
         now: Instant,
         kind: ScrollGestureKind,
     ) -> bool {
-        let interrupted = self.scroll_fling.take().is_some();
+        let interrupted =
+            self.scroll_fling.take().is_some() || self.overscroll.deadline().is_some();
+        if interrupted {
+            self.viewport_motion.clear();
+        }
         if !point.x.is_finite() || !point.y.is_finite() {
             return false;
         }
@@ -2757,16 +3228,36 @@ impl Interaction {
             }
             _ => None,
         };
-        if kind == ScrollGestureKind::MouseControl && tumbler.is_none() && swipe_delegate.is_none()
+        let swipe = (!popup.0
+            && !popup.1
+            && tumbler.is_none()
+            && swipe_delegate.is_none()
+            && matches!(
+                kind,
+                ScrollGestureKind::Touch | ScrollGestureKind::MouseControl
+            ))
+        .then(|| self.swipe_route(scene, layout, point, &hit))
+        .flatten();
+        if kind == ScrollGestureKind::MouseControl
+            && tumbler.is_none()
+            && swipe_delegate.is_none()
+            && swipe.is_none()
         {
             return false;
         }
-        let pages = if popup.0 || popup.1 {
+        let mouse_swipe = kind == ScrollGestureKind::MouseControl && swipe.is_some();
+        let pan_device = match kind {
+            ScrollGestureKind::Touch => PanDevice::Touch,
+            ScrollGestureKind::MouseControl if mouse_swipe => PanDevice::LeftMouse,
+            _ => PanDevice::MiddleMouse,
+        };
+        let pages = if popup.0 || popup.1 || mouse_swipe {
             Vec::new()
         } else {
             Self::page_swipes(scene, layout, point, &scope, &hit)
         };
-        let drawer = if popup.0 || popup.1 || self.popup_at(layout, point).is_some() {
+        let drawer = if popup.0 || popup.1 || mouse_swipe || self.popup_at(layout, point).is_some()
+        {
             None
         } else {
             self.drawer_swipe(scene, layout, point)
@@ -2776,8 +3267,10 @@ impl Interaction {
                 return None;
             }
             let path = Self::scroll_path(layout, point, &scope, |_, item| {
-                item.scroll_on(orientation)
-                    .is_some_and(|scroll| scroll.max_offset > 0.0)
+                item.accepts_pan(orientation, pan_device)
+                    && item
+                        .scroll_on(orientation)
+                        .is_some_and(|scroll| scroll.max_offset > 0.0)
             })?;
             let row_key = scene.row_key_at(&path);
             Some(ScrollTarget {
@@ -2805,7 +3298,18 @@ impl Interaction {
             _ => None,
         };
         let tap = (kind != ScrollGestureKind::MousePan && !interrupted).then_some(hit);
+        let overscroll = if drawer.is_none()
+            && pages.is_empty()
+            && tumbler.is_none()
+            && swipe_delegate.is_none()
+            && swipe.is_none()
+        {
+            self.take_drag_overscroll(layout, &axes, scope.len(), pan_device)
+        } else {
+            Overscroll::default()
+        };
         self.cancel_press();
+        self.overscroll = overscroll;
         self.pointer_leave();
         let delay_touch = delay_target.is_some_and(|target| {
             self.set_focus(Some(target.clone()));
@@ -2817,6 +3321,7 @@ impl Interaction {
                 scope,
                 axes,
                 mouse_viewport: false,
+                pan_device,
             },
             motion: DragMotion::new(point, now),
             tap,
@@ -2825,9 +3330,57 @@ impl Interaction {
             pages,
             tumbler,
             swipe_delegate,
+            swipe,
             delay_touch,
         });
         true
+    }
+
+    fn swipe_route(
+        &self,
+        scene: &Node,
+        layout: &LayoutNode,
+        point: Point,
+        hit: &Hit,
+    ) -> Option<SwipeRoute> {
+        match hit {
+            Hit::Target(target)
+                if scene.at_path(&target.path).is_some_and(|node| {
+                    is_text_input(node.kind)
+                        || is_spin_box(node.kind)
+                        || combo_editable(node)
+                        || matches!(
+                            node.kind,
+                            "Slider"
+                                | "RangeThumb"
+                                | "RangeSlider"
+                                | "Dial"
+                                | "SplitHandle"
+                                | "DelayButton"
+                                | "TableCell"
+                                | "TreeCell"
+                                | "ComboBox"
+                        )
+                }) =>
+            {
+                return None;
+            }
+            Hit::Target(_) | Hit::None | Hit::Blocked(_) => {}
+            _ => return None,
+        }
+        let (path, scope_len) =
+            self.gesture_hit_path(scene, layout, point, "SwipeGestureHandler")?;
+        let targets = (scope_len..=path.len())
+            .rev()
+            .filter_map(|depth| SwipeTarget::new(scene, layout, &path[..depth], point))
+            .collect::<Vec<_>>();
+        if !targets.is_empty()
+            && crate::drag::DragSession::arm(self.drag_context(scene, layout, point), point)
+                .is_some()
+        {
+            return None;
+        }
+        (!targets.is_empty()).then_some(SwipeRoute::Pending(targets))
     }
 
     fn page_swipes(
@@ -2974,9 +3527,9 @@ impl Interaction {
             && scene.row_key_at(&route.scope) == route.scope_row
             && (!route.mouse_viewport
                 || route.axes.iter().flatten().any(|target| {
-                    target
-                        .resolve(scene, layout)
-                        .is_some_and(|(_, item)| item.mouse_drag_pan)
+                    target.resolve(scene, layout).is_some_and(|(_, item)| {
+                        item.accepts_pan(target.orientation, PanDevice::LeftMouse)
+                    })
                 }))
     }
 
@@ -2986,26 +3539,28 @@ impl Interaction {
         layout: &LayoutNode,
         route: &ScrollRoute,
         delta: Point,
-    ) -> [bool; 2] {
+        flicking: bool,
+    ) -> ([AxisMotion; 2], MotionOwners) {
+        let mut owners = MotionOwners::new();
         if !self.scroll_route_is_current(scene, layout, route) {
-            return [false; 2];
+            return ([AxisMotion::default(); 2], owners);
         }
-        std::array::from_fn(|index| {
+        let moved = std::array::from_fn(|index| {
             let Some(target) = &route.axes[index] else {
-                return false;
+                return AxisMotion::default();
             };
-            let Some((_, item)) = target.resolve(scene, layout) else {
-                return false;
-            };
-            if route.mouse_viewport && !item.mouse_drag_pan {
-                return false;
+            if flicking && self.overscroll.owns_axis(target.orientation) {
+                return AxisMotion::default();
             }
+            let Some((_, item)) = target.resolve(scene, layout) else {
+                return AxisMotion::default();
+            };
             let Some(delta) = item.map_delta_from_window(delta) else {
-                return false;
+                return AxisMotion::default();
             };
             let movement = [delta.x, delta.y][index];
             if movement == 0.0 {
-                return false;
+                return AxisMotion::default();
             }
             let path = &target.path;
             self.consume_scroll(
@@ -3014,9 +3569,41 @@ impl Interaction {
                 route.scope.len(),
                 movement,
                 target.orientation,
-                route.mouse_viewport,
+                ScrollInput::Pan {
+                    device: route.pan_device,
+                    owners: &mut owners,
+                    flicking,
+                },
             )
-        })
+        });
+        (moved, owners)
+    }
+
+    fn take_drag_overscroll(
+        &mut self,
+        layout: &LayoutNode,
+        axes: &[Option<ScrollTarget>; 2],
+        scope_len: usize,
+        device: PanDevice,
+    ) -> Overscroll {
+        let mut overscroll = std::mem::take(&mut self.overscroll);
+        overscroll.resume_drag(|axis, handle| {
+            let Some(target) = &axes[usize::from(axis == Orientation::Vertical)] else {
+                return false;
+            };
+            (scope_len..=target.path.len()).rev().any(|depth| {
+                layout.at_path(&target.path[..depth]).is_some_and(|item| {
+                    item.visible
+                        && item.enabled
+                        && item.accepts_pan(axis, device)
+                        && item.viewport_handle.as_ref() == Some(handle)
+                        && item
+                            .elastic
+                            .is_some_and(|options| options.behavior.allows_overshoot(false))
+                })
+            })
+        });
+        overscroll
     }
 
     pub fn move_scroll_gesture(
@@ -3032,8 +3619,13 @@ impl Interaction {
         if !self.scroll_route_is_current(scene, layout, &gesture.route)
             || gesture.popup != (self.menu_open(), self.choice_open())
         {
+            self.viewport_motion.clear();
+            let cleared = self.overscroll.clear();
+            self.swipe_events
+                .extend(gesture.swipe.take().and_then(SwipeRoute::cancel));
             self.cancel_touch_delay();
-            return gesture.tumbler.is_some_and(|drag| drag.offset != 0.0)
+            return cleared
+                || gesture.tumbler.is_some_and(|drag| drag.offset != 0.0)
                 || gesture
                     .swipe_delegate
                     .is_some_and(|drag| drag.has_preview());
@@ -3051,9 +3643,40 @@ impl Interaction {
             }
         }
         let was_dragging = gesture.motion.dragging;
+        if gesture.route.mouse_viewport && !was_dragging {
+            let delta = gesture.motion.delta_to(point);
+            let [x, y] = gesture.route.axes.each_ref().map(|target| {
+                let Some(target) = target else {
+                    return 0.0;
+                };
+                let Some((_, item)) = target.resolve(scene, layout) else {
+                    return 0.0;
+                };
+                if !item.accepts_pan(target.orientation, PanDevice::LeftMouse) {
+                    return 0.0;
+                }
+                item.map_delta_from_window(delta)
+                    .map_or(0.0, |local| match target.orientation {
+                        Orientation::Horizontal => local.x,
+                        Orientation::Vertical => local.y,
+                    })
+            });
+            if x.hypot(y) < DRAG_THRESHOLD {
+                self.scroll_gesture = Some(gesture);
+                return false;
+            }
+        }
+        let elastic_frame = self.overscroll.frame();
         let scrolled = gesture.motion.update(point, now).is_some_and(|delta| {
             if gesture.route.mouse_viewport && !was_dragging {
+                let overscroll = self.take_drag_overscroll(
+                    layout,
+                    &gesture.route.axes,
+                    gesture.route.scope.len(),
+                    gesture.route.pan_device,
+                );
                 self.cancel_press();
+                self.overscroll = overscroll;
                 self.pointer_leave();
             }
             if gesture.delay_touch {
@@ -3096,6 +3719,9 @@ impl Interaction {
                     .and_then(|item| item.map_from_window(point))
                     .is_some_and(|local| swipe.update(scene, layout, local));
             }
+            if self.move_custom_swipe(scene, layout, &mut gesture.swipe, point) {
+                return false;
+            }
             if !was_dragging {
                 let selected = gesture.pages.iter().position(|page| {
                     let Some(local) = layout
@@ -3120,12 +3746,52 @@ impl Interaction {
             if !gesture.pages.is_empty() {
                 return false;
             }
-            self.scroll_captured(scene, layout, &gesture.route, delta)
-                .into_iter()
-                .any(|moved| moved)
+            let (moved, owners) = self.scroll_captured(scene, layout, &gesture.route, delta, false);
+            if moved.into_iter().any(AxisMotion::changed) {
+                self.viewport_motion
+                    .update(owners, ViewportMotion::Dragging);
+                true
+            } else {
+                false
+            }
         });
         self.scroll_gesture = Some(gesture);
-        scrolled
+        scrolled || elastic_frame != self.overscroll.frame()
+    }
+
+    fn move_custom_swipe(
+        &mut self,
+        scene: &Node,
+        layout: &LayoutNode,
+        swipe: &mut Option<SwipeRoute>,
+        point: Point,
+    ) -> bool {
+        if matches!(swipe, Some(SwipeRoute::Pending(_)))
+            && let Some(SwipeRoute::Pending(targets)) = swipe.take()
+        {
+            *swipe = targets
+                .into_iter()
+                .find(|target| target.accepts(scene, layout, self, point))
+                .map(SwipeRoute::Captured);
+        }
+        match swipe {
+            Some(SwipeRoute::Captured(target))
+                if target.is_live(scene, layout, self) && !target.cancel_requested() =>
+            {
+                self.swipe_events.extend(target.update(point));
+                true
+            }
+            Some(SwipeRoute::Captured(_)) => {
+                self.swipe_events.extend(
+                    swipe
+                        .replace(SwipeRoute::Cancelled)
+                        .and_then(SwipeRoute::cancel),
+                );
+                true
+            }
+            Some(SwipeRoute::Cancelled) => true,
+            _ => false,
+        }
     }
 
     pub fn end_scroll_gesture(
@@ -3151,6 +3817,14 @@ impl Interaction {
             && gesture
                 .tap
                 .is_some_and(|hit| hit == self.hit_at(scene, layout, point));
+        match gesture.swipe {
+            Some(SwipeRoute::Captured(target)) => {
+                self.swipe_events.push(target.delivery(SwipePhase::Swiped));
+                return ScrollGestureEnd::default();
+            }
+            Some(SwipeRoute::Cancelled) => return ScrollGestureEnd::default(),
+            _ => {}
+        }
         if gesture.delay_touch && !gesture.motion.dragging {
             self.cancel_touch_delay();
             return ScrollGestureEnd {
@@ -3213,7 +3887,7 @@ impl Interaction {
                 .at_path(&target.path)
                 .is_some_and(|item| item.world_transform() != crate::Affine::IDENTITY)
         });
-        let axes = if transformed {
+        let mut axes = if transformed {
             [true, true]
         } else {
             gesture.route.axes.each_ref().map(|axis| {
@@ -3221,14 +3895,32 @@ impl Interaction {
                     .is_some_and(|target| target.resolve(scene, layout).is_some())
             })
         };
+        let elastic_axes = [Orientation::Horizontal, Orientation::Vertical]
+            .map(|axis| self.overscroll.owns_axis(axis));
+        if transformed && elastic_axes.contains(&true) {
+            axes = [false; 2];
+        } else {
+            for (axis, elastic) in axes.iter_mut().zip(elastic_axes) {
+                *axis &= !elastic;
+            }
+        }
+        let rebounded = self.overscroll.return_to_bounds(now, None);
         self.scroll_fling = gesture.motion.finish(now, axes).map(|motion| ScrollFling {
             route: gesture.route,
             motion,
             transformed,
         });
+        if self.scroll_fling.is_some() {
+            if !transformed {
+                self.viewport_motion.retain_axes(axes);
+            }
+            self.viewport_motion.set_phase(ViewportMotion::Flicking);
+        } else {
+            self.viewport_motion.clear();
+        }
         ScrollGestureEnd {
             tap,
-            scrolled,
+            scrolled: scrolled || rebounded,
             control: None,
         }
     }
@@ -3239,6 +3931,11 @@ impl Interaction {
         layout: &LayoutNode,
         now: Instant,
     ) -> bool {
+        let rebounded = self.overscroll.advance(now);
+        self.advance_flick(scene, layout, now) || rebounded
+    }
+
+    fn advance_flick(&mut self, scene: &Node, layout: &LayoutNode, now: Instant) -> bool {
         let Some(mut fling) = self.scroll_fling.take() else {
             return false;
         };
@@ -3246,34 +3943,52 @@ impl Interaction {
             || self.menu_open()
             || self.choice_open()
         {
+            self.viewport_motion.clear();
             return false;
         }
         let Some(delta) = fling.motion.step(now) else {
+            self.viewport_motion.clear();
             return false;
         };
         if delta == Point::default() {
             self.scroll_fling = Some(fling);
             return false;
         }
-        let moved = self.scroll_captured(scene, layout, &fling.route, delta);
-        if fling.motion.finish_step(if fling.transformed {
-            [moved[0] || moved[1]; 2]
+        let (moved, mut owners) = self.scroll_captured(scene, layout, &fling.route, delta, true);
+        self.overscroll.return_to_bounds(now, None);
+        let continuing = moved.map(|axis| axis.bounded && !axis.elastic);
+        let axes = if fling.transformed {
+            [continuing.contains(&true) && !moved.iter().any(|axis| axis.elastic); 2]
         } else {
-            moved
-        }) {
+            continuing
+        };
+        if fling.motion.finish_step(axes) {
             self.scroll_fling = Some(fling);
+            owners.retain_mut(|(_, owner_axes)| {
+                for (owned, active) in owner_axes.iter_mut().zip(continuing) {
+                    *owned &= active;
+                }
+                owner_axes.contains(&true)
+            });
+            self.viewport_motion
+                .update(owners, ViewportMotion::Flicking);
+        } else {
+            self.viewport_motion.clear();
         }
-        moved.into_iter().any(|moved| moved)
+        moved.into_iter().any(AxisMotion::changed)
     }
 
     pub fn scroll_motion_active(&self) -> bool {
-        self.scroll_fling.is_some()
+        self.scroll_fling.is_some() || self.overscroll.deadline().is_some()
     }
 
     pub fn scroll_motion_deadline(&self) -> Option<Instant> {
         self.scroll_fling
             .as_ref()
             .map(|fling| fling.motion.deadline())
+            .into_iter()
+            .chain(self.overscroll.deadline())
+            .min()
     }
 
     pub fn tumbler_preview(&self) -> Option<(&[usize], f32)> {
@@ -3374,9 +4089,64 @@ impl Interaction {
     }
 
     pub fn cancel_scroll_gesture(&mut self) {
-        self.scroll_gesture = None;
+        self.swipe_events.extend(
+            self.scroll_gesture
+                .take()
+                .and_then(|gesture| gesture.swipe)
+                .and_then(SwipeRoute::cancel),
+        );
         self.scroll_fling = None;
+        self.viewport_motion.clear();
+        self.overscroll.clear();
         self.cancel_touch_delay();
+    }
+
+    pub fn overscroll_frame(&self) -> crate::OverscrollFrame {
+        self.overscroll.frame()
+    }
+
+    pub fn has_overscroll(&self) -> bool {
+        self.overscroll.has_offset()
+    }
+
+    pub(crate) fn visual_overscroll(&self, handle: &ViewportHandle, axis: Orientation) -> f32 {
+        self.overscroll.visual_offset(handle, axis)
+    }
+
+    pub(crate) fn return_viewport_to_bounds(&mut self, target: &ViewportHandle) -> bool {
+        self.overscroll
+            .return_to_bounds(Instant::now(), Some(target))
+    }
+
+    pub(crate) fn cancel_viewport_flick(&mut self, target: &ViewportHandle) -> bool {
+        if self.viewport_motion.contains(target) && self.scroll_fling.take().is_some() {
+            self.viewport_motion.clear();
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn has_pending_swipe_events(&self) -> bool {
+        !self.swipe_events.is_empty() || self.scroll_gesture.as_ref().is_some_and(|gesture|
+            matches!(&gesture.swipe, Some(SwipeRoute::Captured(target)) if target.cancel_requested()))
+    }
+
+    pub fn reconcile_swipe(&mut self, scene: &Node, layout: &LayoutNode) {
+        let invalid = self.scroll_gesture.as_ref().is_some_and(|gesture| matches!(&gesture.swipe,
+            Some(SwipeRoute::Captured(target)) if target.cancel_requested() || !target.is_live(scene, layout, self)));
+        if invalid && let Some(gesture) = &mut self.scroll_gesture {
+            self.swipe_events.extend(
+                gesture
+                    .swipe
+                    .replace(SwipeRoute::Cancelled)
+                    .and_then(SwipeRoute::cancel),
+            );
+        }
+    }
+
+    pub fn take_swipe_events(&mut self) -> Vec<SwipeDelivery> {
+        std::mem::take(&mut self.swipe_events)
     }
 
     fn begin_delay(
@@ -4491,6 +5261,7 @@ impl Interaction {
         changed
     }
     pub fn pointer_leave(&mut self) -> bool {
+        let cancelled_table_selection = self.cancel_table_drag_selection();
         self.cancel_window_move();
         let cancelled_delay = self
             .delay_hold
@@ -4513,7 +5284,11 @@ impl Interaction {
         self.hovered_control_part = None;
         self.hovered_standard_button = None;
         let bar = self.hovered_scroll_bar.take().is_some();
-        self.hovered.take().is_some() || bar || tooltip_was_visible || cancelled_delay
+        self.hovered.take().is_some()
+            || bar
+            || tooltip_was_visible
+            || cancelled_delay
+            || cancelled_table_selection
     }
     pub fn pointer_press(&mut self) {
         self.press(None, None, false);
@@ -4584,6 +5359,7 @@ impl Interaction {
         self.pressed_tree_indicator = self.hovered_tree_indicator;
         self.pressed_table_column = self.hovered_table_column;
         self.table_column_move = None;
+        self.table_drag_selection = None;
         self.pressed_body_column = self.hovered_body_column;
         self.pressed_control_part = self.hovered_control_part;
         self.pressed_standard_button = self.hovered_standard_button;
@@ -5935,6 +6711,9 @@ impl Interaction {
 
     pub fn pointer_release_target(&mut self) -> Option<Target> {
         self.table_column_move = None;
+        if self.cancel_table_drag_selection() {
+            return None;
+        }
         let claimed = std::mem::take(&mut self.delay_pointer_claimed);
         if self
             .delay_hold
@@ -6000,6 +6779,184 @@ impl Interaction {
 
     pub fn table_column_hovered(&self, path: &[usize], column: usize) -> bool {
         self.is_hovered(path) && self.hovered_table_column == Some(column)
+    }
+
+    /// Arm a mouse selection after the ordinary click and drag-source routes are resolved.
+    pub fn arm_table_drag_selection(
+        &mut self,
+        scene: &Node,
+        layout: &LayoutNode,
+        additive: bool,
+    ) -> bool {
+        self.table_drag_selection = (|| {
+            if self.drag.is_some() || self.table_row_resize.is_some() || self.table_resize.is_some()
+            {
+                return None;
+            }
+            let target = self.pressed.as_ref()?;
+            let cell = scene.at_path(&target.path)?;
+            if self.is_text_editor(cell, target) {
+                return None;
+            }
+            let (path, slot) = table_hit_row(scene, &target.path)?;
+            let table = scene.at_path(path)?;
+            crate::table_drag_selection::TableDragSelection::new(
+                path.to_vec(),
+                table,
+                layout.at_path(path)?,
+                table.list?.first_row + slot,
+                self.pointer?,
+                additive,
+                scene.row_key_at(path),
+            )
+        })();
+        self.table_drag_selection.is_some()
+    }
+
+    pub fn table_drag_selection_armed(&self) -> bool {
+        self.table_drag_selection.is_some()
+    }
+
+    pub fn move_table_drag_selection(&mut self, layout: &LayoutNode, now: Instant) -> bool {
+        let Some(drag) = &mut self.table_drag_selection else {
+            return false;
+        };
+        if !drag.claimed
+            && let Some(point) = self.pointer
+            && let Some(item) = layout.at_path(&drag.path)
+            && let Some(delta) = item.map_delta_from_window(Point {
+                x: point.x - drag.start.x,
+                y: point.y - drag.start.y,
+            })
+            && delta.x.hypot(delta.y) >= DRAG_THRESHOLD
+        {
+            drag.claimed = true;
+            drag.scroll_wake = Some(now + SCROLL_FRAME_INTERVAL);
+            self.last_table_click = None;
+            self.pressed = None;
+            let focus = drag.focus_target();
+            self.set_focus_with_reason(Some(focus), xrack_runtime::FocusReason::PointerClick);
+            return true;
+        }
+        drag.claimed
+    }
+
+    pub fn table_drag_selection_claimed(&self) -> bool {
+        self.table_drag_selection
+            .as_ref()
+            .is_some_and(|drag| drag.claimed)
+    }
+
+    pub fn cancel_table_drag_selection(&mut self) -> bool {
+        if self
+            .table_drag_selection
+            .take()
+            .is_some_and(|drag| drag.claimed)
+        {
+            self.cancel_press();
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn finish_table_drag_selection(
+        &mut self,
+        scene: &Node,
+        layout: &LayoutNode,
+    ) -> Option<ControlInput> {
+        let drag = self.table_drag_selection.take()?;
+        let point = self.pointer;
+        self.cancel_press();
+        let (node, item, point) = self.table_drag_route(scene, layout, &drag, point?)?;
+        Some(ControlInput {
+            action: ControlAction::TableSelection(drag.action(node, item, point)?),
+            path: drag.path,
+        })
+    }
+
+    fn table_drag_route<'a>(
+        &self,
+        scene: &'a Node,
+        layout: &'a LayoutNode,
+        drag: &crate::table_drag_selection::TableDragSelection,
+        point: Point,
+    ) -> Option<(&'a Node, &'a LayoutNode, Point)> {
+        if self.menu_open()
+            || self.choice_open()
+            || !drag.path.starts_with(self.pointer_scope(layout, point))
+            || scene.row_key_at(&drag.path) != drag.parent_row
+        {
+            return None;
+        }
+        let node = scene.interactive_at_path(&drag.path)?;
+        let item = layout.at_path(&drag.path)?;
+        drag.valid(node, item).then_some((node, item, point))
+    }
+
+    pub fn table_drag_preview(
+        &self,
+        path: &[usize],
+        node: &Node,
+        layout: &LayoutNode,
+    ) -> Vec<Rect> {
+        match (&self.table_drag_selection, self.pointer) {
+            (Some(drag), Some(point)) if drag.path == path && drag.valid(node, layout) => {
+                drag.preview(node, layout, point)
+            }
+            _ => Vec::new(),
+        }
+    }
+
+    fn table_drag_scroll_delta(&self, scene: &Node, layout: &LayoutNode) -> Option<Point> {
+        let drag = self.table_drag_selection.as_ref()?;
+        let (_, item, point) = self.table_drag_route(scene, layout, drag, self.pointer?)?;
+        let delta = drag.scroll_delta(item, point);
+        (delta != Point::default()).then_some(delta)
+    }
+
+    pub fn table_drag_selection_deadline(
+        &self,
+        scene: &Node,
+        layout: &LayoutNode,
+    ) -> Option<Instant> {
+        self.table_drag_scroll_delta(scene, layout)?;
+        self.table_drag_selection.as_ref()?.scroll_wake
+    }
+
+    pub fn advance_table_drag_selection(
+        &mut self,
+        scene: &Node,
+        layout: &LayoutNode,
+        now: Instant,
+    ) -> bool {
+        let Some(delta) = self.table_drag_scroll_delta(scene, layout) else {
+            return false;
+        };
+        let Some(drag) = self
+            .table_drag_selection
+            .as_mut()
+            .filter(|drag| drag.scroll_wake.is_some_and(|wake| now >= wake))
+        else {
+            return false;
+        };
+        drag.scroll_wake = Some(now + SCROLL_FRAME_INTERVAL);
+        let path = drag.path.clone();
+        let Some(item) = layout.at_path(&path) else {
+            return false;
+        };
+        let mut moved = false;
+        for (axis, delta) in [
+            (Orientation::Horizontal, delta.x),
+            (Orientation::Vertical, delta.y),
+        ] {
+            if delta != 0.0
+                && let Some(scroll) = item.scroll_on(axis)
+            {
+                moved |= self.scroll_to_user_offset(layout, &path, axis, scroll.offset + delta);
+            }
+        }
+        moved
     }
 
     pub fn table_column_move_drag(&mut self, layout: &LayoutNode, now: Instant) -> bool {
@@ -6267,6 +7224,22 @@ impl Interaction {
         self.scope_focus.reconcile(scene, layout);
         self.remember_focus_scope(scene, layout);
         self.reconcile_dialogs(scene, layout);
+        if self.overscroll.has_offset() {
+            let scope = self.active_dialog(layout).unwrap_or_default();
+            self.overscroll.reconcile(layout.at_path(scope));
+        }
+        let route = self
+            .scroll_gesture
+            .as_ref()
+            .map(|gesture| &gesture.route)
+            .or_else(|| self.scroll_fling.as_ref().map(|fling| &fling.route));
+        if let Some(route) = route
+            && self.scroll_route_is_current(scene, layout, route)
+        {
+            self.viewport_motion.reconcile(layout, route.pan_device);
+        } else {
+            self.viewport_motion.clear();
+        }
         self.stack_focus.retain(|key, _| {
             scene
                 .at_path(&key.path)
@@ -6275,9 +7248,10 @@ impl Interaction {
         });
         if self.scroll_bar_press.as_ref().is_some_and(|press| {
             press.grab.is_some()
-                && self
-                    .scroll_bar_for_target(scene, layout, &press.target)
-                    .is_none()
+                && (press.node(scene).is_none()
+                    || self
+                        .scroll_bar_for_target(scene, layout, &press.target)
+                        .is_none())
         }) {
             self.scroll_bar_press.as_mut().unwrap().grab = None;
         }
@@ -6977,6 +7951,7 @@ impl Interaction {
         self.table_resize = None;
         self.table_row_resize = None;
         self.table_column_move = None;
+        self.table_drag_selection = None;
         self.split_drag = None;
         self.slider_offset = 0.0;
         self.slider_anchor = None;

@@ -32,6 +32,323 @@ use xrack_layout::{
 };
 
 #[test]
+fn flickable_overshoot_rebounds_and_supports_stationary_edge_feedback() {
+    use layout_ui::FlickableDemo;
+    use std::time::{Duration, Instant};
+    use xrack_layout::ScrollGestureKind;
+    use xrack_runtime::{Component, Length, ScrollRequests};
+
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))
+    .unwrap();
+    for shift_content in [true, false] {
+        let mut ui = FlickableDemo::new();
+        ui.set_shift_content(shift_content);
+        let scene = ui.render_shared();
+        let viewport = Size::new(360.0, 280.0);
+        let mut input = Interaction::default();
+        let layout = xrack_layout::layout(&scene, viewport, &mut renderer.text);
+        let now = Instant::now();
+        let start = Point { x: 170.0, y: 66.0 };
+        let end = Point { x: 170.0, y: 146.0 };
+        let original = renderer.snapshot(&scene, 360, 280, 1.0, &input).unwrap();
+        assert!(input.begin_scroll_gesture(&scene, &layout, start, now, ScrollGestureKind::Touch));
+        assert!(input.move_scroll_gesture(&scene, &layout, end, now + Duration::from_millis(20)));
+        let shifted = renderer.snapshot(&scene, 360, 280, 1.0, &input).unwrap();
+        assert_eq!(original.pixel(170, 20), Some([0x25, 0x33, 0x4c, 0xff]));
+        assert_eq!(
+            shifted.pixel(170, 20),
+            if shift_content {
+                Some([0x19, 0x24, 0x38, 0xff])
+            } else {
+                original.pixel(170, 20)
+            }
+        );
+        assert!(ui.get_overshoot_y().0 < 0.0 && ui.get_dragging());
+        assert_eq!(ui.get_y_offset(), Length(0.0));
+        assert!(input.scroll_offsets().is_empty());
+
+        if shift_content {
+            input.end_scroll_gesture(&scene, &layout, end, now + Duration::from_millis(25));
+        } else {
+            let requests = ScrollRequests::default();
+            let _context = requests.enter();
+            ui.invoke_return_to_edge();
+            assert!(input.apply_scroll_requests(&scene, &layout, requests.drain()));
+        }
+        assert!(ui.get_rebounding());
+        assert!(input.advance_scroll_motion(
+            &scene,
+            &layout,
+            Instant::now() + Duration::from_millis(240)
+        ));
+        let returned = renderer.snapshot(&scene, 360, 280, 1.0, &input).unwrap();
+        assert_eq!(returned.pixel(170, 20), original.pixel(170, 20));
+        assert_eq!(ui.get_overshoot_y(), Length(0.0));
+        assert_eq!(ui.get_y_offset(), Length(0.0));
+        assert!(!ui.get_rebounding());
+        assert_eq!(ui.get_flicks(), 0);
+        input.cancel_scroll_gesture();
+    }
+}
+
+#[test]
+fn flickable_mouse_pan_moves_pixels_and_preserves_wheel_and_child_taps() {
+    use layout_ui::FlickableDemo;
+    use xrack_runtime::{FlickDirection, Length};
+
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))
+    .unwrap();
+    let mut ui = UiDriver::new(
+        FlickableDemo::new(),
+        xrack_renderer_femtovg::TextSystem::system().unwrap(),
+        Size::new(360.0, 280.0),
+    );
+    let before = renderer
+        .snapshot(ui.scene(), 360, 280, 1.0, ui.input())
+        .unwrap();
+    assert!(ui.drag_viewport_from("canvas", Point { x: -80.0, y: 0.0 }));
+    assert_eq!(ui.component().get_x_offset(), Length(-72.0));
+    assert_eq!(ui.component().get_flicks(), 1);
+    assert!(!ui.component().get_moving());
+    let moved = renderer
+        .snapshot(ui.scene(), 360, 280, 1.0, ui.input())
+        .unwrap();
+    assert_eq!(before.pixel(100, 90), Some([0x25, 0x33, 0x4c, 0xff]));
+    assert_eq!(moved.pixel(100, 90), Some([0x77, 0xd6, 0xb3, 0xff]));
+
+    ui.update(|component| component.set_pan_direction(FlickDirection::Vertical));
+    assert!(!ui.drag_viewport_from("canvas", Point { x: -40.0, y: 0.0 }));
+    assert_eq!(ui.component().get_x_offset(), Length(-72.0));
+    assert!(ui.scroll("canvas", Point { x: 20.0, y: 0.0 }));
+    assert_eq!(ui.component().get_x_offset(), Length(-92.0));
+    ui.update(|component| {
+        component.invoke_reset();
+        component.set_pan_enabled(false);
+    });
+    assert_eq!(ui.component().get_x_offset(), Length(0.0));
+    assert!(!ui.drag_viewport_from("canvas", Point { x: 0.0, y: -50.0 }));
+    ui.click("tap");
+    assert_eq!(ui.component().get_taps(), 1);
+    assert!(ui.scroll("canvas", Point { x: 0.0, y: 30.0 }));
+    assert_eq!(ui.component().get_y_offset(), Length(-30.0));
+    assert_eq!(ui.component().get_flicks(), 3);
+}
+
+#[test]
+fn swipe_handler_moves_the_card_during_preview_and_commits_on_release() {
+    use layout_ui::SwipeGestureDemo;
+    use std::time::{Duration, Instant};
+    use xrack_layout::ScrollGestureKind;
+    use xrack_runtime::{Component, Length};
+
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))
+    .unwrap();
+    let viewport = Size::new(360.0, 280.0);
+    let mut ui = UiDriver::new(
+        SwipeGestureDemo::new(),
+        xrack_renderer_femtovg::TextSystem::system().unwrap(),
+        viewport,
+    );
+    let before = renderer
+        .snapshot(ui.scene(), 360, 280, 1.0, ui.input())
+        .unwrap();
+    let layout = xrack_layout::layout(ui.scene(), viewport, &mut renderer.text);
+    let mut input = Interaction::default();
+    let now = Instant::now();
+    let start = Point { x: 120.0, y: 105.0 };
+    let end = Point { x: 180.0, y: 105.0 };
+    assert!(input.begin_scroll_gesture(
+        ui.scene(),
+        &layout,
+        start,
+        now,
+        ScrollGestureKind::MouseControl
+    ));
+    input.move_scroll_gesture(ui.scene(), &layout, end, now + Duration::from_millis(10));
+    ui.update(|component| {
+        let scene = component.render_shared();
+        for event in input.take_swipe_events() {
+            event.apply(component, &scene);
+        }
+    });
+    assert!(ui.component().get_swiping());
+    assert_eq!(ui.component().get_shift(), Length(0.0));
+    let preview = renderer
+        .snapshot(ui.scene(), 360, 280, 1.0, ui.input())
+        .unwrap();
+    assert_eq!(before.pixel(240, 105), Some([0x25, 0x33, 0x4c, 0xff]));
+    assert_eq!(preview.pixel(240, 105), Some([0x77, 0xd6, 0xb3, 0xff]));
+    let outcome =
+        input.end_scroll_gesture(ui.scene(), &layout, end, now + Duration::from_millis(20));
+    assert!(!outcome.tap);
+    ui.update(|component| {
+        let scene = component.render_shared();
+        for event in input.take_swipe_events() {
+            event.apply(component, &scene);
+        }
+    });
+    assert!(!ui.component().get_swiping());
+    assert_eq!(ui.component().get_shift(), Length(60.0));
+    assert_eq!(ui.component().get_swipes(), 1);
+    let after = renderer
+        .snapshot(ui.scene(), 360, 280, 1.0, ui.input())
+        .unwrap();
+    assert_eq!(preview.pixel(240, 105), after.pixel(240, 105));
+
+    assert!(input.begin_scroll_gesture(
+        ui.scene(),
+        &layout,
+        start,
+        now,
+        ScrollGestureKind::MouseControl
+    ));
+    input.move_scroll_gesture(ui.scene(), &layout, end, now + Duration::from_millis(10));
+    ui.update(|component| {
+        let scene = component.render_shared();
+        for event in input.take_swipe_events() {
+            event.apply(component, &scene);
+        }
+        component.invoke_cancel_swipe();
+        input.reconcile_swipe(&scene, &layout);
+        for event in input.take_swipe_events() {
+            event.apply(component, &scene);
+        }
+    });
+    assert!(!ui.component().get_swiping());
+    assert_eq!(ui.component().get_cancellations(), 1);
+    assert_eq!(ui.component().get_shift(), Length(60.0));
+}
+
+#[test]
+fn scale_rotate_callbacks_drive_the_rendered_transform_and_reset_live_metrics() {
+    use layout_ui::ScaleRotateDemo;
+    use xrack_runtime::{Component, Length, ScaleRotateSample};
+
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))
+    .unwrap();
+    let mut ui = UiDriver::new(
+        ScaleRotateDemo::new(),
+        xrack_renderer_femtovg::TextSystem::system().unwrap(),
+        Size::new(360.0, 280.0),
+    );
+    let before = renderer
+        .snapshot(ui.scene(), 360, 280, 1.0, ui.input())
+        .unwrap();
+    ui.update(|component| {
+        let scene = component.render_shared();
+        let handle = scene.children[0].scale_rotate_handle.as_ref().unwrap();
+        handle.publish(Some(ScaleRotateSample::default()));
+        assert!(component.dispatch_at(&scene, &[0], "started"));
+        handle.publish(Some(ScaleRotateSample {
+            scale: 1.5,
+            rotation: 90.0,
+            center_x: Length(164.0),
+            center_y: Length(110.0),
+        }));
+        assert!(component.dispatch_at(&scene, &[0], "updated"));
+    });
+    assert_eq!(ui.component().get_zoom(), 1.5);
+    assert_eq!(ui.component().get_angle(), 90.0);
+    assert!(ui.component().get_recognizing());
+    assert_eq!(ui.component().get_gesture_center_x(), Length(164.0));
+    let transformed = renderer
+        .snapshot(ui.scene(), 360, 280, 1.0, ui.input())
+        .unwrap();
+    assert_eq!(before.pixel(160, 105), Some([0xf0, 0xb6, 0x67, 0xff]));
+    assert_eq!(transformed.pixel(210, 96), Some([0xf0, 0xb6, 0x67, 0xff]));
+    assert_ne!(before.pixel(210, 96), transformed.pixel(210, 96));
+    ui.update(|component| {
+        let scene = component.render_shared();
+        scene.children[0]
+            .scale_rotate_handle
+            .as_ref()
+            .unwrap()
+            .publish(None);
+        assert!(component.dispatch_at(&scene, &[0], "ended"));
+    });
+    assert!(!ui.component().get_recognizing());
+    assert_eq!(ui.component().get_ends(), 1);
+    assert_eq!(ui.component().get_zoom(), 1.5);
+}
+
+#[test]
+fn standalone_scroll_controls_repaint_clipped_content_before_and_after_snap() {
+    use list_ui::StandaloneScrollDemo;
+
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))
+    .unwrap();
+    let mut ui = UiDriver::new(
+        StandaloneScrollDemo::new(),
+        xrack_renderer_femtovg::TextSystem::system().unwrap(),
+        Size::new(352.0, 272.0),
+    );
+    let before = renderer
+        .snapshot(ui.scene(), 352, 272, 1.0, ui.input())
+        .unwrap();
+    ui.click("snap-toggle");
+    assert!(ui.drag_scroll_bar_with("bar", 0.94, false, |ui| {
+        let dragging = renderer
+            .snapshot(ui.scene(), 352, 272, 1.0, ui.input())
+            .unwrap();
+        assert_eq!(dragging.pixel(60, 70), Some([0x26, 0x37, 0x50, 0xff]));
+        true
+    }));
+    let after = renderer
+        .snapshot(ui.scene(), 352, 272, 1.0, ui.input())
+        .unwrap();
+    assert_eq!(before.pixel(60, 70), Some([0x59, 0xbf, 0x94, 0xff]));
+    assert_eq!(after.pixel(60, 70), Some([0x72, 0xa9, 0xee, 0xff]));
+    assert_ne!(before.pixel(320, 35), after.pixel(320, 35));
+    assert_eq!(before.pixel(320, 35), after.pixel(320, 190));
+}
+
+#[test]
+fn external_scroll_bar_and_indicator_repaint_with_the_canvas() {
+    use list_ui::ScrollBarsDemo;
+
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))
+    .unwrap();
+    let mut ui = UiDriver::new(
+        ScrollBarsDemo::new(),
+        xrack_renderer_femtovg::TextSystem::system().unwrap(),
+        Size::new(352.0, 272.0),
+    );
+    ui.update(|_| {});
+    let before = renderer
+        .snapshot(ui.scene(), 352, 272, 1.0, ui.input())
+        .unwrap();
+    assert!(ui.drag_scroll_bar("vertical-bar", 1.0, false));
+    let after = renderer
+        .snapshot(ui.scene(), 352, 272, 1.0, ui.input())
+        .unwrap();
+    assert_eq!(before.pixel(60, 70), Some([0x59, 0xbf, 0x94, 0xff]));
+    assert_eq!(after.pixel(60, 70), Some([0x72, 0xa9, 0xee, 0xff]));
+    assert_ne!(before.pixel(295, 190), after.pixel(295, 190));
+    assert_ne!(before.pixel(320, 35), after.pixel(320, 35));
+    assert_eq!(before.pixel(320, 35), after.pixel(320, 190));
+    assert_ne!(before.pixel(52, 252), after.pixel(52, 252));
+    assert_eq!(before.pixel(52, 252), after.pixel(242, 252));
+}
+
+#[test]
 fn scroll_position_repaints_the_requested_content_and_virtual_rows() {
     use list_ui::ScrollPositionDemo;
 
@@ -2554,9 +2871,15 @@ fn table_header_stays_above_partially_scrolled_rows_on_gpu() {
         y: bar.thumb.y + bar.thumb.height * 0.5,
     };
     input.pointer_move(&scene, &layout, grab(horizontal));
-    assert_eq!(input.scroll_bar_press(&scene, &layout), Some(false));
+    assert_eq!(
+        input.scroll_bar_press(&scene, &layout),
+        Some(xrack_layout::ScrollBarUpdate::Unchanged)
+    );
     input.pointer_move(&scene, &layout, Point { x: 800.0, y: -40.0 });
-    assert_eq!(input.scroll_bar_drag(&scene, &layout), Some(true));
+    assert_eq!(
+        input.scroll_bar_drag(&scene, &layout),
+        Some(xrack_layout::ScrollBarUpdate::ViewportMoved)
+    );
     assert!(input.finish_scroll_bar());
     let (scene, layout) = renderer.prepare_scene(&ui, ui.render_shared(), viewport, &input);
     let item = layout.at_path(&path).unwrap();
@@ -2575,9 +2898,15 @@ fn table_header_stays_above_partially_scrolled_rows_on_gpu() {
         .find(|bar| bar.orientation == Orientation::Vertical)
         .unwrap();
     input.pointer_move(&scene, &layout, grab(&vertical));
-    assert_eq!(input.scroll_bar_press(&scene, &layout), Some(false));
+    assert_eq!(
+        input.scroll_bar_press(&scene, &layout),
+        Some(xrack_layout::ScrollBarUpdate::Unchanged)
+    );
     input.pointer_move(&scene, &layout, Point { x: 20.0, y: 560.0 });
-    assert_eq!(input.scroll_bar_drag(&scene, &layout), Some(true));
+    assert_eq!(
+        input.scroll_bar_drag(&scene, &layout),
+        Some(xrack_layout::ScrollBarUpdate::ViewportMoved)
+    );
     let (scene, layout) = renderer.prepare_scene(&ui, ui.render_shared(), viewport, &input);
     let item = layout.at_path(&path).unwrap();
     let scroll = item.scroll.unwrap();
@@ -2861,6 +3190,62 @@ fn table_grid_selection_paints_only_the_selected_cells_and_headers() {
                 .save_png(std::path::Path::new(&path).join(filename))
                 .unwrap();
         }
+    }
+}
+
+#[test]
+fn table_drag_selection_previews_only_the_clipped_table_body() {
+    use std::time::Instant;
+
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))
+    .unwrap();
+    let mut ui = TableDemo::new();
+    ui.set_target(SelectionTarget::Cells);
+    ui.set_records(["first", "second", "third"].map(str::to_owned).to_vec());
+    let mut input = Interaction::default();
+    let viewport = Size::new(560.0, 370.0);
+    let (scene, layout) = renderer.prepare_scene(&ui, ui.render_shared(), viewport, &input);
+    let path = [0, 2];
+    let item = layout.at_path(&path).unwrap();
+    let table = item.table.as_ref().unwrap();
+    let x = table.columns[0].x + 75.0;
+    let start = Point {
+        x,
+        y: item.children[0].bounds.y + 16.0,
+    };
+    let end = Point {
+        x,
+        y: item.children[1].bounds.y + 16.0,
+    };
+    let header = (x as u32, (table.header.y + 5.0) as u32);
+    let outside = (x as u32, (item.children[2].bounds.y + 12.0) as u32);
+    input.pointer_move(&scene, &layout, start);
+    input.pointer_press_in_scene(&scene, &layout);
+    assert!(input.arm_table_drag_selection(&scene, &layout, false));
+    input.pointer_move(&scene, &layout, end);
+    assert!(input.move_table_drag_selection(&layout, Instant::now()));
+    let preview = renderer.snapshot(&scene, 560, 370, 1.0, &input).unwrap();
+    assert!(input.cancel_table_drag_selection());
+    let cancelled = renderer.snapshot(&scene, 560, 370, 1.0, &input).unwrap();
+    assert_ne!(
+        preview.pixel(x as u32, start.y as u32),
+        cancelled.pixel(x as u32, start.y as u32)
+    );
+    assert_eq!(
+        preview.pixel(header.0, header.1),
+        cancelled.pixel(header.0, header.1)
+    );
+    assert_eq!(
+        preview.pixel(outside.0, outside.1),
+        cancelled.pixel(outside.0, outside.1)
+    );
+    if let Ok(path) = std::env::var("TEST_UNDECLARED_OUTPUTS_DIR") {
+        preview
+            .save_png(std::path::Path::new(&path).join("table-drag-selection.png"))
+            .unwrap();
     }
 }
 
@@ -4896,7 +5281,10 @@ fn scroll_view_bars_reveal_a_button_at_the_far_corner() {
                 y: bar.thumb.y + bar.thumb.height * 0.5,
             },
         );
-        assert_eq!(input.scroll_bar_press(&scene, &layout), Some(false));
+        assert_eq!(
+            input.scroll_bar_press(&scene, &layout),
+            Some(xrack_layout::ScrollBarUpdate::Unchanged)
+        );
         input.pointer_move(
             &scene,
             &layout,
@@ -4905,7 +5293,10 @@ fn scroll_view_bars_reveal_a_button_at_the_far_corner() {
                 y: bar.track.y + bar.track.height + 30.0,
             },
         );
-        assert_eq!(input.scroll_bar_drag(&scene, &layout), Some(true));
+        assert_eq!(
+            input.scroll_bar_drag(&scene, &layout),
+            Some(xrack_layout::ScrollBarUpdate::ViewportMoved)
+        );
         assert!(input.finish_scroll_bar());
     }
     let layout = renderer.layout_with_input(&scene, viewport, &input);
