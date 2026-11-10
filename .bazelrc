@@ -6,7 +6,8 @@ build --jobs=auto
 # `~` is expanded by Bazel, so this remains portable across developer machines.
 # GitHub Actions overrides this local default from setup-bazel's home RC.
 build --disk_cache=~/.cache/bazel/xrack
-build --experimental_disk_cache_gc_max_size=30G
+# LLVM/MLIR and the native/cross-target Rust builds share this budget.
+build --experimental_disk_cache_gc_max_size=60G
 build --experimental_disk_cache_gc_max_age=30d
 # Reuse the JDK that runs Bazel to generate the ANTLR Rust sources.
 build --java_runtime_version=local_jdk
