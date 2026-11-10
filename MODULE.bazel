@@ -7,12 +7,21 @@ bazel_dep(name = "rules_cc", version = "0.2.27")
 bazel_dep(name = "rules_java", version = "9.3.0")
 bazel_dep(name = "platforms", version = "1.1.0")
 
-cc_configure = use_extension("@rules_cc//cc:extensions.bzl", "cc_configure_extension")
-use_repo(cc_configure, "local_config_cc")
+register_toolchains("@llvm//toolchain:all")
+
+single_version_override(
+    module_name = "rules_rust",
+    patches = ["//bazel:rust_llvm_msvc_linker.patch"],
+    patch_strip = 1,
+)
 
 single_version_override(
     module_name = "rules_rust_bindgen",
-    patches = ["//bazel:bindgen_windows_imports.patch"],
+    patches = [
+        "//bazel:bindgen_libclang_runtime.patch",
+        "//bazel:bindgen_toolchain_headers.patch",
+        "//bazel:bindgen_windows_imports.patch",
+    ],
     patch_strip = 1,
 )
 
@@ -21,6 +30,34 @@ llvm = use_extension("@llvm//extensions:llvm.bzl", "llvm")
 llvm.version(llvm_version = "23.1.2")
 use_repo(llvm, "llvm-project")
 register_toolchains("//mlir:bindgen_toolchain")
+
+# Keep the SDK supplied by LLVM and include the frameworks used by desktop apps.
+osx = use_extension("@llvm//extensions:osx.bzl", "osx")
+osx.frameworks(names = [
+    "AppKit",
+    "ApplicationServices",
+    "Carbon",
+    "CFNetwork",
+    "CollectionViewCore",
+    "ColorSync",
+    "CoreFoundation",
+    "CoreGraphics",
+    "CoreImage",
+    "CoreServices",
+    "CoreText",
+    "CoreVideo",
+    "FontServices",
+    "Foundation",
+    "ImageIO",
+    "Kernel",
+    "Metal",
+    "OSLog",
+    "QuartzCore",
+    "Security",
+    "SystemConfiguration",
+    "UIFoundation",
+    "UniformTypeIdentifiers",
+])
 
 rust = use_extension("@rules_rust//rust:extensions.bzl", "rust")
 rust.toolchain(
@@ -53,6 +90,17 @@ crate.from_cargo(
     cargo_lockfile = "//:Cargo.lock",
     manifests = ["//:Cargo.toml"],
     host_tools = "@xrack_rust_host_tools",
+    # Keep the default triples and add the native Windows arm64 runner.
+    supported_platform_triples = [
+        "aarch64-apple-darwin",
+        "aarch64-pc-windows-msvc",
+        "aarch64-unknown-linux-gnu",
+        "wasm32-unknown-unknown",
+        "wasm32-wasip1",
+        "x86_64-pc-windows-msvc",
+        "x86_64-unknown-linux-gnu",
+        "x86_64-unknown-nixos-gnu",
+    ],
 )
 use_repo(crate, "crates")
 

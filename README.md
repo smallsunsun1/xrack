@@ -6,7 +6,7 @@
 
 ## 构建和运行
 
-要求 Bazel 9.2.0 / Bazelisk、JDK 17+（仅运行 ANTLR generator），以及支持 **C++20** 的平台 C++ 编译工具链（macOS 需要 Xcode Command Line Tools）。目标与构建工具均使用 C++20。依赖由 Bzlmod 下载；首次构建会从源码编译 LLVM/MLIR，耗时明显多于增量构建。
+要求 Bazel 9.2.0 / Bazelisk 和 JDK 17+（用于 ANTLR generator）。Bazel 通过 Bzlmod 获取 LLVM 提供的 **C++20** 编译器、链接器和目标平台 SDK。首次构建会从源码编译 LLVM/MLIR，耗时明显多于增量构建。
 
 ```sh
 bazel build //:xrackc
@@ -22,11 +22,17 @@ bazel run //examples/controls:controls
 bazel run //examples/selection:selection
 bazel run //examples/navigation:navigation
 bazel run //examples/list:list
+bazel run //examples/list:list -- --position
+bazel run //examples/list:list -- --linked
+bazel run //examples/list:list -- --anchor
 bazel run //examples/delegates:delegates
 bazel run //examples/notes:notes
 bazel run //examples/dialog:dialog
 bazel run //examples/menu:menu
 bazel run //examples/table:table
+bazel run //examples/table:table -- --frozen
+bazel run //examples/table:table -- --rows
+bazel run //examples/table:table -- --row-field
 bazel run //examples/table:records
 bazel run //examples/split:split
 bazel run //examples/tooltip:tooltip
@@ -48,7 +54,9 @@ bazel run //:xrackc -- --check examples/counter/counter.xr
 
 系统、`rust-toolchain.toml`、`Cargo.toml` 和 `rules_rust` toolchain 使用 Rust **1.99.1**、edition **2024**；`rules_rust` 固定为 **0.75.0**。依赖版本由 `Cargo.lock` 与 `MODULE.bazel.lock` 锁定。
 
-MLIR 通过 `llvm` module **0.8.26** 导出的 `@llvm-project` 构建，LLVM 版本固定为 **23.1.2**。不探测 `llvm-config`、Homebrew LLVM 或系统 MLIR，不使用 Melior 的系统链接方式。
+MLIR 通过 `llvm` module **0.8.26** 导出的 `@llvm-project` 构建，LLVM 版本固定为 **23.1.2**。目标与执行阶段都由 `@llvm//toolchain:all` 提供 C++ 工具链。Linux 使用 glibc 2.28 目标平台，macOS 使用 LLVM module 管理的 Apple SDK，Windows 保持 MSVC ABI。
+
+Windows 的 Bazel genrule 需要 Bash。下载 MSVC runtime 和 Windows SDK 前，请核对 [Microsoft 组件许可要求](https://github.com/hermeticbuild/windows_support)，并在有权使用这些组件时设置 `BAZEL_MSVC_RUNTIME_VISUAL_STUDIO_EULA=1` 和 `BAZEL_WINDOWS_SDK_EULA=1`。
 
 Bazel 使用配套的 Rust 目标生成器和 `antlr4rust 0.6.0` runtime。`.g4` 变化后，Bazel 通过 JDK 重新生成 Rust lexer、parser 和 listener。JDK 只用于生成源码。
 
@@ -59,8 +67,13 @@ bazel build //grammar:generate_rust //mlir:c_bindings_out_dir
 export XRACK_ANTLR_DIR="$(pwd)/bazel-bin/grammar/generated/rust"
 export OUT_DIR="$(pwd)/bazel-bin/mlir/c_bindings_out_dir"
 cargo check --workspace --locked
-cargo fmt --all --check
-cargo clippy --workspace --all-targets --no-deps --locked -- -D warnings
+```
+
+Rust 格式检查和 Clippy 使用 Bazel 的 Rust 工具链。Clippy 检查手写 Rust，并将 correctness 类诊断作为构建错误。生成的 UI 代码通过编译器测试验证。
+
+```sh
+bazel build --config=fmt //... //tests:gpu_test
+bazel build --config=lint //... //tests:gpu_test
 ```
 
 依赖 MLIR 原生库的可执行文件和测试通过 Bazel 构建。Cargo 可用于运行独立的 parser 测试，执行 `cargo test -p xrack-parser --locked` 前先按上文生成 Rust parser 并设置 `XRACK_ANTLR_DIR`。
@@ -85,17 +98,21 @@ cargo run --manifest-path examples/cargo-consumer/Cargo.toml \
 `python3 tools/package_xrackc.py` 用 Bazel 构建当前宿主平台的 `xrackc`，在 `.tools/dist/` 生成压缩包和 SHA-256 校验文件。解包后将 `XRACKC` 指向其中的可执行文件。压缩包包含编译器及其依赖的许可证。
 
 ```sh
-cargo package -p xrack-runtime -p xrack-assets -p xrack-layout \
+cargo package --locked -p xrack-runtime -p xrack-assets -p xrack-layout \
   -p xrack-renderer-femtovg -p xrack-platform-winit
 ```
 
-Cargo 会验证打包后的源码。正式发布按 `xrack-runtime`、`xrack-assets`、`xrack-layout`、`xrack-renderer-femtovg`、`xrack-platform-winit` 的顺序提交，等待前置依赖进入索引。Cargo 版桌面宿主使用上游 AccessKit，Bazel 版带有 macOS 三态复选框无障碍值修补。
+Cargo 会验证打包后的源码，并在发布时按依赖顺序上传这些 crate。Cargo 版桌面宿主使用上游 AccessKit，Bazel 版带有 macOS 三态复选框无障碍值修补。
+
+手动运行 [Release XRack](.github/workflows/release-crates.yml) 并输入 workspace 版本号，可执行 dry-run。正式发布时，在 `main` 上选取已合并的提交，推送与 workspace 版本一致的 tag，例如 `v0.1.0`。发布任务先验证 Cargo 包，再运行各平台 CI，核对所有 `xrackc` 归档及校验文件。随后将五个 Rust crate 发布到 crates.io，将 `xrackc` 归档和校验文件附到同一 tag 的 GitHub Release。
+
+在 GitHub 的 `crates-io` 环境配置 `CARGO_REGISTRY_TOKEN` secret，并允许发布 tag 使用该环境。首次发布使用允许发布新 crate 的 token。上传中断后，可从同一次 workflow 运行重试，脚本会跳过同一提交已发布的版本。升版本时同步更新 workspace 版本、内部 crate 依赖、`xrackc` 的 Bazel 版本和 Cargo 消费示例的版本。
 
 ### GitHub Actions
 
-[CI](.github/workflows/ci.yml) 在 macOS arm64、Linux x64 和 Windows x64 上分别测试 Cargo 桌面依赖栈与 Bazel 编译器。每个平台用归档中的 `xrackc` 运行仓库外 Cargo 示例。成功的任务上传对应的编译器归档和校验文件，Linux 任务额外上传通过 Cargo 验证的 5 个 `.crate`。真实 GPU 测试使用本地显式目标 `//tests:gpu_test`。
+[CI](.github/workflows/ci.yml) 在 macOS arm64、Linux x64 与 arm64、Windows x64 与 arm64 上测试 Cargo 桌面依赖栈与 Bazel 编译器。每个平台用归档中的 `xrackc` 运行仓库外 Cargo 示例。成功的任务上传对应的编译器归档和校验文件，Linux x64 任务额外上传通过 Cargo 验证的 5 个 `.crate`。真实 GPU 测试使用本地显式目标 `//tests:gpu_test`。
 
-编译器任务通过 `setup-bazel` 缓存 Bazelisk、依赖下载和编译产物。缓存按操作系统和架构隔离。依赖下载缓存跟踪 Bazel 版本、`MODULE.bazel` 和 `Cargo.lock`，编译产物缓存额外跟踪 Bazel 构建规则。Windows x64 使用 MSVC SDK 和 `clang-cl` 构建 C++，本地可用 `BAZEL_LLVM` 指定 `clang-cl` 的安装目录。
+编译器任务通过 `setup-bazel` 缓存 Bazelisk、依赖下载和编译产物。缓存按操作系统和架构隔离。依赖下载缓存跟踪 Bazel 版本、`MODULE.bazel` 和 `Cargo.lock`，编译产物缓存额外跟踪 Bazel 构建规则。Windows 编译器任务从仓库的 Actions variables 读取上述两个 Microsoft 许可变量。
 
 ## VS Code
 
@@ -116,6 +133,8 @@ C++ 使用 clangd。运行 **Bazel: Generate compile_commands.json** 或 `python
 ## Bazel 磁盘缓存
 
 仓库 `.bazelrc` 默认启用 `--disk_cache=~/.cache/bazel/xrack`。此缓存保存构建动作输出，可以跨 Bazel 重启、不同 output base 和兼容的 worktree 复用；它与下载源码包的 repository cache、当前 output base 的增量缓存分开。
+
+本地并发数由 Bazel 根据宿主资源自动确定，需要临时调整时可传 `--jobs=N`。GitHub Actions 为 Linux 和 Windows runner 设置 4 个 job，为 macOS arm64 runner 设置 3 个。
 
 回收策略为 `--experimental_disk_cache_gc_max_size=30G` 和 `--experimental_disk_cache_gc_max_age=30d`，由 Bazel 在空闲时清理，并非构建期间的硬配额。缓存按输入和工具链签名匹配，修改 C++ 标准、Rust 版本或编译选项后可能需要重新预热。已有历史动作不会因为新增配置就保证全部出现在 disk cache 中，首次执行会逐步填充。
 
@@ -182,6 +201,8 @@ export component Counter inherits Window {
 
 `states [ alarm when root.level >= 2: { indicator.width: 280px; } ]` 可在一个状态里覆盖多个视觉属性。每个状态组按声明顺序选择第一个满足 `when` 的状态。没有匹配的覆盖时读取原绑定，即使原绑定依赖的值在状态激活期间变化也会恢复到最新结果。状态覆盖可作用于声明元素及同一组件、同一重复上下文内的后代。
 
+状态可以改变组件实例的 `in`、`in-out` 输入及调用方设置的布局属性，例如 `badge.caption: "告警"; badge.width: 280px;`。输入覆盖参与组件属性的惰性求值，内部控件和外部 getter 会读到相同的值。状态退出时恢复调用方的最新绑定，或使用子组件的默认值。显式写入会接管这个输入，重置后恢复状态绑定。状态可以声明在实例体内，重复实例会按当前行独立选择状态。编译器检查循环依赖和与双向链接的冲突。运行 `bazel run //examples/layout:layout -- --component-states` 查看状态联动和布局转场。
+
 状态内部的 `in`、`out` 和 `in-out` 可以声明 `animate indicator.width { duration: 300ms; }`。转场属性需要一个显式的原绑定。`animate *` 为该状态修改的可插值属性提供默认时序，显式声明优先。同一属性同时命中进入和离开时序时采用进入时序。运行 `bazel run //examples/layout:layout -- --states`，在正常、预警和告警之间切换，观察中途反转与恢复。
 
 `GroupBox` 为控件提供标题和边框，直接子项沿用垂直布局的间距、对齐与尺寸约束。`content-padding` 设置默认内边距，四边 `padding-*` 可单独覆盖。设置 `checkable: true;` 后，标题可用鼠标、键盘或辅助技术勾选，`checked` 可双向绑定，用户切换时触发 `toggled(bool)`。
@@ -194,7 +215,8 @@ export component Counter inherits Window {
 
 `Label` 默认不自动换行，适合标题和状态文字。`Text` 保留现有的默认换行。两者都支持 `wrap`、`horizontal-alignment`、`vertical-alignment`、`overflow` 和 `max-lines`。`start` 和 `end` 按段落方向解释，`left` 和 `right` 指物理边缘。`overflow: elide;` 按字素簇缩短超宽文字，隐藏后续行时在最后一个完整可见行加省略号。辅助技术仍可读取完整文本。运行 `bazel run //examples/layout:layout -- --labels` 体验。
 
-`StyledText` 接收 `styled-text` 值并复用标签的布局属性。``@markdown("**粗体**、*斜体*和 `xrackc`")`` 在编译时生成文字和字素对齐的样式区间。支持段落、标题、粗体、斜体、删除线和代码，链接、图片和 HTML 会产生诊断。Rust 可用 `StyledText::from_markdown` 解析动态内容，也可用 `StyledText::from_runs` 指定颜色和下划线。运行 `bazel run //examples/layout:layout -- --styled-text` 体验换行和截断。
+`StyledText` 接收 `styled-text` 值并复用标签的布局属性。``@markdown("**粗体**、*斜体*和 `xrackc`")`` 在编译时生成文字和字素对齐的样式区间。支持段落、标题、粗体、斜体、删除线、代码和链接。图片和 HTML 会产生诊断。Rust 可用 `StyledText::from_markdown` 解析动态内容，也可用 `StyledText::from_parts` 提供有样式区间和链接的文本。
+Markdown 链接用 `[文案](目标)` 声明，默认显示下划线并可配置 `link-color`。鼠标和 Tab / Enter 均可触发 `link-activated(target)`，应用收到字符串后决定如何处理。布局截断和祖先裁剪会同步限制链接的命中范围和焦点。运行 `bazel run //examples/layout:layout -- --styled-text` 体验换行和截断。
 
 窗口可绑定 `default-font-family`、`default-font-size`、`default-font-weight` 和 `default-font-italic`。文字、按钮和输入控件可分别用 `font-family`、`font-size`、`font-weight` 和 `font-italic` 覆盖窗口设置。字体可用系统字体族名或 `monospace`。缺少所选字形时继续用系统回退字体。字重使用 100 到 900，400 为常规字重，0 沿用默认值。可变字体使用支持的字重和斜体轴。布局、GPU 绘制、编辑器光标和无障碍文字范围共用字体选择。运行 `bazel run //examples/layout:layout -- --fonts`，切换等宽字体和字号，观察单行输入和多行换行。
 
@@ -214,9 +236,23 @@ export component Counter inherits Window {
 
 `ScrollView` 根据直接子项的位置和布局尺寸计算内容范围。`content-width` 和 `content-height` 可以用长度或视口百分比指定最小内容尺寸。子项的百分比尺寸以显式内容尺寸或视口为基准。`viewport-height` 仍可用于既有的最小内容高度绑定。`Shift` 加滚轮可横向滚动，嵌套视图会将各轴剩余滚动量交给外层。运行 `bazel run //examples/layout:layout` 可体验二维画布。
 
+`ScrollView` 和虚拟视图可以在回调中调用 `view.scroll-to(96px, 60px)`，参数为从内容原点量起的逻辑像素。列表、网格、树和表格也可用 `view.position-view-at-index(9000, ScrollAlignment.center)`。索引从零开始，树视图使用当前展开后的可见行序列。对齐方式有 `beginning`、`center`、`end`、`visible` 和 `contain`。`visible` 在目标已有一部分可见时保留位置，`contain` 尽量完整显示目标行。
+
+定位命令在回调结束并更新模型和布局后执行，结果限制在可滚动范围内。越界行索引会被忽略，定位本身不改变选择。读取 `content-x` 和 `content-y` 得到内容相对视口的实际位置，向右或向下滚动时为负值。`visible-width` 和 `visible-height` 是只读视口尺寸。表格的视口尺寸以表身为准。
+
+可用 `content-y: root.offset;` 提供响应式初值，或用 `content-y <=> root.offset;` 把滚动位置链接到可写的 `length` 属性。`ScrollView` 和表格的横轴也支持同样的绑定。单向绑定沿用其他可编辑控件的规则，视口首次主动移动后保留自己的位置。双向链接中的属性表示目标位置，各视口独立裁剪，内容尺寸变化本身不会写回。用户滚动和定位命令实际移动视口时，只将移动的轴写回绑定源。绑定纵轴的虚拟视图以目标位置为准，键盘导航可以更新它。运行 `bazel run //examples/list:list -- --linked` 可比较不同内容长度的联动画布。
+
+`scrolled()` 在滚轮、拖动、惯性、键盘或辅助功能实际移动视口后触发。回调可读取布局更新后的 `self.content-x` 和 `self.content-y`。一次斜向滚动对每个移动的视口触发一次，已到边界的视口和程序化定位不触发。运行 `bazel run //examples/list:list -- --position` 可比较手动滚动和按钮跳转时的回调计数。
+
+可读取已布局元素的 `layout-x`、`layout-y`、`layout-width` 和 `layout-height`。这些值使用逻辑像素，位置相对布局父元素。带 `window-bounds-` 前缀的四个值描述变换后的窗口坐标包围盒，包含滚动位移和绘制变换。元素隐藏或离开场景后，`layout-ready` 变为 `false`，几何值清零。
+
+布局结果可用于读取属性、回调、绘制属性及宽高固定的文字标签。普通内容的布局绑定不能依赖布局结果。`PopupWindow` 和 `Tooltip` 的布局可读取普通内容的几何，编译器会沿属性、纯回调和组件输入追踪依赖。自定义宿主可在准备好场景和布局后调用 `LayoutObservers::sync` 发布这些值。运行 `bazel run //examples/layout:layout -- --geometry` 可调整窗口大小并打开随面板尺寸变化的浮层。
+
 `StandardListView` 可直接绑定 `[string]`，也可绑定带字符串字段的记录列表。记录默认读取 `text` 字段，可用常量 `text-role: "label";` 指定其他字段。默认行复用虚拟布局、滚动条和键盘选择，只读取可见项。辅助技术可读取列表总项数和可见项的绝对位置。
 
 `current-index` 支持双向绑定，默认 `-1` 表示未选择。程序改变选中项时，列表会把它滚入视口。手动滚动后会保留位置，直到选择再次变化。设置 `follow-current: false;` 可关闭程序选中时的自动滚动。运行 `bazel run //examples/list:list -- --standard` 体验字符串分类和五万行记录。
+
+虚拟视图可用 `preserve-scroll-anchor: true;` 保留阅读位置。模型插入、删除、排序、树折叠或网格列数变化时，视口优先保留首个可见记录及其相对视口的位置。该记录消失后，尝试保留原来同屏的下一条记录。无可用记录时沿用现有偏移并按新边界裁剪。选中项跟随和显式定位仍可移动视口。绑定了 `content-y` 的轴由绑定源决定，行锚定本身也不会触发 `scrolled()`。默认关闭。运行 `bazel run //examples/list:list -- --anchor` 可比较两种行为。
 
 `GridView` 接收一个 `for` 模板，支持整数、字符串列表和记录模型，也支持使用自定义组件作为单元格。用 `cell-width`、`cell-height` 和 `spacing` 设置单元格，布局从左到右逐行排列，列数随视口宽度变化。只构建与垂直视口相交的网格行。自定义组件的状态按模型记录标识保存，滚出视口或在模型中移动后仍属于原记录。
 
@@ -226,9 +262,15 @@ export component Counter inherits Window {
 
 滚动容器可用单指拖动内容，桌面也可以按住鼠标中键拖动。快速松手时，内容按松手前的速度继续滚动并减速。手势锁定起始视图，嵌套视图沿用滚轮的逐轴交接规则。短触仍按按钮等控件的点击处理。惯性在边界停下，也可以再次按下停止。
 
+视口可以设置 `mouse-drag-pan-enabled: true;` 启用左键拖动，默认关闭。短按按原控件的点击处理，超过拖动阈值后视口接管，剩余滚动量只交给也启用左键平移的祖先视口。文本选择、滑块、滚动条和拖放仍使用各自的手势。运行 `bazel run //examples/list:list -- --position` 可在画布按钮和列表上试用。
+
 `TextEdit` 支持多行文本、`text <=>`、`edited(string)`、`read-only`、占位文本和 IME。`wrap` 接受 `word-wrap`、`char-wrap` 和 `no-wrap`。Enter 插入换行，Home 和 End 按当前显示行移动，Ctrl 或 Command 加 Home 和 End 移到文档首尾。鼠标拖动或 Shift 加方向键可跨行选择，滚轮浏览内容，编辑和键盘移动时视口跟随光标。
 
 单行和多行文本控件支持鼠标选区和系统剪贴板。Ctrl 或 Command 加 C、X、V 分别复制、剪切、粘贴，只读字段可以复制。Ctrl 或 Command 加 Z 撤销，加 Shift 和 Z 或按 Ctrl+Y 重做。连续输入和删除可以合并，粘贴、剪切及 IME 提交各自形成一笔。历史按编辑控件保存，虚拟列表内按稳定行标识定位。当前文本与历史记录不一致时会重建历史起点，避免撤销覆盖外部更新。剪贴板回执只作用于原来的编辑目标和选区。
+
+回调可以对当前聚焦的文本框调用 `select-all()`、`clear-selection()`、`set-selection-offsets(anchor, caret)`、`cut()`、`copy()`、`paste()`、`undo()` 和 `redo()`。目标可以是单行、多行编辑器、`SearchField` 或可编辑的 `ComboBox`。偏移以 UTF-8 字节计，超界会裁剪，落在字素内部会移到其起点。先调用 `entry.focus()` 再发选择命令，窗口会按顺序应用；工具栏按钮也可用 `focus-on-click: false;` 保留当前选区。剪切和粘贴异步等待系统剪贴板，回执仍须匹配编辑目标、文字和选区。运行 `bazel run //examples/form:form -- --editor-commands` 体验。
+
+混排希伯来文、阿拉伯文、拉丁字母和数字时，点击、左右方向键、选区高亮和 IME 光标都使用实际排字的字形位置。一个逻辑偏移在方向边界可以有两个视觉位置，连续的逻辑选区也可以分成多个高亮段。编辑和剪贴板继续使用原文顺序。多行编辑器上下移动保留屏幕横坐标，软换行后的方向解析以单个视觉行为单位。运行 `bazel run //examples/form:form -- --bidi` 体验。
 
 `Dialog` 是同一窗口内的模态弹层。用 `open <=> root.dialog-open;` 双向绑定打开状态。窗口居中显示对话框，内容按垂直布局排列。`DialogButton` 的 `role` 取 `accept` 或 `reject`，关闭后分别触发 `accepted()` 或 `rejected()`。Escape 默认取消，也可通过 `close-on-escape` 关闭此行为。启用 `close-on-outside` 后，在遮罩上按下并松开会取消。最近打开的对话框接收输入，Tab 在其中循环，关闭后恢复原焦点。
 
@@ -290,6 +332,8 @@ export component Counter inherits Window {
 
 记录模型可用 `text-role` 指定显示字段，用 `value-role` 指定业务值字段。角色由编译器校验，`current-value` 和 `value-selected` 采用该字段的类型，支持字符串、整数、浮点数、布尔值、`Date` 和 `Time`。`selected(string)` 返回显示标签。按值选择会在模型重排后查找相同业务值，弹层高亮随行标识移动。可编辑的记录下拉框按显示标签匹配，提交未匹配的自由文本时可在 `accepted(string)` 中处理。运行 `bazel run //examples/selection:selection -- --record-combo` 体验。
 
+记录下拉框可以用 `enabled-role: "access.available";` 指定布尔字段。禁用项仍显示，鼠标、键盘、补全和辅助技术会跳过它，提交时重新核对当前模型。程序可保留指向禁用项的当前值。非编辑下拉框支持按前缀定位，短时间连续输入会合成前缀，重复按同一个字符会在匹配项之间循环。弹层关闭时直接选中，打开时只移动高亮，按 Enter 才提交。
+
 `editable: true;` 让 `ComboBox` 的文字区域支持输入、IME、剪贴板和撤销。草稿可用 `edit-text <=> root.draft;` 双向绑定，修改时触发 `edited(string)`。点击箭头或按 F4 可打开列表，列表优先定位到与草稿精确匹配或具有相同前缀的项。关闭列表后按 Enter 提交草稿并触发 `accepted(string)`。精确匹配时更新选项，自定义文本以 `current-index: -1` 表示或写入 `current-value`。运行 `bazel run //examples/selection:selection -- --editable-combo` 体验。
 
 `auto-complete: true;` 可在编辑区显示模型中首个前缀匹配项的后缀。光标位于草稿末尾、没有选区且 IME 未预编辑时才显示。已有精确匹配时保留当前文字。按右方向键插入可见后缀并形成一笔可撤销的编辑，按 Escape 收起提示。模型变化会使过期候选失效。按 Enter 仍提交草稿，Tab 仍切换焦点。
@@ -299,6 +343,10 @@ export component Counter inherits Window {
 `accepted(string)` 报告显式提交的查询，`selected(string)` 报告选中的候选。两种操作都触发 `search-triggered(string)`。`live: true;` 也会在输入变化时触发它。`bazel run //examples/async_demo:async_demo` 演示用 Tokio 查询并通过 `UiSender` 返回候选，示例单独维护一批候选和虚拟化的结果列表。
 
 `RadioGroup` 接收静态 `RadioButton`，也可以用一个 `for` 生成所有选项。通过组的 `current-index` 或 `current-value` 双向绑定选择，按钮的选中状态由组推导。组支持横竖排列、方向键导航和 `selected(string)`。
+
+组件根部也可声明非可视的 `ButtonGroup`，各个 `RadioButton` 用 `group: group-id;` 加入同一组，可分别放在不同的行、列或条件容器中。`current-index` 按声明顺序分配槽位，隐藏项保留槽位。`RadioButton.value` 可提供稳定的业务值，`current-value` 和 `selected(string)` 使用该值，省略时沿用 `text`。每组在 Tab 顺序中只占一站，方向键在可用选项间循环。设置组的 `enabled: false;` 停用整组，`accessible-name` 会用于无障碍分组。运行 `bazel run //examples/selection:selection -- --radio-groups` 体验。
+
+`ButtonGroup { exclusive: false; }` 可组合 `CheckBox` 和 `Switch`。全选框用 `check-state <=> options.check-state;` 绑定汇总结果，普通成员各自保留 Tab 停靠点。汇总使用声明中的所有成员，包括隐藏或禁用的选项。`options.set-check-state(CheckState.checked)` 和 `options.set-check-state(CheckState.unchecked)` 分别批量选中和清除，传入部分选中值会保留当前成员状态。批量操作通过各成员的绑定更新属性，成员的用户操作回调由各自的交互触发。运行 `bazel run //examples/controls:controls -- --check-group` 体验。
 
 `TabWidget` 接收静态 `Tab` 子元素，可双向绑定 `current-index`，并通过 `orientation` 切换顶部或左侧标签栏。非活动页面保留组件状态，只有活动页构建内容场景。方向键跳过禁用项，Tab 键把每组选项视为一个焦点停靠点。
 
@@ -324,6 +372,8 @@ export component Counter inherits Window {
 
 `MenuBar` 和 `ContextMenuArea` 分别通过顶部菜单和右键打开 `Menu`。菜单支持嵌套子菜单、禁用项、分隔线和可勾选的 `MenuItem`。`activated()` 在选中可用菜单项时触发。方向键导航，Escape 逐层关闭。右键菜单也可用 Shift+F10 打开。
 
+单行、多行、搜索框、可编辑下拉框、数字输入框和正在编辑的表格或树单元格提供默认编辑菜单。右键、Shift+F10 或辅助技术均可打开。菜单与键盘共用选区、剪贴板和撤销记录。只读框可复制，密码框禁用复制和剪切。数字框的撤销和重做作用于草稿，提交时再更新绑定的数值。`ContextMenuArea` 优先，`context-menu-enabled: false` 可关闭默认菜单。菜单打开后，外部修改当前文本或选区会使旧操作失效。运行 `bazel run //examples/form:form -- --editor-menus` 体验。
+
 `MenuItem` 的 `shortcut: "Primary+Shift+E";` 会在菜单中显示组合键，并与点击共用 `activated()`。`Primary` 在 macOS 上表示 Command，在其他平台表示 Ctrl。也可以组合 `Ctrl`、`Alt`、`Shift` 和 `Super`，主键支持英文字母、数字和 F1 到 F12。字母和数字需要 Ctrl、Alt、Super 或 Primary 中的一个修饰键。无效字符串不会注册快捷键，可将绑定设为空字符串清除快捷键。
 
 菜单栏快捷键在当前窗口或最上层模态区域内生效。打开右键菜单时，只处理该菜单内的快捷键。隐藏和禁用项不参与匹配，同一作用域内的重复组合键不会触发命令。文本编辑保留选择、剪贴板和撤销重做快捷键。运行 `bazel run //examples/menu:menu` 可体验。
@@ -338,6 +388,14 @@ export component Counter inherits Window {
 
 `TableView` 使用静态 `TableColumn` 和一个 `for … : TableRow`。每行按列顺序声明一个展示单元格，支持文本、图像及嵌套布局。列宽支持 `width`、`min-width`、`preferred-width`、`max-width` 和 `horizontal-stretch`。超宽时可用触控板或 Shift+滚轮同步滚动表头和单元格。表头固定在垂直滚动区域上方，只创建可见的行。`current-row` 支持双向绑定，鼠标选择或键盘导航触发 `current-row-changed(int)`。可排序表头交替发出 `sort-ascending(int)` 和 `sort-descending(int)`，应用可用 `VecModel::sort_by` 稳定排序并保留行标识。
 
+表格可用 `movable-columns: true;` 开启表头拖动，默认关闭。拖到目标列的前半或后半时会显示插入位置，松手后提交。靠近表头可见边缘时会自动横向滚动。列宽拖柄和短按排序仍按原操作处理。回调可调用 `table.move-column(0, 2)` 移动显示位置，两个参数都是从零开始的显示索引。`column-moved(column, position)` 给出被移动的声明列索引和新的显示索引。排序、单元格编辑和既有选区保留声明列，键盘导航、Shift 选区和无障碍阅读使用显示顺序。运行 `bazel run //examples/table:table -- --standard` 可试用表头拖动和程序化移动。
+
+表格支持 `frozen-columns: 1;`。它冻结当前显示顺序中的前 N 列，列重排后按新顺序重新计算。冻结列随整表纵向滚动，横向滚动条和翻页只覆盖后面的滚动区。两区共享行标识、选区和编辑状态。窗口较窄且内容溢出时，布局减少实际冻结列数，为滚动区保留空间。默认值为 0。运行 `bazel run //examples/table:table -- --frozen` 可试用，Shift 加滚轮可横向滚动。
+
+表格可用 `resizable-rows: true;` 开启拖动行缝调整行高，默认关闭。回调也可调用 `table.set-row-height(20, 64px)`，按当前模型索引指定行高。行高限制在 12–512 个逻辑像素，传入负长度可恢复该行的默认 `row-height`。调整后的尺寸跟随记录标识，插删和排序后仍属于同一记录，记录移除时清理。列表虚拟化、键盘翻页、行锚定和按索引定位共用这份几何数据。运行 `bazel run //examples/table:table -- --rows` 可试用。
+
+基于记录模型的 `ListView`、`StandardListView`、`TreeView`、`TableView` 和 `StandardTableView` 可以用 `row-height-field: "height";` 指定行高字段。字段名须为常量，字段类型须为 `length`。非正或非有限值使用默认 `row-height`，正值裁剪到 12–512 个逻辑像素。用户拖动或命令设置的表格行高优先，清除覆盖后恢复记录中的最新高度。字段修改只更新对应记录的投影，树按展开后的顺序计算几何。运行 `bazel run //examples/table:table -- --row-field` 可查看共享模型的表格与列表，并对比记录修改和手动覆盖。
+
 `StandardTableView` 可直接绑定记录列表，例如 `model: root.inventory; TableColumn { title: "设备"; field: "name"; }`。`field` 是编译期校验的字段名，支持字符串、整数、浮点数、布尔值、`Date` 和 `Time`。控件为可见行生成只读文本单元格，复用固定表头、列宽调整、选择和排序回调。默认将程序选中的行滚入视口，可通过 `follow-current: false;` 关闭。辅助技术可读取可见的表头、行列位置和单元格值。运行 `bazel run //examples/table:table -- --standard` 体验五万行库存表。
 
 设置 `resizable-columns: true;` 后，可拖动表头分隔线调整列宽。可在单列设置 `resizable: false;` 锁定分隔线。手动宽度保存在当前表格实例，受声明的最小、最大宽度限制，排序和替换行模型时仍然有效。
@@ -348,13 +406,45 @@ export component Counter inherits Window {
 
 用 `bazel run //examples/table:table -- --cells` 或 `bazel run //examples/table:table -- --columns` 体验两种选择方式。
 
+表格设置 `copyable: true;` 后，可用 Ctrl 或 Command 加 C 复制选区到系统剪贴板。复制按当前显示列顺序读取模型，包括离屏的已选行和列。单元格选区输出最小矩形，选区内的空洞保留为空字段。文本中的制表符、换行和引号会转义。自定义表格默认复制直接文本和双向绑定的模型值，也可在直接单元格上用 `clipboard-text` 指定导出文本。编辑中的文本选区优先。一次复制最多 100 万个字段或 8 MiB。
+
 `TableCell { text <=> item; }` 可编辑 `for item in root.records` 中可写 `[string]` 模型的一行。双击单元格，或在聚焦后按 Enter / F2 开始编辑。Enter 提交，Tab 提交并移动焦点，Escape 或切换到其他控件会丢弃草稿。应用在编辑期间重排模型时，仍可见的记录会按行标识保留草稿。滚出视口、删除记录或外部改值会结束编辑。文本输入、IME、剪贴板和撤销在草稿上工作，提交时才修改模型。
 
 结构化行可用 `export struct StockRow { name: string, units: int }` 声明，`property <[StockRow]>` 接收 `StockRow { name: "交换机", units: 12 }` 等记录字面量。在 `TableRow` 的直接子元素中，`TableCell { text <=> row.name; }` 编辑字符串，`SpinBox { value <=> row.units; }` 编辑整数，`Slider { value <=> row.load; }` 编辑浮点数，`CheckBox { checked <=> row.available; }` 或 `Switch` 编辑布尔值。提交核对行标识和被编辑字段的原值，再把改动合并进最新记录。Rust 使用生成的 `StockRow` 和 `VecModel<StockRow>`。运行 `bazel run //examples/table:records` 可体验独立字段编辑和按类型排序。
 
+记录字段可使用其他命名记录类型，类型之间不能形成循环。表格和树编辑器可以双向绑定 `row.stock.units` 这样的字段。`TableColumn.field`、`text-role`、`value-role` 和 `row-height-field` 接受点分路径，例如 `"stock.units"`。树的 `key` 和 `parent-key` 可引用嵌套的整数。粘贴解析器返回整段子记录时，撤销历史仍按实际变更的字段保存。运行 `bazel run //examples/table:records -- --nested` 可查看同一库存模型在表格、列表、下拉框和树中的投影。
+
+`TableRow` 与 `TreeRow` 可以在静态子路径使用匿名组件，例如 `NameEditor { value <=> row.name; submitted => { root.save(); } }`。组件只在记录进入视口时创建，滚动、排序和树的折叠保留同一记录的局部状态，删除记录或替换模型会释放对应实例。点击表格单元格内的控件时，表格先更新选区，控件继续处理本次点击。无障碍树公开行列坐标以及编辑器和按钮自己的角色。
+
+直接作为表格单元格的组件可设置 `clipboard-text: row.name;`，从模型复制可见和离屏记录。表格启用 `pasteable` 后，自定义编辑器可用 `clipboard-target: "value";` 指定绑定到当前模型行的 `in-out` 输入，再用 `clipboard-paste(text) => { … }` 返回包含 `accepted: bool` 和同类型 `value` 的记录。每列可在静态子路径配置一个解析器。表达式可读取外层组件属性、当前记录和索引，也可调用纯回调。所有字段通过校验后才一起提交，解析覆盖离屏行。未配置解析器的自定义单元格会使整次粘贴取消。
+
+运行 `bazel run //examples/table:records -- --delegates`，在表格焦点下可粘贴名称、数量和可用状态。数量解析示例同时接受 `12` 与 `12件`。给一行加星后按表头排序，或编辑名称并按 Enter 提交，可体验自定义编辑器的交互。
+
+`TableView` 可用 `pasteable: true;` 开启 Ctrl/Cmd+V 批量粘贴。选中单元格后，从该格沿显示列顺序写入 TSV，行选区从当前行的第一显示列开始。数据通过单元格的双向绑定写入，支持离屏行和包含制表符、换行、双引号的文本字段。数字使用十进制文本，布尔值接受 `true`、`false`、`1` 或 `0`。整块数据校验成功后才写入模型，保留行标识。只读、禁用、隐藏、类型不匹配、越界和过期剪贴板回执会取消整次粘贴。正在编辑文字时，快捷键交给文本编辑器。运行 `bazel run //examples/table:records -- --cells`，选中名称或负责人单元格后可粘贴多行数据。
+
+表格聚焦时用 Ctrl/Cmd+Z 撤销一整次粘贴，用 Ctrl/Cmd+Shift+Z 或 Ctrl+Y 重做。记录按行标识和实际变更字段保存，重排、滚动和列移动后仍可重放。每次重放先核对全部目标行和字段值。若目标行已删除或已改写某个目标字段，整笔历史失效，其余字段保留后续编辑。文本编辑器继续处理自己的撤销历史。每个表格实例最多保留 64 笔、约 8 MiB 的历史数据，超出单笔容量的粘贴仍提交并清空之前的历史。
+
 `background` 和 `border-color` 使用 `brush` 类型，纯色可直接绑定。线性渐变使用 `@linear-gradient(90deg, #536dfe 0%, root.accent 100%)`，径向渐变使用 `@radial-gradient(circle, #fff, #536dfe)`，中心和半径由元素尺寸决定。色标颜色可以引用属性，省略的位置会均匀插值，显式位置须在 0% 到 100% 之间且按升序排列。`Rectangle` 和 `Button` 可以用 `border-top-left-radius` 等属性分别覆盖四角的 `border-radius`。
 
+视觉节点可以用 `z` 控制同一父级下的叠放顺序，默认是 0。同值按声明顺序绘制，指针从最上层开始命中。Tab 遍历、无障碍阅读顺序和组件事件路径保留各自的结构顺序。模态和弹出层由窗口管理打开顺序。
+
+`opacity` 把节点和子节点作为一组淡出，取值限制在 0 到 1。透明度为 0 时跳过绘制，控件仍参与布局并可接收输入。纯透明度更新可复用已准备的布局。运行 `bazel run //examples/layout:layout -- --compositing` 查看重叠淡出与点击顺序。
+
+`Rectangle` 支持 `drop-shadow-*` 与 `inner-shadow-*`，两组都提供 `color`、`offset-x`、`offset-y`、`blur` 和 `spread`。外阴影由背景和边框的透明度生成，沿父容器边界裁剪。内阴影沿矩形的圆角裁切。正扩张增大外阴影并加宽内阴影，负值收缩阴影。外阴影扩张按设备像素取整，范围为 ±192 个设备像素。两种阴影都随节点的 `opacity` 合成，可通过绑定、状态或动画更新。运行 `bazel run //examples/layout:layout -- --shadows`。
+
+`Rectangle { clip: true; }` 按边框内侧的圆角裁剪子树。显式设置 `clip: false;` 允许子控件溢出矩形，仍受更外层的裁剪和窗口范围约束。省略 `clip` 时沿用原有矩形裁剪。绘制和指针命中共用圆角几何，无障碍按其矩形投影报告可见边界。运行 `bazel run //examples/layout:layout -- --clipping`。
+
+普通视觉节点支持 `transform-rotation`、`transform-scale`、`transform-scale-x` 和 `transform-scale-y`。旋转值用顺时针角度，逐轴值可覆盖统一缩放，负值可镜像。`transform-origin-x` 和 `transform-origin-y` 接受长度或百分比，省略时以节点中心为原点。变换作用于已完成布局的子树，绘制、指针定位和裁剪共用变换矩阵。窗口级弹出层继续以窗口坐标定位。运行 `bazel run //examples/layout:layout -- --transforms`。
+
 `Image` 的 `source: @image-url("assets/icon.svg");` 引用相对于 `.xr` 的本地 PNG 或 SVG。图片以 `!xr.image` 通过 MLIR，编译器检查资源后把编码字节嵌入 Rust。支持 `image-fit: fill | contain | cover | preserve`。布局内默认 `contain`，其他位置默认 `fill`。SVG 支持独立的矢量图形，由 resvg 按显示尺寸和 DPI 栅格化。SVG 文本和外链资源暂未支持。
+
+`source-clip-x`、`source-clip-y`、`source-clip-width` 和 `source-clip-height` 以源像素选择图块。未指定的宽高延伸到源图边缘，超出源图的部分裁掉。裁剪后的宽高参与隐式尺寸和比例计算，`image` 值的 `.width`、`.height` 仍返回完整资源尺寸。`horizontal-alignment` 和 `vertical-alignment` 决定图像在未平铺轴上的位置，`image-rendering: pixelated;` 使用最近邻采样。普通图像和 GIF 帧也可按轴使用 `horizontal-tile-mode` 和 `vertical-tile-mode`。SVG 直接栅格化裁剪区域，PNG 图块使用独立纹理区域以隔离相邻像素。运行 `bazel run //examples/media:media -- --atlas`。
+
+`Image` 和 `AnimatedImage` 的 `colorize` 接受纯色、线性或径向渐变画刷，并以图像透明度作为遮罩。完全透明的画刷恢复原图。渐变以完整源图坐标计算，裁剪后保留对应的颜色区间，平铺重复该区间，九宫格的各块沿用同一画刷。纯色使用缓存的单通道纹理，渐变在 GPU 上合成。运行 `bazel run //examples/media:media -- --colorize`。
+
+用 `@image-url("assets/frame.svg", nine-slice(4 6 8 10))` 创建九宫格图像。边距按上、右、下、左顺序指定源像素数，也可以给一个统一值，或给纵向和横向两个值。编译器会检查图像是否保留了正尺寸的中心。九宫格填满 `Image`，四角保留逻辑尺寸，空间不足时同轴边距按比例收缩。`horizontal-tile-mode` 和 `vertical-tile-mode` 独立支持 `stretch`、`repeat` 和 `round`，分别拉伸、按原尺寸平铺并裁剪末片、缩放为整数个完整的平铺单元。Rust 可以用 `Image::with_nine_slice` 为已有资源设置边距。运行 `bazel run //examples/media:media -- --nine-slice` 查看对照。
+
+`AnimatedImage` 可播放通过 `@image-url` 内嵌的本地 GIF。编译器合成差分帧并保留帧时长和文件循环次数，普通 `Image` 显示首帧。用 `playing` 开始或停止，停止会回到首帧。用 `paused` 暂停，或用 `speed` 调整播放速率。`loops: 0;` 沿用文件设置，`-1` 持续循环，正数表示总播放轮数。完成有限循环后保留末帧并触发 `finished()`。只读的 `current-frame` 和 `frame-count` 在窗口同步播放状态后可用于绑定。仍在场景中但不可见的控件冻结播放时钟，重新可见时继续。运行 `bazel run //examples/media:media -- --animated` 体验。
 
 `Path` 的 `commands` 接受 SVG 路径字符串，包括相对坐标、直线、曲线、弧线和闭合。可以用 `fill`、`stroke`、`stroke-width` 设置外观，用 `viewbox-x`、`viewbox-y`、`viewbox-width`、`viewbox-height` 和 `fit` 控制适配。默认以非零环绕规则填充并使用 `contain`。
 
@@ -403,6 +493,10 @@ model.set_row(1, "第二行已更新".into());
 
 DSL 调用与 Rust 的 `invoke_*()` 共用同一处理逻辑。注册了 Rust `on_*()` 闭包时，有返回类型的调用返回闭包的结果。纯回调接收 `Fn` 闭包，调用方需保证闭包没有副作用。元素事件通过 `dispatch(id, event)` 分发。
 
+`callback submitted <=> editor.accepted;` 可以把内部控件事件或子组件的回调作为组件 API 公开。别名沿用目标的参数、返回类型和纯度，调用别名与调用目标进入同一个回调。也可以在命名元素上声明自定义回调。组件实例可写 `entry := Editor { submitted => { root.save(); } }`，类型化的处理器可以返回结果。列表和网格的实例处理器可读取当前模型项和索引。
+
+实例处理器和 Rust `on_*()` 设置目标回调的实现。声明上已有的普通 DSL 回调语句仍先执行，返回值以当前注册实现为准。别名上声明的处理器可作为默认实现。纯回调的注册变化会让依赖该回调的绑定失效。运行 `bazel run //examples/stepper:stepper -- --linked`，在共享编辑器或任务行按 Enter 体验转发。
+
 ## 焦点作用域
 
 `FocusScope` 可包裹复合控件。用 `initial-focus: editor;` 指定首次进入时优先选择的后代。作用域默认记住最后聚焦的有效子控件，`restore-focus: false;` 可让每次进入都采用初始目标。Tab 和 Shift+Tab 可以离开作用域。`focus-on-tab-navigation` 和 `focus-on-click` 控制作用域本身是否接管这两种入口，子控件保留各自的输入行为。
@@ -441,6 +535,12 @@ macOS 上，`DropArea { accept-files: true; }` 也可接收 Finder 或其他应�
 
 ## 多窗口
 
+`Window` 可绑定 `no-frame: true;` 隐藏系统标题栏。`WindowMoveArea` 可包住自定义标题栏，空白位置拖过 4 个逻辑像素后开始系统移动，里面的按钮和其他交互控件仍处理各自的输入。设置 `enabled: false;` 只停用该区域的窗口拖动。打开菜单、下拉框或对话框时会暂停窗口手势。
+
+无边框窗口可用 `resize-border-width: 8px;` 在四边和四角启用缩放命中区。该区域避开可交互控件，`resizable: false;` 关闭缩放。窗口的 `min-width`、`min-height`、`max-width` 和 `max-height` 长度会传给桌面宿主。Windows 和 Linux 使用 winit 的系统边缘缩放，macOS 通过 AppKit 更新窗口边框并保留对侧边缘。运行 `bazel run //examples/layout:layout -- --frameless` 可体验。
+
+回调可以调用 `root.minimize()`、`root.maximize()`、`root.restore()`、`root.toggle-maximized()`、`root.set-full-screen(bool)` 和 `root.toggle-full-screen()`。`restore()` 请求恢复普通窗口。窗口的 `window-active`、`minimized`、`maximized` 和 `full-screen` 是只读的响应式状态，由宿主从原生窗口采样。`minimized-known` 表示当前后端能否报告最小化，例如 Wayland 上该值为 `false`。同一批切换请求按发出顺序解析，退出全屏后需要调整最大化状态时，宿主会等待退出确认。自定义标题栏可用这些属性更新按钮文字和无障碍名称。
+
 `xrack_platform_winit::run_desktop` 在同一个 winit 事件循环中运行多个顶层组件。通过 `Desktop::open` 可在启动时或任意窗口的 UI 回调中创建新窗口。`open_with_messages` 为每个窗口提供独立的 `UiSender` 和 reducer。`DesktopWindow::close` 关闭指定窗口，最后一个窗口关闭后事件循环退出。
 
 顶层 `.xr` `Window` 可实现 `close-requested() => { … }`，返回 `true` 允许关闭，返回 `false` 保留窗口。标题栏、Rust 的 `DesktopWindow::close()` 和 `.xr` 的 `root.close()` 都经过这个处理器。`root.close()` 在当前回调结束后提交关闭请求。处理器可先拒绝，再打开 `MessageDialog`，由确认回调清除未保存标记并重新请求关闭。运行 `bazel run //examples/form:form -- --close-guard` 体验。
@@ -465,6 +565,12 @@ xr_ui_library(
 带图片的目标在 `xr_ui_library` 里用 `assets = ["assets/icon.svg"]` 声明每个资源。Bazel 会在资源内容变化时重新运行代码生成。编译后的程序可以脱离源目录运行。
 
 `import { Card as BaseCard } from "widgets.xr";` 可导入相对路径文件中导出的组件。Bazel 目标用 `sources = ["widgets.xr"]` 声明每个直接或间接导入文件。自定义组件可继承导入的组件，复用子树并覆盖可写输入与根元素绑定。
+
+组件实例的 `in-out` 属性支持双向链接，例如 `editor := Editor { draft <=> root.document; }`。初值来自右侧，父组件、子组件的控件事件和后续赋值都通过同一属性读写。也可链接到兄弟实例的可写属性，或在多层封装中继续传递链接。编译器要求两端类型一致，并拒绝循环。单向输入仍可按原有方式绑定和覆盖。
+
+声明也可以用 `in-out property <string> draft <=> entry.text;` 把内部属性公开为组件 API。目标可以是静态可寻址的可写声明，或文本框、双态复选框和开关、数值框及滑块的编辑属性。别名继承目标的默认值；调用方传入绑定时，编译器将其转发到最终存储位置。多个别名可以公开同一属性，同一个实例初始化该存储位置时只接受一个输入绑定。
+
+虚拟列表和网格中的组件实例可将输入链接到可写模型的字符串项、整条记录或记录字段，例如 `for task in root.tasks : Editor { draft <=> task.name; }`。写入按行标识定位并合并到当前记录，保留其他字段。排序、插删和模型替换后，旧场景的事件会核对行标识。运行 `bazel run //examples/stepper:stepper -- --linked` 体验跨组件编辑和模型行编辑。
 
 ## MLIR 阶段
 
@@ -515,11 +621,11 @@ Bazel 使用 `rules_rust_bindgen` 和同一份 LLVM 23 的 clang/libclang 生成
 
 ## 首版边界
 
-当前的功能缺口包括通用双向属性链接、嵌套记录和自定义单元格编辑器、回调别名和子元素上的自定义回调、读取布局结果、跨组件的状态覆盖和完整的标准控件库。双向文字的精确光标定位尚待实现。文件扩展名约定为 `.xr`，语法取 Slint 风格子集。
+当前的状态转场作用于视觉属性及组件实例的布局属性。标准控件仍在扩充。文件扩展名约定为 `.xr`，语法取 Slint 风格子集。
 
 桌面宿主通过 AccessKit 发布可见控件、当前焦点和活动模态窗口的无障碍树。`accessible-name` 和 `accessible-description` 可补充控件语义，例如纯图标按钮的名称。当前支持聚焦、点击、文本值替换和数值步进。`ComboBox` 和菜单公开弹层内的可见选项，子菜单会跟随当前展开层级。滚动容器公开偏移和范围，可按项、按页或指定偏移滚动。
 
-单行和多行文本框及可编辑 `ComboBox` 公开已提交的文本、光标和选区。辅助技术可读取文本范围并设置选区，操作沿用编辑器的 Unicode 字素边界与视觉换行。常规可见的从左到右文本行同时提供字符坐标。IME 预编辑期间保留已提交的文本，选区操作在预编辑结束后恢复。
+单行和多行文本框及可编辑 `ComboBox` 公开已提交的文本、光标和选区。辅助技术可读取文本范围并设置选区，操作沿用编辑器的 Unicode 字素边界与视觉换行。可见文本按方向拆分范围并发布字符坐标。IME 预编辑期间保留已提交的文本，选区操作在预编辑结束后恢复。
 
 `xrack-layout` 计算线性布局、绝对坐标和祖先裁剪。隐藏元素不占布局空间。鼠标点击需要在同一目标内按下和释放，禁用或被裁剪的控件不会触发点击。winit 将鼠标、Tab / Shift+Tab 和 Enter / Space 事件交给该状态机。绑定变化、窗口缩放和 DPI 变化会触发重绘。
 

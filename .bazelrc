@@ -1,7 +1,7 @@
 startup:windows --windows_enable_symlinks
 
 build --compilation_mode=opt
-build --jobs=8
+build --jobs=auto
 # Share action outputs across output bases/worktrees and Bazel restarts.
 # `~` is expanded by Bazel, so this remains portable across developer machines.
 # GitHub Actions overrides this local default from setup-bazel's home RC.
@@ -11,19 +11,29 @@ build --experimental_disk_cache_gc_max_age=30d
 # Reuse the JDK that runs Bazel to generate the ANTLR Rust sources.
 build --java_runtime_version=local_jdk
 build --tool_java_runtime_version=local_jdk
+build --repo_env=BAZEL_DO_NOT_DETECT_CPP_TOOLCHAIN=1
 # LLVM's overlay enables strict Clang module layering checks, which do not
 # model the current Apple SDK's libc++ headers as Bazel modules.
 build --enable_platform_specific_config
+build:linux --host_platform=//bazel:linux_gnu --platforms=//bazel:linux_gnu
 build:linux --cxxopt=-std=c++20 --host_cxxopt=-std=c++20
 build:macos --cxxopt=-std=c++20 --host_cxxopt=-std=c++20
 build:windows --cxxopt=/std:c++20 --host_cxxopt=/std:c++20
 build:windows --cxxopt=/bigobj --host_cxxopt=/bigobj
 build:windows --enable_runfiles
-# LLVM's x64 assembly needs clang-cl's assembler on Windows.
-build:windows --extra_execution_platforms=//bazel:windows_x64_clang_cl
-build:windows --extra_toolchains=@local_config_cc//:cc-toolchain-x64_windows-clang-cl
+build:windows --host_platform=//bazel:windows_msvc --platforms=//bazel:windows_msvc
+build:windows --repo_env=BAZEL_MSVC_RUNTIME_VISUAL_STUDIO_EULA
+build:windows --repo_env=BAZEL_WINDOWS_SDK_EULA
 build:macos --features=-layering_check
 build:macos --host_features=-layering_check
+build:macos --@rules_cc//cc/toolchains/args/archiver_flags:use_libtool_on_macos=false
 build:macos --macos_minimum_os=13.0
 build:macos --host_macos_minimum_os=13.0
+
+build:fmt --aspects=@rules_rust//rust:defs.bzl%rustfmt_aspect
+build:fmt --output_groups=rustfmt_checks
+build:lint --aspects=@rules_rust//rust:defs.bzl%rust_clippy_aspect
+build:lint --output_groups=clippy_checks
+build:lint --@rules_rust//rust/settings:clippy_flag=-Dclippy::correctness
+
 test --test_output=errors

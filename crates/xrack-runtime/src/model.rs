@@ -31,7 +31,7 @@ impl RowSignals {
     }
 }
 
-type ProjectionDiff<T> = dyn Fn(&T, &T) -> bool;
+type ProjectionDiff<T> = dyn Fn(usize, &T, &T) -> bool;
 
 struct RowProjection<T> {
     signal: Weak<ChangeSignal>,
@@ -44,6 +44,7 @@ struct ModelData<T> {
     rows: RefCell<Vec<Entry<T>>>,
     next_row: Cell<u64>,
     revision: Cell<u64>,
+    edit_revision: Cell<u64>,
     lifetimes: RefCell<BTreeMap<u64, Rc<()>>>,
     count: ChangeSignal,
     structure: ChangeSignal,
@@ -81,6 +82,7 @@ impl<T> From<Vec<T>> for VecModel<T> {
             ),
             next_row: Cell::new(next_row),
             revision: Cell::default(),
+            edit_revision: Cell::default(),
             lifetimes: RefCell::default(),
             count: ChangeSignal::default(),
             structure: ChangeSignal::default(),
@@ -172,13 +174,17 @@ impl<T> VecModel<T> {
     /// Locate a row after the caller has established the appropriate dependencies.
     pub(crate) fn position_untracked(
         &self,
+        range: std::ops::Range<usize>,
         mut predicate: impl FnMut(&T) -> bool,
     ) -> Option<usize> {
+        let start = range.start;
         self.0
             .rows
             .borrow()
+            .get(range)?
             .iter()
             .position(|entry| predicate(&entry.value))
+            .map(|offset| start + offset)
     }
 
     pub(crate) fn project_row_untracked<R>(
@@ -200,13 +206,23 @@ impl<T> VecModel<T> {
         limit: usize,
         project: impl Fn(&T) -> P + 'static,
     ) -> Rc<ChangeSignal> {
+        self.observe_projection_changes(limit, move |_, before, after| {
+            project(before) != project(after)
+        })
+    }
+
+    pub(crate) fn observe_projection_changes(
+        &self,
+        limit: usize,
+        changed: impl Fn(usize, &T, &T) -> bool + 'static,
+    ) -> Rc<ChangeSignal> {
         let signal = Rc::new(ChangeSignal::default());
         let mut projections = self.0.projections.borrow_mut();
         projections.retain(|projection| projection.signal.strong_count() != 0);
         projections.push(RowProjection {
             signal: Rc::downgrade(&signal),
             limit,
-            changed: Box::new(move |before, after| project(before) != project(after)),
+            changed: Box::new(changed),
         });
         signal
     }
@@ -219,6 +235,12 @@ impl<T> VecModel<T> {
     pub(crate) fn structure_stamp(&self) -> (u64, u64) {
         self.0.structure.track();
         (self.0.id, self.0.revision.get())
+    }
+
+    /// Identify the exact model contents and order seen by an asynchronous edit.
+    #[doc(hidden)]
+    pub fn edit_stamp(&self) -> (u64, u64) {
+        (self.0.id, self.0.edit_revision.get())
     }
 
     pub fn len(&self) -> usize {
@@ -299,6 +321,13 @@ impl<T> VecModel<T> {
             self.0.count.notify();
         }
         self.0.structure.notify();
+        self.values_changed();
+    }
+
+    fn values_changed(&self) {
+        self.0
+            .edit_revision
+            .set(self.0.edit_revision.get().wrapping_add(1));
         self.0.values.notify();
     }
 }
@@ -362,30 +391,87 @@ impl<T: PartialEq> VecModel<T> {
 
     /// Replace one row. Returns false for an invalid index or equal value.
     pub fn set_row(&self, index: usize, value: T) -> bool {
-        let previous = {
+        let mut value = value;
+        let changed = {
             let mut rows = self.0.rows.borrow_mut();
             let Some(current) = rows.get_mut(index) else {
                 return false;
             };
-            if current.value == value {
-                return false;
-            }
-            self.0.projections.borrow_mut().retain(|projection| {
-                let Some(signal) = projection.signal.upgrade() else {
-                    return false;
-                };
-                if index < projection.limit && (projection.changed)(&current.value, &value) {
-                    signal.notify();
-                }
-                true
-            });
-            std::mem::replace(&mut current.value, value)
+            self.swap_row(index, &mut current.value, &mut value)
         };
+        if changed {
+            self.values_changed();
+        }
+        changed
+    }
+
+    pub(crate) fn replace_range_if_current(
+        &self,
+        stamp: (u64, u64),
+        start: usize,
+        mut values: Vec<T>,
+    ) -> bool {
+        if self.edit_stamp() != stamp {
+            return false;
+        }
+        let Some(end) = start.checked_add(values.len()) else {
+            return false;
+        };
+        let mut rows = self.0.rows.borrow_mut();
+        let Some(entries) = rows.get_mut(start..end) else {
+            return false;
+        };
+        let mut changed = false;
+        for (offset, (entry, value)) in entries.iter_mut().zip(&mut values).enumerate() {
+            changed |= self.swap_row(start + offset, &mut entry.value, value);
+        }
+        drop(rows);
+        if changed {
+            self.values_changed();
+        }
+        changed
+    }
+
+    pub(crate) fn replace_rows_if_current(
+        &self,
+        stamp: (u64, u64),
+        mut values: Vec<(usize, T)>,
+    ) -> bool {
+        if self.edit_stamp() != stamp {
+            return false;
+        }
+        let mut rows = self.0.rows.borrow_mut();
+        if values.iter().any(|(index, _)| *index >= rows.len()) {
+            return false;
+        }
+        let mut changed = false;
+        for (index, value) in &mut values {
+            changed |= self.swap_row(*index, &mut rows[*index].value, value);
+        }
+        drop(rows);
+        if changed {
+            self.values_changed();
+        }
+        changed
+    }
+
+    fn swap_row(&self, index: usize, current: &mut T, next: &mut T) -> bool {
+        if current == next {
+            return false;
+        }
+        self.0.projections.borrow_mut().retain(|projection| {
+            let Some(signal) = projection.signal.upgrade() else {
+                return false;
+            };
+            if index < projection.limit && (projection.changed)(index, current, next) {
+                signal.notify();
+            }
+            true
+        });
+        std::mem::swap(current, next);
         if let Some(signal) = self.0.row_signals.borrow().signals.get(&index) {
             signal.notify();
         }
-        self.0.values.notify();
-        drop(previous);
         true
     }
 

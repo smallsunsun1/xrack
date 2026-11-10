@@ -24,6 +24,71 @@ fn button(id: &'static str) -> Node {
 }
 
 #[test]
+fn frozen_columns_follow_visual_order_and_leave_room_for_the_scrollable_pane() {
+    use xrack_runtime::{Orientation, TableHeader};
+
+    let mut table = node("TableView", "table");
+    table.properties.insert("frozen-columns", 2_i64.into());
+    boolean(&mut table, "resizable-columns", true);
+    let columns = (0..4)
+        .map(|_| {
+            let mut column = Node::new("TableColumn", None);
+            length(&mut column, "width", 100.0);
+            column
+        })
+        .collect();
+    table.table_header = Some(Box::new(TableHeader {
+        columns,
+        sort: None,
+        column_widths: Vec::new(),
+    }));
+    let viewport = Size::new(300.0, 180.0);
+    let before = layout(&table, viewport, &mut Text);
+    let mut input = Interaction::default();
+    assert!(input.accessibility_scroll_to(&before, &[], Orientation::Horizontal, 100.0));
+    let scrolled = layout_with_input(&table, viewport, &mut Text, &input);
+    let geometry = scrolled.table.as_ref().unwrap();
+    assert_eq!(geometry.horizontal.offset, 100.0);
+    assert_eq!(geometry.frozen_boundary(), Some(200.0));
+    assert_eq!(geometry.columns[0].x, 0.0);
+    assert_eq!(geometry.columns[1].x, 100.0);
+    assert_eq!(geometry.columns[2].x, 100.0);
+    assert_eq!(geometry.column_at(Point { x: 145.0, y: 12.0 }), Some(1));
+    assert_eq!(
+        geometry.resize_at(&table, scrolled.clip, Point { x: 200.0, y: 12.0 }),
+        Some(1)
+    );
+    let bar = scrolled
+        .scroll_bars(&table)
+        .find(|bar| bar.orientation == Orientation::Horizontal)
+        .unwrap();
+    assert!(bar.track.x >= 200.0);
+    assert_eq!(geometry.reveal_column(0), 100.0);
+    assert_eq!(geometry.reveal_column(2), 0.0);
+    assert_eq!(
+        geometry.column_drop(3, Point { x: 20.0, y: 12.0 }),
+        Some((0, 0.0))
+    );
+    assert_eq!(
+        geometry.column_drop(0, Point { x: 275.0, y: 12.0 }),
+        Some((3, 300.0))
+    );
+
+    table.table_column_order = table.table_column_order.moved(4, 0, 3).unwrap().1;
+    let reordered = layout_with_input(&table, viewport, &mut Text, &input);
+    let geometry = reordered.table.as_ref().unwrap();
+    assert!(geometry.is_frozen(1) && geometry.is_frozen(2) && !geometry.is_frozen(0));
+    assert_eq!(geometry.column_at(Point { x: 45.0, y: 12.0 }), Some(1));
+    let narrow = layout_with_input(&table, Size::new(130.0, 180.0), &mut Text, &input);
+    assert_eq!(narrow.table.as_ref().unwrap().frozen_boundary(), None);
+    assert!(!narrow.table.as_ref().unwrap().is_frozen(1));
+    table.properties.insert("frozen-columns", i64::MAX.into());
+    let fitted = layout(&table, Size::new(420.0, 180.0), &mut Text);
+    assert!(fitted.table.as_ref().unwrap().is_frozen(0));
+    assert_eq!(fitted.table.as_ref().unwrap().scrollable_body().width, 0.0);
+}
+
+#[test]
 fn vertical_tab_bar_reveals_the_selected_tab_and_scrolls_on_its_axis() {
     let mut bar = node("TabBar", "bar");
     bar.properties
@@ -418,11 +483,12 @@ fn vertical_toolbar_wraps_when_its_commands_outgrow_the_available_height() {
 
 #[test]
 fn scroll_bar_captures_drag_and_preserves_focus_when_policy_changes() {
-    use xrack_runtime::{Orientation, ScrollBarPolicy};
+    use xrack_runtime::{Orientation, ScrollBarPolicy, ViewportHandle};
 
     let mut root = node("Window", "root");
     root.children.push(button("opener"));
     let mut view = node("ScrollView", "view");
+    view.viewport_handle = Some(ViewportHandle::with_scroll_notifications());
     length(&mut view, "x", 20.0);
     length(&mut view, "y", 30.0);
     length(&mut view, "width", 100.0);
@@ -464,6 +530,7 @@ fn scroll_bar_captures_drag_and_preserves_focus_when_policy_changes() {
     assert!(input.pointer_release_target().is_none());
 
     let layout = render(&root, &input);
+    assert_eq!(input.take_scroll_events(&root, &layout).len(), 1);
     let thumb = bar(&root, &layout).thumb;
     input.pointer_move(
         &root,
@@ -478,6 +545,7 @@ fn scroll_bar_captures_drag_and_preserves_focus_when_policy_changes() {
     assert_eq!(input.scroll_bar_drag(&root, &layout), Some(true));
     assert_eq!(input.scroll_offsets().get(&[1][..]), Some(&410.0));
     let layout = render(&root, &input);
+    assert_eq!(input.take_scroll_events(&root, &layout).len(), 1);
     let end = bar(&root, &layout);
     assert!((end.thumb.y + end.thumb.height - (end.track.y + end.track.height)).abs() < 0.01);
 
@@ -588,9 +656,104 @@ fn scroll_view_extents_keep_percentage_children_stable_and_clamp_on_shrink() {
 }
 
 #[test]
+fn left_mouse_pan_respects_editors_scrollbars_and_nested_opt_in() {
+    use std::time::{Duration, Instant};
+
+    let mut outer = node("ScrollView", "outer");
+    length(&mut outer, "content-height", 420.0);
+    let mut inner = node("ScrollView", "inner");
+    for (property, value) in [
+        ("width", 120.0),
+        ("height", 100.0),
+        ("content-height", 140.0),
+    ] {
+        length(&mut inner, property, value);
+    }
+    boolean(&mut inner, "mouse-drag-pan-enabled", true);
+    let mut editor = node("LineEdit", "editor");
+    for (property, value) in [("x", 10.0), ("y", 10.0), ("width", 80.0), ("height", 24.0)] {
+        length(&mut editor, property, value);
+    }
+    inner.children.push(editor);
+    outer.children.push(inner);
+    let viewport = Size::new(160.0, 120.0);
+    let before = layout(&outer, viewport, &mut Text);
+    let now = Instant::now();
+    let press = |input: &mut Interaction, scene: &Node, frame: &LayoutNode, point| {
+        input.pointer_move(scene, frame, point);
+        input.pointer_press_in_scene(scene, frame);
+        input.arm_mouse_viewport_pan(scene, frame, point, now)
+    };
+    let mut input = Interaction::default();
+    assert!(!press(
+        &mut input,
+        &outer,
+        &before,
+        Point { x: 20.0, y: 22.0 }
+    ));
+    assert_eq!(
+        input.focused.as_ref().and_then(|target| target.id),
+        Some("editor")
+    );
+    input.cancel_press();
+    let bar = before.children[0]
+        .scroll_bars(&outer.children[0])
+        .next()
+        .unwrap();
+    assert!(!press(
+        &mut input,
+        &outer,
+        &before,
+        Point {
+            x: bar.track.x + 1.0,
+            y: bar.track.y + 1.0
+        }
+    ));
+    input.cancel_press();
+
+    let start = Point { x: 60.0, y: 70.0 };
+    let end = Point { x: 60.0, y: -30.0 };
+    assert!(press(&mut input, &outer, &before, start));
+    assert!(input.move_scroll_gesture(&outer, &before, end, now + Duration::from_millis(20)));
+    assert!(input.mouse_viewport_pan_claimed());
+    assert_eq!(input.scroll_offsets().get(&[0][..]), Some(&40.0));
+    assert!(!input.scroll_offsets().contains_key(&[][..]));
+
+    boolean(&mut outer, "mouse-drag-pan-enabled", true);
+    let before = layout(&outer, viewport, &mut Text);
+    let mut input = Interaction::default();
+    assert!(press(&mut input, &outer, &before, start));
+    assert!(input.move_scroll_gesture(&outer, &before, end, now + Duration::from_millis(20)));
+    assert_eq!(input.scroll_offsets().get(&[][..]), Some(&52.0));
+    boolean(&mut outer, "mouse-drag-pan-enabled", false);
+    boolean(&mut outer.children[0], "mouse-drag-pan-enabled", false);
+    let next = layout_with_input(&outer, viewport, &mut Text, &input);
+    let release = input.end_scroll_gesture(&outer, &next, end, now + Duration::from_millis(25));
+    assert!(!release.tap);
+    assert!(!input.scroll_motion_active());
+}
+
+#[test]
 fn nested_scroll_views_pass_only_unconsumed_motion_to_the_parent() {
+    use xrack_runtime::{Component, ViewportHandle};
+
+    #[derive(Default)]
+    struct Listener(Vec<String>);
+    impl Component for Listener {
+        fn render(&self) -> Node {
+            unreachable!("event delivery uses the prepared scene")
+        }
+        fn dispatch(&mut self, id: &str, event: &str) -> bool {
+            assert_eq!(event, "scrolled");
+            self.0.push(id.into());
+            true
+        }
+    }
+
     let mut outer = node("ScrollView", "outer");
     let mut inner = node("ScrollView", "inner");
+    outer.viewport_handle = Some(ViewportHandle::with_scroll_notifications());
+    inner.viewport_handle = Some(ViewportHandle::with_scroll_notifications());
     for (property, value) in [
         ("width", 100.0),
         ("height", 80.0),
@@ -614,12 +777,38 @@ fn nested_scroll_views_pass_only_unconsumed_motion_to_the_parent() {
     assert_eq!(input.horizontal_scroll_offsets().get(&[][..]), Some(&15.0));
     assert_eq!(input.scroll_offsets().get(&[][..]), Some(&25.0));
     let scrolled = render(&input);
+    let mut listener = Listener::default();
+    for event in input.take_scroll_events(&outer, &scrolled) {
+        assert!(event.apply(&mut listener, &outer));
+    }
+    assert_eq!(listener.0, ["inner", "outer"]);
     input.pointer_move(&outer, &scrolled, point);
     assert!(input.scroll_wheel(&scrolled, Point { x: -50.0, y: -55.0 }, false));
     assert_eq!(input.horizontal_scroll_offsets().get(&[0][..]), Some(&0.0));
     assert_eq!(input.scroll_offsets().get(&[0][..]), Some(&0.0));
     assert_eq!(input.horizontal_scroll_offsets().get(&[][..]), Some(&5.0));
     assert_eq!(input.scroll_offsets().get(&[][..]), Some(&10.0));
+}
+
+#[test]
+fn accessibility_scroll_delivery_does_not_follow_a_replaced_viewport() {
+    use xrack_runtime::{Orientation, ViewportHandle};
+
+    let mut view = node("ScrollView", "view");
+    view.viewport_handle = Some(ViewportHandle::with_scroll_notifications());
+    length(&mut view, "content-height", 320.0);
+    let viewport = Size::new(160.0, 120.0);
+    let mut input = Interaction::default();
+    let frame = layout_with_input(&view, viewport, &mut Text, &input);
+    assert!(input.accessibility_scroll_to(&frame, &[], Orientation::Vertical, 40.0));
+    view.viewport_handle = Some(ViewportHandle::with_scroll_notifications());
+    let frame = layout_with_input(&view, viewport, &mut Text, &input);
+    assert!(input.take_scroll_events(&view, &frame).is_empty());
+
+    assert!(input.accessibility_scroll_to(&frame, &[], Orientation::Vertical, 80.0));
+    let frame = layout_with_input(&view, viewport, &mut Text, &input);
+    assert_eq!(input.take_scroll_events(&view, &frame).len(), 1);
+    assert!(input.take_scroll_events(&view, &frame).is_empty());
 }
 
 #[test]
@@ -807,7 +996,13 @@ fn direct_scroll_keeps_the_initial_view_and_passes_residual_motion_to_its_parent
     let release = input.end_scroll_gesture(&outer, &dragged, end, now + Duration::from_millis(40));
     assert!(!release.tap);
     assert!(input.scroll_motion_active());
-    assert!(input.advance_scroll_motion(&outer, &dragged, now + Duration::from_millis(56)));
+    let wake = now + Duration::from_millis(56);
+    assert_eq!(input.scroll_motion_deadline(), Some(wake));
+    for early in 41..56 {
+        assert!(!input.advance_scroll_motion(&outer, &dragged, now + Duration::from_millis(early)));
+    }
+    assert_eq!(input.scroll_motion_deadline(), Some(wake));
+    assert!(input.advance_scroll_motion(&outer, &dragged, wake));
     let advanced = render(&input);
     assert!(advanced.scroll.unwrap().offset > outer_offset);
     assert_eq!(advanced.children[0].scroll.unwrap().offset, 40.0);
@@ -1331,4 +1526,125 @@ fn model_change_cancels_capture_without_retargeting_a_click() {
     boolean(&mut root.children[0], "enabled", false);
     input.reconcile(&root, &layout(&root, Size::new(100.0, 100.0), &mut Text));
     assert_eq!(input.key_release(ActivationKey::Enter), None);
+}
+
+#[test]
+fn overlapping_scroll_views_route_wheel_input_in_paint_order() {
+    let mut window = node("Window", "root");
+    for id in ["first", "second"] {
+        let mut view = node("ScrollView", id);
+        length(&mut view, "width", 120.0);
+        length(&mut view, "height", 100.0);
+        length(&mut view, "content-height", 300.0);
+        window.children.push(view);
+    }
+    window.children[0].properties.insert("z", 1.0_f64.into());
+    let point = Point { x: 20.0, y: 20.0 };
+    let viewport = Size::new(160.0, 120.0);
+    let frame = layout(&window, viewport, &mut Text);
+    let mut input = Interaction::default();
+    input.pointer_move(&window, &frame, point);
+    assert!(input.scroll_wheel(&frame, Point { x: 0.0, y: 32.0 }, false));
+    assert_eq!(input.scroll_offsets().get(&[0][..]), Some(&32.0));
+    assert!(!input.scroll_offsets().contains_key(&[1][..]));
+}
+
+#[test]
+fn materialized_rows_keep_their_rounded_ancestor_clip() {
+    use std::ops::Range;
+    use xrack_runtime::{Component, ListMetrics};
+
+    struct Rows;
+    impl Component for Rows {
+        fn render(&self) -> Node {
+            let mut window = node("Window", "root");
+            let mut mask = node("Rectangle", "mask");
+            boolean(&mut mask, "clip", true);
+            length(&mut mask, "width", 100.0);
+            length(&mut mask, "height", 100.0);
+            length(&mut mask, "border-radius", 40.0);
+            let mut list = node("ListView", "list");
+            length(&mut list, "width", 100.0);
+            length(&mut list, "height", 100.0);
+            length(&mut list, "row-height", 20.0);
+            list.list = Some(ListMetrics {
+                row_count: 20,
+                first_row: 0,
+            });
+            mask.children.push(list);
+            window.children.push(mask);
+            window
+        }
+
+        fn list_rows(&self, path: &[usize], range: Range<usize>) -> Vec<Node> {
+            assert_eq!(path, &[0, 0]);
+            range.map(|_| button("delegate")).collect()
+        }
+
+        fn dispatch(&mut self, _: &str, _: &str) -> bool {
+            false
+        }
+    }
+
+    let rows = Rows;
+    let mut input = Interaction::default();
+    let (scene, layout) = prepare_scene_with_input(
+        &rows,
+        rows.render_shared(),
+        Size::new(120.0, 120.0),
+        &mut Text,
+        &input,
+    );
+    let first = layout.at_path(&[0, 0, 0, 0]).unwrap();
+    let hidden = Point { x: 2.0, y: 2.0 };
+    assert!(!first.contains_clip_point(hidden));
+    input.pointer_move(&scene, &layout, hidden);
+    assert!(input.hovered.is_none());
+    let visible = Point { x: 50.0, y: 10.0 };
+    assert!(first.contains_clip_point(visible));
+    input.pointer_move(&scene, &layout, visible);
+    assert_eq!(input.hovered.as_ref().unwrap().id, Some("delegate"));
+}
+
+#[test]
+fn rotating_a_scroll_view_maps_pan_and_inertia_to_its_local_axis() {
+    use std::time::{Duration, Instant};
+    use xrack_runtime::ViewportHandle;
+
+    let mut root = node("Window", "root");
+    let mut scroller = node("ScrollView", "scroller");
+    scroller.viewport_handle = Some(ViewportHandle::with_scroll_notifications());
+    for (name, value) in [
+        ("x", 150.0),
+        ("y", 20.0),
+        ("width", 100.0),
+        ("height", 100.0),
+        ("content-height", 300.0),
+        ("transform-origin-x", 0.0),
+        ("transform-origin-y", 0.0),
+    ] {
+        length(&mut scroller, name, value);
+    }
+    scroller
+        .properties
+        .insert("transform-rotation", 90.0_f64.into());
+    root.children.push(scroller);
+    let viewport = Size::new(220.0, 150.0);
+    let mut input = Interaction::default();
+    let frame = layout_with_input(&root, viewport, &mut Text, &input);
+    let start = Instant::now();
+    let origin = Point { x: 88.0, y: 70.0 };
+    assert!(input.begin_scroll_gesture(&root, &frame, origin, start, ScrollGestureKind::Touch));
+    let end = Point { x: 128.0, y: 70.0 };
+    assert!(input.move_scroll_gesture(&root, &frame, end, start + Duration::from_millis(20)));
+    let offset = input.scroll_offsets().get(&[0][..]).copied().unwrap();
+    assert!(offset > 20.0);
+    let frame = layout_with_input(&root, viewport, &mut Text, &input);
+    assert_eq!(input.take_scroll_events(&root, &frame).len(), 1);
+    input.end_scroll_gesture(&root, &frame, end, start + Duration::from_millis(21));
+    assert!(input.scroll_motion_active());
+    assert!(input.advance_scroll_motion(&root, &frame, start + Duration::from_millis(50)));
+    assert!(input.scroll_offsets().get(&[0][..]).copied().unwrap() > offset);
+    let frame = layout_with_input(&root, viewport, &mut Text, &input);
+    assert_eq!(input.take_scroll_events(&root, &frame).len(), 1);
 }

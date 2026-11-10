@@ -30,7 +30,7 @@ pub struct Raster {
     pub rgba: Vec<u8>,
 }
 
-fn check_size(size: [u32; 2]) -> Result<[u32; 2], String> {
+pub fn validate_image_size(size: [u32; 2]) -> Result<[u32; 2], String> {
     if size
         .into_iter()
         .all(|n| (1..=MAX_IMAGE_DIMENSION).contains(&n))
@@ -48,7 +48,7 @@ pub fn image_size(format: ImageFormat, bytes: &[u8]) -> Result<[u32; 2], String>
         ImageFormat::Png => Ok(decode_png(bytes)?.size),
         ImageFormat::Svg => {
             let size = parse_svg(bytes)?.size().to_int_size();
-            check_size([size.width(), size.height()])
+            validate_image_size([size.width(), size.height()])
         }
     }
 }
@@ -57,7 +57,7 @@ pub fn decode_png(bytes: &[u8]) -> Result<Raster, String> {
     let mut decoder = png::Decoder::new(Cursor::new(bytes));
     decoder.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
     let mut reader = decoder.read_info().map_err(|error| error.to_string())?;
-    check_size([reader.info().width, reader.info().height])?;
+    validate_image_size([reader.info().width, reader.info().height])?;
     let mut data = vec![0; reader.output_buffer_size().ok_or("invalid PNG size")?];
     let frame = reader
         .next_frame(&mut data)
@@ -94,12 +94,44 @@ fn parse_svg(bytes: &[u8]) -> Result<usvg::Tree, String> {
 
 /// Rasterize at the requested device pixel size. The result has premultiplied alpha.
 pub fn rasterize_svg(bytes: &[u8], size: [u32; 2]) -> Result<Raster, String> {
-    let [width, height] = check_size(size)?;
+    rasterize_svg_region(bytes, size, None)
+}
+
+/// Rasterize a clipped SVG view in the same integer source coordinates as
+/// `image_size`. Only the selected region is allocated at the requested density.
+pub fn rasterize_svg_region(
+    bytes: &[u8],
+    size: [u32; 2],
+    region: Option<[u32; 4]>,
+) -> Result<Raster, String> {
+    let [width, height] = validate_image_size(size)?;
     let tree = parse_svg(bytes)?;
-    let transform = tiny_skia::Transform::from_scale(
-        width as f32 / tree.size().width(),
-        height as f32 / tree.size().height(),
-    );
+    let source = tree.size();
+    let transform = if let Some([x, y, w, h]) = region {
+        let natural = source.to_int_size();
+        if w == 0
+            || h == 0
+            || x.saturating_add(w) > natural.width()
+            || y.saturating_add(h) > natural.height()
+        {
+            return Err("SVG source clip is outside its intrinsic size".into());
+        }
+        let sx = width as f32 / w as f32;
+        let sy = height as f32 / h as f32;
+        tiny_skia::Transform::from_row(
+            sx * natural.width() as f32 / source.width(),
+            0.0,
+            0.0,
+            sy * natural.height() as f32 / source.height(),
+            -(x as f32) * sx,
+            -(y as f32) * sy,
+        )
+    } else {
+        tiny_skia::Transform::from_scale(
+            width as f32 / source.width(),
+            height as f32 / source.height(),
+        )
+    };
     let mut pixmap = tiny_skia::Pixmap::new(width, height).ok_or("invalid SVG raster size")?;
     resvg::render(&tree, transform, &mut pixmap.as_mut());
     Ok(Raster {

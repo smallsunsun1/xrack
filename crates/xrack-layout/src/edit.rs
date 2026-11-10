@@ -11,7 +11,7 @@ pub struct TextEdit {
     pub preedit_cursor: Option<usize>,
 }
 
-/// A logical text offset plus its visual side at a soft wrap boundary.
+/// A logical offset with affinity to the preceding grapheme at a bidi or wrap boundary.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct TextPosition {
     pub offset: usize,
@@ -246,6 +246,7 @@ impl TextEdit {
                 .unwrap_or(result.len())
         };
         self.anchor = self.caret;
+        self.trailing = !replacement.is_empty();
         Some(AppliedEdit {
             text: result,
             start: range.start,

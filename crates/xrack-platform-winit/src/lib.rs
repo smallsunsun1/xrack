@@ -12,7 +12,9 @@ mod native_dialog;
 mod queue;
 #[cfg(test)]
 mod tests;
+mod window_chrome;
 mod window_owner;
+mod window_presentation;
 
 use accessibility::{Projection, Route};
 use accesskit::{Action as AccessibleAction, ActionData, ActionRequest, TreeId};
@@ -31,7 +33,9 @@ use std::{
     sync::Arc,
     time::{Duration, Instant},
 };
+use window_chrome::{WindowChrome, resize_direction};
 use window_owner::WindowOwner;
+use window_presentation::WindowPresentation;
 use winit::{
     dpi::{LogicalPosition, LogicalSize},
     event::{
@@ -46,15 +50,16 @@ use xrack_layout::{
     ActivationKey, ChoiceKey, ComboGeometry, ControlInput, DragUpdate, EditAction, EditSource,
     FocusObservers, Interaction, LayoutNode, MenuKey, MenuShortcut, NavigationKey, Point,
     RangeInput, Rect, ScrollGestureKind, ShortcutKey, ShortcutModifiers, ShortcutOutcome, Size,
-    SpinGeometry, SplitResize, StackTransitions, TableSelectionKey, Target, TextAreaMotion,
-    TumblerScroll,
+    SpinGeometry, SplitResize, StackTransitions, TablePasteDestination, TableSelectionKey, Target,
+    TextAreaMotion, TumblerScroll, ViewportObservers,
 };
 use xrack_renderer_femtovg::Renderer;
 use xrack_runtime::{
-    ColorScheme, Component, ControlAction, DragAction, EventResult, FocusRequests, KeyPhase,
-    NativeDialogQueue, NativeDialogRegistration, NativeDialogResult, Node, Orientation,
-    RangeAction, RowSelection, SceneTransition, SecondaryWindowRegistration, SpinAction,
-    SpinDecimal, TimerQueue, TimerRegistration, combo_editable, decimal_separator,
+    ColorScheme, Component, ControlAction, DragAction, EventResult, FocusRequests,
+    ImagePlaybackQueue, ImagePlaybackRegistration, KeyPhase, NativeDialogQueue,
+    NativeDialogRegistration, NativeDialogResult, Node, Orientation, RangeAction, RowSelection,
+    SceneTransition, ScrollRequests, SecondaryWindowRegistration, SpinAction, SpinDecimal,
+    TablePaste, TextCommand, TimerQueue, TimerRegistration, combo_editable, decimal_separator,
     is_multiline_text_input, is_spin_box, spin_editable, text_input_value,
 };
 
@@ -68,9 +73,12 @@ struct WindowState {
     ime_purpose: ImePurpose,
     #[cfg(target_os = "macos")]
     file_drop: Option<file_drop::FileDropBridge>,
+    #[cfg(target_os = "macos")]
+    resize_drag: Option<window_chrome::ResizeDrag>,
     owner: WindowOwner,
     window: Arc<Window>,
     frame: FrameCache,
+    presentation: WindowPresentation,
 }
 
 fn activation_key_value(key: &Key) -> Option<ActivationKey> {
@@ -142,9 +150,12 @@ impl WindowState {
             ime_purpose: ImePurpose::Normal,
             #[cfg(target_os = "macos")]
             file_drop: None,
+            #[cfg(target_os = "macos")]
+            resize_drag: None,
             owner,
             window,
             frame: FrameCache::default(),
+            presentation: WindowPresentation::default(),
         })
     }
 
@@ -155,6 +166,52 @@ impl WindowState {
             self.owner.detach();
         }
         self.window.set_visible(visible);
+    }
+
+    fn begin_client_resize(&mut self, edge: xrack_layout::WindowResizeEdge) -> bool {
+        #[cfg(target_os = "macos")]
+        {
+            self.resize_drag = window_chrome::ResizeDrag::start(&self.window, edge);
+            self.resize_drag.is_some()
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            self.window
+                .drag_resize_window(resize_direction(edge))
+                .is_ok()
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    fn update_client_resize(&mut self, allowed: bool) -> bool {
+        if !allowed {
+            self.finish_client_resize();
+        }
+        if let Some(drag) = &self.resize_drag {
+            drag.update();
+            true
+        } else {
+            false
+        }
+    }
+
+    fn finish_client_resize(&mut self) -> bool {
+        #[cfg(target_os = "macos")]
+        {
+            self.resize_drag.take().is_some()
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            false
+        }
+    }
+
+    fn sample_window_status(&mut self) -> xrack_runtime::WindowStatus {
+        #[cfg(target_os = "macos")]
+        if self.resize_drag.is_some() {
+            return self.presentation.observed();
+        }
+        self.presentation.sample(&self.window)
     }
     fn viewport(&self) -> Size {
         let size = self
@@ -204,11 +261,20 @@ enum ClipboardShortcut {
     Paste,
 }
 
+enum ClipboardContext {
+    Edit(EditContext),
+    Table {
+        destination: TablePasteDestination,
+        apply: TablePaste,
+    },
+}
+
 #[derive(Clone, Copy)]
 enum ScrollContact {
     Touch(DeviceId, u64),
     MousePan(Point),
     MouseControl(Point),
+    MouseViewport(Point),
 }
 
 struct Application<C, M, R> {
@@ -219,12 +285,15 @@ struct Application<C, M, R> {
     transition_epoch: Instant,
     animation_wake: Option<Instant>,
     timers: TimerQueue,
+    image_playback: ImagePlaybackQueue,
     native_dialogs: NativeDialogQueue,
     stack_transitions: StackTransitions,
     layout: Option<Rc<LayoutNode>>,
     input: Interaction,
     focus_requests: FocusRequests,
     focus_observers: FocusObservers,
+    scroll_requests: ScrollRequests,
+    viewport_observers: ViewportObservers,
     focus_active: bool,
     scroll_contact: Option<ScrollContact>,
     modifiers: ModifiersState,
@@ -234,7 +303,7 @@ struct Application<C, M, R> {
     inbox: Inbox<M>,
     reduce: R,
     clipboard: Option<Rc<RefCell<ClipboardPort>>>,
-    pending_clipboard: Option<(u64, EditContext)>,
+    pending_clipboard: Option<(u64, ClipboardContext)>,
     events: Option<WindowEvents>,
 }
 
@@ -261,12 +330,15 @@ impl<C: Component, M, R: FnMut(&mut C, M)> Application<C, M, R> {
             transition_epoch: Instant::now(),
             animation_wake: None,
             timers: TimerQueue::default(),
+            image_playback: ImagePlaybackQueue::default(),
             native_dialogs: NativeDialogQueue::default(),
             stack_transitions: StackTransitions::default(),
             layout: None,
             input: Interaction::default(),
             focus_requests: FocusRequests::default(),
             focus_observers: FocusObservers::default(),
+            scroll_requests: ScrollRequests::default(),
+            viewport_observers: ViewportObservers::default(),
             focus_active: false,
             scroll_contact: None,
             modifiers: ModifiersState::default(),
@@ -378,6 +450,24 @@ impl<C: Component, M, R: FnMut(&mut C, M)> Application<C, M, R> {
             Route::Element { target, .. }
             | Route::Choice { target, .. }
             | Route::ControlPart { target, .. } => target,
+            Route::TextLink(target) => {
+                let Some(action) = self.input.text_link_activation(&self.scene, layout, target)
+                else {
+                    return;
+                };
+                match request.action {
+                    AccessibleAction::Focus => {
+                        self.input.focus_target(&self.scene, layout, target.clone());
+                        self.update_editor();
+                    }
+                    AccessibleAction::Click => {
+                        self.input.focus_target(&self.scene, layout, target.clone());
+                        self.apply_control(action);
+                    }
+                    _ => {}
+                }
+                return;
+            }
             Route::MenuEntry { trigger, entry } => {
                 let activate = match request.action {
                     AccessibleAction::Focus => false,
@@ -398,10 +488,19 @@ impl<C: Component, M, R: FnMut(&mut C, M)> Application<C, M, R> {
                 }
                 return;
             }
-            Route::MenuPanel { trigger, path } => {
+            Route::MenuPanel {
+                trigger,
+                path,
+                session,
+            } => {
                 if request.action == AccessibleAction::Collapse {
-                    self.input
-                        .accessibility_close_menu(&self.scene, layout, trigger, path);
+                    self.input.accessibility_close_menu(
+                        &self.scene,
+                        layout,
+                        trigger,
+                        path,
+                        *session,
+                    );
                     self.update_editor();
                 }
                 return;
@@ -487,6 +586,7 @@ impl<C: Component, M, R: FnMut(&mut C, M)> Application<C, M, R> {
                     && let Some(menu) = self.input.choice_menu(&self.scene, layout)
                     && let Some(offset) = index.checked_sub(menu.first)
                     && menu.rows.get(offset) == Some(&value)
+                    && menu.row_enabled(offset)
                     && xrack_runtime::choice_identity(node, index)
                         .is_some_and(|current| current.record == record)
                 {
@@ -617,15 +717,13 @@ impl<C: Component, M, R: FnMut(&mut C, M)> Application<C, M, R> {
                 }
                 AccessibleAction::ShowContextMenu
                     if target.focusable
-                        && accessibility::supports_context_menu(
-                            &self.scene,
-                            layout,
-                            &self.input,
-                            &target.path,
-                        ) =>
+                        && self
+                            .input
+                            .supports_context_menu(&self.scene, layout, &target) =>
                 {
                     self.input.accessibility_focus(target);
                     self.input.open_context_menu(&self.scene, layout, true);
+                    self.pending_clipboard = None;
                     self.update_editor();
                 }
                 AccessibleAction::Increment | AccessibleAction::Decrement
@@ -755,6 +853,9 @@ impl<C: Component, M, R: FnMut(&mut C, M)> Application<C, M, R> {
         let requested = self.requested_drag_action();
         let drag = self.input.reconcile_drag(&scene, &layout, requested);
         let files = self.input.reconcile_file_drag(&scene, &layout);
+        if self.scroll_requests.is_empty() {
+            self.viewport_observers.sync(&scene, &layout);
+        }
         self.scene = scene;
         self.layout = Some(layout);
         #[cfg(target_os = "macos")]
@@ -794,13 +895,34 @@ impl<C: Component, M, R: FnMut(&mut C, M)> Application<C, M, R> {
                 Orientation::Horizontal => CursorIcon::ColResize,
                 Orientation::Vertical => CursorIcon::RowResize,
             }
+        } else if self.input.table_row_resize_cursor() {
+            CursorIcon::RowResize
         } else if self.input.table_resize_cursor() {
             CursorIcon::ColResize
+        } else if let Some(edge) = self.window_resize_cursor() {
+            resize_direction(edge).into()
         } else if self.input.hovered.is_some() {
             CursorIcon::Pointer
         } else {
             CursorIcon::Default
         }
+    }
+
+    fn window_resize_cursor(&self) -> Option<xrack_layout::WindowResizeEdge> {
+        let state = self.state.as_ref()?;
+        #[cfg(target_os = "macos")]
+        if let Some(drag) = &state.resize_drag {
+            return Some(drag.edge());
+        }
+        if state.presentation.observed().maximized
+            || state.presentation.observed().full_screen
+            || state.window.fullscreen().is_some()
+            || state.presentation.is_switching_full_screen()
+        {
+            return None;
+        }
+        self.input
+            .window_resize_edge(&self.scene, self.layout.as_ref()?)
     }
 
     fn dismiss_tooltip(&mut self) -> bool {
@@ -811,6 +933,33 @@ impl<C: Component, M, R: FnMut(&mut C, M)> Application<C, M, R> {
         visible
     }
     fn activate(&mut self, target: Option<Target>) {
+        if let (Some(target), Some(layout)) = (target.as_ref(), self.layout.as_ref())
+            && let Some(selection) = self.input.table_delegate_selection(
+                &self.scene,
+                layout,
+                target,
+                self.row_selection(false),
+            )
+        {
+            self.apply_control(selection);
+            // A selection handler can sort, replace, or remove the clicked row.
+            if self.scene.row_key_at(&target.path) != target.row_key {
+                return;
+            }
+        }
+        if let Some(target) = target
+            .as_ref()
+            .filter(|target| target.text_link_index().is_some())
+        {
+            if let Some(action) = self
+                .layout
+                .as_ref()
+                .and_then(|layout| self.input.text_link_activation(&self.scene, layout, target))
+            {
+                self.apply_control(action);
+            }
+            return;
+        }
         if let Some(target) = &target
             && let Some(node) = self.scene.interactive_at_path(&target.path)
             && node.kind == "DelayButton"
@@ -920,6 +1069,7 @@ impl<C: Component, M, R: FnMut(&mut C, M)> Application<C, M, R> {
     fn refresh_dependencies(&mut self) {
         if self.component.scene_dirty()
             || !self.focus_requests.is_empty()
+            || !self.scroll_requests.is_empty()
             || self
                 .state
                 .as_ref()
@@ -930,47 +1080,83 @@ impl<C: Component, M, R: FnMut(&mut C, M)> Application<C, M, R> {
     }
 
     fn refresh_after_update(&mut self, redraw_input: bool) {
+        if self.sync_base_scene() {
+            self.relayout();
+        } else if self.prepare_frame(self.transition_epoch.elapsed()) {
+            self.layout_changed(true);
+        } else if redraw_input
+            || !self.focus_requests.is_empty()
+            || !self.scroll_requests.is_empty()
+        {
+            self.update_editor();
+        }
+    }
+
+    fn sync_base_scene(&mut self) -> bool {
         let target = self.component.render_shared();
         if Rc::ptr_eq(&self.base_scene, &target) {
-            if self.prepare_frame(self.transition_epoch.elapsed()) {
-                self.layout_changed(true);
-            } else if redraw_input || !self.focus_requests.is_empty() {
-                self.update_editor();
-            }
-            return;
+            return false;
         }
         let previous_width = self.base_scene.length("width");
         let previous_height = self.base_scene.length("height");
+        let was_visible = self.base_scene.boolean("visible", true);
+        let previous_chrome = WindowChrome::read(&self.base_scene);
         self.transition
             .retarget(&self.base_scene, &target, self.transition_epoch.elapsed());
         self.animation_wake = None;
         self.base_scene = target;
-        if let Some(state) = &self.state {
+        if let Some(state) = &mut self.state {
             state
                 .window
                 .set_title(self.base_scene.text("title").unwrap_or("XRack"));
-            state.set_visible(self.base_scene.boolean("visible", true));
+            let visible = self.base_scene.boolean("visible", true);
+            if visible != was_visible {
+                state.set_visible(visible);
+            }
+            let chrome = WindowChrome::read(&self.base_scene);
+            let width = self.base_scene.length("width");
+            let height = self.base_scene.length("height");
+            let size_changed = width != previous_width || height != previous_height;
+            if chrome != previous_chrome || size_changed || !visible {
+                state.finish_client_resize();
+                self.input.cancel_window_move();
+            }
+            chrome.apply(previous_chrome, &state.window);
             let mut size = state
                 .window
                 .inner_size()
-                .to_logical::<f32>(state.window.scale_factor());
-            let width = self.base_scene.length("width");
-            let height = self.base_scene.length("height");
-            if width != previous_width || height != previous_height {
+                .to_logical::<f64>(state.window.scale_factor());
+            if size_changed {
                 if width != previous_width
-                    && let Some(width) = width
+                    && let Some(width) = width.filter(|width| width.is_finite())
                 {
-                    size.width = width.clamp(1.0, 16384.0);
+                    size.width = f64::from(width);
                 }
                 if height != previous_height
-                    && let Some(height) = height
+                    && let Some(height) = height.filter(|height| height.is_finite())
                 {
-                    size.height = height.clamp(1.0, 16384.0);
+                    size.height = f64::from(height);
                 }
-                let _ = state.window.request_inner_size(size);
+                let _ = state.window.request_inner_size(chrome.constrain(size));
             }
         }
-        self.relayout();
+        true
+    }
+
+    fn apply_window_presentation(&mut self, now: Instant) -> Option<Instant> {
+        let state = self.state.as_mut()?;
+        let commands = self.component.take_window_commands();
+        #[cfg(target_os = "macos")]
+        if commands.is_empty() && state.resize_drag.is_some() {
+            return None;
+        }
+        if !commands.is_empty() {
+            state.finish_client_resize();
+            self.input.cancel_window_move();
+        }
+        let status = state.presentation.apply(&state.window, commands, now);
+        self.component.publish_window_status(status);
+        state.presentation.deadline(now)
     }
 
     fn update_editor(&mut self) {
@@ -990,7 +1176,9 @@ impl<C: Component, M, R: FnMut(&mut C, M)> Application<C, M, R> {
         for event in events {
             event.apply(&mut self.component, &self.scene);
         }
-        if (self.component.scene_dirty() || !self.focus_requests.is_empty())
+        if (self.component.scene_dirty()
+            || !self.focus_requests.is_empty()
+            || !self.scroll_requests.is_empty())
             && let Some(state) = &self.state
         {
             state.window.request_redraw();
@@ -998,16 +1186,37 @@ impl<C: Component, M, R: FnMut(&mut C, M)> Application<C, M, R> {
     }
 
     fn refresh_editor(&mut self, follow_caret: bool) {
-        let requests = self.focus_requests.drain();
+        // Capture the result of input before applying queued programmatic moves.
+        let scrolled = self.layout.as_ref().map_or_else(Vec::new, |layout| {
+            self.input.take_scroll_events(&self.scene, layout)
+        });
+        let scroll = self.scroll_requests.drain();
+        if !scroll.is_empty()
+            && let Some(layout) = &self.layout
+        {
+            if self
+                .input
+                .apply_scroll_requests(&self.scene, layout, scroll)
+            {
+                self.prepare_frame(self.transition_epoch.elapsed());
+            } else {
+                self.viewport_observers.sync(&self.scene, layout);
+            }
+        }
+        self.apply_focus_and_text_requests();
         if let Some(layout) = &self.layout {
-            self.input
-                .apply_focus_requests(&self.scene, layout, requests);
             self.input.remember_focus_scope(&self.scene, layout);
         }
         self.publish_focus();
+        for event in scrolled {
+            event.apply(&mut self.component, &self.scene);
+        }
         #[cfg(target_os = "macos")]
         self.sync_file_drop();
         self.input.sync_editor(&self.scene);
+        if let Some(layout) = &self.layout {
+            self.input.reconcile_text_menu(&self.scene, layout);
+        }
         let Some(state) = &mut self.state else {
             return;
         };
@@ -1059,14 +1268,17 @@ impl<C: Component, M, R: FnMut(&mut C, M)> Application<C, M, R> {
                         scroll = geometry.keep_visible(scroll, caret);
                     }
                     let area = geometry.area;
+                    let caret = layout.window_bounds(Rect::new(
+                        area.x + (caret.x - scroll.x).clamp(0.0, area.width),
+                        area.y
+                            + (caret.y - scroll.y)
+                                .clamp(0.0, (area.height - geometry.line_height).max(0.0)),
+                        1.0,
+                        geometry.line_height,
+                    ));
                     state.window.set_ime_cursor_area(
-                        LogicalPosition::new(
-                            area.x + (caret.x - scroll.x).clamp(0.0, area.width),
-                            area.y
-                                + (caret.y - scroll.y)
-                                    .clamp(0.0, (area.height - geometry.line_height).max(0.0)),
-                        ),
-                        LogicalSize::new(1.0, geometry.line_height),
+                        LogicalPosition::new(caret.x, caret.y),
+                        LogicalSize::new(caret.width, caret.height),
                     );
                 }
                 self.input.set_text_scroll(target, scroll);
@@ -1080,12 +1292,50 @@ impl<C: Component, M, R: FnMut(&mut C, M)> Application<C, M, R> {
                 &text,
                 self.input.editor.as_ref(),
             );
+            let caret = layout.window_bounds(Rect::new(x, bounds.y, 1.0, bounds.height.max(1.0)));
             state.window.set_ime_cursor_area(
-                LogicalPosition::new(x, bounds.y),
-                LogicalSize::new(1.0, bounds.height.max(1.0)),
+                LogicalPosition::new(caret.x, caret.y),
+                LogicalSize::new(caret.width, caret.height),
             );
         }
         state.window.request_redraw();
+    }
+
+    fn apply_focus_and_text_requests(&mut self) {
+        for request in self.focus_requests.drain() {
+            let Some(layout) = &self.layout else {
+                break;
+            };
+            let focused = self.input.focused.clone();
+            let command = self.input.apply_focus_request(&self.scene, layout, request);
+            if self.input.focused != focused {
+                self.pending_clipboard = None;
+            }
+            if command.is_some_and(|command| self.run_text_command(command))
+                && self.sync_base_scene()
+            {
+                // Later requests from this callback see the committed value and layout.
+                self.prepare_frame(self.transition_epoch.elapsed());
+            }
+        }
+    }
+
+    fn run_text_command(&mut self, command: TextCommand) -> bool {
+        self.pending_clipboard = None;
+        match command {
+            TextCommand::SelectAll
+            | TextCommand::ClearSelection
+            | TextCommand::SetSelection { .. } => {
+                self.input.apply_text_selection(&self.scene, command);
+            }
+            TextCommand::Undo | TextCommand::Redo => {
+                return self.replay_text_edit(command == TextCommand::Redo);
+            }
+            TextCommand::Cut => self.request_clipboard(ClipboardShortcut::Cut),
+            TextCommand::Copy => self.request_clipboard(ClipboardShortcut::Copy),
+            TextCommand::Paste => self.request_clipboard(ClipboardShortcut::Paste),
+        }
+        false
     }
 
     #[cfg(target_os = "macos")]
@@ -1130,6 +1380,9 @@ impl<C: Component, M, R: FnMut(&mut C, M)> Application<C, M, R> {
         let Some(target) = self.input.focused.as_ref() else {
             return;
         };
+        if self.input.pressed.as_ref() != Some(target) {
+            return;
+        }
         let Some(node) = self
             .scene
             .interactive_at_path(&target.path)
@@ -1142,6 +1395,13 @@ impl<C: Component, M, R: FnMut(&mut C, M)> Application<C, M, R> {
             .as_ref()
             .and_then(|layout| layout.at_path(&target.path))
         else {
+            return;
+        };
+        let origin = self.input.pointer_press_origin().unwrap_or(point);
+        let Some(origin) = item.map_from_window(origin) else {
+            return;
+        };
+        let Some(point) = item.map_from_window(point) else {
             return;
         };
         let Some(state) = &self.state else {
@@ -1163,7 +1423,7 @@ impl<C: Component, M, R: FnMut(&mut C, M)> Application<C, M, R> {
             item.bounds
         };
         if (is_spin_box(node.kind) || combo_editable(node) || node.kind == "SearchField")
-            && !bounds.contains(self.input.pointer_press_origin().unwrap_or(point))
+            && !bounds.contains(origin)
         {
             return;
         }
@@ -1193,26 +1453,61 @@ impl<C: Component, M, R: FnMut(&mut C, M)> Application<C, M, R> {
         }
     }
 
-    fn move_text_caret(&mut self, motion: TextAreaMotion, selecting: bool) {
-        let Some(target) = self.input.focused.as_ref() else {
-            return;
+    fn move_text_caret(&mut self, motion: TextAreaMotion, selecting: bool) -> bool {
+        let (Some(target), Some(state)) = (self.input.focused.as_ref(), &self.state) else {
+            return false;
         };
-        let Some((node, bounds)) = text_area_item(&self.scene, self.layout.as_deref(), target)
-        else {
-            return;
+        let Some(node) = self.scene.interactive_at_path(&target.path) else {
+            return false;
         };
-        self.pending_clipboard = None;
-        self.input.break_text_edit_group();
-        if let Some(state) = &self.state
-            && let Some(editor) = &mut self.input.editor
-        {
-            let text = node.text("text").unwrap_or("");
-            let layout = state.renderer.text.text_area_layout(node, bounds, text);
-            layout.move_caret(text, editor, motion, selecting, |text| {
+        if !self.input.is_text_editor(node, target) || node.password_masked() {
+            return false;
+        }
+        let bounds = self
+            .layout
+            .as_ref()
+            .and_then(|layout| layout.at_path(&target.path))
+            .filter(|item| item.visible && item.enabled)
+            .map(|item| item.bounds);
+        let Some(bounds) = bounds else {
+            return false;
+        };
+        let text = if matches!(node.kind, "TableCell" | "TreeCell") {
+            Cow::Owned(self.input.editor_value(node).into_owned())
+        } else {
+            Cow::Borrowed(text_input_value(node))
+        };
+        let Some(editor) = &mut self.input.editor else {
+            return false;
+        };
+        if is_multiline_text_input(node.kind) {
+            let layout = state.renderer.text.text_area_layout(node, bounds, &text);
+            layout.move_caret(&text, editor, motion, selecting, |text| {
                 state.renderer.text.advance_node(node, text)
             });
-            self.update_editor();
+        } else {
+            let visual = state.renderer.text.single_line_layout(node, &text);
+            let position = match motion {
+                TextAreaMotion::Left | TextAreaMotion::Right => {
+                    let right = matches!(motion, TextAreaMotion::Right);
+                    let edge = (!selecting)
+                        .then(|| visual.selection_edge(editor.selection(&text), right))
+                        .flatten();
+                    edge.or_else(|| visual.step(editor.position(&text), right))
+                }
+                TextAreaMotion::Home | TextAreaMotion::End => {
+                    Some(visual.edge(matches!(motion, TextAreaMotion::End) != visual.is_rtl()))
+                }
+                _ => return false,
+            };
+            if let Some(position) = position {
+                editor.place_caret(&text, position, selecting);
+            }
         }
+        self.pending_clipboard = None;
+        self.input.break_text_edit_group();
+        self.update_editor();
+        true
     }
 
     fn scroll_text_area(&mut self, delta: Point) -> Point {
@@ -1269,7 +1564,8 @@ impl<C: Component, M, R: FnMut(&mut C, M)> Application<C, M, R> {
             return;
         };
         if is_spin_box(node.kind) {
-            self.input.edit_spin(node, action);
+            self.input
+                .edit_spin_from(node, action, source, Instant::now());
             self.update_editor();
             return;
         }
@@ -1301,7 +1597,7 @@ impl<C: Component, M, R: FnMut(&mut C, M)> Application<C, M, R> {
         };
         match clipboard.borrow_mut().request(events, operation) {
             Ok(id) if !matches!(shortcut, ClipboardShortcut::Copy) => {
-                self.pending_clipboard = Some((id, context))
+                self.pending_clipboard = Some((id, ClipboardContext::Edit(context)))
             }
             Ok(_) => {}
             Err(error) => eprintln!("XRack clipboard: {error}"),
@@ -1328,15 +1624,132 @@ impl<C: Component, M, R: FnMut(&mut C, M)> Application<C, M, R> {
         let Some((_, context)) = pending else {
             return;
         };
-        if !context.is_current(&self.input, &self.scene) {
-            return;
+        if self.component.scene_dirty() {
+            self.refresh_scene();
         }
-        match result {
-            ClipboardValue::Text(text) => {
-                self.edit_text_from(EditAction::Insert(&text), EditSource::Atomic)
+        match context {
+            ClipboardContext::Edit(context) if context.is_current(&self.input, &self.scene) => {
+                match result {
+                    ClipboardValue::Text(text) if !text.is_empty() => {
+                        self.edit_text_from(EditAction::Insert(&text), EditSource::Atomic)
+                    }
+                    ClipboardValue::Text(_) => {}
+                    ClipboardValue::Written => {
+                        self.edit_text_from(EditAction::Delete, EditSource::Atomic)
+                    }
+                }
             }
-            ClipboardValue::Written => self.edit_text_from(EditAction::Delete, EditSource::Atomic),
+            ClipboardContext::Table { destination, apply } => {
+                if let ClipboardValue::Text(text) = result
+                    && self.layout.as_ref().is_some_and(|layout| {
+                        self.input.table_paste_target(&self.scene, layout).as_ref()
+                            == Some(&destination)
+                    })
+                    && apply(&text)
+                {
+                    self.refresh_scene();
+                }
+            }
+            ClipboardContext::Edit(_) => {}
         }
+    }
+
+    fn table_clipboard_key(&mut self, event: &KeyEvent) -> bool {
+        if !(self.modifiers.control_key() || self.modifiers.super_key()) || self.modifiers.alt_key()
+        {
+            return false;
+        }
+        let Key::Character(key) = &event.logical_key else {
+            return false;
+        };
+        let pressed = event.state == ElementState::Pressed && !event.repeat;
+        let shift = self.modifiers.shift_key();
+        let undo_key = key.eq_ignore_ascii_case("z");
+        let redo_key = !shift && key.eq_ignore_ascii_case("y");
+        if undo_key || redo_key {
+            return self.table_history_key(pressed, shift || redo_key);
+        }
+        if shift {
+            return false;
+        }
+        if key.eq_ignore_ascii_case("v") {
+            return self.table_paste_key(pressed);
+        }
+        if !key.eq_ignore_ascii_case("c") {
+            return false;
+        }
+        let Some((path, columns)) = self
+            .layout
+            .as_ref()
+            .and_then(|layout| self.input.table_copy_target(&self.scene, layout))
+        else {
+            return false;
+        };
+        if pressed {
+            self.pending_clipboard = None;
+            if let (Some(clipboard), Some(events)) = (&self.clipboard, &self.events)
+                && let Some(text) = self.component.copy_table_at(&self.scene, &path, &columns)
+                && let Err(error) = clipboard
+                    .borrow_mut()
+                    .request(events, clipboard::Operation::Write(text))
+            {
+                eprintln!("XRack clipboard: {error}");
+            }
+        }
+        true
+    }
+
+    fn table_history_key(&mut self, pressed: bool, redo: bool) -> bool {
+        let Some(path) = self
+            .layout
+            .as_ref()
+            .and_then(|layout| self.input.table_paste_history_target(&self.scene, layout))
+        else {
+            return false;
+        };
+        if pressed {
+            self.pending_clipboard = None;
+            if self
+                .component
+                .replay_table_paste_at(&self.scene, path, redo)
+            {
+                self.refresh_scene();
+            }
+        }
+        true
+    }
+
+    fn table_paste_key(&mut self, pressed: bool) -> bool {
+        let Some(destination) = self
+            .layout
+            .as_ref()
+            .and_then(|layout| self.input.table_paste_target(&self.scene, layout))
+        else {
+            return false;
+        };
+        if pressed {
+            self.pending_clipboard = None;
+            if let (Some(clipboard), Some(events)) = (&self.clipboard, &self.events)
+                && let Some(apply) = self.component.prepare_table_paste(
+                    &self.scene,
+                    &destination.path,
+                    destination.row,
+                    destination.columns.clone(),
+                )
+            {
+                match clipboard
+                    .borrow_mut()
+                    .request(events, clipboard::Operation::Read)
+                {
+                    Ok(id) => {
+                        self.pending_clipboard =
+                            Some((id, ClipboardContext::Table { destination, apply }))
+                    }
+                    Err(error) => eprintln!("XRack clipboard: {error}"),
+                }
+            }
+        }
+        true
     }
 
     fn text_shortcut(&mut self, key: &str, shift: bool, repeat: bool) -> bool {
@@ -1356,17 +1769,19 @@ impl<C: Component, M, R: FnMut(&mut C, M)> Application<C, M, R> {
             return true;
         }
         if key.eq_ignore_ascii_case("z") || key.eq_ignore_ascii_case("y") {
-            self.pending_clipboard = None;
             let redo = shift || key.eq_ignore_ascii_case("y");
-            if self
-                .input
-                .replay_text_edit(&mut self.component, &self.scene, redo)
-            {
+            if self.replay_text_edit(redo) {
                 self.refresh_scene();
             }
             return true;
         }
         false
+    }
+
+    fn replay_text_edit(&mut self, redo: bool) -> bool {
+        self.pending_clipboard = None;
+        self.input
+            .replay_text_edit(&mut self.component, &self.scene, redo)
     }
 
     fn text_key(&mut self, event: &KeyEvent) -> bool {
@@ -1414,18 +1829,18 @@ impl<C: Component, M, R: FnMut(&mut C, M)> Application<C, M, R> {
         {
             return true;
         }
-        if multiline
-            && let Some(motion) = match event.logical_key {
-                Key::Named(NamedKey::ArrowUp) => Some(TextAreaMotion::Up),
-                Key::Named(NamedKey::ArrowDown) => Some(TextAreaMotion::Down),
-                Key::Named(NamedKey::Home) if !shortcut => Some(TextAreaMotion::Home),
-                Key::Named(NamedKey::End) if !shortcut => Some(TextAreaMotion::End),
-                Key::Named(NamedKey::PageUp) => Some(TextAreaMotion::PageUp),
-                Key::Named(NamedKey::PageDown) => Some(TextAreaMotion::PageDown),
-                _ => None,
-            }
+        if let Some(motion) = match event.logical_key {
+            Key::Named(NamedKey::ArrowLeft) if !shortcut => Some(TextAreaMotion::Left),
+            Key::Named(NamedKey::ArrowRight) if !shortcut => Some(TextAreaMotion::Right),
+            Key::Named(NamedKey::ArrowUp) if multiline => Some(TextAreaMotion::Up),
+            Key::Named(NamedKey::ArrowDown) if multiline => Some(TextAreaMotion::Down),
+            Key::Named(NamedKey::Home) if !shortcut => Some(TextAreaMotion::Home),
+            Key::Named(NamedKey::End) if !shortcut => Some(TextAreaMotion::End),
+            Key::Named(NamedKey::PageUp) if multiline => Some(TextAreaMotion::PageUp),
+            Key::Named(NamedKey::PageDown) if multiline => Some(TextAreaMotion::PageDown),
+            _ => None,
+        } && self.move_text_caret(motion, shift)
         {
-            self.move_text_caret(motion, shift);
             return true;
         }
         let action = match &event.logical_key {
@@ -1494,6 +1909,12 @@ impl<C: Component, M, R: FnMut(&mut C, M)> Application<C, M, R> {
             .at_path(&input.path)
             .is_some_and(|node| node.kind == "SearchField");
         let changed = match input.action {
+            ControlAction::TextCommand(command) => {
+                self.input.focused.as_ref().is_some_and(|target| {
+                    target.path == input.path
+                        && target.row_key == self.scene.row_key_at(&target.path)
+                }) && self.run_text_command(command)
+            }
             ControlAction::Select(index) if search => {
                 self.pending_clipboard = None;
                 self.input.select_search_suggestion(
@@ -1817,6 +2238,24 @@ impl<C: Component, M, R: FnMut(&mut C, M)> Application<C, M, R> {
         if event.state != ElementState::Pressed {
             return open;
         }
+        if !editing
+            && focused.is_some_and(|node| node.kind == "ComboBox")
+            && !(self.modifiers.control_key()
+                || self.modifiers.super_key()
+                || self.modifiers.alt_key())
+            && let Key::Character(text) = &event.logical_key
+            && let Some(layout) = &self.layout
+        {
+            if let Some(action) =
+                self.input
+                    .choice_typeahead(&self.scene, layout, text, Instant::now())
+            {
+                self.apply_control(action);
+            } else if open {
+                self.update_editor();
+            }
+            return true;
+        }
         if editing
             && self
                 .input
@@ -2065,6 +2504,7 @@ impl<C: Component, M, R: FnMut(&mut C, M)> Application<C, M, R> {
             || self.dialog_key(event)
             || self.spin_key(event)
             || self.text_key(event)
+            || self.table_clipboard_key(event)
             || self.navigation_key(event)
         {
             return true;
@@ -2227,6 +2667,28 @@ impl<C: Component, M, R: FnMut(&mut C, M)> Application<C, M, R> {
         true
     }
 
+    fn window_chrome_press(&mut self) -> bool {
+        let edge = self.window_resize_cursor();
+        let (Some(layout), Some(state)) = (&self.layout, &mut self.state) else {
+            return false;
+        };
+        if state.presentation.observed().full_screen
+            || state.window.fullscreen().is_some()
+            || state.presentation.is_switching_full_screen()
+        {
+            return false;
+        }
+        if edge.is_some_and(|edge| state.begin_client_resize(edge)) {
+            self.input.cancel_press();
+        } else if !self.input.arm_window_move(&self.scene, layout) {
+            return false;
+        }
+        self.pending_clipboard = None;
+        self.input.cancel_shortcut_sequence();
+        self.dismiss_tooltip();
+        true
+    }
+
     fn left_pointer(&mut self, state: ElementState) {
         if state == ElementState::Released
             && let Some(point) = self.input.drag_position()
@@ -2273,7 +2735,7 @@ impl<C: Component, M, R: FnMut(&mut C, M)> Application<C, M, R> {
                 self.update_editor();
                 return;
             }
-            if self.input.focused != self.input.hovered {
+            if self.input.focused != self.input.hovered && !self.input.table_row_resize_cursor() {
                 self.commit_spin();
             }
             if let Some(layout) = &self.layout {
@@ -2285,7 +2747,9 @@ impl<C: Component, M, R: FnMut(&mut C, M)> Application<C, M, R> {
                 if let Some(layout) = &self.layout {
                     self.input.arm_drag(&self.scene, layout, point);
                 }
-                self.place_text_caret(point, self.modifiers.shift_key());
+                if !self.input.table_row_resize_cursor() {
+                    self.place_text_caret(point, self.modifiers.shift_key());
+                }
             }
             if let Some(layout) = &self.layout {
                 self.input
@@ -2343,6 +2807,17 @@ impl<C: Component, M, R: FnMut(&mut C, M)> Application<C, M, R> {
             self.adjust_range(input);
         } else if self.input.finish_split_resize() || self.input.finish_table_resize() {
             self.layout_changed(true);
+        } else if self.input.table_column_move_claimed() {
+            let action = self
+                .layout
+                .as_ref()
+                .and_then(|layout| self.input.finish_table_column_move(&self.scene, layout));
+            if let Some(action) = action {
+                self.apply_control(action);
+            } else {
+                self.input.cancel_press();
+                self.update_editor();
+            }
         } else if let Some(input) = self
             .layout
             .as_ref()
@@ -2378,6 +2853,9 @@ impl<C: Component, M, R: FnMut(&mut C, M)> Application<C, M, R> {
             ScrollContact::Touch(..) => ScrollGestureKind::Touch,
             ScrollContact::MousePan(_) => ScrollGestureKind::MousePan,
             ScrollContact::MouseControl(_) => ScrollGestureKind::MouseControl,
+            ScrollContact::MouseViewport(_) => {
+                unreachable!("a viewport pan starts with an ordinary press")
+            }
         };
         if self.layout.as_ref().is_some_and(|layout| {
             self.input
@@ -2445,13 +2923,19 @@ impl<C: Component, M, R: FnMut(&mut C, M)> Application<C, M, R> {
         self.apply_drag(update)
     }
 
-    fn move_direct_scroll(&mut self, point: Point, now: Instant) {
-        if self.layout.as_ref().is_some_and(|layout| {
+    fn move_direct_scroll(&mut self, point: Point, now: Instant) -> bool {
+        let was_claimed = self.input.mouse_viewport_pan_claimed();
+        let moved = self.layout.as_ref().is_some_and(|layout| {
             self.input
                 .move_scroll_gesture(&self.scene, layout, point, now)
-        }) {
+        });
+        let claimed = self.input.mouse_viewport_pan_claimed();
+        if moved {
             self.relayout_with_caret(false);
+        } else if claimed && !was_claimed {
+            self.update_editor();
         }
+        claimed
     }
 
     fn end_direct_scroll(&mut self, point: Point, now: Instant) {
@@ -2472,7 +2956,11 @@ impl<C: Component, M, R: FnMut(&mut C, M)> Application<C, M, R> {
         if (outcome.tap
             || matches!(
                 contact,
-                Some(ScrollContact::MousePan(_) | ScrollContact::MouseControl(_))
+                Some(
+                    ScrollContact::MousePan(_)
+                        | ScrollContact::MouseControl(_)
+                        | ScrollContact::MouseViewport(_)
+                )
             ))
             && let Some(layout) = &self.layout
         {
@@ -2580,25 +3068,54 @@ impl<C: Component, M, R: FnMut(&mut C, M)> Application<C, M, R> {
             layout: &LayoutNode,
             timers: &mut Vec<&'a TimerRegistration>,
             dialogs: &mut Vec<&'a NativeDialogRegistration>,
+            playback: &mut Vec<(&'a Rc<ImagePlaybackRegistration>, bool)>,
         ) {
-            if !layout.visible {
-                return;
+            if layout.visible {
+                timers.extend(&node.timers);
+                if layout.enabled {
+                    dialogs.extend(&node.native_dialogs);
+                }
             }
-            timers.extend(&node.timers);
-            if layout.enabled {
-                dialogs.extend(&node.native_dialogs);
+            if let Some(image) = &node.image_playback {
+                let clip = layout.clip_rect(layout.bounds);
+                playback.push((
+                    image,
+                    layout.visible && clip.width > 0.0 && clip.height > 0.0,
+                ));
             }
             for (child, item) in node.children.iter().zip(&layout.children) {
-                collect(child, item, timers, dialogs);
+                collect(child, item, timers, dialogs, playback);
             }
         }
         let mut timers = Vec::new();
         let mut dialogs = Vec::new();
+        let mut playback = Vec::new();
         if let Some(layout) = &self.layout {
-            collect(&self.scene, layout, &mut timers, &mut dialogs);
+            collect(
+                &self.scene,
+                layout,
+                &mut timers,
+                &mut dialogs,
+                &mut playback,
+            );
         }
         self.timers.sync(now, timers);
         self.native_dialogs.sync(&dialogs);
+        self.image_playback.sync(now, playback);
+    }
+
+    fn tick_image_playback(&mut self, now: Instant) {
+        if self.image_playback.advance(now) {
+            self.refresh_after_update(false);
+        }
+        for _ in 0..64 {
+            let Some(delivery) = self.image_playback.next_finished() else {
+                break;
+            };
+            if delivery.finish() {
+                self.refresh_after_update(false);
+            }
+        }
     }
 
     fn present_native_dialog(&mut self) {
@@ -2643,12 +3160,15 @@ impl<C: Component, M, R: FnMut(&mut C, M)> Application<C, M, R> {
     }
 
     fn redraw(&mut self) -> Result<(), String> {
-        self.tick_delay(Instant::now());
+        let now = Instant::now();
+        self.tick_delay(now);
         let animating = self.transition.running(Duration::ZERO);
         let elapsed = self.transition_epoch.elapsed();
         if self.layout.as_ref().is_some_and(|layout| {
-            self.input
-                .advance_scroll_motion(&self.scene, layout, Instant::now())
+            self.input.advance_scroll_motion(&self.scene, layout, now)
+                || self
+                    .input
+                    .advance_table_column_move(&self.scene, layout, now)
         }) {
             self.prepare_frame(elapsed);
             self.layout_changed(false);
@@ -2724,10 +3244,7 @@ impl<C: Component, M, R: FnMut(&mut C, M)> Application<C, M, R> {
         let completion = state.renderer.take_painted_combo_completion();
         self.input
             .set_painted_combo_completion(completion.filter(|_| state.window.has_focus()));
-        if state.renderer.needs_redraw()
-            || self.input.scroll_motion_active()
-            || self.stack_transitions.is_active()
-        {
+        if state.renderer.needs_redraw() || self.stack_transitions.is_active() {
             state.window.request_redraw();
         }
         if suboptimal {
@@ -2744,6 +3261,7 @@ impl<C: Component, M, R: FnMut(&mut C, M)> HostedWindow for Application<C, M, R>
     fn user_event(&mut self, event: UserEvent) {
         let _scope = self.tasks.enter();
         let _focus = self.focus_requests.enter();
+        let _scroll = self.scroll_requests.enter();
         self.process_user_event(event);
     }
 
@@ -2753,6 +3271,7 @@ impl<C: Component, M, R: FnMut(&mut C, M)> HostedWindow for Application<C, M, R>
         }
         self.close_async();
         self.component.take_window_close_request();
+        self.component.take_window_commands();
         self.native_dialogs.close();
         self.suspend();
     }
@@ -2760,6 +3279,7 @@ impl<C: Component, M, R: FnMut(&mut C, M)> HostedWindow for Application<C, M, R>
     fn request_close(&mut self) -> bool {
         let _scope = self.tasks.enter();
         let _focus = self.focus_requests.enter();
+        let _scroll = self.scroll_requests.enter();
         self.component.take_window_close_request();
         let accepted = self.component.close_requested();
         // Synchronous requests made during the decision belong to that decision.
@@ -2802,22 +3322,14 @@ impl<C: Component, M, R: FnMut(&mut C, M)> HostedWindow for Application<C, M, R>
     ) -> Result<WindowId, String> {
         let _scope = self.tasks.enter();
         let _focus = self.focus_requests.enter();
+        let _scroll = self.scroll_requests.enter();
         if let Some(id) = self.window_id() {
             return Ok(id);
         }
         let attrs = Window::default_attributes()
             .with_title(self.base_scene.text("title").unwrap_or("XRack"))
-            .with_visible(false)
-            .with_inner_size(LogicalSize::new(
-                self.base_scene
-                    .length("width")
-                    .unwrap_or(640.0)
-                    .clamp(1.0, 16384.0),
-                self.base_scene
-                    .length("height")
-                    .unwrap_or(480.0)
-                    .clamp(1.0, 16384.0),
-            ));
+            .with_visible(false);
+        let attrs = WindowChrome::read(&self.base_scene).attributes(attrs, &self.base_scene);
         let window = event_loop
             .create_window(window_owner::attributes(attrs, owner)?)
             .map(Arc::new)
@@ -2827,17 +3339,23 @@ impl<C: Component, M, R: FnMut(&mut C, M)> HostedWindow for Application<C, M, R>
             .as_ref()
             .expect("window events")
             .accessibility(event_loop, &window);
-        let state = WindowState::new(window, adapter, graphics, owner)?;
+        let mut state = WindowState::new(window, adapter, graphics, owner)?;
         let id = state.window.id();
         state.set_visible(self.base_scene.boolean("visible", true));
         self.focus_active = state.window.has_focus();
+        self.component
+            .publish_window_status(state.sample_window_status());
         self.state = Some(state);
+        self.sync_base_scene();
         self.relayout();
         Ok(id)
     }
     fn suspend(&mut self) {
         self.focus_requests.drain();
         self.focus_observers.clear();
+        self.scroll_requests.drain();
+        self.viewport_observers.clear();
+        self.input.clear_scroll_events();
         self.focus_active = false;
         self.animation_wake = None;
         self.cancel_direct_scroll();
@@ -2851,20 +3369,31 @@ impl<C: Component, M, R: FnMut(&mut C, M)> HostedWindow for Application<C, M, R>
         self.input.clear_file_drag();
         self.layout = None;
         self.timers = TimerQueue::default();
+        self.image_playback.sync(Instant::now(), []);
         self.native_dialogs.sync(&[]);
         self.state = None;
+        self.component
+            .publish_window_status(xrack_runtime::WindowStatus::default());
     }
     fn tick(&mut self, now: Instant) {
         let _scope = self.tasks.enter();
         let _focus = self.focus_requests.enter();
+        let _scroll = self.scroll_requests.enter();
+        if let Some(state) = &mut self.state {
+            self.component
+                .publish_window_status(state.sample_window_status());
+        }
         self.refresh_dependencies();
         self.tick_delay(now);
         self.tick_timers(now);
+        self.tick_image_playback(now);
     }
 
     fn refresh_deadline(&mut self, now: Instant) -> Option<Instant> {
         let _scope = self.tasks.enter();
         let _focus = self.focus_requests.enter();
+        let _scroll = self.scroll_requests.enter();
+        let window_deadline = self.apply_window_presentation(now);
         self.refresh_dependencies();
         self.present_native_dialog();
         self.publish_focus();
@@ -2886,11 +3415,30 @@ impl<C: Component, M, R: FnMut(&mut C, M)> HostedWindow for Application<C, M, R>
                 state.window.request_redraw();
             }
         }
+        let scroll_wake = self.state.as_ref().and_then(|state| {
+            let wake =
+                self.input
+                    .scroll_motion_deadline()
+                    .into_iter()
+                    .chain(self.layout.as_ref().and_then(|layout| {
+                        self.input.table_column_move_deadline(&self.scene, layout)
+                    }))
+                    .min()?;
+            if now >= wake {
+                state.window.request_redraw();
+                return None;
+            }
+            Some(wake)
+        });
         [
             deadline,
+            window_deadline,
+            (self.state.is_some() && self.component.has_window_commands()).then_some(now),
             self.animation_wake,
+            scroll_wake,
             self.input.delay_deadline(),
             self.timers.deadline(),
+            self.image_playback.deadline(),
         ]
         .into_iter()
         .flatten()
@@ -2900,6 +3448,7 @@ impl<C: Component, M, R: FnMut(&mut C, M)> HostedWindow for Application<C, M, R>
     fn window_event(&mut self, id: WindowId, event: WindowEvent) {
         let _scope = self.tasks.enter();
         let _focus = self.focus_requests.enter();
+        let _scroll = self.scroll_requests.enter();
         let Some(state) = self.state.as_mut().filter(|state| state.window.id() == id) else {
             return;
         };
@@ -2928,33 +3477,52 @@ impl<C: Component, M, R: FnMut(&mut C, M)> HostedWindow for Application<C, M, R>
             }
             WindowEvent::Touch(touch) => self.touch_event(touch),
             WindowEvent::CursorMoved { position, .. } => {
+                #[cfg(target_os = "macos")]
+                if state.resize_drag.is_some()
+                    && state.update_client_resize(self.layout.as_ref().is_some_and(|layout| {
+                        self.input.window_gestures_allowed(&self.scene, layout)
+                    }))
+                {
+                    return;
+                }
                 let state = self.state.as_ref().unwrap();
                 let p = position.to_logical::<f32>(state.window.scale_factor());
                 let point = Point { x: p.x, y: p.y };
-                match self.scroll_contact {
+                if let Some(layout) = &self.layout
+                    && self.input.take_window_move(&self.scene, layout, point)
+                {
+                    let _ = state.window.drag_window();
+                    return;
+                }
+                match &mut self.scroll_contact {
                     Some(ScrollContact::Touch(..)) => return,
-                    Some(ScrollContact::MousePan(_) | ScrollContact::MouseControl(_)) => {
-                        self.scroll_contact = self.scroll_contact.map(|contact| {
-                            if matches!(contact, ScrollContact::MousePan(_)) {
-                                ScrollContact::MousePan(point)
-                            } else {
-                                ScrollContact::MouseControl(point)
-                            }
-                        });
+                    Some(
+                        ScrollContact::MousePan(last)
+                        | ScrollContact::MouseControl(last)
+                        | ScrollContact::MouseViewport(last),
+                    ) => {
+                        *last = point;
                         self.move_direct_scroll(point, Instant::now());
                         return;
                     }
-                    None => {}
+                    None => {
+                        if self.move_direct_scroll(point, Instant::now()) {
+                            self.scroll_contact = Some(ScrollContact::MouseViewport(point));
+                            return;
+                        }
+                    }
                 }
                 if self.move_drag(point) {
                     return;
                 }
                 let state = self.state.as_ref().unwrap();
-                if let Some(layout) = &self.layout
-                    && self.input.pointer_move(&self.scene, layout, point)
-                {
-                    state.window.set_cursor(self.pointer_cursor());
-                    state.window.request_redraw();
+                if let Some(layout) = &self.layout {
+                    let before_resize = self.window_resize_cursor();
+                    let changed = self.input.pointer_move(&self.scene, layout, point);
+                    if changed || before_resize != self.window_resize_cursor() {
+                        state.window.set_cursor(self.pointer_cursor());
+                        state.window.request_redraw();
+                    }
                 }
                 if let Some(moved) = self
                     .layout
@@ -2974,12 +3542,20 @@ impl<C: Component, M, R: FnMut(&mut C, M)> HostedWindow for Application<C, M, R>
                     self.apply_split_resize(input);
                     return;
                 }
-                if let Some(input) = self
+                if let Some(input) = self.layout.as_ref().and_then(|layout| {
+                    self.input
+                        .table_resize_drag(&self.scene, layout)
+                        .or_else(|| self.input.table_row_resize_drag(&self.scene, layout))
+                }) {
+                    self.apply_control(input);
+                    return;
+                }
+                if self
                     .layout
                     .as_ref()
-                    .and_then(|layout| self.input.table_resize_drag(&self.scene, layout))
+                    .is_some_and(|layout| self.input.table_column_move_drag(layout, Instant::now()))
                 {
-                    self.apply_control(input);
+                    self.state.as_ref().unwrap().window.request_redraw();
                     return;
                 }
                 if self.input.pressed.is_some()
@@ -3086,6 +3662,12 @@ impl<C: Component, M, R: FnMut(&mut C, M)> HostedWindow for Application<C, M, R>
                 }
                 self.cancel_direct_scroll();
                 self.dismiss_tooltip();
+                if self.layout.as_ref().is_some_and(|layout| {
+                    self.input
+                        .pointer_context_menu_changes_focus(&self.scene, layout)
+                }) {
+                    self.commit_spin();
+                }
                 if self
                     .layout
                     .as_ref()
@@ -3128,10 +3710,16 @@ impl<C: Component, M, R: FnMut(&mut C, M)> HostedWindow for Application<C, M, R>
                 ..
             } => match (state, self.scroll_contact) {
                 (_, Some(ScrollContact::Touch(..))) => {}
-                (ElementState::Released, Some(ScrollContact::MouseControl(point))) => {
+                (
+                    ElementState::Released,
+                    Some(ScrollContact::MouseControl(point) | ScrollContact::MouseViewport(point)),
+                ) => {
                     self.end_direct_scroll(point, Instant::now());
                 }
                 (ElementState::Pressed, None) => {
+                    if self.window_chrome_press() {
+                        return;
+                    }
                     if let Some(point) = self.input.pointer_position() {
                         self.begin_direct_scroll(
                             ScrollContact::MouseControl(point),
@@ -3141,9 +3729,29 @@ impl<C: Component, M, R: FnMut(&mut C, M)> HostedWindow for Application<C, M, R>
                     }
                     if self.scroll_contact.is_none() {
                         self.left_pointer(state);
+                        if let (Some(layout), Some(point)) =
+                            (&self.layout, self.input.pointer_position())
+                        {
+                            self.input.arm_mouse_viewport_pan(
+                                &self.scene,
+                                layout,
+                                point,
+                                Instant::now(),
+                            );
+                        }
                     }
                 }
                 _ => {
+                    if state == ElementState::Released
+                        && (self.input.cancel_window_move()
+                            || self
+                                .state
+                                .as_mut()
+                                .is_some_and(WindowState::finish_client_resize))
+                    {
+                        self.layout_changed(false);
+                        return;
+                    }
                     self.cancel_direct_scroll();
                     self.left_pointer(state);
                 }
@@ -3188,6 +3796,7 @@ impl<C: Component, M, R: FnMut(&mut C, M)> HostedWindow for Application<C, M, R>
             WindowEvent::Focused(focused) => {
                 self.focus_active = focused;
                 if !focused {
+                    self.state.as_mut().unwrap().finish_client_resize();
                     self.cancel_drag();
                     self.input.cancel_shortcut_sequence();
                     self.input.set_painted_combo_completion(None);
@@ -3208,6 +3817,8 @@ impl<C: Component, M, R: FnMut(&mut C, M)> HostedWindow for Application<C, M, R>
             }
             WindowEvent::Occluded(occluded) => {
                 if occluded {
+                    self.state.as_mut().unwrap().finish_client_resize();
+                    self.input.cancel_window_move();
                     self.cancel_drag();
                     self.input.set_painted_combo_completion(None);
                     self.cancel_direct_scroll();

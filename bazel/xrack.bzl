@@ -32,6 +32,8 @@ def xr_ui_library(name, src, visibility = None, assets = [], sources = []):
         srcs = [generated],
         crate_root = generated,
         edition = "2024",
+        # The compiler tests verify the generated source. Lint the generator itself.
+        tags = ["no-clippy"],
         deps = ["//crates/xrack-runtime:xrack_runtime"],
         visibility = visibility,
     )

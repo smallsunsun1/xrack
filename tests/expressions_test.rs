@@ -107,8 +107,12 @@ fn generated_gradients_reuse_fixed_stops_and_update_live_stops() {
 
     let mut ui = GradientPlans::new();
     let before = ui.render();
-    let brush = |scene: &xrack_runtime::Node, id| scene.find(id).unwrap().properties["background"].clone();
-    let Value::Brush(Brush::Linear { stops: original, .. }) = brush(&before, "fixed") else {
+    let brush =
+        |scene: &xrack_runtime::Node, id| scene.find(id).unwrap().properties["background"].clone();
+    let Value::Brush(Brush::Linear {
+        stops: original, ..
+    }) = brush(&before, "fixed")
+    else {
         panic!("expected a linear brush");
     };
     ui.set_swatch_width(Length(60.0));

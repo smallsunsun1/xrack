@@ -1,6 +1,6 @@
 use controls_ui::{
-    CalendarDemo, CheckStateDemo, ColorDemo, ControlsDemo, DecimalSpinDemo, DelayDemo,
-    GroupBoxDemo, IndicatorsDemo, ThemeDemo, TimeDemo, TimerDemo, TumblerDemo,
+    CalendarDemo, CheckGroupDemo, CheckStateDemo, ColorDemo, ControlsDemo, DecimalSpinDemo,
+    DelayDemo, GroupBoxDemo, IndicatorsDemo, ThemeDemo, TimeDemo, TimerDemo, TumblerDemo,
 };
 
 fn main() -> std::process::ExitCode {
@@ -14,6 +14,7 @@ fn main() -> std::process::ExitCode {
         Some("--tumbler") => xrack_platform_winit::run(TumblerDemo::new()),
         Some("--delay") => xrack_platform_winit::run(DelayDemo::new()),
         Some("--check-state") => xrack_platform_winit::run(CheckStateDemo::new()),
+        Some("--check-group") => xrack_platform_winit::run(CheckGroupDemo::new()),
         Some("--groups") => xrack_platform_winit::run(GroupBoxDemo::new()),
         Some("--indicators") => xrack_platform_winit::run(IndicatorsDemo::new()),
         _ => {

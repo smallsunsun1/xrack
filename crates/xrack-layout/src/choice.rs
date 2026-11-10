@@ -1,14 +1,15 @@
 use crate::{LayoutNode, Point, Rect, Target, input::valid};
 use std::borrow::Cow;
+use std::time::{Duration, Instant};
 use unicode_segmentation::UnicodeSegmentation;
 use xrack_runtime::{
-    ChoiceIdentity, Node, RowKey, choice_identity, combo_count, combo_editable, combo_find_label,
-    combo_index, combo_label, combo_labels, combo_row_index, combo_row_key, combo_text,
-    search_suggestion, search_suggestions,
+    ChoiceIdentity, Node, RowKey, choice_enabled, choice_identity, combo_count, combo_editable,
+    combo_find_enabled_label, combo_index, combo_label, combo_labels, combo_row_index,
+    combo_row_key, combo_text, search_suggestion, search_suggestions,
 };
 
 const ROW_HEIGHT: f32 = 28.0;
-const MAX_ROWS: usize = 8;
+pub(crate) const MAX_ROWS: usize = 8;
 
 /// The exact candidate and draft boundary displayed for one focused control.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -25,10 +26,10 @@ impl ComboCompletion {
 }
 
 pub(crate) fn completion_value<'a>(node: &'a Node, draft: &str) -> Option<Cow<'a, str>> {
-    if draft.is_empty() || combo_find_label(node, |value| value == draft).is_some() {
+    if draft.is_empty() || combo_find_enabled_label(node, 0, |value| value == draft).is_some() {
         return None;
     }
-    let index = combo_find_label(node, |value| {
+    let index = combo_find_enabled_label(node, 0, |value| {
         value.strip_prefix(draft).is_some_and(|suffix| {
             suffix.chars().all(|ch| !ch.is_control())
                 && value
@@ -70,6 +71,83 @@ pub enum ChoiceKey {
     Escape,
 }
 
+#[derive(Clone, Debug, Default)]
+pub(crate) struct ChoiceTypeahead {
+    prefix: String,
+    last: Option<Instant>,
+}
+
+impl ChoiceTypeahead {
+    pub fn find(
+        &mut self,
+        node: &Node,
+        text: &str,
+        now: Instant,
+        current: Option<usize>,
+    ) -> Option<usize> {
+        if text.is_empty() || text.chars().any(char::is_control) {
+            return None;
+        }
+        let text: String = text.chars().flat_map(char::to_lowercase).collect();
+        let find = |start, prefix: &str| {
+            combo_find_enabled_label(node, start, |label| {
+                let mut label = label.chars().flat_map(char::to_lowercase);
+                prefix
+                    .chars()
+                    .all(|character| label.next() == Some(character))
+            })
+        };
+        let continuing = self
+            .last
+            .is_some_and(|last| now.saturating_duration_since(last) <= Duration::from_millis(800));
+        self.last = Some(now);
+        if continuing && self.prefix != text && self.prefix.len() + text.len() <= 128 {
+            self.prefix.push_str(&text);
+            if let Some(index) = find(current.unwrap_or(0), &self.prefix) {
+                return Some(index);
+            }
+        }
+        self.prefix = text;
+        find(current.map_or(0, |index| index + 1), &self.prefix)
+    }
+}
+
+pub(crate) fn next_choice(
+    node: &Node,
+    current: Option<usize>,
+    key: ChoiceKey,
+    page: usize,
+) -> Option<usize> {
+    let count = choice_count(node);
+    let last = count.checked_sub(1)?;
+    let enabled = |&index: &usize| choice_enabled(node, index);
+    match key {
+        ChoiceKey::Up => (0..current.unwrap_or(count)).rev().find(enabled),
+        ChoiceKey::Down => (current.map_or(0, |index| index + 1)..count).find(enabled),
+        ChoiceKey::Home => (0..count).find(enabled),
+        ChoiceKey::End => (0..count).rev().find(enabled),
+        ChoiceKey::PageUp => {
+            let Some(current) = current else {
+                return (0..count).find(enabled);
+            };
+            let target = current.saturating_sub(page);
+            (0..=target)
+                .rev()
+                .find(enabled)
+                .or_else(|| (target..current).find(enabled))
+        }
+        ChoiceKey::PageDown => {
+            let target = current.map_or(0, |index| (index + page).min(last));
+            (target..count).find(enabled).or_else(|| {
+                (current.map_or(0, |index| index + 1)..target)
+                    .rev()
+                    .find(enabled)
+            })
+        }
+        _ => None,
+    }
+}
+
 pub struct ComboGeometry {
     pub entry: Rect,
     pub trigger: Rect,
@@ -96,6 +174,10 @@ pub struct ChoiceMenu<'a> {
 }
 
 impl ChoiceMenu<'_> {
+    pub fn row_enabled(&self, offset: usize) -> bool {
+        offset < self.rows.len() && choice_enabled(self.control, self.first + offset)
+    }
+
     pub fn row_bounds(&self, offset: usize) -> Rect {
         let height = self.bounds.height / self.rows.len() as f32;
         Rect::new(
@@ -175,12 +257,14 @@ impl ChoicePopup {
             .filter(|draft| combo_editable(node) && !draft.is_empty())
             .filter(|draft| combo_text(node) != *draft)
             .and_then(|draft| {
-                combo_find_label(node, |item| item == draft)
-                    .or_else(|| combo_find_label(node, |item| item.starts_with(draft)))
+                combo_find_enabled_label(node, 0, |item| item == draft)
+                    .or_else(|| combo_find_enabled_label(node, 0, |item| item.starts_with(draft)))
             })
-            .or(current)
-            .unwrap_or(0);
-        popup.highlight(node, index);
+            .or_else(|| current.filter(|&index| choice_enabled(node, index)))
+            .or_else(|| combo_find_enabled_label(node, current.unwrap_or(0), |_| true));
+        if let Some(index) = index {
+            popup.highlight(node, index);
+        }
         popup.reconcile(scene, layout).then_some(popup)
     }
 
@@ -199,7 +283,8 @@ impl ChoicePopup {
         layout: &LayoutNode,
     ) -> Option<(&'a Node, ChoiceGeometry)> {
         let node = self.node(scene, layout)?;
-        let anchor = layout.at_path(&self.target.path)?.bounds;
+        let item = layout.at_path(&self.target.path)?;
+        let anchor = item.window_bounds(item.bounds);
         Some((node, geometry(anchor, layout.bounds, choice_count(node))?))
     }
 
@@ -246,10 +331,12 @@ impl ChoicePopup {
             (search_suggestion(node, index) == self.highlighted_value.as_deref()
                 && self.highlighted_value.is_some())
             .then_some(index)
-        } else if let Some(key) = self.highlighted_row {
-            combo_row_index(node, key)
         } else {
-            Some(index.min(choice_count(node).saturating_sub(1)))
+            let index = match self.highlighted_row {
+                Some(key) => combo_row_index(node, key)?,
+                None => index.min(choice_count(node).saturating_sub(1)),
+            };
+            choice_enabled(node, index).then_some(index)
         }
     }
 
@@ -282,60 +369,60 @@ impl ChoicePopup {
         let Some((node, index)) = self.pick(scene, layout, point) else {
             return false;
         };
+        if !choice_enabled(node, index) {
+            return false;
+        }
         let previous = self.highlighted(node);
         self.highlight(node, index);
         previous != self.highlight
     }
 
     pub fn press(&mut self, scene: &Node, layout: &LayoutNode, point: Point) -> bool {
+        self.press = None;
         let Some((node, index)) = self.pick(scene, layout, point) else {
             return false;
         };
-        self.highlight(node, index);
-        self.press = choice_identity(node, index).map(|identity| (index, identity));
-        self.press.is_some()
+        if choice_enabled(node, index) {
+            self.highlight(node, index);
+            self.press = choice_identity(node, index).map(|identity| (index, identity));
+        }
+        true
     }
 
     pub fn release(&mut self, scene: &Node, layout: &LayoutNode, point: Point) -> Option<usize> {
         let (pressed, previous) = self.press.take()?;
         let (node, index) = self.pick(scene, layout, point)?;
-        (index == pressed && choice_identity(node, index).as_ref() == Some(&previous))
-            .then_some(index)
+        (index == pressed
+            && choice_enabled(node, index)
+            && choice_identity(node, index).as_ref() == Some(&previous))
+        .then_some(index)
     }
 
     pub fn move_highlight(&mut self, scene: &Node, layout: &LayoutNode, key: ChoiceKey) {
         let Some((node, geo)) = self.resolve(scene, layout) else {
             return;
         };
-        let last = choice_count(node) - 1;
-        let highlight = self.highlighted(node);
-        let next = match key {
-            ChoiceKey::Up => highlight.map_or(last, |index| index.saturating_sub(1)),
-            ChoiceKey::Down => highlight.map_or(0, |index| (index + 1).min(last)),
-            ChoiceKey::Home => 0,
-            ChoiceKey::End => last,
-            ChoiceKey::PageUp => highlight.map_or(0, |index| index.saturating_sub(geo.visible)),
-            ChoiceKey::PageDown => highlight.map_or(0, |index| (index + geo.visible).min(last)),
-            _ => return,
+        if let Some(index) = next_choice(node, self.highlighted(node), key, geo.visible) {
+            self.highlight(node, index);
+            self.reconcile(scene, layout);
+        }
+    }
+
+    pub fn typeahead(
+        &mut self,
+        scene: &Node,
+        layout: &LayoutNode,
+        search: &mut ChoiceTypeahead,
+        text: &str,
+        now: Instant,
+    ) {
+        let Some(node) = self.node(scene, layout) else {
+            return;
         };
-        let next = if node.kind == "SearchField" {
-            let selectable = |&index: &usize| search_suggestion(node, index).is_some();
-            let lower = || (0..=next).rev().find(selectable);
-            let higher = || (next..=last).find(selectable);
-            let candidate = if matches!(key, ChoiceKey::Up | ChoiceKey::End | ChoiceKey::PageUp) {
-                lower().or_else(higher)
-            } else {
-                higher().or_else(lower)
-            };
-            let Some(index) = candidate else {
-                return;
-            };
-            index
-        } else {
-            next
-        };
-        self.highlight(node, next);
-        self.reconcile(scene, layout);
+        if let Some(index) = search.find(node, text, now, self.highlighted(node)) {
+            self.highlight(node, index);
+            self.reconcile(scene, layout);
+        }
     }
 
     pub fn selected(&self, scene: &Node, layout: &LayoutNode) -> Option<usize> {
@@ -351,10 +438,19 @@ impl ChoicePopup {
             .saturating_add_signed(rows)
             .min(choice_count(node) - geo.visible);
         if let Some(highlight) = self.highlighted(node) {
-            self.highlight(
-                node,
-                highlight.clamp(self.first, self.first + geo.visible - 1),
-            );
+            let end = self.first + geo.visible;
+            let index = if highlight >= end {
+                (self.first..end)
+                    .rev()
+                    .find(|&index| choice_enabled(node, index))
+            } else {
+                (highlight.max(self.first)..end).find(|&index| choice_enabled(node, index))
+            };
+            if let Some(index) = index {
+                self.highlight(node, index);
+            } else {
+                self.highlight = None;
+            }
         }
         self.press = None;
     }

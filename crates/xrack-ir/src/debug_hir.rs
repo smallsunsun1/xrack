@@ -21,11 +21,18 @@ pub fn analyze(doc: &Document) -> Result<ir::Module, Vec<Diagnostic>> {
                         properties.push(p);
                     }
                 }
-                LoweredMember::Callback(c) => callbacks.push(c),
+                LoweredMember::Callback(c) => {
+                    if let Some(element) = elements.last_mut() {
+                        element.callbacks.push(c);
+                    } else {
+                        callbacks.push(c);
+                    }
+                }
                 LoweredMember::BeginElement { kind, id, span, .. } => elements.push(ir::Element {
                     kind: kind.into(),
                     id: id.map(str::to_owned),
                     action: None,
+                    button_group: None,
                     span,
                     properties: vec![],
                     bindings: vec![],
@@ -34,7 +41,9 @@ pub fn analyze(doc: &Document) -> Result<ir::Module, Vec<Diagnostic>> {
                     state_bindings: vec![],
                     state_timings: vec![],
                     initial_focus: None,
+                    callbacks: vec![],
                     handlers: vec![],
+                    clipboard_paste: None,
                     children: vec![],
                 }),
                 LoweredMember::Binding(b) | LoweredMember::InstanceLayout(b) => {
@@ -43,9 +52,13 @@ pub fn analyze(doc: &Document) -> Result<ir::Module, Vec<Diagnostic>> {
                 LoweredMember::ActionRef { owner, .. } => {
                     elements.last_mut().unwrap().action = Some(owner)
                 }
-                LoweredMember::ControlLink(b) | LoweredMember::RowLink(b) => {
-                    elements.last_mut().unwrap().bindings.push(b)
+                LoweredMember::RadioGroupRef { group, .. }
+                | LoweredMember::CheckGroupRef { group, .. } => {
+                    elements.last_mut().unwrap().button_group = Some(group)
                 }
+                LoweredMember::ControlLink(b)
+                | LoweredMember::InstanceLink(b)
+                | LoweredMember::RowLink(b) => elements.last_mut().unwrap().bindings.push(b),
                 LoweredMember::Animation(animation) => {
                     elements.last_mut().unwrap().animations.push(animation)
                 }
@@ -75,7 +88,12 @@ pub fn analyze(doc: &Document) -> Result<ir::Module, Vec<Diagnostic>> {
                         value: model,
                     })
                 }
-                LoweredMember::Handler(h) => elements.last_mut().unwrap().handlers.push(h),
+                LoweredMember::Handler(h) | LoweredMember::InstanceHandler(h) => {
+                    elements.last_mut().unwrap().handlers.push(h)
+                }
+                LoweredMember::ClipboardPaste(paste) => {
+                    elements.last_mut().unwrap().clipboard_paste = Some(paste)
+                }
                 LoweredMember::EndElement => {
                     let child = elements.pop().unwrap();
                     if let Some(parent) = elements.last_mut() {

@@ -2,27 +2,29 @@ pub mod ui_driver;
 
 use async_ui::AsyncDemo;
 use controls_ui::{
-    CalendarDemo, CheckStateDemo, ColorDemo, DecimalPrice, DecimalSpinDemo, DelayDemo,
-    GroupBoxDemo, ReviewRow, TimeDemo, TimerDemo, TumblerDemo,
+    CalendarDemo, CheckGroupDemo, CheckStateDemo, ColorDemo, DecimalPrice, DecimalSpinDemo,
+    DelayDemo, GroupBoxDemo, ReviewRow, TimeDemo, TimerDemo, TumblerDemo,
 };
 use counter_ui::Counter;
 use delegates_ui::SwipeDemo;
 use dialog_ui::{DialogDemo, PopupDemo, StandardDialogDemo};
 use form_ui::{
-    CloseGuardDemo, DragDropDemo, FileDialogDemo, FileDropDemo, MessageDialogDemo, ValidationDemo,
-    VirtualDragDemo,
+    CloseGuardDemo, DragDropDemo, EditorCommandsDemo, EditorMenuDemo, FileDialogDemo, FileDropDemo,
+    MessageDialogDemo, ValidationDemo, VirtualDragDemo,
 };
-use layout_ui::{FocusScopesDemo, ScopedKeysDemo, StatesDemo};
-use list_ui::{DirectoryItem, GridDemo, StandardListDemo};
+use layout_ui::{
+    ComponentStatesDemo, FocusScopesDemo, FramelessDemo, GeometryDemo, ScopedKeysDemo, StatesDemo,
+};
+use list_ui::{DirectoryItem, GridDemo, ScrollPositionDemo, StandardListDemo};
 use menu_ui::{MenuDemo, ShortcutDemo};
 use navigation_ui::{PageDemo, StackDemo, TabBarDemo};
-use records_ui::{RecordTableDemo, StockRow};
-use selection_ui::{EditableChoiceDemo, RecordComboDemo, SelectionDemo};
+use records_ui::{DelegateTableDemo, NestedRecordsDemo, QuantityPaste, RecordTableDemo, StockRow};
+use selection_ui::{EditableChoiceDemo, GroupedRadiosDemo, RecordComboDemo, SelectionDemo};
 use split_ui::SplitDemo;
 use std::time::{Duration, Instant};
 use table_ui::{InventoryRow, StandardTableDemo, TableDemo};
 use tooltip_ui::TooltipDemo;
-use tree_ui::{TreeDemo, TreeRecord};
+use tree_ui::{DelegateTreeDemo, TreeDemo, TreeRecord};
 use ui_driver::UiDriver;
 use xrack_layout::{
     ActivationKey, CalendarGeometry, ChoiceKey, EditAction, EditSource, Interaction, MenuKey,
@@ -37,6 +39,304 @@ use xrack_runtime::{
 };
 
 struct FixedText;
+
+#[test]
+fn list_anchors_preserve_a_partial_row_and_fall_back_to_a_visible_neighbor() {
+    use list_ui::AnchoredListDemo;
+    use xrack_runtime::Length;
+
+    let mut ui = AnchoredListDemo::new();
+    ui.set_records(
+        (0..400)
+            .map(|rank| DirectoryItem {
+                label: rank.to_string(),
+                rank,
+            })
+            .collect(),
+    );
+    let model = ui.model_records();
+    let mut driver = UiDriver::new(ui, FixedText, Size::new(560.0, 274.0));
+    driver.update(|ui| ui.invoke_position(10));
+    assert!(driver.scroll("anchored", Point { x: 0.0, y: 7.0 }));
+    let row = model.row_key(10).unwrap();
+    assert_eq!(driver.node("anchored").children[0].row_key, Some(row));
+    assert_eq!(driver.component().get_anchored_y(), Length(-327.0));
+    driver.update(|_| {
+        assert!(model.insert(
+            0,
+            DirectoryItem {
+                label: "new".into(),
+                rank: -1
+            }
+        ))
+    });
+    assert_eq!(driver.node("anchored").children[0].row_key, Some(row));
+    assert_eq!(driver.component().get_anchored_y(), Length(-359.0));
+    assert_eq!(driver.component().get_plain_y(), Length(-320.0));
+
+    driver.update(|_| assert!(model.sort_by(|a, b| b.rank.cmp(&a.rank))));
+    let index = model.row_index(row).unwrap();
+    let offset = index as f64 * 32.0 + 7.0;
+    assert_eq!(driver.node("anchored").children[0].row_key, Some(row));
+    assert_eq!(driver.component().get_anchored_y(), Length(-offset));
+    let neighbor = model.row_key(index + 1).unwrap();
+    driver.update(|_| assert!(model.remove(index).is_some()));
+    assert_eq!(driver.node("anchored").children[1].row_key, Some(neighbor));
+    assert_eq!(
+        driver.component().get_anchored_y(),
+        Length(-(offset - 32.0))
+    );
+    assert_eq!(driver.component().get_scroll_events(), 1);
+    assert!(driver.node("anchored").children.len() <= 6);
+    driver.update(|ui| ui.invoke_position(50));
+    assert_eq!(driver.node("anchored").list.unwrap().first_row, 50);
+    assert_eq!(driver.component().get_anchored_y(), Length(-1600.0));
+    assert!(driver.scroll("anchored", Point { x: 0.0, y: 25.0 }));
+    let row = driver.node("anchored").children[0].row_key;
+    driver.update(|ui| ui.set_anchor_row_height(Length(12.0)));
+    assert_eq!(driver.node("anchored").children[0].row_key, row);
+    assert_eq!(driver.component().get_anchored_y(), Length(-611.0));
+
+    driver.update(|ui| ui.set_anchor_comparison(true));
+    let plain_row = driver.node("plain").children[0].row_key;
+    driver.update(|_| {
+        assert!(model.insert(
+            0,
+            DirectoryItem {
+                label: "again".into(),
+                rank: -2
+            }
+        ))
+    });
+    assert_eq!(driver.node("plain").children[0].row_key, plain_row);
+    assert_eq!(driver.component().get_plain_y(), Length(-1632.0));
+}
+
+#[test]
+fn grid_anchors_preserve_the_visible_record_when_the_column_count_changes() {
+    let mut ui = GridDemo::new();
+    ui.set_preserve_viewport(true);
+    ui.set_records(
+        (0..100)
+            .map(|rank| DirectoryItem {
+                label: rank.to_string(),
+                rank,
+            })
+            .collect(),
+    );
+    let mut input = Interaction::default();
+    let path = [0, 1];
+    let wide = Size::new(620.0, 420.0);
+    let narrow = Size::new(340.0, 420.0);
+    let prepare = |input: &Interaction, viewport| {
+        prepare_scene_with_input(&ui, ui.render_shared(), viewport, &mut FixedText, input)
+    };
+    let (scene, layout) = prepare(&input, wide);
+    input.reconcile(&scene, &layout);
+    assert!(input.accessibility_scroll_to(&layout, &path, Orientation::Vertical, 281.0));
+    let (scene, layout) = prepare(&input, wide);
+    input.reconcile(&scene, &layout);
+    let first = scene.at_path(&path).unwrap().children[0].row_key;
+    let (scene, layout) = prepare(&input, narrow);
+    assert_eq!(scene.at_path(&path).unwrap().children[0].row_key, first);
+    assert_eq!(layout.at_path(&path).unwrap().scroll.unwrap().offset, 557.0);
+}
+
+#[test]
+fn tree_anchors_follow_a_visible_record_when_a_preceding_branch_collapses() {
+    let mut ui = TreeDemo::new();
+    ui.set_preserve_viewport(true);
+    ui.set_records(
+        (0..48)
+            .map(|id| TreeRecord {
+                id,
+                parent_id: if (1..11).contains(&id) { 0 } else { -1 },
+                label: id.to_string(),
+                ..TreeRecord::default()
+            })
+            .collect(),
+    );
+    let viewport = Size::new(600.0, 370.0);
+    let path = [0, 1];
+    let prepare = |ui: &TreeDemo, input: &Interaction| {
+        prepare_scene_with_input(ui, ui.render_shared(), viewport, &mut FixedText, input)
+    };
+    let mut input = Interaction::default();
+    let (scene, _) = prepare(&ui, &input);
+    let folder = scene.at_path(&path).unwrap().tree.as_ref().unwrap().rows()[0];
+    let expansion = |expanded| {
+        ControlAction::Tree(TreeAction::SetExpanded {
+            key: folder.key,
+            row: folder.row,
+            expanded,
+        })
+    };
+    assert!(ui.control_at(&scene, &path, expansion(true)));
+    let (_, layout) = prepare(&ui, &input);
+    assert!(input.accessibility_scroll_to(&layout, &path, Orientation::Vertical, 481.0));
+    let (scene, layout) = prepare(&ui, &input);
+    input.reconcile(&scene, &layout);
+    let row = scene.at_path(&path).unwrap().children[0].row_key;
+    assert!(ui.control_at(&scene, &path, expansion(false)));
+    let (scene, layout) = prepare(&ui, &input);
+    assert_eq!(scene.at_path(&path).unwrap().children[0].row_key, row);
+    assert_eq!(layout.at_path(&path).unwrap().scroll.unwrap().offset, 141.0);
+}
+
+#[test]
+fn left_drag_claims_the_viewport_only_after_the_click_threshold() {
+    use xrack_runtime::Length;
+
+    let mut driver = UiDriver::new(
+        ScrollPositionDemo::new(),
+        FixedText,
+        Size::new(540.0, 300.0),
+    );
+    assert!(!driver.drag_viewport_from("canvas-button", Point { x: 0.0, y: -3.0 }));
+    assert_eq!(driver.component().get_preview_clicks(), 1);
+    assert_eq!(driver.component().get_preview_y(), Length(0.0));
+    assert!(driver.drag_viewport_from("canvas-button", Point { x: 0.0, y: -48.0 }));
+    assert_eq!(driver.component().get_preview_clicks(), 1);
+    assert_eq!(driver.component().get_preview_y(), Length(-40.0));
+    assert_eq!(driver.component().get_preview_scrolls(), 1);
+
+    driver.click("reset");
+    assert!(driver.drag_viewport_from("canvas-button", Point { x: 0.0, y: 40.0 }));
+    assert_eq!(driver.component().get_preview_y(), Length(0.0));
+    assert_eq!(driver.component().get_preview_scrolls(), 1);
+    driver.update(|ui| ui.set_pan_enabled(false));
+    assert!(!driver.drag_viewport_from("canvas-button", Point { x: 0.0, y: -48.0 }));
+    assert_eq!(driver.component().get_preview_y(), Length(0.0));
+    assert_eq!(driver.component().get_preview_clicks(), 1);
+}
+
+#[test]
+fn shared_scroll_bindings_preserve_requested_position_across_independent_clamps() {
+    use list_ui::LinkedScrollDemo;
+    use xrack_runtime::Length;
+
+    let mut driver = UiDriver::new(LinkedScrollDemo::new(), FixedText, Size::new(540.0, 270.0));
+    assert_eq!(driver.component().get_large_y(), Length(-36.0));
+    assert_eq!(driver.component().get_small_y(), Length(-36.0));
+    assert_eq!(driver.component().get_follower_y(), Length(-36.0));
+
+    assert!(driver.scroll("large", Point { x: 30.0, y: 20.0 }));
+    assert_eq!(driver.component().get_horizontal(), Length(-30.0));
+    assert_eq!(driver.component().get_vertical(), Length(-56.0));
+    assert_eq!(driver.component().get_small_y(), Length(-56.0));
+    assert_eq!(driver.component().get_large_writeback(), Length(-56.0));
+    assert_eq!(driver.component().get_large_scrolls(), 1);
+    assert_eq!(driver.component().get_small_scrolls(), 0);
+
+    assert!(driver.scroll("follower", Point { x: 0.0, y: 30.0 }));
+    assert_eq!(driver.component().get_follower_y(), Length(-86.0));
+    assert_eq!(driver.component().get_vertical(), Length(-56.0));
+    driver.click("set-deep");
+    assert_eq!(driver.component().get_large_y(), Length(-170.0));
+    assert_eq!(driver.component().get_small_y(), Length(-60.0));
+    assert_eq!(driver.component().get_follower_y(), Length(-86.0));
+    assert_eq!(driver.component().get_vertical(), Length(-170.0));
+
+    driver.update(|ui| ui.set_small_content(Length(120.0)));
+    assert_eq!(driver.component().get_small_y(), Length(0.0));
+    assert_eq!(driver.component().get_vertical(), Length(-170.0));
+    driver.update(|ui| ui.set_small_content(Length(300.0)));
+    assert_eq!(driver.component().get_small_y(), Length(-170.0));
+    assert!(driver.scroll("small", Point { x: 0.0, y: -12.0 }));
+    assert_eq!(driver.component().get_large_y(), Length(-158.0));
+    assert_eq!(driver.component().get_small_scrolls(), 1);
+    driver.click("move-small");
+    assert_eq!(driver.component().get_vertical(), Length(-40.0));
+    assert_eq!(driver.component().get_large_y(), Length(-40.0));
+    assert_eq!(driver.component().get_small_y(), Length(-40.0));
+    assert_eq!(driver.component().get_horizontal(), Length(-30.0));
+    assert_eq!(driver.component().get_large_scrolls(), 1);
+    assert_eq!(driver.component().get_small_scrolls(), 1);
+}
+
+#[test]
+fn scrolled_observes_the_committed_position_once_for_both_axes() {
+    use xrack_runtime::Length;
+
+    let mut driver = UiDriver::new(
+        ScrollPositionDemo::new(),
+        FixedText,
+        Size::new(540.0, 300.0),
+    );
+    assert_eq!(driver.component().get_preview_scrolls(), 0);
+    driver.click("jump");
+    assert_eq!(driver.component().get_preview_scrolls(), 0);
+    assert_eq!(driver.component().get_records_scrolls(), 0);
+    driver.click("reset");
+    assert!(driver.scroll("preview", Point { x: 45.0, y: 25.0 }));
+    assert_eq!(driver.component().get_preview_scrolls(), 1);
+    assert_eq!(driver.component().get_last_preview_x(), Length(-45.0));
+    assert_eq!(driver.component().get_last_preview_y(), Length(-25.0));
+    assert!(driver.scroll("preview", Point { x: 500.0, y: 500.0 }));
+    assert_eq!(driver.component().get_preview_scrolls(), 2);
+    assert_eq!(driver.component().get_last_preview_x(), Length(-160.0));
+    assert_eq!(driver.component().get_last_preview_y(), Length(-120.0));
+    assert!(!driver.scroll("preview", Point { x: 5.0, y: 5.0 }));
+    driver.update(|ui| ui.set_preview_enabled(false));
+    assert!(!driver.scroll("preview", Point { x: -45.0, y: -25.0 }));
+    assert_eq!(driver.component().get_preview_scrolls(), 2);
+    assert!(driver.scroll("records", Point { x: 0.0, y: 64.0 }));
+    assert_eq!(driver.component().get_records_y(), Length(-64.0));
+    assert_eq!(driver.component().get_records_scrolls(), 1);
+    assert_eq!(driver.component().get_current(), 0);
+}
+
+#[test]
+fn programmatic_scroll_moves_virtual_content_and_publishes_clamped_geometry() {
+    use xrack_runtime::{Length, ScrollAlignment};
+
+    let mut driver = UiDriver::new(
+        ScrollPositionDemo::new(),
+        FixedText,
+        Size::new(540.0, 300.0),
+    );
+    assert_eq!(driver.component().get_records_height(), Length(120.0));
+    assert_eq!(driver.node("records").list.unwrap().first_row, 0);
+    let preview_x = Property::default();
+    assert_eq!(
+        preview_x.get(|| driver.component().get_preview_x()),
+        Length(0.0)
+    );
+    driver.update(|ui| ui.invoke_scroll_preview(Length(0.0), Length(25.0)));
+    assert!(!preview_x.is_dirty());
+    assert_eq!(driver.component().get_preview_y(), Length(-25.0));
+
+    driver.click("jump");
+    assert_eq!(driver.component().get_preview_x(), Length(-96.0));
+    assert_eq!(driver.component().get_preview_y(), Length(-60.0));
+    assert_eq!(driver.component().get_records_y(), Length(-215_952.0));
+    assert_eq!(driver.component().get_records_target(), Length(-215_952.0));
+    assert_eq!(
+        driver.node("list-offset").text("text"),
+        Some("列表 Y -215952")
+    );
+    let list = driver.node("records");
+    assert_eq!(list.list.unwrap().first_row, 8_998);
+    assert!(list.children.len() < 10);
+    assert_eq!(driver.component().get_current(), 0);
+
+    driver.update(|ui| ui.invoke_position(9002, ScrollAlignment::Visible));
+    assert_eq!(driver.component().get_records_y(), Length(-215_952.0));
+    driver.update(|ui| ui.invoke_position(9003, ScrollAlignment::Contain));
+    assert_eq!(driver.component().get_records_y(), Length(-215_976.0));
+    driver.update(|ui| ui.invoke_position(-1, ScrollAlignment::Beginning));
+    assert_eq!(driver.component().get_records_y(), Length(-215_976.0));
+
+    driver.update(|ui| ui.invoke_resize_and_position(18, 17));
+    assert_eq!(driver.node("records").list.unwrap().row_count, 18);
+    assert_eq!(driver.component().get_records_y(), Length(-312.0));
+    driver.update(|ui| ui.invoke_scroll_preview(Length(f64::MAX), Length(-30.0)));
+    assert_eq!(driver.component().get_preview_x(), Length(-160.0));
+    assert_eq!(driver.component().get_preview_y(), Length(0.0));
+    driver.click("reset");
+    assert_eq!(driver.component().get_records_y(), Length(0.0));
+    assert_eq!(driver.component().get_preview_x(), Length(0.0));
+}
 
 #[test]
 fn focus_observers_publish_both_sides_before_callbacks_and_keep_within_stable() {
@@ -281,6 +581,243 @@ fn key_capture_stays_inside_the_active_modal_overlay() {
 }
 
 #[test]
+fn layout_geometry_is_published_to_both_component_scopes_after_layout() {
+    use xrack_layout::LayoutObservers;
+    use xrack_runtime::Length;
+
+    let mut ui = GeometryDemo::new();
+    let input = Interaction::default();
+    let mut observations = LayoutObservers::default();
+    let prepare = |ui: &GeometryDemo, width| {
+        prepare_scene_with_input(
+            ui,
+            ui.render_shared(),
+            Size::new(width, 290.0),
+            &mut FixedText,
+            &input,
+        )
+    };
+    assert!(!ui.get_panel_ready());
+    assert_eq!(ui.get_panel_width(), Length(0.0));
+    let (scene, layout) = prepare(&ui, 500.0);
+    let panel = layout.at_path(&[0, 0, 0]).unwrap();
+    let parent = layout.at_path(&[0, 0]).unwrap();
+    observations.sync(&scene, &layout);
+    assert!(ui.get_panel_ready());
+    assert_eq!(
+        ui.get_panel_x(),
+        Length(f64::from(panel.bounds.x - parent.bounds.x))
+    );
+    assert_eq!(ui.get_panel_width(), Length(f64::from(panel.bounds.width)));
+    assert_eq!(ui.get_component_width(), ui.get_panel_width());
+    assert_eq!(ui.get_panel_window_width(), ui.get_panel_width());
+    let text = ui.render_shared();
+    assert!(
+        text.find("status")
+            .unwrap()
+            .text("text")
+            .unwrap()
+            .contains("布局宽度")
+    );
+    let first_width = ui.get_panel_width();
+
+    ui.set_rotated(true);
+    let (scene, layout) = prepare(&ui, 600.0);
+    let panel = layout.at_path(&[0, 0, 0]).unwrap();
+    observations.sync(&scene, &layout);
+    assert_eq!(ui.get_panel_width(), Length(f64::from(panel.bounds.width)));
+    assert!(
+        ui.get_panel_width().0 > first_width.0,
+        "before {first_width:?}, after {:?}",
+        ui.get_panel_width()
+    );
+    assert_eq!(ui.get_panel_width(), ui.get_component_width());
+    assert!((ui.get_panel_window_width().0 - f64::from(panel.bounds.height)).abs() < 0.01);
+
+    ui.invoke_show_details();
+    let (scene, layout) = prepare(&ui, 600.0);
+    observations.sync(&scene, &layout);
+    assert!(ui.get_tip_ready());
+    assert_eq!(ui.get_tip_width(), ui.get_panel_width());
+    let (scene, layout) = prepare(&ui, 600.0);
+    observations.sync(&scene, &layout);
+    assert!(!ui.scene_dirty());
+
+    ui.set_show_panel(false);
+    let (scene, layout) = prepare(&ui, 600.0);
+    observations.sync(&scene, &layout);
+    assert!(!ui.get_panel_ready());
+    assert_eq!(ui.get_panel_width(), Length(0.0));
+    assert_eq!(ui.get_component_width(), Length(0.0));
+    assert_eq!(ui.get_panel_window_width(), Length(0.0));
+}
+
+#[test]
+fn editor_context_menus_share_text_commands_and_keep_custom_menus() {
+    let mut driver = UiDriver::new(EditorMenuDemo::new(), FixedText, Size::new(540.0, 420.0));
+    let enabled = |driver: &UiDriver<_, _>, label| {
+        driver.menus()[0]
+            .rows
+            .iter()
+            .find(|row| row.label == label)
+            .unwrap()
+            .enabled
+    };
+    assert!(driver.context_menu("entry"));
+    assert_eq!(driver.focused(), Some("entry"));
+    assert!(!enabled(&driver, "Copy"));
+    assert!(!enabled(&driver, "Undo"));
+    assert!(driver.click_menu_row("Select All"));
+    let original = driver.component().get_document();
+    assert_eq!(
+        driver.input().editor.as_ref().unwrap().selection(&original),
+        0..original.len()
+    );
+    driver.fill_focused("Edited");
+    assert!(driver.keyboard_context_menu());
+    assert!(enabled(&driver, "Undo"));
+    driver.menu_key(MenuKey::Accept);
+    assert_eq!(driver.component().get_document(), original);
+    assert!(driver.keyboard_context_menu());
+    assert!(driver.click_menu_row("Redo"));
+    assert_eq!(driver.component().get_document(), "Edited");
+
+    for (editor, copy, paste) in [("read-only", true, false), ("secret", false, true)] {
+        assert!(driver.context_menu(editor));
+        assert!(driver.click_menu_row("Select All"));
+        assert!(driver.keyboard_context_menu());
+        assert_eq!(enabled(&driver, "Copy"), copy);
+        assert_eq!(enabled(&driver, "Paste"), paste);
+        assert!(!enabled(&driver, "Cut"));
+        driver.menu_key(MenuKey::Escape);
+    }
+    assert!(driver.context_menu("custom"));
+    assert_eq!(driver.menus()[0].rows[0].label, "Custom action");
+    assert!(driver.click_menu_row("Custom action"));
+    assert_eq!(driver.component().get_custom_actions(), 1);
+    assert!(!driver.context_menu("quiet"));
+    assert!(driver.context_menu("entry"));
+    driver.update(|ui| ui.set_document("Updated from Rust".into()));
+    assert!(!driver.input().menu_open());
+}
+
+#[test]
+fn spin_box_context_menu_replays_the_draft_before_commit() {
+    let mut ui = EditorMenuDemo::new();
+    let (scene, layout) = prepare_scene(
+        &ui,
+        ui.render_shared(),
+        Size::new(540.0, 420.0),
+        &mut FixedText,
+        &Default::default(),
+    );
+    let mut input = Interaction::default();
+    let path = [0, 4];
+    let spin = scene.at_path(&path).unwrap();
+    let target = input.accessibility_target(&scene, &layout, &path).unwrap();
+    input.focus_target(&scene, &layout, target);
+    input.edit_spin(spin, EditAction::ReplaceAll("315"));
+    assert_eq!(input.editor_value(spin), "315");
+    for (command, redo, expected) in [
+        (xrack_runtime::TextCommand::Undo, false, "42"),
+        (xrack_runtime::TextCommand::Redo, true, "315"),
+    ] {
+        assert!(input.open_context_menu(&scene, &layout, true));
+        assert_eq!(
+            input
+                .menu_key(&scene, &layout, MenuKey::Accept)
+                .unwrap()
+                .action,
+            ControlAction::TextCommand(command)
+        );
+        assert!(input.replay_text_edit(&mut ui, &scene, redo));
+        assert_eq!(input.editor_value(spin), expected);
+        assert_eq!(ui.get_quantity(), 42);
+    }
+    let commit = input.commit_spin_draft().unwrap();
+    assert!(ui.control_at(&scene, &commit.path, commit.action));
+    assert_eq!(ui.get_quantity(), 315);
+}
+
+#[test]
+fn editor_commands_select_utf8_ranges_and_share_edit_history() {
+    use xrack_runtime::{FocusAction, FocusRequests, TextCommand};
+
+    let mut ui = EditorCommandsDemo::new();
+    let mut input = Interaction::default();
+    let queue = FocusRequests::default();
+    let _scope = queue.enter();
+    let prepare = |ui: &EditorCommandsDemo, input: &mut Interaction| {
+        let scene = ui.render_shared();
+        let layout = xrack_layout::layout(&scene, Size::new(620.0, 240.0), &mut FixedText);
+        input.reconcile(&scene, &layout);
+        (scene, layout)
+    };
+    let (scene, layout) = prepare(&ui, &mut input);
+    ui.invoke_paste_selected();
+    assert!(
+        input
+            .apply_focus_request(&scene, &layout, queue.drain().remove(0))
+            .is_none()
+    );
+    ui.invoke_select_prefix();
+    input.apply_focus_requests(&scene, &layout, queue.drain());
+    let editor_path = input.focused.as_ref().unwrap().path.clone();
+    let node = scene.at_path(&editor_path).unwrap();
+    let original = ui.get_document();
+    let handle = node.focus_handle.clone().unwrap();
+    assert_eq!(input.editor.as_ref().unwrap().selection(&original), 0..9);
+
+    let copy_path = [0, 0, 4];
+    let button = layout.at_path(&copy_path).unwrap().bounds;
+    input.pointer_move(
+        &scene,
+        &layout,
+        Point {
+            x: button.x + button.width / 2.0,
+            y: button.y + button.height / 2.0,
+        },
+    );
+    input.pointer_press_in_scene(&scene, &layout);
+    assert_eq!(input.focused.as_ref().unwrap().path, editor_path);
+    assert_eq!(input.editor.as_ref().unwrap().selection(&original), 0..9);
+    let pressed = input.pointer_release_target().unwrap();
+    assert_eq!(pressed.id, Some("copy-selection"));
+    assert!(ui.dispatch_at(&scene, &pressed.path, "clicked"));
+    assert_eq!(
+        input.apply_focus_request(&scene, &layout, queue.drain().remove(0)),
+        Some(TextCommand::Copy)
+    );
+
+    handle.request(FocusAction::Text(TextCommand::SetSelection {
+        anchor: 10,
+        focus: -2,
+    }));
+    input.apply_focus_requests(&scene, &layout, queue.drain());
+    let edit = input.editor.as_ref().unwrap();
+    assert_eq!(edit.anchor(&original), 9);
+    assert_eq!(edit.caret(&original), 0);
+
+    assert!(input.edit_text(
+        &mut ui,
+        &scene,
+        EditAction::Insert("新："),
+        EditSource::Atomic,
+        Instant::now()
+    ));
+    assert_eq!(ui.get_document(), "新：在这里编辑文本");
+    let (scene, layout) = prepare(&ui, &mut input);
+    ui.invoke_undo_edit();
+    assert_eq!(
+        input.apply_focus_request(&scene, &layout, queue.drain().remove(0)),
+        Some(TextCommand::Undo)
+    );
+    assert!(input.replay_text_edit(&mut ui, &scene, false));
+    assert_eq!(ui.get_document(), original);
+    assert_eq!(input.editor.as_ref().unwrap().selection(&original), 0..9);
+}
+
+#[test]
 fn focus_scopes_use_instance_identity_and_restore_only_eligible_children() {
     use xrack_runtime::FocusRequests;
     fn focused_name<'a>(input: &Interaction, scene: &'a xrack_runtime::Node) -> Option<&'a str> {
@@ -414,6 +951,217 @@ fn states_choose_the_first_condition_and_only_evaluate_the_selected_binding() {
         bound.render().find("tile").unwrap().length("width"),
         Some(124.0)
     );
+}
+
+#[test]
+fn custom_chrome_queues_window_commands_and_only_changes_labels_after_host_feedback() {
+    use xrack_runtime::{WindowCommand, WindowStatus};
+
+    let mut driver = UiDriver::new(FramelessDemo::new(), FixedText, Size::new(540.0, 320.0));
+    assert_eq!(driver.node("maximize-window").text("text"), Some("□"));
+    driver.click("maximize-window");
+    driver.click("toggle-full-screen");
+    assert_eq!(driver.node("maximize-window").text("text"), Some("□"));
+    assert_eq!(
+        driver.node("toggle-full-screen").text("text"),
+        Some("进入全屏")
+    );
+    driver.update(|ui| {
+        assert_eq!(
+            ui.take_window_commands(),
+            [
+                WindowCommand::ToggleMaximized,
+                WindowCommand::ToggleFullScreen
+            ]
+        );
+        assert!(ui.take_window_commands().is_empty());
+        ui.publish_window_status(WindowStatus {
+            active: true,
+            minimized: Some(false),
+            maximized: true,
+            full_screen: false,
+        });
+    });
+    assert_eq!(driver.node("maximize-window").text("text"), Some("❐"));
+    assert_eq!(
+        driver.node("window-status").text("text"),
+        Some("最大化 · 当前窗口")
+    );
+    driver.update(|ui| {
+        ui.publish_window_status(WindowStatus {
+            full_screen: true,
+            ..WindowStatus::default()
+        })
+    });
+    assert_eq!(
+        driver.node("toggle-full-screen").text("text"),
+        Some("退出全屏")
+    );
+    driver.click("restore-window");
+    driver.click("minimize-window");
+    driver.update(|ui| {
+        assert_eq!(
+            ui.take_window_commands(),
+            [WindowCommand::Restore, WindowCommand::Minimize]
+        )
+    });
+    let mut other = FramelessDemo::new();
+    assert!(other.take_window_commands().is_empty());
+    assert_eq!(
+        other
+            .render()
+            .find("toggle-full-screen")
+            .unwrap()
+            .text("text"),
+        Some("进入全屏")
+    );
+}
+
+#[test]
+fn custom_window_chrome_routes_background_drags_and_keeps_controls_interactive() {
+    use xrack_layout::WindowResizeEdge;
+
+    let mut ui = FramelessDemo::new();
+    let viewport = Size::new(540.0, 320.0);
+    let frame = |ui: &FramelessDemo| {
+        prepare_scene(
+            ui,
+            ui.render_shared(),
+            viewport,
+            &mut FixedText,
+            &Default::default(),
+        )
+    };
+    let (scene, layout) = frame(&ui);
+    let mut input = Interaction::default();
+    let title = Point { x: 60.0, y: 30.0 };
+    let corner = Point { x: 539.0, y: 319.0 };
+    input.pointer_move(&scene, &layout, corner);
+    assert_eq!(
+        input.window_resize_edge(&scene, &layout),
+        Some(WindowResizeEdge::SouthEast)
+    );
+    input.pointer_move(&scene, &layout, Point { x: 1.0, y: 1.0 });
+    assert_eq!(
+        input.window_resize_edge(&scene, &layout),
+        Some(WindowResizeEdge::NorthWest)
+    );
+    input.pointer_move(&scene, &layout, title);
+    assert_eq!(input.window_resize_edge(&scene, &layout), None);
+    assert!(input.arm_window_move(&scene, &layout));
+    assert!(!input.take_window_move(&scene, &layout, Point { x: 62.0, y: 31.0 }));
+    assert!(input.take_window_move(&scene, &layout, Point { x: 68.0, y: 31.0 }));
+    assert!(!input.take_window_move(&scene, &layout, Point { x: 78.0, y: 31.0 }));
+
+    input.pointer_move(&scene, &layout, title);
+    assert!(input.arm_window_move(&scene, &layout));
+    ui.set_can_move(false);
+    let (scene, layout) = frame(&ui);
+    assert!(!input.take_window_move(&scene, &layout, Point { x: 78.0, y: 31.0 }));
+    assert!(!input.arm_window_move(&scene, &layout));
+    let mut driver = UiDriver::new(ui, FixedText, viewport);
+    driver.click("header-action");
+    assert_eq!(driver.component().get_header_clicks(), 1);
+    driver.update(|ui| ui.set_can_move(true));
+    driver.click("header-action");
+    assert_eq!(driver.component().get_header_clicks(), 2);
+
+    let mut ui = FramelessDemo::new();
+    for (frameless, resizable, modal) in [
+        (false, true, false),
+        (true, false, false),
+        (true, true, true),
+    ] {
+        ui.set_frameless(frameless);
+        ui.set_can_resize(resizable);
+        ui.set_modal(modal);
+        let (scene, layout) = frame(&ui);
+        input.reconcile(&scene, &layout);
+        input.pointer_move(&scene, &layout, corner);
+        assert_eq!(input.window_resize_edge(&scene, &layout), None);
+        if modal {
+            input.pointer_move(&scene, &layout, title);
+            assert!(!input.arm_window_move(&scene, &layout));
+        }
+    }
+}
+
+#[test]
+fn component_states_share_lazy_inputs_and_respect_explicit_writes() {
+    use std::{cell::Cell, rc::Rc};
+
+    let mut ui = ComponentStatesDemo::new();
+    let selections = Rc::new(Cell::new(0));
+    let called = selections.clone();
+    ui.on_warning_active(move |active| {
+        called.set(called.get() + 1);
+        active
+    });
+    let base_reads = Rc::new(Cell::new(0));
+    let called = base_reads.clone();
+    ui.on_normal_caption(move |text| {
+        called.set(called.get() + 1);
+        text
+    });
+    ui.set_warning(true);
+    assert_eq!(ui.get_effective_caption(), "需要检查");
+    let scene = ui.render_shared();
+    let banner = scene.find("banner").unwrap();
+    assert_eq!(
+        banner.find("badge-text").unwrap().text("text"),
+        Some("需要检查")
+    );
+    assert_eq!(
+        banner.children[0].color("background"),
+        Some(Color(0xba4b5dff))
+    );
+    assert_eq!(banner.length("width"), Some(300.0));
+    assert_eq!(banner.state_timings.as_ref().unwrap()["width"].case, 0);
+    assert_eq!(selections.get(), 1);
+    assert_eq!(base_reads.get(), 0);
+    ui.set_baseline("已经恢复".into());
+    assert!(Rc::ptr_eq(&scene, &ui.render_shared()));
+    ui.set_warning(false);
+    assert_eq!(ui.get_effective_caption(), "已经恢复");
+    assert_eq!(base_reads.get(), 1);
+    assert_eq!(
+        ui.render_shared().find("banner").unwrap().length("width"),
+        Some(200.0)
+    );
+
+    ui.set_warning(true);
+    ui.invoke_set_banner("手动标签".into());
+    assert_eq!(ui.get_effective_caption(), "手动标签");
+    ui.set_warning(false);
+    assert_eq!(ui.get_effective_caption(), "手动标签");
+}
+
+#[test]
+fn repeated_component_states_use_each_rows_live_inputs() {
+    let mut driver = UiDriver::new(
+        ComponentStatesDemo::new(),
+        FixedText,
+        Size::new(520.0, 306.0),
+    );
+    let labels = |driver: &UiDriver<_, _>| {
+        driver
+            .node("queue")
+            .children
+            .iter()
+            .map(|row| {
+                row.find("badge-text")
+                    .unwrap()
+                    .text("text")
+                    .unwrap()
+                    .to_owned()
+            })
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(labels(&driver), ["监控", "存储", "网络"]);
+    driver.click("toggle");
+    assert_eq!(labels(&driver), ["监控", "存储 · 待检查", "网络"]);
+    driver.click("toggle");
+    assert_eq!(labels(&driver), ["监控", "存储", "网络"]);
 }
 
 #[test]
@@ -2677,6 +3425,292 @@ fn tab_bar_reveals_offscreen_tabs_and_shares_selection_with_swipe_view() {
 }
 
 #[test]
+fn check_group_master_summarizes_and_updates_the_bound_members_across_layouts() {
+    let mut driver = UiDriver::new(CheckGroupDemo::new(), FixedText, Size::new(520.0, 266.0));
+    assert_eq!(
+        driver.node("select-all").check_state(),
+        CheckState::PartiallyChecked
+    );
+    driver.update(|ui| ui.set_show_validation(false));
+    assert_eq!(
+        driver.component().get_summary(),
+        CheckState::PartiallyChecked
+    );
+    assert!(!driver.can_hit("include-metadata"));
+    driver.click("select-all");
+    assert!(
+        driver.component().get_assets()
+            && driver.component().get_metadata()
+            && driver.component().get_background_work()
+    );
+    assert_eq!(driver.component().get_validation(), CheckState::Checked);
+    assert_eq!(driver.component().get_master_result(), CheckState::Checked);
+    assert_eq!(driver.node("select-all").check_state(), CheckState::Checked);
+    assert_eq!(driver.component().get_child_edits(), 0);
+    driver.click("select-all");
+    assert_eq!(driver.component().get_summary(), CheckState::Unchecked);
+    assert_eq!(driver.component().get_validation(), CheckState::Unchecked);
+    assert!(!driver.component().get_background_work());
+
+    driver.update(|ui| ui.set_allow_metadata(true));
+    driver.tab();
+    assert_eq!(driver.focused(), Some("include-assets"));
+    driver.tab();
+    assert_eq!(driver.focused(), Some("include-metadata"));
+    driver.click("include-assets");
+    assert_eq!(driver.component().get_child_edits(), 1);
+    assert_eq!(
+        driver.component().get_summary(),
+        CheckState::PartiallyChecked
+    );
+    assert!(!driver.component().get_metadata());
+    driver.update(|ui| ui.invoke_apply_all(CheckState::PartiallyChecked));
+    assert_eq!(
+        driver.component().get_master_result(),
+        CheckState::PartiallyChecked
+    );
+    driver.update(|ui| ui.invoke_apply_all(CheckState::Checked));
+    assert_eq!(
+        driver.component().get_before_bulk(),
+        CheckState::PartiallyChecked
+    );
+    assert_eq!(driver.component().get_master_result(), CheckState::Checked);
+    assert_eq!(driver.component().get_child_edits(), 1);
+    driver.update(|ui| ui.set_validation(CheckState::PartiallyChecked));
+    assert_eq!(
+        driver.node("select-all").check_state(),
+        CheckState::PartiallyChecked
+    );
+    driver.update(|ui| ui.set_group_enabled(false));
+    assert!(!driver.can_hit("include-assets"));
+    assert!(!driver.can_hit("use-background"));
+}
+
+#[test]
+fn button_group_uses_one_tab_stop_and_keeps_values_and_slots_when_options_change() {
+    let mut driver = UiDriver::new(GroupedRadiosDemo::new(), FixedText, Size::new(540.0, 280.0));
+    assert!(driver.node("balanced").boolean("checked", false));
+    driver.update(|ui| ui.set_balanced_label("推荐".into()));
+    assert_eq!(driver.node("balanced").text("text"), Some("推荐"));
+    assert!(driver.node("balanced").boolean("checked", false));
+    driver.tab();
+    assert_eq!(driver.focused(), Some("balanced"));
+    assert!(driver.group_key(NavigationKey::Right));
+    assert_eq!(driver.focused(), Some("fast"));
+    assert_eq!(driver.component().get_mode(), "fast");
+    assert!(driver.group_key(NavigationKey::Down));
+    assert_eq!(driver.focused(), Some("audit"));
+    assert_eq!(driver.component().get_last_mode(), "audit");
+    driver.update(|ui| ui.set_show_audit(false));
+    assert_eq!(driver.component().get_mode(), "audit");
+    assert_eq!(driver.focused(), Some("fast"));
+    driver.update(|ui| ui.set_show_audit(true));
+    assert!(driver.node("audit").boolean("checked", false));
+    driver.update(|ui| ui.set_can_audit(false));
+    assert!(driver.group_key(NavigationKey::Right));
+    assert_eq!(driver.focused(), Some("balanced"));
+    assert_eq!(driver.component().get_mode(), "balanced");
+    driver.tab();
+    assert_eq!(driver.focused(), Some("high-quality"));
+    driver.update(|ui| ui.set_show_high(false));
+    assert_eq!(driver.component().get_quality(), 1);
+    assert_eq!(driver.focused(), Some("low-quality"));
+    driver.click("ultra-quality");
+    assert_eq!(driver.component().get_quality(), 2);
+    assert_eq!(driver.component().get_mode(), "balanced");
+    driver.update(|ui| ui.set_mode_enabled(false));
+    assert!(!driver.can_hit("fast"));
+    assert!(driver.can_hit("ultra-quality"));
+}
+
+#[test]
+fn record_combo_checks_enabled_rows_on_hover_accept_and_commit() {
+    let mut ui = RecordComboDemo::new();
+    let model = ui.model_options();
+    let path = [1];
+    let render = |ui: &RecordComboDemo| {
+        let scene = ui.render_shared();
+        let layout = xrack_layout::layout(&scene, Size::new(472.0, 296.0), &mut FixedText);
+        (scene, layout)
+    };
+    let (scene, layout) = render(&ui);
+    let mut input = Interaction::default();
+    let target = input.accessibility_target(&scene, &layout, &path).unwrap();
+    input.focus_target(&scene, &layout, target.clone());
+    ui.set_code(300);
+    let (scene, layout) = render(&ui);
+    let selection = input.choice_key(&scene, &layout, ChoiceKey::Down).unwrap();
+    assert_eq!(selection.action, ControlAction::Select(4));
+    assert!(ui.control_at(&scene, &path, selection.action));
+    assert_eq!(ui.get_code(), 500);
+
+    ui.set_code(400);
+    let (scene, layout) = render(&ui);
+    assert_eq!(
+        xrack_runtime::combo_text(scene.at_path(&path).unwrap()),
+        "Build archive"
+    );
+    assert!(input.open_choice(&scene, &layout, target));
+    let menu = input.choice_menu(&scene, &layout).unwrap();
+    assert_eq!(menu.selected, Some(3));
+    assert_eq!(menu.highlighted, Some(4));
+    assert!(!menu.row_enabled(3 - menu.first));
+    let row_point = |row: usize| {
+        let bounds = menu.row_bounds(row - menu.first);
+        Point {
+            x: bounds.x + 12.0,
+            y: bounds.y + 8.0,
+        }
+    };
+    input.pointer_move(&scene, &layout, row_point(3));
+    assert!(input.choice_press(&scene, &layout));
+    assert!(input.choice_release(&scene, &layout).is_none());
+    assert!(input.choice_open());
+    assert!(!ui.control_at(&scene, &path, ControlAction::Select(3)));
+
+    input.pointer_move(&scene, &layout, row_point(4));
+    assert!(input.choice_press(&scene, &layout));
+    let mut row = model.row(4).unwrap();
+    row.access.available = false;
+    assert!(model.set_row(4, row));
+    assert!(ui.scene_dirty());
+    assert!(!ui.control_at(&scene, &path, ControlAction::Select(4)));
+    let (updated, layout) = render(&ui);
+    input.reconcile(&updated, &layout);
+    assert!(input.choice_release(&updated, &layout).is_none());
+    assert!(
+        input
+            .choice_key(&updated, &layout, ChoiceKey::Accept)
+            .is_none()
+    );
+    assert_eq!(ui.get_code(), 400);
+    let replacement = model.snapshot();
+    ui.set_options(replacement);
+    assert!(!ui.control_at(&updated, &path, ControlAction::Select(5)));
+    let disabled = model
+        .snapshot()
+        .into_iter()
+        .map(|mut row| {
+            row.access.available = false;
+            row
+        })
+        .collect();
+    ui.set_options(disabled);
+    let (scene, layout) = render(&ui);
+    input.reconcile(&scene, &layout);
+    assert!(input.choice_open());
+    input.choice_key(&scene, &layout, ChoiceKey::End);
+    assert_eq!(
+        input.choice_menu(&scene, &layout).unwrap().highlighted,
+        None
+    );
+    assert!(
+        input
+            .choice_key(&scene, &layout, ChoiceKey::Accept)
+            .is_none()
+    );
+}
+
+#[test]
+fn combo_typeahead_wraps_enabled_rows_and_only_commits_a_closed_selection() {
+    let mut ui = RecordComboDemo::new();
+    let path = [1];
+    let render = |ui: &RecordComboDemo| {
+        let scene = ui.render_shared();
+        let layout = xrack_layout::layout(&scene, Size::new(472.0, 296.0), &mut FixedText);
+        (scene, layout)
+    };
+    let (scene, layout) = render(&ui);
+    let mut input = Interaction::default();
+    let target = input.accessibility_target(&scene, &layout, &path).unwrap();
+    input.focus_target(&scene, &layout, target.clone());
+    let now = Instant::now();
+    for (key, offset, expected) in [
+        ("B", 0, 500),
+        ("o", 100, 600),
+        ("b", 1_000, 500),
+        ("B", 1_100, 600),
+    ] {
+        let (scene, layout) = render(&ui);
+        let action = input
+            .choice_typeahead(&scene, &layout, key, now + Duration::from_millis(offset))
+            .unwrap();
+        assert!(ui.control_at(&scene, &action.path, action.action));
+        assert_eq!(ui.get_code(), expected);
+    }
+    let (scene, layout) = render(&ui);
+    assert!(input.open_choice(&scene, &layout, target));
+    assert!(
+        input
+            .choice_typeahead(&scene, &layout, "BU", now + Duration::from_secs(2))
+            .is_none()
+    );
+    assert_eq!(
+        input.choice_menu(&scene, &layout).unwrap().highlighted,
+        Some(4)
+    );
+    assert_eq!(ui.get_code(), 600);
+    assert!(
+        input
+            .choice_key(&scene, &layout, ChoiceKey::Escape)
+            .is_none()
+    );
+    assert_eq!(ui.get_code(), 600);
+}
+
+#[test]
+fn editable_record_combo_does_not_accept_a_disabled_label_as_custom_text() {
+    let mut ui = RecordComboDemo::new();
+    ui.set_editable(true);
+    let path = [1];
+    let mut input = Interaction::default();
+    let scene = ui.render_shared();
+    let layout = xrack_layout::layout(&scene, Size::new(472.0, 296.0), &mut FixedText);
+    let target = input.accessibility_target(&scene, &layout, &path).unwrap();
+    input.focus_target(&scene, &layout, target);
+    assert!(input.edit_text(
+        &mut ui,
+        &scene,
+        EditAction::ReplaceAll("Bu"),
+        EditSource::Atomic,
+        Instant::now()
+    ));
+    let scene = ui.render_shared();
+    let completion = input
+        .combo_completion(scene.at_path(&path).unwrap(), &path)
+        .unwrap();
+    assert_eq!(completion.suffix(), "ild");
+    assert!(input.edit_text(
+        &mut ui,
+        &scene,
+        EditAction::ReplaceAll("Build archive"),
+        EditSource::Atomic,
+        Instant::now()
+    ));
+    let scene = ui.render_shared();
+    assert!(!ui.control_at(&scene, &path, ControlAction::AcceptComboText));
+    assert_eq!(ui.get_code(), 200);
+    assert_eq!(ui.get_accepted_text(), "");
+    assert_eq!(ui.get_selected_code(), -1);
+
+    let model = ui.model_options();
+    let mut row = model.row(0).unwrap();
+    row.access.available = false;
+    assert!(model.set_row(0, row));
+    let scene = ui.render_shared();
+    assert!(input.edit_text(
+        &mut ui,
+        &scene,
+        EditAction::ReplaceAll("共享工作区"),
+        EditSource::Atomic,
+        Instant::now()
+    ));
+    let scene = ui.render_shared();
+    assert!(ui.control_at(&scene, &path, ControlAction::AcceptComboText));
+    assert_eq!(ui.get_code(), 100);
+}
+
+#[test]
 fn record_combo_tracks_keys_and_guards_pressed_rows_across_reorder() {
     use xrack_runtime::{combo_index, combo_text};
 
@@ -3810,6 +4844,1293 @@ fn split_handles_are_keyboard_focusable_in_pane_order_and_respect_limits() {
             .is_none()
     );
     assert!(!ui.resize_split_at(&scene, &end.path, &end.weights));
+}
+
+#[test]
+fn custom_table_cells_share_model_identity_and_keep_local_state_through_scroll_and_sort() {
+    let mut ui = DelegateTableDemo::new();
+    ui.set_records(
+        (0..200)
+            .map(|index| StockRow {
+                name: format!("{index:03}"),
+                units: index,
+                available: true,
+                ..StockRow::default()
+            })
+            .collect(),
+    );
+    let model = ui.model_records();
+    let key = model.row_key(0).unwrap();
+    let table = [0, 1];
+    let text = [0, 1, 0, 0, 0, 0];
+    let star = [0, 1, 0, 0, 0, 1];
+    let spin = [0, 1, 0, 0, 1, 0, 0];
+    let checkbox = [0, 1, 0, 0, 2];
+    let mut input = Interaction::default();
+    let prepare = |ui: &DelegateTableDemo, input: &Interaction| {
+        prepare_scene_with_input(
+            ui,
+            ui.render_shared(),
+            Size::new(620.0, 338.0),
+            &mut FixedText,
+            input,
+        )
+    };
+    let (scene, layout) = prepare(&ui, &input);
+    let bounds = layout.at_path(&star).unwrap().bounds;
+    input.pointer_move(
+        &scene,
+        &layout,
+        Point {
+            x: bounds.x + bounds.width / 2.0,
+            y: bounds.y + bounds.height / 2.0,
+        },
+    );
+    input.pointer_press_in_scene(&scene, &layout);
+    let hit = input.pointer_release_target().unwrap();
+    assert_eq!(hit.path, star);
+    let selection = input
+        .table_delegate_selection(&scene, &layout, &hit, RowSelection::Replace)
+        .unwrap();
+    assert_eq!(
+        selection.action,
+        ControlAction::TableSelection(TableSelectionAction::Cell {
+            row: 0,
+            column: 0,
+            operation: RowSelection::Replace,
+        })
+    );
+    assert!(ui.control_at(&scene, &selection.path, selection.action));
+    assert_eq!(ui.get_selected_row(), 0);
+    assert!(ui.dispatch_at(&scene, &star, "clicked"));
+    assert!(ui.edit_at(&scene, &text, "000!".into()));
+    // A reused scene still resolves the same live row and supplies its latest value.
+    assert!(ui.dispatch_at(&scene, &text, "accepted"));
+    assert_eq!(ui.get_committed_name(), "000!");
+    assert!(ui.control_at(&scene, &spin, ControlAction::Spin(SpinAction::Increase)));
+    assert_eq!(ui.get_committed_units(), 1);
+    assert!(ui.dispatch_at(&scene, &checkbox, "clicked"));
+    assert!(!model.row(0).unwrap().available);
+
+    let (selected, layout) = prepare(&ui, &input);
+    assert_eq!(
+        ui.copy_table_at(&selected, &table, &[0, 1, 2]).as_deref(),
+        Some("000!")
+    );
+    assert_eq!(selected.at_path(&star).unwrap().text("text"), Some("★ 1"));
+    assert!(input.accessibility_scroll_to(&layout, &table, Orientation::Vertical, 4_000.0));
+    let (away, layout) = prepare(&ui, &input);
+    assert!(away.at_path(&table).unwrap().list.unwrap().first_row > 0);
+    assert!(away.at_path(&table).unwrap().children.len() < 15);
+
+    assert!(model.sort_by(|a, b| b.name.cmp(&a.name)));
+    assert!(!ui.dispatch_at(&selected, &star, "clicked"));
+    assert!(input.accessibility_scroll_to(&layout, &table, Orientation::Vertical, 100_000.0));
+    let (moved, _) = prepare(&ui, &input);
+    assert_eq!(model.row_key(199), Some(key));
+    let slot = 199 - moved.at_path(&table).unwrap().list.unwrap().first_row;
+    assert_eq!(
+        moved.at_path(&[0, 1, slot, 0, 0, 1]).unwrap().text("text"),
+        Some("★ 1")
+    );
+    assert!(ui.dispatch_at(&moved, &[0, 1, slot, 0, 0, 0], "accepted"));
+    assert_eq!(ui.get_committed_row(), 199);
+    assert_eq!(ui.get_committed_name(), "000!");
+}
+
+#[test]
+fn nested_table_editors_and_paste_history_update_only_changed_fields() {
+    let mut ui = NestedRecordsDemo::new();
+    ui.on_decode_quantity(|text| {
+        let value = text.strip_suffix('件').and_then(|text| text.parse().ok());
+        QuantityPaste {
+            accepted: value.is_some(),
+            value: value.unwrap_or_default(),
+        }
+    });
+    let table = [0, 2];
+    let model = ui.model_records();
+    let first = model.row_key(0).unwrap();
+    let scene = prepare_scene(
+        &ui,
+        ui.render_shared(),
+        Size::new(840.0, 580.0),
+        &mut FixedText,
+        &Default::default(),
+    )
+    .0;
+    let mut latest = model.row(0).unwrap();
+    latest.stock.note = "updated separately".into();
+    assert!(model.set_row(0, latest));
+    assert!(ui.control_at(
+        &scene,
+        &[0, 2, 0, 0, 0, 0],
+        ControlAction::Spin(SpinAction::Increase)
+    ));
+    assert!(ui.dispatch_at(&scene, &[0, 2, 0, 0, 1], "clicked"));
+    let row = model.row(0).unwrap();
+    assert_eq!(
+        (
+            row.stock.units,
+            row.stock.available,
+            row.stock.note.as_str()
+        ),
+        (13, false, "updated separately")
+    );
+
+    let paste = ui
+        .prepare_table_paste(&ui.render_shared(), &table, 0, vec![0, 1, 2, 3])
+        .unwrap();
+    assert!(paste("29件\ttrue\tstock note\treserve note"));
+    assert!(model.sort_by(|left, right| right.location.key.cmp(&left.location.key)));
+    let index = model.row_index(first).unwrap();
+    let mut row = model.row(index).unwrap();
+    assert_eq!((row.stock.units, row.stock.available), (29, true));
+    assert_eq!(row.stock.note, "stock note");
+    assert_eq!(row.reserve.note, "reserve note");
+    row.reserve.units = 44;
+    assert!(model.set_row(index, row));
+
+    assert!(ui.replay_table_paste_at(&ui.render_shared(), &table, false));
+    let row = model.row(index).unwrap();
+    assert_eq!(
+        (
+            row.stock.units,
+            row.stock.available,
+            row.stock.note.as_str()
+        ),
+        (13, false, "updated separately")
+    );
+    assert_eq!((row.reserve.units, row.reserve.note.as_str()), (44, "备用"));
+    assert!(ui.replay_table_paste_at(&ui.render_shared(), &table, true));
+    let row = model.row(index).unwrap();
+    assert_eq!(
+        (
+            row.stock.units,
+            row.stock.available,
+            row.stock.note.as_str()
+        ),
+        (29, true, "stock note")
+    );
+    assert_eq!(
+        (row.reserve.units, row.reserve.note.as_str()),
+        (44, "reserve note")
+    );
+}
+
+#[test]
+fn nested_roles_project_shared_model_values_and_tree_edit_updates_other_views() {
+    let mut ui = NestedRecordsDemo::new();
+    let list = [0, 1, 0];
+    let tree = [0, 1, 1];
+    let table = [0, 3];
+    let model = ui.model_records();
+    let prepare = |ui: &NestedRecordsDemo| {
+        prepare_scene(
+            ui,
+            ui.render_shared(),
+            Size::new(840.0, 580.0),
+            &mut FixedText,
+            &Default::default(),
+        )
+        .0
+    };
+    let scene = prepare(&ui);
+    assert_eq!(
+        xrack_runtime::combo_text(scene.at_path(&[0, 0]).unwrap()),
+        "仓库 A"
+    );
+    assert_eq!(
+        scene
+            .at_path(&list)
+            .unwrap()
+            .row_heights
+            .as_ref()
+            .unwrap()
+            .height(1),
+        42.0
+    );
+    assert!(ui.control_at(
+        &scene,
+        &tree,
+        ControlAction::Tree(TreeAction::SetExpanded {
+            key: 1,
+            row: model.row_key(0).unwrap(),
+            expanded: true,
+        })
+    ));
+    let scene = prepare(&ui);
+    let child = [0, 1, 1, 1, 0, 0];
+    assert_eq!(scene.at_path(&child).unwrap().text("text"), Some("货位 B"));
+    assert_eq!(
+        scene
+            .at_path(&tree)
+            .unwrap()
+            .row_heights
+            .as_ref()
+            .unwrap()
+            .height(1),
+        42.0
+    );
+    assert!(ui.commit_table_cell(&scene, &child, "货位 B", "Moved shelf".into()));
+    assert!(ui.control_at(&scene, &table, ControlAction::Select(1)));
+    ui.set_selected_location(2);
+    let scene = prepare(&ui);
+    assert_eq!(
+        xrack_runtime::combo_text(scene.at_path(&[0, 0]).unwrap()),
+        "Moved shelf"
+    );
+    assert_eq!(
+        ui.list_rows(&list, 1..2)[0].text("text"),
+        Some("Moved shelf")
+    );
+    assert_eq!(
+        ui.list_rows(&table, 1..2)[0].children[1].text("text"),
+        Some("5")
+    );
+    assert_eq!(
+        ui.copy_table_at(&scene, &table, &[0, 1, 2]).as_deref(),
+        Some("Moved shelf\t5\t待检")
+    );
+    assert_eq!(model.row(1).unwrap().location.key, 2);
+}
+
+#[test]
+fn tree_component_editors_resolve_the_model_index_below_an_expanded_branch() {
+    let mut ui = DelegateTreeDemo::new();
+    let model = ui.model_records();
+    let root = model.row_key(1).unwrap();
+    let mut input = Interaction::default();
+    let path = [0];
+    let prepare = |ui: &DelegateTreeDemo, input: &Interaction| {
+        prepare_scene_with_input(
+            ui,
+            ui.render_shared(),
+            Size::new(360.0, 250.0),
+            &mut FixedText,
+            input,
+        )
+    };
+    let (scene, _) = prepare(&ui, &input);
+    assert!(ui.control_at(
+        &scene,
+        &path,
+        ControlAction::Tree(TreeAction::SetExpanded {
+            key: 1,
+            row: root,
+            expanded: true,
+        })
+    ));
+    let (scene, layout) = prepare(&ui, &input);
+    input.reconcile(&scene, &layout);
+    let child = [0, 1, 0, 0, 0, 0];
+    assert_eq!(scene.at_path(&child).unwrap().text("text"), Some("子记录"));
+    assert!(ui.edit_at(&scene, &child, "已编辑".into()));
+    assert!(ui.dispatch_at(&scene, &child, "accepted"));
+    assert_eq!(ui.get_committed_index(), 0);
+    assert_eq!(model.row(0).unwrap().label, "已编辑");
+    assert_eq!(model.row(1).unwrap().label, "目录");
+}
+
+#[test]
+fn table_copy_reads_offscreen_rows_and_uses_visual_column_order() {
+    let mut ui = StandardTableDemo::new();
+    ui.set_inventory(
+        (0..1_000)
+            .map(|index| InventoryRow {
+                name: format!("Device {index}"),
+                units: index,
+                available: index % 2 == 0,
+                ..InventoryRow::default()
+            })
+            .collect(),
+    );
+    ui.invoke_move_visible_column(3, 0);
+    let path = [0, 1];
+    let viewport = Size::new(620.0, 380.0);
+    let prepare = |ui: &StandardTableDemo, input: &Interaction| {
+        prepare_scene_with_input(ui, ui.render_shared(), viewport, &mut FixedText, input)
+    };
+    let mut input = Interaction::default();
+    let (scene, _) = prepare(&ui, &input);
+    let first = scene.at_path(&path).unwrap().children[0].row_key;
+    for (index, operation) in [(0, RowSelection::Replace), (999, RowSelection::Toggle)] {
+        let (scene, _) = prepare(&ui, &input);
+        assert!(ui.control_at(
+            &scene,
+            &path,
+            ControlAction::TableSelection(TableSelectionAction::Row { index, operation },)
+        ));
+    }
+    let (scene, layout) = prepare(&ui, &input);
+    assert!(
+        !scene
+            .at_path(&path)
+            .unwrap()
+            .children
+            .iter()
+            .any(|row| row.row_key == first)
+    );
+    input.focus_next(&scene, &layout, false);
+    let (target, columns) = input.table_copy_target(&scene, &layout).unwrap();
+    assert_eq!(target, path);
+    assert_eq!(columns, [3, 0, 1, 2]);
+    assert_eq!(
+        ui.copy_table_at(&scene, &target, &columns).as_deref(),
+        Some("00:00:00\tDevice 0\t0\ttrue\n00:00:00\tDevice 999\t999\tfalse")
+    );
+}
+
+#[test]
+fn copied_table_cells_keep_holes_and_quote_embedded_delimiters() {
+    let mut ui = StandardTableDemo::new();
+    ui.set_target(SelectionTarget::Cells);
+    ui.set_inventory(vec![
+        InventoryRow {
+            name: "Alpha\tBeta\n\"quoted\"".into(),
+            ..InventoryRow::default()
+        },
+        InventoryRow::default(),
+        InventoryRow {
+            available: true,
+            ..InventoryRow::default()
+        },
+    ]);
+    ui.invoke_move_visible_column(2, 0);
+    ui.invoke_move_visible_column(2, 1);
+    let path = [0, 1];
+    let viewport = Size::new(620.0, 380.0);
+    let prepare = |ui: &StandardTableDemo, input: &Interaction| {
+        prepare_scene_with_input(ui, ui.render_shared(), viewport, &mut FixedText, input)
+    };
+    let mut input = Interaction::default();
+    for (row, column, operation) in [(0, 0, RowSelection::Replace), (2, 2, RowSelection::Toggle)] {
+        let (scene, _) = prepare(&ui, &input);
+        assert!(ui.control_at(
+            &scene,
+            &path,
+            ControlAction::TableSelection(TableSelectionAction::Cell {
+                row,
+                column,
+                operation
+            },)
+        ));
+    }
+    let (scene, layout) = prepare(&ui, &input);
+    input.focus_next(&scene, &layout, false);
+    let (target, columns) = input.table_copy_target(&scene, &layout).unwrap();
+    assert_eq!(columns, [2, 1, 0, 3]);
+    assert_eq!(
+        ui.copy_table_at(&scene, &target, &columns).as_deref(),
+        Some("\t\t\"Alpha\tBeta\n\"\"quoted\"\"\"\n\t\t\ntrue\t\t")
+    );
+}
+
+#[test]
+fn custom_table_copies_project_values_but_do_not_override_text_editing() {
+    let mut ui = TableDemo::new();
+    ui.set_records(vec!["Edited record".into()]);
+    let path = [0, 2];
+    let viewport = Size::new(560.0, 370.0);
+    let prepare = |ui: &TableDemo, input: &Interaction| {
+        prepare_scene_with_input(ui, ui.render_shared(), viewport, &mut FixedText, input)
+    };
+    let mut input = Interaction::default();
+    let (scene, _) = prepare(&ui, &input);
+    assert!(ui.control_at(&scene, &path, ControlAction::Select(0)));
+    let (scene, layout) = prepare(&ui, &input);
+    input.focus_next(&scene, &layout, false);
+    let (target, columns) = input.table_copy_target(&scene, &layout).unwrap();
+    assert_eq!(
+        ui.copy_table_at(&scene, &target, &columns).as_deref(),
+        Some("Edited record\t#1")
+    );
+    ui.set_show_sequence(false);
+    let (scene, layout) = prepare(&ui, &input);
+    assert_eq!(
+        ui.copy_table_at(&scene, &target, &columns).as_deref(),
+        Some("Edited record\t")
+    );
+    assert!(input.begin_table_edit(&scene, &layout));
+    assert!(input.table_copy_target(&scene, &layout).is_none());
+}
+
+#[test]
+fn table_paste_history_replays_sparse_rows_after_sort_and_preserves_other_fields() {
+    let mut ui = DelegateTableDemo::new();
+    ui.set_records(vec![
+        StockRow {
+            name: "A".into(),
+            units: 10,
+            ..StockRow::default()
+        },
+        StockRow {
+            name: "B".into(),
+            units: 20,
+            available: true,
+            ..StockRow::default()
+        },
+        StockRow {
+            name: "Z".into(),
+            ..StockRow::default()
+        },
+    ]);
+    ui.on_decode_quantity(|text, _, _| {
+        let value = text.parse::<i64>().ok();
+        QuantityPaste {
+            accepted: value.is_some(),
+            value: value.unwrap_or_default(),
+        }
+    });
+    let table = [0, 1];
+    let model = ui.model_records();
+    let first = model.row_key(0).unwrap();
+    let second = model.row_key(1).unwrap();
+    let scene = ui.render_shared();
+    let paste = ui
+        .prepare_table_paste(&scene, &table, 0, vec![0, 1, 2])
+        .unwrap();
+    assert!(paste("Y\t11\ttrue\nC\t21\tfalse"));
+    assert!(model.sort_by(|a, b| a.name.cmp(&b.name)));
+    assert!(model.insert(
+        1,
+        StockRow {
+            name: "Inserted".into(),
+            ..StockRow::default()
+        }
+    ));
+    let first_index = model.row_index(first).unwrap();
+    let second_index = model.row_index(second).unwrap();
+    assert_eq!((first_index, second_index), (2, 0));
+    let mut record = model.row(first_index).unwrap();
+    record.owner = "Later edit".into();
+    assert!(model.set_row(first_index, record));
+    ui.invoke_move_visible_column(0, 2);
+    ui.set_lock_names(true);
+
+    let scene = ui.render_shared();
+    assert!(ui.replay_table_paste_at(&scene, &table, false));
+    let first_row = model.row(first_index).unwrap();
+    let second_row = model.row(second_index).unwrap();
+    assert_eq!(
+        (
+            first_row.name.as_str(),
+            first_row.units,
+            first_row.available
+        ),
+        ("A", 10, false)
+    );
+    assert_eq!(
+        (
+            second_row.name.as_str(),
+            second_row.units,
+            second_row.available
+        ),
+        ("B", 20, true)
+    );
+    assert_eq!(first_row.owner, "Later edit");
+    assert_eq!(model.row(1).unwrap().name, "Inserted");
+    assert_eq!(model.row_key(first_index), Some(first));
+    assert_eq!(model.row_key(second_index), Some(second));
+    assert!(ui.replay_table_paste_at(&ui.render_shared(), &table, true));
+    let first_row = model.row(first_index).unwrap();
+    let second_row = model.row(second_index).unwrap();
+    assert_eq!(
+        (
+            first_row.name.as_str(),
+            first_row.units,
+            first_row.available
+        ),
+        ("Y", 11, true)
+    );
+    assert_eq!(
+        (
+            second_row.name.as_str(),
+            second_row.units,
+            second_row.available
+        ),
+        ("C", 21, false)
+    );
+    assert_eq!(first_row.owner, "Later edit");
+}
+
+#[test]
+fn table_paste_history_rejects_a_conflicting_batch_without_partially_restoring_it() {
+    let mut ui = DelegateTableDemo::new();
+    let table = [0, 1];
+    let model = ui.model_records();
+    let paste = |ui: &DelegateTableDemo, text| {
+        ui.prepare_table_paste(&ui.render_shared(), &table, 0, vec![0])
+            .unwrap()(text)
+    };
+    assert!(paste(&ui, "First\nSecond"));
+    let mut row = model.row(1).unwrap();
+    row.name = "Conflict".into();
+    assert!(model.set_row(1, row));
+    assert!(!ui.replay_table_paste_at(&ui.render_shared(), &table, false));
+    assert_eq!(model.row(0).unwrap().name, "First");
+    assert_eq!(model.row(1).unwrap().name, "Conflict");
+
+    assert!(paste(&ui, "Again\nRemoved"));
+    assert!(model.remove(1).is_some());
+    assert!(!ui.replay_table_paste_at(&ui.render_shared(), &table, false));
+    assert_eq!(model.row(0).unwrap().name, "Again");
+
+    assert!(paste(&ui, "Before replacement"));
+    ui.set_records(model.snapshot());
+    assert!(!ui.replay_table_paste_at(&ui.render_shared(), &table, false));
+    assert_eq!(
+        ui.model_records().row(0).unwrap().name,
+        "Before replacement"
+    );
+}
+
+#[test]
+fn custom_clipboard_paste_validates_mixed_cells_and_offscreen_rows_before_writing() {
+    let mut ui = DelegateTableDemo::new();
+    ui.set_records(
+        (0..64)
+            .map(|index| StockRow {
+                name: format!("Old {index}"),
+                units: index * 2,
+                ..StockRow::default()
+            })
+            .collect(),
+    );
+    ui.on_decode_quantity(|text, units, index| {
+        assert_eq!(units, index * 2);
+        let decoded = text
+            .strip_suffix('件')
+            .and_then(|number| number.trim().parse::<i64>().ok());
+        QuantityPaste {
+            accepted: decoded.is_some(),
+            value: decoded.unwrap_or_default(),
+        }
+    });
+    let model = ui.model_records();
+    let table = [0, 1];
+    ui.invoke_move_visible_column(2, 0);
+    let mut input = Interaction::default();
+    let prepare = |ui: &DelegateTableDemo, input: &Interaction| {
+        prepare_scene_with_input(
+            ui,
+            ui.render_shared(),
+            Size::new(620.0, 338.0),
+            &mut FixedText,
+            input,
+        )
+    };
+    let (scene, _) = prepare(&ui, &input);
+    assert!(ui.control_at(
+        &scene,
+        &table,
+        ControlAction::TableSelection(TableSelectionAction::Cell {
+            row: 0,
+            column: 2,
+            operation: RowSelection::Replace,
+        })
+    ));
+    let (scene, layout) = prepare(&ui, &input);
+    input.focus_next(&scene, &layout, false);
+    let target = input.table_paste_target(&scene, &layout).unwrap();
+    assert_eq!(target.path, table);
+    assert_eq!(target.columns, [2, 0, 1]);
+    assert!(scene.at_path(&table).unwrap().children.len() < 20);
+    let original = model.snapshot();
+    let stamp = model.edit_stamp();
+    let keys: Vec<_> = (0..64).map(|index| model.row_key(index)).collect();
+    let prepare_paste = || {
+        ui.prepare_table_paste(&scene, &table, target.row, target.columns.clone())
+            .unwrap()
+    };
+    let payload = |invalid: bool| {
+        (0..40)
+            .map(|index| {
+                let quantity = if invalid && index == 30 {
+                    "invalid".into()
+                } else {
+                    format!("{}件", 100 + index)
+                };
+                format!("TRUE\t\"New\t{index}\"\t{quantity}")
+            })
+            .collect::<Vec<_>>()
+            .join("\r\n")
+    };
+    assert!(!prepare_paste()(&payload(true)));
+    assert_eq!(model.snapshot(), original);
+    assert_eq!(model.edit_stamp(), stamp);
+    assert!(prepare_paste()(&payload(false)));
+    for (index, key) in keys.into_iter().enumerate() {
+        let record = model.row(index).unwrap();
+        assert_eq!(model.row_key(index), key);
+        if index < 40 {
+            assert_eq!(record.name, format!("New\t{index}"));
+            assert_eq!(record.units, 100 + index as i64);
+            assert!(record.available);
+        } else {
+            assert_eq!(record, original[index]);
+        }
+    }
+    assert_eq!(ui.get_committed_row(), -1);
+}
+
+#[test]
+fn custom_clipboard_paste_honors_live_policy_visibility_and_model_revision() {
+    let mut ui = DelegateTableDemo::new();
+    ui.on_decode_quantity(|_, _, _| QuantityPaste {
+        accepted: true,
+        value: 55,
+    });
+    let model = ui.model_records();
+    let path = [0, 1];
+    let prepare = |ui: &DelegateTableDemo, columns| {
+        ui.prepare_table_paste(&ui.render_shared(), &path, 0, columns)
+            .unwrap()
+    };
+    let original = model.snapshot();
+    let pending = prepare(&ui, vec![0]);
+    ui.set_lock_names(true);
+    assert!(!pending("Locked"));
+    ui.set_lock_names(false);
+    assert!(!prepare(&ui, vec![0])("\"\""));
+    ui.set_show_quantity(false);
+    assert!(!prepare(&ui, vec![0, 1])("Valid name\t55件"));
+    assert_eq!(model.snapshot(), original);
+    let pending = prepare(&ui, vec![0]);
+    let mut changed = model.row(1).unwrap();
+    changed.owner = "External update".into();
+    assert!(model.set_row(1, changed));
+    assert!(!pending("Stale clipboard result"));
+    assert_eq!(model.row(0).unwrap(), original[0]);
+}
+
+#[test]
+fn table_paste_updates_typed_fields_in_visual_order_including_offscreen_rows() {
+    let mut ui = RecordTableDemo::new();
+    ui.set_target(SelectionTarget::Cells);
+    ui.set_records(vec![
+        StockRow {
+            name: "Keep".into(),
+            ..StockRow::default()
+        };
+        24
+    ]);
+    ui.invoke_move_visible_column(0, 4);
+    let path = [0, 1];
+    let viewport = Size::new(760.0, 330.0);
+    let prepare = |ui: &RecordTableDemo, input: &Interaction| {
+        prepare_scene_with_input(ui, ui.render_shared(), viewport, &mut FixedText, input)
+    };
+    let mut input = Interaction::default();
+    let (scene, _) = prepare(&ui, &input);
+    assert!(ui.control_at(
+        &scene,
+        &path,
+        ControlAction::TableSelection(TableSelectionAction::Cell {
+            row: 0,
+            column: 1,
+            operation: RowSelection::Replace,
+        }),
+    ));
+    let (scene, layout) = prepare(&ui, &input);
+    input.focus_next(&scene, &layout, false);
+    let target = input.table_paste_target(&scene, &layout).unwrap();
+    assert_eq!(target.path, path);
+    assert_eq!(target.row, 0);
+    assert_eq!(target.columns, [1, 2, 3, 4, 0]);
+    assert!(scene.at_path(&path).unwrap().children.len() < 20);
+    let model = ui.model_records();
+    let keys: Vec<_> = (0..24).map(|index| model.row_key(index)).collect();
+    let paste = ui
+        .prepare_table_paste(&scene, &target.path, target.row, target.columns)
+        .unwrap();
+    let payload = (0..20)
+        .map(|row| format!("\"Owner\t{row}\"\t{row}\tTRUE\t0.75"))
+        .collect::<Vec<_>>()
+        .join("\r\n");
+    assert!(paste(&payload));
+    for (index, key) in keys.into_iter().enumerate() {
+        assert_eq!(model.row_key(index), key);
+        let row = model.row(index).unwrap();
+        assert_eq!(row.name, "Keep");
+        if index < 20 {
+            assert_eq!(row.owner, format!("Owner\t{index}"));
+            assert_eq!(row.units, index as i64);
+            assert!(row.available);
+            assert_eq!(row.load, 0.75);
+        } else {
+            assert_eq!(row.owner, "");
+        }
+    }
+    let (scene, layout) = prepare(&ui, &input);
+    assert!(input.begin_table_edit(&scene, &layout));
+    assert!(input.table_paste_target(&scene, &layout).is_none());
+}
+
+#[test]
+fn table_paste_rejects_the_entire_block_and_expires_on_model_changes() {
+    let mut ui = RecordTableDemo::new();
+    let model = ui.model_records();
+    let path = [0, 1];
+    let paste = |ui: &RecordTableDemo, row, columns| {
+        ui.prepare_table_paste(&ui.render_shared(), &path, row, columns)
+            .unwrap()
+    };
+    let original = model.snapshot();
+    let stamp = model.edit_stamp();
+    for text in [
+        "valid\t15\ninvalid\tNaN",
+        "valid\t15\ninvalid\t1000",
+        "valid\t15\nragged",
+    ] {
+        assert!(!paste(&ui, 0, vec![0, 2])(text));
+    }
+    assert!(!paste(&ui, 2, vec![0])("fits\noutside"));
+    assert_eq!(model.snapshot(), original);
+    assert_eq!(model.edit_stamp(), stamp);
+
+    let pending = paste(&ui, 0, vec![0, 1]);
+    ui.set_lock_owner(true);
+    assert!(!pending("Changed name\tRead-only owner"));
+    assert_eq!(model.snapshot(), original);
+
+    let pending = paste(&ui, 0, vec![0]);
+    let mut row = model.row(1).unwrap();
+    row.units += 1;
+    assert!(model.set_row(1, row));
+    assert!(!pending("Stale paste"));
+    assert_eq!(model.row(0).unwrap(), original[0]);
+
+    let pending = paste(&ui, 0, vec![0]);
+    ui.set_records(original.clone());
+    assert!(!pending("Old model"));
+    assert_eq!(ui.model_records().snapshot(), original);
+}
+
+#[test]
+fn record_row_heights_keep_virtual_anchors_and_manual_table_overrides() {
+    use table_ui::{LogRow, ProjectedRowsDemo};
+    use xrack_runtime::Length;
+
+    let mut ui = ProjectedRowsDemo::new();
+    ui.set_entries(
+        (0..50_000)
+            .map(|index| LogRow {
+                message: index.to_string(),
+                severity: "info".into(),
+                height: Length(if index == 30_000 { 64.0 } else { 0.0 }),
+            })
+            .collect(),
+    );
+    let model = ui.model_entries();
+    let mut driver = UiDriver::new(ui, FixedText, Size::new(660.0, 310.0));
+    driver.update(|ui| ui.invoke_center_row(30_000));
+    let offset = driver.component().get_offset();
+    let anchor = driver.node("table").children[0].row_key;
+    assert!(driver.node("table").children.len() < 10);
+
+    let previous = driver.component().render_shared();
+    let mut unrelated = model.row(49_999).unwrap();
+    unrelated.message = "Updated text".into();
+    assert!(model.set_row(49_999, unrelated));
+    assert!(std::rc::Rc::ptr_eq(
+        &previous,
+        &driver.component().render_shared()
+    ));
+    driver.update(|_| {
+        let mut first = model.row(0).unwrap();
+        first.height = Length(96.0);
+        assert!(model.set_row(0, first));
+    });
+    assert_eq!(driver.component().get_offset(), Length(offset.0 - 64.0));
+    assert_eq!(driver.node("table").children[0].row_key, anchor);
+    assert_eq!(
+        driver.node("list").row_heights.as_ref().unwrap().height(0),
+        96.0
+    );
+
+    driver.update(|ui| ui.invoke_set_height(30_000, Length(80.0)));
+    driver.update(|_| {
+        let mut row = model.row(30_000).unwrap();
+        row.height = Length(120.0);
+        assert!(model.set_row(30_000, row));
+    });
+    assert_eq!(
+        driver
+            .node("table")
+            .row_heights
+            .as_ref()
+            .unwrap()
+            .height(30_000),
+        80.0
+    );
+    assert_eq!(
+        driver
+            .node("list")
+            .row_heights
+            .as_ref()
+            .unwrap()
+            .height(30_000),
+        120.0
+    );
+    driver.update(|ui| ui.invoke_set_height(30_000, Length(-1.0)));
+    assert_eq!(
+        driver
+            .node("table")
+            .row_heights
+            .as_ref()
+            .unwrap()
+            .height(30_000),
+        120.0
+    );
+}
+
+#[test]
+fn tree_row_height_fields_follow_visible_order_without_rebuilding_topology() {
+    use tree_ui::SizedTreeDemo;
+    use xrack_runtime::Length;
+
+    let mut ui = SizedTreeDemo::new();
+    let viewport = Size::new(320.0, 240.0);
+    let input = Interaction::default();
+    let prepare = |ui: &SizedTreeDemo| {
+        prepare_scene_with_input(ui, ui.render_shared(), viewport, &mut FixedText, &input)
+    };
+    let (scene, layout) = prepare(&ui);
+    let first = scene.children[0].tree.as_ref().unwrap().rows()[0];
+    assert_eq!(layout.at_path(&[0, 1]).unwrap().bounds.height, 44.0);
+    assert!(ui.control_at(
+        &scene,
+        &[0],
+        ControlAction::Tree(TreeAction::SetExpanded {
+            key: first.key,
+            row: first.row,
+            expanded: true,
+        })
+    ));
+    let (scene, layout) = prepare(&ui);
+    assert_eq!(layout.at_path(&[0, 1]).unwrap().bounds.height, 76.0);
+    assert_eq!(layout.at_path(&[0, 2]).unwrap().bounds.height, 44.0);
+    let tree = scene.children[0].tree.as_ref().unwrap().clone();
+    let model = ui.model_records();
+    let mut branch = model.row(1).unwrap();
+    branch.height = Length(88.0);
+    assert!(model.set_row(1, branch));
+    let (scene, layout) = prepare(&ui);
+    assert!(std::sync::Arc::ptr_eq(
+        &tree,
+        scene.children[0].tree.as_ref().unwrap()
+    ));
+    assert_eq!(layout.at_path(&[0, 1]).unwrap().bounds.height, 88.0);
+    assert!(ui.control_at(
+        &scene,
+        &[0],
+        ControlAction::Tree(TreeAction::SetExpanded {
+            key: first.key,
+            row: first.row,
+            expanded: false,
+        })
+    ));
+    let (_, layout) = prepare(&ui);
+    assert_eq!(layout.at_path(&[0, 1]).unwrap().bounds.height, 44.0);
+}
+
+#[test]
+fn row_resize_keeps_record_identity_through_an_insert_during_the_drag() {
+    let mut ui = StandardTableDemo::new();
+    ui.set_resize_rows(true);
+    ui.set_pinned(1);
+    ui.set_inventory(
+        (0..80)
+            .map(|units| InventoryRow {
+                units,
+                ..InventoryRow::default()
+            })
+            .collect(),
+    );
+    let path = [0, 1];
+    let viewport = Size::new(620.0, 380.0);
+    let prepare = |ui: &StandardTableDemo, input: &Interaction| {
+        prepare_scene_with_input(ui, ui.render_shared(), viewport, &mut FixedText, input)
+    };
+    let mut input = Interaction::default();
+    let (scene, layout) = prepare(&ui, &input);
+    let key = scene.at_path(&path).unwrap().children[0].row_key.unwrap();
+    let row = layout.at_path(&[0, 1, 0]).unwrap().bounds;
+    let start = Point {
+        x: row.x + 55.0,
+        y: row.y + row.height - 1.0,
+    };
+    input.pointer_move(&scene, &layout, start);
+    assert!(input.table_row_resize_cursor());
+    input.pointer_press_in_scene(&scene, &layout);
+    let end = Point {
+        x: start.x,
+        y: start.y + 40.0,
+    };
+    input.pointer_move(&scene, &layout, end);
+    let stale = input.table_row_resize_drag(&scene, &layout).unwrap();
+    assert_eq!(
+        stale.action,
+        ControlAction::ResizeRow {
+            row: 0,
+            key,
+            height: 72
+        }
+    );
+    let model = ui.model_inventory();
+    assert!(model.insert(0, InventoryRow::default()));
+    assert!(!ui.control_at(&scene, &stale.path, stale.action));
+    let (scene, layout) = prepare(&ui, &input);
+    input.pointer_move(&scene, &layout, end);
+    let resized = input.table_row_resize_drag(&scene, &layout).unwrap();
+    assert_eq!(
+        resized.action,
+        ControlAction::ResizeRow {
+            row: 1,
+            key,
+            height: 72
+        }
+    );
+    assert!(ui.control_at(&scene, &resized.path, resized.action));
+    assert!(input.finish_table_resize());
+    assert!(input.pointer_release_target().is_none());
+    let (scene, layout) = prepare(&ui, &input);
+    assert_eq!(scene.at_path(&path).unwrap().children[1].row_key, Some(key));
+    assert_eq!(layout.at_path(&[0, 1, 0]).unwrap().bounds.height, 32.0);
+    assert_eq!(layout.at_path(&[0, 1, 1]).unwrap().bounds.height, 72.0);
+    assert_eq!(ui.get_current(), -1);
+}
+
+#[test]
+fn programmatic_heights_position_unmaterialized_rows_and_drive_page_navigation() {
+    use xrack_runtime::{Length, ScrollRequests};
+
+    let mut ui = StandardTableDemo::new();
+    ui.set_inventory(vec![InventoryRow::default(); 1_000]);
+    ui.invoke_set_height(0, Length(160.0));
+    ui.invoke_set_height(899, Length(80.0));
+    let path = [0, 1];
+    let viewport = Size::new(620.0, 380.0);
+    let prepare = |ui: &StandardTableDemo, input: &Interaction| {
+        prepare_scene_with_input(ui, ui.render_shared(), viewport, &mut FixedText, input)
+    };
+    let mut input = Interaction::default();
+    ui.set_current(0);
+    let (scene, layout) = prepare(&ui, &input);
+    assert!(scene.at_path(&path).unwrap().children.len() < 10);
+    input.focus_next(&scene, &layout, false);
+    let body_height = layout
+        .at_path(&path)
+        .unwrap()
+        .table
+        .as_ref()
+        .unwrap()
+        .body
+        .height;
+    let expected = 1 + ((body_height - 160.0).max(0.0) / 32.0).floor() as usize;
+    let page = input
+        .list_key(&scene, &layout, NavigationKey::PageDown)
+        .unwrap();
+    assert_eq!(page.action, ControlAction::Select(expected));
+    let requests = ScrollRequests::default();
+    {
+        let _scope = requests.enter();
+        ui.invoke_center_row(900);
+    }
+    let (scene, layout) = prepare(&ui, &input);
+    assert!(input.apply_scroll_requests(&scene, &layout, requests.drain()));
+    let (scene, layout) = prepare(&ui, &input);
+    let geometry = layout.at_path(&path).unwrap().table.as_ref().unwrap();
+    let list = scene.at_path(&path).unwrap().list.unwrap();
+    let row = layout
+        .at_path(&[0, 1, 900 - list.first_row])
+        .unwrap()
+        .bounds;
+    assert!(
+        (row.y + row.height / 2.0 - (geometry.body.y + geometry.body.height / 2.0)).abs() < 0.01
+    );
+    let offset = geometry.body.height;
+    assert!(
+        (layout.at_path(&path).unwrap().scroll.unwrap().offset
+            - (900.0 * 32.0 + 176.0 + (32.0 - offset) / 2.0))
+            .abs()
+            < 0.01
+    );
+    ui.invoke_set_height(899, Length(-1.0));
+    let scene = ui.render_shared();
+    let heights = scene.at_path(&path).unwrap().row_heights.as_ref().unwrap();
+    assert_eq!(heights.height(899), 32.0);
+}
+
+#[test]
+fn frozen_cells_keep_their_hit_targets_and_edit_the_original_field() {
+    let mut ui = RecordTableDemo::new();
+    ui.set_pinned(1);
+    let viewport = Size::new(760.0, 330.0);
+    let path = [0, 1];
+    let prepare = |ui: &RecordTableDemo, input: &Interaction| {
+        prepare_scene_with_input(ui, ui.render_shared(), viewport, &mut FixedText, input)
+    };
+    let mut input = Interaction::default();
+    let (scene, _) = prepare(&ui, &input);
+    assert!(ui.control_at(
+        &scene,
+        &path,
+        ControlAction::ResizeColumn {
+            column: 0,
+            width: 320
+        }
+    ));
+    let (_, layout) = prepare(&ui, &input);
+    assert!(input.accessibility_scroll_to(&layout, &path, Orientation::Horizontal, 70.0));
+    let (scene, layout) = prepare(&ui, &input);
+    let geometry = layout.at_path(&path).unwrap().table.as_ref().unwrap();
+    let seam = geometry.frozen_boundary().unwrap();
+    let cell_path = [0, 1, 0, 0, 0];
+    let body = Point {
+        x: seam - 20.0,
+        y: geometry.body.y + 12.0,
+    };
+    assert!(geometry.columns[1].x < body.x);
+    assert_eq!(layout.at_path(&[0, 1, 0, 0, 1]).unwrap().clip.x, seam);
+    input.pointer_move(&scene, &layout, body);
+    assert_eq!(input.hovered.as_ref().unwrap().path, cell_path);
+    let model = ui.model_records();
+    let old = model.row(0).unwrap();
+    assert!(ui.commit_table_cell(&scene, &cell_path, &old.name, "Frozen name".into()));
+    let edited = model.row(0).unwrap();
+    assert_eq!(edited.name, "Frozen name");
+    assert_eq!(edited.owner, old.owner);
+
+    input.pointer_move(
+        &scene,
+        &layout,
+        Point {
+            x: body.x,
+            y: geometry.header.y + 12.0,
+        },
+    );
+    input.pointer_press_in_scene(&scene, &layout);
+    let sort = input
+        .table_header_release(&scene, RowSelection::Replace, false)
+        .unwrap();
+    assert_eq!(sort.action, ControlAction::SortColumn(0));
+    ui.invoke_move_visible_column(0, 1);
+    let (_, layout) = prepare(&ui, &input);
+    let geometry = layout.at_path(&path).unwrap().table.as_ref().unwrap();
+    assert!(geometry.is_frozen(1) && !geometry.is_frozen(0));
+    assert_eq!(geometry.columns[1].x, geometry.body.x);
+}
+
+#[test]
+fn dragging_columns_preserves_cell_selection_widths_and_sort_identity() {
+    let mut ui = StandardTableDemo::new();
+    ui.set_target(SelectionTarget::Cells);
+    ui.set_inventory(
+        (0..24)
+            .map(|units| InventoryRow {
+                name: format!("Device {units}"),
+                units,
+                ..InventoryRow::default()
+            })
+            .collect(),
+    );
+    let sorted = std::rc::Rc::new(std::cell::Cell::new(None));
+    let capture = sorted.clone();
+    ui.on_sort_requested(move |column, descending| capture.set(Some((column, descending))));
+    let path = [0, 1];
+    let viewport = Size::new(620.0, 380.0);
+    let prepare = |ui: &StandardTableDemo, input: &Interaction| {
+        prepare_scene_with_input(ui, ui.render_shared(), viewport, &mut FixedText, input)
+    };
+    let mut input = Interaction::default();
+    let (scene, _) = prepare(&ui, &input);
+    assert!(ui.control_at(
+        &scene,
+        &path,
+        ControlAction::ResizeColumn {
+            column: 0,
+            width: 210
+        }
+    ));
+    assert!(ui.control_at(
+        &scene,
+        &path,
+        ControlAction::TableSelection(TableSelectionAction::Cell {
+            row: 0,
+            column: 0,
+            operation: RowSelection::Replace
+        },)
+    ));
+    let (scene, layout) = prepare(&ui, &input);
+    let view = layout.at_path(&path).unwrap();
+    let geometry = view.table.as_ref().unwrap();
+    let header_point = |column: usize, fraction: f32| Point {
+        x: geometry.columns[column].x + geometry.columns[column].width * fraction,
+        y: geometry.header.y + 12.0,
+    };
+    input.pointer_move(&scene, &layout, header_point(0, 0.5));
+    input.pointer_press_in_scene(&scene, &layout);
+    assert!(!input.table_column_move_drag(&layout, Instant::now()));
+    input.pointer_move(&scene, &layout, header_point(2, 0.75));
+    assert!(input.table_column_move_drag(&layout, Instant::now()));
+    assert_eq!(
+        input.table_column_move_marker(&path, scene.at_path(&path).unwrap(), view),
+        Some(geometry.columns[3].x)
+    );
+    let moved = input.finish_table_column_move(&scene, &layout).unwrap();
+    assert_eq!(moved.action, ControlAction::MoveColumn { from: 0, to: 2 });
+    assert!(ui.control_at(&scene, &moved.path, moved.action));
+    assert!(!ui.control_at(&scene, &moved.path, moved.action));
+    assert_eq!(ui.get_moved_column(), 0);
+    assert_eq!(ui.get_moved_position(), 2);
+    assert_eq!(sorted.get(), None);
+
+    let (scene, layout) = prepare(&ui, &input);
+    input.reconcile(&scene, &layout);
+    let table = scene.at_path(&path).unwrap();
+    let geometry = layout.at_path(&path).unwrap().table.as_ref().unwrap();
+    assert_eq!(geometry.visual_columns().collect::<Vec<_>>(), [1, 2, 0, 3]);
+    assert_eq!(geometry.columns[0].width, 210.0);
+    let row = &table.children[0];
+    let row_key = row.row_key.unwrap();
+    assert_eq!(
+        xrack_layout::child_reading_order(&row.children[0]).collect::<Vec<_>>(),
+        [1, 2, 0, 3]
+    );
+    assert!(row.children[0].children[0].boolean("table-selected", false));
+    let extend = input
+        .list_key_with_selection(&scene, &layout, NavigationKey::Left, RowSelection::Extend)
+        .unwrap();
+    assert_eq!(
+        extend.action,
+        ControlAction::TableSelection(TableSelectionAction::Cell {
+            row: 0,
+            column: 2,
+            operation: RowSelection::Extend
+        })
+    );
+    assert!(ui.control_at(&scene, &extend.path, extend.action));
+    let (scene, layout) = prepare(&ui, &input);
+    let table = scene.at_path(&path).unwrap();
+    let selection = table.table_selection.as_ref().unwrap();
+    assert!(selection.contains_cell(row_key, 0));
+    assert!(selection.contains_cell(row_key, 2));
+    assert!(!selection.contains_cell(row_key, 1));
+    let geometry = layout.at_path(&path).unwrap().table.as_ref().unwrap();
+    input.pointer_move(
+        &scene,
+        &layout,
+        Point {
+            x: geometry.columns[0].x + 30.0,
+            y: geometry.header.y + 12.0,
+        },
+    );
+    input.pointer_press_in_scene(&scene, &layout);
+    let sort = input
+        .table_header_release(&scene, RowSelection::Replace, false)
+        .unwrap();
+    assert_eq!(sort.action, ControlAction::SortColumn(0));
+    assert!(ui.control_at(&scene, &sort.path, sort.action));
+    assert_eq!(sorted.get(), Some((0, false)));
+
+    ui.invoke_move_visible_column(2, 0);
+    let (scene, layout) = prepare(&ui, &input);
+    let geometry = layout.at_path(&path).unwrap().table.as_ref().unwrap();
+    assert_eq!(geometry.visual_columns().collect::<Vec<_>>(), [0, 1, 2, 3]);
+    assert_eq!(
+        scene
+            .at_path(&path)
+            .unwrap()
+            .table_header
+            .as_ref()
+            .unwrap()
+            .sort
+            .unwrap()
+            .column,
+        0
+    );
+    assert_eq!(ui.get_moved_position(), 0);
+    ui.invoke_move_visible_column(-1, 0);
+    assert_eq!(ui.get_moved_position(), 0);
+}
+
+#[test]
+fn dragging_near_the_header_edge_scrolls_to_offscreen_columns() {
+    let mut ui = StandardTableDemo::new();
+    ui.set_inventory(vec![InventoryRow::default(); 10]);
+    let path = [0, 1];
+    let viewport = Size::new(380.0, 380.0);
+    let prepare = |ui: &StandardTableDemo, input: &Interaction| {
+        prepare_scene_with_input(ui, ui.render_shared(), viewport, &mut FixedText, input)
+    };
+    let mut input = Interaction::default();
+    let (mut scene, mut layout) = prepare(&ui, &input);
+    let geometry = layout.at_path(&path).unwrap().table.as_ref().unwrap();
+    let y = geometry.header.y + 12.0;
+    let edge = Point {
+        x: geometry.header.x + geometry.header.width - 2.0,
+        y,
+    };
+    input.pointer_move(
+        &scene,
+        &layout,
+        Point {
+            x: geometry.columns[0].x + 36.0,
+            y,
+        },
+    );
+    input.pointer_press_in_scene(&scene, &layout);
+    input.pointer_move(&scene, &layout, edge);
+    let now = Instant::now();
+    assert!(input.table_column_move_drag(&layout, now));
+    let wake = input.table_column_move_deadline(&scene, &layout).unwrap();
+    assert!(wake > now);
+    assert!(!input.advance_table_column_move(&scene, &layout, now));
+    for _ in 0..32 {
+        let Some(wake) = input.table_column_move_deadline(&scene, &layout) else {
+            break;
+        };
+        assert!(input.advance_table_column_move(&scene, &layout, wake));
+        (scene, layout) = prepare(&ui, &input);
+        input.reconcile(&scene, &layout);
+    }
+    let geometry = layout.at_path(&path).unwrap().table.as_ref().unwrap();
+    assert!(geometry.horizontal.offset > 0.0);
+    assert_eq!(geometry.horizontal.offset, geometry.horizontal.max_offset);
+    assert_eq!(geometry.visual_columns().collect::<Vec<_>>(), [0, 1, 2, 3]);
+    let moved = input.finish_table_column_move(&scene, &layout).unwrap();
+    assert_eq!(moved.action, ControlAction::MoveColumn { from: 0, to: 3 });
+    assert!(ui.control_at(&scene, &moved.path, moved.action));
+    assert_eq!(ui.get_moved_position(), 3);
+}
+
+#[test]
+fn moved_table_cells_still_edit_their_declared_record_fields() {
+    let mut ui = RecordTableDemo::new();
+    let viewport = Size::new(760.0, 330.0);
+    let path = [0, 1];
+    ui.invoke_move_visible_column(0, 4);
+    let (scene, layout) = prepare_scene(
+        &ui,
+        ui.render_shared(),
+        viewport,
+        &mut FixedText,
+        &Default::default(),
+    );
+    let geometry = layout.at_path(&path).unwrap().table.as_ref().unwrap();
+    assert_eq!(geometry.visual_index(0), Some(4));
+    assert_eq!(
+        layout.at_path(&[0, 1, 0, 0, 0]).unwrap().bounds.x,
+        geometry.columns[0].x
+    );
+    let model = ui.model_records();
+    let original = model.row(0).unwrap();
+    assert!(ui.commit_table_cell(&scene, &[0, 1, 0, 0, 0], &original.name, "New name".into()));
+    let edited = model.row(0).unwrap();
+    assert_eq!(edited.name, "New name");
+    assert_eq!(edited.owner, original.owner);
 }
 
 #[test]
@@ -5418,4 +7739,113 @@ fn context_menu_respects_modal_scope_and_restores_focus() {
     assert_eq!(ui.focused(), Some("inspector-area"));
     ui.escape();
     assert_eq!(ui.focused(), Some("dialog-button"));
+}
+
+#[test]
+fn styled_text_links_share_pointer_keyboard_and_stale_document_guards() {
+    use layout_ui::StyledTextDemo;
+    use xrack_runtime::StyledText;
+
+    let mut ui = StyledTextDemo::new();
+    let document = "Before [first link](#first) after\n\n[second link](#second)";
+    ui.set_body(StyledText::from_markdown(document).unwrap());
+    let mut input = Interaction::default();
+    let frame = |ui: &StyledTextDemo| {
+        let scene = ui.render_shared();
+        let layout = xrack_layout::layout(&scene, Size::new(460.0, 268.0), &mut FixedText);
+        (scene, layout)
+    };
+    let path = [1];
+    let (scene, layout) = frame(&ui);
+    let first = layout
+        .at_path(&path)
+        .unwrap()
+        .text_link_regions()
+        .next()
+        .unwrap()
+        .1;
+    let point = Point {
+        x: first.x + first.width * 0.5,
+        y: first.y + first.height * 0.5,
+    };
+    input.pointer_move(&scene, &layout, point);
+    input.pointer_press_in_scene(&scene, &layout);
+    let action = input.control_part_release(&scene, &layout).unwrap();
+    assert_eq!(action.action, ControlAction::ActivateTextLink(0));
+    assert!(ui.control_at(&scene, &action.path, action.action));
+    assert_eq!(ui.get_last_link(), "#first");
+
+    input.focus_next(&scene, &layout, false);
+    assert_eq!(input.focused.as_ref().unwrap().text_link_index(), Some(1));
+    input.key_press_with_scene(&scene, ActivationKey::Enter);
+    let target = input
+        .key_release_with_scene(&scene, ActivationKey::Enter)
+        .unwrap();
+    let action = input
+        .text_link_activation(&scene, &layout, &target)
+        .unwrap();
+    assert!(ui.control_at(&scene, &action.path, action.action));
+    assert_eq!(ui.get_last_link(), "#second");
+
+    ui.set_compact(true);
+    let (scene, layout) = frame(&ui);
+    input.reconcile(&scene, &layout);
+    assert!(input.text_link_target(&scene, &layout, &path, 1).is_none());
+    assert!(
+        input
+            .text_link_activation(&scene, &layout, &target)
+            .is_none()
+    );
+
+    input.pointer_move(&scene, &layout, point);
+    input.pointer_press_in_scene(&scene, &layout);
+    ui.set_body(StyledText::from_markdown(&document.replace("#first", "#different")).unwrap());
+    let (scene, layout) = frame(&ui);
+    input.reconcile(&scene, &layout);
+    input.pointer_move(&scene, &layout, point);
+    assert!(input.control_part_release(&scene, &layout).is_none());
+    assert_eq!(ui.get_last_link(), "#second");
+
+    ui.set_links_enabled(false);
+    let (scene, layout) = frame(&ui);
+    input.reconcile(&scene, &layout);
+    input.pointer_move(&scene, &layout, point);
+    assert!(input.hovered.is_none());
+    input.focus_next(&scene, &layout, false);
+    assert_eq!(input.focused.as_ref().unwrap().text_link_index(), None);
+}
+
+#[test]
+fn sibling_stacking_controls_pointer_order_without_changing_tab_order() {
+    use layout_ui::CompositingDemo;
+
+    let mut ui = UiDriver::new(CompositingDemo::new(), FixedText, Size::new(460.0, 292.0));
+    ui.tab();
+    assert_eq!(ui.focused(), Some("first"));
+    ui.tab();
+    assert_eq!(ui.focused(), Some("second"));
+
+    assert!(ui.can_hit("first"));
+    assert!(!ui.can_hit("second"));
+    ui.click("first");
+    assert_eq!(ui.component().get_first_clicks(), 1);
+    ui.click("toggle-first");
+    assert_eq!(ui.node("first").opacity(), 0.0);
+    ui.click("first");
+    assert_eq!(ui.component().get_first_clicks(), 2);
+
+    ui.click("swap-order");
+    assert!(!ui.can_hit("first"));
+    ui.click("second");
+    assert_eq!(ui.component().get_second_clicks(), 1);
+
+    let mut tied = CompositingDemo::new();
+    tied.set_first_layer(1.0);
+    let mut tied = UiDriver::new(tied, FixedText, Size::new(460.0, 292.0));
+    tied.click("second");
+    assert_eq!(
+        tied.component().get_second_clicks(),
+        1,
+        "declaration-order tie break"
+    );
 }

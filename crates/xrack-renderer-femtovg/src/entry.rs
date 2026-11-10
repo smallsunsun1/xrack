@@ -7,7 +7,7 @@ use std::{borrow::Cow, ops::Range};
 use xrack_layout::{
     PasswordMask, Point, Rect, TextAreaLayout, TextEdit, TextMeasurer, TextPosition,
 };
-use xrack_runtime::{CheckState, Color as UiColor, Node, TextWrap};
+use xrack_runtime::{CheckState, Color as UiColor, Node};
 
 pub(crate) struct EntryText<'a> {
     pub value: &'a str,
@@ -40,7 +40,7 @@ fn display_text<'a>(node: &'a Node, value: &'a str, editor: Option<&TextEdit>) -
             composition = selection.start..selection.start + edit.preedit.len();
             caret = edit.preedit_cursor.map(|cursor| TextPosition {
                 offset: composition.start + cursor,
-                trailing: false,
+                trailing: cursor > 0,
             });
             selection = 0..0;
         }
@@ -85,36 +85,18 @@ impl TextSystem {
         editor: Option<&TextEdit>,
         value: &str,
     ) -> TextPosition {
-        let size = self.font_size(node);
         let area = bounds.inset(node.length("padding").unwrap_or(6.0).max(0.0));
-        let paint = self.paint_node(node, Color::white(), false);
-        let advance = |text: &str| self.advance_painted(text, &paint);
         let mask = node.password_masked().then(|| PasswordMask::new(value));
         let display = mask.as_ref().map_or(value, PasswordMask::display);
+        let layout = self.single_line_layout(node, display);
         let scroll = editor.map_or(0.0, |edit| {
-            let caret = edit.caret(value);
-            let offset = mask
-                .as_ref()
-                .map_or(caret, |mask| mask.display_offset(caret));
-            entry_scroll(advance(&display[..offset]), area.width)
+            let mut caret = edit.position(value);
+            if let Some(mask) = &mask {
+                caret.offset = mask.display_offset(caret.offset);
+            }
+            entry_scroll(layout.caret_x(caret), area.width)
         });
-        let layout = TextAreaLayout::new(
-            display,
-            area,
-            size * 1.4,
-            TextWrap::NoWrap,
-            advance,
-            str::len,
-        );
-        let mut position = layout.hit(
-            display,
-            Point {
-                x: point.x,
-                y: area.y,
-            },
-            Point { x: scroll, y: 0.0 },
-            advance,
-        );
+        let mut position = layout.hit(point.x - area.x + scroll);
         if let Some(mask) = &mask {
             position.offset = mask.source_offset(position.offset);
         }
@@ -134,7 +116,8 @@ impl TextSystem {
             .caret
             .filter(|_| !display.placeholder)
             .map_or(0.0, |caret| {
-                self.advance_node(node, &display.content[..caret.offset])
+                self.single_line_layout(node, &display.content)
+                    .caret_x(caret)
             });
         area.x + (advance - entry_scroll(advance, area.width)).clamp(0.0, area.width)
     }
@@ -183,14 +166,14 @@ pub(crate) fn draw(
     let size = text_system.font_size(node);
     let height = size * 1.4;
     let y = bounds.y + ((bounds.height - height) * 0.5).max(0.0);
-    let width_at = |offset: usize| {
-        if offset == 0 || placeholder {
+    let layout = text_system.single_line_layout(node, &content);
+    let advance = caret.map(|caret| {
+        if placeholder {
             0.0
         } else {
-            text_system.advance_node(node, &content[..offset])
+            layout.caret_x(caret)
         }
-    };
-    let advance = caret.map(|caret| width_at(caret.offset));
+    });
     let x = area.x - advance.map_or(0.0, |advance| entry_scroll(advance, area.width));
     canvas.intersect_scissor(area.x, bounds.y, area.width, bounds.height);
     let mut rect = |x: f32, y: f32, width: f32, height: f32, tint: Color| {
@@ -198,22 +181,20 @@ pub(crate) fn draw(
         path.rect(x, y, width, height);
         canvas.fill_path(&path, &Paint::color(tint));
     };
-    if !selection.is_empty() {
-        let start = width_at(selection.start);
+    for span in layout.selection_spans(selection) {
         rect(
-            x + start,
+            x + span.start,
             y,
-            (width_at(selection.end) - start).max(0.0),
+            span.end - span.start,
             height,
             color(theme.role(Role::TextSelection)),
         );
     }
-    if !composition.is_empty() {
-        let start = width_at(composition.start);
+    for span in layout.selection_spans(composition) {
         rect(
-            x + start,
+            x + span.start,
             y + height - 2.0,
-            (width_at(composition.end) - start).max(0.0),
+            span.end - span.start,
             1.0,
             color(theme.focus),
         );
@@ -237,7 +218,7 @@ pub(crate) fn draw(
         .fill_text(x, y, &content, &paint)
         .map_err(|error| format!("text input drawing failed: {error}"))?;
     if let Some((suffix, clip)) = text.completion {
-        let start = x + width_at(content.len()) + 2.0;
+        let start = x + layout.width() + 2.0;
         let clip = clip.intersect(Rect::new(area.x, bounds.y, area.width, bounds.height));
         let width = text_system.advance_node(node, suffix);
         if width > 0.0
@@ -296,31 +277,37 @@ pub(crate) fn draw_area(
     canvas.intersect_scissor(area.x, area.y, area.width, area.height);
     for index in layout.visible_lines(scroll) {
         let line = &layout.lines[index];
+        let visual = layout
+            .visual_line(index)
+            .expect("text system shapes each line");
         let y = area.y + index as f32 * height - scroll.y;
-        let decoration = |span: &Range<usize>| {
-            let start = span.start.max(line.start).min(line.end);
-            let end = span.end.max(line.start).min(line.end);
-            let left = advance(&display.content[line.start..start]);
-            let right = advance(&display.content[line.start..end]);
-            (x + left, (right - left).max(0.0))
+        let local = |span: &Range<usize>| {
+            span.start.saturating_sub(line.start)..span.end.saturating_sub(line.start)
         };
         if !display.selection.is_empty() {
-            let (left, width) = decoration(&display.selection);
+            for span in visual.selection_spans(local(&display.selection)) {
+                fill_rect(
+                    canvas,
+                    Rect::new(x + span.start, y, span.end - span.start, height),
+                    color(theme.role(Role::TextSelection)),
+                );
+            }
             let newline = display.selection.start <= line.end
                 && display.selection.end > line.end
                 && layout
                     .lines
                     .get(index + 1)
                     .is_some_and(|next| next.start > line.end);
-            if width > 0.0 || newline {
+            if newline {
+                let edge = visual.caret_x(TextPosition {
+                    offset: line.len(),
+                    trailing: true,
+                });
+                let width = size * 0.45;
+                let left = if visual.is_rtl() { edge - width } else { edge };
                 fill_rect(
                     canvas,
-                    Rect::new(
-                        left,
-                        y,
-                        width + if newline { size * 0.45 } else { 0.0 },
-                        height,
-                    ),
+                    Rect::new(x + left, y, width, height),
                     color(theme.role(Role::TextSelection)),
                 );
             }
@@ -330,15 +317,12 @@ pub(crate) fn draw_area(
                 .fill_text(x, y, &display.content[line.clone()], &paint)
                 .map_err(|error| format!("multiline text drawing failed: {error}"))?;
         }
-        if !display.composition.is_empty() {
-            let (left, width) = decoration(&display.composition);
-            if width > 0.0 {
-                fill_rect(
-                    canvas,
-                    Rect::new(left, y + height - 2.0, width, 1.0),
-                    color(theme.focus),
-                );
-            }
+        for span in visual.selection_spans(local(&display.composition)) {
+            fill_rect(
+                canvas,
+                Rect::new(x + span.start, y + height - 2.0, span.end - span.start, 1.0),
+                color(theme.focus),
+            );
         }
     }
     if let Some(position) = display.caret {

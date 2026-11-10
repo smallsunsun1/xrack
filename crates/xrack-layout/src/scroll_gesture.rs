@@ -5,6 +5,7 @@ const DRAG_THRESHOLD: f32 = 8.0;
 const MIN_SPEED: f32 = 25.0;
 const MAX_SPEED: f32 = 3200.0;
 const DAMPING: f32 = 7.5;
+pub(crate) const SCROLL_FRAME_INTERVAL: Duration = Duration::from_millis(16);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ScrollGestureKind {
@@ -100,7 +101,14 @@ pub(crate) struct FlingMotion {
 }
 
 impl FlingMotion {
+    pub(crate) fn deadline(&self) -> Instant {
+        self.updated + SCROLL_FRAME_INTERVAL
+    }
+
     pub(crate) fn step(&mut self, now: Instant) -> Option<Point> {
+        if now < self.deadline() {
+            return Some(Point::default());
+        }
         let elapsed = now.saturating_duration_since(self.updated).as_secs_f32();
         // A window may resume after being occluded or suspended.
         if elapsed > 0.25 {

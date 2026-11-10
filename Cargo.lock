@@ -1189,6 +1189,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "gif"
+version = "0.14.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ee8cfcc411d9adbbaba82fb72661cc1bcca13e8bba98b364e62b2dba8f960159"
+dependencies = [
+ "weezl",
+]
+
+[[package]]
+name = "gif-dispose"
+version = "6.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8286d15964fdb9c181187f910412c964f62ce91306d890fd93e36b3c909e0de2"
+dependencies = [
+ "gif",
+ "imgref",
+ "rgb",
+]
+
+[[package]]
 name = "glow"
 version = "0.18.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3258,6 +3278,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "weezl"
+version = "0.1.12"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a28ac98ddc8b9274cb41bb4d9d4d5c425b6020c50c46f25559911905610b4a88"
+
+[[package]]
 name = "wgpu"
 version = "30.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3789,7 +3815,11 @@ name = "xrack-compiler"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "gif",
+ "gif-dispose",
+ "png",
  "proc-macro2",
+ "rgb",
  "serde_json",
  "thiserror 2.0.21",
  "ttf-parser",
@@ -3877,7 +3907,6 @@ dependencies = [
  "png",
  "pollster",
  "rgb",
- "unicode-bidi",
  "wgpu",
  "xrack-assets",
  "xrack-layout",

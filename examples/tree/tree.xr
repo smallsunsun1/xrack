@@ -8,6 +8,59 @@ export struct TreeRecord {
     load: float,
 }
 
+export struct SizedBranch {
+    key: int,
+    parent: int,
+    label: string,
+    height: length,
+}
+
+export component DelegateTreeDemo inherits Window {
+    width: 360px; height: 250px;
+    in-out property <[SizedBranch]> records: [
+        SizedBranch { key: 2, parent: 1, label: "子记录", height: 38px },
+        SizedBranch { key: 1, parent: -1, label: "目录", height: 38px },
+    ];
+    out property <int> committed-index: -1;
+    branches := TreeView {
+        row-height: 38px;
+        for branch[index] in root.records : TreeRow {
+            key: branch.key;
+            parent-key: branch.parent;
+            HorizontalLayout {
+                BranchEditor {
+                    value <=> branch.label;
+                    submitted => { root.committed-index = index; }
+                }
+            }
+        }
+    }
+}
+
+component BranchEditor inherits HorizontalLayout {
+    in-out property <string> value <=> input.text;
+    callback submitted <=> input.accepted;
+    input := LineEdit { accessible-name: "分支名称"; horizontal-stretch: 1; }
+}
+
+export component SizedTreeDemo inherits Window {
+    title: "XRack · 不同行高的树";
+    width: 320px; height: 240px;
+    in-out property <[SizedBranch]> records: [
+        SizedBranch { key: 1, parent: -1, label: "目录", height: 32px },
+        SizedBranch { key: 2, parent: 1, label: "详情", height: 76px },
+        SizedBranch { key: 3, parent: -1, label: "下一条", height: 44px },
+    ];
+    branches := TreeView {
+        row-height-field: "height";
+        for branch in root.records : TreeRow {
+            key: branch.key;
+            parent-key: branch.parent;
+            Text { text: branch.label; }
+        }
+    }
+}
+
 export component TreeDemo inherits Window {
     title: "XRack · 目录树";
     width: 600px;
@@ -24,6 +77,7 @@ export component TreeDemo inherits Window {
     ];
     in-out property <int> current: -1;
     in-out property <bool> multiple: true;
+    in property <bool> preserve-viewport: false;
     out property <int> expansions: 0;
     out property <int> collapses: 0;
     out property <int> selected-count: 0;
@@ -34,6 +88,7 @@ export component TreeDemo inherits Window {
         spacing: 8px;
         Text { text: "目录树 · F2 重命名，Tab 编辑当前行"; font-size: 20px; }
         directory := TreeView {
+            preserve-scroll-anchor: root.preserve-viewport;
             current-key <=> root.current;
             multi-select: root.multiple;
             row-height: 34px;

@@ -65,8 +65,18 @@ pub(crate) fn declaration(name: &Ident, text: &StyledText) -> TokenStream {
             }
         }
     });
+    let links = text.links().iter().map(|link| {
+        let start = link.start;
+        let end = link.end;
+        let href = link.href.as_ref();
+        quote! {
+            ::xrack_runtime::StyledLink { start: #start, end: #end, href: ::std::borrow::Cow::Borrowed(#href) }
+        }
+    });
     quote! {
-        static #name: ::xrack_runtime::StyledText =
-            ::xrack_runtime::StyledText::from_compiled(#plain, &[#(#runs),*]);
+        static #name: ::xrack_runtime::StyledText = {
+            static LINKS: &[::xrack_runtime::StyledLink] = &[#(#links),*];
+            ::xrack_runtime::StyledText::from_compiled_parts(#plain, &[#(#runs),*], LINKS)
+        };
     }
 }

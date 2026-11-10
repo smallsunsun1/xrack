@@ -2,9 +2,10 @@
 use accesskit::{Node as AccessibleNode, NodeId, Role, TextDirection, TextSelection};
 use std::ops::Range;
 use unicode_segmentation::UnicodeSegmentation;
+use xrack_layout::Affine;
 use xrack_layout::{
     ComboGeometry, Interaction, PasswordMask, Point, Rect, TextAreaLayout, TextEdit, TextMeasurer,
-    TextPosition, font_size,
+    TextPosition, VisualTextLine, font_size,
 };
 use xrack_renderer_femtovg::TextSystem;
 use xrack_runtime::{
@@ -14,7 +15,6 @@ use xrack_runtime::{
 // AccessKit represents word start indices with u8. Runs on the same visual
 // line are linked so splitting a long line doesn't change line navigation.
 const RUN_CHARACTERS: usize = 256;
-const MEASURED_CHARACTERS: usize = 128;
 
 pub(crate) fn supports_ranges(node: &Node) -> bool {
     is_text_input(node.kind) || combo_editable(node)
@@ -50,7 +50,7 @@ impl EditorState {
 struct Run {
     id: NodeId,
     offsets: Vec<usize>,
-    soft_wrap_end: bool,
+    trailing_boundary: bool,
 }
 
 pub(crate) struct TextDocument {
@@ -78,7 +78,7 @@ impl TextDocument {
         if position.trailing
             && index > 0
             && self.runs[index].offsets[0] == position.offset
-            && self.runs[index - 1].soft_wrap_end
+            && self.runs[index - 1].trailing_boundary
         {
             index -= 1;
         }
@@ -114,7 +114,7 @@ impl TextDocument {
         let offset = *run.offsets.get(position.character_index)?;
         Some(TextPosition {
             offset,
-            trailing: run.soft_wrap_end && Some(&offset) == run.offsets.last(),
+            trailing: run.trailing_boundary && Some(&offset) == run.offsets.last(),
         })
     }
 
@@ -131,7 +131,7 @@ pub(crate) fn project_text(
     rect: Rect,
     path: &[usize],
     input: &Interaction,
-    scale: f64,
+    (scale, transform): (f64, Affine),
     text_system: Option<&TextSystem>,
     mut allocate_id: impl FnMut(usize, &str) -> NodeId,
 ) -> (TextDocument, Vec<(NodeId, AccessibleNode)>) {
@@ -177,7 +177,11 @@ pub(crate) fn project_text(
     let lines = layout
         .as_ref()
         .map_or(std::slice::from_ref(&single), |layout| &layout.lines);
-    let advance = |text: &str| text_system.map_or(0.0, |system| system.advance_node(node, text));
+    let single_geometry = if multiline {
+        None
+    } else {
+        text_system.map(|system| system.single_line_layout(node, measured(single.clone())))
+    };
     let (origin, height) = if let Some(layout) = &layout {
         let scroll = layout.clamp_scroll(scroll);
         (
@@ -189,13 +193,15 @@ pub(crate) fn project_text(
         )
     } else {
         let height = size * 1.4;
-        let x_scroll = editor.map_or(0.0, |editor| {
-            let caret = editor.caret(source);
-            let offset = mask
-                .as_ref()
-                .map_or(caret, |mask| mask.display_offset(caret));
-            (advance(measured(0..offset)) + 1.0 - viewport.width).max(0.0)
-        });
+        let x_scroll = if let (Some(editor), Some(visual)) = (editor, &single_geometry) {
+            let mut caret = editor.position(source);
+            if let Some(mask) = mask.as_ref().filter(|_| node.password_masked()) {
+                caret.offset = mask.display_offset(caret.offset);
+            }
+            (visual.caret_x(caret) + 1.0 - viewport.width).max(0.0)
+        } else {
+            0.0
+        };
         (
             Point {
                 x: viewport.x - x_scroll,
@@ -220,41 +226,27 @@ pub(crate) fn project_text(
         // The renderer omits line terminators from the visual line. AccessKit
         // needs them in its text runs, including CRLF as a single character.
         let range = line.start..next.map_or(line.end, |next| next.start);
+        let newline = range.end > line.end;
         let offsets = character_offsets(value, range);
         let count = offsets.len() - 1;
         let y = origin.y + index as f32 * height;
-        let positions = text_system
+        let positions = layout
+            .as_ref()
+            .and_then(|layout| layout.visual_line(index))
+            .or(single_geometry.as_deref())
             .filter(|_| {
-                count <= MEASURED_CHARACTERS
-                    && y + height > viewport.y
+                y + height > viewport.y
                     && y < viewport.y + viewport.height
                     && editor.is_none_or(|editor| editor.preedit.is_empty())
             })
-            .and_then(|system| {
-                let metrics = system.shape(measured(line.clone()), size).ok()?;
-                if !metrics
-                    .glyphs
-                    .windows(2)
-                    .all(|pair| pair[0].byte_index <= pair[1].byte_index)
-                {
-                    return None;
-                }
-                Some(
-                    offsets
-                        .iter()
-                        .map(|&offset| {
-                            if offset > line.end {
-                                advance(measured(line.clone())) + size * 0.45
-                            } else {
-                                advance(measured(line.start..offset))
-                            }
-                        })
-                        .collect::<Vec<_>>(),
-                )
-            });
+            .and_then(|visual| character_geometry(visual, count, newline.then_some(size * 0.45)));
 
-        for first in (0..count.max(1)).step_by(RUN_CHARACTERS) {
-            let end = (first + RUN_CHARACTERS).min(count);
+        let mut first = 0;
+        loop {
+            let limit = (first + RUN_CHARACTERS).min(count);
+            let end = positions
+                .as_ref()
+                .map_or(limit, |positions| contiguous_end(positions, first, limit));
             let offsets = &offsets[first..=end];
             let start_byte = offsets[0];
             let end_byte = offsets[end - first];
@@ -284,27 +276,13 @@ pub(crate) fn project_text(
                 run.set_previous_on_line(*previous_id);
             }
             if let Some(positions) = &positions {
-                let origin_x = origin.x + positions[first];
-                let width = positions[end] - positions[first];
-                run.set_bounds(accesskit::Rect::new(
-                    f64::from(origin_x) * scale,
-                    f64::from(y) * scale,
-                    f64::from(origin_x + width) * scale,
-                    f64::from(y + height) * scale,
-                ));
-                run.set_text_direction(TextDirection::LeftToRight);
-                let scale = scale as f32;
-                run.set_character_positions(
-                    positions[first..end]
-                        .iter()
-                        .map(|x| (x - positions[first]) * scale)
-                        .collect::<Vec<_>>(),
-                );
-                run.set_character_widths(
-                    positions[first..=end]
-                        .windows(2)
-                        .map(|pair| (pair[1] - pair[0]).max(0.0) * scale)
-                        .collect::<Vec<_>>(),
+                publish_geometry(
+                    &mut run,
+                    &positions[first..end],
+                    Point { x: origin.x, y },
+                    height,
+                    scale,
+                    transform,
                 );
             }
             nodes.push((id, run));
@@ -317,11 +295,103 @@ pub(crate) fn project_text(
                             .map_or(offset, |mask| mask.source_offset(offset))
                     })
                     .collect(),
-                soft_wrap_end: end == count && next.is_some_and(|next| next.start == line.end),
+                trailing_boundary: end < count || next.is_some_and(|next| next.start == line.end),
             });
+            if end == count {
+                break;
+            }
+            first = end;
         }
     }
     (document, nodes)
+}
+
+#[derive(Clone, Copy)]
+struct CharacterGeometry {
+    leading: f32,
+    trailing: f32,
+    rtl: bool,
+}
+
+fn character_geometry(
+    visual: &VisualTextLine,
+    count: usize,
+    newline_width: Option<f32>,
+) -> Option<Vec<CharacterGeometry>> {
+    if visual.graphemes().len() + usize::from(newline_width.is_some()) != count {
+        return None;
+    }
+    let mut cells: Vec<_> = visual
+        .graphemes()
+        .iter()
+        .map(|cell| CharacterGeometry {
+            leading: cell.leading,
+            trailing: cell.trailing,
+            rtl: cell.rtl,
+        })
+        .collect();
+    if let Some(width) = newline_width {
+        let leading = cells.last().map_or(0.0, |cell| cell.trailing);
+        let rtl = visual.is_rtl();
+        cells.push(CharacterGeometry {
+            leading,
+            trailing: leading + if rtl { -width } else { width },
+            rtl,
+        });
+    }
+    Some(cells)
+}
+
+fn contiguous_end(cells: &[CharacterGeometry], first: usize, end: usize) -> usize {
+    cells[first..end]
+        .windows(2)
+        .position(|pair| {
+            pair[0].rtl != pair[1].rtl || (pair[0].trailing - pair[1].leading).abs() > 0.01
+        })
+        .map_or(end, |index| first + index + 1)
+}
+
+fn publish_geometry(
+    run: &mut AccessibleNode,
+    cells: &[CharacterGeometry],
+    origin: Point,
+    height: f32,
+    scale: f64,
+    transform: Affine,
+) {
+    let (Some(first), Some(last)) = (cells.first(), cells.last()) else {
+        return;
+    };
+    let left = first.leading.min(last.trailing);
+    let right = first.leading.max(last.trailing);
+    let bounds = transform.map_rect(Rect::new(origin.x + left, origin.y, right - left, height));
+    run.set_bounds(accesskit::Rect::new(
+        f64::from(bounds.x) * scale,
+        f64::from(bounds.y) * scale,
+        f64::from(bounds.x + bounds.width) * scale,
+        f64::from(bounds.y + bounds.height) * scale,
+    ));
+    run.set_text_direction(if first.rtl {
+        TextDirection::RightToLeft
+    } else {
+        TextDirection::LeftToRight
+    });
+    let [a, b, c, d, _, _] = transform.0;
+    if b == 0.0 && c == 0.0 && a > 0.0 && d > 0.0 {
+        let scale = scale as f32 * a;
+        run.set_character_positions(
+            cells
+                .iter()
+                .map(|cell| (cell.leading - first.leading).abs() * scale)
+                .collect::<Vec<_>>(),
+        );
+        run.set_character_widths(
+            cells
+                .iter()
+                .map(|cell| (cell.trailing - cell.leading).abs() * scale)
+                .collect::<Vec<_>>(),
+        );
+    }
 }
 
 fn character_offsets(value: &str, range: Range<usize>) -> Vec<usize> {
@@ -352,12 +422,12 @@ mod tests {
                 Run {
                     id: NodeId(1),
                     offsets: vec![0, 3, 6],
-                    soft_wrap_end: true,
+                    trailing_boundary: true,
                 },
                 Run {
                     id: NodeId(2),
                     offsets: vec![6, 9, 12],
-                    soft_wrap_end: false,
+                    trailing_boundary: false,
                 },
             ],
             path: Vec::new(),
@@ -384,6 +454,30 @@ mod tests {
     }
 
     #[test]
+    fn publishes_right_to_left_run_geometry_in_logical_character_order() {
+        let visual = VisualTextLine::new("aאבb", [0, 3, 1, 5].map(|offset| (offset, 10.0)));
+        let cells = character_geometry(&visual, 4, None).unwrap();
+        assert_eq!(contiguous_end(&cells, 0, 4), 1);
+        assert_eq!(contiguous_end(&cells, 1, 4), 3);
+        let mut node = AccessibleNode::new(Role::TextRun);
+        publish_geometry(
+            &mut node,
+            &cells[1..3],
+            Point::default(),
+            12.0,
+            1.0,
+            Affine::IDENTITY,
+        );
+        assert_eq!(node.text_direction(), Some(TextDirection::RightToLeft));
+        assert_eq!(
+            node.bounds(),
+            Some(accesskit::Rect::new(10.0, 0.0, 30.0, 12.0))
+        );
+        assert_eq!(node.character_positions(), Some([0.0, 10.0].as_slice()));
+        assert_eq!(node.character_widths(), Some([10.0, 10.0].as_slice()));
+    }
+
+    #[test]
     fn links_long_text_runs_on_the_same_line() {
         let value = format!("{} two", "a".repeat(RUN_CHARACTERS + 1));
         let mut field = Node::new("LineEdit", None);
@@ -394,7 +488,7 @@ mod tests {
             Rect::new(0.0, 0.0, 800.0, 32.0),
             &[],
             &Interaction::default(),
-            1.0,
+            (1.0, Affine::IDENTITY),
             None,
             |_, _| {
                 id += 1;

@@ -398,6 +398,132 @@ export component StatesDemo inherits Window {
     }
 }
 
+component StatusBadge inherits Rectangle {
+    in-out property <string> caption: "就绪";
+    in property <brush> tint: #3a6fa4;
+    height: 42px;
+    border-radius: 6px;
+    background: root.tint;
+    badge-text := Label { x: 10px; y: 12px; text: root.caption; }
+}
+
+component StatusFrame inherits Rectangle {
+    in-out property <string> caption <=> badge.caption;
+    in property <brush> tint: #3a6fa4;
+    height: 48px;
+    badge := StatusBadge { width: 100%; tint: root.tint; }
+}
+
+export component ComponentStatesDemo inherits Window {
+    title: "XRack · 跨组件状态";
+    width: 520px; height: 306px;
+    background: #141d2c;
+    in-out property <bool> warning: false;
+    in-out property <string> baseline: "一切正常";
+    out property <string> effective-caption: banner.caption;
+    pure callback warning-active(bool) -> bool;
+    warning-active(active) => { active }
+    pure callback normal-caption(string) -> string;
+    normal-caption(text) => { text }
+    callback set-banner(string);
+    set-banner(text) => { banner.caption = text; }
+
+    banner := StatusFrame { x: 24px; y: 32px; width: 200px; caption: root.normal-caption(root.baseline); }
+    status := Label { x: 24px; y: 88px; text: root.effective-caption; }
+    toggle := CheckBox {
+        x: 24px; y: 116px; width: 172px; height: 38px;
+        text: "显示预警";
+        checked <=> root.warning;
+    }
+    states [ attention when root.warning-active(root.warning): {
+        banner.caption: "需要检查";
+        banner.tint: #ba4b5d;
+        banner.width: 300px;
+        status.color: #ffd5c6;
+        in-out { animate banner.width { duration: 260ms; } }
+    } ]
+    queue := ListView {
+        x: 24px; y: 166px; width: 310px; height: 120px; row-height: 38px;
+        for item[index] in ["监控", "存储", "网络"] : StatusBadge {
+            caption: item;
+            states [ attention when root.warning && index == 1: {
+                caption: item + " · 待检查";
+                tint: #ba4b5d;
+            } ]
+        }
+    }
+}
+
+export component FramelessDemo inherits Window {
+    title: "XRack · 自定义标题栏";
+    width: 540px; height: 320px;
+    min-width: 400px; min-height: 260px;
+    max-width: 960px; max-height: 640px;
+    background: #141d2c;
+    no-frame: root.frameless;
+    resize-border-width: 8px;
+    resizable: root.can-resize;
+    in-out property <bool> frameless: true;
+    in-out property <bool> can-resize: true;
+    in-out property <bool> can-move: true;
+    in-out property <bool> modal: false;
+    out property <int> header-clicks: 0;
+
+    title-area := WindowMoveArea {
+        height: 56px;
+        enabled: root.can-move;
+        Rectangle { background: #223650; }
+        HorizontalLayout {
+            padding: 10px; spacing: 8px;
+            Label { text: "XRack 标题栏"; font-size: 19px; horizontal-stretch: 1; }
+            header-action := Button {
+                width: 76px;
+                text: "计数";
+                clicked => { root.header-clicks += 1; }
+            }
+            minimize-window := Button { width: 38px; text: "−"; accessible-name: "最小化窗口"; clicked => { root.minimize(); } }
+            maximize-window := Button {
+                width: 38px;
+                text: root.maximized ? "❐" : "□";
+                accessible-name: root.maximized ? "还原窗口" : "最大化窗口";
+                clicked => { root.toggle-maximized(); }
+            }
+            close-window := Button { width: 68px; text: "关闭"; clicked => { root.close(); } }
+        }
+    }
+    VerticalLayout {
+        x: 18px; y: 72px; width: 360px; height: 176px;
+        spacing: 8px;
+        HorizontalLayout {
+            spacing: 12px;
+            CheckBox { text: "自定义边框"; checked <=> root.frameless; }
+            CheckBox { text: "允许边缘缩放"; checked <=> root.can-resize; }
+        }
+        CheckBox { text: "允许标题栏拖动"; checked <=> root.can-move; }
+        HorizontalLayout {
+            spacing: 8px;
+            open-dialog := Button { text: "打开模态层"; clicked => { root.modal = true; } }
+            toggle-full-screen := Button {
+                text: root.full-screen ? "退出全屏" : "进入全屏";
+                clicked => { root.toggle-full-screen(); }
+            }
+            restore-window := Button { text: "还原"; clicked => { root.restore(); } }
+        }
+        Label { text: "标题栏按钮已点击 " + root.header-clicks + " 次"; }
+        window-status := Label {
+            text: (root.full-screen ? "全屏" : root.maximized ? "最大化" : root.minimized ? "最小化" : "普通")
+                + (root.window-active ? " · 当前窗口" : " · 非活动")
+                + (root.minimized-known ? "" : " · 宿主未报告最小化状态");
+        }
+    }
+    dialog := Dialog {
+        width: 280px; height: 132px;
+        title: "模态层";
+        open <=> root.modal;
+        dismiss-dialog := Button { x: 24px; y: 52px; text: "返回"; clicked => { root.modal = false; } }
+    }
+}
+
 component EditorPane inherits FocusScope {
     width: 218px; height: 148px;
     background: root.focus-within ? #355372 : #26364e;
@@ -540,8 +666,10 @@ export component StyledTextDemo inherits Window {
     title: "XRack · 富文本";
     width: 460px; height: 268px;
     background: #141d2c;
-    in-out property <styled-text> body: @markdown("# 发布说明\n\n**粗体**、*斜体*、`xrackc` 和 ~~已弃用~~。\n\n**مرحبا** بكم في XRack");
+    in-out property <styled-text> body: @markdown("# 发布说明\n\n**粗体**、*斜体*、[`xrackc`](#compiler) 和 ~~已弃用~~。\n\n**مرحبا** بكم في XRack · [阅读手册](#manual)");
     in-out property <bool> compact: false;
+    in-out property <bool> links-enabled: true;
+    out property <string> last-link: "";
 
     Label {
         x: 24px; y: 20px; text: "带内联样式的文字";
@@ -551,13 +679,318 @@ export component StyledTextDemo inherits Window {
         x: 24px; y: 52px; width: 412px;
         font-size: 22px;
         color: #e8f2ff;
+        link-color: #84d8ff;
+        enabled: root.links-enabled;
         max-lines: root.compact ? 2 : 5;
         overflow: elide;
         text: root.body;
+        link-activated(target) => { root.last-link = target; }
+    }
+    Label {
+        x: 24px; y: 212px; width: 412px; overflow: elide;
+        text: root.last-link == "" ? "用 Tab 和 Enter 打开链接" : "已激活 " + root.last-link;
     }
     CheckBox {
-        x: 24px; y: 220px; width: 412px; height: 36px;
+        x: 24px; y: 236px; width: 412px; height: 30px;
         text: "只显示两行";
         checked <=> root.compact;
     }
+}
+
+export component CompositingDemo inherits Window {
+    title: "XRack · 叠放与整组透明度";
+    width: 460px; height: 292px;
+    background: #101725;
+    in-out property <float> fade: 0.5;
+    in-out property <float> first-layer: 2.0;
+    in-out property <float> first-opacity: 1.0;
+    out property <int> first-clicks: 0;
+    out property <int> second-clicks: 0;
+
+    Label { x: 24px; y: 22px; text: "整组淡出"; color: #e8f2ff; }
+    Label { x: 240px; y: 22px; text: "绘制与命中共用叠放顺序"; color: #e8f2ff; }
+    composite := Rectangle {
+        x: 24px; y: 56px; width: 172px; height: 124px;
+        background: #ff0000;
+        opacity: root.fade;
+        Rectangle {
+            x: 42px; y: 24px; width: 90px; height: 78px;
+            background: #0000ff;
+            Rectangle {
+                x: 31px; y: 20px; width: 44px; height: 42px;
+                opacity: 0.5; background: #00ff00;
+            }
+        }
+    }
+    stage := Rectangle {
+        x: 240px; y: 56px; width: 184px; height: 124px;
+        background: #263653;
+        first := Button {
+            x: 10px; y: 12px; width: 132px; height: 68px;
+            z: root.first-layer;
+            opacity: root.first-opacity;
+            background: #39d6bc; color: #102132; text: "第一项";
+            clicked() => { root.first-clicks = root.first-clicks + 1; }
+        }
+        second := Button {
+            x: 42px; y: 30px; width: 132px; height: 68px;
+            z: 1.0;
+            background: #ffd177; color: #102132; text: "第二项";
+            clicked() => { root.second-clicks = root.second-clicks + 1; }
+        }
+    }
+    Slider {
+        x: 24px; y: 201px; width: 172px; height: 28px;
+        minimum: 0.0; maximum: 1.0;
+        value <=> root.fade;
+        accessible-name: "整组透明度";
+    }
+    swap-order := Button {
+        x: 240px; y: 198px; width: 184px; height: 31px; text: "交换叠放顺序";
+        clicked() => { root.first-layer = root.first-layer > 1.0 ? 0.0 : 2.0; }
+    }
+    toggle-first := Button {
+        x: 240px; y: 237px; width: 184px; height: 31px; text: "切换第一项透明度";
+        clicked() => { root.first-opacity = root.first-opacity == 0.0 ? 1.0 : 0.0; }
+    }
+    Label {
+        x: 24px; y: 242px; width: 184px;
+        color: #a7b6ce;
+        text: "第一项 " + root.first-clicks + " · 第二项 " + root.second-clicks;
+    }
+}
+
+export component RectangleShadowDemo inherits Window {
+    title: "XRack · 矩形阴影";
+    width: 460px; height: 268px;
+    background: #101725;
+    in-out property <length> blur: 0px;
+    in-out property <length> inset-blur: 0px;
+    in-out property <length> inset-spread: 0px;
+    in-out property <length> spread: 0px;
+    in-out property <length> shift: 16px;
+    in-out property <length> outline: 0px;
+    in-out property <float> card-alpha: 1.0;
+    in-out property <brush> surface: #e0e8ff;
+    out property <int> clicks: 0;
+
+    Label { x: 24px; y: 20px; text: "外阴影 · 随父容器裁剪"; color: #e8f2ff; }
+    Label { x: 238px; y: 20px; text: "内阴影 · 沿圆角收边"; color: #e8f2ff; }
+    Rectangle {
+        x: 24px; y: 56px; width: 184px; height: 116px; background: #263653;
+        card := Rectangle {
+            x: 24px; y: 16px; width: 116px; height: 72px;
+            background: root.surface;
+            border-width: root.outline;
+            border-color: #a7b6ce;
+            border-radius: 5px;
+            opacity: root.card-alpha;
+            drop-shadow-color: #39d6bc;
+            drop-shadow-offset-x: root.shift;
+            drop-shadow-offset-y: 16px;
+            drop-shadow-spread: root.spread;
+            drop-shadow-blur: root.blur;
+            hit-card := TouchArea {
+                width: 100%; height: 100%;
+                clicked() => { root.clicks = root.clicks + 1; }
+                accessible-name: "点击卡片";
+            }
+        }
+    }
+    Rectangle {
+        x: 238px; y: 56px; width: 184px; height: 116px; background: #263653;
+        Rectangle {
+            x: 24px; y: 16px; width: 116px; height: 72px;
+            background: #e0e8ff;
+            border-radius: 18px;
+            inner-shadow-color: #203056;
+            inner-shadow-offset-x: 13px;
+            inner-shadow-offset-y: 10px;
+            inner-shadow-blur: root.inset-blur;
+            inner-shadow-spread: root.inset-spread;
+        }
+    }
+    soften := Button {
+        x: 24px; y: 187px; width: 184px; height: 30px;
+        text: root.blur == 0px ? "柔化阴影" : "恢复硬边";
+        clicked() => {
+            root.blur = root.blur == 0px ? 12px : 0px;
+            root.inset-blur = root.blur;
+        }
+    }
+    shift-shadow := Button {
+        x: 238px; y: 187px; width: 184px; height: 30px;
+        text: "切换偏移";
+        clicked() => { root.shift = root.shift == 16px ? 48px : 16px; }
+    }
+    Label {
+        x: 24px; y: 231px; text: "卡片点击次数 " + root.clicks;
+        color: #a7b6ce;
+    }
+}
+
+export component ClippingDemo inherits Window {
+    title: "XRack · 圆角裁剪与溢出";
+    width: 468px; height: 264px;
+    background: #101725;
+    in-out property <bool> clipped: true;
+    in-out property <float> fade: 1.0;
+    out property <int> hits: 0;
+
+    Label {
+        x: 24px; y: 20px;
+        text: root.clipped ? "沿边框内侧裁剪" : "允许子项溢出";
+        color: #e8f2ff; font-size: 19px;
+    }
+    clipper := Rectangle {
+        x: 48px; y: 60px; width: 132px; height: 110px;
+        background: #263653;
+        border-color: #778dab; border-width: 8px;
+        border-top-left-radius: 36px;
+        border-top-right-radius: 20px;
+        border-bottom-left-radius: 18px;
+        border-bottom-right-radius: 28px;
+        clip: root.clipped;
+        opacity: root.fade;
+        spill := Button {
+            x: 96px; y: 32px; width: 96px; height: 44px;
+            border-radius: 0px;
+            background: #39d6bc; color: #102132;
+            accessible-name: "跨出边框的按钮";
+            clicked() => { root.hits = root.hits + 1; }
+        }
+        corner := Button {
+            x: 9px; y: 9px; width: 6px; height: 6px; z: 1;
+            border-radius: 0px;
+            background: #ffd177;
+            accessible-name: "圆角内的标记";
+            clicked() => { root.hits = root.hits + 10; }
+        }
+    }
+    Label { x: 280px; y: 20px; text: "未声明 clip 的矩形"; color: #e8f2ff; }
+    Rectangle {
+        x: 280px; y: 60px; width: 132px; height: 110px;
+        background: #263653;
+        border-color: #778dab; border-width: 8px;
+        border-radius: 18px;
+        Rectangle {
+            x: 96px; y: 32px; width: 96px; height: 44px;
+            background: #7c93f7;
+        }
+    }
+    toggle-clip := Button {
+        x: 24px; y: 192px; width: 200px; height: 31px;
+        text: "切换裁剪 / 溢出";
+        clicked() => { root.clipped = !root.clipped; }
+    }
+    toggle-fade := Button {
+        x: 244px; y: 192px; width: 200px; height: 31px;
+        text: "切换整组透明度";
+        clicked() => { root.fade = root.fade == 1.0 ? 0.5 : 1.0; }
+    }
+    Label { x: 24px; y: 233px; color: #a7b6ce; text: "点击计数 " + root.hits; }
+}
+
+export component TransformDemo inherits Window {
+    title: "XRack · 视觉变换";
+    width: 460px; height: 286px;
+    background: #101725;
+    in-out property <float> angle: 90.0;
+    in-out property <float> scale-factor: 1.0;
+    in-out property <float> amount: 0.0;
+    out property <int> clicks: 0;
+
+    Label { x: 24px; y: 18px; text: "旋转子树，点击跟随图形"; color: #e8f2ff; }
+    Rectangle {
+        x: 24px; y: 54px; width: 412px; height: 162px;
+        background: #263653;
+        tile := Rectangle {
+            x: 86px; y: 26px; width: 88px; height: 56px;
+            background: #203052; border-radius: 16px; clip: true;
+            transform-rotation: root.angle;
+            transform-scale: root.scale-factor;
+            transform-origin-x: 0px; transform-origin-y: 0px;
+            hot := Button {
+                x: 8px; y: 8px; width: 44px; height: 26px;
+                background: #39d6bc; border-radius: 0px;
+                accessible-name: "跟随变换的按钮";
+                clicked() => { root.clicks = root.clicks + 1; }
+            }
+            Rectangle {
+                x: 0px; y: 0px; width: 3px; height: 3px; background: #ff3060;
+            }
+            Rectangle {
+                x: 56px; y: 13px; width: 20px; height: 20px;
+                transform-scale-x: -1.0;
+                Rectangle { x: 0px; y: 0px; width: 8px; height: 20px; background: #ffd177; }
+            }
+        }
+        ruler := Slider {
+            x: 274px; y: 26px; width: 118px; height: 28px;
+            transform-rotation: 90.0;
+            transform-origin-x: 0px; transform-origin-y: 0px;
+            minimum: 0.0; maximum: 1.0;
+            value <=> root.amount;
+            accessible-name: "旋转后的滑块";
+        }
+    }
+    turn := Button {
+        x: 24px; y: 232px; width: 160px; height: 32px; text: "切换旋转";
+        clicked() => { root.angle = root.angle == 90.0 ? 0.0 : 90.0; }
+    }
+    zoom := Button {
+        x: 200px; y: 232px; width: 112px; height: 32px; text: "切换缩放";
+        clicked() => { root.scale-factor = root.scale-factor == 1.0 ? 0.75 : 1.0; }
+    }
+    Label { x: 327px; y: 240px; text: "点击 " + root.clicks; color: #a7b6ce; }
+}
+export component GeometryDemo inherits Window {
+    title: "XRack · 实际布局几何";
+    width: 500px; height: 290px;
+    background: #182331;
+    in property <bool> show-panel: true;
+    in property <bool> rotated: false;
+    out property <bool> panel-ready: panel.layout-ready;
+    out property <length> panel-x: panel.layout-x;
+    out property <length> panel-width: panel.layout-width;
+    out property <length> panel-window-width: panel.window-bounds-width;
+    out property <length> component-width: panel.measured-width;
+    out property <length> tip-width: details.layout-width;
+    out property <bool> tip-ready: details.layout-ready;
+    callback show-details;
+    show-details => { details.show(); }
+
+    VerticalLayout {
+        padding: 20px; spacing: 12px;
+        HorizontalLayout {
+            width: 100%; height: 80px; spacing: 8px;
+            if root.show-panel : panel := GeometryPanel {
+                transform-rotation: root.rotated ? 90 : 0;
+            }
+            Rectangle { width: 72px; height: 54px; background: #40547c; }
+        }
+        status := Text {
+            width: 420px; height: 28px;
+            text: root.panel-ready
+                ? "布局宽度 " + (root.panel-width / 1px) + " · 窗口宽度 " + (root.panel-window-width / 1px)
+                : "面板未布局";
+        }
+        trigger := Button {
+            text: "显示按面板宽度布局的浮层";
+            clicked => { root.show-details(); }
+            details := PopupWindow {
+                width: panel.layout-width;
+                height: 36px;
+                background: #35516b;
+                Text { text: "浮层宽度来自已排版的面板"; }
+            }
+        }
+    }
+}
+
+component GeometryPanel inherits Rectangle {
+    height: 54px;
+    horizontal-stretch: 1;
+    background: #16857d;
+    out property <length> measured-width: root.layout-width;
 }

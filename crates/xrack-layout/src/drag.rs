@@ -140,16 +140,13 @@ impl Context<'_> {
             transitions: &BTreeSet<Vec<usize>>,
             accept: &impl Fn(&Node, &LayoutNode) -> Option<T>,
         ) -> Option<(Vec<usize>, T)> {
-            if !layout.visible
-                || !layout.enabled
+            if !layout.enabled
                 || transitions.contains(path)
-                || !layout.clip.intersect(layout.bounds).contains(point)
+                || !layout.contains_subtree_point(point)
             {
                 return None;
             }
-            for (index, (child, item)) in
-                node.children.iter().zip(&layout.children).enumerate().rev()
-            {
+            for (index, child, item) in layout.children_in_paint_order(node).rev() {
                 if is_window_overlay(child.kind) {
                     continue;
                 }
@@ -160,10 +157,13 @@ impl Context<'_> {
                     return found;
                 }
             }
-            node.boolean("enabled", true)
-                .then(|| accept(node, layout))
-                .flatten()
-                .map(|value| (path.clone(), value))
+            (node.boolean("enabled", true)
+                && layout
+                    .map_from_window(point)
+                    .is_some_and(|point| layout.bounds.contains(point)))
+            .then(|| accept(node, layout))
+            .flatten()
+            .map(|value| (path.clone(), value))
         }
         if self.blocked {
             return None;
@@ -178,6 +178,7 @@ impl Context<'_> {
         )?;
         Some((
             Target {
+                text_link: None,
                 id: self.scene.at_path(&path)?.id,
                 row_key: self.scene.row_key_at(&path),
                 path,
@@ -192,6 +193,7 @@ impl Context<'_> {
             (node.kind == "DropArea")
                 .then(|| {
                     let action = offer.action_for(node, requested)?;
+                    let point = layout.map_from_window(point)?;
                     Some((
                         action,
                         Point {

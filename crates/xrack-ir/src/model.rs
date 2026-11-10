@@ -24,6 +24,8 @@ pub struct Property {
     pub ty: Type,
     pub visibility: String,
     pub init: Expr,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub alias: bool,
     pub span: Span,
 }
 
@@ -37,6 +39,16 @@ pub struct Callback {
     pub result: Option<Expr>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub pure: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub alias: Option<CallbackRef>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub has_handler: bool,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct CallbackRef {
+    pub owner: String,
+    pub name: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -49,8 +61,36 @@ pub enum Statement {
     Popup(PopupEffect),
     NativeDialogOpen(NativeDialogOpen),
     WindowClose { window_close: Span },
+    WindowCommand(WindowCommand),
+    CheckGroupCommand(CheckGroupCommand),
     SecondaryWindowCommand(SecondaryWindowCommand),
     FocusCommand(FocusCommand),
+    TextCommand(TextCommand),
+    ScrollCommand(ScrollCommand),
+    MoveColumn(MoveColumn),
+    SetRowHeight(SetRowHeight),
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SetRowHeight {
+    pub row_height_owner: String,
+    pub arguments: [Expr; 2],
+    pub span: Span,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct MoveColumn {
+    pub table_owner: String,
+    pub positions: [Expr; 2],
+    pub span: Span,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ScrollCommand {
+    pub viewport: String,
+    pub method: String,
+    pub args: Vec<Expr>,
+    pub span: Span,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -61,9 +101,31 @@ pub struct FocusCommand {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct TextCommand {
+    pub owner: String,
+    pub method: String,
+    pub args: Vec<Expr>,
+    pub span: Span,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SecondaryWindowCommand {
     pub secondary_window: String,
     pub command: String,
+    pub span: Span,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct WindowCommand {
+    pub window_command: String,
+    pub argument: Option<Expr>,
+    pub span: Span,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct CheckGroupCommand {
+    pub check_group: String,
+    pub state: Expr,
     pub span: Span,
 }
 
@@ -123,6 +185,8 @@ pub struct Element {
     pub id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub action: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub button_group: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub properties: Vec<Property>,
     pub bindings: Vec<Binding>,
@@ -136,8 +200,20 @@ pub struct Element {
     pub state_timings: Vec<StateTiming>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub initial_focus: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub callbacks: Vec<Callback>,
     pub handlers: Vec<Callback>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub clipboard_paste: Option<ClipboardPaste>,
     pub children: Vec<Element>,
+    pub span: Span,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ClipboardPaste {
+    pub target: String,
+    pub text_parameter: String,
+    pub result: Expr,
     pub span: Span,
 }
 
@@ -162,6 +238,8 @@ pub struct StateSelection {
 pub struct StateBinding {
     pub owner: String,
     pub case: i64,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub instance_input: bool,
     pub binding: Binding,
 }
 

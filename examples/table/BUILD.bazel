@@ -14,6 +14,7 @@ rust_binary(
     deps = [
         ":records_ui",
         "//crates/xrack-platform-winit:xrack_platform_winit",
+        "//crates/xrack-runtime:xrack_runtime",
     ],
 )
 

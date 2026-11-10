@@ -5,6 +5,7 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
+  workflow_call:
 
 permissions:
   contents: read
@@ -21,7 +22,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-15, ubuntu-24.04, windows-2025]
+        os: [macos-15, ubuntu-24.04, ubuntu-24.04-arm, windows-2025, windows-11-arm]
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -31,24 +32,22 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y pkg-config libdbus-1-dev libwayland-dev libxkbcommon-dev
-      - name: Check formatting
-        if: runner.os == 'Linux'
-        run: |
-          cargo fmt --all --check
-          cargo fmt --manifest-path examples/cargo-consumer/Cargo.toml --check
+      - name: Select native Rust on Windows arm64
+        if: matrix.os == 'windows-11-arm'
+        run: rustup set default-host aarch64-pc-windows-msvc
       - name: Test Cargo runtime and desktop host
         run: >-
           cargo test --locked
           -p xrack-runtime -p xrack-assets -p xrack-layout
           -p xrack-renderer-femtovg -p xrack-platform-winit
       - name: Verify publishable crates
-        if: runner.os == 'Linux'
+        if: matrix.os == 'ubuntu-24.04'
         run: >-
-          cargo package
+          cargo package --locked
           -p xrack-runtime -p xrack-assets -p xrack-layout
           -p xrack-renderer-femtovg -p xrack-platform-winit
       - name: Upload Cargo packages
-        if: runner.os == 'Linux'
+        if: matrix.os == 'ubuntu-24.04'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: cargo-packages
@@ -65,17 +64,43 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-15, ubuntu-24.04, windows-2025]
+        include:
+          - os: macos-15
+            target: aarch64-apple-darwin
+          - os: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+          - os: windows-2025
+            target: x86_64-pc-windows-msvc
+          - os: windows-11-arm
+            target: aarch64-pc-windows-msvc
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
-      - name: Configure Windows shell and clang-cl
+      - name: Configure Windows shell and SDK license settings
         if: runner.os == 'Windows'
         shell: pwsh
+        env:
+          BAZEL_MSVC_RUNTIME_VISUAL_STUDIO_EULA: ${{ vars.BAZEL_MSVC_RUNTIME_VISUAL_STUDIO_EULA }}
+          BAZEL_WINDOWS_SDK_EULA: ${{ vars.BAZEL_WINDOWS_SDK_EULA }}
         run: |
+          if ($env:BAZEL_MSVC_RUNTIME_VISUAL_STUDIO_EULA -ne '1' -or $env:BAZEL_WINDOWS_SDK_EULA -ne '1') {
+            throw 'Set BAZEL_MSVC_RUNTIME_VISUAL_STUDIO_EULA and BAZEL_WINDOWS_SDK_EULA to 1 after confirming the Microsoft licenses.'
+          }
           "BAZEL_SH=C:/msys64/usr/bin/bash.exe" >> $env:GITHUB_ENV
-          "BAZEL_LLVM=$env:ProgramFiles/LLVM" >> $env:GITHUB_ENV
+          "BAZEL_MSVC_RUNTIME_VISUAL_STUDIO_EULA=$env:BAZEL_MSVC_RUNTIME_VISUAL_STUDIO_EULA" >> $env:GITHUB_ENV
+          "BAZEL_WINDOWS_SDK_EULA=$env:BAZEL_WINDOWS_SDK_EULA" >> $env:GITHUB_ENV
+      - name: Select native Rust on Windows arm64
+        if: matrix.os == 'windows-11-arm'
+        run: rustup set default-host aarch64-pc-windows-msvc
+      - name: Check compiler packaging host
+        shell: bash
+        env:
+          XRACK_TARGET: ${{ matrix.target }}
+        run: |
+          rustc -vV | tr -d '\r' | grep -Fx "host: $XRACK_TARGET"
       - uses: bazel-contrib/setup-bazel@c5acdfb288317d0b5c0bbd7a396a3dc868bb0f86 # 0.19.0
         with:
           bazelisk-cache: true
@@ -85,12 +110,23 @@ jobs:
             - Cargo.lock
           disk-cache: true
           bazelrc: |
-            build --jobs=${{ runner.os == 'Linux' && '4' || '3' }}
+            build --jobs=${{ runner.os == 'macOS' && '3' || '4' }}
+      - name: Check Rust formatting through Bazel
+        if: runner.os == 'macOS'
+        run: |
+          bazel build --config=fmt --lockfile_mode=update //... //tests:gpu_test
+          bazel run @xrack_rust_host_tools//:rustfmt -- --check --edition 2024 \
+            "$GITHUB_WORKSPACE/examples/cargo-consumer/build.rs" \
+            "$GITHUB_WORKSPACE/examples/cargo-consumer/src/main.rs"
       - name: Test compiler, MLIR passes, and generated Rust
         # Bazel extension digests can differ between the local installation and hosted runners.
         run: >-
           bazel test --announce_rc --lockfile_mode=update
           //tests:compiler_test //tests:mlir_pass_test //tests:expressions_test
+          //crates/xrack-lsp:xrack_lsp_test
+      - name: Run Clippy through Bazel
+        if: runner.os == 'macOS'
+        run: bazel build --config=lint --lockfile_mode=error //... //tests:gpu_test
       - name: Check the Cargo dependency lock
         run: git diff --exit-code -- Cargo.lock
       - name: Package xrackc

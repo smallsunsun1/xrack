@@ -248,13 +248,18 @@ fn state_block(block: &StateBlockContextAll<'_>) -> StateBlock {
 
 fn member(ctx: &MemberContextAll<'_>) -> Member {
     if let Some(property) = ctx.property() {
+        let alias = property.reference();
         Member::Property(Property {
             name: property.identifier().expect("property name").get_text(),
             ty: Type::from_source(&property.typeName().expect("property type").get_text()),
             visibility: property
                 .visibility()
                 .map_or_else(|| "private".into(), |v| v.get_text()),
-            value: property.expression().as_deref().map(expression),
+            value: alias
+                .as_deref()
+                .map(reference_expr)
+                .or_else(|| property.expression().as_deref().map(expression)),
+            two_way: alias.is_some(),
             span: span(&*property),
         })
     } else if let Some(callback) = ctx.callback() {
@@ -277,6 +282,7 @@ fn member(ctx: &MemberContextAll<'_>) -> Member {
                 .typeName()
                 .map(|ty| Type::from_source(&ty.get_text())),
             pure: starts_with(&*callback, "pure"),
+            alias: callback.reference().map(|reference| reference.get_text()),
         })
     } else if let Some(binding) = ctx.binding() {
         let reference = binding.reference();
@@ -457,7 +463,20 @@ fn primary_expr(ctx: &PrimaryContextAll<'_>) -> Expr {
     let kind = if let Some(invocation) = ctx.call() {
         ExprKind::Call(call(&invocation))
     } else if let Some(url) = ctx.imageUrl() {
-        ExprKind::ImageUrl(url.STRING().expect("image URL").get_text())
+        let path = url.STRING().expect("image URL").get_text();
+        if let Some(slice) = url.imageSlice() {
+            ExprKind::SlicedImageUrl {
+                path,
+                slice: slice.IDENT().expect("image modifier").get_text(),
+                edges: slice
+                    .imageEdge_all()
+                    .iter()
+                    .map(|edge| edge.get_text())
+                    .collect(),
+            }
+        } else {
+            ExprKind::ImageUrl(path)
+        }
     } else if let Some(markdown) = ctx.markdown() {
         ExprKind::Markdown(markdown.STRING().expect("Markdown string").get_text())
     } else if let Some(array) = ctx.arrayLiteral() {

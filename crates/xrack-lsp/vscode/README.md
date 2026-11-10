@@ -4,6 +4,8 @@ The extension adds `.xr` highlighting, context-sensitive completions, compiler d
 
 Type `root.` or `self.` for properties and callbacks in scope, or press **Ctrl+Space** to complete element types, bindings, event handlers and enum values. If `import { Card as Tile } from "widgets.xr";` introduces a component, `card := Tile { }` makes its public properties and callbacks available after `card.`. The instance body also suggests its input properties. Open files are read from the editor buffer, so unsaved changes to exported members show up in completions.
 
+With the `from "widgets.xr"` path in place, completion inside the import braces suggests exported components and records. A preceding font import can stay in the same file. In `for item[index] in root.people : Text { ... }`, a declared `[Person]` model lets `item.` suggest the record's fields and shows `index` as an `int`.
+
 Install the VSIX for your platform with **Extensions → Install from VSIX…** and open an `.xr` file. The package includes `xrack-lsp`, so this setup works without a local XRack build.
 
 ## Development

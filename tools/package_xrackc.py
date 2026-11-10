@@ -4,6 +4,7 @@
 import hashlib
 import json
 from pathlib import Path
+import shutil
 import subprocess
 import tarfile
 import tempfile
@@ -21,8 +22,9 @@ def output(*args):
 
 
 def cargo_licenses(host):
-    metadata = json.loads(output(
-        "cargo", "metadata", "--locked", "--format-version", "1", "--filter-platform", host,
+    metadata = json.loads(subprocess.check_output(
+        ("cargo", "metadata", "--locked", "--format-version", "1", "--filter-platform", host),
+        cwd=ROOT,
     ))
     packages = {package["id"]: package for package in metadata["packages"]}
     dependencies = {node["id"]: node["deps"] for node in metadata["resolve"]["nodes"]}
@@ -50,6 +52,10 @@ def cargo_licenses(host):
         if package["license_file"]:
             files.add(directory / package["license_file"])
         name = f'{package["name"]}-{package["version"]}'
+        if not files and name == "gif-dispose-6.0.0" and package["license"] == "MIT OR Apache-2.0":
+            # This crate declares both licenses but ships neither text.
+            # Include the declaration and the Apache-2.0 terms.
+            files.update((directory / "Cargo.toml.orig", ROOT / "LICENSE-APACHE"))
         if not files:
             raise RuntimeError(f"no license files for {name}")
         for file in sorted(files):
@@ -57,11 +63,16 @@ def cargo_licenses(host):
 
 
 def main():
+    # Resolve the PATH entry explicitly so Windows can use a Bazelisk batch shim.
+    bazel = shutil.which("bazel")
+    if bazel is None:
+        raise SystemExit("Bazel was not found on PATH")
+    bazel = Path(bazel).absolute()
     host = next(line.removeprefix("host: ") for line in output("rustc", "-vV").splitlines()
                 if line.startswith("host: "))
-    subprocess.run(("bazel", "build", *BAZEL_OPTIONS, "//:xrackc"), cwd=ROOT, check=True)
-    bin_dir = Path(output("bazel", "info", *BAZEL_OPTIONS, "bazel-bin"))
-    external = Path(output("bazel", "info", *BAZEL_OPTIONS, "output_base")) / "external"
+    subprocess.run((bazel, "build", *BAZEL_OPTIONS, "//:xrackc"), cwd=ROOT, check=True)
+    bin_dir = Path(output(bazel, "info", *BAZEL_OPTIONS, "bazel-bin"))
+    external = Path(output(bazel, "info", *BAZEL_OPTIONS, "output_base")) / "external"
     exe = "xrackc.exe" if "windows" in host else "xrackc"
     compiler = bin_dir / "crates" / "xrack-compiler" / exe
     version = output(compiler, "--version").split()[1]

@@ -1,6 +1,7 @@
-use crate::{brush_paint, image::fitted_rect};
+use crate::brush_paint;
 use femtovg::{Canvas, Path, renderer::WGPURenderer};
 use xrack_assets::{parse_path, vector_bounds, vector_segments};
+use xrack_layout::fitted_rect;
 use xrack_layout::{Rect, Size};
 use xrack_runtime::{Node, VectorSegment};
 
@@ -81,7 +82,12 @@ fn draw_segments(
         return Ok(());
     }
     let fit = node.image_fit("fit").unwrap_or_default();
-    let destination = fitted_rect(target, Size::new(viewbox.width, viewbox.height), fit);
+    let destination = fitted_rect(
+        target,
+        Size::new(viewbox.width, viewbox.height),
+        fit,
+        [0.5; 2],
+    );
     let sx = destination.width / viewbox.width;
     let sy = destination.height / viewbox.height;
     let map = |x: f32, y: f32| {

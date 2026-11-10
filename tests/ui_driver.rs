@@ -1,11 +1,14 @@
 //! A named-target driver for native UI scenarios. Pointer and focus
 //! actions use the same Interaction state machine as the window backend.
-use std::{rc::Rc, time::Instant};
+use std::{
+    rc::Rc,
+    time::{Duration, Instant},
+};
 use xrack_layout::{
     ChoiceKey, EditAction, EditSource, Interaction, LayoutNode, MenuKey, MenuPanel, MenuShortcut,
-    NavigationKey, Point, Size, TextMeasurer, prepare_scene_with_input,
+    NavigationKey, Point, Size, TextMeasurer, ViewportObservers, prepare_scene_with_input,
 };
-use xrack_runtime::{Component, Node};
+use xrack_runtime::{Component, ControlAction, Node, ScrollRequests, TextCommand};
 
 pub struct UiDriver<C, T> {
     component: C,
@@ -14,6 +17,8 @@ pub struct UiDriver<C, T> {
     scene: Rc<Node>,
     layout: LayoutNode,
     viewport: Size,
+    scroll_requests: ScrollRequests,
+    viewport_observers: ViewportObservers,
 }
 
 impl<C: Component, T: TextMeasurer> UiDriver<C, T> {
@@ -27,6 +32,8 @@ impl<C: Component, T: TextMeasurer> UiDriver<C, T> {
             &input,
         );
         input.reconcile(&scene, &layout);
+        let mut viewport_observers = ViewportObservers::default();
+        viewport_observers.sync(&scene, &layout);
         Self {
             component,
             text,
@@ -34,10 +41,12 @@ impl<C: Component, T: TextMeasurer> UiDriver<C, T> {
             scene,
             layout,
             viewport,
+            scroll_requests: ScrollRequests::default(),
+            viewport_observers,
         }
     }
 
-    fn refresh(&mut self) {
+    fn prepare(&mut self) {
         (self.scene, self.layout) = prepare_scene_with_input(
             &self.component,
             self.component.render_shared(),
@@ -46,6 +55,84 @@ impl<C: Component, T: TextMeasurer> UiDriver<C, T> {
             &self.input,
         );
         self.input.reconcile(&self.scene, &self.layout);
+    }
+
+    fn refresh(&mut self) {
+        let _scroll = self.scroll_requests.enter();
+        self.prepare();
+        let scrolled = self.input.take_scroll_events(&self.scene, &self.layout);
+        if self
+            .input
+            .apply_scroll_requests(&self.scene, &self.layout, self.scroll_requests.drain())
+        {
+            self.prepare();
+        }
+        self.viewport_observers.sync(&self.scene, &self.layout);
+        for event in scrolled {
+            event.apply(&mut self.component, &self.scene);
+        }
+        if self.component.scene_dirty() {
+            self.prepare();
+        }
+    }
+
+    pub fn update(&mut self, update: impl FnOnce(&mut C)) {
+        let _scroll = self.scroll_requests.enter();
+        update(&mut self.component);
+        self.refresh();
+    }
+
+    pub fn scroll(&mut self, id: &str, delta: Point) -> bool {
+        let path = self.path(id);
+        self.move_to(&path);
+        let moved = self.input.scroll_wheel(&self.layout, delta, false);
+        if moved {
+            self.refresh();
+        }
+        moved
+    }
+
+    pub fn drag_viewport_from(&mut self, id: &str, delta: Point) -> bool {
+        let _scroll = self.scroll_requests.enter();
+        let path = self.path(id);
+        self.move_to(&path);
+        let start = self.input.pointer_position().unwrap();
+        let end = Point {
+            x: start.x + delta.x,
+            y: start.y + delta.y,
+        };
+        let now = Instant::now();
+        self.input.pointer_press_in_scene(&self.scene, &self.layout);
+        self.input.arm_drag(&self.scene, &self.layout, start);
+        self.input
+            .arm_mouse_viewport_pan(&self.scene, &self.layout, start, now);
+        let moved = self.input.move_scroll_gesture(
+            &self.scene,
+            &self.layout,
+            end,
+            now + Duration::from_millis(20),
+        );
+        let claimed = self.input.mouse_viewport_pan_claimed();
+        if moved {
+            self.refresh();
+        }
+        if claimed {
+            self.input.end_scroll_gesture(
+                &self.scene,
+                &self.layout,
+                end,
+                now + Duration::from_millis(160),
+            );
+        } else {
+            self.input.cancel_scroll_gesture();
+            self.input.pointer_move(&self.scene, &self.layout, end);
+            if let Some(target) = self.input.pointer_release_target() {
+                self.component
+                    .dispatch_at(&self.scene, &target.path, "clicked");
+            }
+            self.refresh();
+        }
+        claimed
     }
 
     pub fn scene(&self) -> &Node {
@@ -118,6 +205,7 @@ impl<C: Component, T: TextMeasurer> UiDriver<C, T> {
     }
 
     pub fn click(&mut self, id: &str) {
+        let _scroll = self.scroll_requests.enter();
         let path = self.path(id);
         self.move_to(&path);
         if self.input.menu_press(&self.scene, &self.layout) {
@@ -216,10 +304,7 @@ impl<C: Component, T: TextMeasurer> UiDriver<C, T> {
 
     pub fn menu_key(&mut self, key: MenuKey) {
         if let Some(action) = self.input.menu_key(&self.scene, &self.layout, key) {
-            assert!(
-                self.component
-                    .control_at(&self.scene, &action.path, action.action)
-            );
+            self.apply_menu_action(action);
         }
         self.refresh();
     }
@@ -229,10 +314,7 @@ impl<C: Component, T: TextMeasurer> UiDriver<C, T> {
             return false;
         };
         self.input.close_menu(&self.scene, &self.layout);
-        assert!(
-            self.component
-                .control_at(&self.scene, &action.path, action.action)
-        );
+        self.apply_menu_action(action);
         self.refresh();
         true
     }
@@ -265,14 +347,27 @@ impl<C: Component, T: TextMeasurer> UiDriver<C, T> {
             .input
             .menu_release(&self.scene, &self.layout)
             .is_some_and(|action| {
-                assert!(
-                    self.component
-                        .control_at(&self.scene, &action.path, action.action)
-                );
+                self.apply_menu_action(action);
                 true
             });
         self.refresh();
         activated
+    }
+
+    fn apply_menu_action(&mut self, input: xrack_layout::ControlInput) {
+        match input.action {
+            ControlAction::TextCommand(command @ TextCommand::SelectAll) => {
+                self.input.apply_text_selection(&self.scene, command);
+            }
+            ControlAction::TextCommand(command @ (TextCommand::Undo | TextCommand::Redo)) => {
+                assert!(self.input.replay_text_edit(
+                    &mut self.component,
+                    &self.scene,
+                    command == TextCommand::Redo
+                ));
+            }
+            action => assert!(self.component.control_at(&self.scene, &input.path, action)),
+        }
     }
 
     pub fn choice_key(&mut self, key: ChoiceKey) {

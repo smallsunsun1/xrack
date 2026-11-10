@@ -1,4 +1,5 @@
-use crate::{ChangeSignal, ListModel, RowKey};
+use crate::table_clipboard::{MAX_CLIPBOARD_BYTES, MAX_CLIPBOARD_CELLS};
+use crate::{ChangeSignal, ListModel, Node, RowKey};
 use std::{
     cell::RefCell,
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
@@ -152,12 +153,19 @@ pub struct TableSelectionSnapshot {
     stamp: (u64, u64),
     target: SelectionTarget,
     column_count: usize,
+    order: crate::TableColumnOrder,
     multiple: bool,
     current_column: Option<usize>,
     selected: Selected,
 }
 
 impl TableSelectionSnapshot {
+    #[doc(hidden)]
+    pub fn with_column_order(mut self, order: crate::TableColumnOrder) -> Self {
+        self.order = order;
+        self
+    }
+
     pub fn target(&self) -> SelectionTarget {
         self.target
     }
@@ -231,6 +239,164 @@ impl TableSelectionSnapshot {
         });
         indices
     }
+}
+
+/// Serialize the selected model rows in the supplied visual column order.
+#[doc(hidden)]
+pub fn copy_table_text<M: ListModel>(
+    model: &M,
+    table: &Node,
+    displayed_columns: &[usize],
+    mut cell: impl FnMut(usize, usize, &M::Item) -> Option<String>,
+) -> Option<String> {
+    let count = model.row_count();
+    let column_count = table.table_header.as_ref()?.columns.len();
+    let mut columns: Vec<_> = displayed_columns
+        .iter()
+        .copied()
+        .filter(|&column| column < column_count)
+        .collect();
+    let mut rows = Vec::new();
+    let mut range = 0..count;
+    let mut cells = None;
+    if let Some(selection) = table.table_selection.as_deref() {
+        if selection.stamp.0 != model.structure_stamp().0 {
+            return None;
+        }
+        match &selection.selected {
+            Selected::Rows(selected) => {
+                if selected.len().checked_mul(columns.len())? > MAX_CLIPBOARD_CELLS {
+                    return None;
+                }
+                let current = table
+                    .int("current-row")
+                    .and_then(|row| usize::try_from(row).ok());
+                if let Some(row) = current.filter(|&row| {
+                    selected.len() == 1 && row < count && selected.contains(&model.row_key(row))
+                }) {
+                    rows.push(row);
+                } else {
+                    rows = selection.indices(model);
+                }
+                range = 0..0;
+            }
+            Selected::Columns(selected) => columns.retain(|column| selected.contains(column)),
+            Selected::Cells(selected) => {
+                let start = columns
+                    .iter()
+                    .position(|column| selected.contains_key(column))?;
+                let end = columns
+                    .iter()
+                    .rposition(|column| selected.contains_key(column))?
+                    + 1;
+                columns = columns[start..end].to_vec();
+                let selected_count = columns
+                    .iter()
+                    .filter_map(|column| selected.get(column))
+                    .try_fold(0usize, |count, keys| count.checked_add(keys.len()))?;
+                if selected_count > MAX_CLIPBOARD_CELLS {
+                    return None;
+                }
+                let mut seen = HashSet::new();
+                let row_sets: Vec<_> = columns
+                    .iter()
+                    .filter_map(|column| selected.get(column))
+                    .filter(|keys| seen.insert(Arc::as_ptr(keys)))
+                    .collect();
+                let union: HashSet<_> = if row_sets.len() > 1 {
+                    row_sets
+                        .iter()
+                        .flat_map(|rows| rows.iter().copied())
+                        .collect()
+                } else {
+                    HashSet::new()
+                };
+                let mut index = 0;
+                let mut first = count;
+                let mut last = 0;
+                model.visit_row_keys(0..count, |key| {
+                    let included = if let [keys] = row_sets.as_slice() {
+                        keys.contains(&key)
+                    } else {
+                        union.contains(&key)
+                    };
+                    if included {
+                        first = first.min(index);
+                        last = index + 1;
+                    }
+                    index += 1;
+                });
+                range = first..last;
+                cells = Some(selection);
+            }
+        }
+    } else {
+        let row = usize::try_from(table.int("current-row")?).ok()?;
+        if row >= count {
+            return None;
+        }
+        range = row..row + 1;
+    }
+
+    let size = (rows.len() + range.len()).checked_mul(columns.len())?;
+    if size == 0 || size > MAX_CLIPBOARD_CELLS {
+        return None;
+    }
+    let mut text = String::new();
+    for (line, row) in rows.into_iter().chain(range).enumerate() {
+        if line != 0 {
+            text.push('\n');
+        }
+        let line_start = text.len();
+        let key = model.row_key(row);
+        let item = model.item(row);
+        for (slot, &column) in columns.iter().enumerate() {
+            if slot != 0 {
+                text.push('\t');
+            }
+            if cells.is_none_or(|selection| selection.contains_cell(key, column))
+                && let Some(value) = cell(row, column, &item)
+            {
+                append_cell(&mut text, &value)?;
+            }
+            if text.len() > MAX_CLIPBOARD_BYTES {
+                return None;
+            }
+        }
+        if text.len() == line_start {
+            // A blank final single-column row would otherwise look like a trailing newline.
+            if text.len().checked_add(2)? > MAX_CLIPBOARD_BYTES {
+                return None;
+            }
+            text.push_str("\"\"");
+        }
+    }
+    Some(text)
+}
+
+fn append_cell(text: &mut String, value: &str) -> Option<()> {
+    let quoted = value.contains(['\t', '\n', '\r', '"']);
+    let extra = if quoted {
+        value.bytes().filter(|&byte| byte == b'"').count() + 2
+    } else {
+        0
+    };
+    if text.len().saturating_add(value.len()).saturating_add(extra) > MAX_CLIPBOARD_BYTES {
+        return None;
+    }
+    if quoted {
+        text.push('"');
+        for (index, part) in value.split('"').enumerate() {
+            if index != 0 {
+                text.push_str("\"\"");
+            }
+            text.push_str(part);
+        }
+        text.push('"');
+    } else {
+        text.push_str(value);
+    }
+    Some(())
 }
 
 #[doc(hidden)]
@@ -319,10 +485,23 @@ impl Selection {
         span(anchor, row)
     }
 
-    fn column_range(&mut self, column: usize) -> Range<usize> {
-        let anchor = self.column_anchor.or(self.current_column).unwrap_or(column);
+    fn column_range<'a>(
+        &mut self,
+        column: usize,
+        view: &'a TableSelectionSnapshot,
+    ) -> impl Iterator<Item = usize> + use<'a> {
+        let index = |column| view.order.visual_index(view.column_count, column);
+        let anchor = self
+            .column_anchor
+            .or(self.current_column)
+            .filter(|&column| column < view.column_count)
+            .unwrap_or(column);
         self.column_anchor = Some(anchor);
-        span(anchor, column)
+        let range = span(index(anchor).unwrap_or(0), index(column).unwrap_or(0));
+        view.order
+            .iter(view.column_count)
+            .skip(range.start)
+            .take(range.len())
     }
 }
 
@@ -357,6 +536,7 @@ impl TableSelection {
             stamp,
             target,
             column_count,
+            order: crate::TableColumnOrder::default(),
             multiple,
             current_column: state.current_column,
             selected: state.selected(model, current),
@@ -433,7 +613,7 @@ impl TableSelection {
                         toggle(Arc::make_mut(columns), column);
                     }
                     RowSelection::Extend | RowSelection::AddRange => {
-                        let range = state.column_range(column);
+                        let range = state.column_range(column, view);
                         if operation == RowSelection::Extend {
                             *columns = Arc::new(range.collect());
                         } else {
@@ -474,7 +654,7 @@ impl TableSelection {
                         }
                     }
                     RowSelection::Extend | RowSelection::AddRange => {
-                        let range = state.column_range(column);
+                        let range = state.column_range(column, view);
                         let rows = Arc::new(row_keys(model, state.row_range(model, current, row)));
                         if operation == RowSelection::Extend {
                             *cells = Arc::new(range.map(|column| (column, rows.clone())).collect());
@@ -554,6 +734,48 @@ impl TableSelection {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn whole_column_copy_is_ordered_and_checks_the_budget_before_projecting() {
+        let selection = TableSelection::default();
+        let model = 3_i64;
+        let mut table = Node::new("TableView", None);
+        table.table_header = Some(Box::new(crate::TableHeader {
+            columns: (0..3).map(|_| Node::new("TableColumn", None)).collect(),
+            sort: None,
+            column_widths: Vec::new(),
+        }));
+        for (column, operation) in [(1, RowSelection::Replace), (2, RowSelection::Toggle)] {
+            let view = selection.snapshot(&model, None, SelectionTarget::Columns, 3, true);
+            assert!(
+                selection
+                    .apply(
+                        &model,
+                        &view,
+                        None,
+                        TableSelectionAction::Column { column, operation }
+                    )
+                    .is_some()
+            );
+        }
+        table.table_selection = Some(Box::new(selection.snapshot(
+            &model,
+            None,
+            SelectionTarget::Columns,
+            3,
+            true,
+        )));
+        let text = copy_table_text(&model, &table, &[2, 0, 1], |_, column, value| {
+            Some(format!("{value}:{column}"))
+        });
+        assert_eq!(text.as_deref(), Some("0:2\t0:1\n1:2\t1:1\n2:2\t2:1"));
+        assert!(
+            copy_table_text(&600_000_i64, &table, &[2, 0, 1], |_, _, _| panic!(
+                "oversized selection must be rejected before projection"
+            ))
+            .is_none()
+        );
+    }
 
     #[test]
     fn numeric_models_prune_removed_positions_and_reject_stale_actions() {

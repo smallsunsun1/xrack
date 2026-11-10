@@ -17,7 +17,12 @@ export component RecordTableDemo inherits Window {
         StockRow { name: "工作站", owner: "设计组", units: 5, available: false, load: 0.5 },
         StockRow { name: "路由器", owner: "网络组", units: 8, available: true, load: 0.75 },
     ];
+    in property <int> pinned: 0;
+    in property <SelectionTarget> target: rows;
+    in property <bool> lock-owner: false;
     callback sort-requested(column: int, descending: bool);
+    callback move-visible-column(int, int);
+    move-visible-column(from, to) => { stock.move-column(from, to); }
 
     VerticalLayout {
         padding: 16px;
@@ -26,6 +31,11 @@ export component RecordTableDemo inherits Window {
         stock := TableView {
             row-height: 36px;
             resizable-columns: true;
+            movable-columns: true;
+            copyable: true;
+            pasteable: true;
+            selection-target: root.target;
+            frozen-columns: root.pinned;
             sort-ascending(column) => { root.sort-requested(column, false); }
             sort-descending(column) => { root.sort-requested(column, true); }
             TableColumn { title: "名称"; min-width: 150px; }
@@ -35,11 +45,199 @@ export component RecordTableDemo inherits Window {
             TableColumn { title: "负载"; width: 112px; }
             for row[index] in root.records : TableRow {
                 TableCell { text <=> row.name; background: index % 2 == 0 ? #263750 : #223249; }
-                TableCell { text <=> row.owner; background: index % 2 == 0 ? #263750 : #223249; }
+                TableCell { text <=> row.owner; read-only: root.lock-owner; background: index % 2 == 0 ? #263750 : #223249; }
                 SpinBox { value <=> row.units; minimum: 0; maximum: 999; }
                 CheckBox { checked <=> row.available; }
                 Slider { value <=> row.load; minimum: 0; maximum: 1; step: 0.05; }
             }
         }
     }
+}
+
+export struct NamePaste { accepted: bool, value: string }
+export struct QuantityPaste { accepted: bool, value: int }
+
+export component DelegateTableDemo inherits Window {
+    title: "XRack · 组件化单元格";
+    width: 620px;
+    height: 338px;
+    background: #182331;
+    in-out property <[StockRow]> records: [
+        StockRow { name: "交换机", owner: "网络组", units: 12, available: true, load: 0.25 },
+        StockRow { name: "工作站", owner: "设计组", units: 5, available: false, load: 0.5 },
+        StockRow { name: "路由器", owner: "网络组", units: 8, available: true, load: 0.75 },
+    ];
+    in-out property <int> selected-row: -1;
+    out property <int> committed-row: -1;
+    out property <string> committed-name: "";
+    out property <int> committed-units: -1;
+    in property <bool> lock-names: false;
+    in property <bool> show-quantity: true;
+    pure callback decode-quantity(string, int, int) -> QuantityPaste;
+    callback sort-requested(int, bool);
+    callback move-visible-column(int, int);
+    move-visible-column(from, to) => { stock.move-column(from, to); }
+    callback locate(int);
+    locate(index) => { stock.position-view-at-index(index, beginning); }
+
+    VerticalLayout {
+        padding: 16px; spacing: 8px;
+        Text { text: "选中行 " + root.selected-row + " · 提交 " + root.committed-name + " · 数量 " + root.committed-units; font-size: 18px; }
+        stock := TableView {
+            row-height: 40px;
+            copyable: true;
+            pasteable: true;
+            movable-columns: true;
+            resizable-columns: true;
+            selection-target: cells;
+            current-row <=> root.selected-row;
+            sort-ascending(column) => { root.sort-requested(column, false); }
+            sort-descending(column) => { root.sort-requested(column, true); }
+            TableColumn { title: "设备"; width: 250px; }
+            TableColumn { title: "库存"; width: 190px; }
+            TableColumn { title: "可用"; width: 90px; }
+            for row[index] in root.records : TableRow {
+                NameEditor {
+                    value <=> row.name;
+                    locked: root.lock-names;
+                    clipboard-text: row.name;
+                    clipboard-target: "value";
+                    clipboard-paste(text) => {
+                        NamePaste { accepted: !root.lock-names && text != "", value: text }
+                    }
+                    submitted => { root.committed-row = index; root.committed-name = row.name; }
+                }
+                HorizontalLayout {
+                    visible: root.show-quantity;
+                    clipboard-text: "" + row.units;
+                    QuantityEditor {
+                        quantity <=> row.units;
+                        clipboard-target: "quantity";
+                        clipboard-paste(text) => { root.decode-quantity(text, row.units, index) }
+                        changed(value) => { root.committed-row = index; root.committed-units = value; }
+                    }
+                }
+                CheckBox { checked <=> row.available; }
+            }
+        }
+    }
+}
+
+component NameEditor inherits HorizontalLayout {
+    in-out property <string> value <=> input.text;
+    callback submitted <=> input.accepted;
+    in property <bool> locked: false;
+    property <int> stars: 0;
+    spacing: 4px;
+    input := LineEdit { accessible-name: "设备名称"; read-only: root.locked; horizontal-stretch: 1; }
+    star := Button {
+        width: 46px;
+        text: "★ " + root.stars;
+        clicked => { root.stars += 1; }
+    }
+}
+
+component QuantityEditor inherits HorizontalLayout {
+    in-out property <int> quantity <=> spin.value;
+    callback changed <=> spin.edited;
+    spin := SpinBox { accessible-name: "库存数量"; minimum: 0; maximum: 999; horizontal-stretch: 1; }
+}
+
+export struct WarehouseRow {
+    location: StockLocation,
+    stock: StockDetails,
+    reserve: StockDetails,
+}
+
+export struct StockLocation { title: string, height: length, key: int, parent-key: int }
+export struct StockDetails { units: int, available: bool, note: string }
+struct StockPaste { accepted: bool, value: StockDetails }
+
+export component NestedRecordsDemo inherits Window {
+    title: "XRack · 仓库库存和货位";
+    width: 840px;
+    height: 580px;
+    in-out property <[WarehouseRow]> records: [
+        WarehouseRow {
+            location: StockLocation { title: "仓库 A", height: 38px, key: 1, parent-key: -1 },
+            stock: StockDetails { units: 12, available: true, note: "现货" },
+            reserve: StockDetails { units: 20, available: true, note: "备用" },
+        },
+        WarehouseRow {
+            location: StockLocation { title: "货位 B", height: 42px, key: 2, parent-key: 1 },
+            stock: StockDetails { units: 5, available: false, note: "待检" },
+            reserve: StockDetails { units: 7, available: true, note: "备用" },
+        },
+    ];
+    in-out property <int> selected-location: 1;
+    pure callback decode-quantity(string) -> QuantityPaste;
+
+    VerticalLayout {
+        padding: 16px; spacing: 8px;
+        locations := ComboBox {
+            model: root.records;
+            text-role: "location.title";
+            value-role: "location.key";
+            current-value <=> root.selected-location;
+        }
+        HorizontalLayout {
+            height: 144px; spacing: 8px;
+            names := StandardListView {
+                model: root.records;
+                text-role: "location.title";
+                row-height-field: "location.height";
+            }
+            shelves := TreeView {
+                row-height-field: "location.height";
+                for row in root.records : TreeRow {
+                    key: row.location.key;
+                    parent-key: row.location.parent-key;
+                    TreeCell { text <=> row.location.title; }
+                }
+            }
+        }
+        stock := TableView {
+            row-height-field: "location.height";
+            selection-target: cells;
+            copyable: true;
+            pasteable: true;
+            TableColumn { title: "库存"; width: 140px; }
+            TableColumn { title: "可用"; width: 76px; }
+            TableColumn { title: "库存备注"; width: 170px; }
+            TableColumn { title: "备用备注"; width: 170px; }
+            for row in root.records : TableRow {
+                QuantityEditor {
+                    quantity <=> row.stock.units;
+                    clipboard-text: "" + row.stock.units;
+                    clipboard-target: "quantity";
+                    clipboard-paste(text) => { root.decode-quantity(text) }
+                }
+                CheckBox { checked <=> row.stock.available; }
+                TableCell { text <=> row.stock.note; }
+                ReserveCell {
+                    details <=> row.reserve;
+                    clipboard-text: row.reserve.note;
+                    clipboard-target: "details";
+                    clipboard-paste(text) => {
+                        StockPaste { accepted: text != "", value: StockDetails {
+                            units: row.reserve.units, available: row.reserve.available, note: text,
+                        } }
+                    }
+                }
+            }
+        }
+        summary := StandardTableView {
+            model: root.records;
+            row-height-field: "location.height";
+            copyable: true;
+            TableColumn { title: "货位"; field: "location.title"; width: 150px; }
+            TableColumn { title: "数量"; field: "stock.units"; width: 100px; }
+            TableColumn { title: "备注"; field: "stock.note"; width: 170px; }
+        }
+    }
+}
+
+component ReserveCell inherits Text {
+    in-out property <StockDetails> details;
+    text: root.details.note;
 }

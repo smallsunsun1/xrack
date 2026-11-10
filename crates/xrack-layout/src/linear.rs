@@ -162,6 +162,7 @@ pub(crate) fn intrinsic_item(kind: &str) -> bool {
             | "DialogButton"
             | "Menu"
             | "Image"
+            | "AnimatedImage"
             | "Slider"
             | "PageIndicator"
             | "Dial"
@@ -472,8 +473,9 @@ pub(crate) fn measure_with_width(
                     (label.height.max(icon) + chrome).max(min.height),
                 )
             }
-            "Image" => {
-                let [width, height] = node.image("source").unwrap_or_default().size();
+            "Image" | "AnimatedImage" => {
+                let source = node.image("source").unwrap_or_default().size();
+                let [width, height] = crate::ImageRegion::for_node(node, source).size();
                 if width == 0 || height == 0 {
                     Size::default()
                 } else {

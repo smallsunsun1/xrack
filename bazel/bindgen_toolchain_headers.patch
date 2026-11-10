@@ -1,0 +1,25 @@
+--- a/private/bindgen.bzl
++++ b/private/bindgen.bzl
+@@ -369,1 +369,3 @@
+-        "--sysroot",
++        "--sysroot",
++        "-resource-dir",
++        "-ivfsoverlay",
+@@ -414,1 +416,6 @@
+-        if open_arg:
++        # Bindgen uses the GNU driver interface. Retain the SDK and resource
++        # paths supplied by clang-cl with their equivalent search priority.
++        if arg.startswith("/clang:"):
++            arg = arg[len("/clang:"):]
++
++        if open_arg:
+@@ -419,1 +426,8 @@
+-        # The cc_toolchain merged these flags into its returned flags - don't strip these out.
++        if arg.startswith("/imsvc"):
++            arg = "-idirafter" + arg[len("/imsvc"):]
++        elif arg.startswith("/external:I"):
++            arg = "-isystem" + arg[len("/external:I"):]
++        elif arg.startswith("/I"):
++            arg = "-I" + arg[len("/I"):]
++
++        # The cc_toolchain merged these flags into its returned flags - don't strip these out.

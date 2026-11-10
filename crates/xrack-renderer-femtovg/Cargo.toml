@@ -18,4 +18,3 @@ pollster.workspace = true
 png.workspace = true
 imgref.workspace = true
 rgb.workspace = true
-unicode-bidi.workspace = true

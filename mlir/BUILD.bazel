@@ -3,7 +3,6 @@ load("@llvm-project//mlir:tblgen.bzl", "gentbl_cc_library")
 load("@rules_rust//rust:defs.bzl", "rust_library")
 load("@rules_rust_bindgen//:defs.bzl", "rust_bindgen", "rust_bindgen_toolchain")
 load("//bazel:xrack.bzl", "rust_generated_source")
-load(":bindgen.bzl", "LLVM_BUILTIN_HEADERS")
 
 rust_bindgen_toolchain(
     name = "bindgen_impl",
@@ -52,6 +51,7 @@ cc_library(
     name = "xrack_dialect",
     srcs = ["xrack_dialect.cc"],
     hdrs = ["xrack_dialect.h"],
+    linkstatic = True,
     deps = [
         ":xrack_inc_gen",
         "@llvm-project//llvm:Support",
@@ -68,6 +68,7 @@ cc_library(
         "xrack_visual_cache.cc",
     ],
     hdrs = ["xrack_passes.h"],
+    linkstatic = True,
     deps = [
         ":xrack_dialect",
         ":xrack_passes_inc_gen",
@@ -95,6 +96,7 @@ cc_library(
     name = "xrack_c_api",
     srcs = ["bridge.cc"],
     hdrs = ["c_api.h"],
+    linkstatic = True,
     deps = [
         ":xrack_dialect",
         ":xrack_inc_gen",
@@ -106,12 +108,6 @@ cc_library(
     ],
 )
 
-cc_library(
-    name = "bindgen_inputs",
-    hdrs = ["@llvm-project//clang:builtin_headers_files"],
-    deps = [":xrack_c_api"],
-)
-
 rust_bindgen(
     name = "c_bindings",
     bindgen_flags = [
@@ -119,18 +115,21 @@ rust_bindgen(
         "(mlir|xrackMlir).*",
         "--allowlist-type",
         "Mlir.*",
+        "--no-include-path-detection",
         "--no-layout-tests",
         "--rust-edition",
         "2024",
     ],
-    cc_lib = ":bindgen_inputs",
+    cc_lib = ":xrack_c_api",
     clang_flags = [
         "-x",
         "c",
         "-std=c11",
-        "-isystem",
-        LLVM_BUILTIN_HEADERS,
-    ],
+    ] + select({
+        # Use the SDK include paths carried by the Bazel toolchain.
+        "@platforms//os:windows": ["-nostdlibinc"],
+        "//conditions:default": [],
+    }),
     header = "c_api.h",
     merge_cc_lib_objects_into_rlib = False,
 )
