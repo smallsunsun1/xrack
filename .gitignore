@@ -7,3 +7,4 @@
 *.tmp
 /.cache
 /.rules_rust_analyzer
+/tools/__pycache__/

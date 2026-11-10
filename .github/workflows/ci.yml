@@ -37,15 +37,15 @@ jobs:
         run: rustup set default-host aarch64-pc-windows-msvc
       - name: Test Cargo runtime and desktop host
         run: >-
-          cargo test --release --locked
+          cargo test --release --locked -p xrack-build
           -p xrack-runtime -p xrack-assets -p xrack-layout
-          -p xrack-renderer-femtovg -p xrack-platform-winit
+          -p xrack-renderer-femtovg -p xrack-platform-winit -p xrack
       - name: Verify publishable crates
         if: matrix.os == 'ubuntu-24.04'
         run: >-
           cargo package --locked
           -p xrack-runtime -p xrack-assets -p xrack-layout
-          -p xrack-renderer-femtovg -p xrack-platform-winit
+          -p xrack-renderer-femtovg -p xrack-platform-winit -p xrack
       - name: Upload Cargo packages
         if: matrix.os == 'ubuntu-24.04'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
@@ -134,38 +134,8 @@ jobs:
         run: git diff --exit-code -- Cargo.lock
       - name: Package xrackc
         run: python tools/package_xrackc.py
-      - name: Run the standalone Cargo consumer
-        shell: python
-        run: |
-          import json
-          import os
-          from pathlib import Path
-          import shutil
-          import subprocess
-          import tarfile
-          import tempfile
-          import tomllib
-
-          runtime = Path("crates/xrack-runtime").resolve()
-          toolchain = tomllib.loads(Path("rust-toolchain.toml").read_text())["toolchain"]["channel"]
-          archive, = Path(".tools/dist").glob("xrackc-*.tar.gz")
-          with tempfile.TemporaryDirectory() as directory:
-              stage = Path(directory)
-              with tarfile.open(archive) as bundle:
-                  bundle.extractall(stage, filter="data")
-              exe = "xrackc.exe" if os.name == "nt" else "xrackc"
-              compiler = stage / archive.name.removesuffix(".tar.gz") / exe
-              app = stage / "app"
-              shutil.copytree("examples/cargo-consumer", app)
-              result = subprocess.run(
-                  ["cargo", "run", "--release", "--config",
-                   f"patch.crates-io.xrack-runtime.path={json.dumps(runtime.as_posix())}"],
-                  cwd=app, check=True, text=True, stdout=subprocess.PIPE,
-                  env={**os.environ, "XRACKC": str(compiler), "RUSTUP_TOOLCHAIN": toolchain},
-              )
-              print(result.stdout, end="")
-              if result.stdout.strip() != "count=1, doubled=2":
-                  raise SystemExit("unexpected Cargo consumer output")
+      - name: Run the standalone Cargo consumer with the bundled compiler
+        run: python tools/test_cargo_consumer.py .tools/dist ${{ matrix.target }}
       - name: Upload xrackc archive and checksum
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:

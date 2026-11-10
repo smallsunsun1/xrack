@@ -80,18 +80,77 @@ bazel build --config=lint //... //tests:gpu_test
 
 ## 在 Cargo 项目中使用 XRack
 
-生成的组件只依赖 `xrack-runtime`。需要开原生窗口时，应用另加 `xrack-platform-winit`，并调用 `xrack_platform_winit::run(MyComponent::new())`。桌面宿主会通过 Cargo 拉入布局、渲染和资源 crate。编译器 `xrackc` 是单独安装的宿主工具，生成 Rust 时使用。Cargo 不会构建 LLVM、MLIR 或 ANTLR 生成器。
+以下接入方式对应下一版 `0.1.1`。`xrack` 提供组件、模型、桌面宿主及布局、渲染和资源模块，`xrack-build` 在 Cargo 的构建阶段编译 `.xr`。
 
-[Cargo 示例](examples/cargo-consumer) 用只依赖 Rust 标准库的 `build.rs` 调用 `xrackc --cargo ui/counter.xr -o "$OUT_DIR/ui.rs"`。编译器输出 Cargo 的文件变更指令，覆盖入口、间接导入的 `.xr`、内嵌图像和字体。使用同一版本的 `xrackc` 和运行时，示例固定为 `0.1.0`。也可以预生成 `.rs` 并随应用源码提交，此时构建应用无需安装 `xrackc`。
-
-以下命令用本地运行时运行示例，适合 crate 尚未发布时验证。
+使用 Rust 1.99.1 或更新版本新建应用。
 
 ```sh
-bazel build --repo_env=CARGO_BAZEL_ISOLATED=false //:xrackc
-export XRACKC="$(bazel info bazel-bin)/crates/xrack-compiler/xrackc"
-cargo run --manifest-path examples/cargo-consumer/Cargo.toml \
-  --config "patch.crates-io.xrack-runtime.path=\"$(pwd)/crates/xrack-runtime\""
+cargo new --bin --edition 2024 hello-xrack
+cd hello-xrack
+mkdir ui
 ```
+
+把下面两段加入 `Cargo.toml`。`[dependencies]` 下只需声明 `xrack`。
+
+```toml
+[dependencies]
+xrack = "=0.1.1"
+
+[build-dependencies]
+xrack-build = "=0.1.1"
+```
+
+将界面保存为 `ui/app.xr`。
+
+```xr
+export component App inherits Window {
+    title: "Hello XRack";
+    width: 320px;
+    height: 160px;
+    in-out property <int> count: 0;
+
+    VerticalLayout {
+        padding: 16px;
+        spacing: 12px;
+        Label { text: "Count: " + root.count; }
+        increment := Button {
+            text: "Add one";
+            clicked() => { root.count += 1; }
+        }
+    }
+}
+```
+
+在 `build.rs` 中编译一个入口文件。入口可以导入其他 `.xr` 文件。
+
+```rust
+fn main() -> std::io::Result<()> {
+    xrack_build::compile("ui/app.xr")
+}
+```
+
+在 `src/main.rs` 中引入生成的组件并启动原生窗口。
+
+```rust
+xrack::include_modules!();
+
+fn main() -> Result<(), String> {
+    xrack::run(App::new())
+}
+```
+
+运行 `cargo run`。点击 **Add one** 后，绑定到 `count` 的文字会更新。修改 `.xr` 文件后重新运行 Cargo 即可看到变更。
+
+发布的 `xrack-build` 通过 Cargo 选择宿主平台的 `xrackc-bin-*` 包。编译器由 Bazel 构建，Cargo 下载并校验归档，构建脚本把可执行文件解压到 `OUT_DIR`。编译器输出 Cargo 的文件变更指令，覆盖入口、导入文件和内嵌资源。交叉编译时编译器仍在宿主机运行。
+
+[Cargo 示例](examples/cargo-consumer) 使用同一入口。框架开发者可以用 `XRACKC` 指向同版本的自定义编译器，也可以在仓库根目录通过暂存的宿主包验证默认接入。
+
+```sh
+CARGO_BAZEL_ISOLATED=false python3 tools/package_xrackc.py
+python3 tools/test_cargo_consumer.py .tools/dist aarch64-apple-darwin
+```
+
+将最后一个参数换成 `rustc -vV` 输出的宿主三元组。该命令在独立的临时目录构建示例。
 
 ### 准备发布包
 
@@ -99,18 +158,18 @@ cargo run --manifest-path examples/cargo-consumer/Cargo.toml \
 
 ```sh
 cargo package --locked -p xrack-runtime -p xrack-assets -p xrack-layout \
-  -p xrack-renderer-femtovg -p xrack-platform-winit
+  -p xrack-renderer-femtovg -p xrack-platform-winit -p xrack
 ```
 
 Cargo 会验证打包后的源码，并在发布时按依赖顺序上传这些 crate。Cargo 版桌面宿主使用上游 AccessKit，Bazel 版带有 macOS 三态复选框无障碍值修补。
 
-手动运行 [Release XRack](.github/workflows/release-crates.yml) 并输入 workspace 版本号，可执行 dry-run。正式发布时，在 `main` 上选取已合并的提交，推送与 workspace 版本一致的 tag，例如 `v0.1.0`。发布任务先验证 Cargo 包，再运行各平台 CI，核对所有 `xrackc` 归档及校验文件。随后将五个 Rust crate 发布到 crates.io，将 `xrackc` 归档和校验文件附到同一 tag 的 GitHub Release。
+手动运行 [Release XRack](.github/workflows/release-crates.yml) 并输入 workspace 版本号，可以预检运行时和门面包。正式发布时，给 `main` 上已合并的提交推送与 workspace 版本一致的 tag，例如 `v0.1.1`。发布流程跑各平台 CI，并从五份 Bazel 归档生成宿主编译器 crate。归档的 SHA-256、二进制和许可证会随编译器包验证。Cargo 先发布五个宿主编译器包，再发布运行时、`xrack` 和 `xrack-build`。同一 tag 的 GitHub Release 也提供独立的 `xrackc` 归档和校验文件。
 
-在 GitHub 的 `crates-io` 环境配置 `CARGO_REGISTRY_TOKEN` secret，并允许发布 tag 使用该环境。首次发布使用允许发布新 crate 的 token。上传中断后，可从同一次 workflow 运行重试，脚本会跳过同一提交已发布的版本。升版本时同步更新 workspace 版本、内部 crate 依赖、`xrackc` 的 Bazel 版本和 Cargo 消费示例的版本。
+在 GitHub 的 `crates-io` 环境配置 `CARGO_REGISTRY_TOKEN` secret，并允许发布 tag 使用该环境。首次发布使用允许发布新 crate 的 token。上传中断后，可从同一次 workflow 重试，脚本会校验已发布的版本及对应的源码提交。升版本时同步 workspace 版本、内部 crate 依赖、宿主包版本、Bazel 目标版本和 Cargo 消费示例。
 
 ### GitHub Actions
 
-[CI](.github/workflows/ci.yml) 在 macOS arm64、Linux x64 与 arm64、Windows x64 与 arm64 上测试 Cargo 桌面依赖栈与 Bazel 编译器。每个平台用归档中的 `xrackc` 运行仓库外 Cargo 示例。成功的任务上传对应的编译器归档和校验文件，Linux x64 任务额外上传通过 Cargo 验证的 5 个 `.crate`。真实 GPU 测试使用本地显式目标 `//tests:gpu_test`。
+[CI](.github/workflows/ci.yml) 在 macOS arm64、Linux x64 与 arm64、Windows x64 与 arm64 上测试 Cargo 桌面依赖栈与 Bazel 编译器。每个平台把编译器归档暂存为宿主 crate，再用 Cargo 运行仓库外的门面示例。成功的任务上传对应的编译器归档和校验文件，Linux x64 任务额外上传通过 Cargo 验证的运行时和门面包。真实 GPU 测试使用本地显式目标 `//tests:gpu_test`。
 
 编译器任务通过 `setup-bazel` 缓存 Bazelisk、依赖下载和编译产物。缓存按操作系统和架构隔离。依赖下载缓存跟踪 Bazel 版本、`MODULE.bazel` 和 `Cargo.lock`，编译产物缓存额外跟踪 Bazel 构建规则。Windows 编译器任务从仓库的 Actions variables 读取上述两个 Microsoft 许可变量。
 

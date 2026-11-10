@@ -1,0 +1,10 @@
+load("@rules_rust//rust:defs.bzl", "rust_library")
+
+# Bazel supplies xrackc as a tool. Compiler bundles are generated for Cargo releases.
+rust_library(
+    name = "xrack_build",
+    srcs = glob(["src/*.rs"]),
+    edition = "2024",
+    version = "0.1.1",
+    visibility = ["//visibility:public"],
+)

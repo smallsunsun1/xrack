@@ -1,0 +1,15 @@
+[package]
+name = "xrack"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+description = "Declarative native UI for Rust with XRack"
+
+[dependencies]
+xrack-runtime.workspace = true
+xrack-platform-winit.workspace = true
+xrack-layout.workspace = true
+xrack-renderer-femtovg.workspace = true
+xrack-assets.workspace = true
