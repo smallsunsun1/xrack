@@ -109,8 +109,11 @@ jobs:
             - MODULE.bazel
             - Cargo.lock
           disk-cache: true
+          # PR merge refs and release tags can restore main's cache.
+          cache-save: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
           bazelrc: |
             build --jobs=${{ runner.os == 'macOS' && '3' || '4' }}
+            build --experimental_disk_cache_gc_max_size=30G
       - name: Check Rust formatting through Bazel
         if: runner.os == 'macOS'
         run: |
