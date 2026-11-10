@@ -185,6 +185,15 @@ impl TextHistory {
         Some(record.apply(&self.expected, redo))
     }
 
+    pub(crate) fn can_replay(&self, current: &str, redo: bool) -> bool {
+        self.expected == current
+            && if redo {
+                !self.redo.is_empty()
+            } else {
+                !self.undo.is_empty()
+            }
+    }
+
     pub(crate) fn commit_replay(&mut self, text: String, redo: bool) {
         if redo {
             self.undo.push_back(self.redo.pop().unwrap());
@@ -200,6 +209,13 @@ impl TextHistory {
 pub(crate) struct EditHistories(VecDeque<(EditorKey, TextHistory)>);
 
 impl EditHistories {
+    pub(crate) fn get(&self, key: &EditorKey) -> Option<&TextHistory> {
+        self.0
+            .iter()
+            .find(|(stored, _)| stored == key)
+            .map(|(_, history)| history)
+    }
+
     pub(crate) fn entry(&mut self, key: EditorKey) -> &mut TextHistory {
         let old = self
             .0

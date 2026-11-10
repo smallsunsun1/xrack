@@ -74,6 +74,7 @@ impl FileDropScope {
             blocked: self.blocked,
         };
         let (target, local) = context.find(point, &|node, item| {
+            let point = item.map_from_window(point)?;
             accepts(node, paths).then_some(Point {
                 x: point.x - item.bounds.x,
                 y: point.y - item.bounds.y,

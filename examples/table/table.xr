@@ -9,6 +9,9 @@ export component TableDemo inherits Window {
     out property <int> selections: 0;
     out property <int> selected-count: 0;
     in property <SelectionTarget> target: rows;
+    in property <int> pinned: 0;
+    in property <bool> resize-rows: false;
+    in property <bool> show-sequence: true;
     callback sort-requested(column: int, descending: bool);
 
     VerticalLayout {
@@ -25,6 +28,10 @@ export component TableDemo inherits Window {
             row-height: 32px;
             header-height: 36px;
             resizable-columns: true;
+            resizable-rows: root.resize-rows;
+            movable-columns: true;
+            copyable: true;
+            frozen-columns: root.pinned;
             multi-select: true;
             selection-target: root.target;
             background: #223249;
@@ -43,6 +50,8 @@ export component TableDemo inherits Window {
                 }
                 Rectangle {
                     background: index % 2 == 0 ? #2b3c57 : #263750;
+                    clipboard-text: "#" + (index + 1);
+                    states [ hidden when !root.show-sequence: { visible: false; } ]
                     Text { x: 8px; y: 5px; text: "#" + (index + 1); color: #acc0db; }
                 }
             }
@@ -61,29 +70,103 @@ export struct InventoryRow {
     refreshed: Time,
 }
 
+export struct LogRow {
+    message: string,
+    severity: string,
+    height: length,
+}
+
+export component ProjectedRowsDemo inherits Window {
+    title: "XRack · 模型行高";
+    width: 660px; height: 310px;
+    background: #182331;
+    in-out property <[LogRow]> entries: [];
+    out property <length> offset: table.content-y;
+    callback set-height(int, length);
+    set-height(row, height) => { table.set-row-height(row, height); }
+    callback center-row(int);
+    center-row(row) => { table.position-view-at-index(row, center); }
+    callback grow-record();
+
+    Text { x: 16px; y: 12px; text: "记录字段提供行高 · 可拖动表格行缝"; font-size: 18px; }
+    table := StandardTableView {
+        x: 16px; y: 44px; width: 412px; height: 204px;
+        row-height: 32px; row-height-field: "height";
+        resizable-rows: true;
+        preserve-scroll-anchor: true;
+        model: root.entries;
+        TableColumn { title: "日志"; field: "message"; min-width: 200px; }
+        TableColumn { title: "级别"; field: "severity"; width: 90px; }
+    }
+    list := ListView {
+        x: 444px; y: 44px; width: 200px; height: 204px;
+        row-height-field: "height";
+        for item in root.entries : Rectangle {
+            background: item.severity == "warn" ? #405971 : #263750;
+            Text { x: 8px; y: 5px; text: item.message; }
+        }
+    }
+    locate := Button {
+        x: 16px; y: 263px; width: 162px; height: 34px;
+        text: "定位到记录 12000";
+        clicked() => { root.center-row(12000); list.position-view-at-index(12000, center); }
+    }
+    grow := Button {
+        x: 194px; y: 263px; width: 180px; height: 34px;
+        text: "改写记录中的高度";
+        clicked() => { root.grow-record(); }
+    }
+    reset := Button {
+        x: 390px; y: 263px; width: 188px; height: 34px;
+        text: "清除该行的手动高度";
+        clicked() => { root.set-height(12000, -1px); }
+    }
+}
+
 export component StandardTableDemo inherits Window {
     title: "XRack · 标准表格";
-    width: 620px; height: 380px;
+    width: root.window-width; height: 380px;
     background: #182331;
     in-out property <[InventoryRow]> inventory;
     in-out property <int> current: -1;
     in property <int> target-row: 0;
+    in property <SelectionTarget> target: rows;
+    in property <length> window-width: 620px;
+    in property <int> pinned: 0;
+    in property <bool> resize-rows: false;
     out property <int> selections: 0;
+    out property <int> moved-column: -1;
+    out property <int> moved-position: -1;
     callback sort-requested(column: int, descending: bool);
+    callback move-visible-column(int, int);
+    move-visible-column(from, to) => { inventory-table.move-column(from, to); }
+    callback set-height(int, length);
+    set-height(row, height) => { inventory-table.set-row-height(row, height); }
+    callback center-row(int);
+    center-row(row) => { inventory-table.position-view-at-index(row, center); }
 
     VerticalLayout {
         padding: 16px; spacing: 8px;
-        Text { text: "库存 · 字段投影与虚拟滚动"; font-size: 22px; }
+        Text { text: root.resize-rows ? "库存 · 拖动行缝调整高度" : "库存 · 字段投影与虚拟滚动"; font-size: 22px; }
         inventory-table := StandardTableView {
             accessible-name: "库存表";
             row-height: 32px;
             resizable-columns: true;
+            resizable-rows: root.resize-rows;
+            movable-columns: true;
+            copyable: true;
+            frozen-columns: root.pinned;
             multi-select: true;
+            selection-target: root.target;
             model: root.inventory;
             current-row <=> root.current;
             current-row-changed(index) => { root.selections += 1; }
             sort-ascending(column) => { root.sort-requested(column, false); }
             sort-descending(column) => { root.sort-requested(column, true); }
+            column-moved(column, position) => {
+                root.moved-column = column;
+                root.moved-position = position;
+            }
             TableColumn { title: "设备"; field: "name"; min-width: 160px; }
             TableColumn { title: "数量"; field: "units"; min-width: 100px; }
             TableColumn { title: "可用"; field: "available"; min-width: 100px; }
@@ -93,6 +176,7 @@ export component StandardTableDemo inherits Window {
             spacing: 12px;
             cross-axis-alignment: center;
             jump := Button { text: "跳到目标行"; clicked() => { root.current = root.target-row; } }
+            move-first := Button { text: "首列移到末尾"; clicked() => { root.move-visible-column(0, 3); } }
             Text { text: "当前索引 " + root.current + " · 用户选择 " + root.selections + " 次"; color: #b8caff; }
         }
     }

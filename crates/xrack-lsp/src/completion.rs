@@ -8,8 +8,9 @@ use crate::{
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 use xrack_ir::semantic::{
-    builtin_event, builtin_property, focus_property, is_builtin, layout_item_property,
-    state_property,
+    builtin_event, builtin_property, control_alias_type, focus_property, geometry_owner,
+    geometry_property, is_builtin, layout_item_property, state_property, viewport_kind,
+    viewport_offset_property, window_status_property,
 };
 use xrack_parser::ast::Type;
 
@@ -177,7 +178,12 @@ impl<'a> Index<'a> {
                         });
                     }
                 }
-                "callback" if matches!(scopes[current].role, Role::Component { .. }) => {
+                "callback"
+                    if matches!(
+                        scopes[current].role,
+                        Role::Component { .. } | Role::Element { .. }
+                    ) =>
+                {
                     if let Some(member) = tokens.get(i + 1).filter(|t| name(t.text)) {
                         scopes[current].members.push(Member {
                             name: member.text.into(),
@@ -557,7 +563,7 @@ fn suggest<'a>(index: &Index<'a>, scope: usize, head: &[&Token<'a>], items: &mut
                 items.words("in out in-out", KEYWORD, "transition direction");
             }
             if let Some(element) = index.element(scope) {
-                add_state_properties(index.scopes[element].role, timing, items);
+                add_state_properties(index, element, timing, items);
             }
             if let Some(component) = index.component(scope) {
                 for (i, candidate) in index.scopes.iter().enumerate() {
@@ -589,6 +595,24 @@ fn suggest<'a>(index: &Index<'a>, scope: usize, head: &[&Token<'a>], items: &mut
         }
         _ => "",
     };
+    if matches!(kind, "RadioButton" | "CheckBox" | "Switch")
+        && first == "group"
+        && head.iter().any(|token| token.text == ":")
+    {
+        if let Some(component) = index.component(scope) {
+            for (i, candidate) in index.scopes.iter().enumerate() {
+                if let Role::Element {
+                    kind: "ButtonGroup",
+                    id: Some(id),
+                } = candidate.role
+                    && index.component(i) == Some(component)
+                {
+                    items.add(id, VARIABLE, "ButtonGroup");
+                }
+            }
+        }
+        return;
+    }
     let expression = matches!(role, Role::Handler)
         || matches!(first, "if" | "for")
         || head
@@ -627,7 +651,12 @@ fn suggest<'a>(index: &Index<'a>, scope: usize, head: &[&Token<'a>], items: &mut
     if !kind.is_empty() {
         let animation = first == "animate";
         for property in catalog::PROPERTIES.split_ascii_whitespace() {
-            if focus_property(kind, property)
+            if matches!(property, "content-x" | "content-y")
+                && (animation || !viewport_offset_property(kind, property))
+                || focus_property(kind, property)
+                || kind == "ButtonGroup" && property == "check-state"
+                || kind == "Window" && window_status_property(property)
+                || geometry_property(property).is_some()
                 || (kind == "StackView"
                     && matches!(property, "current-page" | "depth" | "can-go-back"))
                 || (kind == "StackPage" && property == "visible")
@@ -651,17 +680,56 @@ fn suggest<'a>(index: &Index<'a>, scope: usize, head: &[&Token<'a>], items: &mut
         }
         if !animation {
             let instance = matches!(role, Role::Element { .. }) && !is_builtin(kind);
+            if matches!(
+                index.scopes[index.scopes[scope].parent].role,
+                Role::Element {
+                    kind: "TableRow",
+                    ..
+                }
+            ) {
+                items.add("clipboard-text", PROPERTY, "string");
+            }
+            if instance
+                && index.ancestors(scope).any(|ancestor| {
+                    matches!(
+                        index.scopes[ancestor].role,
+                        Role::Element {
+                            kind: "TableRow",
+                            ..
+                        }
+                    )
+                })
+            {
+                items.add(
+                    "clipboard-target",
+                    PROPERTY,
+                    "string · row-linked in-out property",
+                );
+                items.add(
+                    "clipboard-paste",
+                    FUNCTION,
+                    "(string) → { accepted, value }",
+                );
+            }
             if matches!(kind, "Button" | "ToolButton" | "MenuItem") {
                 items.add("action", PROPERTY, "Action id");
             }
             for member in index.members(scope, false) {
-                if (!instance && member.kind == FUNCTION)
-                    || matches!(member.visibility, "in" | "in-out")
+                if instance
+                    && member.visibility == "in-out"
+                    && let Some(ty) = &member.ty
                 {
+                    items.add(
+                        &member.name,
+                        member.kind,
+                        &format!("{} · supports two-way binding", ty.name()),
+                    );
+                } else if member.kind == FUNCTION || matches!(member.visibility, "in" | "in-out") {
                     items.member(member);
                 }
             }
             if instance {
+                items.add("states", KEYWORD, "conditional component inputs and layout");
                 return;
             }
             for event in catalog::EVENTS
@@ -696,13 +764,20 @@ fn expected_type(index: &Index<'_>, scope: usize, head: &[&Token<'_>], kind: &st
         .or_else(|| members.into_iter().find(|m| m.name == name)?.ty.clone())
 }
 
-fn add_state_properties(role: Role<'_>, timing: bool, items: &mut Items<'_>) {
+fn add_state_properties(index: &Index<'_>, owner: usize, timing: bool, items: &mut Items<'_>) {
+    let role = index.scopes[owner].role;
     let kind = match role {
         Role::Element { kind, .. } | Role::Component { base: kind, .. } => kind,
         _ => return,
     };
+    let instance = matches!(role, Role::Element { .. }) && !is_builtin(kind);
     for property in catalog::PROPERTIES.split_ascii_whitespace() {
-        if let Some(ty) = state_property(kind, property)
+        let ty = if instance {
+            layout_item_property(property)
+        } else {
+            state_property(kind, property)
+        };
+        if let Some(ty) = ty
             && (!timing
                 || matches!(
                     ty,
@@ -710,6 +785,13 @@ fn add_state_properties(role: Role<'_>, timing: bool, items: &mut Items<'_>) {
                 ))
         {
             items.add(property, PROPERTY, &ty.name());
+        }
+    }
+    if instance && !timing {
+        for member in index.members(owner, true) {
+            if matches!(member.visibility, "in" | "in-out") && member.ty.is_some() {
+                items.member(member);
+            }
         }
     }
 }
@@ -731,6 +813,17 @@ fn qualified<'a>(index: &Index<'a>, scope: usize, head: &[&Token<'a>], items: &m
         for &variant in ty.enum_variants() {
             items.add(variant, ENUM_MEMBER, first);
         }
+    }
+    if receiver.is_empty()
+        && index.ancestors(scope).any(|scope| {
+            index
+                .members(scope, false)
+                .into_iter()
+                .any(|member| member.name == first && member.ty == Some(Type::Image))
+        })
+    {
+        items.words("width height", FIELD, "read-only int");
+        return;
     }
     if let Some(mut ty @ (Type::KeyEvent | Type::KeyModifiers)) =
         index.ancestors(scope).find_map(|scope| {
@@ -773,6 +866,45 @@ fn qualified<'a>(index: &Index<'a>, scope: usize, head: &[&Token<'a>], items: &m
     let role = index.scopes[scope].role;
     if receiver.is_empty()
         && let Some(owner) = owner
+        && matches!(role, Role::State | Role::StateTransition)
+        && !head.iter().any(|token| token.text == ":")
+    {
+        add_state_properties(index, owner, matches!(role, Role::StateTransition), items);
+        return;
+    }
+    if receiver.is_empty()
+        && let Some(owner) = owner
+        && head.iter().any(|token| token.text == "<=>")
+        && head.iter().any(|token| token.text == "callback")
+    {
+        let kind = match index.scopes[owner].role {
+            Role::Element { kind, .. } | Role::Component { base: kind, .. } => kind,
+            _ => "",
+        };
+        for event in catalog::EVENTS
+            .split_ascii_whitespace()
+            .filter(|event| builtin_event(kind, event))
+        {
+            items.add(event, FUNCTION, "event");
+        }
+    }
+    if receiver.is_empty()
+        && let Some(owner) = owner
+        && head.iter().any(|token| token.text == "<=>")
+        && head.iter().any(|token| token.text == "property")
+    {
+        let kind = match index.scopes[owner].role {
+            Role::Element { kind, .. } | Role::Component { base: kind, .. } => kind,
+            _ => "",
+        };
+        for property in catalog::PROPERTIES.split_ascii_whitespace() {
+            if let Some(ty) = control_alias_type(kind, property) {
+                items.add(property, PROPERTY, &ty.name());
+            }
+        }
+    }
+    if receiver.is_empty()
+        && let Some(owner) = owner
     {
         let kind = match index.scopes[owner].role {
             Role::Element { kind, .. } | Role::Component { base: kind, .. } => kind,
@@ -783,18 +915,80 @@ fn qualified<'a>(index: &Index<'a>, scope: usize, head: &[&Token<'a>], items: &m
                 items.add(property, PROPERTY, "read-only bool");
             }
         }
+        if kind == "Window" {
+            items.words(
+                "window-active minimized minimized-known maximized full-screen",
+                PROPERTY,
+                "read-only bool",
+            );
+            if matches!(role, Role::Handler) {
+                items.words(
+                    "minimize maximize restore toggle-maximized toggle-full-screen",
+                    FUNCTION,
+                    "()",
+                );
+                items.add("set-full-screen", FUNCTION, "(bool)");
+            }
+        }
+        if kind == "ButtonGroup" {
+            items.add("check-state", PROPERTY, "CheckState · non-exclusive groups");
+            if matches!(role, Role::Handler) {
+                items.add("set-check-state", FUNCTION, "(CheckState)");
+            }
+        }
+        if geometry_owner(kind)
+            && (is_builtin(kind)
+                || index.declared_component(kind).is_some()
+                || index.imported_members.contains_key(kind))
+        {
+            items.words(
+                "layout-x layout-y layout-width layout-height window-bounds-x window-bounds-y window-bounds-width window-bounds-height",
+                PROPERTY, "read-only length",
+            );
+            items.add("layout-ready", PROPERTY, "read-only bool");
+        }
     }
     if receiver.is_empty()
         && let Some(owner) = owner
-        && matches!(role, Role::State | Role::StateTransition)
-        && !head.iter().any(|token| token.text == ":")
     {
-        add_state_properties(
-            index.scopes[owner].role,
-            matches!(role, Role::StateTransition),
-            items,
-        );
-        return;
+        let kind = match index.scopes[owner].role {
+            Role::Element { kind, .. } | Role::Component { base: kind, .. } => kind,
+            _ => "",
+        };
+        if viewport_kind(kind) {
+            items.words("visible-width visible-height", PROPERTY, "read-only length");
+            for property in ["content-x", "content-y"] {
+                let description = if viewport_offset_property(kind, property) {
+                    "effective length · supports two-way binding"
+                } else {
+                    "read-only length"
+                };
+                items.add(property, PROPERTY, description);
+            }
+            if matches!(role, Role::Handler) {
+                items.add("scroll-to", FUNCTION, "(length, length)");
+                if kind != "ScrollView" {
+                    items.add("position-view-at-index", FUNCTION, "(int, ScrollAlignment)");
+                }
+                if matches!(kind, "TableView" | "StandardTableView") {
+                    items.add("move-column", FUNCTION, "(int, int)");
+                    items.add("set-row-height", FUNCTION, "(int, length)");
+                }
+            }
+        }
+        if matches!(role, Role::Handler)
+            && matches!(
+                kind,
+                "TextInput" | "LineEdit" | "TextEdit" | "TextArea" | "SearchField" | "ComboBox"
+            )
+        {
+            items.words(
+                "select-all clear-selection undo redo cut copy paste",
+                FUNCTION,
+                "()",
+            );
+            items.add("set-selection-offsets", FUNCTION, "(int, int)");
+        }
     }
     if receiver.is_empty()
         && let Some(owner) = owner
@@ -837,15 +1031,20 @@ fn qualified<'a>(index: &Index<'a>, scope: usize, head: &[&Token<'a>], items: &m
         };
         index.record(&record).iter().collect()
     };
-    for field in receiver.into_iter().rev() {
-        let Some(Type::Record(record)) = members
+    let mut fields = receiver.into_iter().rev().peekable();
+    while let Some(field) = fields.next() {
+        match members
             .iter()
-            .find(|m| m.name == field)
-            .and_then(|m| m.ty.as_ref())
-        else {
-            return;
-        };
-        members = index.record(record).iter().collect();
+            .find(|member| member.name == field)
+            .and_then(|member| member.ty.as_ref())
+        {
+            Some(Type::Record(record)) => members = index.record(record).iter().collect(),
+            Some(Type::Image) if fields.peek().is_none() => {
+                items.words("width height", FIELD, "read-only int");
+                return;
+            }
+            _ => return,
+        }
     }
     for member in members {
         items.member(member);
@@ -855,6 +1054,17 @@ fn qualified<'a>(index: &Index<'a>, scope: usize, head: &[&Token<'a>], items: &m
 #[cfg(test)]
 mod tests {
     use super::complete;
+
+    #[test]
+    fn qualified_viewport_completion_separates_metrics_and_commands() {
+        let source = "component App inherits Window { view := ScrollView {} jump := Button { clicked() => { view.";
+        let entries = complete(source, 0, source.len(), None);
+        let has = |label| entries.iter().any(|item| item["label"] == label);
+        assert!(has("content-y"));
+        assert!(has("visible-height"));
+        assert!(has("scroll-to"));
+        assert!(!has("position-view-at-index"));
+    }
 
     #[test]
     fn key_handler_completes_nested_modifier_fields() {
@@ -885,5 +1095,29 @@ mod tests {
         let transitions = labels("in { animate tile.");
         assert!(transitions.iter().any(|label| label == "width"));
         assert!(!transitions.iter().any(|label| label == "visible"));
+    }
+
+    #[test]
+    fn instance_states_complete_public_inputs_and_layout_without_read_only_members() {
+        let source = "component Badge inherits Rectangle { in property <string> caption; out property <string> current; property <int> secret; } component App inherits Window { badge := Badge {} states [ attention when true: { ";
+        let labels = |suffix| {
+            let text = format!("{source}{suffix}");
+            complete(&text, 0, text.len(), None)
+                .into_iter()
+                .map(|item| item["label"].as_str().unwrap().to_owned())
+                .collect::<Vec<_>>()
+        };
+        let properties = labels("badge.");
+        for name in ["caption", "width"] {
+            assert!(properties.iter().any(|label| label == name));
+        }
+        for name in ["secret", "current", "layout-width"] {
+            assert!(!properties.iter().any(|label| label == name));
+        }
+        assert!(
+            !labels("in { animate badge.")
+                .iter()
+                .any(|label| label == "caption")
+        );
     }
 }

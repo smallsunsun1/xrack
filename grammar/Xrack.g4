@@ -16,10 +16,10 @@ stateDecl: identifier ('when' expression)? ':' '{' (stateBinding | stateTransiti
 stateBinding: reference ':' expression ';';
 stateTransition: ('in' | 'out' | 'in-out') '{' transitionAnimation* '}';
 transitionAnimation: 'animate' (reference (',' reference)* | '*') animationBody;
-property: visibility? 'property' '<' typeName '>' identifier (':' expression)? ';';
+property: visibility? 'property' '<' typeName '>' identifier (':' expression | '<=>' reference)? ';';
 visibility: 'in' | 'out' | 'in-out' | 'private';
 typeName: identifier | '[' identifier ']';
-callback: 'pure'? 'callback' identifier ('(' (parameter (',' parameter)* ','?)? ')' ('->' typeName)?)? ';';
+callback: 'pure'? 'callback' identifier ('<=>' reference | '(' (parameter (',' parameter)* ','?)? ')' ('->' typeName)?)? ';';
 parameter: (identifier ':')? typeName;
 binding: identifier (':' expression | '<=>' reference) ';';
 handler: identifier ('(' (identifier (',' identifier)*)? ')')? '=>' '{' statement* (expression ';'?)? '}';
@@ -43,7 +43,9 @@ call: reference '(' (expression (',' expression)* ','?)? ')';
 arrayLiteral: '[' (expression (',' expression)* ','?)? ']';
 recordLiteral: identifier '{' (recordValue (',' recordValue)* ','?)? '}';
 recordValue: identifier ':' expression;
-imageUrl: '@image-url' '(' STRING ')';
+imageUrl: '@image-url' '(' STRING (',' imageSlice)? ')';
+imageSlice: IDENT '(' imageEdge+ ')';
+imageEdge: NUMBER;
 markdown: '@markdown' '(' STRING ')';
 gradient: ('@linear-gradient' '(' gradientAngle | '@radial-gradient' '(' 'circle')
           ',' gradientStop (',' gradientStop)* ')';

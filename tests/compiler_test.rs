@@ -10,6 +10,257 @@ fn analyze(source: &str) -> Result<ir::Module, String> {
 }
 
 #[test]
+fn non_exclusive_button_groups_verify_members_reads_and_effects() {
+    let source = r#"
+        component App inherits Window {
+            in property <bool> choice-mode: false;
+            out property <CheckState> status: checks.check-state;
+            checks := ButtonGroup { exclusive: false; }
+            master := CheckBox { check-state <=> checks.check-state; }
+            CheckBox { group: checks; text: "Option"; }
+            Switch { group: checks; text: "Switch"; }
+            callback clear();
+            clear() => { checks.set-check-state(CheckState.unchecked); }
+        }
+    "#;
+    let compiled = compile(source, "check-groups.xr").unwrap();
+    assert_eq!(compiled.mlir.matches("\"xr.check_group_ref\"").count(), 2);
+    assert!(compiled.mlir.contains("\"xr.check_group_read\""));
+    assert!(compiled.mlir.contains("\"xr.check_group_command\""));
+    assert!(compiled.rust.to_string().contains("summarize_checks"));
+    for (from, to, expected) in [
+        (
+            "exclusive: false",
+            "exclusive: root.choice-mode",
+            "requires a literal bool",
+        ),
+        (
+            "Switch { group: checks",
+            "RadioButton { group: checks",
+            "requires an exclusive ButtonGroup",
+        ),
+        (
+            "exclusive: false;",
+            "exclusive: false; current-index: 0;",
+            "require an exclusive ButtonGroup",
+        ),
+        (
+            "group: checks; text: \"Option\"",
+            "group: checks; check-state: CheckState.checked; text: \"Option\"",
+            "require writable check-state",
+        ),
+        (
+            "master := CheckBox {",
+            "master := CheckBox { group: checks;",
+            "cyclic property binding",
+        ),
+        (
+            "group: checks; text: \"Option\"",
+            "group: checks; checked: checks.check-state == CheckState.checked;",
+            "cyclic property binding",
+        ),
+        (
+            "callback clear();",
+            "pure callback clear();",
+            "not allowed in a pure callback",
+        ),
+        (
+            "set-check-state(CheckState.unchecked)",
+            "set-check-state(true)",
+            "type mismatch",
+        ),
+        (
+            "checks.set-check-state(CheckState.unchecked)",
+            "checks.check-state = CheckState.unchecked",
+            "read-only",
+        ),
+    ] {
+        let error = compile(&source.replacen(from, to, 1), "check-groups.xr")
+            .err()
+            .unwrap();
+        assert!(error.contains(expected), "{error}");
+    }
+    let raw = lower(source, "check-groups.xr");
+    let wrong_property = raw.replace("property = \"checked\"", "property = \"check-state\"");
+    assert!(
+        mlir::process(&wrong_property)
+            .unwrap_err()
+            .contains("incorrect check group member property")
+    );
+    let wrong_owner = raw.replace("group = \"checks\"", "group = \"master\"");
+    assert!(
+        mlir::process(&wrong_owner)
+            .unwrap_err()
+            .contains("non-exclusive ButtonGroup")
+    );
+}
+
+#[test]
+fn button_group_membership_is_a_verified_reference_with_typed_selection() {
+    let source = r#"
+        export component App inherits Window {
+            in-out property <string> mode: "quick";
+            in property <bool> show-detail: true;
+            modes := ButtonGroup { current-value <=> root.mode; selected(value) => { } }
+            HorizontalLayout {
+                RadioButton { group: modes; value: "quick"; text: "Quick"; }
+                VerticalLayout {
+                    if root.show-detail : RadioButton { group: modes; value: "detail"; text: "Detailed"; }
+                }
+            }
+        }
+    "#;
+    let compiled = compile(source, "button-group.xr").unwrap();
+    assert_eq!(compiled.mlir.matches("\"xr.radio_group_ref\"").count(), 2);
+    assert!(compiled.rust.to_string().contains("bind_button_group"));
+    for (from, to, expected) in [
+        ("group: modes", "group: missing", "id of a ButtonGroup"),
+        ("group: modes", "group: \"modes\"", "id of a ButtonGroup"),
+        ("value: \"quick\"", "value: 1", "type mismatch"),
+        (
+            "current-value <=> root.mode;",
+            "current-value <=> root.mode; current-index: 0;",
+            "either current-index or current-value",
+        ),
+    ] {
+        let error = compile(&source.replacen(from, to, 1), "button-group.xr")
+            .err()
+            .unwrap();
+        assert!(error.contains(expected), "{error}");
+    }
+    let raw = lower(source, "button-group.xr").replace("group = \"modes\"", "group = \"missing\"");
+    assert!(
+        mlir::process(&raw)
+            .unwrap_err()
+            .contains("a ButtonGroup in the same component")
+    );
+    let nested = "component App inherits Window { VerticalLayout { modes := ButtonGroup {} } }";
+    assert!(
+        compile(nested, "button-group.xr")
+            .err()
+            .unwrap()
+            .contains("at the component root")
+    );
+    let double_group = "component App inherits Window { modes := ButtonGroup {} RadioGroup { RadioButton { group: modes; } } }";
+    assert!(
+        compile(double_group, "button-group.xr")
+            .err()
+            .unwrap()
+            .contains("already belongs to its parent RadioGroup")
+    );
+}
+
+#[test]
+fn native_window_status_and_commands_have_verified_types_and_scope() {
+    let source = r#"
+        export component App inherits Window {
+            in property <bool> fullscreen-request: true;
+            out property <bool> actual-fullscreen: root.full-screen;
+            callback update();
+            update() => { root.maximize(); root.set-full-screen(root.fullscreen-request); }
+            restore-button := Button { clicked => { root.restore(); } }
+        }
+    "#;
+    let compiled = compile(source, "window-commands.xr").unwrap();
+    assert_eq!(compiled.mlir.matches("\"xr.window_command\"").count(), 3);
+    assert!(compiled.mlir.contains("\"xr.window_read\""));
+    assert!(
+        compiled
+            .rust
+            .to_string()
+            .contains("WindowCommand :: SetFullScreen")
+    );
+    for (from, to, expected) in [
+        (
+            "set-full-screen(root.fullscreen-request)",
+            "set-full-screen(1)",
+            "type mismatch",
+        ),
+        (
+            "root.maximize()",
+            "root.maximize(true)",
+            "takes no arguments",
+        ),
+        (
+            "callback update();",
+            "pure callback update();",
+            "not allowed in a pure callback",
+        ),
+        ("root.maximize()", "root.maximized = true", "read-only"),
+        (
+            "callback update();",
+            "maximized: true; callback update();",
+            "read-only",
+        ),
+    ] {
+        let error = compile(&source.replace(from, to), "window-commands.xr")
+            .err()
+            .unwrap();
+        assert!(error.contains(expected), "{error}");
+    }
+    let raw = lower(source, "window-commands.xr");
+    let wrong_args = raw.replace("command = \"set-full-screen\"", "command = \"minimize\"");
+    assert!(
+        mlir::process(&wrong_args)
+            .unwrap_err()
+            .contains("invalid window command or arguments")
+    );
+    let wrong_scope = raw.replace("kind = \"Window\"", "kind = \"Rectangle\"");
+    assert!(
+        mlir::process(&wrong_scope)
+            .unwrap_err()
+            .contains("root Window")
+    );
+}
+
+#[test]
+fn frameless_window_properties_are_typed_in_source_and_mlir() {
+    let source = r#"component App inherits Window {
+        no-frame: true;
+        resizable: false;
+        resize-border-width: 8px;
+        WindowMoveArea { enabled: true; Text { text: "Header"; } }
+    }"#;
+    let compiled = compile(source, "frameless.xr").unwrap();
+    assert!(compiled.mlir.contains("kind = \"WindowMoveArea\""));
+    let raw = lower(source, "frameless.xr");
+    assert!(
+        mlir::process(&raw.replace("name = \"no-frame\"", "name = \"resize-border-width\""))
+            .unwrap_err()
+            .contains("incorrect window chrome property or type")
+    );
+    for (from, to) in [
+        ("no-frame: true", "no-frame: 1"),
+        ("resize-border-width: 8px", "resize-border-width: 8%"),
+        ("enabled: true", "enabled: 1"),
+    ] {
+        let error = compile(&source.replace(from, to), "frameless.xr")
+            .err()
+            .unwrap();
+        assert!(error.contains("type mismatch"), "{error}");
+    }
+}
+
+#[test]
+fn context_menu_opt_out_requires_a_typed_editor_property() {
+    let source = "component App inherits Window { LineEdit { context-menu-enabled: false; } }";
+    let compiled = compile(source, "editor-menu.xr").unwrap();
+    assert!(compiled.mlir.contains("name = \"context-menu-enabled\""));
+    assert!(
+        compile(&source.replace("false", "1"), "editor-menu.xr")
+            .err()
+            .unwrap()
+            .contains("type mismatch")
+    );
+    let raw = lower(source, "editor-menu.xr").replace("kind = \"LineEdit\"", "kind = \"Button\"");
+    assert!(
+        mlir::process(&raw)
+            .unwrap_err()
+            .contains("context-menu-enabled requires a boolean on a text editor")
+    );
+}
+
+#[test]
 fn compiler_errors_retain_source_diagnostics() {
     let Err(CompilerError::Diagnostics {
         filename,
@@ -21,6 +272,734 @@ fn compiler_errors_retain_source_diagnostics() {
     assert_eq!(filename, "bad.xr");
     assert_eq!(diagnostics[0].span.line, 1);
     assert!(diagnostics[0].message.contains("type mismatch"));
+}
+
+#[test]
+fn viewport_metrics_and_scroll_commands_are_typed_and_verified() {
+    let source = r#"export component Demo inherits Window {
+        out property <length> offset: view.content-y;
+        view := ScrollView {}
+        list := ListView { for item in 100 : Text { text: "Row " + item; } }
+        jump := Button { clicked() => {
+            view.scroll-to(24px, 48px);
+            list.position-view-at-index(40, ScrollAlignment.center);
+        } }
+    }"#;
+    let compiled = compile(source, "scroll.xr").unwrap();
+    assert!(compiled.mlir.contains("\"xr.viewport_read\""));
+    assert!(compiled.mlir.contains("\"xr.scroll_command\""));
+    assert!(compiled.mlir.contains("!xr.scrollalignment"));
+    assert!(
+        compiled
+            .rust
+            .to_string()
+            .contains("ScrollAction :: ToIndex")
+    );
+    for (from, to, diagnostic) in [
+        (
+            "view.scroll-to(24px, 48px)",
+            "view.scroll-to(24, 48px)",
+            "type mismatch",
+        ),
+        (
+            "list.position-view-at-index",
+            "view.position-view-at-index",
+            "requires a list",
+        ),
+        (
+            "view.scroll-to(24px, 48px)",
+            "view.content-y = 48px",
+            "read-only",
+        ),
+        (
+            "view := ScrollView {}",
+            "view := ScrollView { visible-height: 4px; }",
+            "read-only",
+        ),
+    ] {
+        let invalid = source.replace(from, to);
+        assert!(
+            compile(&invalid, "scroll.xr")
+                .err()
+                .unwrap()
+                .contains(diagnostic)
+        );
+    }
+    let pure = r#"component Demo inherits Window {
+        view := ScrollView {}
+        pure callback jump() -> int;
+        jump() => { view.scroll-to(0px, 0px); 0 }
+    }"#;
+    assert!(
+        compile(pure, "scroll.xr")
+            .err()
+            .unwrap()
+            .contains("scroll commands are not allowed in a pure callback")
+    );
+    let repeated = r#"component Demo inherits Window {
+        for item in 3 : ScrollView { content-width: self.visible-width; }
+    }"#;
+    assert!(
+        compile(repeated, "scroll.xr")
+            .err()
+            .unwrap()
+            .contains("requires a component delegate")
+    );
+
+    let raw = lower(source, "scroll.xr");
+    let invalid = raw.replace(
+        "method = \"scroll-to\"",
+        "method = \"position-view-at-index\"",
+    );
+    assert!(
+        mlir::process(&invalid)
+            .unwrap_err()
+            .contains("position-view-at-index(int, ScrollAlignment)")
+    );
+    let invalid = raw.replace(
+        "owner = \"view\", value = \"content-y\"",
+        "owner = \"jump\", value = \"content-y\"",
+    );
+    assert!(
+        mlir::process(&invalid)
+            .unwrap_err()
+            .contains("requires a scrollable element")
+    );
+}
+
+#[test]
+fn custom_clipboard_parsers_require_a_pure_typed_projection_to_a_row_link() {
+    let source = r#"
+        struct Parsed { accepted: bool, value: string }
+        component Demo inherits Window {
+            in-out property <[string]> names: ["one"];
+            pure callback decode(string) -> Parsed;
+            decode(raw) => { Parsed { accepted: raw != "", value: raw } }
+            TableView {
+                pasteable: true;
+                TableColumn { title: "Name"; }
+                for row[index] in root.names : TableRow {
+                    HorizontalLayout {
+                        Editor {
+                            value <=> row;
+                            clipboard-target: "value";
+                            clipboard-paste(raw) => { root.decode(raw) }
+                        }
+                    }
+                }
+            }
+        }
+        component Editor inherits Rectangle { in-out property <string> value; }
+    "#;
+    let compiled = compile(source, "custom-clipboard.xr").unwrap();
+    assert!(compiled.mlir.contains("\"xr.clipboard_paste\""));
+    assert!(compiled.mlir.contains("target = \"value\""));
+    for (from, to, expected) in [
+        (
+            "value <=> row",
+            "value: row",
+            "must name an in-out property linked",
+        ),
+        (
+            "clipboard-paste(raw)",
+            "clipboard-paste(index)",
+            "must differ from the row",
+        ),
+        ("root.decode(raw)", "raw", "must return a record"),
+        ("pure callback decode", "callback decode", "impure callback"),
+        (
+            "clipboard-target: \"value\";",
+            "",
+            "requires clipboard-target",
+        ),
+    ] {
+        let error = analyze(&source.replace(from, to)).unwrap_err();
+        assert!(error.contains(expected), "{error}");
+    }
+    let raw = lower(source, "custom-clipboard.xr");
+    let invalid = raw.replace(
+        "target = \"value\", text_parameter",
+        "target = \"missing\", text_parameter",
+    );
+    assert!(
+        mlir::process(&invalid)
+            .unwrap_err()
+            .contains("requires a component input linked to a table model row")
+    );
+}
+
+#[test]
+fn row_component_delegates_share_typed_repeat_context_and_validate_clipboard_text() {
+    let source = r#"component Demo inherits Window {
+        in-out property <[string]> names: ["one"];
+        out property <int> committed: -1;
+        TableView {
+            copyable: true;
+            TableColumn { title: "Name"; }
+            for row[index] in root.names : TableRow {
+                Editor {
+                    value <=> row;
+                    clipboard-text: row;
+                    submitted => { root.committed = index; }
+                }
+            }
+        }
+    }
+    component Editor inherits Rectangle {
+        in-out property <string> value;
+        callback submitted;
+    }"#;
+    let compiled = compile(source, "row-delegate.xr").unwrap();
+    assert!(compiled.mlir.contains("\"xr.instance_link\""));
+    assert!(compiled.mlir.contains("name = \"clipboard-text\""));
+    assert!(compiled.rust.to_string().contains("ComponentRepeater"));
+    assert!(
+        analyze(&source.replace("clipboard-text: row", "clipboard-text: index"))
+            .unwrap_err()
+            .contains("type mismatch")
+    );
+    assert!(
+        analyze(&source.replace(
+            "Editor {\n                    value",
+            "named := Editor {\n                    value"
+        ))
+        .unwrap_err()
+        .contains("anonymous instance")
+    );
+    let raw = lower(source, "row-delegate.xr");
+    let invalid = raw.replace(
+        "name = \"names\", visibility = \"in-out\"",
+        "name = \"names\", visibility = \"in\"",
+    );
+    assert!(
+        mlir::process(&invalid)
+            .unwrap_err()
+            .contains("cannot write read-only property")
+    );
+}
+
+#[test]
+fn table_copy_projections_are_typed_and_scoped_to_direct_cells() {
+    let source = r#"component Demo inherits Window {
+        outside := Text { text: "Other"; }
+        TableView {
+            copyable: true;
+            TableColumn { title: "Label"; }
+            for row in 3 : TableRow {
+                Rectangle { clipboard-text: "Row " + row; Text { text: "Shown"; } }
+            }
+        }
+    }"#;
+    let compiled = compile(source, "table-copy.xr").unwrap();
+    assert!(compiled.mlir.contains("name = \"clipboard-text\""));
+    assert!(compiled.rust.to_string().contains("copy_table_text"));
+    let invalid = source.replace("clipboard-text: \"Row \" + row", "clipboard-text: row");
+    assert!(
+        compile(&invalid, "table-copy.xr")
+            .err()
+            .unwrap()
+            .contains("type mismatch")
+    );
+    let invalid = source.replace("text: \"Other\"", "clipboard-text: \"Other\"");
+    assert!(
+        compile(&invalid, "table-copy.xr")
+            .err()
+            .unwrap()
+            .contains("direct table cell")
+    );
+    let raw = lower(source, "table-copy.xr");
+    let invalid = raw.replacen("name = \"text\"", "name = \"clipboard-text\"", 1);
+    assert!(
+        mlir::process(&invalid)
+            .unwrap_err()
+            .contains("direct table cell")
+    );
+}
+
+#[test]
+fn table_paste_compiles_writable_row_links_and_checks_the_flag_type() {
+    let source = r#"component Demo inherits Window {
+        in-out property <[string]> names: ["One", "Two"];
+        TableView {
+            row-height: 32px;
+            pasteable: true;
+            TableColumn { title: "Name"; }
+            for name in root.names : TableRow {
+                TableCell { text <=> name; }
+            }
+        }
+    }"#;
+    let compiled = compile(source, "table-paste.xr").unwrap();
+    assert!(compiled.mlir.contains("name = \"pasteable\""));
+    assert!(compiled.mlir.contains("xr.row_link"));
+    let rust = compiled.rust.to_string();
+    assert!(rust.contains("TablePasteHistory"));
+    assert!(rust.contains("replay_table_paste_at"));
+    let invalid = source.replace("pasteable: true", "pasteable: 1");
+    assert!(
+        compile(&invalid, "table-paste.xr")
+            .err()
+            .unwrap()
+            .contains("type mismatch")
+    );
+    let raw = lower(source, "table-paste.xr");
+    let invalid = raw.replacen("name = \"row-height\"", "name = \"pasteable\"", 1);
+    assert!(
+        mlir::process(&invalid)
+            .unwrap_err()
+            .contains("pasteable requires a boolean on a TableView")
+    );
+}
+
+#[test]
+fn layout_geometry_reads_are_typed_and_only_flow_into_later_layout_phases() {
+    let source = r#"component Demo inherits Window {
+        out property <length> measured: panel.layout-width;
+        out property <bool> ready: panel.layout-ready;
+        pure callback metric() -> length;
+        metric => { root.measured }
+        panel := Rectangle { width: 120px; height: 40px; }
+        label := Text { width: 280px; height: 20px; text: "width " + (root.metric() / 1px); }
+        button := Button {
+            details := PopupWindow { width: panel.layout-width; height: 36px; }
+        }
+    }"#;
+    let compiled = compile(source, "geometry.xr").unwrap();
+    assert!(compiled.mlir.contains("\"xr.geometry_read\""));
+    assert!(
+        compiled
+            .rust
+            .to_string()
+            .contains("GeometryMetric :: LayoutWidth")
+    );
+    for (from, to) in [
+        ("width: 120px", "width: root.metric()"),
+        ("width: 280px; height: 20px;", ""),
+        ("width: panel.layout-width;", "width: details.layout-width;"),
+    ] {
+        let error = analyze(&source.replace(from, to)).unwrap_err();
+        assert!(error.contains("layout feedback"), "{error}");
+    }
+    let cross_component = r#"component App inherits Window {
+        panel := Rectangle { width: 120px; }
+        peer := Peer { size: panel.layout-width; }
+    }
+    component Peer inherits Rectangle {
+        in property <length> size;
+        width: root.size;
+    }"#;
+    assert!(
+        analyze(cross_component)
+            .unwrap_err()
+            .contains("layout feedback")
+    );
+    let read_only = source.replace("width: 120px;", "layout-width: 120px;");
+    assert!(analyze(&read_only).unwrap_err().contains("read-only"));
+    let raw = lower(source, "geometry.xr");
+    let malformed = raw.replace(
+        "value = \"layout-ready\"",
+        "value = \"window-bounds-width\"",
+    );
+    assert!(
+        mlir::process(&malformed)
+            .unwrap_err()
+            .contains("requires a typed layout geometry")
+    );
+    let feedback = raw.replace(
+        "owner = \"panel\", value = \"layout-width\"",
+        "owner = \"details\", value = \"layout-width\"",
+    );
+    assert!(
+        mlir::process(&feedback)
+            .unwrap_err()
+            .contains("layout feedback")
+    );
+}
+
+#[test]
+fn editor_commands_keep_order_and_verify_operands_and_purity() {
+    let source = r#"component Demo inherits Window {
+        callback edit-range(int, int);
+        edit-range(anchor, caret) => {
+            entry.focus();
+            entry.set-selection-offsets(anchor, caret);
+            entry.paste();
+        }
+        entry := TextArea { text: "任务"; }
+        other := Button { text: "编辑"; }
+    }"#;
+    let compiled = compile(source, "editor-commands.xr").unwrap();
+    let focus = compiled.mlir.find("\"xr.focus_command\"").unwrap();
+    let selection = compiled
+        .mlir
+        .find("method = \"set-selection-offsets\"")
+        .unwrap();
+    let paste = compiled.mlir.find("method = \"paste\"").unwrap();
+    assert!(focus < selection && selection < paste);
+    assert!(
+        compiled
+            .rust
+            .to_string()
+            .contains("TextCommand :: SetSelection")
+    );
+
+    let invalid = source.replace(
+        "set-selection-offsets(anchor, caret)",
+        "set-selection-offsets(anchor, true)",
+    );
+    assert!(
+        compile(&invalid, "editor-commands.xr")
+            .err()
+            .unwrap()
+            .contains("type mismatch")
+    );
+    let invalid = source
+        .replace("callback edit-range", "pure callback edit-range")
+        .replace("entry.focus();", "");
+    assert!(
+        compile(&invalid, "editor-commands.xr")
+            .err()
+            .unwrap()
+            .contains("text commands are not allowed in a pure callback")
+    );
+
+    let raw = lower(source, "editor-commands.xr");
+    let invalid = raw.replace("method = \"set-selection-offsets\"", "method = \"paste\"");
+    assert!(
+        mlir::process(&invalid)
+            .unwrap_err()
+            .contains("requires set-selection-offsets(int, int)")
+    );
+    let invalid = raw.replace(
+        "method = \"paste\", owner = \"entry\"",
+        "method = \"paste\", owner = \"other\"",
+    );
+    assert!(
+        mlir::process(&invalid)
+            .unwrap_err()
+            .contains("requires a statically addressed editor")
+    );
+}
+
+#[test]
+fn projected_row_heights_require_constant_length_fields_in_source_and_mlir() {
+    let source = r#"struct Metric { label: string, height: length, id: int, parent: int }
+    component Demo inherits Window {
+        property <[Metric]> rows;
+        property <string> field-name: "height";
+        StandardTableView {
+            model: root.rows;
+            row-height-field: "height";
+            TableColumn { field: "label"; }
+        }
+        StandardListView { model: root.rows; text-role: "label"; row-height-field: "height"; }
+        ListView { row-height-field: "height"; for item in root.rows : Text { text: item.label; } }
+        TableView {
+            row-height-field: "height";
+            TableColumn { title: "Name"; }
+            for item in root.rows : TableRow { Text { text: item.label; } }
+        }
+        TreeView {
+            row-height-field: "height";
+            for item in root.rows : TreeRow { key: item.id; parent-key: item.parent; Text { text: item.label; } }
+        }
+    }"#;
+    let compiled = compile(source, "height-field.xr").unwrap();
+    assert_eq!(
+        compiled.mlir.matches("name = \"row-height-field\"").count(),
+        5
+    );
+    assert!(compiled.rust.to_string().contains("RowHeightProjection"));
+    for (from, to, diagnostic) in [
+        (
+            "row-height-field: \"height\"",
+            "row-height-field: \"label\"",
+            "length field",
+        ),
+        (
+            "row-height-field: \"height\"",
+            "row-height-field: root.field-name",
+            "constant string",
+        ),
+        ("model: root.rows", "model: [\"text\"]", "record model"),
+    ] {
+        let invalid = source.replace(from, to);
+        assert!(
+            compile(&invalid, "height-field.xr")
+                .err()
+                .unwrap()
+                .contains(diagnostic)
+        );
+    }
+    let raw = lower(source, "height-field.xr");
+    let invalid = raw
+        .lines()
+        .map(|line| {
+            if line.contains("\"xr.literal\"") && line.contains("height") {
+                line.replace("height", "label")
+            } else {
+                line.to_owned()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        mlir::process(&invalid)
+            .unwrap_err()
+            .contains("requires a length field")
+    );
+}
+
+#[test]
+fn table_row_heights_lower_to_a_typed_layout_effect() {
+    let source = r#"component Demo inherits Window {
+        other := Rectangle {}
+        table := TableView {
+            resizable-rows: true;
+            TableColumn { title: "Name"; }
+            for entry in 3 : TableRow { Text { text: "Row " + entry; } }
+        }
+        resize := Button { clicked() => { table.set-row-height(1, 64px); } }
+    }"#;
+    let compiled = compile(source, "row-height.xr").unwrap();
+    assert!(compiled.mlir.contains("\"xr.set_row_height\""));
+    assert!(compiled.rust.to_string().contains("RowHeightOverrides"));
+    let invalid = source.replace("1, 64px", "1, true");
+    assert!(
+        compile(&invalid, "row-height.xr")
+            .err()
+            .unwrap()
+            .contains("type mismatch")
+    );
+    let raw = lower(source, "row-height.xr");
+    let invalid = raw.replace("owner = \"table\"", "owner = \"other\"");
+    assert!(
+        mlir::process(&invalid)
+            .unwrap_err()
+            .contains("requires a statically addressed table")
+    );
+}
+
+#[test]
+fn frozen_columns_are_typed_on_tables_only() {
+    let source = r#"struct Entry { label: string }
+    component Demo inherits Window {
+        property <[Entry]> rows;
+        StandardTableView {
+            model: root.rows;
+            enabled: true;
+            frozen-columns: 1;
+            TableColumn { field: "label"; }
+        }
+    }"#;
+    let compiled = compile(source, "frozen-columns.xr").unwrap();
+    assert!(compiled.mlir.contains("name = \"frozen-columns\""));
+    let invalid = source.replace(": 1", ": true");
+    assert!(
+        compile(&invalid, "frozen-columns.xr")
+            .err()
+            .unwrap()
+            .contains("type mismatch")
+    );
+    let raw = lower(source, "frozen-columns.xr");
+    let invalid = raw.replace("name = \"enabled\"", "name = \"frozen-columns\"");
+    assert!(
+        mlir::process(&invalid)
+            .unwrap_err()
+            .contains("frozen-columns requires an integer on a table")
+    );
+    assert!(
+        compile(
+            "component Demo inherits Window { ScrollView { frozen-columns: 1; } }",
+            "frozen-columns.xr"
+        )
+        .err()
+        .unwrap()
+        .contains("unknown property")
+    );
+}
+
+#[test]
+fn moving_table_columns_is_a_typed_effect_and_event() {
+    let source = r#"component Demo inherits Window {
+        outside := Rectangle {}
+        table := TableView {
+            movable-columns: true;
+            column-moved(column, visual) => {}
+            TableColumn { title: "A"; }
+            TableColumn { title: "B"; }
+            for value in 3 : TableRow { Text {} Text {} }
+        }
+        move := Button { clicked() => { table.move-column(0, 1); } }
+    }"#;
+    let compiled = compile(source, "column-order.xr").unwrap();
+    assert!(compiled.mlir.contains("\"xr.move_column\""));
+    assert!(compiled.mlir.contains("name = \"column-moved\""));
+    for (from, to, error) in [
+        (
+            "movable-columns: true",
+            "movable-columns: 2",
+            "type mismatch",
+        ),
+        (
+            "column-moved(column, visual)",
+            "column-moved(column)",
+            "two int parameters",
+        ),
+        ("move-column(0, 1)", "move-column(0px, 1)", "type mismatch"),
+    ] {
+        let wrong = source.replace(from, to);
+        assert!(
+            compile(&wrong, "column-order.xr")
+                .err()
+                .unwrap()
+                .contains(error)
+        );
+    }
+    let raw = lower(source, "column-order.xr");
+    let invalid = raw.replace("owner = \"table\"", "owner = \"outside\"");
+    assert!(
+        mlir::process(&invalid)
+            .unwrap_err()
+            .contains("requires a statically addressed table")
+    );
+}
+
+#[test]
+fn scroll_anchoring_is_a_boolean_for_virtual_views() {
+    let source = "component Demo inherits Window { ListView { preserve-scroll-anchor: true; for row in 3 : Rectangle {} } }";
+    let compiled = compile(source, "anchor.xr").unwrap();
+    assert!(compiled.mlir.contains("name = \"preserve-scroll-anchor\""));
+    assert!(compiled.rust.to_string().contains("ListRowLocator"));
+    let wrong = source.replace("true", "24px");
+    assert!(
+        compile(&wrong, "anchor.xr")
+            .err()
+            .unwrap()
+            .contains("type mismatch")
+    );
+    let raw = lower(
+        "component Demo inherits Window { StandardListView { preserve-scroll-anchor: true; } }",
+        "anchor.xr",
+    );
+    let invalid = raw.replace("kind = \"StandardListView\"", "kind = \"ScrollView\"");
+    assert!(
+        mlir::process(&invalid)
+            .unwrap_err()
+            .contains("scroll anchoring requires a boolean on a virtual view")
+    );
+    let wrong = "component Demo inherits Window { ScrollView { preserve-scroll-anchor: true; } }";
+    assert!(
+        compile(wrong, "anchor.xr")
+            .err()
+            .unwrap()
+            .contains("unknown property")
+    );
+}
+
+#[test]
+fn mouse_drag_pan_is_a_boolean_viewport_binding() {
+    let source = "component Demo inherits Window { ScrollView { mouse-drag-pan-enabled: true; } }";
+    let compiled = compile(source, "mouse-pan.xr").unwrap();
+    assert!(compiled.mlir.contains("name = \"mouse-drag-pan-enabled\""));
+    let wrong_type = source.replace("true", "12px");
+    assert!(
+        compile(&wrong_type, "mouse-pan.xr")
+            .err()
+            .unwrap()
+            .contains("type mismatch")
+    );
+    let invalid =
+        lower(source, "mouse-pan.xr").replace("kind = \"ScrollView\"", "kind = \"Rectangle\"");
+    assert!(
+        mlir::process(&invalid)
+            .unwrap_err()
+            .contains("mouse drag panning requires a boolean on a viewport")
+    );
+}
+
+#[test]
+fn viewport_offset_bindings_require_writable_lengths_and_reject_feedback_cycles() {
+    let source = r#"export component Demo inherits Window {
+        in-out property <length> shared: -24px;
+        first := ScrollView { content-y <=> root.shared; }
+        second := ScrollView { content-y: root.shared; }
+    }"#;
+    let compiled = compile(source, "offset-link.xr").unwrap();
+    assert!(compiled.mlir.contains("\"xr.control_link\""));
+    assert!(compiled.rust.to_string().contains("bind_offset"));
+    for (from, to, diagnostic) in [
+        ("in-out property", "in property", "read-only"),
+        (
+            "<length> shared: -24px",
+            "<int> shared: -24",
+            "writable length",
+        ),
+        (
+            "content-y <=> root.shared;",
+            "content-x <=> root.shared; content-y <=> root.shared;",
+            "distinct writable",
+        ),
+        ("-24px", "first.content-y", "cyclic property binding"),
+        (
+            "content-y: root.shared;",
+            "content-y: self.content-y;",
+            "cyclic property binding",
+        ),
+    ] {
+        let invalid = source.replace(from, to);
+        assert!(
+            compile(&invalid, "offset-link.xr")
+                .err()
+                .unwrap()
+                .contains(diagnostic)
+        );
+    }
+    let raw = lower(source, "offset-link.xr");
+    let invalid = raw.replacen("name = \"content-y\"", "name = \"visible-height\"", 1);
+    assert!(
+        mlir::process(&invalid)
+            .unwrap_err()
+            .contains("requires a writable property reference")
+    );
+}
+
+#[test]
+fn scrolled_is_a_zero_argument_viewport_event_in_source_and_mlir() {
+    let source = r#"export component Demo inherits ScrollView {
+        out property <length> last: 0px;
+        scrolled() => { root.last = self.content-y; }
+    }"#;
+    let compiled = compile(source, "scrolled.xr").unwrap();
+    assert!(compiled.mlir.contains("name = \"scrolled\""));
+    assert!(
+        compiled
+            .rust
+            .to_string()
+            .contains("ViewportHandle :: with_scroll_notifications")
+    );
+    let wrong_arity = source.replace("scrolled()", "scrolled(offset)");
+    assert!(
+        compile(&wrong_arity, "scrolled.xr")
+            .err()
+            .unwrap()
+            .contains("takes no parameters")
+    );
+    let source = "component Demo inherits Window { view := ScrollView { scrolled() => {} } }";
+    let invalid = source.replace("ScrollView", "Rectangle");
+    assert!(
+        compile(&invalid, "scrolled.xr")
+            .err()
+            .unwrap()
+            .contains("unknown event")
+    );
+    let invalid =
+        lower(source, "scrolled.xr").replace("kind = \"ScrollView\"", "kind = \"Rectangle\"");
+    assert!(
+        mlir::process(&invalid)
+            .unwrap_err()
+            .contains("requires scrolled() on a scrollable element")
+    );
 }
 
 #[test]
@@ -206,6 +1185,96 @@ fn states_use_scoped_selectors_and_reject_invalid_property_changes() {
             .err()
             .unwrap()
             .contains("cannot override two-way property")
+    );
+}
+
+#[test]
+fn instance_states_verify_public_inputs_layout_and_composition_dependencies() {
+    let source = r#"
+        component Badge inherits Rectangle {
+            in-out property <string> caption: "Ready";
+            out property <string> reported: root.caption;
+            in property <int> count: 0;
+            Label { text: root.caption; }
+        }
+        export component App inherits Window {
+            in-out property <string> caption;
+            in property <bool> warning;
+            badge := Badge { caption: root.caption; width: 100px; }
+            states [ attention when root.warning: {
+                badge.caption: "Warning";
+                badge.width: 160px;
+                in-out { animate * { duration: 120ms; } }
+            } ]
+        }
+    "#;
+    let compiled = compile(source, "instance-states.xr").unwrap();
+    assert_eq!(compiled.mlir.matches("\"xr.instance_state\"").count(), 1);
+    assert_eq!(compiled.mlir.matches("\"xr.state_timing\"").count(), 2);
+    assert!(compiled.rust.to_string().contains("with_state"));
+    for (invalid, expected) in [
+        (
+            source.replace("badge.caption:", "badge.reported:"),
+            "public writable component input",
+        ),
+        (
+            source.replace("badge.caption:", "badge.count:"),
+            "type mismatch",
+        ),
+        (
+            source.replace(
+                "caption: root.caption; width",
+                "caption <=> root.caption; width",
+            ),
+            "cannot override two-way",
+        ),
+        (
+            source.replace("when root.warning", "when badge.reported == \"Ready\""),
+            "cyclic property binding",
+        ),
+        (
+            source.replace(
+                "badge.caption: \"Warning\"",
+                "badge.caption: root.layout-width > 80px ? \"wide\" : \"narrow\"",
+            ),
+            "layout feedback",
+        ),
+    ] {
+        let error = compile(&invalid, "instance-states.xr").err().unwrap();
+        assert!(error.contains(expected), "{error}");
+    }
+    let raw = lower(source, "instance-states.xr");
+    let change = raw
+        .lines()
+        .find(|line| line.contains("\"xr.instance_state\""))
+        .unwrap();
+    for (name, expected) in [
+        ("reported", "read-only property"),
+        ("count", "property type mismatch"),
+    ] {
+        let replacement = change.replace("name = \"caption\"", &format!("name = \"{name}\""));
+        let error = mlir::process(&raw.replace(change, &replacement)).unwrap_err();
+        assert!(error.contains(expected), "{error}");
+    }
+}
+
+#[test]
+fn a_two_way_input_cannot_be_routed_to_an_instance_state_through_an_alias() {
+    let source = r#"
+        component Badge inherits Rectangle { in-out property <string> caption; }
+        component Frame inherits Rectangle {
+            in-out property <string> caption <=> badge.caption;
+            badge := Badge { states [ active when true: { caption: "Warning"; } ] }
+        }
+        component App inherits Window {
+            in-out property <string> caption;
+            Frame { caption <=> root.caption; }
+        }
+    "#;
+    let error = compile(source, "instance-state-link.xr").err().unwrap();
+    assert!(
+        error.contains("state cannot override a two-way component input"),
+        "{error}"
     );
 }
 
@@ -507,6 +1576,60 @@ fn standard_table_checks_column_fields_in_source_and_mlir() {
             .unwrap_err()
             .contains("requires exactly one field")
     );
+}
+
+#[test]
+fn nested_record_fields_are_typed_and_layouts_must_be_acyclic() {
+    let source = r#"
+        struct Entry { details: Details }
+        struct Details { label: string, units: int }
+        component App inherits Window {
+            in property <[Entry]> rows: [Entry { details: Details { label: "one", units: 1 } }];
+            StandardListView { model: root.rows; text-role: "details.label"; }
+        }
+    "#;
+    let compiled = compile(source, "nested.xr").unwrap();
+    assert!(compiled.rust.to_string().contains("details . label"));
+    for (invalid, expected) in [
+        (
+            source.replace("details: Details", "details: Missing"),
+            "unknown record type `Missing`",
+        ),
+        (
+            source.replace("label: string, units: int", "owner: Entry"),
+            "cyclic record layout",
+        ),
+        (
+            source.replace("details.label", "details.units"),
+            "requires a string field",
+        ),
+        (
+            source.replace("details.label", "details.label."),
+            "requires a string field",
+        ),
+    ] {
+        let error = compile(&invalid, "nested.xr").err().unwrap();
+        assert!(error.contains(expected), "{error}");
+    }
+
+    let raw = lower(source, "nested.xr");
+    for (old, new, expected) in [
+        (
+            r#"\22ty\22:\22Details\22"#,
+            r#"\22ty\22:\22Missing\22"#,
+            "unknown record type Missing",
+        ),
+        (
+            r#"\22ty\22:\22Details\22"#,
+            r#"\22ty\22:\22Entry\22"#,
+            "cyclic record layout",
+        ),
+        ("details.label", "details.label.", "requires a string field"),
+    ] {
+        assert!(raw.contains(old), "{raw}");
+        let error = mlir::process(&raw.replacen(old, new, 1)).unwrap_err();
+        assert!(error.contains(expected), "{error}");
+    }
 }
 
 #[test]
@@ -837,6 +1960,54 @@ fn time_picker_verifies_types_events_and_time_fields_in_mlir() {
         .err()
         .unwrap()
         .contains("type mismatch")
+    );
+}
+
+#[test]
+fn combo_enabled_role_requires_a_constant_nested_boolean_field() {
+    let source = r#"
+        struct Access { allowed: bool }
+        struct OptionRow { title: string, access: Access }
+        component App inherits Window {
+            in property <[OptionRow]> options;
+            in property <string> role: "access.allowed";
+            ComboBox { model: root.options; text-role: "title"; enabled-role: "access.allowed"; }
+        }
+    "#;
+    let compiled = compile(source, "enabled-role.xr").unwrap();
+    assert!(
+        compiled
+            .rust
+            .to_string()
+            .contains("ComboItems :: with_enabled")
+    );
+    for (from, to, expected) in [
+        (
+            "enabled-role: \"access.allowed\"",
+            "enabled-role: \"title\"",
+            "requires a bool field",
+        ),
+        (
+            "enabled-role: \"access.allowed\"",
+            "enabled-role: root.role",
+            "requires a constant string",
+        ),
+        (
+            "model: root.options",
+            "model: [\"One\"]",
+            "roles require a record model",
+        ),
+    ] {
+        let error = compile(&source.replace(from, to), "enabled-role.xr")
+            .err()
+            .unwrap();
+        assert!(error.contains(expected), "{error}");
+    }
+    let raw = lower(source, "enabled-role.xr").replace("access.allowed", "title");
+    assert!(
+        mlir::process(&raw)
+            .unwrap_err()
+            .contains("enabled-role requires a bool field")
     );
 }
 
@@ -1850,7 +3021,10 @@ fn rejects_invalid_ui_programs_before_codegen() {
             "for row in 3 : ListView { for item in 4 : Text {} }",
             "repeat templates require anonymous display elements",
         ),
-        ("Text { callback hit(); }", "component scope"),
+        (
+            "Text { callback hit(); callback hit(); }",
+            "duplicate or conflicting member",
+        ),
         ("Button { clicked() => {} }", "require an id"),
         ("callback hit(step: int); hit() => {}", "expects 1"),
         ("callback hit(a: int, a: int);", "duplicate parameter"),
@@ -2698,18 +3872,38 @@ fn exported_record_types_and_literals_resolve_through_import_aliases() {
     std::fs::create_dir(&directory).unwrap();
     std::fs::write(
         directory.join("types.xr"),
-        "export struct Data { label: string }",
+        "export struct Data { details: Details } export struct Details { label: string }",
     )
     .unwrap();
-    let source = r#"import { Data as Row } from "types.xr";
+    let source = r#"import { Data as Row, Details as Info } from "types.xr";
         export component App inherits Window {
-            in property <[Row]> rows: [Row { label: "one" }];
-            VerticalLayout { for item in root.rows : Text { text: item.label; } }
+            in property <[Row]> rows: [Row { details: Info { label: "one" } }];
+            VerticalLayout { for item in root.rows : Text { text: item.details.label; } }
         }
     "#;
-    let result = compile(source, &directory.join("app.xr").to_string_lossy());
+    let filename = directory.join("app.xr");
+    let result = compile(source, &filename.to_string_lossy());
+    std::fs::write(
+        directory.join("types.xr"),
+        "export struct Data { details: Details }",
+    )
+    .unwrap();
+    let missing = compile(
+        r#"import { Data as Row } from "types.xr";
+        struct Details { label: string }
+        component App inherits Window { in property <[Row]> rows; }
+    "#,
+        &filename.to_string_lossy(),
+    )
+    .err()
+    .unwrap();
     std::fs::remove_dir_all(directory).unwrap();
-    assert!(result.is_ok(), "{:?}", result.err());
+    let compiled = result.unwrap();
+    assert!(compiled.mlir.matches("\"xr.get_field\"").count() >= 2);
+    assert!(
+        missing.contains("types.xr:1:") && missing.contains("unknown record type `Details`"),
+        "{missing}"
+    );
 }
 
 #[test]
@@ -3050,6 +4244,256 @@ fn rejects_recursive_instances_and_cross_instance_binding_cycles() {
 }
 
 #[test]
+fn component_links_verify_writable_matching_endpoints_and_alias_cycles() {
+    let source = r#"
+        component App inherits Window {
+            in-out property <string> shared: "host";
+            left := Editor { draft <=> root.shared; }
+            right := Editor { draft <=> left.draft; }
+        }
+        component Editor inherits Rectangle {
+            in-out property <string> draft: "child";
+        }
+    "#;
+    let compiled = compile(source, "links.xr").unwrap();
+    assert_eq!(compiled.mlir.matches("\"xr.instance_link\"").count(), 2);
+    assert!(
+        compiled
+            .rust
+            .to_string()
+            .contains("InputProperty :: linked")
+    );
+    let raw = lower(source, "links.xr");
+    let cycle = source.replace("draft <=> root.shared", "draft <=> right.draft");
+    assert!(
+        analyze(&cycle)
+            .unwrap_err()
+            .contains("cyclic property binding")
+    );
+    let invalid = raw.replace(
+        "owner = \"root\", value = \"shared\"",
+        "owner = \"right\", value = \"draft\"",
+    );
+    assert!(
+        mlir::process(&invalid)
+            .unwrap_err()
+            .contains("cyclic instance property link")
+    );
+    let invalid = raw.replace(
+        "name = \"draft\", visibility = \"in-out\"",
+        "name = \"draft\", visibility = \"in\"",
+    );
+    assert!(
+        mlir::process(&invalid)
+            .unwrap_err()
+            .contains("requires an in-out component property")
+    );
+    let read_only = source.replace(
+        "in-out property <string> shared",
+        "in property <string> shared",
+    );
+    assert!(analyze(&read_only).unwrap_err().contains("read-only"));
+    let mismatch = source.replace(
+        "in-out property <string> shared: \"host\"",
+        "property <int> shared: 1",
+    );
+    assert!(
+        analyze(&mismatch)
+            .unwrap_err()
+            .contains("requires a writable string")
+    );
+}
+
+#[test]
+fn repeated_component_links_require_live_writable_models_and_typed_fields() {
+    let source = r#"
+        struct Task { title: string, rank: int }
+        component App inherits Window {
+            in-out property <[Task]> tasks;
+            ListView {
+                for row[index] in root.tasks : Editor { draft <=> row.title; }
+            }
+        }
+        component Editor inherits Rectangle {
+            in-out property <string> draft;
+        }
+    "#;
+    let compiled = compile(source, "row-links.xr").unwrap();
+    assert!(compiled.mlir.contains("\"xr.instance_link\""));
+    for (from, to, expected) in [
+        ("row.title", "index", "only the repeated item"),
+        ("row.title", "row.rank", "requires a writable string"),
+        (
+            "in-out property <[Task]> tasks",
+            "in property <[Task]> tasks",
+            "read-only",
+        ),
+    ] {
+        assert!(
+            analyze(&source.replace(from, to))
+                .unwrap_err()
+                .contains(expected)
+        );
+    }
+    let raw = lower(source, "row-links.xr");
+    let invalid = raw.replace(
+        "name = \"tasks\", visibility = \"in-out\"",
+        "name = \"tasks\", visibility = \"in\"",
+    );
+    assert!(
+        mlir::process(&invalid)
+            .unwrap_err()
+            .contains("cannot write read-only property")
+    );
+}
+
+#[test]
+fn callback_aliases_and_instance_handlers_share_a_verified_signature() {
+    let source = r#"export component App inherits Window {
+        property <int> bias: 3;
+        out property <int> result: root.compute(4);
+        pure callback compute <=> worker.score;
+        worker := Worker { score(input) => { input + root.bias } }
+    }
+    component Worker inherits Rectangle {
+        pure callback score <=> body.evaluate;
+        body := Rectangle {
+            pure callback evaluate(int) -> int;
+            evaluate(input) => { input * 2 }
+        }
+    }"#;
+    let compiled = compile(source, "callback-aliases.xr").unwrap();
+    assert!(compiled.mlir.contains("alias_owner = \"worker\""));
+    assert_eq!(compiled.mlir.matches("\"xr.callback\"").count(), 4);
+    for (from, to, expected) in [
+        ("score(input)", "score()", "expects 1 parameters"),
+        (
+            "input + root.bias",
+            "root.bias = input; input",
+            "assignment is not allowed",
+        ),
+        ("input + root.bias", "\"wrong\"", "type mismatch"),
+    ] {
+        let error = analyze(&source.replace(from, to)).unwrap_err();
+        assert!(error.contains(expected), "{error}");
+    }
+    let raw = lower(source, "callback-aliases.xr");
+    let bad = raw.replace("alias_name = \"score\"", "alias_name = \"missing\"");
+    assert!(
+        mlir::process(&bad)
+            .unwrap_err()
+            .contains("unknown callback target")
+    );
+    assert!(
+        analyze(
+            r#"component App inherits Window {
+        callback left <=> root.right;
+        callback right <=> root.left;
+    }"#
+        )
+        .unwrap_err()
+        .contains("cyclic callback alias")
+    );
+    assert!(
+        analyze(
+            r#"component App inherits Window {
+        pure callback exposed <=> button.clicked;
+        button := Button {}
+    }"#
+        )
+        .unwrap_err()
+        .contains("pure alias requires a pure callback")
+    );
+}
+
+#[test]
+fn property_aliases_verify_controls_types_and_cycles() {
+    let source = r#"export component Editor inherits Rectangle {
+        in-out property <string> document <=> entry.text;
+        entry := LineEdit { text: "initial"; }
+    }"#;
+    let compiled = compile(source, "aliases.xr").unwrap();
+    assert!(compiled.mlir.contains("\"xr.control_read\""));
+    assert!(compiled.mlir.contains("alias = \"true\""));
+    let raw = lower(source, "aliases.xr");
+    let invalid = raw.replace(
+        "owner = \"entry\", value = \"text\"",
+        "owner = \"entry\", value = \"enabled\"",
+    );
+    assert!(
+        mlir::process(&invalid)
+            .unwrap_err()
+            .contains("supported writable control")
+    );
+    assert!(
+        analyze(&source.replace("<string> document", "<int> document"))
+            .unwrap_err()
+            .contains("property alias type mismatch")
+    );
+    let cycle = source.replace("text: \"initial\"", "text <=> root.document");
+    assert!(
+        analyze(&cycle)
+            .unwrap_err()
+            .contains("cyclic property binding")
+    );
+    let cycle = source.replace("text: \"initial\"", "text: root.document");
+    assert!(
+        analyze(&cycle)
+            .unwrap_err()
+            .contains("cyclic property binding")
+    );
+
+    let raw = lower(
+        r#"component App inherits Window {
+        property <string> data: "value";
+        property <string> alias <=> root.data;
+    }"#,
+        "aliases.xr",
+    );
+    assert!(
+        mlir::process(&raw.replace("value = \"data\"", "value = \"alias\""))
+            .unwrap_err()
+            .contains("cyclic property alias")
+    );
+}
+
+#[test]
+fn alias_inputs_detect_duplicate_and_recursive_initializers_at_the_leaf() {
+    let source = r#"
+        component Leaf inherits Rectangle {
+            in-out property <string> a <=> entry.text;
+            in-out property <string> b <=> entry.text;
+            entry := LineEdit {}
+        }
+        component Wrapper inherits Rectangle {
+            in-out property <string> label-a <=> child.a;
+            in-out property <string> label-b <=> child.b;
+            child := Leaf {}
+        }
+        component App inherits Window {
+            editor := Wrapper { label-a: "left"; }
+        }
+    "#;
+    compile(source, "alias-inputs.xr").unwrap();
+    let duplicate = source.replace(
+        "label-a: \"left\";",
+        "label-a: \"left\"; label-b: \"right\";",
+    );
+    assert!(
+        compile(&duplicate, "alias-inputs.xr")
+            .err()
+            .unwrap()
+            .contains("multiple inputs to the same property")
+    );
+    let cycle = source.replace("label-a: \"left\";", "label-a: editor.label-b;");
+    assert!(
+        analyze(&cycle)
+            .unwrap_err()
+            .contains("cyclic property binding")
+    );
+}
+
+#[test]
 fn mlir_roundtrip_preserves_typed_expressions_and_unicode() {
     let source = r#"export component App inherits Window {
         in-out property <int> n: 2;
@@ -3187,7 +4631,7 @@ fn markdown_literals_are_typed_in_mlir_and_compiled_to_static_style_ranges() {
     assert!(compiled.mlir.contains("\"xr.markdown\""));
     assert!(compiled.mlir.contains("!xr.styledtext"));
     let tokens = compiled.rust.to_string();
-    assert!(tokens.contains("StyledText :: from_compiled (\"bold code\""));
+    assert!(tokens.contains("StyledText :: from_compiled_parts (\"bold code\""));
     assert!(tokens.contains("bold : true"));
     assert!(tokens.contains("monospace : true"));
     let invalid = source.replace("StyledText {", "Label {");
@@ -3198,11 +4642,11 @@ fn markdown_literals_are_typed_in_mlir_and_compiled_to_static_style_ranges() {
             .contains("type mismatch")
     );
 
-    let invalid = source.replace("**bold** `code`", "[link](https://example.test)");
+    let invalid = source.replace("**bold** `code`", "![image](assets/image.png)");
     let error = compile(&invalid, "markdown.xr").err().unwrap();
     assert!(error.contains("markdown.xr:2:"), "{error}");
     assert!(
-        error.contains("unsupported Markdown syntax: links"),
+        error.contains("unsupported Markdown syntax: images"),
         "{error}"
     );
 
@@ -3212,5 +4656,439 @@ fn markdown_literals_are_typed_in_mlir_and_compiled_to_static_style_ranges() {
         mlir::process(&malformed)
             .unwrap_err()
             .contains("incorrect text layout property type")
+    );
+}
+
+#[test]
+fn markdown_links_compile_with_a_typed_activation_handler() {
+    let source = r#"export component App inherits Window {
+        out property <string> destination: "";
+        body := StyledText {
+            text: @markdown("[**manual**](#docs)");
+            link-color: #41a6e7;
+            link-activated(target) => { root.destination = target; }
+        }
+    }"#;
+    let compiled = compile(source, "links.xr").unwrap();
+    assert!(compiled.mlir.contains("name = \"link-activated\""));
+    let tokens = compiled.rust.to_string();
+    assert!(tokens.contains("StyledLink"));
+    assert!(tokens.contains("Borrowed (\"#docs\")"));
+    assert!(tokens.contains("ControlAction :: ActivateTextLink"));
+    let raw = lower(source, "links.xr");
+    let malformed = raw.replace("link-activated", "clicked");
+    assert!(
+        mlir::process(&malformed)
+            .unwrap_err()
+            .contains("StyledText requires link-activated(string)")
+    );
+    let malformed = source.replace("link-activated(target)", "link-activated(target, extra)");
+    assert!(
+        compile(&malformed, "links.xr")
+            .err()
+            .unwrap()
+            .contains("expects one string parameter")
+    );
+}
+
+#[test]
+fn nine_slice_keeps_typed_edges_and_validates_against_the_embedded_asset() {
+    const SVG: &[u8] = include_bytes!("../examples/media/assets/nine-slice.svg");
+    let dir = std::env::var_os("TEST_TMPDIR")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir)
+        .join(format!("xrack-nine-slice-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("media.xr");
+    let asset = dir.join("frame.svg");
+    std::fs::write(&asset, SVG).unwrap();
+    let file = path.to_str().unwrap();
+    let source = r#"export component Media inherits Window {
+        Image {
+            source: @image-url("frame.svg", nine-slice(4 6 8 10));
+            horizontal-tile-mode: repeat;
+            vertical-tile-mode: round;
+        }
+    }"#;
+    let compiled = compile(source, file).unwrap();
+    assert!(compiled.mlir.contains("\"xr.nine_slice\""));
+    assert!(compiled.mlir.contains("!xr.imagetilemode"));
+    let tokens = compiled.rust.to_string();
+    assert!(
+        tokens.contains("NineSlice { top : 4u32 , right : 6u32 , bottom : 8u32 , left : 10u32")
+    );
+    assert!(tokens.contains("ImageTileMode :: Repeat"));
+    let malformed = lower(source, file).replace("value = \"10\"", "value = \"-1\"");
+    assert!(
+        mlir::process(&malformed)
+            .unwrap_err()
+            .contains("nonnegative integer literals")
+    );
+    for (edges, diagnostic) in [
+        ("3 1 2", "expects one, two or four edges"),
+        ("2.5", "nonnegative integers"),
+        ("18", "must leave a nonempty center"),
+        ("4294967295", "must leave a nonempty center"),
+    ] {
+        let invalid = source.replace("4 6 8 10", edges);
+        assert!(compile(&invalid, file).err().unwrap().contains(diagnostic));
+    }
+    let invalid = source.replace("4 6 8 10", "16");
+    let module = xrack_compiler::lower(&parse(&invalid).unwrap(), file).unwrap();
+    assert!(
+        xrack_compiler::check_resources(&module, file, Some(std::slice::from_ref(&asset)))
+            .unwrap_err()
+            .to_string()
+            .contains("must leave a nonempty center")
+    );
+    for (edges, top, right) in [("4", 4, 4), ("4 7", 4, 7)] {
+        let source = source.replace("4 6 8 10", edges);
+        let tokens = compile(&source, file).unwrap().rust.to_string();
+        assert!(tokens.contains(&format!(
+            "NineSlice {{ top : {top}u32 , right : {right}u32 , bottom : {top}u32 , left : {right}u32"
+        )));
+    }
+    std::fs::remove_file(asset).unwrap();
+    std::fs::remove_dir(dir).unwrap();
+}
+
+#[test]
+fn animated_image_embeds_gif_frames_and_checks_read_only_playback_state() {
+    const GIF: &[u8] = include_bytes!("../examples/media/assets/pulse.gif");
+    let dir = std::env::var_os("TEST_TMPDIR")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir)
+        .join(format!("xrack-gif-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let asset = dir.join("pulse.gif");
+    std::fs::write(&asset, GIF).unwrap();
+    let path = dir.join("animated.xr");
+    let file = path.to_str().unwrap();
+    let source = r#"export component Media inherits Window {
+        out property <int> frame: pulse.current-frame;
+        out property <int> frames: pulse.frame-count;
+        pulse := AnimatedImage {
+            source: @image-url("pulse.gif");
+            paused: true;
+            speed: 2.0;
+            loops: -1;
+            finished() => {}
+        }
+    }"#;
+    let compiled = compile(source, file).unwrap();
+    assert!(compiled.mlir.contains("\"xr.image_playback_read\""));
+    assert!(compiled.mlir.contains("value = \"frame-count\""));
+    let tokens = compiled.rust.to_string();
+    for time in [80, 200, 260] {
+        assert!(tokens.contains(&format!("end_ms : {time}u32")));
+    }
+    let invalid = source.replace("paused: true", "current-frame: 2");
+    assert!(compile(&invalid, file).err().unwrap().contains("read-only"));
+    let invalid = source.replace("speed: 2.0", "speed: true");
+    assert!(
+        compile(&invalid, file)
+            .err()
+            .unwrap()
+            .contains("type mismatch")
+    );
+    let malformed =
+        lower(source, file).replace("value = \"frame-count\"", "value = \"loop-count\"");
+    assert!(
+        mlir::process(&malformed)
+            .unwrap_err()
+            .contains("playback state property")
+    );
+    let invalid = source.replace("\"pulse.gif\"", "\"pulse.gif\", nine-slice(2)");
+    assert!(
+        compile(&invalid, file)
+            .err()
+            .unwrap()
+            .contains("static PNG or SVG")
+    );
+
+    let mut oversized = GIF.to_vec();
+    oversized[6..8].copy_from_slice(&5000_u16.to_le_bytes());
+    std::fs::write(&asset, oversized).unwrap();
+    let error = compile(source, file).err().unwrap();
+    assert!(error.contains("image dimensions"), "{error}");
+    std::fs::remove_file(asset).unwrap();
+    std::fs::remove_dir(dir).unwrap();
+}
+
+#[test]
+fn image_clips_alignments_and_intrinsic_dimensions_are_typed_in_mlir() {
+    let source = r#"export component Atlas inherits Window {
+        in property <image> atlas: @image-url("");
+        out property <int> pixels: root.atlas.width * root.atlas.height;
+        Image {
+            source: root.atlas;
+            source-clip-x: 1; source-clip-y: -2;
+            source-clip-width: root.atlas.width;
+            horizontal-alignment: right;
+            vertical-alignment: bottom;
+            image-rendering: pixelated;
+        }
+        AnimatedImage {
+            source: root.atlas;
+            source-clip-height: 4;
+            horizontal-tile-mode: repeat;
+        }
+    }"#;
+    let result = compile(source, "atlas.xr").unwrap();
+    assert!(result.mlir.contains("\"xr.image_dimension\""));
+    assert!(result.mlir.contains("!xr.imagehorizontalalignment"));
+    assert!(result.mlir.contains("!xr.imageverticalalignment"));
+    assert!(result.mlir.contains("!xr.imagerendering"));
+    assert!(result.rust.to_string().contains(". size ()"));
+    let invalid = source.replace("source-clip-x: 1", "source-clip-x: 1px");
+    assert!(
+        compile(&invalid, "atlas.xr")
+            .err()
+            .unwrap()
+            .contains("type mismatch")
+    );
+    let invalid = source.replace("root.atlas.height", "root.atlas.depth");
+    assert!(
+        compile(&invalid, "atlas.xr")
+            .err()
+            .unwrap()
+            .contains("image has no field")
+    );
+    let raw = lower(source, "atlas.xr");
+    let invalid = raw.replace("value = \"width\"", "value = \"depth\"");
+    assert!(
+        mlir::process(&invalid)
+            .unwrap_err()
+            .contains("image dimension must be width or height")
+    );
+    let invalid = raw.replace("name = \"source-clip-x\"", "name = \"image-rendering\"");
+    assert!(
+        mlir::process(&invalid)
+            .unwrap_err()
+            .contains("incorrect Image property type")
+    );
+}
+
+#[test]
+fn image_colorize_uses_typed_brushes_in_bindings_and_states() {
+    let source = r#"export component Art inherits Window {
+        in property <bool> alternate: false;
+        icon := Image {
+            source: @image-url("");
+            colorize: #0af;
+        }
+        AnimatedImage {
+            source: @image-url("");
+            colorize: root.alternate ? @linear-gradient(90deg, #0000, #f84) : #0af;
+        }
+        states [ alternate when root.alternate: {
+            icon.colorize: @radial-gradient(circle, #fff, #369);
+        } ]
+    }"#;
+    let result = compile(source, "colorize.xr").unwrap();
+    assert!(result.mlir.contains("name = \"colorize\""));
+    assert!(result.mlir.contains("!xr.brush"));
+    assert!(result.mlir.contains("\"xr.state_set\""));
+    assert!(result.rust.to_string().contains("Brush :: Solid"));
+    let invalid = source.replace("colorize: #0af", "colorize: 5");
+    assert!(
+        compile(&invalid, "colorize.xr")
+            .err()
+            .unwrap()
+            .contains("type mismatch")
+    );
+    let raw = lower(source, "colorize.xr");
+    let invalid = raw.replace("kind = \"Image\"", "kind = \"Rectangle\"");
+    assert!(
+        mlir::process(&invalid)
+            .unwrap_err()
+            .contains("incorrect Image property type")
+    );
+}
+
+#[test]
+fn composition_properties_have_typed_bindings_on_nodes_and_instances() {
+    let source = r#"component Card inherits Rectangle { background: #024; }
+    export component App inherits Window {
+        in property <bool> raised: true;
+        panel := Rectangle {
+            opacity: 0.5;
+            z: 2;
+            animate opacity { duration: 120ms; }
+        }
+        Card { opacity: 0.75; z: -1; }
+        states [ raise when root.raised: { panel.opacity: 1; panel.z: 3; } ]
+    }"#;
+    let result = compile(source, "compositing.xr").unwrap();
+    for line in result
+        .mlir
+        .lines()
+        .filter(|line| line.contains("name = \"opacity\"") || line.contains("name = \"z\""))
+    {
+        if !line.contains("xr.animate") {
+            assert!(line.contains("!xr.float"), "{line}");
+        }
+    }
+    assert!(
+        result
+            .mlir
+            .lines()
+            .any(|line| line.contains("\"xr.layout_bind\"") && line.contains("name = \"z\""))
+    );
+    let invalid = source.replace("opacity: 0.5", "opacity: true");
+    assert!(
+        compile(&invalid, "compositing.xr")
+            .err()
+            .unwrap()
+            .contains("type mismatch")
+    );
+    let invalid = source.replace("opacity: 0.5;", "Timer { opacity: 0.5; }");
+    assert!(compile(&invalid, "compositing.xr").is_err());
+
+    let raw = lower(source, "compositing.xr");
+    let invalid = raw.replace("name = \"background\"", "name = \"opacity\"");
+    assert!(
+        mlir::process(&invalid)
+            .unwrap_err()
+            .contains("z and opacity require")
+    );
+}
+
+#[test]
+fn rectangle_shadows_keep_typed_brush_geometry_and_state_overrides() {
+    let source = r#"export component Card inherits Window {
+        in property <bool> lifted: false;
+        panel := Rectangle {
+            background: #fff;
+            drop-shadow-color: #3154;
+            drop-shadow-offset-x: -4px;
+            drop-shadow-offset-y: 8px;
+            drop-shadow-spread: 2px;
+            drop-shadow-blur: 10px;
+            inner-shadow-color: #0008;
+            inner-shadow-offset-x: 2px;
+            inner-shadow-offset-y: 1px;
+            inner-shadow-spread: -1px;
+            inner-shadow-blur: 6px;
+            animate drop-shadow-offset-y { duration: 80ms; }
+        }
+        states [ lift when root.lifted: { panel.drop-shadow-offset-y: 12px; } ]
+    }"#;
+    let compiled = compile(source, "shadows.xr").unwrap();
+    for line in compiled.mlir.lines().filter(|line| {
+        (line.contains("name = \"drop-shadow") || line.contains("name = \"inner-shadow"))
+            && (line.contains("xr.bind") || line.contains("xr.state_set"))
+    }) {
+        let ty = if line.contains("shadow-color") {
+            "!xr.color"
+        } else {
+            "!xr.length"
+        };
+        assert!(line.contains(ty), "{line}");
+    }
+    assert!(
+        compiled
+            .mlir
+            .lines()
+            .any(|line| line.contains("xr.state_set") && line.contains("drop-shadow-offset-y"))
+    );
+    let invalid = source.replace("inner-shadow-blur: 6px", "inner-shadow-blur: true");
+    assert!(
+        compile(&invalid, "shadows.xr")
+            .err()
+            .unwrap()
+            .contains("type mismatch")
+    );
+    let invalid = source.replace("panel := Rectangle", "panel := Image");
+    assert!(compile(&invalid, "shadows.xr").is_err());
+    let invalid = lower(source, "shadows.xr").replace(
+        "name = \"inner-shadow-color\"",
+        "name = \"inner-shadow-spread\"",
+    );
+    assert!(
+        mlir::process(&invalid)
+            .unwrap_err()
+            .contains("incorrect Rectangle shadow property type")
+    );
+}
+
+#[test]
+fn rectangle_clip_is_a_typed_binding_and_state_override() {
+    let source = r#"export component Demo inherits Window {
+        in property <bool> enabled-clip: false;
+        mask := Rectangle { clip: root.enabled-clip; }
+        states [ rounded when root.enabled-clip: { mask.clip: true; } ]
+    }"#;
+    let compiled = compile(source, "clip.xr").unwrap();
+    for op in ["xr.bind", "xr.state_set"] {
+        assert!(compiled.mlir.lines().any(|line| line.contains(op)
+            && line.contains("name = \"clip\"")
+            && line.contains("!xr.bool")));
+    }
+    let invalid = source.replace("clip: root.enabled-clip", "clip: 10px");
+    assert!(
+        compile(&invalid, "clip.xr")
+            .err()
+            .unwrap()
+            .contains("type mismatch")
+    );
+    let raw = lower(source, "clip.xr");
+    let invalid = raw.replace("kind = \"Rectangle\"", "kind = \"Image\"");
+    assert!(
+        mlir::process(&invalid)
+            .unwrap_err()
+            .contains("clip requires a boolean on Rectangle")
+    );
+}
+
+#[test]
+fn transforms_are_typed_on_visual_nodes_instances_and_states() {
+    let source = r#"component Tile inherits Rectangle { background: #234; }
+    export component Demo inherits Window {
+        in property <bool> turned: false;
+        tile := Rectangle {
+            transform-rotation: 45;
+            transform-scale: 125%;
+            transform-scale-x: -1.0;
+            transform-origin-x: 30%;
+            transform-origin-y: 2px;
+            animate transform-rotation { duration: 120ms; }
+        }
+        Tile { transform-origin-x: 50%; transform-rotation: 90; }
+        states [ turned when root.turned: { tile.transform-rotation: 0; } ]
+    }"#;
+    let compiled = compile(source, "transform.xr").unwrap();
+    assert!(
+        compiled
+            .mlir
+            .lines()
+            .any(|line| line.contains("xr.layout_bind")
+                && line.contains("transform-origin-x")
+                && line.contains("!xr.percent"))
+    );
+    assert!(
+        compiled
+            .mlir
+            .lines()
+            .any(|line| line.contains("xr.state_set")
+                && line.contains("transform-rotation")
+                && line.contains("!xr.float"))
+    );
+    let invalid = source.replace("transform-rotation: 45", "transform-rotation: 45px");
+    assert!(
+        compile(&invalid, "transform.xr")
+            .err()
+            .unwrap()
+            .contains("type mismatch")
+    );
+    let raw = lower(source, "transform.xr");
+    let invalid = raw.replace(
+        "name = \"transform-origin-y\"",
+        "name = \"transform-scale-y\"",
+    );
+    assert!(
+        mlir::process(&invalid)
+            .unwrap_err()
+            .contains("incorrect visual transform property or type")
     );
 }

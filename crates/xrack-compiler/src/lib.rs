@@ -2,6 +2,7 @@
 use proc_macro2::TokenStream;
 use std::{collections::BTreeSet, path::PathBuf};
 
+mod animated_image;
 mod error;
 mod modules;
 mod resources;
@@ -69,7 +70,9 @@ pub fn check_resources(
     filename: &str,
     declared_assets: Option<&[PathBuf]>,
 ) -> Result<(), CompilerError> {
-    resources::resolve(module, filename, declared_assets).map_err(CompilerError::Resources)?;
+    let assets =
+        resources::resolve(module, filename, declared_assets).map_err(CompilerError::Resources)?;
+    codegen::check_nine_slices(module, &assets.images).map_err(CompilerError::Resources)?;
     codegen::check_markdown(module).map_err(CompilerError::Codegen)
 }
 

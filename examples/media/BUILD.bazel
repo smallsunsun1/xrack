@@ -5,8 +5,20 @@ xr_ui_library(
     name = "media_ui",
     src = "media.xr",
     assets = [
+        "assets/color-mask.png",
         "assets/landscape.png",
+        "assets/nine-slice.svg",
         "assets/orbit.svg",
+        "assets/pulse.gif",
+        "assets/sprite-atlas.png",
+    ],
+    visibility = ["//tests:__pkg__"],
+)
+
+exports_files(
+    [
+        "assets/nine-slice.svg",
+        "assets/pulse.gif",
     ],
     visibility = ["//tests:__pkg__"],
 )

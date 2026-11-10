@@ -40,6 +40,7 @@ pub(crate) enum Route {
         kind: &'static str,
         standard_kind: Option<StandardButtonKind>,
     },
+    TextLink(Target),
     Choice {
         target: Target,
         index: usize,
@@ -57,6 +58,7 @@ pub(crate) enum Route {
     MenuPanel {
         trigger: Target,
         path: Vec<usize>,
+        session: u64,
     },
 }
 
@@ -78,6 +80,7 @@ struct Key {
     option: Option<(usize, String)>,
     row_option: Option<RowKey>,
     text_run: Option<(usize, String)>,
+    menu_session: Option<u64>,
 }
 
 impl Key {
@@ -99,6 +102,7 @@ impl Key {
                 .map(|kind| (0, kind.label().to_owned())),
             row_option: None,
             text_run: None,
+            menu_session: None,
         }
     }
 }
@@ -113,6 +117,7 @@ struct PopupState {
 
 #[derive(PartialEq)]
 struct MenuFrame {
+    session: u64,
     path: Vec<usize>,
     bounds: Rect,
     first: usize,
@@ -189,6 +194,7 @@ impl Projection {
         let menus: Vec<_> = menu_panels
             .iter()
             .map(|panel| MenuFrame {
+                session: panel.session(),
                 path: panel.path().to_vec(),
                 bounds: panel.bounds,
                 first: panel.row_index(0),
@@ -226,6 +232,7 @@ impl Projection {
             routes: BTreeMap::new(),
             documents: BTreeMap::new(),
             nodes: Vec::new(),
+            radio_groups: Vec::new(),
             focus: ROOT,
         };
         let mut children = if let Some(path) = input.dialog_layers(layout).next_back() {
@@ -273,6 +280,7 @@ impl Projection {
         {
             children.push(popup);
         }
+        children.extend(builder.radio_groups.iter().copied());
         let mut root = AccessibleNode::new(Role::Window);
         root.set_label(
             scene
@@ -335,6 +343,7 @@ struct Builder<'a> {
     routes: BTreeMap<NodeId, Route>,
     documents: BTreeMap<NodeId, TextDocument>,
     nodes: Vec<(NodeId, AccessibleNode)>,
+    radio_groups: Vec<NodeId>,
     focus: NodeId,
 }
 
@@ -349,6 +358,41 @@ impl Builder<'_> {
         });
         self.ids.insert(key, id);
         id
+    }
+
+    fn attached_button_group(
+        &mut self,
+        node: &Node,
+        path: &[usize],
+        row: Option<(RowKey, usize)>,
+    ) -> Option<NodeId> {
+        let member = node.button_group.as_ref()?;
+        let component = member.component_path(path)?;
+        let mut key = Key::element(
+            node,
+            component,
+            row.filter(|(_, depth)| *depth <= component.len()),
+        );
+        key.kind = "AttachedButtonGroup";
+        key.id = Some(member.group.key);
+        if let Some(&id) = self.ids.get(&key) {
+            return Some(id);
+        }
+        let id = self.id(key);
+        let mut group = AccessibleNode::new(if member.group.exclusive {
+            Role::RadioGroup
+        } else {
+            Role::Group
+        });
+        if !member.group.name.is_empty() {
+            group.set_label(member.group.name.as_str());
+        }
+        if !member.group.enabled {
+            group.set_disabled();
+        }
+        self.nodes.push((id, group));
+        self.radio_groups.push(id);
+        Some(id)
     }
 
     fn children(
@@ -366,11 +410,50 @@ impl Builder<'_> {
                     return None;
                 }
                 path.push(index);
-                let id = self.visit(child, layout, path, row, view);
+                let mut id = self.visit(child, layout, path, row, view);
+                if let Some(content) = id
+                    && node.kind == "TableRow"
+                    && child.boolean("table-delegate-cell", false)
+                {
+                    id = self
+                        .table_delegate_cell(child, layout, path, row, content)
+                        .or(id);
+                }
                 path.pop();
                 id
             })
             .collect()
+    }
+
+    fn table_delegate_cell(
+        &mut self,
+        node: &Node,
+        item: &LayoutNode,
+        path: &[usize],
+        row: Option<(RowKey, usize)>,
+        content: NodeId,
+    ) -> Option<NodeId> {
+        let [table @ .., slot, 0, column] = path else {
+            return None;
+        };
+        let list = self.scene.at_path(table)?.list?;
+        let visual = self
+            .layout
+            .at_path(table)?
+            .table
+            .as_ref()?
+            .visual_index(*column)?;
+        let mut key = Key::element(node, path, row);
+        key.kind = "TableDelegateCell";
+        let id = self.id(key);
+        let mut cell = AccessibleNode::new(Role::Cell);
+        cell.set_bounds(bounds(item.visible_window_bounds(item.bounds), self.scale));
+        cell.set_row_index(list.first_row + slot);
+        cell.set_column_index(visual);
+        cell.set_selected(node.boolean("table-selected", false));
+        cell.set_children(vec![content]);
+        self.nodes.push((id, cell));
+        Some(id)
     }
 
     fn visit(
@@ -381,12 +464,12 @@ impl Builder<'_> {
         row: Option<(RowKey, usize)>,
         view: Option<&'static str>,
     ) -> Option<NodeId> {
-        let rect = item.clip.intersect(
+        let rect = item.visible_window_bounds(
             item.tab_header
                 .or_else(|| item.visible.then_some(item.bounds))?,
         );
-        if rect.width <= 0.0
-            || rect.height <= 0.0
+        let has_bounds = rect.width > 0.0 && rect.height > 0.0;
+        if !has_bounds && !item.allows_overflow()
             || matches!(node.kind, "Tooltip" | "StandardListItem")
             || matches!(node.kind, "SwipeLeft" | "SwipeRight") && !item.enabled
         {
@@ -405,6 +488,9 @@ impl Builder<'_> {
             _ => view,
         };
         let mut children = self.children(node, item, path, row, child_view);
+        if node.kind == "StyledText" {
+            children.extend(self.text_links(node, item, path, row));
+        }
         let label = node
             .text("accessible-name")
             .or_else(|| match role {
@@ -413,6 +499,7 @@ impl Builder<'_> {
                 }
                 Role::Tab if node.kind == "TabButton" => node.text("text"),
                 Role::Group if node.kind == "Calendar" => Some("Calendar"),
+                Role::Group if node.kind == "StyledText" => node.text("text"),
                 Role::Group if matches!(node.kind, "GroupBox" | "Page") => node.text("title"),
                 Role::ProgressIndicator if node.kind == "BusyIndicator" => Some("Loading"),
                 Role::ProgressIndicator => Some("Progress"),
@@ -440,7 +527,12 @@ impl Builder<'_> {
 
         let id = self.id(Key::element(node, path, row));
         let mut accessible = AccessibleNode::new(role);
-        accessible.set_bounds(bounds(rect, self.scale));
+        if let Some(group) = self.attached_button_group(node, path, row) {
+            accessible.set_member_of(group);
+        }
+        if has_bounds {
+            accessible.set_bounds(bounds(rect, self.scale));
+        }
         if let Some(label) = label {
             accessible.set_label(label);
         }
@@ -462,7 +554,7 @@ impl Builder<'_> {
                 CheckState::Checked => Toggled::True,
             }),
             Role::Switch | Role::RadioButton => {
-                let checked = if role == Role::RadioButton {
+                let checked = if role == Role::RadioButton && node.button_group.is_none() {
                     path.split_last().is_some_and(|(&index, parent)| {
                         self.scene.at_path(parent).and_then(group_index) == Some(index)
                     })
@@ -563,7 +655,14 @@ impl Builder<'_> {
                     && let Some(list) = self.scene.at_path(table).and_then(|table| table.list)
                 {
                     accessible.set_row_index(list.first_row + slot);
-                    accessible.set_column_index(*column);
+                    if let Some(visual) = self
+                        .layout
+                        .at_path(table)
+                        .and_then(|item| item.table.as_ref())
+                        .and_then(|geometry| geometry.visual_index(*column))
+                    {
+                        accessible.set_column_index(visual);
+                    }
                 }
                 accessible.set_selected(node.boolean("table-selected", false));
             }
@@ -672,7 +771,7 @@ impl Builder<'_> {
                 item.bounds,
                 path,
                 self.input,
-                self.scale,
+                (self.scale, item.world_transform()),
                 self.text_system,
                 |start, value| {
                     let mut key = Key::element(node, path, row);
@@ -703,7 +802,10 @@ impl Builder<'_> {
         {
             if target.focusable {
                 accessible.add_action(Action::Focus);
-                if supports_context_menu(self.scene, self.layout, self.input, path) {
+                if self
+                    .input
+                    .supports_context_menu(self.scene, self.layout, &target)
+                {
                     accessible.add_action(Action::ShowContextMenu);
                 }
             }
@@ -736,7 +838,7 @@ impl Builder<'_> {
                     let id = self.id(key);
                     let mut toggle = AccessibleNode::new(Role::Button);
                     toggle.set_label(label);
-                    toggle.set_bounds(bounds(rect, self.scale));
+                    toggle.set_bounds(bounds(item.visible_window_bounds(rect), self.scale));
                     toggle.add_action(Action::Click);
                     self.routes.insert(
                         id,
@@ -807,6 +909,62 @@ impl Builder<'_> {
         Some(id)
     }
 
+    fn text_links(
+        &mut self,
+        node: &Node,
+        item: &LayoutNode,
+        path: &[usize],
+        row: Option<(RowKey, usize)>,
+    ) -> Vec<NodeId> {
+        let Some(document) = node.styled_text("text") else {
+            return Vec::new();
+        };
+        let mut regions = BTreeMap::<usize, Rect>::new();
+        for (index, rect) in item.text_link_regions() {
+            regions
+                .entry(index)
+                .and_modify(|area| {
+                    let x = area.x.min(rect.x);
+                    let y = area.y.min(rect.y);
+                    let right = (area.x + area.width).max(rect.x + rect.width);
+                    let bottom = (area.y + area.height).max(rect.y + rect.height);
+                    *area = Rect::new(x, y, right - x, bottom - y);
+                })
+                .or_insert(rect);
+        }
+        regions
+            .into_iter()
+            .filter_map(|(index, rect)| {
+                let link = document.links().get(index)?;
+                let label = &document.text()[link.start..link.end];
+                let mut key = Key::element(node, path, row);
+                key.kind = "StyledTextLink";
+                key.option = Some((index, link.href.to_string()));
+                key.text_run = Some((link.start, label.into()));
+                let id = self.id(key);
+                let mut accessible = AccessibleNode::new(Role::Link);
+                accessible.set_bounds(bounds(item.visible_window_bounds(rect), self.scale));
+                accessible.set_label(label);
+                accessible.set_url(link.href.as_ref());
+                if let Some(target) =
+                    self.input
+                        .text_link_target(self.scene, self.layout, path, index)
+                {
+                    accessible.add_action(Action::Focus);
+                    accessible.add_action(Action::Click);
+                    if self.input.focused.as_ref() == Some(&target) {
+                        self.focus = id;
+                    }
+                    self.routes.insert(id, Route::TextLink(target));
+                } else {
+                    accessible.set_disabled();
+                }
+                self.nodes.push((id, accessible));
+                Some(id)
+            })
+            .collect()
+    }
+
     fn table_headers(
         &mut self,
         node: &Node,
@@ -820,14 +978,13 @@ impl Builder<'_> {
         let target = self
             .input
             .accessibility_target(self.scene, self.layout, path);
-        let clip = item.clip.intersect(geometry.header);
-        header
-            .columns
-            .iter()
-            .zip(&geometry.columns)
+        let clip = item.clip_rect(geometry.header);
+        geometry
+            .visual_columns()
             .enumerate()
-            .filter_map(|(index, (column, rect))| {
-                let rect = rect.intersect(clip);
+            .filter_map(|(visual, index)| {
+                let column = &header.columns[index];
+                let rect = geometry.columns[index].intersect(geometry.column_clip(index, clip));
                 if rect.width <= 0.0 || rect.height <= 0.0 {
                     return None;
                 }
@@ -836,8 +993,8 @@ impl Builder<'_> {
                 key.option = Some((index, String::new()));
                 let id = self.id(key);
                 let mut part = AccessibleNode::new(Role::ColumnHeader);
-                part.set_bounds(bounds(rect, self.scale));
-                part.set_column_index(index);
+                part.set_bounds(bounds(item.visible_window_bounds(rect), self.scale));
+                part.set_column_index(visual);
                 if let Some(title) = column.text("title") {
                     part.set_label(title);
                 }
@@ -884,7 +1041,7 @@ impl Builder<'_> {
         key.kind = "GroupBoxToggle";
         let id = self.id(key);
         let mut toggle = AccessibleNode::new(Role::CheckBox);
-        toggle.set_bounds(bounds(rect, self.scale));
+        toggle.set_bounds(bounds(item.visible_window_bounds(rect), self.scale));
         toggle.set_label(
             node.text("accessible-name")
                 .or_else(|| node.text("title"))
@@ -969,7 +1126,7 @@ impl Builder<'_> {
                     Role::Button
                 });
                 part.set_label(label);
-                part.set_bounds(bounds(rect, self.scale));
+                part.set_bounds(bounds(item.visible_window_bounds(rect), self.scale));
                 if let Some(selected) = selected {
                     part.set_toggled(if selected {
                         Toggled::True
@@ -1009,7 +1166,7 @@ impl Builder<'_> {
             .rows
             .iter()
             .filter_map(|entry| {
-                let rect = entry.bounds.intersect(item.bounds).intersect(item.clip);
+                let rect = item.clip_rect(entry.bounds.intersect(item.bounds));
                 if rect.width <= 0.0 || rect.height <= 0.0 {
                     return None;
                 }
@@ -1019,7 +1176,7 @@ impl Builder<'_> {
                 let id = self.id(key);
                 let mut option = AccessibleNode::new(Role::ListBoxOption);
                 option.set_label(entry.label.as_str());
-                option.set_bounds(bounds(rect, self.scale));
+                option.set_bounds(bounds(item.visible_window_bounds(rect), self.scale));
                 option.set_selected(wheel.selected == Some(entry.index));
                 option.add_action(Action::Click);
                 self.nodes.push((id, option));
@@ -1057,7 +1214,7 @@ impl Builder<'_> {
                 };
                 let id = self.id(key);
                 let mut part = AccessibleNode::new(Role::Button);
-                part.set_bounds(bounds(rect, self.scale));
+                part.set_bounds(bounds(item.visible_window_bounds(rect), self.scale));
                 part.set_label(if action == ControlAction::ClearSearch {
                     "Clear search"
                 } else {
@@ -1106,7 +1263,7 @@ impl Builder<'_> {
             option.set_label(value.as_str());
             option.set_bounds(bounds(menu.row_bounds(offset), self.scale));
             option.set_selected(menu.selected == Some(index));
-            if let Some(choice) = choice {
+            if let Some(choice) = choice.filter(|_| menu.row_enabled(offset)) {
                 option.add_action(Action::Click);
                 self.routes.insert(
                     id,
@@ -1153,11 +1310,10 @@ impl Builder<'_> {
                     continue;
                 }
                 let entry = panel.entry(slot);
-                let Some(node) = self.scene.at_path(&entry.path) else {
-                    continue;
-                };
+                let node = row_data.node;
                 let mut key = Key::element(node, &entry.path, row);
                 key.kind = "PopupMenuRow";
+                key.menu_session = Some(panel.session());
                 key.option = Some((panel.row_index(slot), entry.label.clone()));
                 let id = self.id(key);
                 let role = if row_data.checked.is_some() {
@@ -1210,9 +1366,10 @@ impl Builder<'_> {
                 rows.push(id);
                 self.nodes.push((id, accessible));
             }
-            let menu = self.scene.at_path(panel.path())?;
+            let menu = panel.menu;
             let mut key = Key::element(menu, panel.path(), row);
             key.kind = "PopupMenu";
+            key.menu_session = Some(panel.session());
             let id = self.id(key);
             let mut popup = AccessibleNode::new(Role::Menu);
             popup.set_label(menu.text("title").unwrap_or("Context menu"));
@@ -1224,6 +1381,7 @@ impl Builder<'_> {
                 Route::MenuPanel {
                     trigger: trigger.clone(),
                     path: panel.path().to_vec(),
+                    session: panel.session(),
                 },
             );
             self.nodes.push((id, popup));
@@ -1252,7 +1410,21 @@ fn role(node: &Node, view: Option<&str>) -> Role {
         "Switch" => Role::Switch,
         "RadioButton" => Role::RadioButton,
         "RadioGroup" => Role::RadioGroup,
+        "StyledText"
+            if node
+                .styled_text("text")
+                .is_some_and(|text| !text.links().is_empty()) =>
+        {
+            Role::Group
+        }
         "Text" | "Label" | "StyledText" => Role::Label,
+        "Image" | "AnimatedImage"
+            if ["accessible-name", "accessible-description"]
+                .iter()
+                .any(|name| node.text(name).is_some_and(|value| !value.is_empty())) =>
+        {
+            Role::Image
+        }
         "TextInput" | "LineEdit" if node.is_password() => Role::PasswordInput,
         "TextInput" | "LineEdit" if node.input_type() == InputType::Search => Role::SearchInput,
         "TextInput" | "LineEdit" => Role::TextInput,
@@ -1346,13 +1518,16 @@ pub(crate) fn requested_scroll(
     let viewport = item
         .table
         .as_ref()
-        .map_or(item.bounds, |table| table.body)
+        .map_or(item.bounds, |table| match axis {
+            Orientation::Horizontal => table.scrollable_body(),
+            Orientation::Vertical => table.body,
+        })
         .intersect(item.clip);
     let step = match (data, axis) {
         (Some(ActionData::ScrollUnit(ScrollUnit::Item)), Orientation::Vertical)
             if node.list.is_some() =>
         {
-            ListMetrics::row_height(node)
+            ListMetrics::row_height_at(node, node.list.map_or(0, |list| list.first_row))
         }
         (Some(ActionData::ScrollUnit(ScrollUnit::Item)), _) => 28.0,
         (_, Orientation::Horizontal) => viewport.width,
@@ -1389,27 +1564,6 @@ pub(crate) fn supports_text_value(node: &Node) -> bool {
         && !node.boolean("read-only", false)
 }
 
-pub(crate) fn supports_context_menu(
-    scene: &Node,
-    layout: &LayoutNode,
-    input: &Interaction,
-    path: &[usize],
-) -> bool {
-    let scope = input.dialog_layers(layout).next_back().unwrap_or_default();
-    path.starts_with(scope)
-        && (scope.len()..=path.len()).any(|depth| {
-            scene
-                .interactive_at_path(&path[..depth])
-                .is_some_and(|node| {
-                    node.kind == "ContextMenuArea"
-                        && node
-                            .children
-                            .iter()
-                            .any(|child| child.kind == "Menu" && child.is_visible())
-                })
-        })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1442,6 +1596,143 @@ mod tests {
             .iter()
             .find_map(|(id, node)| (node.label() == Some(label)).then_some((*id, node)))
             .unwrap()
+    }
+
+    #[test]
+    fn native_accessibility_projects_transformed_bounds_and_skips_singular_items() {
+        let mut window = Node::new("Window", None);
+        let mut tile = Node::new("Rectangle", Some("tile"));
+        for (name, value) in [
+            ("x", 70.0),
+            ("y", 30.0),
+            ("width", 100.0),
+            ("height", 60.0),
+            ("transform-origin-x", 0.0),
+            ("transform-origin-y", 0.0),
+        ] {
+            length(&mut tile, name, value);
+        }
+        tile.properties
+            .insert("transform-rotation", 90.0_f64.into());
+        let mut action = button("action", "Rotated action", 20.0);
+        length(&mut action, "y", 10.0);
+        length(&mut action, "width", 30.0);
+        length(&mut action, "height", 20.0);
+        tile.children.push(action);
+        window.children.push(tile);
+
+        let project = |node: &Node| {
+            let scene = Rc::new(node.clone());
+            let frame = Rc::new(layout(&scene, Size::new(200.0, 150.0), &mut Text));
+            let mut input = Interaction::default();
+            input.focus_next(&scene, &frame, false);
+            Projection::default()
+                .update(&scene, &frame, &input, 2.0, None)
+                .unwrap()
+        };
+        let visible = project(&window);
+        let (id, action) = named(&visible, "Rotated action");
+        assert_eq!(visible.focus, id);
+        assert_eq!(
+            action.bounds(),
+            Some(accesskit::Rect::new(80.0, 100.0, 120.0, 160.0))
+        );
+        window.children[0]
+            .properties
+            .insert("transform-scale", 0.0_f64.into());
+        assert!(
+            !project(&window)
+                .nodes
+                .iter()
+                .any(|(_, node)| node.label() == Some("Rotated action"))
+        );
+    }
+
+    #[test]
+    fn rounded_clips_hide_occluded_buttons_and_bound_visible_overflow() {
+        let mut window = Node::new("Window", None);
+        let mut mask = Node::new("Rectangle", Some("mask"));
+        length(&mut mask, "width", 100.0);
+        length(&mut mask, "height", 100.0);
+        length(&mut mask, "border-radius", 40.0);
+        mask.properties.insert("clip", true.into());
+        let mut corner = button("corner", "Corner", 2.0);
+        length(&mut corner, "y", 2.0);
+        length(&mut corner, "width", 6.0);
+        length(&mut corner, "height", 6.0);
+        let mut spill = button("spill", "Spill", 70.0);
+        length(&mut spill, "y", 42.0);
+        length(&mut spill, "width", 70.0);
+        mask.children.extend([corner, spill]);
+        window.children.push(mask);
+        let project = |node: &Node| {
+            let scene = Rc::new(node.clone());
+            let frame = Rc::new(layout(&scene, Size::new(160.0, 120.0), &mut Text));
+            let mut input = Interaction::default();
+            input.focus_next(&scene, &frame, false);
+            Projection::default()
+                .update(&scene, &frame, &input, 1.0, None)
+                .unwrap()
+        };
+        let clipped = project(&window);
+        assert!(
+            !clipped
+                .nodes
+                .iter()
+                .any(|(_, node)| node.label() == Some("Corner"))
+        );
+        let (spill_id, spill) = named(&clipped, "Spill");
+        assert_eq!(clipped.focus, spill_id);
+        assert_eq!(spill.bounds().unwrap().x1, 100.0);
+
+        window.children[0].properties.insert("clip", false.into());
+        let open = project(&window);
+        assert_eq!(open.focus, named(&open, "Corner").0);
+        assert_eq!(named(&open, "Spill").1.bounds().unwrap().x1, 140.0);
+
+        // An overflow-only group has no own visible bounds.
+        length(&mut window.children[0], "x", -120.0);
+        let overflow = project(&window);
+        assert_eq!(named(&overflow, "Spill").1.bounds().unwrap().x1, 20.0);
+    }
+
+    #[test]
+    fn z_and_opacity_preserve_accessibility_order_and_actions() {
+        let mut window = Node::new("Window", None);
+        window.children.extend([
+            button("first", "First", 0.0),
+            button("second", "Second", 0.0),
+        ]);
+        let mut projection = Projection::default();
+        let mut input = Interaction::default();
+        let snapshot = |node: &Node| {
+            let scene = Rc::new(node.clone());
+            let frame = Rc::new(layout(&scene, Size::new(160.0, 90.0), &mut Text));
+            (scene, frame)
+        };
+        let (scene, frame) = snapshot(&window);
+        input.focus_next(&scene, &frame, false);
+        let first = projection
+            .update(&scene, &frame, &input, 1.0, None)
+            .unwrap();
+        let (first_id, _) = named(&first, "First");
+        let (second_id, _) = named(&first, "Second");
+
+        window.children[0].properties.insert("z", 2.0_f64.into());
+        window.children[0]
+            .properties
+            .insert("opacity", 0.0_f64.into());
+        let (scene, frame) = snapshot(&window);
+        input.reconcile(&scene, &frame);
+        let update = projection
+            .update(&scene, &frame, &input, 1.0, None)
+            .unwrap();
+        let (id, item) = named(&update, "First");
+        assert_eq!(id, first_id);
+        assert_eq!(update.focus, first_id);
+        assert!(item.supports_action(Action::Click));
+        let root = update.nodes.iter().find(|(id, _)| *id == ROOT).unwrap();
+        assert_eq!(root.1.children(), &[first_id, second_id]);
     }
 
     #[test]
@@ -1518,6 +1809,26 @@ mod tests {
     }
 
     #[test]
+    fn named_images_have_an_image_role_and_decorative_images_are_omitted() {
+        let mut icon = Node::new("Image", Some("named"));
+        length(&mut icon, "width", 32.0);
+        length(&mut icon, "height", 32.0);
+        let mut decorative = icon.clone();
+        length(&mut decorative, "x", 40.0);
+        icon.properties
+            .insert("accessible-name", "Map preview".to_owned().into());
+        let mut window = Node::new("Window", None);
+        window.children.extend([icon, decorative]);
+        let scene = Rc::new(window);
+        let frame = Rc::new(layout(&scene, Size::new(100.0, 60.0), &mut Text));
+        let update = Projection::default()
+            .update(&scene, &frame, &Interaction::default(), 1.0, None)
+            .unwrap();
+        assert_eq!(named(&update, "Map preview").1.role(), Role::Image);
+        assert_eq!(update.nodes.len(), 2);
+    }
+
+    #[test]
     fn styled_text_exposes_full_plain_text_through_the_label_role() {
         let mut label = Node::new("StyledText", Some("rich"));
         length(&mut label, "width", 30.0);
@@ -1537,6 +1848,48 @@ mod tests {
             update.nodes.iter().any(|(_, node)| {
                 node.role() == Role::Label && node.value() == Some("Full text")
             })
+        );
+    }
+
+    #[test]
+    fn styled_text_projects_only_visible_links_with_independent_focus_routes() {
+        let mut label = Node::new("StyledText", Some("links"));
+        length(&mut label, "width", 210.0);
+        label.properties.insert(
+            "text",
+            xrack_runtime::StyledText::from_markdown("[first](#a) [second](#b)\n\n[hidden](#c)")
+                .unwrap()
+                .into(),
+        );
+        label.properties.insert("max-lines", 1_i64.into());
+        label
+            .properties
+            .insert("overflow", xrack_runtime::TextOverflow::Elide.into());
+        let mut scene = Node::new("Window", None);
+        scene.children.push(label);
+        let scene = Rc::new(scene);
+        let frame = Rc::new(layout(&scene, Size::new(240.0, 120.0), &mut Text));
+        let mut input = Interaction::default();
+        input.focus_next(&scene, &frame, false);
+        input.focus_next(&scene, &frame, false);
+        let mut projection = Projection::default();
+        let update = projection
+            .update(&scene, &frame, &input, 1.0, None)
+            .unwrap();
+        let links: Vec<_> = update
+            .nodes
+            .iter()
+            .filter(|(_, node)| node.role() == Role::Link)
+            .collect();
+        assert_eq!(links.len(), 2);
+        assert_eq!(links[0].1.url(), Some("#a"));
+        assert_eq!(links[1].1.url(), Some("#b"));
+        assert_eq!(update.focus, links[1].0);
+        assert!(links[1].1.supports_action(Action::Click));
+        assert!(links[1].1.supports_action(Action::Focus));
+        assert!(
+            matches!(projection.route(update.focus), Some(Route::TextLink(target))
+            if target.text_link_index() == Some(1))
         );
     }
 
@@ -1675,6 +2028,181 @@ mod tests {
         let (_, cell) = named(&update, "47 units");
         assert_eq!(cell.row_index(), Some(200));
         assert_eq!(cell.column_index(), Some(0));
+    }
+
+    #[test]
+    fn component_table_cell_exposes_coordinates_and_keeps_its_editor_role() {
+        let mut table = Node::new("TableView", None);
+        table.list = Some(ListMetrics {
+            row_count: 1,
+            first_row: 0,
+        });
+        table.table_header = Some(Box::new(xrack_runtime::TableHeader {
+            columns: vec![Node::new("TableColumn", None)],
+            sort: None,
+            column_widths: Vec::new(),
+        }));
+        let mut row = Node::new("ListRow", None);
+        let mut record = Node::new("TableRow", None);
+        let mut cell = Node::new("HorizontalLayout", None);
+        cell.properties.insert("table-delegate-cell", true.into());
+        cell.properties.insert("table-selected", true.into());
+        let mut editor = Node::new("LineEdit", Some("entry"));
+        editor
+            .properties
+            .insert("accessible-name", "Delegate editor".to_owned().into());
+        cell.children.push(editor);
+        record.children.push(cell);
+        row.children.push(record);
+        table.children.push(row);
+        let scene = Rc::new(table);
+        let frame = Rc::new(xrack_layout::layout(
+            &scene,
+            Size::new(240.0, 120.0),
+            &mut Text,
+        ));
+        let mut projection = Projection::default();
+        let update = projection
+            .update(&scene, &frame, &Interaction::default(), 1.0, None)
+            .unwrap();
+        let (_, cell) = update
+            .nodes
+            .iter()
+            .find(|(_, node)| node.role() == Role::Cell)
+            .unwrap();
+        assert_eq!(cell.row_index(), Some(0));
+        assert_eq!(cell.column_index(), Some(0));
+        assert_eq!(cell.is_selected(), Some(true));
+        let (id, editor) = named(&update, "Delegate editor");
+        assert_eq!(editor.role(), Role::TextInput);
+        assert!(matches!(projection.route(id), Some(Route::Element { .. })));
+    }
+
+    #[test]
+    fn frozen_columns_hide_scrolled_cells_under_their_pane_from_accessibility() {
+        let mut table = Node::new("TableView", Some("table"));
+        table.properties.insert("frozen-columns", 2_i64.into());
+        table.list = Some(ListMetrics {
+            row_count: 1,
+            first_row: 0,
+        });
+        let mut record = Node::new("TableRow", None);
+        let columns = ["A", "B", "C", "D"].map(|label| {
+            let mut column = Node::new("TableColumn", None);
+            length(&mut column, "width", 100.0);
+            column.properties.insert("title", label.to_owned().into());
+            let mut cell = Node::new("TableCell", None);
+            cell.properties
+                .insert("text", format!("Cell {label}").into());
+            record.children.push(cell);
+            column
+        });
+        let mut row = Node::new("ListRow", None);
+        row.children.push(record);
+        table.children.push(row);
+        table.table_header = Some(Box::new(xrack_runtime::TableHeader {
+            columns: columns.into(),
+            sort: None,
+            column_widths: Vec::new(),
+        }));
+        let scene = Rc::new(table);
+        let size = Size::new(300.0, 130.0);
+        let mut input = Interaction::default();
+        let mut projection = Projection::default();
+        let frame = Rc::new(xrack_layout::layout_with_input(
+            &scene, size, &mut Text, &input,
+        ));
+        let first = projection
+            .update(&scene, &frame, &input, 1.0, None)
+            .unwrap();
+        let (id, frozen) = named(&first, "Cell B");
+        let bounds = frozen.bounds();
+        assert!(input.accessibility_scroll_to(&frame, &[], Orientation::Horizontal, 100.0));
+        let frame = Rc::new(xrack_layout::layout_with_input(
+            &scene, size, &mut Text, &input,
+        ));
+        let update = projection
+            .update(&scene, &frame, &input, 1.0, None)
+            .unwrap();
+        let (after_id, after) = named(&update, "Cell B");
+        assert_eq!(after_id, id);
+        assert_eq!(after.bounds(), bounds);
+        assert!(
+            !update
+                .nodes
+                .iter()
+                .any(|(_, node)| matches!(node.label(), Some("C" | "Cell C")))
+        );
+        assert_eq!(named(&update, "D").1.bounds().unwrap().x0, 200.0);
+        assert_eq!(named(&update, "Cell D").1.column_index(), Some(3));
+    }
+
+    #[test]
+    fn moved_table_columns_keep_accessible_identity_and_report_visual_indices() {
+        let mut table = Node::new("TableView", Some("table"));
+        table
+            .properties
+            .insert("accessible-name", "Moved table".to_owned().into());
+        table.list = Some(ListMetrics {
+            row_count: 1,
+            first_row: 0,
+        });
+        let mut record = Node::new("TableRow", None);
+        let columns = ["Name", "Quantity", "Owner"].map(|title| {
+            let mut column = Node::new("TableColumn", None);
+            column.properties.insert("title", title.to_owned().into());
+            let mut cell = Node::new("TableCell", None);
+            cell.properties
+                .insert("text", format!("{title} value").into());
+            record.children.push(cell);
+            column
+        });
+        let mut row = Node::new("ListRow", None);
+        row.children.push(record);
+        table.children.push(row);
+        table.table_header = Some(Box::new(xrack_runtime::TableHeader {
+            columns: columns.into(),
+            sort: None,
+            column_widths: Vec::new(),
+        }));
+        let layout = |scene: &Node| {
+            Rc::new(xrack_layout::layout(
+                scene,
+                Size::new(300.0, 120.0),
+                &mut Text,
+            ))
+        };
+        let input = Interaction::default();
+        let mut projection = Projection::default();
+        let scene = Rc::new(table.clone());
+        let first = projection
+            .update(&scene, &layout(&scene), &input, 1.0, None)
+            .unwrap();
+        let name = named(&first, "Name").0;
+        let cell = named(&first, "Name value").0;
+
+        let (_, order) = table.table_column_order.moved(3, 0, 2).unwrap();
+        table.table_column_order = order.clone();
+        table.children[0].children[0].table_column_order = order;
+        let scene = Rc::new(table);
+        let update = projection
+            .update(&scene, &layout(&scene), &input, 1.0, None)
+            .unwrap();
+        let (_, table) = named(&update, "Moved table");
+        let (header_id, header) = named(&update, "Name");
+        assert_eq!(header_id, name);
+        assert_eq!(table.children()[2], name);
+        assert_eq!(header.column_index(), Some(2));
+        let (cell_id, value) = named(&update, "Name value");
+        assert_eq!(cell_id, cell);
+        assert_eq!(value.column_index(), Some(2));
+        assert!(matches!(
+            projection.route(name),
+            Some(Route::ControlPart {
+                action: ControlAction::SortColumn(0),
+                ..
+            })
+        ));
     }
 
     #[test]
@@ -2167,6 +2695,152 @@ mod tests {
     }
 
     #[test]
+    fn nonexclusive_group_members_and_a_mixed_master_keep_their_accessible_roles() {
+        let mut scene = Node::new("Window", None);
+        for (index, name, kind) in [
+            (0, "All options", "CheckBox"),
+            (1, "Assets", "CheckBox"),
+            (2, "Background", "Switch"),
+        ] {
+            let mut node = Node::new(kind, None);
+            length(&mut node, "y", f64::from(index) * 40.0);
+            length(&mut node, "height", 34.0);
+            node.properties.insert("text", name.to_owned().into());
+            if index == 0 {
+                node.properties
+                    .insert("check-state", CheckState::PartiallyChecked.into());
+            } else {
+                node.properties.insert("checked", (index == 1).into());
+            }
+            scene.children.push(node);
+        }
+        xrack_runtime::bind_check_group(
+            &mut scene,
+            "options",
+            "Export options".into(),
+            &[&[1], &[2]],
+            true,
+        );
+        let scene = Rc::new(scene);
+        let layout = Rc::new(layout(&scene, Size::new(350.0, 140.0), &mut Text));
+        let mut projection = Projection::default();
+        let update = projection
+            .update(&scene, &layout, &Interaction::default(), 1.0, None)
+            .unwrap();
+        let (group, group_node) = named(&update, "Export options");
+        assert_eq!(group_node.role(), Role::Group);
+        let (_, master) = named(&update, "All options");
+        assert_eq!(master.role(), Role::CheckBox);
+        assert_eq!(master.toggled(), Some(Toggled::Mixed));
+        assert_eq!(master.member_of(), None);
+        let (_, assets) = named(&update, "Assets");
+        let (_, background) = named(&update, "Background");
+        assert_eq!(assets.member_of(), Some(group));
+        assert_eq!(background.member_of(), Some(group));
+        assert_eq!(assets.toggled(), Some(Toggled::True));
+        assert_eq!(background.toggled(), Some(Toggled::False));
+    }
+
+    #[test]
+    fn attached_radio_groups_publish_membership_without_reparenting_controls() {
+        use xrack_runtime::{ButtonGroupSelection, bind_button_group};
+
+        let mut root = Node::new("Window", None);
+        for (index, name) in ["Left group", "Right group"].into_iter().enumerate() {
+            let mut component = Node::new("Rectangle", None);
+            length(&mut component, "x", (index * 160) as f64);
+            length(&mut component, "width", 150.0);
+            length(&mut component, "height", 100.0);
+            for (row, label) in ["One", "Two"].into_iter().enumerate() {
+                let mut radio = Node::new("RadioButton", None);
+                length(&mut radio, "y", (row * 40) as f64);
+                length(&mut radio, "height", 34.0);
+                radio
+                    .properties
+                    .insert("text", format!("{name} {label}").into());
+                component.children.push(radio);
+            }
+            bind_button_group(
+                &mut component,
+                "options",
+                name.into(),
+                &[&[0], &[1]],
+                ButtonGroupSelection::Index(index as i64),
+                index == 0,
+            );
+            root.children.push(component);
+        }
+        let scene = Rc::new(root);
+        let layout = Rc::new(layout(&scene, Size::new(350.0, 130.0), &mut Text));
+        let mut projection = Projection::default();
+        let update = projection
+            .update(&scene, &layout, &Interaction::default(), 1.0, None)
+            .unwrap();
+        let (left, group) = named(&update, "Left group");
+        let (right, disabled) = named(&update, "Right group");
+        assert_eq!(group.role(), Role::RadioGroup);
+        assert_ne!(left, right);
+        assert!(disabled.is_disabled());
+        assert_eq!(named(&update, "Left group One").1.member_of(), Some(left));
+        assert_eq!(named(&update, "Left group Two").1.member_of(), Some(left));
+        assert_eq!(named(&update, "Right group Two").1.member_of(), Some(right));
+        assert_eq!(
+            named(&update, "Left group One").1.toggled(),
+            Some(Toggled::True)
+        );
+        assert_eq!(
+            named(&update, "Right group One").1.toggled(),
+            Some(Toggled::False)
+        );
+    }
+
+    #[test]
+    fn combo_accessibility_keeps_identity_when_a_row_becomes_disabled() {
+        let source = VecModel::from(vec![
+            ("Online".to_owned(), true),
+            ("Archive".to_owned(), true),
+        ]);
+        let items = xrack_runtime::ComboItems::with_enabled(
+            source.clone(),
+            |row| &row.0,
+            |row| row.0.clone().into(),
+            |row| row.1,
+        );
+        let scene = || {
+            let mut root = Node::new("Window", None);
+            let mut combo = Node::new("ComboBox", Some("choice"));
+            length(&mut combo, "width", 150.0);
+            length(&mut combo, "height", 36.0);
+            combo
+                .properties
+                .insert("model", Value::ComboModel(items.snapshot(0, None)));
+            root.children.push(combo);
+            Rc::new(root)
+        };
+        let before = scene();
+        let layout = Rc::new(layout(&before, Size::new(240.0, 160.0), &mut Text));
+        let mut input = Interaction::default();
+        let target = input.accessibility_target(&before, &layout, &[0]).unwrap();
+        assert!(input.open_choice(&before, &layout, target));
+        input.choice_key(&before, &layout, ChoiceKey::End);
+        let mut tree = Projection::default();
+        let update = tree.update(&before, &layout, &input, 1.0, None).unwrap();
+        let (id, option) = named(&update, "Archive");
+        assert_eq!(update.focus, id);
+        assert!(option.supports_action(Action::Click));
+        assert!(source.set_row(1, ("Archive".to_owned(), false)));
+        let after = scene();
+        input.reconcile(&after, &layout);
+        let update = tree.update(&after, &layout, &input, 1.0, None).unwrap();
+        let (current, option) = named(&update, "Archive");
+        assert_eq!(id, current);
+        assert_ne!(update.focus, id);
+        assert!(option.is_disabled());
+        assert!(!option.supports_action(Action::Click));
+        assert!(tree.route(id).is_none());
+    }
+
+    #[test]
     fn combo_popup_exposes_visible_options_and_highlighted_focus() {
         let mut root = Node::new("Window", None);
         let mut combo = Node::new("ComboBox", Some("choice"));
@@ -2199,6 +2873,60 @@ mod tests {
         input.choice_key(&scene, &layout, ChoiceKey::Down);
         let update = tree.update(&scene, &layout, &input, 1.0, None).unwrap();
         assert_eq!(update.focus, named(&update, "Beta").0);
+    }
+
+    #[test]
+    fn editor_context_menu_publishes_actions_and_expires_its_accessibility_session() {
+        let mut root = Node::new("Window", None);
+        let mut entry = Node::new("LineEdit", Some("entry"));
+        length(&mut entry, "width", 180.0);
+        length(&mut entry, "height", 36.0);
+        entry
+            .properties
+            .insert("accessible-name", Value::String("Document".into()));
+        entry
+            .properties
+            .insert("text", Value::String("initial value".into()));
+        root.children.push(entry);
+        let scene = Rc::new(root);
+        let layout = Rc::new(layout(&scene, Size::new(420.0, 280.0), &mut Text));
+        let mut input = Interaction::default();
+        let trigger = input.accessibility_target(&scene, &layout, &[0]).unwrap();
+        input.accessibility_focus(trigger.clone());
+        let mut tree = Projection::default();
+        let update = tree.update(&scene, &layout, &input, 1.0, None).unwrap();
+        assert!(
+            named(&update, "Document")
+                .1
+                .supports_action(Action::ShowContextMenu)
+        );
+        assert!(input.open_context_menu(&scene, &layout, true));
+        let update = tree.update(&scene, &layout, &input, 1.0, None).unwrap();
+        assert_eq!(named(&update, "Text editing").1.role(), Role::Menu);
+        assert!(named(&update, "Copy").1.is_disabled());
+        let old_id = named(&update, "Select All").0;
+        let Some(Route::MenuEntry { entry, .. }) = tree.route(old_id) else {
+            panic!("editor menu action");
+        };
+        let action = input
+            .accessibility_menu_entry(&scene, &layout, &trigger, &entry, true)
+            .unwrap();
+        assert_eq!(action.path, [0]);
+        assert_eq!(
+            action.action,
+            ControlAction::TextCommand(xrack_runtime::TextCommand::SelectAll)
+        );
+        input.apply_text_selection(&scene, xrack_runtime::TextCommand::SelectAll);
+        assert!(input.open_context_menu(&scene, &layout, true));
+        let update = tree.update(&scene, &layout, &input, 1.0, None).unwrap();
+        assert!(named(&update, "Copy").1.supports_action(Action::Click));
+        assert_ne!(named(&update, "Select All").0, old_id);
+        assert!(tree.route(old_id).is_none());
+        assert!(
+            input
+                .accessibility_menu_entry(&scene, &layout, &trigger, &entry, true)
+                .is_none()
+        );
     }
 
     #[test]

@@ -164,6 +164,10 @@ pub enum Type {
     Brush,
     Image,
     ImageFit,
+    ImageTileMode,
+    ImageHorizontalAlignment,
+    ImageVerticalAlignment,
+    ImageRendering,
     LayoutAlignment,
     CrossAxisAlignment,
     Orientation,
@@ -171,6 +175,7 @@ pub enum Type {
     FlexboxLayoutWrap,
     DialInputMode,
     ScrollBarPolicy,
+    ScrollAlignment,
     TextWrap,
     TextHorizontalAlignment,
     TextVerticalAlignment,
@@ -237,6 +242,10 @@ impl Type {
             Self::Brush => "brush",
             Self::Image => "image",
             Self::ImageFit => "imagefit",
+            Self::ImageTileMode => "imagetilemode",
+            Self::ImageHorizontalAlignment => "imagehorizontalalignment",
+            Self::ImageVerticalAlignment => "imageverticalalignment",
+            Self::ImageRendering => "imagerendering",
             Self::LayoutAlignment => "layoutalignment",
             Self::CrossAxisAlignment => "crossaxisalignment",
             Self::Orientation => "orientation",
@@ -244,6 +253,7 @@ impl Type {
             Self::FlexboxLayoutWrap => "flexboxlayoutwrap",
             Self::DialInputMode => "dialinputmode",
             Self::ScrollBarPolicy => "scrollbarpolicy",
+            Self::ScrollAlignment => "scrollalignment",
             Self::TextWrap => "textwrap",
             Self::TextHorizontalAlignment => "texthorizontalalignment",
             Self::TextVerticalAlignment => "textverticalalignment",
@@ -284,6 +294,12 @@ impl Type {
             "brush" => Self::Brush,
             "image" => Self::Image,
             "imagefit" | "ImageFit" => Self::ImageFit,
+            "imagetilemode" | "ImageTileMode" => Self::ImageTileMode,
+            "imagehorizontalalignment" | "ImageHorizontalAlignment" => {
+                Self::ImageHorizontalAlignment
+            }
+            "imageverticalalignment" | "ImageVerticalAlignment" => Self::ImageVerticalAlignment,
+            "imagerendering" | "ImageRendering" => Self::ImageRendering,
             "layoutalignment" | "LayoutAlignment" => Self::LayoutAlignment,
             "crossaxisalignment" | "CrossAxisAlignment" => Self::CrossAxisAlignment,
             "orientation" | "Orientation" => Self::Orientation,
@@ -291,6 +307,7 @@ impl Type {
             "flexboxlayoutwrap" | "FlexboxLayoutWrap" => Self::FlexboxLayoutWrap,
             "dialinputmode" | "DialInputMode" => Self::DialInputMode,
             "scrollbarpolicy" | "ScrollBarPolicy" => Self::ScrollBarPolicy,
+            "scrollalignment" | "ScrollAlignment" => Self::ScrollAlignment,
             "textwrap" | "TextWrap" => Self::TextWrap,
             "texthorizontalalignment" | "TextHorizontalAlignment" => Self::TextHorizontalAlignment,
             "textverticalalignment" | "TextVerticalAlignment" => Self::TextVerticalAlignment,
@@ -340,6 +357,10 @@ impl Type {
     pub fn enum_variants(&self) -> &'static [&'static str] {
         match self {
             Self::ImageFit => &["fill", "contain", "cover", "preserve"],
+            Self::ImageTileMode => &["stretch", "repeat", "round"],
+            Self::ImageHorizontalAlignment => &["left", "center", "right"],
+            Self::ImageVerticalAlignment => &["top", "center", "bottom"],
+            Self::ImageRendering => &["smooth", "pixelated"],
             Self::LayoutAlignment => &[
                 "stretch",
                 "center",
@@ -355,6 +376,7 @@ impl Type {
             Self::FlexboxLayoutWrap => &["wrap", "no-wrap", "wrap-reverse"],
             Self::DialInputMode => &["circular", "horizontal", "vertical"],
             Self::ScrollBarPolicy => &["as-needed", "always-on", "always-off"],
+            Self::ScrollAlignment => &["beginning", "center", "end", "visible", "contain"],
             Self::TextWrap => &["word-wrap", "no-wrap", "char-wrap"],
             Self::TextHorizontalAlignment => &["start", "end", "left", "center", "right"],
             Self::TextVerticalAlignment => &["top", "center", "bottom"],
@@ -415,6 +437,10 @@ impl Serialize for Type {
             Self::StyledText => serializer.serialize_str("styled-text"),
             Self::StringList => serializer.serialize_str("[string]"),
             Self::ImageFit => serializer.serialize_str("ImageFit"),
+            Self::ImageTileMode => serializer.serialize_str("ImageTileMode"),
+            Self::ImageHorizontalAlignment => serializer.serialize_str("ImageHorizontalAlignment"),
+            Self::ImageVerticalAlignment => serializer.serialize_str("ImageVerticalAlignment"),
+            Self::ImageRendering => serializer.serialize_str("ImageRendering"),
             Self::LayoutAlignment => serializer.serialize_str("LayoutAlignment"),
             Self::CrossAxisAlignment => serializer.serialize_str("CrossAxisAlignment"),
             Self::Orientation => serializer.serialize_str("Orientation"),
@@ -422,6 +448,7 @@ impl Serialize for Type {
             Self::FlexboxLayoutWrap => serializer.serialize_str("FlexboxLayoutWrap"),
             Self::DialInputMode => serializer.serialize_str("DialInputMode"),
             Self::ScrollBarPolicy => serializer.serialize_str("ScrollBarPolicy"),
+            Self::ScrollAlignment => serializer.serialize_str("ScrollAlignment"),
             Self::TextWrap => serializer.serialize_str("TextWrap"),
             Self::TextHorizontalAlignment => serializer.serialize_str("TextHorizontalAlignment"),
             Self::TextVerticalAlignment => serializer.serialize_str("TextVerticalAlignment"),
@@ -463,6 +490,8 @@ pub struct Property {
     pub ty: Type,
     pub visibility: String,
     pub value: Option<Expr>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub two_way: bool,
     pub span: Span,
 }
 
@@ -475,6 +504,8 @@ pub struct Callback {
     pub return_type: Option<Type>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub pure: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub alias: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -556,6 +587,11 @@ pub enum ExprKind {
         ty: Type,
     },
     ImageUrl(String),
+    SlicedImageUrl {
+        path: String,
+        slice: String,
+        edges: Vec<String>,
+    },
     Markdown(String),
     Array(Vec<Expr>),
     Record {

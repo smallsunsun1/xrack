@@ -69,3 +69,229 @@ export component MediaDemo inherits Window {
         clicked() => { root.crop = !root.crop; }
     }
 }
+
+export component NineSliceDemo inherits Window {
+    title: "XRack · 九宫格图像";
+    width: 460px; height: 268px;
+    background: #101725;
+    in-out property <length> panel-width: 203px;
+    in-out property <length> panel-height: 129px;
+    in-out property <ImageTileMode> horizontal-mode: stretch;
+    in-out property <ImageTileMode> vertical-mode: stretch;
+    in-out property <image> frame: @image-url("assets/nine-slice.svg", nine-slice(4 6 8 10));
+
+    Label {
+        x: 24px; y: 24px; text: "固定四角，独立平铺两条轴";
+        font-size: 20px; color: #f0f4ff;
+    }
+    sliced := Image {
+        x: 24px; y: 64px; width: root.panel-width; height: root.panel-height;
+        source: root.frame;
+        horizontal-tile-mode: root.horizontal-mode;
+        vertical-tile-mode: root.vertical-mode;
+        accessible-name: "九宫格边框";
+    }
+    Image {
+        x: 253px; y: 64px; width: 183px; height: 129px;
+        source: @image-url("assets/nine-slice.svg");
+        image-fit: fill;
+        accessible-name: "整张图像拉伸对照";
+    }
+    Label {
+        x: 24px; y: 201px; text: "九宫格";
+        color: #a7b6ce;
+    }
+    Label {
+        x: 253px; y: 201px; text: "整张拉伸";
+        color: #a7b6ce;
+    }
+    cycle-horizontal := Button {
+        x: 24px; y: 226px; width: 202px; height: 30px;
+        text: root.horizontal-mode == ImageTileMode.stretch ? "横向拉伸" :
+              root.horizontal-mode == ImageTileMode.repeat ? "横向重复" : "横向等分";
+        clicked() => {
+            root.horizontal-mode = root.horizontal-mode == ImageTileMode.stretch ? repeat :
+                                   root.horizontal-mode == ImageTileMode.repeat ? round : stretch;
+        }
+    }
+    cycle-vertical := Button {
+        x: 253px; y: 226px; width: 183px; height: 30px;
+        text: root.vertical-mode == ImageTileMode.stretch ? "纵向拉伸" :
+              root.vertical-mode == ImageTileMode.repeat ? "纵向重复" : "纵向等分";
+        clicked() => {
+            root.vertical-mode = root.vertical-mode == ImageTileMode.stretch ? repeat :
+                                 root.vertical-mode == ImageTileMode.repeat ? round : stretch;
+        }
+    }
+}
+
+export component AnimatedImageDemo inherits Window {
+    title: "XRack · GIF 播放";
+    width: 460px; height: 258px;
+    background: #101725;
+    in-out property <image> animation: @image-url("assets/pulse.gif");
+    in-out property <bool> running: true;
+    in-out property <bool> pause: false;
+    in-out property <bool> show: true;
+    in-out property <float> rate: 1.0;
+    in-out property <int> passes: -1;
+    out property <int> frame: pulse.current-frame;
+    out property <int> frame-total: pulse.frame-count;
+    out property <int> completions: 0;
+
+    Label {
+        x: 24px; y: 20px;
+        text: "当前帧 " + root.frame + " / " + root.frame-total + " · 完成 " + root.completions;
+        font-size: 19px; color: #f0f4ff;
+    }
+    pulse := AnimatedImage {
+        x: 24px; y: 55px; width: 214px; height: 132px;
+        source: root.animation;
+        playing: root.running; paused: root.pause; speed: root.rate; loops: root.passes;
+        visible: root.show;
+        accessible-name: "GIF 动画";
+        finished() => { root.completions = root.completions + 1; }
+    }
+    Image {
+        x: 266px; y: 55px; width: 170px; height: 105px;
+        source: root.animation;
+        accessible-name: "GIF 首帧";
+    }
+    Label { x: 266px; y: 167px; text: "静态 Image 的首帧"; color: #a7b6ce; }
+    toggle := Button {
+        x: 24px; y: 205px; width: 126px; height: 34px;
+        text: root.running ? "停止" : "播放";
+        clicked() => { root.running = !root.running; }
+    }
+    pause-button := Button {
+        x: 165px; y: 205px; width: 126px; height: 34px;
+        text: root.pause ? "继续" : "暂停";
+        clicked() => { root.pause = !root.pause; }
+    }
+    speed-button := Button {
+        x: 310px; y: 205px; width: 126px; height: 34px;
+        text: root.rate == 1.0 ? "切换 2×" : "切换 1×";
+        clicked() => { root.rate = root.rate == 1.0 ? 2.0 : 1.0; }
+    }
+}
+
+export component SpriteAtlasDemo inherits Window {
+    title: "XRack · 精灵图";
+    width: 460px; height: 282px;
+    background: #101725;
+    in-out property <image> atlas: @image-url("assets/sprite-atlas.png");
+    in-out property <int> column: 0;
+    in-out property <int> row-index: 0;
+    in-out property <int> cell-height: 4;
+    in-out property <ImageFit> fit-mode: contain;
+    in-out property <ImageRendering> sampling: pixelated;
+    in-out property <ImageTileMode> tile-mode: stretch;
+    out property <int> atlas-width: root.atlas.width;
+    out property <int> atlas-height: root.atlas.height;
+
+    Label {
+        x: 24px; y: 20px; font-size: 20px; color: #f0f4ff;
+        text: "精灵图 " + root.atlas-width + " × " + root.atlas-height;
+    }
+    Image {
+        x: 24px; y: 62px; width: 184px; height: 184px;
+        source: root.atlas;
+        image-rendering: pixelated;
+        accessible-name: "原始精灵图";
+    }
+    Rectangle {
+        x: 250px; y: 62px; width: 150px; height: 120px;
+        background: #263653;
+        selected := Image {
+            width: 100%; height: 100%;
+            source: root.atlas;
+            source-clip-x: root.column * 4;
+            source-clip-y: root.row-index * 4;
+            source-clip-width: 4;
+            source-clip-height: root.cell-height;
+            image-fit: root.fit-mode;
+            horizontal-alignment: right;
+            vertical-alignment: bottom;
+            image-rendering: root.sampling;
+            horizontal-tile-mode: root.tile-mode;
+            accessible-name: "选中的图块";
+        }
+    }
+    natural := Image {
+        x: 250px; y: 192px; width: 48px;
+        source: root.atlas;
+        source-clip-x: root.column * 4;
+        source-clip-y: root.row-index * 4;
+        source-clip-width: 4; source-clip-height: root.cell-height;
+        image-rendering: root.sampling;
+    }
+    next := Button {
+        x: 250px; y: 249px; width: 91px; height: 28px; text: "下一格";
+        clicked() => {
+            root.row-index = root.column == 1 ? 1 - root.row-index : root.row-index;
+            root.column = 1 - root.column;
+        }
+    }
+    filter := Button {
+        x: 345px; y: 249px; width: 91px; height: 28px;
+        text: root.sampling == ImageRendering.pixelated ? "像素采样" : "平滑采样";
+        clicked() => { root.sampling = root.sampling == ImageRendering.pixelated ? smooth : pixelated; }
+    }
+}
+
+export component ImageColorizeDemo inherits Window {
+    title: "XRack · 图像着色";
+    width: 624px; height: 266px;
+    background: #101725;
+    in-out property <image> mask: @image-url("assets/color-mask.png");
+    in-out property <brush> accent: #39d6bc;
+    in-out property <int> clip-x: 0;
+    in-out property <int> clip-width: root.mask.width;
+    in-out property <ImageTileMode> tile-mode: stretch;
+    property <bool> alternate: false;
+
+    Label {
+        x: 24px; y: 20px; font-size: 21px; color: #f0f4ff;
+        text: "同一份透明度，可以换不同画刷";
+    }
+    Image {
+        x: 24px; y: 61px; width: 120px; height: 120px;
+        source: root.mask;
+        accessible-name: "原图";
+    }
+    accent-preview := Image {
+        x: 176px; y: 61px; width: 120px; height: 120px;
+        source: root.mask;
+        source-clip-x: root.clip-x; source-clip-width: root.clip-width;
+        horizontal-tile-mode: root.tile-mode;
+        colorize: root.accent;
+        accessible-name: "可切换画刷";
+    }
+    Image {
+        x: 328px; y: 61px; width: 120px; height: 120px;
+        source: root.mask;
+        source-clip-x: root.clip-x; source-clip-width: root.clip-width;
+        horizontal-tile-mode: root.tile-mode;
+        colorize: @linear-gradient(90deg, #f45f51, #3b5cf5);
+        accessible-name: "线性渐变";
+    }
+    Image {
+        x: 480px; y: 61px; width: 120px; height: 120px;
+        source: @image-url("assets/orbit.svg");
+        colorize: @radial-gradient(circle, #fff3ad, #956aff);
+        image-fit: contain;
+        accessible-name: "SVG 径向渐变";
+    }
+    Label { x: 24px; y: 190px; text: "原图"; color: #a7b6ce; }
+    Label { x: 176px; y: 190px; text: "纯色 / 渐变"; color: #a7b6ce; }
+    Label { x: 328px; y: 190px; text: "线性渐变"; color: #a7b6ce; }
+    Label { x: 480px; y: 190px; text: "SVG 径向渐变"; color: #a7b6ce; }
+    toggle-brush := Button {
+        x: 24px; y: 225px; width: 576px; height: 29px;
+        text: root.alternate ? "换回纯色" : "把纯色换成纵向渐变";
+        clicked() => {
+            root.alternate = !root.alternate;
+            root.accent = root.alternate ? @linear-gradient(180deg, #ffd77d, #526dff) : #39d6bc;
+        }
+    }
+}

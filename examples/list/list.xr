@@ -30,9 +30,208 @@ export component ListDemo inherits Window {
     }
 }
 
+export component ScrollPositionDemo inherits Window {
+    title: "XRack · 滚动定位";
+    width: 540px; height: 300px;
+    background: #182331;
+    in-out property <int> count: 10000;
+    in-out property <int> current: 0;
+    in-out property <length> records-target: 0px;
+    in property <bool> preview-enabled: true;
+    in property <bool> pan-enabled: true;
+    out property <length> preview-x: preview.content-x;
+    out property <length> preview-y: preview.content-y;
+    out property <length> records-y: records.content-y;
+    out property <length> records-height: records.visible-height;
+    out property <int> preview-scrolls: 0;
+    out property <int> records-scrolls: 0;
+    out property <length> last-preview-x: 0px;
+    out property <length> last-preview-y: 0px;
+    out property <int> preview-clicks: 0;
+
+    callback scroll-preview(length, length);
+    scroll-preview(x, y) => { preview.scroll-to(x, y); }
+    callback position(int, ScrollAlignment);
+    position(row, alignment) => { records.position-view-at-index(row, alignment); }
+    callback resize-and-position(int, int);
+    resize-and-position(count, row) => {
+        root.count = count;
+        records.position-view-at-index(row, end);
+    }
+
+    Text { x: 16px; y: 12px; text: "滚动定位 · 虚拟列表"; font-size: 20px; }
+    preview := ScrollView {
+        x: 16px; y: 50px; width: 160px; height: 120px;
+        content-width: 320px; content-height: 240px;
+        enabled: root.preview-enabled;
+        mouse-drag-pan-enabled: root.pan-enabled;
+        scrolled() => {
+            root.preview-scrolls += 1;
+            root.last-preview-x = self.content-x;
+            root.last-preview-y = self.content-y;
+        }
+        Rectangle { width: 320px; height: 240px; background: #263750; }
+        Rectangle {
+            x: 96px; y: 60px; width: 88px; height: 80px;
+            background: root.preview-scrolls > 0 ? #49b989 : #4687da;
+        }
+        Text { x: 104px; y: 66px; text: "目标区"; }
+        canvas-button := Button {
+            x: 10px; y: 8px; width: 82px; height: 28px;
+            text: "点或拖";
+            clicked() => { root.preview-clicks += 1; }
+        }
+    }
+    records := ListView {
+        x: 190px; y: 50px; width: 334px; height: 120px; row-height: 24px;
+        current-index <=> root.current;
+        content-y <=> root.records-target;
+        mouse-drag-pan-enabled: root.pan-enabled;
+        scrolled() => { root.records-scrolls += 1; }
+        for item in root.count : Rectangle {
+            background: item % 2 == 0 ? #263750 : #304565;
+            Text { x: 12px; y: 2px; text: "记录 " + item; }
+        }
+    }
+    preview-offset := Text {
+        x: 16px; y: 184px;
+        text: "画布 " + (root.preview-x / 1px) + ", " + (root.preview-y / 1px);
+    }
+    list-offset := Text {
+        x: 190px; y: 184px;
+        text: "列表 Y " + (root.records-y / 1px);
+    }
+    jump := Button {
+        x: 16px; y: 226px; width: 202px; height: 40px;
+        text: "定位到第 9000 行";
+        clicked() => {
+            root.scroll-preview(96px, 60px);
+            root.position(9000, ScrollAlignment.center);
+        }
+    }
+    reset := Button {
+        x: 228px; y: 226px; width: 136px; height: 40px;
+        text: "回到起点";
+        clicked() => { root.scroll-preview(0px, 0px); root.position(0, beginning); }
+    }
+    scroll-status := Text {
+        x: 16px; y: 274px; color: #acc0db;
+        text: "用户滚动  画布 " + root.preview-scrolls + " · 列表 " + root.records-scrolls + " · 点击 " + root.preview-clicks;
+    }
+}
+
+export component LinkedScrollDemo inherits Window {
+    title: "XRack · 双向滚动绑定";
+    width: 540px; height: 270px;
+    background: #182331;
+    in-out property <length> vertical: -36px;
+    in-out property <length> horizontal: 0px;
+    in property <length> small-content: 180px;
+    out property <length> large-y: large.content-y;
+    out property <length> small-y: small.content-y;
+    out property <length> follower-y: follower.content-y;
+    out property <int> large-scrolls: 0;
+    out property <int> small-scrolls: 0;
+    out property <length> large-writeback: 0px;
+
+    Text { x: 16px; y: 12px; text: "目标 Y " + (root.vertical / 1px); font-size: 20px; }
+    Text { x: 16px; y: 45px; text: "共享位置 · 大画布"; }
+    Text { x: 190px; y: 45px; text: "共享位置 · 小画布"; }
+    Text { x: 364px; y: 45px; text: "单向初值"; }
+
+    large := ScrollView {
+        x: 16px; y: 75px; width: 160px; height: 120px;
+        content-width: 320px; content-height: 420px;
+        content-x <=> root.horizontal;
+        content-y <=> root.vertical;
+        scrolled() => {
+            root.large-scrolls += 1;
+            root.large-writeback = root.vertical;
+        }
+        Rectangle { width: 100%; height: 100%; background: #263750; }
+        Rectangle { x: 45px; y: 95px; width: 80px; height: 40px; background: #49b989; }
+    }
+    small := ScrollView {
+        x: 190px; y: 75px; width: 160px; height: 120px;
+        content-height: root.small-content;
+        content-y <=> root.vertical;
+        scrolled() => { root.small-scrolls += 1; }
+        Rectangle { width: 100%; height: 100%; background: #304565; }
+        Rectangle { x: 35px; y: 75px; width: 80px; height: 40px; background: #efab56; }
+    }
+    follower := ScrollView {
+        x: 364px; y: 75px; width: 160px; height: 120px;
+        content-height: 420px;
+        content-y: root.vertical;
+        Rectangle { width: 100%; height: 100%; background: #263750; }
+        Rectangle { x: 35px; y: 95px; width: 80px; height: 40px; background: #4687da; }
+    }
+    move-small := Button {
+        x: 16px; y: 216px; width: 158px; height: 36px;
+        text: "小画布定位到 40";
+        clicked() => { small.scroll-to(0px, 40px); }
+    }
+    set-deep := Button {
+        x: 190px; y: 216px; width: 160px; height: 36px;
+        text: "共享目标设为 -170";
+        clicked() => { root.vertical = -170px; }
+    }
+}
+
 export struct DirectoryItem {
     label: string,
     rank: int,
+}
+
+export component AnchoredListDemo inherits Window {
+    title: "XRack · 保留虚拟列表阅读位置";
+    width: 560px; height: 274px;
+    background: #182331;
+    in-out property <[DirectoryItem]> records: [];
+    in property <length> anchor-row-height: 32px;
+    in property <bool> anchor-comparison: false;
+    out property <length> anchored-y: anchored.content-y;
+    out property <length> plain-y: plain.content-y;
+    out property <int> scroll-events: 0;
+    callback prepend();
+    callback reverse-order();
+    callback position(int);
+    position(index) => {
+        anchored.position-view-at-index(index, beginning);
+        plain.position-view-at-index(index, beginning);
+    }
+
+    Text { x: 16px; y: 12px; text: "保留可见记录"; font-size: 18px; }
+    Text { x: 288px; y: 12px; text: "保留像素偏移"; font-size: 18px; }
+    anchored := ListView {
+        x: 16px; y: 48px; width: 256px; height: 160px; row-height: root.anchor-row-height;
+        preserve-scroll-anchor: true;
+        scrolled() => { root.scroll-events += 1; }
+        for item in root.records : Rectangle {
+            background: item.rank % 2 == 0 ? #263750 : #405971;
+            Text { x: 12px; y: 5px; text: item.label; }
+        }
+    }
+    plain := StandardListView {
+        x: 288px; y: 48px; width: 256px; height: 160px; row-height: 32px;
+        preserve-scroll-anchor: root.anchor-comparison;
+        model: root.records; text-role: "label";
+    }
+    jump := Button {
+        x: 16px; y: 224px; width: 162px; height: 34px;
+        text: "定位到记录 12000";
+        clicked() => { root.position(12000); }
+    }
+    prepend := Button {
+        x: 190px; y: 224px; width: 156px; height: 34px;
+        text: "在开头插入";
+        clicked() => { root.prepend(); }
+    }
+    reverse := Button {
+        x: 358px; y: 224px; width: 156px; height: 34px;
+        text: "反转排序";
+        clicked() => { root.reverse-order(); }
+    }
 }
 
 export component StandardListDemo inherits Window {
@@ -98,12 +297,14 @@ export component GridDemo inherits Window {
     ];
     in-out property <int> current: -1;
     in property <int> jump-index: 1;
+    in property <bool> preserve-viewport: false;
     out property <int> selections: 0;
 
     VerticalLayout {
         padding: 16px; spacing: 8px;
         Text { text: "虚拟网格 · 调整窗口宽度重新排列"; font-size: 20px; }
         tiles := GridView {
+            preserve-scroll-anchor: root.preserve-viewport;
             accessible-name: "资源网格";
             cell-width: 128px; cell-height: 84px; spacing: 8px;
             current-index <=> root.current;

@@ -189,6 +189,16 @@ impl Builder {
         if callback.pure {
             attrs.extend(self.strings(&[("pure", "true")]));
         }
+        if op == "callback" {
+            if let Some(target) = &callback.alias {
+                attrs.extend(
+                    self.strings(&[("alias_owner", &target.owner), ("alias_name", &target.name)]),
+                );
+            }
+            if callback.has_handler && callback.alias.is_some() {
+                attrs.extend(self.strings(&[("implementation", "true")]));
+            }
+        }
         self.open(op, callback.span, &attrs)?;
         for statement in &callback.body {
             match statement {
@@ -229,6 +239,16 @@ impl Builder {
                 ir::Statement::WindowClose { window_close } => {
                     self.emit("window_close", *window_close, &[], &[], &[])?;
                 }
+                ir::Statement::WindowCommand(command) => {
+                    let operands = self.operands(command.argument.as_slice())?;
+                    let attrs = self.strings(&[("command", &command.window_command)]);
+                    self.emit("window_command", command.span, &operands, &[], &attrs)?;
+                }
+                ir::Statement::CheckGroupCommand(command) => {
+                    let state = self.expr(&command.state)?;
+                    let attrs = self.strings(&[("owner", &command.check_group)]);
+                    self.emit("check_group_command", command.span, &[state], &[], &attrs)?;
+                }
                 ir::Statement::SecondaryWindowCommand(command) => {
                     let attrs = self.strings(&[
                         ("owner", &command.secondary_window),
@@ -242,6 +262,28 @@ impl Builder {
                         ("action", if command.clear { "clear" } else { "focus" }),
                     ]);
                     self.emit("focus_command", command.span, &[], &[], &attrs)?;
+                }
+                ir::Statement::TextCommand(command) => {
+                    let operands = self.operands(&command.args)?;
+                    let attrs =
+                        self.strings(&[("owner", &command.owner), ("method", &command.method)]);
+                    self.emit("text_command", command.span, &operands, &[], &attrs)?;
+                }
+                ir::Statement::ScrollCommand(command) => {
+                    let operands = self.operands(&command.args)?;
+                    let attrs =
+                        self.strings(&[("owner", &command.viewport), ("method", &command.method)]);
+                    self.emit("scroll_command", command.span, &operands, &[], &attrs)?;
+                }
+                ir::Statement::MoveColumn(command) => {
+                    let operands = self.operands(&command.positions)?;
+                    let attrs = self.strings(&[("owner", &command.table_owner)]);
+                    self.emit("move_column", command.span, &operands, &[], &attrs)?;
+                }
+                ir::Statement::SetRowHeight(command) => {
+                    let operands = self.operands(&command.arguments)?;
+                    let attrs = self.strings(&[("owner", &command.row_height_owner)]);
+                    self.emit("set_row_height", command.span, &operands, &[], &attrs)?;
                 }
             }
         }
@@ -264,14 +306,25 @@ impl Builder {
         self.open("component", component.span, &attrs)?;
         for member in members {
             match member {
-                LoweredMember::Property(p) => self.consume(
-                    "property",
-                    &p.name,
-                    &p.init,
-                    &[("visibility", &p.visibility)],
-                    p.span,
-                )?,
-                LoweredMember::Callback(cb) => self.callback("callback", &cb)?,
+                LoweredMember::Property(p) => {
+                    let mut attributes = vec![("visibility", p.visibility.as_str())];
+                    if p.alias {
+                        attributes.push(("alias", "true"));
+                    }
+                    self.consume("property", &p.name, &p.init, &attributes, p.span)?;
+                }
+                LoweredMember::Callback(cb) | LoweredMember::InstanceHandler(cb) => {
+                    self.callback("callback", &cb)?
+                }
+                LoweredMember::ClipboardPaste(paste) => {
+                    let attrs = self.strings(&[
+                        ("target", &paste.target),
+                        ("text_parameter", &paste.text_parameter),
+                    ]);
+                    self.open("clipboard_paste", paste.span, &attrs)?;
+                    self.consume("return", "result", &paste.result, &[], paste.result.span)?;
+                    self.close()?;
+                }
                 LoweredMember::BeginElement {
                     kind,
                     id,
@@ -295,6 +348,28 @@ impl Builder {
                 LoweredMember::Binding(b) => {
                     self.consume("bind", &b.name, &b.value, &[], b.span)?
                 }
+                LoweredMember::RadioGroupRef { group, span } => {
+                    self.emit(
+                        "radio_group_ref",
+                        span,
+                        &[],
+                        &[],
+                        &self.strings(&[("group", &group)]),
+                    )?;
+                }
+                LoweredMember::CheckGroupRef {
+                    group,
+                    property,
+                    span,
+                } => {
+                    self.emit(
+                        "check_group_ref",
+                        span,
+                        &[],
+                        &[],
+                        &self.strings(&[("group", &group), ("property", property)]),
+                    )?;
+                }
                 LoweredMember::ActionRef { owner, span } => {
                     self.emit(
                         "action_ref",
@@ -309,6 +384,9 @@ impl Builder {
                 }
                 LoweredMember::ControlLink(b) => {
                     self.consume("control_link", &b.name, &b.value, &[], b.span)?
+                }
+                LoweredMember::InstanceLink(b) => {
+                    self.consume("instance_link", &b.name, &b.value, &[], b.span)?;
                 }
                 LoweredMember::RowLink(b) => {
                     self.consume("row_link", &b.name, &b.value, &[], b.span)?
@@ -347,7 +425,12 @@ impl Builder {
                     let mut attrs = self.strings(&[("name", &binding.name)]);
                     attrs.push(self.integer("case_index", state.case));
                     let selector = self.state_selectors[&state.owner];
-                    self.emit("state_set", binding.span, &[selector, value], &[], &attrs)?;
+                    let operation = if state.instance_input {
+                        "instance_state"
+                    } else {
+                        "state_set"
+                    };
+                    self.emit(operation, binding.span, &[selector, value], &[], &attrs)?;
                 }
                 LoweredMember::StateTiming(state) => {
                     let mut attrs = self.strings(&[("direction", &state.direction)]);

@@ -27,6 +27,16 @@ public interface XrackListener extends ParseTreeListener {
 	 */
 	void exitImportDecl(XrackParser.ImportDeclContext ctx);
 	/**
+	 * Enter a parse tree produced by {@link XrackParser#fontImport}.
+	 * @param ctx the parse tree
+	 */
+	void enterFontImport(XrackParser.FontImportContext ctx);
+	/**
+	 * Exit a parse tree produced by {@link XrackParser#fontImport}.
+	 * @param ctx the parse tree
+	 */
+	void exitFontImport(XrackParser.FontImportContext ctx);
+	/**
 	 * Enter a parse tree produced by {@link XrackParser#importName}.
 	 * @param ctx the parse tree
 	 */
@@ -36,6 +46,26 @@ public interface XrackListener extends ParseTreeListener {
 	 * @param ctx the parse tree
 	 */
 	void exitImportName(XrackParser.ImportNameContext ctx);
+	/**
+	 * Enter a parse tree produced by {@link XrackParser#recordDecl}.
+	 * @param ctx the parse tree
+	 */
+	void enterRecordDecl(XrackParser.RecordDeclContext ctx);
+	/**
+	 * Exit a parse tree produced by {@link XrackParser#recordDecl}.
+	 * @param ctx the parse tree
+	 */
+	void exitRecordDecl(XrackParser.RecordDeclContext ctx);
+	/**
+	 * Enter a parse tree produced by {@link XrackParser#recordField}.
+	 * @param ctx the parse tree
+	 */
+	void enterRecordField(XrackParser.RecordFieldContext ctx);
+	/**
+	 * Exit a parse tree produced by {@link XrackParser#recordField}.
+	 * @param ctx the parse tree
+	 */
+	void exitRecordField(XrackParser.RecordFieldContext ctx);
 	/**
 	 * Enter a parse tree produced by {@link XrackParser#component}.
 	 * @param ctx the parse tree
@@ -66,6 +96,76 @@ public interface XrackListener extends ParseTreeListener {
 	 * @param ctx the parse tree
 	 */
 	void exitAnimation(XrackParser.AnimationContext ctx);
+	/**
+	 * Enter a parse tree produced by {@link XrackParser#animationBody}.
+	 * @param ctx the parse tree
+	 */
+	void enterAnimationBody(XrackParser.AnimationBodyContext ctx);
+	/**
+	 * Exit a parse tree produced by {@link XrackParser#animationBody}.
+	 * @param ctx the parse tree
+	 */
+	void exitAnimationBody(XrackParser.AnimationBodyContext ctx);
+	/**
+	 * Enter a parse tree produced by {@link XrackParser#animationField}.
+	 * @param ctx the parse tree
+	 */
+	void enterAnimationField(XrackParser.AnimationFieldContext ctx);
+	/**
+	 * Exit a parse tree produced by {@link XrackParser#animationField}.
+	 * @param ctx the parse tree
+	 */
+	void exitAnimationField(XrackParser.AnimationFieldContext ctx);
+	/**
+	 * Enter a parse tree produced by {@link XrackParser#stateBlock}.
+	 * @param ctx the parse tree
+	 */
+	void enterStateBlock(XrackParser.StateBlockContext ctx);
+	/**
+	 * Exit a parse tree produced by {@link XrackParser#stateBlock}.
+	 * @param ctx the parse tree
+	 */
+	void exitStateBlock(XrackParser.StateBlockContext ctx);
+	/**
+	 * Enter a parse tree produced by {@link XrackParser#stateDecl}.
+	 * @param ctx the parse tree
+	 */
+	void enterStateDecl(XrackParser.StateDeclContext ctx);
+	/**
+	 * Exit a parse tree produced by {@link XrackParser#stateDecl}.
+	 * @param ctx the parse tree
+	 */
+	void exitStateDecl(XrackParser.StateDeclContext ctx);
+	/**
+	 * Enter a parse tree produced by {@link XrackParser#stateBinding}.
+	 * @param ctx the parse tree
+	 */
+	void enterStateBinding(XrackParser.StateBindingContext ctx);
+	/**
+	 * Exit a parse tree produced by {@link XrackParser#stateBinding}.
+	 * @param ctx the parse tree
+	 */
+	void exitStateBinding(XrackParser.StateBindingContext ctx);
+	/**
+	 * Enter a parse tree produced by {@link XrackParser#stateTransition}.
+	 * @param ctx the parse tree
+	 */
+	void enterStateTransition(XrackParser.StateTransitionContext ctx);
+	/**
+	 * Exit a parse tree produced by {@link XrackParser#stateTransition}.
+	 * @param ctx the parse tree
+	 */
+	void exitStateTransition(XrackParser.StateTransitionContext ctx);
+	/**
+	 * Enter a parse tree produced by {@link XrackParser#transitionAnimation}.
+	 * @param ctx the parse tree
+	 */
+	void enterTransitionAnimation(XrackParser.TransitionAnimationContext ctx);
+	/**
+	 * Exit a parse tree produced by {@link XrackParser#transitionAnimation}.
+	 * @param ctx the parse tree
+	 */
+	void exitTransitionAnimation(XrackParser.TransitionAnimationContext ctx);
 	/**
 	 * Enter a parse tree produced by {@link XrackParser#property}.
 	 * @param ctx the parse tree
@@ -307,6 +407,26 @@ public interface XrackListener extends ParseTreeListener {
 	 */
 	void exitArrayLiteral(XrackParser.ArrayLiteralContext ctx);
 	/**
+	 * Enter a parse tree produced by {@link XrackParser#recordLiteral}.
+	 * @param ctx the parse tree
+	 */
+	void enterRecordLiteral(XrackParser.RecordLiteralContext ctx);
+	/**
+	 * Exit a parse tree produced by {@link XrackParser#recordLiteral}.
+	 * @param ctx the parse tree
+	 */
+	void exitRecordLiteral(XrackParser.RecordLiteralContext ctx);
+	/**
+	 * Enter a parse tree produced by {@link XrackParser#recordValue}.
+	 * @param ctx the parse tree
+	 */
+	void enterRecordValue(XrackParser.RecordValueContext ctx);
+	/**
+	 * Exit a parse tree produced by {@link XrackParser#recordValue}.
+	 * @param ctx the parse tree
+	 */
+	void exitRecordValue(XrackParser.RecordValueContext ctx);
+	/**
 	 * Enter a parse tree produced by {@link XrackParser#imageUrl}.
 	 * @param ctx the parse tree
 	 */
@@ -316,6 +436,36 @@ public interface XrackListener extends ParseTreeListener {
 	 * @param ctx the parse tree
 	 */
 	void exitImageUrl(XrackParser.ImageUrlContext ctx);
+	/**
+	 * Enter a parse tree produced by {@link XrackParser#imageSlice}.
+	 * @param ctx the parse tree
+	 */
+	void enterImageSlice(XrackParser.ImageSliceContext ctx);
+	/**
+	 * Exit a parse tree produced by {@link XrackParser#imageSlice}.
+	 * @param ctx the parse tree
+	 */
+	void exitImageSlice(XrackParser.ImageSliceContext ctx);
+	/**
+	 * Enter a parse tree produced by {@link XrackParser#imageEdge}.
+	 * @param ctx the parse tree
+	 */
+	void enterImageEdge(XrackParser.ImageEdgeContext ctx);
+	/**
+	 * Exit a parse tree produced by {@link XrackParser#imageEdge}.
+	 * @param ctx the parse tree
+	 */
+	void exitImageEdge(XrackParser.ImageEdgeContext ctx);
+	/**
+	 * Enter a parse tree produced by {@link XrackParser#markdown}.
+	 * @param ctx the parse tree
+	 */
+	void enterMarkdown(XrackParser.MarkdownContext ctx);
+	/**
+	 * Exit a parse tree produced by {@link XrackParser#markdown}.
+	 * @param ctx the parse tree
+	 */
+	void exitMarkdown(XrackParser.MarkdownContext ctx);
 	/**
 	 * Enter a parse tree produced by {@link XrackParser#gradient}.
 	 * @param ctx the parse tree

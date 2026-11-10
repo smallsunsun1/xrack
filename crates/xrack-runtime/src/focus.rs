@@ -27,6 +27,20 @@ impl PartialEq for FocusHandle {
 pub enum FocusAction {
     Focus,
     Clear,
+    Text(TextCommand),
+}
+
+/// A programmatic edit using the same selection, validation and history as keyboard input.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TextCommand {
+    SelectAll,
+    ClearSelection,
+    SetSelection { anchor: i64, focus: i64 },
+    Undo,
+    Redo,
+    Cut,
+    Copy,
+    Paste,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

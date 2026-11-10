@@ -80,7 +80,8 @@ export component SelectionDemo inherits Window {
     }
 }
 
-export struct WorkspaceOption { code: int, title: string, notes: string }
+export struct WorkspaceAccess { available: bool }
+export struct WorkspaceOption { code: int, title: string, notes: string, access: WorkspaceAccess }
 
 export component RecordComboDemo inherits Window {
     title: "XRack · 记录下拉框";
@@ -88,9 +89,12 @@ export component RecordComboDemo inherits Window {
     color-scheme: system;
 
     in-out property <[WorkspaceOption]> options: [
-        WorkspaceOption { code: 200, title: "共享工作区", notes: "团队 B" },
-        WorkspaceOption { code: 100, title: "共享工作区", notes: "团队 A" },
-        WorkspaceOption { code: 300, title: "归档", notes: "只读归档" }
+        WorkspaceOption { code: 200, title: "共享工作区", notes: "团队 B", access: WorkspaceAccess { available: true } },
+        WorkspaceOption { code: 100, title: "共享工作区", notes: "团队 A", access: WorkspaceAccess { available: true } },
+        WorkspaceOption { code: 300, title: "归档", notes: "只读归档", access: WorkspaceAccess { available: true } },
+        WorkspaceOption { code: 400, title: "Build archive", notes: "离线", access: WorkspaceAccess { available: false } },
+        WorkspaceOption { code: 500, title: "Build", notes: "在线", access: WorkspaceAccess { available: true } },
+        WorkspaceOption { code: 600, title: "Board", notes: "在线", access: WorkspaceAccess { available: true } },
     ];
     in-out property <int> code: 200;
     in-out property <bool> editable: false;
@@ -98,6 +102,7 @@ export component RecordComboDemo inherits Window {
     out property <string> selected-label: "";
     out property <string> accepted-text: "";
     callback reorder;
+    callback toggle-archive;
 
     Text { x: 20px; y: 16px; text: "记录模型与业务编号"; font-size: 22px; }
     choice := ComboBox {
@@ -106,8 +111,10 @@ export component RecordComboDemo inherits Window {
         model: root.options;
         text-role: "title";
         value-role: "code";
+        enabled-role: "access.available";
         current-value <=> root.code;
         editable: root.editable;
+        auto-complete: true;
         selected(label) => { root.selected-label = label; }
         value-selected(value) => { root.selected-code = value; }
         accepted(text) => { root.accepted-text = text; }
@@ -118,9 +125,71 @@ export component RecordComboDemo inherits Window {
         clicked => { root.reorder(); }
     }
     enable-editing := CheckBox { x: 20px; y: 136px; text: "允许编辑"; checked <=> root.editable; }
+    toggle-archive := Button {
+        x: 294px; y: 132px; width: 156px; height: 38px;
+        text: "切换 Build archive";
+        clicked => { root.toggle-archive(); }
+    }
     Text { x: 20px; y: 182px; text: "当前编号 · " + root.code; }
     Text { x: 20px; y: 213px; text: "已选择编号 · " + root.selected-code; }
     Text { x: 20px; y: 246px; text: "已提交文本 · " + root.accepted-text; }
+}
+
+export component GroupedRadiosDemo inherits Window {
+    title: "XRack · 分布式单选组";
+    width: 540px; height: 280px;
+    background: #162338;
+    in-out property <string> mode: "balanced";
+    in-out property <string> balanced-label: "均衡";
+    in-out property <bool> show-audit: true;
+    in-out property <bool> can-audit: true;
+    in-out property <bool> mode-enabled: true;
+    in-out property <int> quality: 1;
+    in-out property <bool> show-high: true;
+    out property <string> last-mode: "";
+
+    modes := ButtonGroup {
+        accessible-name: "构建模式";
+        enabled: root.mode-enabled;
+        current-value <=> root.mode;
+        selected(value) => { root.last-mode = value; }
+    }
+    VerticalLayout {
+        padding: 18px; spacing: 8px;
+        Label { text: "同一组可以跨列排布"; font-size: 22px; }
+        HorizontalLayout {
+            spacing: 18px;
+            VerticalLayout {
+                spacing: 4px;
+                fast := RadioButton { group: modes; value: "fast"; text: "快速"; }
+                if root.show-audit : audit := RadioButton {
+                    group: modes; value: "audit"; text: "审计"; enabled: root.can-audit;
+                }
+            }
+            VerticalLayout {
+                spacing: 4px;
+                balanced := RadioButton { group: modes; value: "balanced"; text: root.balanced-label; }
+                Label { text: "选择值与显示标签独立"; }
+            }
+        }
+        quality-picker := QualityPicker { choice <=> root.quality; show-high: root.show-high; }
+        HorizontalLayout {
+            spacing: 12px;
+            show-audit-toggle := CheckBox { text: "显示审计"; checked <=> root.show-audit; }
+            allow-audit-toggle := CheckBox { text: "允许审计"; checked <=> root.can-audit; }
+        }
+        Label { text: "模式 " + root.mode + " · 质量槽位 " + root.quality; }
+    }
+}
+
+component QualityPicker inherits HorizontalLayout {
+    in-out property <int> choice: 1;
+    in property <bool> show-high: true;
+    quality-options := ButtonGroup { accessible-name: "输出质量"; current-index <=> root.choice; }
+    Label { text: "输出质量"; }
+    low-quality := RadioButton { group: quality-options; text: "标准"; }
+    if root.show-high : high-quality := RadioButton { group: quality-options; text: "高"; }
+    ultra-quality := RadioButton { group: quality-options; text: "超高"; }
 }
 
 export component EditableChoiceDemo inherits Window {

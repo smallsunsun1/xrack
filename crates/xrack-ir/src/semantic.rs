@@ -35,12 +35,128 @@ fn stack_read_type(name: &str) -> Option<Type> {
     })
 }
 
+fn playback_property(name: &str) -> bool {
+    matches!(name, "current-frame" | "frame-count")
+}
+
+pub fn window_status_property(name: &str) -> bool {
+    matches!(
+        name,
+        "window-active" | "minimized" | "minimized-known" | "maximized" | "full-screen"
+    )
+}
+
+pub fn viewport_kind(kind: &str) -> bool {
+    matches!(
+        kind,
+        "ScrollView"
+            | "ListView"
+            | "GridView"
+            | "StandardListView"
+            | "TreeView"
+            | "TableView"
+            | "StandardTableView"
+    )
+}
+
+fn row_height_view(kind: &str) -> bool {
+    matches!(
+        kind,
+        "ListView" | "StandardListView" | "TableView" | "StandardTableView" | "TreeView"
+    )
+}
+
+fn viewport_property(kind: &str, name: &str) -> bool {
+    viewport_kind(kind)
+        && matches!(
+            name,
+            "content-x" | "content-y" | "visible-width" | "visible-height"
+        )
+}
+
+pub fn viewport_offset_property(kind: &str, name: &str) -> bool {
+    match name {
+        "content-y" => viewport_kind(kind),
+        "content-x" => matches!(kind, "ScrollView" | "TableView" | "StandardTableView"),
+        _ => false,
+    }
+}
+
+fn box_shadow_type(name: &str) -> Option<Type> {
+    Some(match name {
+        "drop-shadow-color" | "inner-shadow-color" => Type::Color,
+        "drop-shadow-blur"
+        | "drop-shadow-offset-x"
+        | "drop-shadow-offset-y"
+        | "drop-shadow-spread"
+        | "inner-shadow-blur"
+        | "inner-shadow-offset-x"
+        | "inner-shadow-offset-y"
+        | "inner-shadow-spread" => Type::Length,
+        _ => return None,
+    })
+}
+
 pub fn builtin_property(kind: &str, name: &str) -> Option<Type> {
     if !is_builtin(kind) {
         return None;
     }
+    if geometry_owner(kind)
+        && let Some(ty) = geometry_property(name)
+    {
+        return Some(ty);
+    }
+    if viewport_property(kind, name) {
+        return Some(Type::Length);
+    }
+    if kind == "Window" && window_status_property(name) {
+        return Some(Type::Bool);
+    }
+    if name == "mouse-drag-pan-enabled" && viewport_kind(kind) {
+        return Some(Type::Bool);
+    }
+    if name == "preserve-scroll-anchor" && viewport_kind(kind) && kind != "ScrollView" {
+        return Some(Type::Bool);
+    }
+    if name.starts_with("transform-")
+        && matches!(
+            kind,
+            "Window"
+                | "Dialog"
+                | "Drawer"
+                | "PopupWindow"
+                | "SecondaryWindow"
+                | "TimePickerPopup"
+                | "DatePickerPopup"
+                | "ColorPickerPopup"
+                | "Menu"
+                | "MenuItem"
+                | "MenuSeparator"
+                | "Tooltip"
+                | "Tab"
+                | "TabButton"
+                | "TableColumn"
+        )
+    {
+        return None;
+    }
+    if name == "clip" {
+        return (kind == "Rectangle").then_some(Type::Bool);
+    }
+    if let Some(ty) = box_shadow_type(name) {
+        return (kind == "Rectangle").then_some(ty);
+    }
     if kind == "SecondaryWindow" {
         return (name == "visible").then_some(Type::Bool);
+    }
+    if kind == "ButtonGroup" {
+        return match name {
+            "accessible-name" | "current-value" => Some(Type::String),
+            "enabled" | "exclusive" => Some(Type::Bool),
+            "current-index" => Some(Type::Int),
+            "check-state" => Some(Type::CheckState),
+            _ => None,
+        };
     }
     if kind == "Action" {
         return match name {
@@ -83,6 +199,11 @@ pub fn builtin_property(kind: &str, name: &str) -> Option<Type> {
             _ => None,
         };
     }
+    if matches!(name, "z" | "opacity")
+        && matches!(kind, "MenuItem" | "MenuSeparator" | "TableColumn")
+    {
+        return None;
+    }
     if let Some(ty) = layout_item_property(name) {
         return Some(ty);
     }
@@ -93,10 +214,41 @@ pub fn builtin_property(kind: &str, name: &str) -> Option<Type> {
             _ => builtin_property("Button", name),
         };
     }
-    if kind == "StyledText" && name == "text" {
-        return Some(Type::StyledText);
+    if kind == "AnimatedImage" {
+        return match name {
+            "playing" | "paused" => Some(Type::Bool),
+            "speed" => Some(Type::Float),
+            "loops" => Some(Type::Int),
+            name if playback_property(name) => Some(Type::Int),
+            _ => builtin_property("Image", name),
+        };
     }
-    if matches!(kind, "Label" | "StyledText") {
+    if kind == "Image" {
+        return match name {
+            "source" => Some(Type::Image),
+            "image-fit" => Some(Type::ImageFit),
+            "colorize" => Some(Type::Brush),
+            "source-clip-x" | "source-clip-y" | "source-clip-width" | "source-clip-height" => {
+                Some(Type::Int)
+            }
+            "horizontal-tile-mode" | "vertical-tile-mode" => Some(Type::ImageTileMode),
+            "horizontal-alignment" => Some(Type::ImageHorizontalAlignment),
+            "vertical-alignment" => Some(Type::ImageVerticalAlignment),
+            "image-rendering" => Some(Type::ImageRendering),
+            "accessible-name" | "accessible-description" => Some(Type::String),
+            "visible" => Some(Type::Bool),
+            _ => None,
+        };
+    }
+    if kind == "StyledText" {
+        return match name {
+            "text" => Some(Type::StyledText),
+            "link-color" => Some(Type::Color),
+            "enabled" => Some(Type::Bool),
+            _ => builtin_property("Text", name),
+        };
+    }
+    if kind == "Label" {
         return builtin_property("Text", name);
     }
     if focus_property(kind, name) {
@@ -109,15 +261,20 @@ pub fn builtin_property(kind: &str, name: &str) -> Option<Type> {
     }
     Some(match name {
         "accessible-name" | "accessible-description" => Type::String,
+        "value" if kind == "RadioButton" => Type::String,
+        "group" if matches!(kind, "RadioButton" | "CheckBox" | "Switch") => Type::String,
         "color-scheme" if kind == "Window" => Type::ColorScheme,
         "accent-color" if kind == "Window" => Type::Color,
+        "no-frame" | "resizable" if kind == "Window" => Type::Bool,
+        "resize-border-width" if kind == "Window" => Type::Length,
         "initial-focus" if kind == "FocusScope" => Type::String,
+        "focus-on-click" if matches!(kind, "Button" | "ToolButton") => Type::Bool,
         "focus-on-click" | "focus-on-tab-navigation" | "restore-focus" | "enabled"
             if kind == "FocusScope" =>
         {
             Type::Bool
         }
-        "enabled" if matches!(kind, "DragArea" | "DropArea") => Type::Bool,
+        "enabled" if matches!(kind, "DragArea" | "DropArea" | "WindowMoveArea") => Type::Bool,
         "data" | "drag-key" if kind == "DragArea" => Type::String,
         "allow-copy" | "allow-move" | "allow-link" if kind == "DragArea" => Type::Bool,
         "keys" if kind == "DropArea" => Type::StringList,
@@ -286,6 +443,7 @@ pub fn builtin_property(kind: &str, name: &str) -> Option<Type> {
                     | "Page"
                     | "PageHeader"
                     | "PageFooter"
+                    | "ScrollView"
                     | "ListView"
                     | "GridView"
                     | "StandardListView"
@@ -374,7 +532,7 @@ pub fn builtin_property(kind: &str, name: &str) -> Option<Type> {
         }
         "model" if matches!(kind, "ComboBox" | "Tumbler" | "StandardListView") => Type::StringList,
         "text-role" if matches!(kind, "StandardListView" | "ComboBox") => Type::String,
-        "value-role" if kind == "ComboBox" => Type::String,
+        "value-role" | "enabled-role" if kind == "ComboBox" => Type::String,
         "model" if kind == "StandardTableView" => Type::RecordList("Record".into()),
         "field" if kind == "TableColumn" => Type::String,
         "follow-current"
@@ -420,7 +578,7 @@ pub fn builtin_property(kind: &str, name: &str) -> Option<Type> {
         "initial-page" if kind == "StackView" => Type::String,
         "transition-duration" if kind == "StackView" => Type::Int,
         "dot-size" | "spacing" if kind == "PageIndicator" => Type::Length,
-        "current-row" if table_view(kind) => Type::Int,
+        "current-row" | "frozen-columns" if table_view(kind) => Type::Int,
         "current-key" if kind == "TreeView" => Type::Int,
         "key" | "parent-key" if kind == "TreeRow" => Type::Int,
         "indentation" if kind == "TreeView" => Type::Length,
@@ -429,8 +587,14 @@ pub fn builtin_property(kind: &str, name: &str) -> Option<Type> {
         {
             Type::Length
         }
+        "row-height-field" if row_height_view(kind) => Type::String,
         "header-height" if table_view(kind) => Type::Length,
-        "resizable-columns" if table_view(kind) => Type::Bool,
+        "resizable-columns" | "resizable-rows" | "movable-columns" | "copyable"
+            if table_view(kind) =>
+        {
+            Type::Bool
+        }
+        "pasteable" if kind == "TableView" => Type::Bool,
         "multi-select" if table_view(kind) || kind == "TreeView" => Type::Bool,
         "selection-target" if table_view(kind) => Type::SelectionTarget,
         "sortable" | "resizable" if kind == "TableColumn" => Type::Bool,
@@ -453,6 +617,15 @@ pub fn builtin_property(kind: &str, name: &str) -> Option<Type> {
         "wrap" if matches!(kind, "ToolBar" | "DialogButtonBox") => Type::Bool,
         "auto-complete" if kind == "ComboBox" => Type::Bool,
         "placeholder-text" if text_input(kind) || kind == "ComboBox" => Type::String,
+        "context-menu-enabled"
+            if text_input(kind)
+                || matches!(
+                    kind,
+                    "ComboBox" | "SpinBox" | "DoubleSpinBox" | "TableCell" | "TreeCell"
+                ) =>
+        {
+            Type::Bool
+        }
         "read-only"
             if text_input(kind)
                 || matches!(kind, "SpinBox" | "DoubleSpinBox" | "TableCell" | "TreeCell") =>
@@ -540,8 +713,6 @@ pub fn builtin_property(kind: &str, name: &str) -> Option<Type> {
         {
             Type::Brush
         }
-        "source" if kind == "Image" => Type::Image,
-        "image-fit" if kind == "Image" => Type::ImageFit,
         "commands" if kind == "Path" => Type::String,
         "fill" | "stroke" if kind == "Path" => Type::Brush,
         "stroke-width" if matches!(kind, "Path" | "Spinner" | "BusyIndicator") => Type::Length,
@@ -553,11 +724,32 @@ pub fn builtin_property(kind: &str, name: &str) -> Option<Type> {
     })
 }
 
+pub fn geometry_property(name: &str) -> Option<Type> {
+    Some(match name {
+        "layout-x"
+        | "layout-y"
+        | "layout-width"
+        | "layout-height"
+        | "window-bounds-x"
+        | "window-bounds-y"
+        | "window-bounds-width"
+        | "window-bounds-height" => Type::Length,
+        "layout-ready" => Type::Bool,
+        _ => return None,
+    })
+}
+
+pub fn geometry_owner(kind: &str) -> bool {
+    !nonvisual_element(kind) && kind != "TableColumn"
+}
+
 pub fn layout_item_property(name: &str) -> Option<Type> {
     Some(match name {
         "width" | "height" | "x" | "y" | "min-width" | "min-height" | "preferred-width"
-        | "preferred-height" | "max-width" | "max-height" => Type::Length,
-        "horizontal-stretch" | "vertical-stretch" => Type::Float,
+        | "preferred-height" | "max-width" | "max-height" | "transform-origin-x"
+        | "transform-origin-y" => Type::Length,
+        "horizontal-stretch" | "vertical-stretch" | "z" | "opacity" | "transform-rotation"
+        | "transform-scale" | "transform-scale-x" | "transform-scale-y" => Type::Float,
         "visible" => Type::Bool,
         "layout-order" | "row" | "col" | "rowspan" | "colspan" => Type::Int,
         "cross-axis-self-alignment" => Type::CrossAxisAlignment,
@@ -593,12 +785,14 @@ pub fn is_builtin(s: &str) -> bool {
         || matches!(
             s,
             "Window"
+                | "WindowMoveArea"
                 | "Rectangle"
                 | "Page"
                 | "Text"
                 | "Label"
                 | "StyledText"
                 | "Button"
+                | "ButtonGroup"
                 | "StandardButton"
                 | "Action"
                 | "Timer"
@@ -621,6 +815,7 @@ pub fn is_builtin(s: &str) -> bool {
                 | "DragArea"
                 | "DropArea"
                 | "Image"
+                | "AnimatedImage"
                 | "Path"
                 | "GridLayout"
                 | "Row"
@@ -779,6 +974,9 @@ fn key_handler(event: &str) -> bool {
 }
 
 fn control_event(kind: &str, event: &str) -> bool {
+    if event == "scrolled" {
+        return viewport_kind(kind);
+    }
     if kind == "TreeView" {
         return matches!(
             event,
@@ -800,7 +998,7 @@ fn control_event(kind: &str, event: &str) -> bool {
         || matches!(kind, "Slider" | "RangeSlider" | "Dial")
             && matches!(event, "changed" | "released")
         || matches!(kind, "SpinBox" | "DoubleSpinBox") && event == "edited"
-        || matches!(kind, "ComboBox" | "RadioGroup") && event == "selected"
+        || matches!(kind, "ComboBox" | "RadioGroup" | "ButtonGroup") && event == "selected"
         || kind == "ComboBox" && matches!(event, "edited" | "accepted" | "value-selected")
         || matches!(
             kind,
@@ -816,7 +1014,11 @@ fn control_event(kind: &str, event: &str) -> bool {
         || table_view(kind)
             && matches!(
                 event,
-                "current-row-changed" | "selection-changed" | "sort-ascending" | "sort-descending"
+                "current-row-changed"
+                    | "selection-changed"
+                    | "sort-ascending"
+                    | "sort-descending"
+                    | "column-moved"
             )
         || kind == "Dialog"
             && matches!(
@@ -828,6 +1030,8 @@ fn control_event(kind: &str, event: &str) -> bool {
         || kind == "Calendar" && matches!(event, "changed" | "month-changed")
         || kind == "TimePicker" && event == "changed"
         || kind == "SwipeDelegate" && matches!(event, "clicked" | "changed")
+        || kind == "StyledText" && event == "link-activated"
+        || kind == "AnimatedImage" && event == "finished"
         || kind == "Timer" && event == "triggered"
         || kind == "FileDialog" && matches!(event, "accepted" | "canceled" | "failed")
         || kind == "MessageDialog"
@@ -859,10 +1063,70 @@ pub fn builtin_event(kind: &str, event: &str) -> bool {
         || control_event(kind, event)
 }
 
+fn event_parameters<'a>(
+    kind: &str,
+    event: &str,
+    combo_value: Option<&'a Type>,
+    span: Span,
+) -> Result<&'a [Type]> {
+    let scrolled = event == "scrolled";
+    let key_handler = kind == "FocusScope" && key_handler(event);
+    Ok(match kind {
+        _ if scrolled => &[],
+        _ if event == "column-moved" => &[Type::Int, Type::Int],
+        "FocusScope" if key_handler => &[Type::KeyEvent],
+        "FocusScope" if event == "focus-within-changed" => &[Type::Bool, Type::FocusReason],
+        "FocusScope" if focus_handler(&event) => &[Type::FocusReason],
+        "Slider" | "Dial" | "DoubleSpinBox" => &[Type::Float],
+        "RangeSlider" => &[Type::Float, Type::Float],
+        "Calendar" => &[Type::Date],
+        "TimePicker" => &[Type::Time],
+        "TimePickerPopup" if event == "accepted" => &[Type::Time],
+        "DatePickerPopup" if event == "accepted" => &[Type::Date],
+        "ColorPickerPopup" if event == "accepted" => &[Type::Color],
+        "FileDialog" if event == "accepted" => &[Type::StringList],
+        "MessageDialog" if event == "finished" => &[Type::StandardButtonKind],
+        kind if native_dialog(kind) && event == "failed" => &[Type::String],
+        "GroupBox" => &[Type::Bool],
+        "CheckBox" if event == "check-state-changed" => &[Type::CheckState],
+        "StackView" => &[Type::String, Type::Int],
+        "SwipeDelegate" if event == "changed" => &[Type::SwipeSide],
+        "StyledText" => &[Type::String],
+        "DragArea" if event == "drag-finished" => &[Type::DragAction],
+        "DropArea" if matches!(event, "entered" | "dropped") => &[Type::String, Type::DragAction],
+        "DropArea" if event == "position-changed" => &[Type::Length, Type::Length],
+        "DropArea" if matches!(event, "files-entered" | "files-dropped") => &[Type::StringList],
+        "SpinBox" | "TabWidget" | "TabBar" | "SwipeView" | "PageIndicator" | "ListView"
+        | "GridView" | "StandardListView" | "TableView" | "StandardTableView" | "TreeView"
+        | "Tumbler" => &[Type::Int],
+        "ComboBox" if event == "value-selected" => {
+            let Some(ty) = combo_value else {
+                return fail(span, "value-selected requires a record ComboBox model");
+            };
+            std::slice::from_ref(ty)
+        }
+        "ComboBox" | "RadioGroup" | "ButtonGroup" | "SearchField" => &[Type::String],
+        "TextEdit" | "TextArea" => &[Type::String],
+        _ => &[],
+    })
+}
+
+fn event_return_type(kind: &str, event: &str) -> Option<Type> {
+    if kind == "Window" && event == "close-requested" {
+        Some(Type::Bool)
+    } else if kind == "FocusScope" && key_handler(event) {
+        Some(Type::EventResult)
+    } else {
+        None
+    }
+}
+
 /// Validated members of one source component, in lowering order.
 pub enum LoweredMember<'a> {
     Property(ir::Property),
     Callback(ir::Callback),
+    InstanceHandler(ir::Callback),
+    ClipboardPaste(ir::ClipboardPaste),
     BeginElement {
         kind: &'a str,
         id: Option<&'a str>,
@@ -875,9 +1139,19 @@ pub enum LoweredMember<'a> {
         owner: String,
         span: Span,
     },
+    RadioGroupRef {
+        group: String,
+        span: Span,
+    },
+    CheckGroupRef {
+        group: String,
+        property: &'static str,
+        span: Span,
+    },
     InstanceLayout(ir::Binding),
     Condition(ir::Expr),
     ControlLink(ir::Binding),
+    InstanceLink(ir::Binding),
     RowLink(ir::Binding),
     Animation(ir::Animation),
     StateSelection(ir::StateSelection),
@@ -938,9 +1212,31 @@ pub fn for_each_component(
         return Err(errors);
     }
 
+    let mut scopes = BTreeMap::new();
+    for c in &components {
+        let mut scope = Scope {
+            records: records.clone(),
+            component_name: &c.name,
+            ..Scope::default()
+        };
+        match scope.register(&definitions, &c.members, &c.base, "root", None, c.span) {
+            Ok(()) => {
+                scopes.insert(c.name.as_str(), scope);
+            }
+            Err(error) => errors.push(error),
+        }
+    }
+    if !errors.is_empty() {
+        return Err(errors);
+    }
+    let callbacks = std::rc::Rc::new(resolve_callbacks(&scopes).map_err(|error| vec![error])?);
     let mut validated = Vec::new();
     for c in &components {
-        match component(c, &definitions, &records) {
+        let mut scope = scopes
+            .remove(c.name.as_str())
+            .expect("registered component scope");
+        scope.callback_catalog = Some(callbacks.clone());
+        match component(c, scope) {
             Ok(members) => validated.push((c, members)),
             Err(e) => errors.push(e),
         }
@@ -980,13 +1276,12 @@ fn validate_records(doc: &ast::Document) -> Result<BTreeMap<&str, &ast::RecordDe
             }
             if matches!(
                 field.ty,
-                Type::Record(_)
-                    | Type::RecordList(_)
-                    | Type::StringList
-                    | Type::GradientStop
-                    | Type::Percent
+                Type::RecordList(_) | Type::StringList | Type::GradientStop | Type::Percent
             ) {
-                return fail(field.span, "record fields require scalar or enum types");
+                return fail(
+                    field.span,
+                    "record fields require scalar, enum or named record types",
+                );
             }
         }
         if fields.is_empty() {
@@ -994,7 +1289,41 @@ fn validate_records(doc: &ast::Document) -> Result<BTreeMap<&str, &ast::RecordDe
         }
         records.insert(record.name.as_str(), record);
     }
+    let mut layouts = Dependencies::new();
+    for record in &doc.records {
+        let mut fields = Vec::new();
+        for field in &record.fields {
+            if let Type::Record(name) = &field.ty {
+                if !records.contains_key(name.as_ref()) {
+                    return fail(field.span, format!("unknown record type `{name}`"));
+                }
+                fields.push(name.to_string());
+            }
+        }
+        layouts.insert(record.name.clone(), (record.span, fields));
+    }
+    check_cycles(&layouts, "record layout")?;
     Ok(records)
+}
+
+fn record_field_type(
+    records: &BTreeMap<&str, &ast::RecordDef>,
+    record: &str,
+    path: &str,
+) -> Option<Type> {
+    let mut fields = path.split('.').peekable();
+    let mut schema = *records.get(record)?;
+    while let Some(name) = fields.next() {
+        let field = schema.fields.iter().find(|field| field.name == name)?;
+        if fields.peek().is_none() {
+            return Some(field.ty.clone());
+        }
+        let Type::Record(next) = &field.ty else {
+            return None;
+        };
+        schema = *records.get(next.as_ref())?;
+    }
+    None
 }
 
 fn inherit<'a>(
@@ -1043,7 +1372,10 @@ fn inherit<'a>(
                     Member::Property(property) if property.name == binding.name => Some(property),
                     _ => None,
                 }) {
-                    if binding.two_way || !matches!(property.visibility.as_str(), "in" | "in-out") {
+                    if binding.two_way
+                        || property.two_way
+                        || !matches!(property.visibility.as_str(), "in" | "in-out")
+                    {
                         return fail(
                             binding.span,
                             format!("cannot override inherited property `{}`", binding.name),
@@ -1099,8 +1431,184 @@ struct Scope<'a> {
     effects_allowed: bool,
     writable_row: Option<String>,
     row_template: Option<RowTemplate>,
+    repeat_source: Option<RepeatSource>,
     records: BTreeMap<&'a str, &'a ast::RecordDef>,
     state_targets: BTreeMap<String, StateTarget>,
+    component_name: &'a str,
+    callback_catalog: Option<std::rc::Rc<CallbackCatalog>>,
+}
+
+#[derive(Clone)]
+struct RepeatSource {
+    item: String,
+    owner: String,
+    property: Option<(String, Span)>,
+}
+
+type CallbackKey = (String, String, String);
+type CallbackCatalog = BTreeMap<CallbackKey, ResolvedCallback>;
+
+fn callback_key(component: &str, owner: &str, name: &str) -> CallbackKey {
+    (component.into(), owner.into(), name.into())
+}
+
+#[derive(Clone)]
+struct ResolvedCallback {
+    signature: ast::Callback,
+    target: Option<ir::CallbackRef>,
+    builtin: bool,
+}
+
+fn resolve_callbacks(scopes: &BTreeMap<&str, Scope<'_>>) -> Result<CallbackCatalog> {
+    let mut resolver = CallbackResolver {
+        scopes,
+        resolved: BTreeMap::new(),
+        active: BTreeSet::new(),
+    };
+    for (&component, scope) in scopes {
+        for (owner, element) in &scope.owners {
+            if element.instance {
+                continue;
+            }
+            for (&name, declaration) in &element.callbacks {
+                resolver.resolve(component, owner, name, declaration.span)?;
+            }
+        }
+    }
+    Ok(resolver.resolved)
+}
+
+struct CallbackResolver<'a, 'b> {
+    scopes: &'a BTreeMap<&'b str, Scope<'b>>,
+    resolved: CallbackCatalog,
+    active: BTreeSet<CallbackKey>,
+}
+
+impl CallbackResolver<'_, '_> {
+    fn resolve(
+        &mut self,
+        component: &str,
+        owner: &str,
+        name: &str,
+        span: Span,
+    ) -> Result<ResolvedCallback> {
+        let key = callback_key(component, owner, name);
+        if let Some(resolved) = self.resolved.get(&key) {
+            return Ok(resolved.clone());
+        }
+        if !self.active.insert(key.clone()) {
+            return fail(
+                span,
+                format!("cyclic callback alias involving `{owner}.{name}`"),
+            );
+        }
+        let scope = &self.scopes[component];
+        let element = &scope.owners[owner];
+        let callback = if let Some(declaration) = element.callbacks.get(name) {
+            let mut signature = (*declaration).clone();
+            let target = if let Some(reference) = &declaration.alias {
+                let (target, target_name) = scope.member_owner(
+                    owner,
+                    reference,
+                    "callback",
+                    declaration.span,
+                    |scope, name| scope.callbacks.contains_key(name),
+                )?;
+                for start in [owner, target] {
+                    let mut current = Some(start);
+                    while let Some(key) = current {
+                        let element = &scope.owners[key];
+                        if element.repeated {
+                            return fail(
+                                declaration.span,
+                                "callback aliases require statically addressed endpoints",
+                            );
+                        }
+                        current = element.parent.as_deref();
+                    }
+                }
+                let receiver = &scope.owners[target];
+                if receiver.instance && !receiver.callbacks.contains_key(target_name) {
+                    return fail(declaration.span, format!("unknown callback `{reference}`"));
+                }
+                let (target_component, target_owner) = if receiver.instance {
+                    (receiver.kind.as_str(), "root")
+                } else {
+                    (component, target)
+                };
+                let resolved = self.resolve(
+                    target_component,
+                    target_owner,
+                    target_name,
+                    declaration.span,
+                )?;
+                if declaration.pure && !resolved.signature.pure {
+                    return fail(
+                        declaration.span,
+                        "a pure alias requires a pure callback target",
+                    );
+                }
+                signature.parameters = resolved.signature.parameters;
+                signature.return_type = resolved.signature.return_type;
+                signature.pure = resolved.signature.pure;
+                Some(ir::CallbackRef {
+                    owner: target.into(),
+                    name: target_name.into(),
+                })
+            } else {
+                None
+            };
+            ResolvedCallback {
+                signature,
+                target,
+                builtin: false,
+            }
+        } else if builtin_event(&element.kind, name) {
+            if matches!(
+                element.kind.as_str(),
+                "Button" | "ToolButton" | "MenuItem" | "Shortcut"
+            ) && element.members.iter().any(
+                |member| matches!(member, Member::Binding(binding) if binding.name == "action"),
+            ) {
+                return fail(span, "alias the linked Action callback");
+            }
+            let combo = if element.kind == "ComboBox" && name == "value-selected" {
+                record_combo(element.members, scope, owner)?
+            } else {
+                None
+            };
+            let types = event_parameters(
+                &element.kind,
+                name,
+                combo.as_ref().map(|combo| &combo.value_type),
+                span,
+            )?;
+            ResolvedCallback {
+                signature: ast::Callback {
+                    name: name.into(),
+                    parameters: types
+                        .iter()
+                        .cloned()
+                        .map(|ty| ast::Parameter {
+                            name: String::new(),
+                            ty,
+                        })
+                        .collect(),
+                    span,
+                    return_type: event_return_type(&element.kind, name),
+                    pure: false,
+                    alias: None,
+                },
+                target: None,
+                builtin: true,
+            }
+        } else {
+            return fail(span, format!("unknown callback `{owner}.{name}`"));
+        };
+        self.active.remove(&key);
+        self.resolved.insert(key, callback.clone());
+        Ok(callback)
+    }
 }
 
 fn key(e: &ast::Element, parent: &str, index: usize) -> String {
@@ -1115,7 +1623,7 @@ fn contains_element<'a>(
     members: &'a [Member],
     definitions: &BTreeMap<&str, &'a ast::Component>,
     visited: &mut BTreeSet<&'a str>,
-    matches_kind: fn(&str) -> bool,
+    matches_kind: impl Fn(&str) -> bool + Copy,
 ) -> bool {
     if matches_kind(kind) {
         return true;
@@ -1211,6 +1719,26 @@ fn validate_table(kind: &str, members: &[Member], span: Span) -> Result<()> {
     if cells.clone().count() != columns || cells.into_iter().any(|cell| cell.repeat.is_some()) {
         return fail(row.span, "TableRow requires one cell element per column");
     }
+    fn parsers(members: &[Member]) -> usize {
+        members
+            .iter()
+            .map(|member| match member {
+                Member::Handler(handler) if handler.name == "clipboard-paste" => 1,
+                Member::Element(element) => parsers(&element.members),
+                _ => 0,
+            })
+            .sum()
+    }
+    for member in &row.members {
+        if let Member::Element(cell) = member
+            && parsers(&cell.members) > 1
+        {
+            return fail(
+                cell.span,
+                "each table column accepts only one clipboard-paste handler",
+            );
+        }
+    }
     Ok(())
 }
 
@@ -1219,7 +1747,15 @@ fn swipe_slot(kind: &str) -> bool {
 }
 
 fn nonvisual_element(kind: &str) -> bool {
-    matches!(kind, "Action" | "Timer" | "SecondaryWindow") || native_dialog(kind)
+    matches!(kind, "Action" | "ButtonGroup" | "Timer" | "SecondaryWindow") || native_dialog(kind)
+}
+
+fn non_exclusive_group(members: &[Member]) -> bool {
+    members.iter().any(|member| {
+        matches!(member, Member::Binding(binding)
+        if binding.name == "exclusive" && matches!(&binding.value.kind,
+            ExprKind::Literal { value, ty: Type::Bool } if value == "false"))
+    })
 }
 
 fn native_dialog(kind: &str) -> bool {
@@ -1255,6 +1791,30 @@ fn validate_swipe_delegate(members: &[Member], span: Span) -> Result<()> {
 }
 
 impl<'a> Scope<'a> {
+    fn callback_info(&self, owner: &str, name: &str) -> Option<&ResolvedCallback> {
+        let element = self.owners.get(owner)?;
+        let (component, owner) = if element.instance {
+            if !element.callbacks.contains_key(name) {
+                return None;
+            }
+            (element.kind.as_str(), "root")
+        } else {
+            (self.component_name, owner)
+        };
+        self.callback_catalog
+            .as_ref()?
+            .get(&callback_key(component, owner, name))
+    }
+
+    fn local_callbacks<'s>(&'s self, owner: &'s str) -> impl Iterator<Item = &'s ResolvedCallback> {
+        self.callback_catalog
+            .iter()
+            .flat_map(|catalog| catalog.iter())
+            .filter_map(move |((component, key, _), resolved)| {
+                (component == self.component_name && key == owner).then_some(resolved)
+            })
+    }
+
     fn checked_type(&self, ty: &Type, span: Span) -> Result<()> {
         if matches!(ty, Type::Percent | Type::GradientStop) {
             return fail(span, format!("{} is an internal value type", ty.name()));
@@ -1289,17 +1849,7 @@ impl<'a> Scope<'a> {
             members
         };
         let mut properties = BTreeMap::new();
-        let callbacks = if instance || parent.is_none() {
-            property_members
-                .iter()
-                .filter_map(|member| match member {
-                    Member::Callback(callback) => Some((callback.name.as_str(), callback)),
-                    _ => None,
-                })
-                .collect()
-        } else {
-            BTreeMap::new()
-        };
+        let mut callbacks = BTreeMap::new();
         let mut names = BTreeSet::new();
         for p in property_members.iter().filter_map(as_property) {
             check_name(&p.name, p.span)?;
@@ -1311,6 +1861,41 @@ impl<'a> Scope<'a> {
                 );
             }
             properties.insert(p.name.as_str(), p);
+        }
+        for callback in property_members.iter().filter_map(|member| {
+            if let Member::Callback(callback) = member {
+                Some(callback)
+            } else {
+                None
+            }
+        }) {
+            check_name(&callback.name, callback.span)?;
+            let mut parameters = BTreeSet::new();
+            for parameter in &callback.parameters {
+                self.checked_type(&parameter.ty, callback.span)?;
+                if !parameter.name.is_empty() {
+                    check_name(&parameter.name, callback.span)?;
+                    if !parameters.insert(rust_name(&parameter.name)) {
+                        return fail(
+                            callback.span,
+                            format!("duplicate parameter `{}`", parameter.name),
+                        );
+                    }
+                }
+            }
+            if let Some(ty) = &callback.return_type {
+                self.checked_type(ty, callback.span)?;
+            }
+            if builtin_property(kind, &callback.name).is_some()
+                || builtin_event(kind, &callback.name)
+                || !names.insert(rust_name(&callback.name))
+            {
+                return fail(
+                    callback.span,
+                    format!("duplicate or conflicting member `{}`", callback.name),
+                );
+            }
+            callbacks.insert(callback.name.as_str(), callback);
         }
         if self
             .owners
@@ -1542,8 +2127,23 @@ impl<'a> Scope<'a> {
                     {
                         return fail(e.span, format!("{} is not a valid child of {kind}", e.ty));
                     }
-                    if e.repeat.is_some() && !is_builtin(&e.ty) {
-                        if !matches!(kind, "ListView" | "GridView") || e.id.is_some() {
+                    let row_delegate = !is_builtin(&e.ty) && {
+                        let mut ancestor = Some(owner);
+                        let mut found = false;
+                        while let Some(key) = ancestor {
+                            let element = &self.owners[key];
+                            if matches!(element.kind.as_str(), "TableRow" | "TreeRow") {
+                                found = true;
+                                break;
+                            }
+                            ancestor = element.parent.as_deref();
+                        }
+                        found
+                    };
+                    if !is_builtin(&e.ty) && (e.repeat.is_some() || row_delegate) {
+                        if e.repeat.is_some()
+                            && (!matches!(kind, "ListView" | "GridView") || e.id.is_some())
+                        {
                             return fail(
                                 e.span,
                                 "repeated component instances require an anonymous ListView template or an anonymous GridView template",
@@ -1555,21 +2155,22 @@ impl<'a> Scope<'a> {
                             definitions,
                             &mut BTreeSet::new(),
                             |kind| {
-                                matches!(
-                                    kind,
-                                    "ListView"
-                                        | "GridView"
-                                        | "StandardListView"
-                                        | "TableView"
-                                        | "StandardTableView"
-                                        | "TreeView"
-                                )
+                                row_delegate && matches!(kind, "Window" | "SecondaryWindow")
+                                    || matches!(
+                                        kind,
+                                        "ListView"
+                                            | "GridView"
+                                            | "StandardListView"
+                                            | "TableView"
+                                            | "StandardTableView"
+                                            | "TreeView"
+                                    )
                             },
                         ) {
                             return fail(
                                 e.span,
                                 format!(
-                                    "{kind} delegates cannot contain another ListView or other virtual view"
+                                    "{kind} delegates cannot contain another ListView or other virtual view or window"
                                 ),
                             );
                         }
@@ -1612,7 +2213,7 @@ impl<'a> Scope<'a> {
                     if matches!(kind, "RadioButton" | "TabButton") {
                         return fail(e.span, format!("{kind} cannot contain child elements"));
                     }
-                    if (e.ty == "RadioButton" && kind != "RadioGroup")
+                    if (e.ty == "RadioButton" && kind != "RadioGroup" && !e.members.iter().any(|member| matches!(member, Member::Binding(binding) if binding.name == "group")))
                         || (e.ty == "Tab" && kind != "TabWidget")
                         || (e.ty == "TabButton" && kind != "TabBar")
                         || (e.ty == "SwipePage" && kind != "SwipeView")
@@ -1679,6 +2280,11 @@ impl<'a> Scope<'a> {
     ) -> Result<(ir::PropertyRef, Type)> {
         if write
             && (self.stack_read(current, reference, span).is_some()
+                || self.window_read(current, reference, span).is_some()
+                || self.check_group_read(reference, span)?.is_some()
+                || self.image_playback_read(current, reference, span).is_some()
+                || self.viewport_read(current, reference, span)?.is_some()
+                || self.geometry_read(current, reference, span)?.is_some()
                 || self.focus_read(current, reference, span)?.is_some())
         {
             return fail(span, format!("property `{reference}` is read-only"));
@@ -1711,6 +2317,41 @@ impl<'a> Scope<'a> {
             },
             p.ty.clone(),
         ))
+    }
+
+    fn check_group_read(&self, reference: &str, span: Span) -> Result<Option<ir::Expr>> {
+        let Some((owner, "check-state")) = reference.split_once('.') else {
+            return Ok(None);
+        };
+        let Some(group) = self
+            .owners
+            .get(owner)
+            .filter(|group| group.kind == "ButtonGroup")
+        else {
+            return Ok(None);
+        };
+        if !non_exclusive_group(group.members) {
+            return fail(span, "ButtonGroup check-state requires exclusive: false");
+        }
+        Ok(Some(ir::Expr {
+            value: "check-state".into(),
+            owner: Some(owner.into()),
+            ..ir::Expr::operation("check_group_read", Type::CheckState, vec![], span)
+        }))
+    }
+
+    fn window_read(&self, current: &str, reference: &str, span: Span) -> Option<ir::Expr> {
+        let (owner, name) = self
+            .member_owner(current, reference, "property", span, |element, name| {
+                element.properties.contains_key(name)
+                    || element.kind == "Window" && window_status_property(name)
+            })
+            .ok()?;
+        (owner == "root" && self.owners[owner].kind == "Window" && window_status_property(name))
+            .then(|| ir::Expr {
+                value: name.into(),
+                ..ir::Expr::operation("window_read", Type::Bool, vec![], span)
+            })
     }
 
     fn focus_read(&self, current: &str, reference: &str, span: Span) -> Result<Option<ir::Expr>> {
@@ -1747,6 +2388,91 @@ impl<'a> Scope<'a> {
         }))
     }
 
+    fn require_static_viewport(&self, owner: &str, span: Span) -> Result<()> {
+        let mut current = Some(owner);
+        while let Some(key) = current {
+            let element = &self.owners[key];
+            if element.repeated {
+                return fail(
+                    span,
+                    "viewport access on repeated elements requires a component delegate",
+                );
+            }
+            current = element.parent.as_deref();
+        }
+        Ok(())
+    }
+
+    fn viewport_read(
+        &self,
+        current: &str,
+        reference: &str,
+        span: Span,
+    ) -> Result<Option<ir::Expr>> {
+        let Ok((owner, property)) =
+            self.member_owner(current, reference, "property", span, |element, name| {
+                element.properties.contains_key(name) || viewport_property(&element.kind, name)
+            })
+        else {
+            return Ok(None);
+        };
+        let element = &self.owners[owner];
+        if element.instance || !viewport_property(&element.kind, property) {
+            return Ok(None);
+        }
+        self.require_static_viewport(owner, span)?;
+        Ok(Some(ir::Expr {
+            op: "viewport_read".into(),
+            owner: Some(owner.into()),
+            value: property.into(),
+            ty: Type::Length,
+            args: Vec::new(),
+            span,
+        }))
+    }
+
+    fn geometry_read(
+        &self,
+        current: &str,
+        reference: &str,
+        span: Span,
+    ) -> Result<Option<ir::Expr>> {
+        let Ok((owner, name)) =
+            self.member_owner(current, reference, "property", span, |scope, name| {
+                scope.properties.contains_key(name)
+                    || geometry_owner(&scope.kind) && geometry_property(name).is_some()
+            })
+        else {
+            return Ok(None);
+        };
+        let Some(ty) = geometry_property(name) else {
+            return Ok(None);
+        };
+        let element = &self.owners[owner];
+        if !geometry_owner(&element.kind) {
+            return fail(span, "layout geometry requires a visual target");
+        }
+        let mut ancestor = Some(owner);
+        while let Some(key) = ancestor {
+            let target = &self.owners[key];
+            if target.repeated {
+                return fail(
+                    span,
+                    "geometry reads on repeated elements require a component delegate",
+                );
+            }
+            ancestor = target.parent.as_deref();
+        }
+        Ok(Some(ir::Expr {
+            op: "geometry_read".into(),
+            owner: Some(owner.into()),
+            value: name.into(),
+            ty,
+            args: vec![],
+            span,
+        }))
+    }
+
     fn stack_read(&self, current: &str, reference: &str, span: Span) -> Option<ir::Expr> {
         let (receiver, name) = reference.rsplit_once('.')?;
         let owner = if receiver == "self" {
@@ -1767,6 +2493,26 @@ impl<'a> Scope<'a> {
         })
     }
 
+    fn image_playback_read(&self, current: &str, reference: &str, span: Span) -> Option<ir::Expr> {
+        let (receiver, name) = reference.rsplit_once('.')?;
+        let owner = if receiver == "self" {
+            current
+        } else {
+            receiver
+        };
+        if self.owners.get(owner)?.kind != "AnimatedImage" || !playback_property(name) {
+            return None;
+        }
+        Some(ir::Expr {
+            op: "image_playback_read".into(),
+            owner: Some(owner.into()),
+            value: name.into(),
+            ty: Type::Int,
+            args: Vec::new(),
+            span,
+        })
+    }
+
     fn call(&self, call: &ast::Call, current: &str) -> Result<(ir::CallbackCall, Option<Type>)> {
         let span = call.span;
         let reference = &call.callee;
@@ -1777,9 +2523,10 @@ impl<'a> Scope<'a> {
             self.member_owner(current, reference, "callback", span, |scope, name| {
                 scope.callbacks.contains_key(name) || scope.properties.contains_key(name)
             })?;
-        let callback = self.owners[owner]
-            .callbacks
-            .get(name)
+        let callback = self
+            .callback_info(owner, name)
+            .map(|info| &info.signature)
+            .or_else(|| self.owners[owner].callbacks.get(name).copied())
             .ok_or_else(|| Diagnostic {
                 span,
                 message: format!("unknown callback `{reference}`"),
@@ -1859,6 +2606,168 @@ impl<'a> Scope<'a> {
             } else {
                 receiver
             };
+            if method == "set-check-state"
+                && let Some(group) = self
+                    .owners
+                    .get(owner)
+                    .filter(|group| group.kind == "ButtonGroup")
+            {
+                if !self.effects_allowed {
+                    return fail(
+                        call.span,
+                        "group commands are not allowed in a pure callback",
+                    );
+                }
+                if !non_exclusive_group(group.members) {
+                    return fail(
+                        call.span,
+                        "set-check-state() requires a non-exclusive ButtonGroup",
+                    );
+                }
+                let [value] = call.arguments.as_slice() else {
+                    return fail(call.span, "set-check-state() takes one CheckState argument");
+                };
+                return Ok(ir::Statement::CheckGroupCommand(ir::CheckGroupCommand {
+                    check_group: owner.into(),
+                    state: expression_as(value, self, current, Type::CheckState)?,
+                    span: call.span,
+                }));
+            }
+            if matches!(method, "move-column" | "set-row-height")
+                && let Some(target) = self.owners.get(owner)
+                && !target.instance
+                && table_view(&target.kind)
+                && !target.callbacks.contains_key(method)
+            {
+                if !self.effects_allowed {
+                    return fail(
+                        call.span,
+                        format!("{method}() is not allowed in a pure callback"),
+                    );
+                }
+                let [first, second] = call.arguments.as_slice() else {
+                    return fail(call.span, format!("{method}() takes two arguments"));
+                };
+                self.require_static_viewport(owner, call.span)?;
+                let setting_height = method == "set-row-height";
+                let values = [
+                    expression_as(first, self, current, Type::Int)?,
+                    expression_as(
+                        second,
+                        self,
+                        current,
+                        if setting_height {
+                            Type::Length
+                        } else {
+                            Type::Int
+                        },
+                    )?,
+                ];
+                if setting_height {
+                    return Ok(ir::Statement::SetRowHeight(ir::SetRowHeight {
+                        row_height_owner: owner.into(),
+                        arguments: values,
+                        span: call.span,
+                    }));
+                }
+                return Ok(ir::Statement::MoveColumn(ir::MoveColumn {
+                    table_owner: owner.into(),
+                    positions: values,
+                    span: call.span,
+                }));
+            }
+            if matches!(method, "scroll-to" | "position-view-at-index")
+                && let Some(target) = self.owners.get(owner)
+                && !target.instance
+                && viewport_kind(&target.kind)
+                && !target.callbacks.contains_key(method)
+            {
+                if !self.effects_allowed {
+                    return fail(
+                        call.span,
+                        "scroll commands are not allowed in a pure callback",
+                    );
+                }
+                if call.arguments.len() != 2 {
+                    return fail(call.span, format!("{method}() takes two arguments"));
+                }
+                if method == "position-view-at-index" && target.kind == "ScrollView" {
+                    return fail(
+                        call.span,
+                        "position-view-at-index() requires a list, grid, tree, or table",
+                    );
+                }
+                self.require_static_viewport(owner, call.span)?;
+                let types = if method == "scroll-to" {
+                    [Type::Length, Type::Length]
+                } else {
+                    [Type::Int, Type::ScrollAlignment]
+                };
+                let args = call
+                    .arguments
+                    .iter()
+                    .zip(types)
+                    .map(|(arg, ty)| expression_as(arg, self, current, ty))
+                    .collect::<Result<Vec<_>>>()?;
+                return Ok(ir::Statement::ScrollCommand(ir::ScrollCommand {
+                    viewport: owner.into(),
+                    method: method.into(),
+                    args,
+                    span: call.span,
+                }));
+            }
+            if matches!(
+                method,
+                "select-all"
+                    | "clear-selection"
+                    | "set-selection-offsets"
+                    | "undo"
+                    | "redo"
+                    | "cut"
+                    | "copy"
+                    | "paste"
+            ) && let Some(target) = self.owners.get(owner)
+                && !target.instance
+                && (text_input(&target.kind) || target.kind == "ComboBox")
+                && !target.callbacks.contains_key(method)
+            {
+                if !self.effects_allowed {
+                    return fail(
+                        call.span,
+                        "text commands are not allowed in a pure callback",
+                    );
+                }
+                let arity = if method == "set-selection-offsets" {
+                    2
+                } else {
+                    0
+                };
+                if call.arguments.len() != arity {
+                    return fail(call.span, format!("{method}() expects {arity} arguments"));
+                }
+                let mut current_target = Some(owner);
+                while let Some(key) = current_target {
+                    let element = &self.owners[key];
+                    if element.repeated {
+                        return fail(
+                            call.span,
+                            "text commands require a statically addressed editor",
+                        );
+                    }
+                    current_target = element.parent.as_deref();
+                }
+                let args = call
+                    .arguments
+                    .iter()
+                    .map(|arg| expression_as(arg, self, current, Type::Int))
+                    .collect::<Result<Vec<_>>>()?;
+                return Ok(ir::Statement::TextCommand(ir::TextCommand {
+                    owner: owner.into(),
+                    method: method.into(),
+                    args,
+                    span: call.span,
+                }));
+            }
             if matches!(method, "focus" | "clear-focus")
                 && let Some(target) = self.owners.get(owner)
                 && !target.instance
@@ -1936,6 +2845,41 @@ impl<'a> Scope<'a> {
                 return Ok(ir::Statement::WindowClose {
                     window_close: call.span,
                 });
+            }
+            if owner == "root"
+                && self.owners["root"].kind == "Window"
+                && matches!(
+                    method,
+                    "minimize"
+                        | "maximize"
+                        | "restore"
+                        | "toggle-maximized"
+                        | "set-full-screen"
+                        | "toggle-full-screen"
+                )
+                && !self.owners["root"].callbacks.contains_key(method)
+            {
+                if !self.effects_allowed {
+                    return fail(
+                        call.span,
+                        "window commands are not allowed in a pure callback",
+                    );
+                }
+                let argument = match (method, call.arguments.as_slice()) {
+                    ("set-full-screen", [enabled]) => {
+                        Some(expression_as(enabled, self, current, Type::Bool)?)
+                    }
+                    ("set-full-screen", _) => {
+                        return fail(call.span, "set-full-screen() takes one bool argument");
+                    }
+                    (_, []) => None,
+                    _ => return fail(call.span, format!("{method}() takes no arguments")),
+                };
+                return Ok(ir::Statement::WindowCommand(ir::WindowCommand {
+                    window_command: method.into(),
+                    argument,
+                    span: call.span,
+                }));
             }
             if method == "open"
                 && let Some(target) = self
@@ -2069,8 +3013,77 @@ fn as_property(member: &Member) -> Option<&ast::Property> {
     }
 }
 
+pub fn control_alias_type(kind: &str, name: &str) -> Option<Type> {
+    Some(match (kind, name) {
+        (kind, "text") if text_input(kind) => Type::String,
+        ("Switch" | "CheckBox", "checked") => Type::Bool,
+        ("Slider" | "Dial" | "DoubleSpinBox", "value") => Type::Float,
+        ("RangeSlider", "lower-value" | "upper-value") => Type::Float,
+        ("SpinBox", "value") => Type::Int,
+        _ => return None,
+    })
+}
+
+fn alias_initializer(p: &ast::Property, scope: &Scope<'_>, owner: &str) -> Result<ir::Expr> {
+    let Some(ast::Expr {
+        kind: ExprKind::Reference(reference),
+        span,
+    }) = &p.value
+    else {
+        return fail(p.span, "property alias requires a property reference");
+    };
+    let (target, name) =
+        scope.member_owner(owner, reference, "property", *span, |scope, name| {
+            scope.properties.contains_key(name)
+        })?;
+    for start in [owner, target] {
+        let mut current = Some(start);
+        while let Some(key) = current {
+            let element = &scope.owners[key];
+            if element.repeated {
+                return fail(
+                    *span,
+                    "property aliases require statically addressed endpoints",
+                );
+            }
+            current = element.parent.as_deref();
+        }
+    }
+    let element = &scope.owners[target];
+    let tristate = element.kind == "CheckBox" && element.members.iter().any(|member| {
+        matches!(member, Member::Binding(binding) if matches!(binding.name.as_str(), "check-state" | "tristate"))
+    });
+    let value = if let Some(ty) =
+        control_alias_type(&element.kind, name).filter(|_| !element.instance && !tristate)
+    {
+        ir::Expr {
+            op: "control_read".into(),
+            owner: Some(target.into()),
+            value: name.into(),
+            ty,
+            args: vec![],
+            span: *span,
+        }
+    } else {
+        let (target, ty) = scope.property(owner, reference, true, *span)?;
+        ir::Expr::read(target, ty, *span)
+    };
+    if value.ty != p.ty {
+        return fail(
+            *span,
+            format!(
+                "property alias type mismatch: expected {}, found {}",
+                p.ty.name(),
+                value.ty.name()
+            ),
+        );
+    }
+    Ok(value)
+}
+
 fn property(p: &ast::Property, scope: &Scope<'_>, owner: &str) -> Result<ir::Property> {
     let init = match &p.value {
+        _ if p.two_way => alias_initializer(p, scope, owner)?,
         Some(e) => expression_as(e, scope, owner, p.ty.clone())?,
         None => default(p.ty.clone(), p.span),
     };
@@ -2079,15 +3092,291 @@ fn property(p: &ast::Property, scope: &Scope<'_>, owner: &str) -> Result<ir::Pro
         ty: p.ty.clone(),
         visibility: p.visibility.clone(),
         init,
+        alias: p.two_way,
         span: p.span,
     })
 }
 
-fn component<'a>(
-    c: &'a ast::Component,
-    definitions: &BTreeMap<&str, &'a ast::Component>,
-    records: &BTreeMap<&'a str, &'a ast::RecordDef>,
-) -> Result<Vec<LoweredMember<'a>>> {
+fn lower_callable(
+    info: &ResolvedCallback,
+    handler: Option<&ast::Handler>,
+    scope: &Scope<'_>,
+    owner: &str,
+) -> Result<ir::Callback> {
+    let definition = &info.signature;
+    if let Some(handler) = handler
+        && handler.parameters.len() != definition.parameters.len()
+    {
+        return fail(
+            handler.span,
+            format!(
+                "callback `{}` expects {} parameters",
+                definition.name,
+                definition.parameters.len()
+            ),
+        );
+    }
+    let span = handler.map_or(definition.span, |handler| handler.span);
+    let mut names = BTreeSet::new();
+    let parameters = definition
+        .parameters
+        .iter()
+        .enumerate()
+        .map(|(index, parameter)| {
+            let name = handler.map_or(parameter.name.as_str(), |handler| {
+                handler.parameters[index].as_str()
+            });
+            let name = if name.is_empty() {
+                format!("__xr_arg_{index}")
+            } else {
+                check_name(name, span)?;
+                if !names.insert(rust_name(name)) {
+                    return fail(span, format!("duplicate handler parameter `{name}`"));
+                }
+                name.into()
+            };
+            Ok(ast::Parameter {
+                name,
+                ty: parameter.ty.clone(),
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let mut callback = ir::Callback {
+        name: definition.name.clone(),
+        parameters,
+        span: definition.span,
+        pure: definition.pure,
+        body: vec![],
+        result: definition.return_type.clone().map(|ty| {
+            if info.builtin && definition.name == "close-requested" {
+                ir::Expr::literal(Type::Bool, "true", span)
+            } else {
+                default(ty, span)
+            }
+        }),
+        alias: info.target.clone(),
+        has_handler: handler.is_some(),
+    };
+    if let Some(handler) = handler {
+        let mut handler_scope = scope.clone();
+        handler_scope.effects_allowed = !callback.pure;
+        handler_scope.parameters.extend(
+            callback
+                .parameters
+                .iter()
+                .map(|parameter| (parameter.name.clone(), parameter.ty.clone())),
+        );
+        callback.body = statements(handler, &handler_scope, owner)?;
+        callback.result = match (definition.return_type.clone(), &handler.result) {
+            (Some(ty), Some(value)) => Some(expression_as(value, &handler_scope, owner, ty)?),
+            (Some(ty), None) => return fail(span, format!("callback must return {}", ty.name())),
+            (None, Some(value)) => {
+                callback
+                    .body
+                    .push(discarded_call(value, &handler_scope, owner)?);
+                None
+            }
+            (None, None) => None,
+        };
+    }
+    Ok(callback)
+}
+
+fn lower_local_callbacks<'a>(
+    members: &[Member],
+    scope: &Scope<'_>,
+    owner: &str,
+    lowered: &mut Vec<LoweredMember<'a>>,
+) -> Result<()> {
+    for info in scope.local_callbacks(owner) {
+        let mut handlers = members.iter().filter_map(|member| match member {
+            Member::Handler(handler) if handler.name == info.signature.name => Some(handler),
+            _ => None,
+        });
+        let handler = handlers.next();
+        if let Some(duplicate) = handlers.next() {
+            return fail(
+                duplicate.span,
+                format!("duplicate handler `{}`", duplicate.name),
+            );
+        }
+        lowered.push(LoweredMember::Callback(lower_callable(
+            info, handler, scope, owner,
+        )?));
+    }
+    Ok(())
+}
+
+fn event_relay(info: &ResolvedCallback, owner: &str) -> Result<ir::Callback> {
+    let mut callback = lower_callable(info, None, &Scope::default(), owner)?;
+    let args = callback
+        .parameters
+        .iter()
+        .map(|p| ir::Expr {
+            op: "param".into(),
+            value: p.name.clone(),
+            ty: p.ty.clone(),
+            owner: None,
+            args: vec![],
+            span: callback.span,
+        })
+        .collect::<Vec<_>>();
+    if let Some(result) = &mut callback.result {
+        *result = ir::Expr {
+            op: "call".into(),
+            value: callback.name.clone(),
+            ty: result.ty.clone(),
+            owner: Some(owner.into()),
+            args,
+            span: callback.span,
+        };
+    } else {
+        callback.body.push(ir::Statement::Invoke(ir::CallbackCall {
+            owner: owner.into(),
+            name: callback.name.clone(),
+            args,
+            span: callback.span,
+        }));
+    }
+    Ok(callback)
+}
+
+fn custom_clipboard_paste(
+    members: &[Member],
+    scope: &Scope<'_>,
+    owner: &str,
+) -> Result<Option<ir::ClipboardPaste>> {
+    let target = members.iter().find_map(|member| match member {
+        Member::Binding(binding) if binding.name == "clipboard-target" => Some(binding),
+        _ => None,
+    });
+    let handler = members.iter().find_map(|member| match member {
+        Member::Handler(handler) if handler.name == "clipboard-paste" => Some(handler),
+        _ => None,
+    });
+    let (target, handler) = match (target, handler) {
+        (None, None) => return Ok(None),
+        (Some(target), Some(handler)) => (target, handler),
+        (Some(target), None) => {
+            return fail(
+                target.span,
+                "clipboard-target requires a clipboard-paste handler",
+            );
+        }
+        (None, Some(handler)) => {
+            return fail(handler.span, "clipboard-paste requires clipboard-target");
+        }
+    };
+    let ExprKind::Literal {
+        value,
+        ty: Type::String,
+    } = &target.value.kind
+    else {
+        return fail(
+            target.span,
+            "clipboard-target requires a constant property name",
+        );
+    };
+    if target.two_way {
+        return fail(
+            target.span,
+            "clipboard-target requires a constant property name",
+        );
+    }
+    let name: String = serde_json::from_str(value).map_err(|error| Diagnostic {
+        span: target.span,
+        message: error.to_string(),
+    })?;
+    let row = scope
+        .repeat_source
+        .as_ref()
+        .expect("table row has a repeat");
+    let declaration = scope.owners[owner].properties.get(name.as_str());
+    let linked = members.iter().any(|member| {
+        matches!(member, Member::Binding(binding)
+        if binding.name == name && binding.two_way
+        && matches!(&binding.value.kind, ExprKind::Reference(reference)
+            if reference.split('.').next() == Some(row.item.as_str())))
+    });
+    let Some(declaration) =
+        declaration.filter(|property| property.visibility == "in-out" && linked)
+    else {
+        return fail(
+            target.span,
+            "clipboard-target must name an in-out property linked to the current model row",
+        );
+    };
+    let [text] = handler.parameters.as_slice() else {
+        return fail(handler.span, "clipboard-paste expects one string parameter");
+    };
+    check_name(text, handler.span)?;
+    if scope
+        .parameters
+        .keys()
+        .any(|name| rust_name(name) == rust_name(text))
+    {
+        return fail(
+            handler.span,
+            "clipboard-paste parameter must differ from the row item and index",
+        );
+    }
+    let Some(result) = handler
+        .result
+        .as_ref()
+        .filter(|_| handler.statements.is_empty())
+    else {
+        return fail(
+            handler.span,
+            "clipboard-paste requires one pure result expression",
+        );
+    };
+    let mut parser = scope.clone();
+    parser.effects_allowed = false;
+    parser.parameters.insert(text.clone(), Type::String);
+    parser.owners.retain(|key, _| {
+        let mut current = Some(key.as_str());
+        while let Some(key) = current {
+            let element = &scope.owners[key];
+            if element.repeated {
+                return false;
+            }
+            current = element.parent.as_deref();
+        }
+        true
+    });
+    let result = expression(result, &parser, "root")?;
+    let schema = match &result.ty {
+        Type::Record(name) => scope.records.get(name.as_ref()).copied(),
+        _ => None,
+    };
+    if !schema.is_some_and(|record| {
+        record.fields.len() == 2
+            && record
+                .fields
+                .iter()
+                .any(|field| field.name == "accepted" && field.ty == Type::Bool)
+            && record
+                .fields
+                .iter()
+                .any(|field| field.name == "value" && field.ty == declaration.ty)
+    }) {
+        return fail(
+            result.span,
+            format!(
+                "clipboard-paste must return a record with accepted: bool and value: {}",
+                declaration.ty.name()
+            ),
+        );
+    }
+    Ok(Some(ir::ClipboardPaste {
+        target: name,
+        text_parameter: text.clone(),
+        result,
+        span: handler.span,
+    }))
+}
+
+fn component<'a>(c: &'a ast::Component, scope: Scope<'a>) -> Result<Vec<LoweredMember<'a>>> {
     check_name(&c.name, c.span)?;
     if is_builtin(&c.name) {
         return fail(
@@ -2122,7 +3411,9 @@ fn component<'a>(
             "Action requires a named declaration inside a component",
         );
     }
-    if matches!(c.base.as_str(), "Timer" | "SecondaryWindow") || native_dialog(&c.base) {
+    if matches!(c.base.as_str(), "Timer" | "ButtonGroup" | "SecondaryWindow")
+        || native_dialog(&c.base)
+    {
         return fail(
             c.span,
             format!("{} requires a named declaration inside a component", c.base),
@@ -2149,146 +3440,19 @@ fn component<'a>(
     ) {
         return fail(c.span, "component root cannot be a tab or radio option");
     }
-    let mut scope = Scope {
-        records: records.clone(),
-        ..Scope::default()
-    };
-    scope.register(definitions, &c.members, &c.base, "root", None, c.span)?;
-    let mut symbols: BTreeSet<_> = scope.owners["root"]
-        .properties
-        .keys()
-        .map(|name| rust_name(name))
-        .collect();
-    let mut callback_defs = BTreeMap::new();
-    for m in &c.members {
-        if let Member::Callback(cb) = m {
-            check_name(&cb.name, cb.span)?;
-            for parameter in &cb.parameters {
-                scope.checked_type(&parameter.ty, cb.span)?;
-            }
-            if let Some(ty) = &cb.return_type {
-                scope.checked_type(ty, cb.span)?;
-            }
-            if builtin_property(&c.base, &cb.name).is_some()
-                || c.base == "Window" && cb.name == "close-requested"
-                || !symbols.insert(rust_name(&cb.name))
-            {
-                return fail(
-                    cb.span,
-                    format!("duplicate or conflicting member `{}`", cb.name),
-                );
-            }
-            callback_defs.insert(cb.name.clone(), cb);
-        }
-    }
     let mut lowered = Vec::new();
     for p in c.members.iter().filter_map(as_property) {
         lowered.push(LoweredMember::Property(property(p, &scope, "root")?));
     }
-    let mut handlers = BTreeMap::new();
-    for h in c.members.iter().filter_map(|m| {
-        if let Member::Handler(h) = m {
-            Some(h)
-        } else {
-            None
-        }
-    }) {
-        if control_event(&c.base, &h.name) {
-            continue;
-        }
-        let def = callback_defs.get(&h.name).ok_or_else(|| Diagnostic {
-            span: h.span,
-            message: format!("unknown callback `{}`", h.name),
-        })?;
-        if handlers.insert(h.name.clone(), h).is_some() {
-            return fail(h.span, format!("duplicate handler `{}`", h.name));
-        }
-        if def.parameters.len() != h.parameters.len() {
-            return fail(
-                h.span,
-                format!(
-                    "callback `{}` expects {} parameters",
-                    h.name,
-                    def.parameters.len()
-                ),
-            );
-        }
-    }
-    for def in callback_defs.values() {
-        let mut names = BTreeSet::new();
-        for p in def
-            .parameters
-            .iter()
-            .filter(|parameter| !parameter.name.is_empty())
+    for member in &c.members {
+        if let Member::Handler(h) = member
+            && scope.callback_info("root", &h.name).is_none()
+            && !control_event(&c.base, &h.name)
         {
-            check_name(&p.name, def.span)?;
-            if !names.insert(rust_name(&p.name)) {
-                return fail(def.span, format!("duplicate parameter `{}`", p.name));
-            }
+            return fail(h.span, format!("unknown callback `{}`", h.name));
         }
-        let mut cb = ir::Callback {
-            name: def.name.clone(),
-            parameters: def
-                .parameters
-                .iter()
-                .enumerate()
-                .map(|(index, parameter)| {
-                    if parameter.name.is_empty() {
-                        ast::Parameter {
-                            name: format!("__xr_arg_{index}"),
-                            ty: parameter.ty.clone(),
-                        }
-                    } else {
-                        parameter.clone()
-                    }
-                })
-                .collect(),
-            body: vec![],
-            span: def.span,
-            result: def.return_type.clone().map(|ty| default(ty, def.span)),
-            pure: def.pure,
-        };
-        if let Some(h) = handlers.get(&def.name) {
-            let mut bound = BTreeSet::new();
-            for name in &h.parameters {
-                check_name(name, h.span)?;
-                if !bound.insert(rust_name(name)) {
-                    return fail(h.span, format!("duplicate handler parameter `{name}`"));
-                }
-            }
-            scope.parameters = h
-                .parameters
-                .iter()
-                .zip(&def.parameters)
-                .map(|(name, p)| (name.clone(), p.ty.clone()))
-                .collect();
-            cb.parameters = h
-                .parameters
-                .iter()
-                .zip(&def.parameters)
-                .map(|(name, p)| ast::Parameter {
-                    name: name.clone(),
-                    ty: p.ty.clone(),
-                })
-                .collect();
-            scope.effects_allowed = !def.pure;
-            cb.body = statements(h, &scope, "root")?;
-            cb.result = match (def.return_type.clone(), &h.result) {
-                (Some(ty), Some(expr)) => Some(expression_as(expr, &scope, "root", ty)?),
-                (Some(ty), None) => {
-                    return fail(h.span, format!("callback must return {}", ty.name()));
-                }
-                (None, Some(expr)) => {
-                    cb.body.push(discarded_call(expr, &scope, "root")?);
-                    None
-                }
-                (None, None) => None,
-            };
-            scope.parameters.clear();
-            scope.effects_allowed = false;
-        }
-        lowered.push(LoweredMember::Callback(cb));
     }
+    lower_local_callbacks(&c.members, &scope, "root", &mut lowered)?;
     element(
         (&c.base, Some("root"), c.span),
         &c.members,
@@ -2322,6 +3486,19 @@ fn element<'a>(
             "TreeCell requires a stable child path within a TreeRow",
         );
     }
+    if kind == "AnimatedImage" {
+        let mut current = Some(owner);
+        while let Some(key) = current {
+            let element = &scope.owners[key];
+            if element.repeated {
+                return fail(
+                    span,
+                    "AnimatedImage in a repetition requires a component delegate",
+                );
+            }
+            current = element.parent.as_deref();
+        }
+    }
     lowered.push(LoweredMember::BeginElement {
         kind,
         id,
@@ -2341,7 +3518,14 @@ fn element<'a>(
     let repeated_scope;
     let scope = if let Some(repeat) = repeat {
         if !instance {
-            validate_template(kind, id, members, span, kind == "TreeRow")?;
+            validate_template(
+                kind,
+                id,
+                members,
+                span,
+                kind == "TreeRow",
+                matches!(kind, "TableRow" | "TreeRow"),
+            )?;
         }
         check_name(&repeat.item, span)?;
         if let Some(index) = &repeat.index {
@@ -2359,7 +3543,7 @@ fn element<'a>(
             for role in ["key", "parent-key"] {
                 if !members.iter().any(|member| matches!(member, Member::Binding(binding)
                     if binding.name == role && !binding.two_way && matches!(&binding.value.kind, ExprKind::Reference(reference)
-                        if reference.split_once('.').is_some_and(|(item, field)| item == repeat.item && !field.contains('.')))))
+                        if reference.split_once('.').is_some_and(|(item, _)| item == repeat.item))))
                 {
                     return fail(span, format!("TreeRow {role} requires an integer field of the repeated record"));
                 }
@@ -2378,6 +3562,16 @@ fn element<'a>(
             "TreeRow" => Some(RowTemplate::Tree),
             _ => None,
         };
+        template.repeat_source = Some(RepeatSource {
+            item: repeat.item.clone(),
+            owner: parent.into(),
+            property: match &repeat.model.kind {
+                ExprKind::Reference(reference) if model.op == "read" => {
+                    Some((reference.clone(), repeat.model.span))
+                }
+                _ => None,
+            },
+        });
         template.writable_row = match &repeat.model.kind {
             ExprKind::Reference(reference)
                 if template.row_template.is_some()
@@ -2437,6 +3631,7 @@ fn element<'a>(
     let mut handlers = BTreeSet::new();
     let mut animations = BTreeSet::new();
     let mut range_target = None;
+    let mut viewport_target = None;
     let mut calendar_target = None;
     let mut combo_text_target = None;
     let text_role = if kind == "StandardListView" {
@@ -2444,6 +3639,9 @@ fn element<'a>(
     } else {
         None
     };
+    if !instance && row_height_view(kind) {
+        check_row_height_field(kind, members, scope, owner)?;
+    }
     let combo = if kind == "ComboBox" {
         record_combo(members, scope, owner)?
     } else {
@@ -2453,7 +3651,39 @@ fn element<'a>(
         && members
             .iter()
             .any(|member| matches!(member, Member::Binding(binding) if binding.name == "action"));
+    let clipboard = if instance && scope.row_template == Some(RowTemplate::Table) {
+        custom_clipboard_paste(members, scope, owner)?
+    } else {
+        None
+    };
+    let clipboard_parser = clipboard.is_some();
+    if let Some(clipboard) = clipboard {
+        lowered.push(LoweredMember::ClipboardPaste(clipboard));
+    }
+    if !instance {
+        if !root {
+            lower_local_callbacks(members, scope, owner, lowered)?;
+        }
+        for event in scope.local_callbacks(owner).filter(|info| info.builtin) {
+            lowered.push(LoweredMember::Handler(event_relay(event, owner)?));
+        }
+    }
     for (index, m) in members.iter().enumerate() {
+        if kind == "ButtonGroup" && !matches!(m, Member::Binding(_) | Member::Handler(_)) {
+            return fail(
+                m.span(),
+                "ButtonGroup only accepts property bindings and selected(value)",
+            );
+        }
+        if kind == "ButtonGroup"
+            && non_exclusive_group(members)
+            && matches!(m, Member::Handler(handler) if handler.name == "selected")
+        {
+            return fail(
+                m.span(),
+                "selected(value) requires an exclusive ButtonGroup",
+            );
+        }
         if kind == "Action" && !matches!(m, Member::Binding(_) | Member::Handler(_)) {
             return fail(
                 m.span(),
@@ -2484,19 +3714,60 @@ fn element<'a>(
                 "Shortcut only accepts bindings and activation handlers",
             );
         }
-        if instance && !matches!(m, Member::Binding(_)) {
+        if instance
+            && !matches!(
+                m,
+                Member::Binding(_) | Member::Handler(_) | Member::States(_)
+            )
+        {
             return fail(
                 m.span(),
-                "a component instance body only supports input and layout bindings",
+                "a component instance body only supports inputs, layout bindings, states, and callback handlers",
             );
         }
         match m {
             Member::Binding(b) => {
+                if kind == "ButtonGroup" {
+                    if b.name == "exclusive"
+                        && (b.two_way
+                            || !matches!(b.value.kind, ExprKind::Literal { ty: Type::Bool, .. }))
+                    {
+                        return fail(b.span, "ButtonGroup exclusive requires a literal bool");
+                    }
+                    if b.name == "check-state" {
+                        return fail(
+                            b.span,
+                            "ButtonGroup check-state is read-only; use set-check-state()",
+                        );
+                    }
+                    if non_exclusive_group(members)
+                        && matches!(b.name.as_str(), "current-index" | "current-value")
+                    {
+                        return fail(
+                            b.span,
+                            "current-index and current-value require an exclusive ButtonGroup",
+                        );
+                    }
+                }
                 if kind == "StackPage" && b.name == "visible" {
                     return fail(b.span, "StackView manages StackPage visibility");
                 }
-                if focus_property(kind, &b.name) {
+                let viewport_offset = viewport_offset_property(kind, &b.name);
+                if geometry_property(&b.name).is_some()
+                    || focus_property(kind, &b.name)
+                    || kind == "Window" && window_status_property(&b.name)
+                    || viewport_property(kind, &b.name) && !viewport_offset
+                {
                     return fail(b.span, format!("property `{kind}.{}` is read-only", b.name));
+                }
+                if viewport_offset {
+                    scope.require_static_viewport(owner, b.span)?;
+                }
+                if kind == "AnimatedImage" && playback_property(&b.name) {
+                    return fail(
+                        b.span,
+                        format!("property `AnimatedImage.{}` is read-only", b.name),
+                    );
                 }
                 if kind == "StackView" && stack_read_type(&b.name).is_some() {
                     return fail(
@@ -2506,6 +3777,35 @@ fn element<'a>(
                 }
                 if !bindings.insert(b.name.as_str()) {
                     return fail(b.span, format!("duplicate binding `{}`", b.name));
+                }
+                if clipboard_parser && b.name == "clipboard-target" {
+                    continue;
+                }
+                if b.name == "clipboard-text"
+                    && (!instance
+                        || scope.owners[owner]
+                            .parent
+                            .as_deref()
+                            .is_some_and(|parent| scope.owners[parent].kind == "TableRow"))
+                {
+                    if b.two_way
+                        || !scope.owners[owner]
+                            .parent
+                            .as_deref()
+                            .is_some_and(|parent| scope.owners[parent].kind == "TableRow")
+                    {
+                        return fail(
+                            b.span,
+                            "clipboard-text requires a string binding on a direct table cell",
+                        );
+                    }
+                    let value = expression_as(&b.value, scope, owner, Type::String)?;
+                    lowered.push(LoweredMember::Binding(ir::Binding {
+                        name: b.name.clone(),
+                        value,
+                        span: b.span,
+                    }));
+                    continue;
                 }
                 if b.name == "initial-focus" && kind == "FocusScope" {
                     let ExprKind::Reference(target) = &b.value.kind else {
@@ -2570,6 +3870,71 @@ fn element<'a>(
                         "action requires the id of an Action in this component",
                     );
                 }
+                if matches!(kind, "RadioButton" | "CheckBox" | "Switch") && b.name == "group" {
+                    let mut current = &scope.owners[owner];
+                    if current
+                        .parent
+                        .as_deref()
+                        .is_some_and(|parent| scope.owners[parent].kind == "RadioGroup")
+                    {
+                        return fail(
+                            b.span,
+                            "RadioButton already belongs to its parent RadioGroup",
+                        );
+                    }
+                    loop {
+                        if current.repeated {
+                            return fail(
+                                b.span,
+                                "ButtonGroup membership requires a stable element path",
+                            );
+                        }
+                        let Some(parent) = current.parent.as_deref() else {
+                            break;
+                        };
+                        current = &scope.owners[parent];
+                    }
+                    if !b.two_way
+                        && let ExprKind::Reference(reference) = &b.value.kind
+                        && let Some(group) = scope
+                            .owners
+                            .get(reference)
+                            .filter(|target| target.kind == "ButtonGroup")
+                    {
+                        let non_exclusive = non_exclusive_group(group.members);
+                        if (kind == "RadioButton") == non_exclusive {
+                            return fail(
+                                b.span,
+                                if non_exclusive {
+                                    "RadioButton requires an exclusive ButtonGroup"
+                                } else {
+                                    "CheckBox and Switch require a non-exclusive ButtonGroup"
+                                },
+                            );
+                        }
+                        if non_exclusive {
+                            if members.iter().any(|member| matches!(member, Member::Binding(binding) if binding.name == "check-state" && !binding.two_way)) {
+                                return fail(b.span, "ButtonGroup members require writable check-state; use a two-way binding");
+                            }
+                            let property = if kind == "CheckBox" && members.iter().any(|member| matches!(member, Member::Binding(binding) if matches!(binding.name.as_str(), "check-state" | "tristate"))) { "check-state" } else { "checked" };
+                            lowered.push(LoweredMember::CheckGroupRef {
+                                group: reference.clone(),
+                                property,
+                                span: b.span,
+                            });
+                        } else {
+                            lowered.push(LoweredMember::RadioGroupRef {
+                                group: reference.clone(),
+                                span: b.span,
+                            });
+                        }
+                        continue;
+                    }
+                    return fail(
+                        b.span,
+                        "group requires the id of a ButtonGroup in this component",
+                    );
+                }
                 if kind == "Shortcut"
                     && bindings.contains("sequence")
                     && bindings.contains("sequences")
@@ -2582,7 +3947,7 @@ fn element<'a>(
                         "checked, checkable and shortcut belong to the linked Action",
                     );
                 }
-                if matches!(kind, "ComboBox" | "RadioGroup")
+                if matches!(kind, "ComboBox" | "RadioGroup" | "ButtonGroup")
                     && bindings.contains("current-index")
                     && bindings.contains("current-value")
                 {
@@ -2601,16 +3966,83 @@ fn element<'a>(
                     return fail(b.span, "Tumbler accepts either model or count");
                 }
                 if b.two_way {
+                    if instance {
+                        let declaration = scope.owners[owner].properties.get(b.name.as_str())
+                            .filter(|property| property.visibility == "in-out")
+                            .ok_or_else(|| Diagnostic {
+                                span: b.span,
+                                message: format!("two-way binding requires an in-out component property `{kind}.{}`", b.name),
+                            })?;
+                        let ExprKind::Reference(reference) = &b.value.kind else {
+                            return fail(b.span, "two-way binding requires a property reference");
+                        };
+                        let head = reference.split('.').next().unwrap();
+                        let value = if scope.parameters.contains_key(head) {
+                            let Some(repeat) = scope
+                                .repeat_source
+                                .as_ref()
+                                .filter(|repeat| repeat.item == head)
+                            else {
+                                return fail(
+                                    b.span,
+                                    "only the repeated item or one of its fields can be linked",
+                                );
+                            };
+                            let Some((model, span)) = &repeat.property else {
+                                return fail(
+                                    b.span,
+                                    "delegate links require a writable model property",
+                                );
+                            };
+                            let (_, model_type) =
+                                scope.property(&repeat.owner, model, true, *span)?;
+                            if model_type.list_item().is_none() {
+                                return fail(
+                                    b.span,
+                                    "delegate links require a writable string or record model",
+                                );
+                            }
+                            let value = expression(&b.value, scope, owner)?;
+                            if !is_record_projection(&value, head) {
+                                return fail(
+                                    b.span,
+                                    "delegate links require a writable model field",
+                                );
+                            }
+                            value
+                        } else {
+                            let (target, ty) =
+                                scope.property(owner, reference, true, b.value.span)?;
+                            ir::Expr::read(target, ty, b.value.span)
+                        };
+                        if value.ty != declaration.ty {
+                            return fail(
+                                b.value.span,
+                                format!(
+                                    "two-way binding requires a writable {} property or model field, found {}",
+                                    declaration.ty.name(),
+                                    value.ty.name()
+                                ),
+                            );
+                        }
+                        lowered.push(LoweredMember::InstanceLink(ir::Binding {
+                            name: b.name.clone(),
+                            value,
+                            span: b.span,
+                        }));
+                        continue;
+                    }
                     let field_type = match (kind, b.name.as_str()) {
                         ("TableCell" | "TreeCell", "text") => Some(Type::String),
                         _ if scope.row_template.is_some() => row_editor_type(kind, &b.name),
                         _ => None,
                     };
                     if let Some(field_type) = field_type {
-                        if !matches!(&b.value.kind, ExprKind::Reference(reference)
-                            if scope.writable_row.as_deref() == reference.split('.').next()
-                                && (kind == "TableCell" || reference.contains('.')))
-                        {
+                        let Some(item) = scope.writable_row.as_deref().filter(|item| {
+                            matches!(&b.value.kind, ExprKind::Reference(reference)
+                                if reference.split('.').next() == Some(*item)
+                                    && (kind == "TableCell" || reference.contains('.')))
+                        }) else {
                             let message = if kind == "TableCell" {
                                 "editable TableCell text requires the repeated item of a writable [string] property or a string field of a writable record list"
                             } else if kind == "TreeCell" {
@@ -2621,8 +4053,11 @@ fn element<'a>(
                                 "table editor binding requires a matching field of a writable record list"
                             };
                             return fail(b.span, message);
-                        }
+                        };
                         let value = expression(&b.value, scope, owner)?;
+                        if !is_record_projection(&value, item) {
+                            return fail(b.span, "row editor requires a writable model field");
+                        }
                         if value.ty != field_type {
                             let editor = if kind == "TreeCell" {
                                 "TreeCell"
@@ -2648,6 +4083,7 @@ fn element<'a>(
                         continue;
                     }
                     let expected = match (kind, b.name.as_str()) {
+                        _ if viewport_offset => Type::Length,
                         (kind, "text") if text_input(kind) => Type::String,
                         ("CheckBox" | "Switch", "checked") => Type::Bool,
                         ("CheckBox", "check-state") => Type::CheckState,
@@ -2675,14 +4111,14 @@ fn element<'a>(
                         ("RangeSlider", "lower-value" | "upper-value") => Type::Float,
                         ("SpinBox", "value")
                         | (
-                            "ComboBox" | "RadioGroup" | "TabWidget" | "TabBar" | "SwipeView"
-                            | "ListView" | "GridView" | "StandardListView",
+                            "ComboBox" | "RadioGroup" | "ButtonGroup" | "TabWidget" | "TabBar"
+                            | "SwipeView" | "ListView" | "GridView" | "StandardListView",
                             "current-index",
                         ) => Type::Int,
                         ("ComboBox", "current-value") => combo
                             .as_ref()
                             .map_or(Type::String, |combo| combo.value_type.clone()),
-                        ("RadioGroup", "current-value") => Type::String,
+                        ("RadioGroup" | "ButtonGroup", "current-value") => Type::String,
                         ("ComboBox", "edit-text") => Type::String,
                         _ => {
                             return fail(
@@ -2694,7 +4130,26 @@ fn element<'a>(
                     let ExprKind::Reference(reference) = &b.value.kind else {
                         return fail(b.span, "two-way binding requires a property reference");
                     };
+                    if kind == "CheckBox"
+                        && b.name == "check-state"
+                        && let Some(value) = scope.check_group_read(reference, b.span)?
+                    {
+                        if members.iter().any(|member| matches!(member, Member::Binding(binding) if binding.name == "tristate")) {
+                            return fail(b.span, "an aggregate CheckBox uses the group's three-state value without tristate");
+                        }
+                        lowered.push(LoweredMember::ControlLink(ir::Binding {
+                            name: b.name.clone(),
+                            value,
+                            span: b.span,
+                        }));
+                        continue;
+                    }
                     let (target, ty) = scope.property(owner, reference, true, b.span)?;
+                    if viewport_offset
+                        && viewport_target.replace(target.clone()).as_ref() == Some(&target)
+                    {
+                        return fail(b.span, "viewport axes require distinct writable properties");
+                    }
                     if kind == "RangeSlider"
                         && range_target.replace(target.clone()).as_ref() == Some(&target)
                     {
@@ -2751,7 +4206,6 @@ fn element<'a>(
                     let Type::RecordList(name) = &value.ty else {
                         return fail(b.span, "StandardTableView model requires a record list");
                     };
-                    let record = &scope.records[name.as_ref()];
                     for member in members {
                         let Member::Element(column) = member else {
                             continue;
@@ -2759,7 +4213,7 @@ fn element<'a>(
                         if column.ty != "TableColumn" {
                             continue;
                         }
-                        check_standard_column(column, record)?;
+                        check_standard_column(column, &scope.records, name)?;
                     }
                     lowered.push(LoweredMember::Binding(ir::Binding {
                         name: b.name.clone(),
@@ -2774,11 +4228,8 @@ fn element<'a>(
                         Type::StringList if text_role.is_none() => {}
                         Type::RecordList(name) => {
                             let field = text_role.as_deref().unwrap_or("text");
-                            if !scope.records.get(name.as_ref()).is_some_and(|record| {
-                                record.fields.iter().any(|candidate| {
-                                    candidate.name == field && candidate.ty == Type::String
-                                })
-                            }) {
+                            if record_field_type(&scope.records, name, field) != Some(Type::String)
+                            {
                                 return fail(
                                     b.span,
                                     format!(
@@ -2841,6 +4292,20 @@ fn element<'a>(
                 if kind == "StackView" && b.name == "initial-page" {
                     scope.check_stack_route(owner, &value)?;
                 }
+                if kind == "TreeRow"
+                    && matches!(b.name.as_str(), "key" | "parent-key")
+                    && !scope.repeat_source.as_ref().is_some_and(|repeat| {
+                        value.op == "get_field" && is_record_projection(&value, &repeat.item)
+                    })
+                {
+                    return fail(
+                        b.span,
+                        format!(
+                            "TreeRow {} requires an integer field of the repeated record",
+                            b.name
+                        ),
+                    );
+                }
                 if b.name == "cross-axis-alignment"
                     && value.op == "literal"
                     && value.value == "auto"
@@ -2867,6 +4332,23 @@ fn element<'a>(
                 e.repeat.as_ref(),
                 lowered,
             )?,
+            Member::Handler(h) if clipboard_parser && h.name == "clipboard-paste" => {}
+            Member::Handler(h) if instance => {
+                let info = scope
+                    .callback_info(owner, &h.name)
+                    .ok_or_else(|| Diagnostic {
+                        span: h.span,
+                        message: format!("unknown callback `{kind}.{}`", h.name),
+                    })?;
+                if !handlers.insert(&h.name) {
+                    return fail(h.span, "duplicate instance callback handler");
+                }
+                let mut callback = lower_callable(info, Some(h), scope, owner)?;
+                callback.span = h.span;
+                callback.alias = None;
+                lowered.push(LoweredMember::InstanceHandler(callback));
+            }
+            Member::Handler(h) if scope.callback_info(owner, &h.name).is_some() => {}
             Member::Handler(h) if !root || control_event(kind, &h.name) => {
                 if has_action {
                     return fail(h.span, "activation handler belongs to the linked Action");
@@ -2875,6 +4357,7 @@ fn element<'a>(
                     return fail(h.span, format!("unknown event `{kind}.{}`", h.name));
                 }
                 let close_requested = kind == "Window" && h.name == "close-requested";
+                let scrolled = h.name == "scrolled";
                 let key_handler = kind == "FocusScope" && key_handler(&h.name);
                 if close_requested && !root {
                     return fail(
@@ -2885,6 +4368,7 @@ fn element<'a>(
                 if id.is_none()
                     && !matches!(kind, "MenuItem" | "Shortcut")
                     && !close_requested
+                    && !(root && scrolled)
                     && !(root
                         && matches!(
                             kind,
@@ -2925,52 +4409,19 @@ fn element<'a>(
                         "elements with handlers require an id (`name := Button { ... }`)",
                     );
                 }
-                let parameter_types: &[Type] = match kind {
-                    "FocusScope" if key_handler => &[Type::KeyEvent],
-                    "FocusScope" if h.name == "focus-within-changed" => {
-                        &[Type::Bool, Type::FocusReason]
-                    }
-                    "FocusScope" if focus_handler(&h.name) => &[Type::FocusReason],
-                    "Slider" | "Dial" | "DoubleSpinBox" => &[Type::Float],
-                    "RangeSlider" => &[Type::Float, Type::Float],
-                    "Calendar" => &[Type::Date],
-                    "TimePicker" => &[Type::Time],
-                    "TimePickerPopup" if h.name == "accepted" => &[Type::Time],
-                    "DatePickerPopup" if h.name == "accepted" => &[Type::Date],
-                    "ColorPickerPopup" if h.name == "accepted" => &[Type::Color],
-                    "FileDialog" if h.name == "accepted" => &[Type::StringList],
-                    "MessageDialog" if h.name == "finished" => &[Type::StandardButtonKind],
-                    kind if native_dialog(kind) && h.name == "failed" => &[Type::String],
-                    "GroupBox" => &[Type::Bool],
-                    "CheckBox" if h.name == "check-state-changed" => &[Type::CheckState],
-                    "StackView" => &[Type::String, Type::Int],
-                    "SwipeDelegate" if h.name == "changed" => &[Type::SwipeSide],
-                    "DragArea" if h.name == "drag-finished" => &[Type::DragAction],
-                    "DropArea" if matches!(h.name.as_str(), "entered" | "dropped") => {
-                        &[Type::String, Type::DragAction]
-                    }
-                    "DropArea" if h.name == "position-changed" => &[Type::Length, Type::Length],
-                    "DropArea" if matches!(h.name.as_str(), "files-entered" | "files-dropped") => {
-                        &[Type::StringList]
-                    }
-                    "SpinBox" | "TabWidget" | "TabBar" | "SwipeView" | "PageIndicator"
-                    | "ListView" | "GridView" | "StandardListView" | "TableView"
-                    | "StandardTableView" | "TreeView" | "Tumbler" => &[Type::Int],
-                    "ComboBox" if h.name == "value-selected" => {
-                        let Some(combo) = &combo else {
-                            return fail(h.span, "value-selected requires a record ComboBox model");
-                        };
-                        std::slice::from_ref(&combo.value_type)
-                    }
-                    "ComboBox" | "RadioGroup" | "SearchField" => &[Type::String],
-                    "TextEdit" | "TextArea" => &[Type::String],
-                    _ => &[],
-                };
+                let parameter_types = event_parameters(
+                    kind,
+                    &h.name,
+                    combo.as_ref().map(|combo| &combo.value_type),
+                    h.span,
+                )?;
                 if h.parameters.len() != parameter_types.len() {
                     let message = if parameter_types.is_empty() {
                         format!("event {} takes no parameters", h.name)
                     } else if kind == "RangeSlider" {
                         format!("event {} expects two float parameters", h.name)
+                    } else if h.name == "column-moved" {
+                        "event column-moved expects two int parameters".into()
                     } else if kind == "StackView" {
                         format!("event {} expects a string page and an int depth", h.name)
                     } else {
@@ -3037,13 +4488,12 @@ fn element<'a>(
                     span: h.span,
                     result,
                     pure: false,
+                    alias: None,
+                    has_handler: true,
                 }));
             }
             Member::Property(p) if !root => {
                 lowered.push(LoweredMember::Property(property(p, scope, owner)?));
-            }
-            Member::Callback(_) if !root => {
-                return fail(m.span(), "declare callbacks at component scope");
             }
             Member::Animation(animation) => {
                 let target = &animation.property;
@@ -3057,6 +4507,15 @@ fn element<'a>(
                     return fail(
                         animation.span,
                         "animate a visual child instead of the Window",
+                    );
+                }
+                if kind == "AnimatedImage" && playback_property(target) {
+                    return fail(animation.span, "AnimatedImage playback state is read-only");
+                }
+                if viewport_property(kind, target) || geometry_property(target).is_some() {
+                    return fail(
+                        animation.span,
+                        format!("property `{kind}.{target}` is read-only"),
                     );
                 }
                 if !matches!(
@@ -3081,7 +4540,7 @@ fn state_target<'a>(
     owner: &'a str,
     scope: &Scope<'_>,
     span: Span,
-) -> Result<(&'a str, &'a str, Type)> {
+) -> Result<(&'a str, &'a str, Type, bool)> {
     let (target, property) = reference.split_once('.').unwrap_or((owner, reference));
     let target = if target == "self" { owner } else { target };
     let Some(element) = scope.owners.get(target) else {
@@ -3090,11 +4549,8 @@ fn state_target<'a>(
     let mut path = target;
     while path != owner {
         let current = &scope.owners[path];
-        if current.instance || current.repeated {
-            return fail(
-                span,
-                "state targets cannot cross a component or repetition boundary",
-            );
+        if current.repeated {
+            return fail(span, "state targets cannot cross a repetition boundary");
         }
         let Some(parent) = current.parent.as_deref() else {
             return fail(
@@ -3104,8 +4560,11 @@ fn state_target<'a>(
         };
         path = parent;
     }
-    if element.instance || nonvisual_element(&element.kind) || element.kind == "TableColumn" {
-        return fail(span, "state targets must be built-in visual elements");
+    if nonvisual_element(&element.kind) || element.kind == "TableColumn" {
+        return fail(
+            span,
+            "state targets must be visual elements or component instances",
+        );
     }
     if element.members.iter().any(|member| {
         matches!(member, Member::Binding(binding)
@@ -3117,14 +4576,35 @@ fn state_target<'a>(
         );
     }
     let kind = element.kind.as_str();
+    if element.instance {
+        let secondary = element
+            .parent
+            .as_deref()
+            .is_some_and(|parent| scope.owners[parent].kind == "SecondaryWindow");
+        if !secondary && let Some(ty) = layout_item_property(property) {
+            return Ok((target, property, ty, false));
+        }
+        let Some(input) = element.properties.get(property) else {
+            return fail(span, format!("unknown component input `{reference}`"));
+        };
+        if !matches!(input.visibility.as_str(), "in" | "in-out") {
+            return fail(
+                span,
+                format!("state requires a public writable component input `{reference}`"),
+            );
+        }
+        return Ok((target, property, input.ty.clone(), true));
+    }
     let Some(ty) = state_property(kind, property) else {
         return fail(span, format!("state cannot override `{kind}.{property}`"));
     };
-    Ok((target, property, ty))
+    Ok((target, property, ty, false))
 }
 
 pub fn state_property(kind: &str, property: &str) -> Option<Type> {
     let visual = layout_item_property(property).is_some()
+        || box_shadow_type(property).is_some()
+        || property == "clip"
         || matches!(
             property,
             "x" | "y"
@@ -3141,6 +4621,7 @@ pub fn state_property(kind: &str, property: &str) -> Option<Type> {
                 | "border-bottom-right-radius"
                 | "visible"
                 | "enabled"
+                | "link-color"
                 | "font-family"
                 | "font-weight"
                 | "font-italic"
@@ -3149,6 +4630,14 @@ pub fn state_property(kind: &str, property: &str) -> Option<Type> {
                 | "accessible-description"
                 | "title"
                 | "source"
+                | "source-clip-x"
+                | "source-clip-y"
+                | "source-clip-width"
+                | "source-clip-height"
+                | "horizontal-tile-mode"
+                | "vertical-tile-mode"
+                | "image-rendering"
+                | "colorize"
                 | "fill"
                 | "stroke"
                 | "stroke-width"
@@ -3196,8 +4685,11 @@ fn lower_states(
         })
         .flatten()
     {
-        if scope.owners[owner].instance || nonvisual_element(&scope.owners[owner].kind) {
-            return fail(state.span, "states require a built-in visual element");
+        if nonvisual_element(&scope.owners[owner].kind) {
+            return fail(
+                state.span,
+                "states require a visual element or component instance",
+            );
         }
         check_name(&state.name, state.span)?;
         if !names.insert(&state.name) {
@@ -3211,8 +4703,10 @@ fn lower_states(
         selection.cases.push((state.name.clone(), when));
         let mut changes = BTreeMap::new();
         for change in &state.changes {
-            let (target, name, ty) = state_target(&change.name, owner, scope, change.span)?;
-            if changes.insert((target, name), ty.clone()).is_some() {
+            let (target, name, ty, instance_input) =
+                state_target(&change.name, owner, scope, change.span)?;
+            let can_animate = !instance_input && animatable(&ty);
+            if changes.insert((target, name), can_animate).is_some() {
                 return fail(
                     change.span,
                     format!("duplicate state binding for `{}`", change.name),
@@ -3229,7 +4723,7 @@ fn lower_states(
                     format!("`{}` already belongs to another state group", change.name),
                 );
             }
-            let value = if relative_size(&scope.owners[target].kind, name, &ty) {
+            let value = if !instance_input && relative_size(&scope.owners[target].kind, name, &ty) {
                 let value = expression(&change.value, scope, owner)?;
                 if value.ty == Type::Percent {
                     value
@@ -3246,6 +4740,7 @@ fn lower_states(
                 .push(ir::StateBinding {
                     owner: owner.into(),
                     case,
+                    instance_input,
                     binding: ir::Binding {
                         name: name.into(),
                         value,
@@ -3270,13 +4765,13 @@ fn lower_states(
                     let properties = if wildcard {
                         changes
                             .iter()
-                            .filter(|(_, ty)| animatable(ty))
+                            .filter(|(_, can_animate)| **can_animate)
                             .map(|(&key, _)| key)
                             .collect()
                     } else {
-                        let (target, name, ty) =
+                        let (target, name, _, _) =
                             state_target(&animation.property, owner, scope, animation.span)?;
-                        if !changes.contains_key(&(target, name)) || !animatable(&ty) {
+                        if changes.get(&(target, name)) != Some(&true) {
                             return fail(
                                 animation.span,
                                 "transitions require an animatable property changed by this state",
@@ -3347,6 +4842,8 @@ fn relative_size(kind: &str, name: &str, ty: &Type) -> bool {
                 | "max-height"
                 | "preferred-width"
                 | "preferred-height"
+                | "transform-origin-x"
+                | "transform-origin-y"
         ) || kind == "ScrollView" && matches!(name, "content-width" | "content-height"))
 }
 
@@ -3472,17 +4969,18 @@ fn record_combo(members: &[Member], scope: &Scope<'_>, owner: &str) -> Result<Op
     };
     let text_role = binding("text-role");
     let value_role = binding("value-role");
+    let enabled_role = binding("enabled-role");
     let model = binding("model")
         .map(|model| expression(&model.value, scope, owner))
         .transpose()?;
     let Some(model) = model else {
-        if let Some(role) = text_role.or(value_role) {
+        if let Some(role) = text_role.or(value_role).or(enabled_role) {
             return fail(role.span, "ComboBox roles require a record model");
         }
         return Ok(None);
     };
     let Type::RecordList(name) = &model.ty else {
-        if let Some(role) = text_role.or(value_role) {
+        if let Some(role) = text_role.or(value_role).or(enabled_role) {
             return fail(role.span, "ComboBox roles require a record model");
         }
         if model.ty != Type::StringList {
@@ -3518,25 +5016,29 @@ fn record_combo(members: &[Member], scope: &Scope<'_>, owner: &str) -> Result<Op
         .map(role_name)
         .transpose()?
         .unwrap_or_else(|| text.clone());
-    let record = &scope.records[name.as_ref()];
-    if !record
-        .fields
-        .iter()
-        .any(|field| field.name == text && field.ty == Type::String)
-    {
+    if let Some(role) = enabled_role {
+        let field = role_name(role)?;
+        if record_field_type(&scope.records, name, &field) != Some(Type::Bool) {
+            return fail(
+                role.span,
+                format!("ComboBox enabled-role requires a bool field named `{field}`"),
+            );
+        }
+    }
+    if record_field_type(&scope.records, name, &text) != Some(Type::String) {
         return fail(
             model.span,
             format!("ComboBox text-role requires a string field named `{text}`"),
         );
     }
-    let Some(field) = record.fields.iter().find(|field| field.name == value) else {
+    let Some(value_type) = record_field_type(&scope.records, name, &value) else {
         return fail(
             model.span,
             format!("ComboBox value-role has no record field named `{value}`"),
         );
     };
     if !matches!(
-        field.ty,
+        value_type,
         Type::String | Type::Int | Type::Float | Type::Bool | Type::Date | Type::Time
     ) {
         return fail(
@@ -3544,10 +5046,7 @@ fn record_combo(members: &[Member], scope: &Scope<'_>, owner: &str) -> Result<Op
             "ComboBox value-role requires a string, int, float, bool, Date or Time field",
         );
     }
-    Ok(Some(RecordCombo {
-        model,
-        value_type: field.ty.clone(),
-    }))
+    Ok(Some(RecordCombo { model, value_type }))
 }
 
 fn standard_list_role(members: &[Member]) -> Result<Option<String>> {
@@ -3583,7 +5082,69 @@ fn standard_list_role(members: &[Member]) -> Result<Option<String>> {
     }
 }
 
-fn check_standard_column(column: &ast::Element, record: &ast::RecordDef) -> Result<()> {
+fn check_row_height_field(
+    kind: &str,
+    members: &[Member],
+    scope: &Scope<'_>,
+    owner: &str,
+) -> Result<()> {
+    let Some(role) = members.iter().find_map(|member| match member {
+        Member::Binding(binding) if binding.name == "row-height-field" => Some(binding),
+        _ => None,
+    }) else {
+        return Ok(());
+    };
+    let ExprKind::Literal {
+        value,
+        ty: Type::String,
+    } = &role.value.kind
+    else {
+        return fail(
+            role.span,
+            "row-height-field requires a constant string field name",
+        );
+    };
+    if role.two_way {
+        return fail(
+            role.span,
+            "row-height-field requires a constant string field name",
+        );
+    }
+    let name: String = serde_json::from_str(value).map_err(|error| Diagnostic {
+        span: role.span,
+        message: error.to_string(),
+    })?;
+    let model = if matches!(kind, "StandardListView" | "StandardTableView") {
+        members.iter().find_map(|member| match member {
+            Member::Binding(binding) if binding.name == "model" => Some(&binding.value),
+            _ => None,
+        })
+    } else {
+        members.iter().find_map(|member| match member {
+            Member::Element(element) => element.repeat.as_ref().map(|repeat| &repeat.model),
+            _ => None,
+        })
+    };
+    let Some(model) = model else {
+        return fail(role.span, "row-height-field requires a record model");
+    };
+    let Type::RecordList(record) = expression(model, scope, owner)?.ty else {
+        return fail(role.span, "row-height-field requires a record model");
+    };
+    if record_field_type(&scope.records, &record, &name) != Some(Type::Length) {
+        return fail(
+            role.span,
+            format!("row-height-field requires a length field named `{name}`"),
+        );
+    }
+    Ok(())
+}
+
+fn check_standard_column(
+    column: &ast::Element,
+    records: &BTreeMap<&str, &ast::RecordDef>,
+    record: &str,
+) -> Result<()> {
     let Some(field) = column.members.iter().find_map(|member| match member {
         Member::Binding(binding) if binding.name == "field" => Some(binding),
         _ => None,
@@ -3604,18 +5165,14 @@ fn check_standard_column(column: &ast::Element, record: &ast::RecordDef) -> Resu
         span: field.span,
         message: error.to_string(),
     })?;
-    let Some(definition) = record
-        .fields
-        .iter()
-        .find(|definition| definition.name == name)
-    else {
+    let Some(field_type) = record_field_type(records, record, &name) else {
         return fail(
             field.span,
-            format!("record `{}` has no field `{name}`", record.name),
+            format!("record `{record}` has no field `{name}`"),
         );
     };
     if !matches!(
-        definition.ty,
+        field_type,
         Type::String | Type::Int | Type::Float | Type::Bool | Type::Date | Type::Time
     ) {
         return fail(
@@ -3626,6 +5183,13 @@ fn check_standard_column(column: &ast::Element, record: &ast::RecordDef) -> Resu
         );
     }
     Ok(())
+}
+
+fn is_record_projection(mut value: &ir::Expr, item: &str) -> bool {
+    while value.op == "get_field" {
+        value = &value.args[0];
+    }
+    value.op == "param" && value.value == item
 }
 
 fn row_editor_binding(kind: &str) -> Option<(&'static str, Type)> {
@@ -3653,7 +5217,21 @@ fn validate_template(
     members: &[Member],
     span: Span,
     tree: bool,
+    allow_delegate: bool,
 ) -> Result<()> {
+    if allow_delegate && !is_builtin(kind) {
+        if id.is_some()
+            || members
+                .iter()
+                .any(|member| !matches!(member, Member::Binding(_) | Member::Handler(_)))
+        {
+            return fail(
+                span,
+                "row component delegates require an anonymous instance with inputs and callback handlers",
+            );
+        }
+        return Ok(());
+    }
     if kind == "TreeCell" && !tree {
         return fail(
             span,
@@ -3737,6 +5315,7 @@ fn validate_template(
                         &child.members,
                         child.span,
                         tree && child.repeat.is_none() && child.ty != "Tooltip",
+                        allow_delegate && child.repeat.is_none() && child.ty != "Tooltip",
                     )?;
                 }
             }
@@ -3834,6 +5413,9 @@ fn default(ty: Type, span: Span) -> ir::Expr {
         Type::Bool => "false",
         Type::Color => "#00000000",
         Type::ImageFit => "contain",
+        Type::ImageTileMode => "stretch",
+        Type::ImageHorizontalAlignment | Type::ImageVerticalAlignment => "center",
+        Type::ImageRendering => "smooth",
         Type::LayoutAlignment => "stretch",
         Type::CrossAxisAlignment => "auto",
         Type::Orientation => "horizontal",
@@ -3841,6 +5423,7 @@ fn default(ty: Type, span: Span) -> ir::Expr {
         Type::FlexboxLayoutWrap => "wrap",
         Type::DialInputMode => "circular",
         Type::ScrollBarPolicy => "as-needed",
+        Type::ScrollAlignment => "contain",
         Type::TextWrap => "word-wrap",
         Type::TextHorizontalAlignment => "start",
         Type::TextVerticalAlignment => "top",
@@ -3873,7 +5456,7 @@ fn expression_as(
     expected: Type,
 ) -> Result<ir::Expr> {
     if let ExprKind::Conditional { condition, yes, no } = &e.kind
-        && !expected.enum_variants().is_empty()
+        && (expected == Type::Brush || !expected.enum_variants().is_empty())
     {
         let condition = expression_as(condition, scope, owner, Type::Bool)?;
         let yes = expression_as(yes, scope, owner, expected.clone())?;
@@ -4035,14 +5618,39 @@ fn expression(e: &ast::Expr, scope: &Scope<'_>, owner: &str) -> Result<ir::Expr>
                 ..ir::Expr::operation("markdown", Type::StyledText, vec![], span)
             }
         }
-        ExprKind::ImageUrl(url) => {
-            let value = serde_json::from_str::<String>(url).map_err(|e| Diagnostic {
+        ExprKind::ImageUrl(path) | ExprKind::SlicedImageUrl { path, .. } => {
+            let value = serde_json::from_str::<String>(path).map_err(|e| Diagnostic {
                 span,
                 message: format!("invalid image path: {e}"),
             })?;
-            ir::Expr {
+            let source = ir::Expr {
                 value,
                 ..ir::Expr::operation("image_url", Type::Image, vec![], span)
+            };
+            if let ExprKind::SlicedImageUrl { slice, edges, .. } = &e.kind {
+                if slice != "nine-slice" {
+                    return fail(span, format!("unknown image modifier `{slice}`"));
+                }
+                if source.value.is_empty() {
+                    return fail(span, "nine-slice requires a nonempty image path");
+                }
+                let edges = match edges.as_slice() {
+                    [all] => [all, all, all, all],
+                    [vertical, horizontal] => [vertical, horizontal, vertical, horizontal],
+                    [top, right, bottom, left] => [top, right, bottom, left],
+                    _ => return fail(span, "nine-slice expects one, two or four edges"),
+                };
+                let mut operands = vec![source];
+                for edge in edges {
+                    let value = edge.parse::<u32>().map_err(|_| Diagnostic {
+                        span,
+                        message: "nine-slice edges must be nonnegative integers".into(),
+                    })?;
+                    operands.push(ir::Expr::literal(Type::Int, value.to_string(), span));
+                }
+                ir::Expr::operation("nine_slice", Type::Image, operands, span)
+            } else {
+                source
             }
         }
         ExprKind::Array(items) => {
@@ -4156,6 +5764,10 @@ fn expression(e: &ast::Expr, scope: &Scope<'_>, owner: &str) -> Result<ir::Expr>
                 && matches!(
                     namespace,
                     "ImageFit"
+                        | "ImageTileMode"
+                        | "ImageHorizontalAlignment"
+                        | "ImageVerticalAlignment"
+                        | "ImageRendering"
                         | "LayoutAlignment"
                         | "CrossAxisAlignment"
                         | "Orientation"
@@ -4163,6 +5775,7 @@ fn expression(e: &ast::Expr, scope: &Scope<'_>, owner: &str) -> Result<ir::Expr>
                         | "FlexboxLayoutWrap"
                         | "DialInputMode"
                         | "ScrollBarPolicy"
+                        | "ScrollAlignment"
                         | "TextWrap"
                         | "TextHorizontalAlignment"
                         | "TextVerticalAlignment"
@@ -4191,47 +5804,33 @@ fn expression(e: &ast::Expr, scope: &Scope<'_>, owner: &str) -> Result<ir::Expr>
                 return Ok(ir::Expr::literal(ty, name, span));
             }
             if let Some((base, field)) = s.rsplit_once('.') {
-                let record = if let Some(
-                    ty @ (Type::Record(_)
-                    | Type::Date
-                    | Type::Time
-                    | Type::KeyEvent
-                    | Type::KeyModifiers),
-                ) = scope.parameters.get(base)
-                {
-                    Some(ir::Expr {
-                        op: "param".into(),
-                        value: base.into(),
-                        owner: None,
-                        ty: ty.clone(),
-                        args: vec![],
-                        span,
-                    })
-                } else if let Ok((
-                    property,
-                    ty @ (Type::Record(_)
-                    | Type::Date
-                    | Type::Time
-                    | Type::KeyEvent
-                    | Type::KeyModifiers),
-                )) = scope.property(owner, base, false, span)
-                {
-                    Some(ir::Expr::read(property, ty, span))
-                } else {
-                    None
+                let base_reference = ast::Expr {
+                    kind: ExprKind::Reference(base.into()),
+                    span,
                 };
-                let record = record.or_else(|| {
-                    if base.ends_with(".modifiers") {
-                        let base = ast::Expr {
-                            kind: ExprKind::Reference(base.into()),
-                            span,
-                        };
-                        return expression(&base, scope, owner)
-                            .ok()
-                            .filter(|value| value.ty == Type::KeyModifiers);
+                let record = match expression(&base_reference, scope, owner) {
+                    Ok(value)
+                        if matches!(
+                            value.ty,
+                            Type::Record(_)
+                                | Type::Date
+                                | Type::Time
+                                | Type::Image
+                                | Type::KeyEvent
+                                | Type::KeyModifiers
+                        ) =>
+                    {
+                        Some(value)
                     }
-                    None
-                });
+                    Err(error)
+                        if base.split_once('.').is_some_and(|(item, _)| {
+                            matches!(scope.parameters.get(item), Some(Type::Record(_)))
+                        }) =>
+                    {
+                        return Err(error);
+                    }
+                    _ => None,
+                };
                 if let Some(record) = record {
                     if matches!(record.ty, Type::KeyEvent | Type::KeyModifiers) {
                         let Some(ty) = record.ty.key_field(field) else {
@@ -4243,6 +5842,15 @@ fn expression(e: &ast::Expr, scope: &Scope<'_>, owner: &str) -> Result<ir::Expr>
                         return Ok(ir::Expr {
                             value: field.into(),
                             ..ir::Expr::operation("key_field", ty, vec![record], span)
+                        });
+                    }
+                    if record.ty == Type::Image {
+                        if !matches!(field, "width" | "height") {
+                            return fail(span, format!("image has no field `{field}`"));
+                        }
+                        return Ok(ir::Expr {
+                            value: field.into(),
+                            ..ir::Expr::operation("image_dimension", Type::Int, vec![record], span)
                         });
                     }
                     let civil = match record.ty {
@@ -4294,10 +5902,19 @@ fn expression(e: &ast::Expr, scope: &Scope<'_>, owner: &str) -> Result<ir::Expr>
                     span,
                 });
             }
-            if let Some(read) = scope.focus_read(owner, s, span)? {
+            if let Some(read) = scope
+                .focus_read(owner, s, span)?
+                .or(scope.viewport_read(owner, s, span)?)
+                .or(scope.geometry_read(owner, s, span)?)
+                .or(scope.check_group_read(s, span)?)
+            {
                 return Ok(read);
             }
-            if let Some(read) = scope.stack_read(owner, s, span) {
+            if let Some(read) = scope
+                .stack_read(owner, s, span)
+                .or_else(|| scope.image_playback_read(owner, s, span))
+                .or_else(|| scope.window_read(owner, s, span))
+            {
                 return Ok(read);
             }
             let (property, ty) = scope.property(owner, s, false, span)?;
@@ -4455,7 +6072,9 @@ fn check_cycles(edges: &Dependencies, description: &str) -> Result<()> {
         if done.contains(name) {
             return Ok(());
         }
-        let (span, next) = &edges[name];
+        let Some((span, next)) = edges.get(name) else {
+            return Ok(());
+        };
         if !active.insert(name) {
             return fail(*span, format!("cyclic {description} involving `{name}`"));
         }
@@ -4500,10 +6119,143 @@ fn check_composition(components: &[(&ast::Component, Vec<LoweredMember<'_>>)]) -
     check_cycles(&types, "component instantiation")?;
     for members in definitions.values() {
         let mut edges = Dependencies::new();
-        collect_bindings(members, &definitions, "", &mut edges);
+        let mut links = BTreeMap::new();
+        let mut geometry = GeometryFlow::default();
+        collect_bindings(
+            members,
+            &definitions,
+            "",
+            &mut edges,
+            &mut links,
+            &mut geometry,
+            false,
+        );
+        let overlays: Vec<_> = edges
+            .extract_if(.., |key, _| key.starts_with("@state-input:"))
+            .collect();
+        for (key, (span, dependencies)) in overlays {
+            let destination = key.strip_prefix("@state-input:").unwrap();
+            if links.contains_key(destination) {
+                return fail(span, "state cannot override a two-way component input");
+            }
+            edges
+                .entry(destination.into())
+                .or_insert((span, Vec::new()))
+                .1
+                .extend(dependencies);
+        }
         check_cycles(&edges, "property binding or callback call")?;
+        geometry.validate(&edges)?;
     }
     Ok(())
+}
+
+#[derive(Default)]
+struct GeometryFlow {
+    overlays: BTreeMap<String, bool>,
+    sinks: Vec<(String, String, Span)>,
+}
+
+impl GeometryFlow {
+    fn validate(&self, edges: &Dependencies) -> Result<()> {
+        fn sources<'a>(
+            name: &'a str,
+            edges: &'a Dependencies,
+            flow: &GeometryFlow,
+            memo: &mut BTreeMap<&'a str, u8>,
+        ) -> u8 {
+            if let Some(&cached) = memo.get(name) {
+                return cached;
+            }
+            let mask = if let Some(source) = name.strip_prefix("@geometry:") {
+                let owner = source
+                    .rsplit_once('.')
+                    .map(|(owner, _)| owner)
+                    .unwrap_or_default();
+                if flow.overlays.get(owner).copied().unwrap_or(false) {
+                    2
+                } else {
+                    1
+                }
+            } else if let Some((_, dependencies)) = edges.get(name) {
+                dependencies.iter().fold(0, |mask, dependency| {
+                    mask | sources(dependency, edges, flow, memo)
+                })
+            } else {
+                0
+            };
+            memo.insert(name, mask);
+            mask
+        }
+
+        let mut memo = BTreeMap::new();
+        for (owner, value, span) in &self.sinks {
+            let overlay = self.overlays.get(owner).copied().unwrap_or(false);
+            let invalid_sources = if overlay { 2 } else { 3 };
+            if sources(value, edges, self, &mut memo) & invalid_sources != 0 {
+                return fail(
+                    *span,
+                    "layout feedback: a layout binding cannot depend on geometry from its own or a later layout phase",
+                );
+            }
+        }
+        Ok(())
+    }
+}
+
+fn fixed_geometry_labels<'a>(members: &'a [LoweredMember<'_>]) -> BTreeSet<&'a str> {
+    let mut axes = BTreeMap::<&str, u8>::new();
+    let mut owners = vec!["root"];
+    for member in members {
+        match member {
+            LoweredMember::BeginElement { key, kind, .. } => {
+                owners.push(key);
+                if matches!(*kind, "Text" | "Label" | "StyledText") {
+                    axes.insert(key, 0);
+                }
+            }
+            LoweredMember::EndElement => {
+                owners.pop();
+            }
+            LoweredMember::Binding(binding)
+                if binding.value.op == "literal" && binding.value.ty == Type::Length =>
+            {
+                if let Some(flags) = axes.get_mut(owners.last().unwrap()) {
+                    match binding.name.as_str() {
+                        "width" => *flags |= 1,
+                        "height" => *flags |= 2,
+                        _ => {}
+                    }
+                }
+            }
+            LoweredMember::StateBinding(state)
+                if matches!(state.binding.name.as_str(), "width" | "height") =>
+            {
+                if let Some(flags) = axes.get_mut(owners.last().unwrap()) {
+                    *flags |= 4;
+                }
+            }
+            _ => {}
+        }
+    }
+    axes.into_iter()
+        .filter_map(|(owner, flags)| (flags == 3).then_some(owner))
+        .collect()
+}
+
+fn geometry_safe_binding(kind: &str, property: &str, fixed_label: bool) -> bool {
+    matches!(
+        property,
+        "background"
+            | "color"
+            | "border-color"
+            | "link-color"
+            | "accessible-name"
+            | "accessible-description"
+            | "opacity"
+            | "z"
+    ) || kind == "Window" && property == "title"
+        || property == "text" && fixed_label
 }
 
 fn collect_bindings(
@@ -4511,6 +6263,9 @@ fn collect_bindings(
     definitions: &BTreeMap<&str, &[LoweredMember<'_>]>,
     prefix: &str,
     edges: &mut Dependencies,
+    links: &mut BTreeMap<String, String>,
+    geometry: &mut GeometryFlow,
+    inherited_overlay: bool,
 ) {
     let instances: BTreeSet<_> = members
         .iter()
@@ -4541,10 +6296,14 @@ fn collect_bindings(
             format!("{prefix}{owner}.{name}")
         }
     };
+    let scope_path = |owner: &str| path(owner, "").trim_end_matches('.').to_owned();
+    let fixed_labels = fixed_geometry_labels(members);
 
     fn dependencies(e: &ir::Expr, path: &impl Fn(&str, &str) -> String, out: &mut Vec<String>) {
-        // Focus is published by the host, so it is an input to the graph.
-        if e.op == "focus_read" {
+        // The host publishes these values, so they are inputs to the graph.
+        if matches!(e.op.as_str(), "focus_read" | "image_playback_read")
+            || e.op == "viewport_read" && !matches!(e.value.as_str(), "content-x" | "content-y")
+        {
             return;
         }
         if let Some(owner) = &e.owner {
@@ -4554,7 +6313,9 @@ fn collect_bindings(
                 &e.value
             };
             let target = path(owner, name);
-            out.push(if e.op == "call" {
+            out.push(if e.op == "geometry_read" {
+                format!("@geometry:{target}")
+            } else if e.op == "call" {
                 format!("{target}()")
             } else {
                 target
@@ -4566,31 +6327,166 @@ fn collect_bindings(
     }
 
     let mut owners = vec!["root"];
+    let mut layout_scopes = vec![("", inherited_overlay)];
+    let mut alias_handlers = Vec::new();
     for m in members {
         let (name, value, span): (&str, &ir::Expr, Span) = match m {
             LoweredMember::BeginElement {
                 key,
                 kind,
                 instance,
+                span,
                 ..
             } => {
                 owners.push(key);
+                let overlay =
+                    layout_scopes.last().unwrap().1 || matches!(*kind, "PopupWindow" | "Tooltip");
+                layout_scopes.push((kind, overlay));
+                geometry.overlays.insert(scope_path(key), overlay);
                 if *instance {
                     collect_bindings(
                         definitions[kind],
                         definitions,
                         &format!("{prefix}{key}/"),
                         edges,
+                        links,
+                        geometry,
+                        overlay,
                     );
+                } else if viewport_kind(kind) {
+                    for offset in ["content-x", "content-y"] {
+                        edges.insert(path(key, offset), (*span, Vec::new()));
+                    }
                 }
                 continue;
             }
             LoweredMember::EndElement => {
                 owners.pop();
+                layout_scopes.pop();
+                continue;
+            }
+            LoweredMember::CheckGroupRef {
+                group,
+                property,
+                span,
+            } => {
+                let member = owners.last().unwrap();
+                edges
+                    .entry(path(group, "check-state"))
+                    .or_insert((*span, Vec::new()))
+                    .1
+                    .push(path(member, property));
+                continue;
+            }
+            LoweredMember::Condition(value) | LoweredMember::Repeat { model: value, .. } => {
+                let owner = owners.last().unwrap();
+                let key = path(
+                    owner,
+                    if matches!(m, LoweredMember::Condition(_)) {
+                        "@visible"
+                    } else {
+                        "@model"
+                    },
+                );
+                let mut deps = Vec::new();
+                dependencies(value, &path, &mut deps);
+                edges.insert(key.clone(), (value.span, deps));
+                geometry.sinks.push((scope_path(owner), key, value.span));
+                continue;
+            }
+            LoweredMember::StateSelection(selection) => {
+                let mut deps = Vec::new();
+                for (_, condition) in &selection.cases {
+                    dependencies(condition, &path, &mut deps);
+                }
+                edges.insert(path(&selection.owner, "@state"), (selection.span, deps));
+                continue;
+            }
+            LoweredMember::StateBinding(state) => {
+                let owner = owners.last().unwrap();
+                let binding = &state.binding;
+                if state.instance_input {
+                    let destination = instance_storage(
+                        path(owner, &binding.name),
+                        &format!("{prefix}{owner}/"),
+                        links,
+                    );
+                    let mut deps = vec![path(&state.owner, "@state")];
+                    dependencies(&binding.value, &path, &mut deps);
+                    edges
+                        .entry(format!("@state-input:{destination}"))
+                        .or_insert((binding.span, Vec::new()))
+                        .1
+                        .extend(deps);
+                } else if !geometry_safe_binding(
+                    layout_scopes.last().unwrap().0,
+                    &binding.name,
+                    fixed_labels.contains(owner),
+                ) {
+                    let key = path(owner, &format!("@state.{}.{}", state.case, binding.name));
+                    let mut deps = vec![path(&state.owner, "@state")];
+                    dependencies(&binding.value, &path, &mut deps);
+                    edges.insert(key.clone(), (binding.span, deps));
+                    geometry.sinks.push((scope_path(owner), key, binding.span));
+                }
+                continue;
+            }
+            LoweredMember::InstanceLayout(binding) => {
+                let owner = owners.last().unwrap();
+                if !geometry_safe_binding(layout_scopes.last().unwrap().0, &binding.name, false) {
+                    let key = path(owner, &format!("@layout.{}", binding.name));
+                    let mut deps = Vec::new();
+                    dependencies(&binding.value, &path, &mut deps);
+                    edges.insert(key.clone(), (binding.span, deps));
+                    geometry.sinks.push((scope_path(owner), key, binding.span));
+                }
+                continue;
+            }
+            LoweredMember::Animation(animation) if animation.enabled.is_some() => {
+                let owner = owners.last().unwrap();
+                if !geometry_safe_binding(
+                    layout_scopes.last().unwrap().0,
+                    &animation.property,
+                    false,
+                ) {
+                    let key = path(owner, &format!("@animate.{}", animation.property));
+                    let mut deps = Vec::new();
+                    dependencies(animation.enabled.as_ref().unwrap(), &path, &mut deps);
+                    edges.insert(key.clone(), (animation.span, deps));
+                    geometry
+                        .sinks
+                        .push((scope_path(owner), key, animation.span));
+                }
+                continue;
+            }
+            LoweredMember::StateTiming(timing) => {
+                let owner = owners.last().unwrap();
+                let animation = &timing.animation;
+                if !geometry_safe_binding(
+                    layout_scopes.last().unwrap().0,
+                    &animation.property,
+                    false,
+                ) {
+                    let key = path(
+                        owner,
+                        &format!(
+                            "@transition.{}.{}.{}",
+                            timing.case, timing.direction, animation.property
+                        ),
+                    );
+                    let mut deps = vec![path(&timing.owner, "@state")];
+                    if let Some(enabled) = &animation.enabled {
+                        dependencies(enabled, &path, &mut deps);
+                    }
+                    edges.insert(key.clone(), (animation.span, deps));
+                    geometry
+                        .sinks
+                        .push((scope_path(owner), key, animation.span));
+                }
                 continue;
             }
             LoweredMember::Property(p) => (&p.name, &p.init, p.span),
-            LoweredMember::Callback(callback) => {
+            LoweredMember::Callback(callback) | LoweredMember::InstanceHandler(callback) => {
                 let mut deps = Vec::new();
                 for statement in &callback.body {
                     match statement {
@@ -4608,6 +6504,34 @@ fn collect_bindings(
                                 dependencies(page, &path, &mut deps);
                             }
                         }
+                        ir::Statement::ScrollCommand(command) => {
+                            for arg in &command.args {
+                                dependencies(arg, &path, &mut deps);
+                            }
+                        }
+                        ir::Statement::TextCommand(command) => {
+                            for arg in &command.args {
+                                dependencies(arg, &path, &mut deps);
+                            }
+                        }
+                        ir::Statement::MoveColumn(command) => {
+                            for position in &command.positions {
+                                dependencies(position, &path, &mut deps);
+                            }
+                        }
+                        ir::Statement::SetRowHeight(command) => {
+                            for argument in &command.arguments {
+                                dependencies(argument, &path, &mut deps);
+                            }
+                        }
+                        ir::Statement::WindowCommand(command) => {
+                            if let Some(argument) = &command.argument {
+                                dependencies(argument, &path, &mut deps);
+                            }
+                        }
+                        ir::Statement::CheckGroupCommand(command) => {
+                            dependencies(&command.state, &path, &mut deps)
+                        }
                         ir::Statement::Timer(_)
                         | ir::Statement::Popup(_)
                         | ir::Statement::NativeDialogOpen(_)
@@ -4619,13 +6543,30 @@ fn collect_bindings(
                 if let Some(result) = &callback.result {
                     dependencies(result, &path, &mut deps);
                 }
-                edges.insert(
-                    format!("{}()", path("root", &callback.name)),
-                    (callback.span, deps),
-                );
+                let owner = owners.last().unwrap();
+                let slot = format!("{}()", path(owner, &callback.name));
+                if let Some(target) = &callback.alias {
+                    let target = format!("{}()", path(&target.owner, &target.name));
+                    if callback.has_handler {
+                        alias_handlers.push((target.clone(), callback.span, deps));
+                    }
+                    links.insert(slot.clone(), target.clone());
+                    edges.insert(slot, (callback.span, vec![target]));
+                } else if matches!(m, LoweredMember::InstanceHandler(_)) {
+                    let destination = terminal_binding(slot, links);
+                    edges
+                        .entry(destination)
+                        .or_insert((callback.span, Vec::new()))
+                        .1
+                        .extend(deps);
+                } else {
+                    edges.insert(slot, (callback.span, deps));
+                }
                 continue;
             }
-            LoweredMember::Binding(b) if instances.contains(owners.last().unwrap()) => {
+            LoweredMember::Binding(b) | LoweredMember::InstanceLink(b)
+                if instances.contains(owners.last().unwrap()) =>
+            {
                 (&b.name, &b.value, b.span)
             }
             LoweredMember::Binding(b)
@@ -4633,11 +6574,78 @@ fn collect_bindings(
             {
                 ("@stack", &b.value, b.span)
             }
+            LoweredMember::Binding(b) | LoweredMember::ControlLink(b) => {
+                (&b.name, &b.value, b.span)
+            }
             _ => continue,
         };
         let mut deps = Vec::new();
         dependencies(value, &path, &mut deps);
-        // An instance input takes precedence over the component's default binding.
-        edges.insert(path(owners.last().unwrap(), name), (span, deps));
+        let owner = owners.last().unwrap();
+        let mut destination = path(owner, name);
+        if !instances.contains(owner)
+            && matches!(m, LoweredMember::Binding(_) | LoweredMember::ControlLink(_))
+            && !geometry_safe_binding(
+                layout_scopes.last().unwrap().0,
+                name,
+                fixed_labels.contains(owner),
+            )
+        {
+            geometry
+                .sinks
+                .push((scope_path(owner), destination.clone(), span));
+        }
+        if value.op == "control_read"
+            && let Some(target) = &value.owner
+        {
+            geometry
+                .sinks
+                .push((scope_path(target), path(target, &value.value), span));
+        }
+        if instances.contains(owner) {
+            // Keep alias edges in the instance. The caller replaces the
+            // initializer at the storage endpoint reached by those edges.
+            destination = instance_storage(destination, &format!("{prefix}{owner}/"), links);
+        }
+        let forwards = matches!(m, LoweredMember::Property(p) if p.alias)
+            || matches!(
+                m,
+                LoweredMember::ControlLink(_) | LoweredMember::InstanceLink(_)
+            );
+        if forwards
+            && value.op != "check_group_read"
+            && let [target] = deps.as_slice()
+        {
+            links.insert(destination.clone(), target.clone());
+        }
+        edges.insert(destination, (span, deps));
     }
+    for (target, span, dependencies) in alias_handlers {
+        edges
+            .entry(terminal_binding(target, links))
+            .or_insert((span, Vec::new()))
+            .1
+            .extend(dependencies);
+    }
+}
+
+fn terminal_binding(mut name: String, links: &BTreeMap<String, String>) -> String {
+    let mut seen = BTreeSet::new();
+    while let Some(next) = links.get(&name)
+        && seen.insert(name.clone())
+    {
+        name = next.clone();
+    }
+    name
+}
+
+fn instance_storage(mut name: String, scope: &str, links: &BTreeMap<String, String>) -> String {
+    let mut seen = BTreeSet::new();
+    while let Some(next) = links.get(&name)
+        && next.starts_with(scope)
+        && seen.insert(name.clone())
+    {
+        name = next.clone();
+    }
+    name
 }

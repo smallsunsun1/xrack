@@ -1,5 +1,8 @@
-use crate::{LayoutNode, MenuShortcut, Point, Rect, Target, input::valid};
-use xrack_runtime::{Image, Node, is_window_overlay};
+use crate::{
+    ControlInput, LayoutNode, MenuShortcut, Point, Rect, Target, edit::SelectionState, input::valid,
+};
+use std::sync::atomic::{AtomicU64, Ordering};
+use xrack_runtime::{ControlAction, Image, Node, TextCommand, is_window_overlay};
 
 const ROW_HEIGHT: f32 = 28.0;
 const MAX_VISIBLE_ROWS: usize = 14;
@@ -29,11 +32,13 @@ pub struct MenuRow<'a> {
 }
 
 pub struct MenuPanel<'a> {
+    pub menu: &'a Node,
     pub bounds: Rect,
     pub rows: Vec<MenuRow<'a>>,
     pub highlighted: Option<usize>,
     icon_column: bool,
     path: Vec<usize>,
+    session: u64,
 }
 
 /// Identity of a displayed menu row, including the label used to guard late actions.
@@ -42,11 +47,16 @@ pub struct MenuEntry {
     pub path: Vec<usize>,
     pub label: String,
     pub kind: &'static str,
+    session: u64,
 }
 
 impl MenuPanel<'_> {
     pub fn path(&self) -> &[usize] {
         &self.path
+    }
+
+    pub fn session(&self) -> u64 {
+        self.session
     }
 
     pub fn row_index(&self, slot: usize) -> usize {
@@ -61,6 +71,7 @@ impl MenuPanel<'_> {
             path,
             label: row.label.to_owned(),
             kind: row.node.kind,
+            session: self.session,
         }
     }
 
@@ -117,6 +128,82 @@ pub(crate) struct MenuPopup {
     point: Option<Point>,
     levels: Vec<Level>,
     pressed: Option<PressedItem>,
+    pub session: u64,
+    pub text: Option<TextMenu>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct TextMenu {
+    menu: Node,
+    pub value: String,
+    pub selection: SelectionState,
+    pub kind: &'static str,
+    pub writable: bool,
+    pub password: bool,
+}
+
+const TEXT_ENTRIES: [Option<(TextCommand, &str, &str)>; 8] = [
+    Some((TextCommand::Undo, "Undo", "Primary+Z")),
+    Some((TextCommand::Redo, "Redo", "Primary+Shift+Z")),
+    None,
+    Some((TextCommand::Cut, "Cut", "Primary+X")),
+    Some((TextCommand::Copy, "Copy", "Primary+C")),
+    Some((TextCommand::Paste, "Paste", "Primary+V")),
+    None,
+    Some((TextCommand::SelectAll, "Select All", "Primary+A")),
+];
+
+impl TextMenu {
+    pub fn new(
+        node: &Node,
+        value: String,
+        selection: SelectionState,
+        undo: bool,
+        redo: bool,
+    ) -> Self {
+        let writable = !node.boolean("read-only", false);
+        let password = node.is_password();
+        let selected = !selection.collapsed();
+        let mut menu = Node::new("Menu", None);
+        menu.properties
+            .insert("title", "Text editing".to_owned().into());
+        for entry in TEXT_ENTRIES {
+            let Some((command, label, shortcut)) = entry else {
+                menu.children.push(Node::new("MenuSeparator", None));
+                continue;
+            };
+            let enabled = match command {
+                TextCommand::Undo => writable && undo,
+                TextCommand::Redo => writable && redo,
+                TextCommand::Cut => writable && selected && !password,
+                TextCommand::Copy => selected && !password,
+                TextCommand::Paste => writable,
+                TextCommand::SelectAll => !value.is_empty(),
+                _ => unreachable!(),
+            };
+            let mut item = Node::new("MenuItem", None);
+            item.properties.insert("text", label.to_owned().into());
+            item.properties
+                .insert("shortcut", shortcut.to_owned().into());
+            item.properties.insert("enabled", enabled.into());
+            menu.children.push(item);
+        }
+        Self {
+            menu,
+            value,
+            selection,
+            kind: node.kind,
+            writable,
+            password,
+        }
+    }
+}
+
+fn menu_at<'a>(scene: &'a Node, text: Option<&'a TextMenu>, path: &[usize]) -> Option<&'a Node> {
+    match text {
+        Some(text) => Some(&text.menu),
+        None => scene.at_path(path),
+    }
 }
 
 fn rows(menu: &Node) -> impl Iterator<Item = (usize, &Node)> {
@@ -177,7 +264,7 @@ fn visit_presentations(
         visit(node, path);
         return;
     }
-    let visible = layout.bounds.intersect(layout.clip);
+    let visible = layout.clip_rect(layout.bounds);
     if visible.width <= 0.0 || visible.height <= 0.0 {
         return;
     }
@@ -190,7 +277,7 @@ fn visit_presentations(
         }
         path.push(index);
         if node.kind == "MenuBar" {
-            let visible = item.bounds.intersect(item.clip);
+            let visible = item.clip_rect(item.bounds);
             if item.visible && item.enabled && visible.width > 0.0 && visible.height > 0.0 {
                 visit_menu_shortcuts(child, path, visit);
             }
@@ -212,6 +299,7 @@ pub(crate) fn visit_shortcut_presentations(
         if popup.trigger.path.starts_with(scope)
             && valid(&popup.trigger, scene, layout)
             && let Some(level) = popup.levels.first()
+            && popup.text.is_none()
             && let Some(node) = scene.interactive_at_path(&level.path)
         {
             visit_menu_shortcuts(node, &mut level.path.clone(), &mut visit);
@@ -260,7 +348,9 @@ impl MenuPopup {
         point: Option<Point>,
         scene: &Node,
         layout: &LayoutNode,
+        text: Option<TextMenu>,
     ) -> Option<Self> {
+        static NEXT_SESSION: AtomicU64 = AtomicU64::new(1);
         let mut popup = Self {
             trigger,
             point,
@@ -270,6 +360,8 @@ impl MenuPopup {
                 highlight: None,
             }],
             pressed: None,
+            session: NEXT_SESSION.fetch_add(1, Ordering::Relaxed),
+            text,
         };
         popup.reconcile(scene, layout).then_some(popup)
     }
@@ -287,21 +379,25 @@ impl MenuPopup {
             .min(count)
     }
 
-    pub fn panels<'a>(&self, scene: &'a Node, layout: &LayoutNode) -> Vec<MenuPanel<'a>> {
+    pub fn panels<'a>(&'a self, scene: &'a Node, layout: &LayoutNode) -> Vec<MenuPanel<'a>> {
         let viewport = layout.clip.inset(4.0);
         if viewport.width <= 0.0 || viewport.height <= 0.0 || !valid(&self.trigger, scene, layout) {
             return Vec::new();
         }
         let mut anchor = self.point.map_or_else(
-            || layout.at_path(&self.trigger.path).unwrap().bounds,
+            || {
+                let item = layout.at_path(&self.trigger.path).unwrap();
+                item.window_bounds(item.bounds)
+            },
             |point| Rect::new(point.x, point.y, 0.0, 0.0),
         );
         let mut panels = Vec::new();
         for (index, level) in self.levels.iter().enumerate() {
-            let Some(menu) = scene
-                .interactive_at_path(&level.path)
-                .filter(|menu| menu.kind == "Menu")
-            else {
+            let menu = self.text.as_ref().map_or_else(
+                || scene.interactive_at_path(&level.path),
+                |text| Some(&text.menu),
+            );
+            let Some(menu) = menu.filter(|menu| menu.kind == "Menu") else {
                 break;
             };
             let count = rows(menu).count();
@@ -333,10 +429,12 @@ impl MenuPopup {
                 index > 0,
             );
             let panel = MenuPanel {
+                menu,
                 bounds,
                 highlighted: level.highlight,
                 icon_column,
                 path: level.path.clone(),
+                session: self.session,
                 rows: rows(menu)
                     .skip(first)
                     .take(visible)
@@ -378,7 +476,7 @@ impl MenuPopup {
     pub fn reconcile(&mut self, scene: &Node, layout: &LayoutNode) -> bool {
         let viewport = layout.clip.inset(4.0);
         for level in &mut self.levels {
-            let Some(menu) = scene.at_path(&level.path) else {
+            let Some(menu) = menu_at(scene, self.text.as_ref(), &level.path) else {
                 break;
             };
             if !level.highlight.is_some_and(|index| {
@@ -415,11 +513,12 @@ impl MenuPopup {
         else {
             return false;
         };
-        if !row.enabled || self.levels[level].highlight == Some(row.index) {
+        let index = row.index;
+        if !row.enabled || self.levels[level].highlight == Some(index) {
             return false;
         }
         self.levels.truncate(level + 1);
-        self.levels[level].highlight = Some(row.index);
+        self.levels[level].highlight = Some(index);
         true
     }
 
@@ -473,6 +572,14 @@ impl MenuPopup {
         index: usize,
     ) -> Option<Vec<usize>> {
         let mut path = self.levels[level].path.clone();
+        if let Some(text) = &self.text {
+            let node = text.menu.children.get(index)?;
+            if !enabled(node) {
+                return None;
+            }
+            path.push(index);
+            return Some(path);
+        }
         path.push(index);
         let node = scene.interactive_at_path(&path)?;
         match node.kind {
@@ -499,7 +606,7 @@ impl MenuPopup {
         entry: &MenuEntry,
         activate: bool,
     ) -> Option<Vec<usize>> {
-        if &self.trigger != trigger {
+        if &self.trigger != trigger || self.session != entry.session {
             return None;
         }
         let (&index, parent) = entry.path.split_last()?;
@@ -528,8 +635,9 @@ impl MenuPopup {
         layout: &LayoutNode,
         trigger: &Target,
         path: &[usize],
+        session: u64,
     ) -> Option<bool> {
-        if &self.trigger != trigger {
+        if &self.trigger != trigger || self.session != session {
             return None;
         }
         let depth = self
@@ -548,8 +656,7 @@ impl MenuPopup {
         let Some(index) = level.highlight else {
             return false;
         };
-        if !scene
-            .at_path(&level.path)
+        if !menu_at(scene, self.text.as_ref(), &level.path)
             .and_then(|menu| menu.children.get(index))
             .is_some_and(|row| row.kind == "Menu" && row.is_visible() && enabled(row))
         {
@@ -562,7 +669,7 @@ impl MenuPopup {
     pub fn key(&mut self, scene: &Node, layout: &LayoutNode, key: MenuKey) -> Option<Vec<usize>> {
         let depth = self.levels.len().checked_sub(1)?;
         let level = &mut self.levels[depth];
-        let menu = scene.at_path(&level.path)?;
+        let menu = menu_at(scene, self.text.as_ref(), &level.path)?;
         match key {
             MenuKey::Accept => {
                 let index = level.highlight?;
@@ -614,7 +721,7 @@ impl MenuPopup {
             return;
         };
         let level = &mut self.levels[depth];
-        let Some(menu) = scene.at_path(&level.path) else {
+        let Some(menu) = menu_at(scene, self.text.as_ref(), &level.path) else {
             return;
         };
         let count = rows(menu).count();
@@ -629,5 +736,25 @@ impl MenuPopup {
             .find(|(_, row)| enabled(row))
             .map(|(index, _)| index);
         self.levels.truncate(depth + 1);
+    }
+
+    pub fn input(&self, mut path: Vec<usize>) -> Option<ControlInput> {
+        let action = if self.text.is_some() {
+            let index = path.pop()?;
+            let (command, _, _) = TEXT_ENTRIES.get(index)?.as_ref()?;
+            ControlAction::TextCommand(*command)
+        } else {
+            ControlAction::ActivateMenuItem
+        };
+        Some(ControlInput { path, action })
+    }
+
+    pub fn text_shortcut(&self, key: MenuShortcut) -> Option<ControlInput> {
+        let text = self.text.as_ref()?;
+        let (index, _) =
+            rows(&text.menu).find(|(_, row)| enabled(row) && shortcut(row) == Some(key))?;
+        let mut path = self.trigger.path.clone();
+        path.push(index);
+        self.input(path)
     }
 }

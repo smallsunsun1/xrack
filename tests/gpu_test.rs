@@ -8,7 +8,7 @@ use controls_ui::{
 use counter_ui::Counter;
 use delegates_ui::{DelegatesDemo, SwipeDemo};
 use dialog_ui::{DialogDemo, PopupDemo, StandardDialogDemo};
-use form_ui::{DragDropDemo, FileDropDemo, FormDemo, PasswordDemo};
+use form_ui::{BidiEditorDemo, DragDropDemo, FileDropDemo, FormDemo, PasswordDemo};
 use layout_ui::{
     AnimationsDemo, FlexDemo, FlowDemo, FontsDemo, LabelsDemo, LayoutDemo, StatesDemo,
 };
@@ -30,6 +30,118 @@ use xrack_layout::{
     RangeInput, Size, SliderGeometry, SliderKey, SpinGeometry, TextAreaMotion, TextEdit,
     TextPosition, font_size,
 };
+
+#[test]
+fn scroll_position_repaints_the_requested_content_and_virtual_rows() {
+    use list_ui::ScrollPositionDemo;
+
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))
+    .unwrap();
+    let mut driver = UiDriver::new(
+        ScrollPositionDemo::new(),
+        xrack_renderer_femtovg::TextSystem::system().unwrap(),
+        Size::new(540.0, 300.0),
+    );
+    let first = renderer
+        .snapshot(driver.scene(), 540, 300, 1.0, driver.input())
+        .unwrap();
+    driver.click("jump");
+    let jumped = renderer
+        .snapshot(driver.scene(), 540, 300, 1.0, driver.input())
+        .unwrap();
+    assert_eq!(first.pixel(60, 96), Some([0x26, 0x37, 0x50, 0xff]));
+    assert_eq!(jumped.pixel(60, 96), Some([0x46, 0x87, 0xda, 0xff]));
+    let rows = driver.node("records");
+    assert_eq!(rows.list.unwrap().first_row, 8_998);
+    assert!(
+        rows.children
+            .iter()
+            .any(|row| { row.children[0].children[0].text("text") == Some("记录 9000") })
+    );
+    driver.click("reset");
+    assert!(driver.drag_viewport_from("canvas-button", Point { x: -96.0, y: -60.0 }));
+    let user_scrolled = renderer
+        .snapshot(driver.scene(), 540, 300, 1.0, driver.input())
+        .unwrap();
+    assert_eq!(user_scrolled.pixel(60, 96), Some([0x49, 0xb9, 0x89, 0xff]));
+}
+
+#[test]
+fn prepending_rows_preserves_anchored_pixels_and_virtualizes_the_rest() {
+    use list_ui::AnchoredListDemo;
+
+    let mut ui = AnchoredListDemo::new();
+    ui.set_records(
+        (0..1000)
+            .map(|rank| DirectoryItem {
+                label: rank.to_string(),
+                rank,
+            })
+            .collect(),
+    );
+    let model = ui.model_records();
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))
+    .unwrap();
+    let mut driver = UiDriver::new(
+        ui,
+        xrack_renderer_femtovg::TextSystem::system().unwrap(),
+        Size::new(560.0, 274.0),
+    );
+    driver.update(|ui| ui.invoke_position(500));
+    assert!(driver.scroll("anchored", Point { x: 0.0, y: 7.0 }));
+    let before = renderer
+        .snapshot(driver.scene(), 560, 274, 1.0, driver.input())
+        .unwrap();
+    driver.update(|_| {
+        assert!(model.insert(
+            0,
+            DirectoryItem {
+                label: "New row".into(),
+                rank: -1
+            }
+        ))
+    });
+    let after = renderer
+        .snapshot(driver.scene(), 560, 274, 1.0, driver.input())
+        .unwrap();
+    assert_eq!(before.pixel(190, 56), Some([0x26, 0x37, 0x50, 0xff]));
+    assert_eq!(after.pixel(190, 56), before.pixel(190, 56));
+    assert_eq!(driver.node("anchored").list.unwrap().first_row, 501);
+    assert!(driver.node("anchored").children.len() <= 6);
+}
+
+#[test]
+fn linked_scroll_repaints_both_viewports_from_one_gesture() {
+    use list_ui::LinkedScrollDemo;
+
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))
+    .unwrap();
+    let mut driver = UiDriver::new(
+        LinkedScrollDemo::new(),
+        xrack_renderer_femtovg::TextSystem::system().unwrap(),
+        Size::new(540.0, 270.0),
+    );
+    let before = renderer
+        .snapshot(driver.scene(), 540, 270, 1.0, driver.input())
+        .unwrap();
+    assert!(driver.scroll("large", Point { x: 0.0, y: 20.0 }));
+    let after = renderer
+        .snapshot(driver.scene(), 540, 270, 1.0, driver.input())
+        .unwrap();
+    assert_eq!(before.pixel(80, 123), Some([0x26, 0x37, 0x50, 0xff]));
+    assert_eq!(after.pixel(80, 123), Some([0x49, 0xb9, 0x89, 0xff]));
+    assert_eq!(before.pixel(245, 102), Some([0x30, 0x45, 0x65, 0xff]));
+    assert_eq!(after.pixel(245, 102), Some([0xef, 0xab, 0x56, 0xff]));
+}
 
 #[test]
 fn focus_observation_repaints_the_active_scope_and_clears_on_window_blur() {
@@ -62,6 +174,55 @@ fn focus_observation_repaints_the_active_scope_and_clears_on_window_blur() {
         .snapshot(&ui.render(), 492, 272, 1.0, &input)
         .unwrap();
     assert_eq!(blurred.pixel(25, 55), before.pixel(25, 55));
+}
+
+#[test]
+fn frameless_title_area_covers_the_resized_client_width() {
+    use layout_ui::FramelessDemo;
+
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))
+    .unwrap();
+    let scene = FramelessDemo::new().render();
+    let input = Interaction::default();
+    for width in [540, 720] {
+        let frame = renderer.snapshot(&scene, width, 320, 1.0, &input).unwrap();
+        assert_eq!(frame.pixel(width - 2, 12), Some([0x22, 0x36, 0x50, 0xff]));
+        assert_eq!(frame.pixel(width - 2, 64), Some([0x14, 0x1d, 0x2c, 0xff]));
+    }
+}
+
+#[test]
+fn a_state_animates_instance_layout_and_repaints_the_component_input() {
+    use layout_ui::ComponentStatesDemo;
+    use std::time::Duration;
+    use xrack_runtime::SceneTransition;
+
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))
+    .unwrap();
+    let input = Interaction::default();
+    let mut ui = ComponentStatesDemo::new();
+    let start = ui.render();
+    let banner = [start
+        .children
+        .iter()
+        .position(|node| node.id == Some("banner"))
+        .unwrap()];
+    let normal = renderer.snapshot(&start, 520, 306, 1.0, &input).unwrap();
+    ui.set_warning(true);
+    let warning = ui.render();
+    let timeline = SceneTransition::between(&start, &warning);
+    let frame = timeline.frame(&warning, Duration::from_millis(130));
+    let halfway = renderer.snapshot(&frame, 520, 306, 1.0, &input).unwrap();
+    assert_eq!(halfway.layout.at_path(&banner).unwrap().bounds.width, 250.0);
+    assert_eq!(normal.pixel(260, 53), Some([0x14, 0x1d, 0x2c, 0xff]));
+    assert_eq!(halfway.pixel(260, 53), Some([0xba, 0x4b, 0x5d, 0xff]));
+    assert_eq!(halfway.pixel(300, 53), normal.pixel(300, 53));
 }
 
 #[test]
@@ -1273,6 +1434,159 @@ fn editable_combo_clips_completion_and_ime_preedit_to_its_entry() {
 }
 
 #[test]
+fn check_group_master_repaints_mixed_and_checked_marks() {
+    use controls_ui::CheckGroupDemo;
+
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))
+    .unwrap();
+    let mut ui = UiDriver::new(
+        CheckGroupDemo::new(),
+        xrack_renderer_femtovg::TextSystem::system().unwrap(),
+        Size::new(520.0, 266.0),
+    );
+    let mixed = renderer
+        .snapshot(ui.scene(), 520, 266, 1.0, ui.input())
+        .unwrap();
+    let rect = mixed.layout.at_path(&[0, 1]).unwrap().bounds;
+    ui.click("select-all");
+    let checked = renderer
+        .snapshot(ui.scene(), 520, 266, 1.0, ui.input())
+        .unwrap();
+    let x = rect.x as u32;
+    let y = (rect.y + rect.height * 0.5) as u32;
+    assert!(
+        (y.saturating_sub(8)..y + 8)
+            .any(|y| (x + 8..x + 25).any(|x| mixed.pixel(x, y) != checked.pixel(x, y)))
+    );
+    assert_eq!(
+        ui.node("run-validation").check_state(),
+        xrack_runtime::CheckState::Checked
+    );
+    assert!(ui.node("use-background").boolean("checked", false));
+}
+
+#[test]
+fn radio_selection_paints_across_independent_layout_columns() {
+    use selection_ui::GroupedRadiosDemo;
+
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))
+    .unwrap();
+    let mut ui = UiDriver::new(
+        GroupedRadiosDemo::new(),
+        xrack_renderer_femtovg::TextSystem::system().unwrap(),
+        Size::new(540.0, 280.0),
+    );
+    let balanced = renderer
+        .snapshot(ui.scene(), 540, 280, 1.0, ui.input())
+        .unwrap();
+    let dot = |path: &[usize]| {
+        let rect = balanced.layout.at_path(path).unwrap().bounds;
+        ((rect.x + 14.0) as u32, (rect.y + rect.height * 0.5) as u32)
+    };
+    let (fast_x, fast_y) = dot(&[0, 1, 0, 0]);
+    let (balanced_x, balanced_y) = dot(&[0, 1, 1, 0]);
+    ui.update(|ui| ui.set_mode("fast".into()));
+    let fast = renderer
+        .snapshot(ui.scene(), 540, 280, 1.0, ui.input())
+        .unwrap();
+    assert_ne!(balanced.pixel(fast_x, fast_y), fast.pixel(fast_x, fast_y));
+    assert_ne!(
+        balanced.pixel(balanced_x, balanced_y),
+        fast.pixel(balanced_x, balanced_y)
+    );
+    assert_eq!(
+        balanced.pixel(balanced_x, balanced_y),
+        fast.pixel(fast_x, fast_y)
+    );
+}
+
+#[test]
+fn a_disabled_combo_option_uses_a_different_label_color_in_the_open_popup() {
+    use selection_ui::RecordComboDemo;
+
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))
+    .unwrap();
+    let mut ui = UiDriver::new(
+        RecordComboDemo::new(),
+        xrack_renderer_femtovg::TextSystem::system().unwrap(),
+        Size::new(472.0, 296.0),
+    );
+    ui.click("choice");
+    let disabled = renderer
+        .snapshot(ui.scene(), 472, 296, 1.0, ui.input())
+        .unwrap();
+    let row = {
+        let menu = ui
+            .input()
+            .choice_menu(ui.scene(), &disabled.layout)
+            .unwrap();
+        let index = menu
+            .rows
+            .iter()
+            .position(|label| label == "Build archive")
+            .unwrap();
+        assert!(!menu.row_enabled(index));
+        menu.row_bounds(index)
+    };
+    ui.update(|ui| {
+        let options = ui.model_options();
+        let mut row = options.row(3).unwrap();
+        row.access.available = true;
+        assert!(options.set_row(3, row));
+    });
+    let enabled = renderer
+        .snapshot(ui.scene(), 472, 296, 1.0, ui.input())
+        .unwrap();
+    let x = row.x as u32;
+    let y = row.y as u32;
+    assert_eq!(disabled.pixel(x + 4, y + 12), enabled.pixel(x + 4, y + 12));
+    assert!(
+        (y + 4..y + 24)
+            .any(|y| (x + 10..x + 134).any(|x| disabled.pixel(x, y) != enabled.pixel(x, y)))
+    );
+}
+
+#[test]
+fn editor_context_menu_is_drawn_over_the_form_and_clears_on_escape() {
+    use form_ui::EditorMenuDemo;
+
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))
+    .unwrap();
+    let mut ui = UiDriver::new(
+        EditorMenuDemo::new(),
+        xrack_renderer_femtovg::TextSystem::system().unwrap(),
+        Size::new(540.0, 420.0),
+    );
+    assert!(ui.context_menu("entry"));
+    let bounds = ui.menus()[0].bounds;
+    let open = renderer
+        .snapshot(ui.scene(), 540, 420, 1.0, ui.input())
+        .unwrap();
+    ui.menu_key(MenuKey::Escape);
+    let closed = renderer
+        .snapshot(ui.scene(), 540, 420, 1.0, ui.input())
+        .unwrap();
+    let inside = (bounds.x as u32 + 10, bounds.y as u32 + 10);
+    assert_ne!(
+        open.pixel(inside.0, inside.1),
+        closed.pixel(inside.0, inside.1)
+    );
+    assert_eq!(open.pixel(8, 8), closed.pixel(8, 8));
+}
+
+#[test]
 fn cascaded_menu_panels_render_and_stay_inside_the_viewport() {
     let mut renderer = pollster::block_on(Renderer::new(
         wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
@@ -1876,6 +2190,217 @@ fn standard_dialog_button_box_wraps_and_distinguishes_danger_on_gpu() {
     assert_eq!(pixel(0), Some([0x53, 0x6d, 0xfe, 255]));
     assert_eq!(pixel(1), Some([0x38, 0x49, 0x66, 255]));
     assert_eq!(pixel(3), Some([0xa6, 0x38, 0x43, 255]));
+}
+
+#[test]
+fn record_height_changes_move_the_painted_boundary_of_a_virtual_list() {
+    use table_ui::{LogRow, ProjectedRowsDemo};
+    use xrack_runtime::Length;
+
+    let mut ui = ProjectedRowsDemo::new();
+    ui.set_entries(vec![
+        LogRow {
+            message: "Warning".into(),
+            severity: "warn".into(),
+            height: Length(60.0),
+        },
+        LogRow {
+            message: "Info".into(),
+            severity: "info".into(),
+            height: Length(0.0),
+        },
+    ]);
+    let model = ui.model_entries();
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))
+    .unwrap();
+    let mut driver = UiDriver::new(
+        ui,
+        xrack_renderer_femtovg::TextSystem::system().unwrap(),
+        Size::new(660.0, 310.0),
+    );
+    let before = renderer
+        .snapshot(driver.scene(), 660, 310, 1.0, driver.input())
+        .unwrap();
+    driver.update(|_| {
+        let mut row = model.row(0).unwrap();
+        row.height = Length(20.0);
+        assert!(model.set_row(0, row));
+    });
+    let after = renderer
+        .snapshot(driver.scene(), 660, 310, 1.0, driver.input())
+        .unwrap();
+    assert_eq!(before.pixel(603, 84), Some([0x40, 0x59, 0x71, 0xff]));
+    assert_eq!(after.pixel(603, 84), Some([0x26, 0x37, 0x50, 0xff]));
+}
+
+#[test]
+fn resizing_a_table_row_repaints_the_new_boundary() {
+    let mut ui = TableDemo::new();
+    ui.set_resize_rows(true);
+    ui.set_pinned(1);
+    ui.set_records(vec!["A".into(), "B".into(), "C".into()]);
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))
+    .unwrap();
+    let path = [0, 2];
+    let viewport = Size::new(560.0, 370.0);
+    let mut input = Interaction::default();
+    let (scene, frame) = renderer.prepare_scene(&ui, ui.render_shared(), viewport, &input);
+    let row = frame.at_path(&[0, 2, 0]).unwrap().bounds;
+    let sample = ((row.x + 120.0) as u32, (row.y + 45.0) as u32);
+    let before = renderer.snapshot(&scene, 560, 370, 1.0, &input).unwrap();
+    assert_eq!(
+        before.pixel(sample.0, sample.1),
+        Some([0x22, 0x32, 0x49, 0xff])
+    );
+    let start = Point {
+        x: row.x + 100.0,
+        y: row.y + 31.0,
+    };
+    input.pointer_move(&scene, &frame, start);
+    input.pointer_press_in_scene(&scene, &frame);
+    input.pointer_move(
+        &scene,
+        &frame,
+        Point {
+            x: start.x,
+            y: start.y + 40.0,
+        },
+    );
+    let action = input.table_row_resize_drag(&scene, &frame).unwrap();
+    assert_eq!(action.path, path);
+    assert!(ui.control_at(&scene, &action.path, action.action));
+    assert!(input.finish_table_resize());
+    let (scene, _) = renderer.prepare_scene(&ui, ui.render_shared(), viewport, &input);
+    let after = renderer.snapshot(&scene, 560, 370, 1.0, &input).unwrap();
+    assert_eq!(
+        after.pixel(sample.0, sample.1),
+        Some([0x26, 0x37, 0x50, 0xff])
+    );
+    assert_eq!(
+        after.layout.at_path(&[0, 2, 0]).unwrap().bounds.height,
+        72.0
+    );
+}
+
+#[test]
+fn frozen_table_pane_clips_scrolled_and_transformed_cell_pixels() {
+    let mut ui = TableDemo::new();
+    ui.set_pinned(1);
+    ui.set_records(vec!["A".into(), "B".into()]);
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))
+    .unwrap();
+    let path = [0, 2];
+    let viewport = Size::new(560.0, 370.0);
+    let mut input = Interaction::default();
+    let base = ui.render_shared();
+    assert!(ui.control_at(
+        &base,
+        &path,
+        ControlAction::ResizeColumn {
+            column: 0,
+            width: 440
+        }
+    ));
+    let (scene, frame) = renderer.prepare_scene(&ui, ui.render_shared(), viewport, &input);
+    let geometry = frame.at_path(&path).unwrap().table.as_ref().unwrap();
+    let seam = geometry.frozen_boundary().unwrap();
+    let pixel = ((seam - 15.0) as u32, (geometry.body.y + 18.0) as u32);
+    let initial = renderer.snapshot(&scene, 560, 370, 1.0, &input).unwrap();
+    assert_eq!(
+        initial.pixel(pixel.0, pixel.1),
+        Some([0x26, 0x37, 0x50, 0xff])
+    );
+    assert!(input.accessibility_scroll_to(
+        &frame,
+        &path,
+        xrack_runtime::Orientation::Horizontal,
+        60.0
+    ));
+    let (mut scene, _) = renderer.prepare_scene(&ui, ui.render_shared(), viewport, &input);
+    let scrolled = renderer.snapshot(&scene, 560, 370, 1.0, &input).unwrap();
+    assert_eq!(
+        scrolled.pixel(pixel.0, pixel.1),
+        initial.pixel(pixel.0, pixel.1)
+    );
+    let row =
+        &mut std::rc::Rc::make_mut(&mut scene).children[0].children[2].children[0].children[0];
+    row.children[1]
+        .properties
+        .insert("transform-rotation", 22.0_f64.into());
+    let rotated = renderer.snapshot(&scene, 560, 370, 1.0, &input).unwrap();
+    assert!(
+        rotated
+            .layout
+            .at_path(&[0, 2, 0, 0, 1])
+            .unwrap()
+            .table_pane_clip()
+            .is_some()
+    );
+    assert_eq!(
+        rotated.pixel(pixel.0, pixel.1),
+        initial.pixel(pixel.0, pixel.1)
+    );
+}
+
+#[test]
+fn moved_table_columns_repaint_their_cells_below_the_new_header_positions() {
+    let mut ui = TableDemo::new();
+    ui.set_records(vec!["A".into(), "B".into()]);
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))
+    .unwrap();
+    let path = [0, 2];
+    let mut input = Interaction::default();
+    let viewport = Size::new(560.0, 370.0);
+    let (scene, _) = renderer.prepare_scene(&ui, ui.render_shared(), viewport, &input);
+    let before = renderer.snapshot(&scene, 560, 370, 1.0, &input).unwrap();
+    let table = before
+        .layout
+        .at_path(&path)
+        .unwrap()
+        .table
+        .as_ref()
+        .unwrap();
+    let start = Point {
+        x: table.columns[0].x + 40.0,
+        y: table.header.y + 12.0,
+    };
+    let end = Point {
+        x: table.columns[1].x + 120.0,
+        y: start.y,
+    };
+    let pixel = ((table.body.x + 120.0) as u32, (table.body.y + 26.0) as u32);
+    assert_eq!(
+        before.pixel(pixel.0, pixel.1),
+        Some([0x26, 0x37, 0x50, 0xff])
+    );
+    input.pointer_move(&scene, &before.layout, start);
+    input.pointer_press_in_scene(&scene, &before.layout);
+    input.pointer_move(&scene, &before.layout, end);
+    assert!(input.table_column_move_drag(&before.layout, std::time::Instant::now()));
+    let action = input
+        .finish_table_column_move(&scene, &before.layout)
+        .unwrap();
+    assert!(ui.control_at(&scene, &action.path, action.action));
+    let (scene, _) = renderer.prepare_scene(&ui, ui.render_shared(), viewport, &input);
+    let after = renderer.snapshot(&scene, 560, 370, 1.0, &input).unwrap();
+    assert_eq!(
+        after.pixel(pixel.0, pixel.1),
+        Some([0x2b, 0x3c, 0x57, 0xff])
+    );
+    let table = after.layout.at_path(&path).unwrap().table.as_ref().unwrap();
+    assert_eq!(table.visual_columns().collect::<Vec<_>>(), [1, 0]);
 }
 
 #[test]
@@ -2567,6 +3092,121 @@ fn drawer_swipe_opens_the_panel_and_shades_the_window() {
             .children
             .is_empty()
     );
+}
+
+#[test]
+fn bidi_editor_uses_shaped_glyph_edges_for_hit_testing_selection_and_vertical_movement() {
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))
+    .unwrap();
+    let mut ui = BidiEditorDemo::new();
+    let value = "AאבB";
+    let document = format!("{value}\n{value}\nمرحبا 123");
+    ui.set_line(value.into());
+    ui.set_document(document.clone());
+    let scene = ui.render_shared();
+    let path = [0, 1];
+    let node = scene.at_path(&path).unwrap();
+    let mut input = Interaction::default();
+    let layout = renderer.layout_with_input(&scene, Size::new(520.0, 300.0), &input);
+    let bounds = layout.at_path(&path).unwrap().bounds;
+    let visual = renderer.text.single_line_layout(node, value);
+    let first_rtl = &visual.graphemes()[1];
+    let second_rtl = &visual.graphemes()[2];
+    assert!(first_rtl.leading > first_rtl.trailing);
+    assert!(first_rtl.span().start >= second_rtl.span().end - 0.01);
+    let spans = visual.selection_spans(0..3);
+    assert_eq!(spans.len(), 2);
+    let padding = bounds.x + 6.0;
+    let left_side = TextPosition {
+        offset: 1,
+        trailing: true,
+    };
+    let right_side = TextPosition {
+        offset: 1,
+        trailing: false,
+    };
+    let mut edit = TextEdit::at_end(value);
+    edit.place_caret(value, left_side, false);
+    let left = renderer
+        .text
+        .single_line_caret_x(node, bounds, value, Some(&edit));
+    edit.place_caret(value, right_side, false);
+    let right = renderer
+        .text
+        .single_line_caret_x(node, bounds, value, Some(&edit));
+    assert!(right - left > 5.0);
+    let x = first_rtl.leading * 0.9 + first_rtl.trailing * 0.1;
+    let point = Point {
+        x: padding + x,
+        y: bounds.y + bounds.height * 0.5,
+    };
+    assert_eq!(
+        renderer.text.single_line_hit(node, bounds, point, None),
+        right_side
+    );
+    assert_eq!(visual.step(right_side, false).unwrap().offset, 3);
+
+    input.pointer_move(&scene, &layout, point);
+    input.pointer_press_in_scene(&scene, &layout);
+    input.sync_editor(&scene);
+    let before = renderer.snapshot(&scene, 520, 300, 1.0, &input).unwrap();
+    input.editor.as_mut().unwrap().set_selection(
+        value,
+        0,
+        TextPosition {
+            offset: 3,
+            trailing: true,
+        },
+    );
+    let selected = renderer.snapshot(&scene, 520, 300, 1.0, &input).unwrap();
+    let y = (bounds.y + ((bounds.height - font_size(node) * 1.4) * 0.5).max(0.0)) as u32;
+    let changed = |x: f32| {
+        let x = (padding + x) as u32;
+        (y + 2..y + 8).any(|row| before.pixel(x, row) != selected.pixel(x, row))
+    };
+    for span in &spans {
+        assert!(changed(span.start.midpoint(span.end)));
+    }
+    assert!(!changed(spans[0].end.midpoint(spans[1].start)));
+
+    edit.place_caret(
+        value,
+        TextPosition {
+            offset: 5,
+            trailing: false,
+        },
+        false,
+    );
+    edit.set_preedit("ש".into(), Some((2, 2)));
+    let composed = renderer.text.single_line_layout(node, "AאבשB");
+    let ime_cursor = TextPosition {
+        offset: 7,
+        trailing: true,
+    };
+    let x = renderer
+        .text
+        .single_line_caret_x(node, bounds, value, Some(&edit));
+    assert!((x - (padding + composed.caret_x(ime_cursor))).abs() < 0.01);
+
+    let paragraph_path = [0, 3];
+    let paragraph = scene.at_path(&paragraph_path).unwrap();
+    let paragraph_bounds = layout.at_path(&paragraph_path).unwrap().bounds;
+    let area = renderer
+        .text
+        .text_area_layout(paragraph, paragraph_bounds, &document);
+    let advance = |text: &str| renderer.text.advance_node(paragraph, text);
+    edit.place_caret(&document, right_side, false);
+    let original = area.caret_point(&document, edit.position(&document), advance);
+    area.move_caret(&document, &mut edit, TextAreaMotion::Down, false, advance);
+    let next = area.caret_point(&document, edit.position(&document), advance);
+    assert!((next.x - original.x).abs() < 0.01);
+    assert_eq!(next.y, area.line_height);
+    let rtl = area.visual_line(2).unwrap();
+    assert!(rtl.is_rtl());
+    assert!(rtl.caret_x(TextPosition::default()) > 0.0);
 }
 
 #[test]
@@ -4634,4 +5274,809 @@ fn styled_text_shapes_bidi_spans_and_elides_without_losing_the_source_text() {
     assert!(visible.height < bounds.height);
     assert_eq!(colored_x(&clipped, visible, 2), None);
     assert_eq!(scene.at_path(&[1]).unwrap().text("text"), Some(body));
+}
+
+#[test]
+fn wrapped_text_link_geometry_tracks_gpu_paint_and_focus() {
+    use layout_ui::StyledTextDemo;
+    use xrack_runtime::StyledText;
+
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))
+    .unwrap();
+    let mut ui = StyledTextDemo::new();
+    ui.set_body(StyledText::from_markdown(
+        "See [**wrapping links** follow the paint geometry across lines of inline text](#wrapped).",
+    ).unwrap());
+    let mut input = Interaction::default();
+    let scene = ui.render_shared();
+    let normal = renderer.snapshot(&scene, 460, 268, 1.0, &input).unwrap();
+    let link_bounds: Vec<_> = normal
+        .layout
+        .at_path(&[1])
+        .unwrap()
+        .text_link_regions()
+        .filter_map(|(index, region)| (index == 0).then_some(region))
+        .collect();
+    assert!(link_bounds.iter().any(|region| region.y > link_bounds[0].y));
+    for rect in &link_bounds {
+        assert!(
+            (rect.y as u32..(rect.y + rect.height) as u32).any(|y| {
+                (rect.x as u32..(rect.x + rect.width) as u32).any(|x| {
+                    let [r, g, b, _] = normal.pixel(x, y).unwrap();
+                    r > 100 && g > r.saturating_add(45) && b >= g
+                })
+            }),
+            "missing link-colored pixels in {rect:?}"
+        );
+        input.pointer_move(
+            &scene,
+            &normal.layout,
+            Point {
+                x: rect.x + rect.width * 0.5,
+                y: rect.y + rect.height * 0.5,
+            },
+        );
+        assert_eq!(input.hovered.as_ref().unwrap().text_link_index(), Some(0));
+    }
+    input.focus_next(&scene, &normal.layout, false);
+    let focused = renderer.snapshot(&scene, 460, 268, 1.0, &input).unwrap();
+    assert!(link_bounds.iter().any(|rect| {
+        (rect.y as u32..(rect.y + rect.height) as u32).any(|y| {
+            (rect.x as u32..(rect.x + rect.width) as u32)
+                .any(|x| normal.pixel(x, y) != focused.pixel(x, y))
+        })
+    }));
+}
+
+#[test]
+fn nine_slice_preserves_asymmetric_corners_and_tiles_each_axis() {
+    use media_ui::NineSliceDemo;
+    use xrack_runtime::{ImageTileMode, Length, NineSlice, Node};
+
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))
+    .unwrap();
+    let mut ui = NineSliceDemo::new();
+    let input = Interaction::default();
+    let snapshot = |renderer: &mut Renderer, ui: &NineSliceDemo| {
+        renderer
+            .snapshot(&ui.render_shared(), 460, 268, 1.0, &input)
+            .unwrap()
+    };
+    let stretch = snapshot(&mut renderer, &ui);
+    let first = Some([0x6b, 0x3d, 0x92, 255]);
+    let second = Some([0xd4, 0x4b, 0x76, 255]);
+    let top_left = Some([0xff, 0xd1, 0x77, 255]);
+    let top_right = Some([0xfc, 0x88, 0x6d, 255]);
+    let bottom_left = Some([0x74, 0xcb, 0xf8, 255]);
+    let bottom_right = Some([0x90, 0xe4, 0xa1, 255]);
+
+    assert_eq!(stretch.pixel(26, 65), top_left);
+    assert_eq!(stretch.pixel(224, 65), top_right);
+    assert_eq!(stretch.pixel(26, 190), bottom_left);
+    assert_eq!(stretch.pixel(224, 190), bottom_right);
+    assert_eq!(stretch.pixel(53, 65), first);
+    assert_eq!(stretch.pixel(218, 65), second);
+
+    ui.set_horizontal_mode(ImageTileMode::Repeat);
+    let repeat = snapshot(&mut renderer, &ui);
+    assert_eq!(repeat.pixel(37, 65), first);
+    assert_eq!(repeat.pixel(45, 65), second);
+    assert_eq!(repeat.pixel(53, 65), first);
+    assert_eq!(repeat.pixel(213, 65), first);
+    assert_eq!(repeat.pixel(224, 65), top_right);
+    assert_eq!(repeat.pixel(26, 93), stretch.pixel(26, 93));
+
+    ui.set_horizontal_mode(ImageTileMode::Round);
+    ui.set_vertical_mode(ImageTileMode::Repeat);
+    let round = snapshot(&mut renderer, &ui);
+    assert_eq!(round.pixel(218, 65), second);
+    assert_eq!(round.pixel(26, 72), round.pixel(26, 92));
+    assert_ne!(round.pixel(26, 72), round.pixel(26, 82));
+    let hidpi = renderer
+        .snapshot(&ui.render_shared(), 920, 536, 2.0, &input)
+        .unwrap();
+    assert_eq!(hidpi.pixel(52, 130), top_left);
+    assert_eq!(hidpi.pixel(448, 380), bottom_right);
+
+    ui.set_panel_width(Length(8.0));
+    ui.set_panel_height(Length(6.0));
+    let tiny = snapshot(&mut renderer, &ui);
+    assert_eq!(tiny.pixel(26, 65), top_left);
+    assert_eq!(tiny.pixel(30, 65), top_right);
+    assert_eq!(tiny.pixel(26, 68), bottom_left);
+    assert_eq!(tiny.pixel(30, 68), bottom_right);
+    assert_eq!(tiny.pixel(32, 68), Some([0x10, 0x17, 0x25, 255]));
+
+    // A Rust application can apply the same metadata to an embedded PNG.
+    let scene = MediaDemo::new().render_shared();
+    let png = scene.find("png-image").unwrap().image("source").unwrap();
+    let mut original = Node::new("Image", None);
+    original.properties.insert("source", png.into());
+    let reference = renderer.snapshot(&original, 96, 48, 1.0, &input).unwrap();
+    ui.set_frame(
+        png.with_nine_slice(NineSlice {
+            top: 4,
+            right: 6,
+            bottom: 8,
+            left: 10,
+        })
+        .unwrap(),
+    );
+    ui.set_panel_width(Length(203.0));
+    ui.set_panel_height(Length(129.0));
+    let png = snapshot(&mut renderer, &ui);
+    assert_eq!(png.pixel(26, 65), reference.pixel(2, 1));
+    assert_eq!(png.pixel(224, 65), reference.pixel(93, 1));
+}
+
+#[test]
+fn animated_gif_samples_composited_frames_and_freezes_offscreen_and_when_paused() {
+    use media_ui::AnimatedImageDemo;
+    use std::time::{Duration, Instant};
+    use xrack_runtime::{Image, ImagePlaybackQueue};
+
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))
+    .unwrap();
+    let mut ui = AnimatedImageDemo::new();
+    ui.set_passes(0);
+    let mut playback = ImagePlaybackQueue::default();
+    let start = Instant::now();
+    let at = |ms| start + Duration::from_millis(ms);
+    let sync = |playback: &mut ImagePlaybackQueue, ui: &AnimatedImageDemo, ms| {
+        let scene = ui.render_shared();
+        let pulse = scene.find("pulse").unwrap();
+        playback.sync(
+            at(ms),
+            [(pulse.image_playback.as_ref().unwrap(), pulse.is_visible())],
+        );
+    };
+    let input = Interaction::default();
+    let capture = |renderer: &mut Renderer, ui: &AnimatedImageDemo| {
+        renderer
+            .snapshot(&ui.render_shared(), 460, 258, 1.0, &input)
+            .unwrap()
+    };
+    let coral = Some([0xfc, 0x88, 0x6d, 255]);
+    let teal = Some([0x39, 0xd6, 0xbc, 255]);
+    let blue = Some([0x51, 0x6c, 0xfe, 255]);
+
+    sync(&mut playback, &ui, 0);
+    assert_eq!(ui.get_frame_total(), 3);
+    assert_eq!(playback.deadline(), Some(at(80)));
+    let initial = capture(&mut renderer, &ui);
+    assert_eq!(initial.pixel(60, 80), coral);
+    assert_eq!(initial.pixel(190, 80), coral);
+
+    assert!(!playback.advance(at(79)));
+    assert!(playback.advance(at(80)));
+    assert_eq!(ui.get_frame(), 1);
+    let first = capture(&mut renderer, &ui);
+    assert_eq!(first.pixel(60, 80), teal);
+    assert_eq!(first.pixel(190, 80), coral);
+    assert_eq!(first.pixel(300, 80), coral);
+    let mut cropped = ui.render();
+    let pulse = cropped
+        .children
+        .iter_mut()
+        .find(|node| node.id == Some("pulse"))
+        .unwrap();
+    pulse.properties.insert("source-clip-x", 16_i64.into());
+    let cropped_frame = renderer.snapshot(&cropped, 460, 258, 1.0, &input).unwrap();
+    assert_eq!(
+        cropped_frame.pixel(60, 80),
+        coral,
+        "cropping follows the sampled GIF frame"
+    );
+
+    let pulse = cropped
+        .children
+        .iter_mut()
+        .find(|node| node.id == Some("pulse"))
+        .unwrap();
+    pulse
+        .properties
+        .insert("colorize", xrack_runtime::Color(0xffd177ff).into());
+    let tinted = renderer.snapshot(&cropped, 460, 258, 1.0, &input).unwrap();
+    assert_eq!(tinted.pixel(60, 80), Some([255, 209, 119, 255]));
+    assert_eq!(
+        tinted.pixel(300, 80),
+        coral,
+        "the static preview keeps the source color"
+    );
+
+    ui.set_pause(true);
+    sync(&mut playback, &ui, 100);
+    assert!(playback.deadline().is_none());
+    assert!(!playback.advance(at(1000)));
+    assert_eq!(ui.get_frame(), 1);
+
+    ui.set_pause(false);
+    ui.set_rate(2.0);
+    sync(&mut playback, &ui, 1000);
+    assert_eq!(playback.deadline(), Some(at(1050)));
+    assert!(playback.advance(at(1050)));
+    assert_eq!(ui.get_frame(), 2);
+    let second = capture(&mut renderer, &ui);
+    assert_eq!(second.pixel(60, 80), coral, "restore-previous GIF disposal");
+    assert_eq!(second.pixel(190, 80), blue);
+
+    ui.set_show(false);
+    sync(&mut playback, &ui, 1060);
+    assert!(playback.deadline().is_none());
+    assert!(!playback.advance(at(2000)));
+    assert_eq!(ui.get_frame_total(), 3);
+    ui.set_show(true);
+    sync(&mut playback, &ui, 2000);
+    assert_eq!(playback.deadline(), Some(at(2020)));
+    assert!(playback.advance(at(2020)));
+    assert_eq!(ui.get_frame(), 0);
+
+    assert!(playback.advance(at(2150)));
+    assert_eq!(ui.get_frame(), 2);
+    assert!(playback.next_finished().unwrap().finish());
+    assert_eq!(ui.get_completions(), 1);
+    assert!(playback.next_finished().is_none());
+    assert!(playback.deadline().is_none());
+
+    ui.set_running(false);
+    sync(&mut playback, &ui, 2150);
+    assert_eq!(ui.get_frame(), 0);
+    ui.set_animation(Image::Empty);
+    sync(&mut playback, &ui, 2150);
+    assert_eq!(ui.get_frame_total(), 0);
+}
+
+#[test]
+fn sprite_atlas_clips_before_layout_fit_and_isolates_gpu_sampling() {
+    use media_ui::{NineSliceDemo, SpriteAtlasDemo};
+    use xrack_runtime::{ImageFit, ImageRendering, ImageTileMode};
+
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))
+    .unwrap();
+    let mut ui = SpriteAtlasDemo::new();
+    let input = Interaction::default();
+    let capture = |renderer: &mut Renderer, ui: &SpriteAtlasDemo| {
+        renderer
+            .snapshot(&ui.render_shared(), 460, 282, 1.0, &input)
+            .unwrap()
+    };
+    let coral = Some([252, 136, 109, 255]);
+    let gold = Some([255, 209, 119, 255]);
+    let blue = Some([81, 108, 254, 255]);
+    let teal = Some([57, 214, 188, 255]);
+    let panel = Some([0x26, 0x36, 0x53, 255]);
+
+    assert_eq!((ui.get_atlas_width(), ui.get_atlas_height()), (8, 8));
+    let nearest = capture(&mut renderer, &ui);
+    assert_eq!(nearest.layout.at_path(&[3]).unwrap().bounds.height, 48.0);
+    assert_eq!(nearest.pixel(260, 90), panel, "right-aligned contain");
+    assert_eq!(nearest.pixel(334, 90), coral);
+    assert_eq!(nearest.pixel(399, 90), gold);
+
+    ui.set_sampling(ImageRendering::Smooth);
+    let smooth = capture(&mut renderer, &ui);
+    assert_ne!(smooth.pixel(334, 90), coral);
+    assert_eq!(
+        smooth.pixel(399, 90),
+        gold,
+        "the next atlas cell cannot bleed through"
+    );
+    ui.set_column(1);
+    let second = capture(&mut renderer, &ui);
+    assert_eq!(second.pixel(280, 90), blue);
+    assert_eq!(second.pixel(399, 90), teal);
+
+    ui.set_cell_height(2);
+    let shallow = capture(&mut renderer, &ui);
+    assert_eq!(shallow.layout.at_path(&[3]).unwrap().bounds.height, 24.0);
+    assert_eq!(shallow.pixel(260, 90), panel, "bottom-aligned contain");
+    assert_eq!(shallow.pixel(260, 140), blue);
+    ui.set_sampling(ImageRendering::Pixelated);
+    ui.set_fit_mode(ImageFit::Cover);
+    let cover = capture(&mut renderer, &ui);
+    assert_eq!(cover.pixel(255, 70), blue);
+    assert_eq!(cover.pixel(395, 70), teal);
+    ui.set_fit_mode(ImageFit::Contain);
+
+    ui.set_column(-1);
+    let empty = capture(&mut renderer, &ui);
+    assert_eq!(empty.layout.at_path(&[3]).unwrap().bounds.height, 0.0);
+    assert_eq!(empty.pixel(260, 140), panel);
+
+    ui.set_column(0);
+    ui.set_cell_height(4);
+    ui.set_sampling(ImageRendering::Pixelated);
+    ui.set_tile_mode(ImageTileMode::Repeat);
+    let repeat = capture(&mut renderer, &ui);
+    assert_eq!(repeat.pixel(251, 90), coral);
+    assert_eq!(repeat.pixel(253, 90), gold);
+    assert_eq!(repeat.pixel(399, 90), coral);
+    ui.set_tile_mode(ImageTileMode::Round);
+    assert_eq!(capture(&mut renderer, &ui).pixel(399, 90), gold);
+
+    let border = NineSliceDemo::new();
+    let scene = border.render_shared();
+    ui.set_tile_mode(ImageTileMode::Stretch);
+    ui.set_sampling(ImageRendering::Smooth);
+    ui.set_atlas(scene.children[2].image("source").unwrap());
+    ui.set_column(4);
+    let svg = capture(&mut renderer, &ui);
+    assert_eq!(svg.pixel(290, 90), Some([0x6b, 0x3d, 0x92, 255]));
+    assert_eq!(svg.pixel(390, 90), Some([0xd4, 0x4b, 0x76, 255]));
+
+    ui.set_atlas(border.get_frame());
+    ui.set_column(0);
+    let sliced_corner = capture(&mut renderer, &ui);
+    assert_eq!(sliced_corner.pixel(260, 140), gold);
+    assert_eq!(sliced_corner.pixel(390, 140), gold);
+}
+
+#[test]
+fn image_colorize_preserves_alpha_and_source_gradients_across_shared_textures() {
+    use media_ui::{ImageColorizeDemo, NineSliceDemo};
+    use xrack_runtime::{Brush, Color, GradientStop, ImageTileMode};
+
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))
+    .unwrap();
+    let mut ui = ImageColorizeDemo::new();
+    let input = Interaction::default();
+    let capture = |renderer: &mut Renderer, ui: &ImageColorizeDemo| {
+        renderer
+            .snapshot(&ui.render_shared(), 624, 266, 1.0, &input)
+            .unwrap()
+    };
+    let bg = Some([16, 23, 37, 255]);
+    let teal = Some([57, 214, 188, 255]);
+    let initial = capture(&mut renderer, &ui);
+    assert_eq!(initial.pixel(31, 90), Some([244, 95, 81, 255]));
+    assert_eq!(initial.pixel(183, 90), teal);
+    let half_alpha = initial.pixel(222, 90).unwrap();
+    for (channel, expected) in half_alpha.into_iter().zip([37u8, 119, 113, 255]) {
+        assert!(
+            channel.abs_diff(expected) <= 1,
+            "half-alpha color {half_alpha:?}"
+        );
+    }
+    assert_eq!(initial.pixel(251, 90), bg);
+    let original_scene = ui.render_shared();
+    ui.set_accent(Brush::Solid(Color(0x39d6bc80)));
+    let translucent = capture(&mut renderer, &ui);
+    assert_eq!(translucent.pixel(183, 90), Some(half_alpha));
+    assert_eq!(translucent.pixel(251, 90), bg);
+
+    let vertical = Brush::Linear {
+        angle_degrees: 180.0,
+        stops: [
+            GradientStop {
+                offset: 0.0,
+                color: Color(0xff0000ff),
+            },
+            GradientStop {
+                offset: 1.0,
+                color: Color(0x0000ffff),
+            },
+        ]
+        .into(),
+    };
+    ui.set_accent(vertical);
+    assert!(original_scene.same_frame_inputs(&ui.render_shared()));
+    let gradients = capture(&mut renderer, &ui);
+    let top = gradients.pixel(183, 69).unwrap();
+    let bottom = gradients.pixel(183, 170).unwrap();
+    assert!(top[0] > 200 && top[2] < 60, "top gradient {top:?}");
+    assert!(
+        bottom[2] > 200 && bottom[0] < 60,
+        "bottom gradient {bottom:?}"
+    );
+    assert_eq!(gradients.pixel(251, 90), bg);
+    assert_eq!(gradients.pixel(338, 95), initial.pixel(338, 95));
+    assert_eq!(gradients.pixel(436, 95), initial.pixel(436, 95));
+    assert_ne!(gradients.pixel(540, 121), bg);
+    assert_eq!(gradients.pixel(484, 65), bg);
+    let again = capture(&mut renderer, &ui);
+    assert_eq!(again.rgba, gradients.rgba);
+
+    let mut layered = ui.render();
+    layered
+        .children
+        .iter_mut()
+        .find(|node| node.id == Some("accent-preview"))
+        .unwrap()
+        .properties
+        .insert("opacity", 0.5_f64.into());
+    let faded = renderer.snapshot(&layered, 624, 266, 1.0, &input).unwrap();
+    let faded_top = faded.pixel(183, 69).unwrap();
+    for (index, background) in [16, 23, 37].into_iter().enumerate() {
+        let expected = ((u16::from(top[index]) + background) / 2) as u8;
+        assert!(faded_top[index].abs_diff(expected) <= 1);
+    }
+    assert_eq!(faded.pixel(338, 95), gradients.pixel(338, 95));
+
+    ui.set_clip_x(12);
+    ui.set_clip_width(4);
+    ui.set_tile_mode(ImageTileMode::Repeat);
+    let tiled = capture(&mut renderer, &ui);
+    let right = tiled.pixel(329, 95).unwrap();
+    assert!(
+        right[2] > right[0].saturating_add(60),
+        "source-space color {right:?}"
+    );
+    assert_eq!(tiled.pixel(329, 95), tiled.pixel(333, 95));
+    ui.set_accent(Brush::Solid(Color(0x00000000)));
+    let original = capture(&mut renderer, &ui);
+    assert_eq!(original.pixel(183, 90), Some([247, 184, 77, 255]));
+
+    ui.set_mask(NineSliceDemo::new().get_frame());
+    ui.set_clip_x(0);
+    ui.set_clip_width(32);
+    ui.set_tile_mode(ImageTileMode::Stretch);
+    let sliced = capture(&mut renderer, &ui);
+    let left_of_cut = sliced.pixel(337, 65).unwrap();
+    let right_of_cut = sliced.pixel(338, 65).unwrap();
+    assert!(left_of_cut[0].abs_diff(right_of_cut[0]) <= 12);
+    assert!(left_of_cut[0] > right_of_cut[2]);
+    assert_eq!(sliced.pixel(326, 65), bg);
+}
+
+#[test]
+fn whole_subtree_opacity_and_sibling_z_match_gpu_and_input() {
+    use layout_ui::CompositingDemo;
+
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))
+    .unwrap();
+    let mut ui = CompositingDemo::new();
+    let mut input = Interaction::default();
+    let scene = ui.render_shared();
+    let half = renderer.snapshot(&scene, 460, 292, 1.0, &input).unwrap();
+    let assert_rgb = |pixel: Option<[u8; 4]>, expected: [u8; 4]| {
+        let pixel = pixel.unwrap();
+        assert!(
+            pixel
+                .iter()
+                .zip(expected)
+                .all(|(actual, target)| actual.abs_diff(target) <= 1),
+            "{pixel:?} != {expected:?}"
+        );
+    };
+    assert_rgb(half.pixel(36, 66), [136, 12, 19, 255]);
+    assert_rgb(half.pixel(78, 91), [8, 12, 146, 255]);
+    assert_rgb(half.pixel(108, 108), [8, 75, 82, 255]);
+    assert_eq!(half.pixel(312, 92), Some([57, 214, 188, 255]));
+    let point = Point { x: 312.0, y: 92.0 };
+    input.pointer_move(&scene, &half.layout, point);
+    assert_eq!(input.hovered.as_ref().unwrap().id, Some("first"));
+
+    ui.set_fade(0.0);
+    let clear = ui.render_shared();
+    assert!(
+        scene
+            .find("composite")
+            .unwrap()
+            .same_frame_inputs(clear.find("composite").unwrap())
+    );
+    let invisible = renderer
+        .snapshot(&clear, 460, 292, 1.0, &Interaction::default())
+        .unwrap();
+    assert_eq!(invisible.layout, half.layout);
+    assert_eq!(invisible.pixel(78, 91), Some([16, 23, 37, 255]));
+
+    ui.set_first_layer(0.0);
+    let behind = ui.render_shared();
+    let reordered = renderer
+        .snapshot(&behind, 460, 292, 1.0, &Interaction::default())
+        .unwrap();
+    assert_eq!(reordered.pixel(312, 92), Some([255, 209, 119, 255]));
+    input.reconcile(&behind, &reordered.layout);
+    assert_eq!(input.hovered.as_ref().unwrap().id, Some("second"));
+
+    ui.set_fade(1.0);
+    let opaque = renderer
+        .snapshot(&ui.render_shared(), 920, 584, 2.0, &Interaction::default())
+        .unwrap();
+    assert_eq!(opaque.pixel(156, 182), Some([0, 0, 255, 255]));
+    assert_rgb(opaque.pixel(216, 216), [0, 128, 127, 255]);
+}
+
+#[test]
+fn rectangle_shadows_respect_alpha_rounding_and_ancestor_clips() {
+    use layout_ui::RectangleShadowDemo;
+    use xrack_runtime::{Brush, Color, GradientStop, Length};
+
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))
+    .unwrap();
+    let mut ui = RectangleShadowDemo::new();
+    let input = Interaction::default();
+    let capture = |renderer: &mut Renderer, ui: &RectangleShadowDemo| {
+        renderer
+            .snapshot(&ui.render_shared(), 460, 268, 1.0, &input)
+            .unwrap()
+    };
+    let panel = Some([38, 54, 83, 255]);
+    let window = Some([16, 23, 37, 255]);
+    let teal = Some([57, 214, 188, 255]);
+    let surface = Some([224, 232, 255, 255]);
+    let inset = Some([32, 48, 86, 255]);
+
+    let scene = ui.render_shared();
+    let hard = capture(&mut renderer, &ui);
+    assert_eq!(hard.pixel(90, 100), surface);
+    assert_eq!(hard.pixel(175, 133), teal);
+    assert_eq!(hard.pixel(185, 133), panel);
+    assert_eq!(hard.pixel(267, 90), inset);
+    assert_eq!(hard.pixel(320, 108), surface);
+    assert_eq!(hard.pixel(263, 73), panel, "rounded inner clip");
+    ui.set_inset_spread(Length(6.0));
+    assert_eq!(capture(&mut renderer, &ui).pixel(278, 110), inset);
+    ui.set_inset_spread(Length(-6.0));
+    assert_eq!(capture(&mut renderer, &ui).pixel(272, 110), surface);
+    ui.set_inset_spread(Length(0.0));
+    let mut pointer = Interaction::default();
+    pointer.pointer_move(&scene, &hard.layout, Point { x: 175.0, y: 133.0 });
+    assert!(
+        pointer.hovered.is_none(),
+        "shadow pixels are outside the hit box"
+    );
+    pointer.pointer_move(&scene, &hard.layout, Point { x: 103.0, y: 108.0 });
+    assert_eq!(pointer.hovered.as_ref().unwrap().id, Some("hit-card"));
+
+    ui.set_shift(Length(48.0));
+    let shifted = capture(&mut renderer, &ui);
+    assert_eq!(shifted.pixel(205, 133), teal);
+    assert_eq!(shifted.pixel(211, 133), window);
+    assert_eq!(shifted.layout, hard.layout);
+    assert!(
+        scene
+            .find("card")
+            .unwrap()
+            .same_frame_inputs(ui.render_shared().find("card").unwrap())
+    );
+
+    ui.set_shift(Length(16.0));
+    ui.set_spread(Length(5.0));
+    assert_eq!(capture(&mut renderer, &ui).pixel(183, 133), teal);
+    ui.set_spread(Length(-6.0));
+    assert_eq!(capture(&mut renderer, &ui).pixel(176, 133), panel);
+    ui.set_spread(Length(0.0));
+
+    ui.set_surface(Brush::Solid(Color(0xe0e8ff80)));
+    let translucent = capture(&mut renderer, &ui);
+    let translucent_shadow = translucent.pixel(175, 133).unwrap();
+    for (channel, expected) in translucent_shadow.into_iter().zip([48u8, 134, 136, 255]) {
+        assert!(channel.abs_diff(expected) <= 1, "{translucent_shadow:?}");
+    }
+    ui.set_surface(Brush::Linear {
+        angle_degrees: 180.0,
+        stops: [
+            GradientStop {
+                offset: 0.0,
+                color: Color(0xe0e8ff00),
+            },
+            GradientStop {
+                offset: 1.0,
+                color: Color(0xe0e8ffff),
+            },
+        ]
+        .into(),
+    });
+    let gradient = capture(&mut renderer, &ui);
+    let top = gradient.pixel(175, 103).unwrap();
+    let bottom = gradient.pixel(175, 151).unwrap();
+    assert!(
+        bottom[1] > top[1] + 50,
+        "source alpha gradient: {top:?}, {bottom:?}"
+    );
+    ui.set_surface(Brush::default());
+    assert_eq!(capture(&mut renderer, &ui).pixel(175, 133), panel);
+    ui.set_outline(Length(4.0));
+    let border_only = capture(&mut renderer, &ui);
+    assert_eq!(border_only.pixel(178, 133), teal);
+    assert_eq!(border_only.pixel(171, 133), panel);
+    ui.set_outline(Length(0.0));
+    ui.set_surface(Brush::Solid(Color(0xe0e8ffff)));
+
+    let mut outside = ui.render();
+    let offscreen = &mut outside.children[2].children[0];
+    offscreen.properties.insert("x", Length(190.0).into());
+    offscreen
+        .properties
+        .insert("drop-shadow-offset-x", Length(-40.0).into());
+    let shadow_only = renderer.snapshot(&outside, 460, 268, 1.0, &input).unwrap();
+    assert_eq!(shadow_only.pixel(200, 133), teal);
+    assert_eq!(shadow_only.pixel(211, 133), window);
+
+    ui.set_blur(Length(12.0));
+    ui.set_inset_blur(Length(12.0));
+    let blurred = capture(&mut renderer, &ui);
+    let near = blurred.pixel(182, 123).unwrap();
+    let far = blurred.pixel(193, 123).unwrap();
+    assert!(
+        near[1] > far[1] && far[1] >= 54 && near[1] < 214,
+        "{near:?}, {far:?}"
+    );
+    let soft_inset = blurred.pixel(274, 100).unwrap();
+    assert!(soft_inset[0] > 32 && soft_inset[0] < 224, "{soft_inset:?}");
+    assert_eq!(blurred.pixel(263, 73), panel);
+
+    ui.set_card_alpha(0.5);
+    let faded = capture(&mut renderer, &ui);
+    let halo = faded.pixel(175, 123).unwrap();
+    let opaque_halo = blurred.pixel(175, 123).unwrap();
+    assert!(halo[1] > 54 && halo[1] < opaque_halo[1]);
+    let hidpi = renderer
+        .snapshot(&ui.render_shared(), 920, 536, 2.0, &input)
+        .unwrap();
+    assert_eq!(hidpi.pixel(526, 146), panel);
+    assert!(hidpi.pixel(350, 246).unwrap()[1] > 54);
+}
+
+#[test]
+fn rectangle_clip_and_overflow_share_geometry_with_pointer_routing() {
+    use layout_ui::ClippingDemo;
+    use xrack_runtime::Length;
+
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))
+    .unwrap();
+    let mut ui = ClippingDemo::new();
+    let mut input = Interaction::default();
+    let frame = |renderer: &mut Renderer, scene: &xrack_runtime::Node| {
+        renderer
+            .snapshot(scene, 468, 264, 1.0, &Interaction::default())
+            .unwrap()
+    };
+    let bg = Some([16, 23, 37, 255]);
+    let rim = Some([119, 141, 171, 255]);
+    let teal = Some([57, 214, 188, 255]);
+    let gold = Some([255, 209, 119, 255]);
+
+    let scene = ui.render_shared();
+    let clipped = frame(&mut renderer, &scene);
+    assert_eq!(clipped.pixel(154, 109), teal);
+    assert_eq!(clipped.pixel(176, 109), rim);
+    assert_eq!(clipped.pixel(218, 109), bg);
+    assert_eq!(clipped.pixel(60, 72), rim);
+    assert_eq!(clipped.pixel(409, 109), Some([124, 147, 247, 255]));
+    assert_eq!(clipped.pixel(425, 109), bg);
+    let corner = Point { x: 60.0, y: 72.0 };
+    input.pointer_move(&scene, &clipped.layout, corner);
+    assert!(input.hovered.is_none());
+    let outside = Point { x: 218.0, y: 109.0 };
+    input.pointer_move(&scene, &clipped.layout, outside);
+    assert!(input.hovered.is_none());
+
+    ui.set_clipped(false);
+    let scene = ui.render_shared();
+    let open = frame(&mut renderer, &scene);
+    assert_eq!(open.pixel(218, 109), teal);
+    assert_eq!(open.pixel(60, 72), gold);
+    input.reconcile(&scene, &open.layout);
+    assert_eq!(input.hovered.as_ref().unwrap().id, Some("spill"));
+    input.pointer_press_in_scene(&scene, &open.layout);
+    let target = input.pointer_release_target().unwrap();
+    assert!(ui.dispatch_at(&scene, &target.path, "clicked"));
+    assert_eq!(ui.get_hits(), 1);
+
+    input.pointer_move(&scene, &open.layout, corner);
+    assert_eq!(input.hovered.as_ref().unwrap().id, Some("corner"));
+
+    ui.set_fade(0.5);
+    let faded = frame(&mut renderer, &ui.render_shared());
+    let pixel = faded.pixel(218, 109).unwrap();
+    assert!(
+        pixel
+            .into_iter()
+            .zip([37u8, 119, 113, 255])
+            .all(|(a, b)| a.abs_diff(b) <= 1),
+        "{pixel:?}"
+    );
+
+    // The parent itself is offscreen, but its overflow remains paintable and interactive.
+    let mut offscreen = ui.render();
+    let clipper = &mut offscreen.children[1];
+    clipper.properties.insert("x", Length(-200.0).into());
+    clipper.children[0]
+        .properties
+        .insert("x", Length(230.0).into());
+    let overflow_only = frame(&mut renderer, &offscreen);
+    assert_ne!(overflow_only.pixel(55, 109), bg);
+    input.pointer_move(
+        &offscreen,
+        &overflow_only.layout,
+        Point { x: 55.0, y: 109.0 },
+    );
+    assert_eq!(input.hovered.as_ref().unwrap().id, Some("spill"));
+}
+
+#[test]
+fn transformed_controls_keep_layout_geometry_and_share_exact_hit_coordinates() {
+    use layout_ui::TransformDemo;
+
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))
+    .unwrap();
+    let mut ui = TransformDemo::new();
+    let mut input = Interaction::default();
+    let scene = ui.render_shared();
+    let snapshot = renderer.snapshot(&scene, 460, 286, 1.0, &input).unwrap();
+    let tile = snapshot.layout.at_path(&[1, 0]).unwrap();
+    assert_eq!(
+        tile.bounds,
+        xrack_layout::Rect::new(110.0, 80.0, 88.0, 56.0)
+    );
+    let tile_bounds = tile.window_bounds(tile.bounds);
+    assert_eq!(tile_bounds, xrack_layout::Rect::new(54.0, 80.0, 56.0, 88.0));
+    let hot = snapshot.layout.at_path(&[1, 0, 0]).unwrap();
+    let mapped = hot.map_to_window(Point { x: 139.0, y: 99.0 });
+    assert_eq!(mapped, Point { x: 91.0, y: 109.0 });
+    assert_eq!(snapshot.pixel(91, 109), Some([57, 214, 188, 255]));
+    assert_eq!(snapshot.pixel(139, 99), Some([38, 54, 83, 255]));
+    // The tiny red rectangle starts in a rounded corner of the tile.
+    assert_eq!(snapshot.pixel(109, 81), Some([38, 54, 83, 255]));
+    // The innermost rectangle uses a negative X scale.
+    assert_eq!(snapshot.pixel(86, 152), Some([255, 209, 119, 255]));
+    assert_ne!(snapshot.pixel(86, 140), Some([255, 209, 119, 255]));
+
+    input.pointer_move(&scene, &snapshot.layout, mapped);
+    assert_eq!(input.hovered.as_ref().unwrap().id, Some("hot"));
+    input.pointer_press_in_scene(&scene, &snapshot.layout);
+    let target = input.pointer_release_target().unwrap();
+    assert!(ui.dispatch_at(&scene, &target.path, "clicked"));
+    assert_eq!(ui.get_clicks(), 1);
+
+    let ruler = snapshot.layout.at_path(&[1, 1]).unwrap();
+    let on_slider = |fraction: f32| {
+        ruler.map_to_window(Point {
+            x: ruler.bounds.x + ruler.bounds.width * fraction,
+            y: ruler.bounds.y + ruler.bounds.height * 0.5,
+        })
+    };
+    input.pointer_move(&scene, &snapshot.layout, on_slider(0.5));
+    assert_eq!(input.hovered.as_ref().unwrap().id, Some("ruler"));
+    input.pointer_press_in_scene(&scene, &snapshot.layout);
+    let action = input.slider_press(&scene, &snapshot.layout).unwrap();
+    assert!(ui.adjust_range_at(&scene, &action.path, action.action));
+    assert!((ui.get_amount() - 0.5).abs() < 0.04);
+    input.pointer_move(&scene, &snapshot.layout, on_slider(0.8));
+    let action = input.slider_drag(&scene, &snapshot.layout).unwrap();
+    assert!(ui.adjust_range_at(&scene, &action.path, action.action));
+    assert!(ui.get_amount() > 0.78);
+
+    ui.set_scale_factor(0.0);
+    let collapsed = ui.render_shared();
+    let snapshot = renderer
+        .snapshot(&collapsed, 460, 286, 1.0, &Interaction::default())
+        .unwrap();
+    assert_eq!(
+        snapshot.layout.at_path(&[1, 0]).unwrap().bounds,
+        tile.bounds
+    );
+    assert_eq!(snapshot.pixel(91, 109), Some([38, 54, 83, 255]));
+    input.reconcile(&collapsed, &snapshot.layout);
+    input.pointer_move(&collapsed, &snapshot.layout, mapped);
+    assert!(input.hovered.is_none());
 }

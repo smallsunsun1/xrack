@@ -65,10 +65,10 @@ pub(crate) fn hovered(
     point: Point,
 ) -> Option<TooltipKey> {
     fn path_at(node: &Node, item: &LayoutNode, point: Point, path: &mut Vec<usize>) -> bool {
-        if !item.visible || !item.bounds.intersect(item.clip).contains(point) {
+        if !item.contains_subtree_point(point) {
             return false;
         }
-        for (index, (child, layout)) in node.children.iter().zip(&item.children).enumerate().rev() {
+        for (index, child, layout) in item.children_in_paint_order(node).rev() {
             if is_window_overlay(child.kind) {
                 continue;
             }
@@ -78,7 +78,8 @@ pub(crate) fn hovered(
             }
             path.pop();
         }
-        true
+        item.map_from_window(point)
+            .is_some_and(|point| item.bounds.contains(point))
     }
     let mut path = scope.to_vec();
     if !path_at(
@@ -231,7 +232,7 @@ impl TooltipState {
         }
         let node = key.node(scene)?;
         let owner = layout.at_path(&key.owner)?;
-        let bounds = owner.bounds.intersect(owner.clip);
+        let bounds = owner.visible_window_bounds(owner.bounds);
         if !owner.visible || bounds.width <= 0.0 || bounds.height <= 0.0 {
             return None;
         }
@@ -262,6 +263,9 @@ pub fn layout_tooltip(
     } = popup;
     let area = viewport.inset(6.0);
     let mut surface = Node::new("VerticalLayout", None);
+    if let Some(opacity) = node.properties.get("opacity") {
+        surface.properties.insert("opacity", opacity.clone());
+    }
     surface.properties.insert(
         "background",
         node.properties
@@ -347,6 +351,9 @@ pub fn layout_tooltip(
     let mut context = LayoutContext {
         row_key: None,
         anchor: None,
+        resolved_list_scroll: None,
+        ancestor_shapes: None,
+        space: None,
         text,
         offsets: &BTreeMap::new(),
         input: None,
