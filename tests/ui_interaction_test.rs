@@ -41,6 +41,218 @@ use xrack_runtime::{
 struct FixedText;
 
 #[test]
+fn generated_tray_menu_reuses_action_bindings_and_callback_routes() {
+    use std::{cell::Cell, rc::Rc};
+    use tray_ui::TrayDemo;
+
+    let mut tray = TrayDemo::new();
+    let opened = Rc::new(Cell::new(false));
+    let opened_by_menu = opened.clone();
+    tray.on_open_window(move || opened_by_menu.set(true));
+    let scene = tray.render_shared();
+    assert_eq!(scene.kind, "SystemTrayIcon");
+    assert_eq!(scene.children[0].kind, "Menu");
+    assert!(!scene.children[0].children[0].boolean("checked", false));
+    assert!(tray.control_at(&scene, &[0, 0], ControlAction::ActivateMenuItem));
+    assert!(tray.get_paused());
+    let scene = tray.render_shared();
+    assert_eq!(scene.text("tooltip"), Some("XRack is paused"));
+    assert!(scene.children[0].children[0].boolean("checked", false));
+    assert!(tray.control_at(&scene, &[0, 1], ControlAction::ActivateMenuItem));
+    assert!(opened.get());
+    opened.set(false);
+    assert!(tray.dispatch_at(&scene, &[], "clicked"));
+    assert!(opened.get());
+    assert!(!tray.control_at(&scene, &[0, 2, 0], ControlAction::ActivateMenuItem));
+}
+
+#[test]
+fn generated_flickable_cancel_flick_stops_its_pending_inertia() {
+    use layout_ui::FlickableDemo;
+    use xrack_runtime::ScrollRequests;
+
+    let mut ui = FlickableDemo::new();
+    let scene = ui.render_shared();
+    let viewport = Size::new(360.0, 280.0);
+    let now = Instant::now();
+    let mut input = Interaction::default();
+    let frame = xrack_layout::layout(&scene, viewport, &mut FixedText);
+    let start = Point { x: 140.0, y: 122.0 };
+    let end = Point { x: 140.0, y: 66.0 };
+    assert!(input.begin_scroll_gesture(&scene, &frame, start, now, ScrollGestureKind::Touch));
+    assert!(input.move_scroll_gesture(&scene, &frame, end, now + Duration::from_millis(20)));
+    assert!(ui.get_dragging() && ui.get_moving() && !ui.get_flicking());
+    let frame = xrack_layout::layout_with_input(&scene, viewport, &mut FixedText, &input);
+    input.end_scroll_gesture(&scene, &frame, end, now + Duration::from_millis(28));
+    assert!(!ui.get_dragging() && ui.get_flicking() && ui.get_moving());
+    let requests = ScrollRequests::default();
+    let _context = requests.enter();
+    ui.invoke_stop();
+    assert!(input.apply_scroll_requests(&scene, &frame, requests.drain()));
+    assert!(!ui.get_flicking() && !ui.get_moving());
+    assert!(!input.advance_scroll_motion(&scene, &frame, now + Duration::from_millis(60)));
+}
+
+#[test]
+fn attached_scroll_bar_snaps_live_and_keeps_nondivisible_endpoints_reachable() {
+    use list_ui::ScrollBarsDemo;
+    use xrack_runtime::{Length, ScrollSnapMode};
+
+    let mut ui = UiDriver::new(ScrollBarsDemo::new(), FixedText, Size::new(352.0, 272.0));
+    ui.update(|component| component.set_snap_mode(ScrollSnapMode::Always));
+    assert!(ui.drag_scroll_bar_with("vertical-bar", 0.34, false, |ui| {
+        assert!((ui.component().get_vertical().0 + 117.6).abs() < 0.001);
+        assert_eq!(ui.component().get_scrolls(), 1);
+        true
+    }));
+    assert_eq!(ui.component().get_scrolls(), 1);
+    assert!(ui.drag_scroll_bar("vertical-bar", 0.98, true));
+    assert_eq!(ui.component().get_vertical(), Length(-392.0));
+    assert_eq!(ui.component().get_scrolls(), 2);
+    assert_eq!(ui.scroll_bar_key(NavigationKey::Up), Some(true));
+    assert!((ui.component().get_vertical().0 + 215.6).abs() < 0.001);
+}
+
+#[test]
+fn release_snapping_respects_touch_cancellation_and_live_control_state() {
+    use list_ui::StandaloneScrollDemo;
+
+    let mut ui = UiDriver::new(
+        StandaloneScrollDemo::new(),
+        FixedText,
+        Size::new(352.0, 272.0),
+    );
+    ui.click("snap-toggle");
+    assert!(ui.drag_scroll_bar_with("bar", 0.36, true, |ui| {
+        assert!((ui.component().get_position() - 0.27).abs() < 0.000001);
+        assert_eq!(ui.component().get_changes(), 1);
+        true
+    }));
+    assert_eq!(ui.component().get_position(), 0.28125);
+    assert_eq!(ui.component().get_changes(), 2);
+
+    assert!(ui.drag_scroll_bar_with("bar", 0.18, true, |_| false));
+    assert!((ui.component().get_position() - 0.135).abs() < 0.000001);
+    assert_eq!(ui.component().get_changes(), 3);
+    assert!(ui.drag_scroll_bar_with("bar", 0.64, false, |ui| {
+        ui.update(|component| component.set_interactive(false));
+        true
+    }));
+    assert!((ui.component().get_position() - 0.48).abs() < 0.000001);
+    assert_eq!(ui.component().get_changes(), 4);
+    assert!(!ui.input().scroll_bar_captured());
+}
+
+#[test]
+fn standalone_scroll_controls_update_bindings_and_clamp_the_live_range() {
+    use list_ui::StandaloneScrollDemo;
+
+    let mut ui = UiDriver::new(
+        StandaloneScrollDemo::new(),
+        FixedText,
+        Size::new(352.0, 272.0),
+    );
+    let bar = ui.scroll_bar("bar").unwrap();
+    assert!((bar.thumb.height - bar.track.height * 0.4).abs() < 0.001);
+    assert!(!ui.drag_scroll_bar("indicator", 1.0, true));
+    assert!(ui.drag_scroll_bar("bar", 1.0, false));
+    assert_eq!(ui.component().get_offset(), 0.75);
+    assert_eq!(ui.component().get_last_change(), 0.75);
+    assert_eq!(ui.component().get_changes(), 1);
+    assert_eq!(ui.scroll_bar("indicator").unwrap().scroll.offset, 0.75);
+    assert_eq!(ui.scroll_bar_key(NavigationKey::End), Some(false));
+    assert_eq!(ui.scroll_bar_key(NavigationKey::Up), Some(true));
+    assert!((ui.component().get_position() - 0.625).abs() < 0.000001);
+    assert!(ui.drag_scroll_bar("bar", 0.0, true));
+    assert_eq!(ui.component().get_position(), 0.0);
+    ui.click("bar");
+    assert!((ui.component().get_position() - 0.25).abs() < 0.000001);
+
+    ui.update(|component| component.invoke_jump());
+    assert!((ui.component().get_before_jump() - 0.25).abs() < 0.000001);
+    assert_eq!(ui.component().get_after_jump(), 0.5);
+    assert_eq!(ui.component().get_changes(), 4);
+    ui.update(|component| component.set_thumb_size(0.75));
+    assert_eq!(ui.component().get_size(), 0.75);
+    assert_eq!(ui.component().get_position(), 0.25);
+    assert_eq!(ui.component().get_offset(), 0.5);
+    ui.update(|component| component.set_interactive(false));
+    assert!(!ui.drag_scroll_bar("bar", 0.0, false));
+    assert_eq!(ui.component().get_position(), 0.25);
+    ui.update(|component| component.set_thumb_size(1.5));
+    assert_eq!(ui.component().get_size(), 1.0);
+    assert_eq!(ui.component().get_position(), 0.0);
+    assert!(ui.scroll_bar("bar").is_none());
+    assert!(ui.drag_scroll_bar("horizontal-bar", 1.0, false));
+    assert_eq!(ui.component().get_horizontal_position(), 0.5);
+    assert_eq!(ui.component().get_offset(), 0.5);
+}
+
+#[test]
+fn external_scroll_bars_share_offsets_with_passive_indicators_and_the_viewport() {
+    use list_ui::ScrollBarsDemo;
+    use xrack_runtime::Length;
+
+    let mut ui = UiDriver::new(ScrollBarsDemo::new(), FixedText, Size::new(352.0, 272.0));
+    assert!((ui.component().get_vertical_size() - 1.0 / 3.0).abs() < 1e-12);
+    assert_eq!(ui.component().get_vertical_position(), 0.0);
+    ui.tab();
+    assert_eq!(ui.focused(), Some("vertical-bar"));
+    assert!(!ui.drag_scroll_bar("vertical-indicator", 1.0, true));
+    assert_eq!(ui.component().get_vertical(), Length(0.0));
+
+    assert!(ui.drag_scroll_bar("vertical-bar", 1.0, false));
+    assert_eq!(ui.component().get_vertical(), Length(-392.0));
+    assert_eq!(ui.component().get_scrolls(), 1);
+    assert!((ui.component().get_vertical_position() - 2.0 / 3.0).abs() < 1e-12);
+    assert_eq!(
+        ui.component().get_last_scroll_position(),
+        ui.component().get_vertical_position()
+    );
+    let bar = ui.scroll_bar("vertical-bar").unwrap();
+    let indicator = ui.scroll_bar("vertical-indicator").unwrap();
+    assert_eq!(bar.scroll, indicator.scroll);
+    assert_eq!(bar.thumb.y, indicator.thumb.y);
+    assert_eq!(ui.scroll_bar_key(NavigationKey::PageUp), Some(true));
+    assert_eq!(ui.component().get_vertical(), Length(-196.0));
+    assert_eq!(ui.component().get_scrolls(), 2);
+
+    assert!(ui.drag_scroll_bar("horizontal-bar", 1.0, true));
+    assert_eq!(ui.focused(), Some("horizontal-bar"));
+    assert_eq!(ui.component().get_horizontal(), Length(-260.0));
+    assert_eq!(ui.component().get_vertical(), Length(-196.0));
+    assert_eq!(ui.component().get_scrolls(), 3);
+    ui.update(|component| component.set_readout_axis(Orientation::Horizontal));
+    assert_eq!(ui.component().get_readout_size(), 0.5);
+    assert_eq!(ui.component().get_readout_position(), 0.5);
+    assert!(ui.scroll("canvas", Point { x: 0.0, y: 36.0 }));
+    assert_eq!(
+        ui.scroll_bar("vertical-indicator").unwrap().scroll.offset,
+        232.0
+    );
+    assert!((ui.component().get_vertical_position() - 232.0 / 588.0).abs() < 1e-12);
+    assert_eq!(ui.component().get_readout_position(), 0.5);
+
+    ui.update(|component| component.set_scroll_enabled(false));
+    assert!(!ui.drag_scroll_bar("vertical-bar", 1.0, false));
+    ui.update(|component| {
+        component.set_scroll_enabled(true);
+        component.set_canvas_height(Length(196.0));
+    });
+    assert!(ui.scroll_bar("vertical-bar").is_none());
+    assert!(ui.scroll_bar("vertical-indicator").is_none());
+    assert!(ui.scroll_bar("horizontal-bar").is_some());
+    assert_eq!(ui.component().get_vertical_size(), 1.0);
+    assert_eq!(ui.component().get_vertical_position(), 0.0);
+    ui.update(|component| component.set_canvas_visible(false));
+    assert_eq!(ui.component().get_readout_size(), 0.0);
+    assert_eq!(ui.component().get_readout_position(), 0.0);
+    ui.update(|component| component.set_canvas_visible(true));
+    assert_eq!(ui.component().get_readout_size(), 0.5);
+    assert_eq!(ui.component().get_readout_position(), 0.5);
+}
+
+#[test]
 fn list_anchors_preserve_a_partial_row_and_fall_back_to_a_visible_neighbor() {
     use list_ui::AnchoredListDemo;
     use xrack_runtime::Length;
@@ -4663,7 +4875,10 @@ fn tree_materializes_only_rows_in_the_viewport_after_expansion() {
             y: bar.thumb.y + 6.0,
         },
     );
-    assert_eq!(input.scroll_bar_press(&scene, &layout), Some(false));
+    assert_eq!(
+        input.scroll_bar_press(&scene, &layout),
+        Some(xrack_layout::ScrollBarUpdate::Unchanged)
+    );
     input.pointer_move(
         &scene,
         &layout,
@@ -4672,7 +4887,10 @@ fn tree_materializes_only_rows_in_the_viewport_after_expansion() {
             y: bar.track.y + bar.track.height + 20.0,
         },
     );
-    assert_eq!(input.scroll_bar_drag(&scene, &layout), Some(true));
+    assert_eq!(
+        input.scroll_bar_drag(&scene, &layout),
+        Some(xrack_layout::ScrollBarUpdate::ViewportMoved)
+    );
     assert!(input.finish_scroll_bar());
     let (scene, layout) = render(&ui, &input);
     let tree = scene.at_path(&path).unwrap();
@@ -5130,6 +5348,163 @@ fn tree_component_editors_resolve_the_model_index_below_an_expanded_branch() {
     assert_eq!(ui.get_committed_index(), 0);
     assert_eq!(model.row(0).unwrap().label, "已编辑");
     assert_eq!(model.row(1).unwrap().label, "目录");
+}
+
+#[test]
+fn table_drag_selection_crosses_frozen_panes_and_virtual_rows() {
+    let mut ui = StandardTableDemo::new();
+    ui.set_target(SelectionTarget::Cells);
+    ui.set_pinned(1);
+    ui.set_inventory(
+        (0..1_000)
+            .map(|units| InventoryRow {
+                units,
+                ..InventoryRow::default()
+            })
+            .collect(),
+    );
+    ui.invoke_move_visible_column(3, 0);
+    let path = [0, 1];
+    let viewport = Size::new(470.0, 330.0);
+    let prepare = |ui: &StandardTableDemo, input: &Interaction| {
+        prepare_scene_with_input(ui, ui.render_shared(), viewport, &mut FixedText, input)
+    };
+    let mut input = Interaction::default();
+    let (mut scene, mut layout) = prepare(&ui, &input);
+    let item = layout.at_path(&path).unwrap();
+    let table = item.table.as_ref().unwrap();
+    assert!(table.is_frozen(3));
+    let body_top = table.body.y;
+    let start = Point {
+        x: table.columns[3].x + 24.0,
+        y: table.body.y + 16.0,
+    };
+    let edge = Point {
+        x: table.body.x + table.body.width - 16.0,
+        y: table.body.y + table.body.height - 6.0,
+    };
+    input.pointer_move(&scene, &layout, start);
+    input.pointer_press_in_scene(&scene, &layout);
+    assert!(input.arm_table_drag_selection(&scene, &layout, false));
+    let now = Instant::now();
+    input.pointer_move(&scene, &layout, edge);
+    assert!(input.move_table_drag_selection(&layout, now));
+    assert!(
+        input
+            .table_drag_selection_deadline(&scene, &layout)
+            .is_some()
+    );
+    let mut advanced_x = false;
+    for frame in 1..20 {
+        if input.advance_table_drag_selection(
+            &scene,
+            &layout,
+            now + Duration::from_millis(frame * 20),
+        ) {
+            (scene, layout) = prepare(&ui, &input);
+            advanced_x |= layout
+                .at_path(&path)
+                .unwrap()
+                .table
+                .as_ref()
+                .unwrap()
+                .horizontal
+                .offset
+                > 0.0;
+        }
+    }
+    let node = scene.at_path(&path).unwrap();
+    assert!(advanced_x);
+    assert!(node.list.unwrap().first_row > 0);
+    assert!(node.table_selection.as_ref().unwrap().is_empty());
+    let previews = input.table_drag_preview(&path, node, layout.at_path(&path).unwrap());
+    assert_eq!(previews.len(), 2);
+    assert!(previews.iter().all(|rect| rect.y >= body_top));
+    let released = input.finish_table_drag_selection(&scene, &layout).unwrap();
+    let ControlAction::TableSelection(TableSelectionAction::DragRange {
+        anchor,
+        end,
+        additive: false,
+    }) = released.action
+    else {
+        panic!("expected a table range");
+    };
+    assert_eq!(anchor, (0, 3));
+    assert!(end.0 >= node.list.unwrap().first_row && end.1 == 2);
+    assert!(ui.control_at(&scene, &released.path, released.action));
+    let (scene, _) = prepare(&ui, &input);
+    let selection = scene
+        .at_path(&path)
+        .unwrap()
+        .table_selection
+        .as_ref()
+        .unwrap();
+    assert_eq!(selection.len(), (end.0 + 1) * 4);
+    assert_eq!(ui.get_current(), end.0 as i64);
+    assert_eq!(ui.get_selections(), 1);
+}
+
+#[test]
+fn table_drag_selection_cancels_cleanly_and_rejects_a_reordered_model() {
+    let mut ui = TableDemo::new();
+    ui.set_target(SelectionTarget::Cells);
+    ui.set_records(["c", "b", "a"].map(str::to_owned).to_vec());
+    let path = [0, 2];
+    let viewport = Size::new(560.0, 370.0);
+    let prepare = |ui: &TableDemo, input: &Interaction| {
+        prepare_scene_with_input(ui, ui.render_shared(), viewport, &mut FixedText, input)
+    };
+    let mut input = Interaction::default();
+    let initial = ui.render_shared();
+    assert!(ui.control_at(
+        &initial,
+        &path,
+        ControlAction::TableSelection(TableSelectionAction::Cell {
+            row: 0,
+            column: 1,
+            operation: RowSelection::Replace
+        })
+    ));
+    let (scene, layout) = prepare(&ui, &input);
+    let item = layout.at_path(&path).unwrap();
+    let table = item.table.as_ref().unwrap();
+    let start = Point {
+        x: table.columns[0].x + 20.0,
+        y: item.children[1].bounds.y + 16.0,
+    };
+    let end = Point {
+        x: start.x,
+        y: item.children[2].bounds.y + 16.0,
+    };
+    let begin = |input: &mut Interaction| {
+        input.pointer_move(&scene, &layout, start);
+        input.pointer_press_in_scene(&scene, &layout);
+        assert!(input.arm_table_drag_selection(&scene, &layout, true));
+        input.pointer_move(&scene, &layout, end);
+        assert!(input.move_table_drag_selection(&layout, Instant::now()));
+        assert!(input.is_focused(&path));
+    };
+    begin(&mut input);
+    assert!(input.cancel_table_drag_selection());
+    assert!(input.pointer_release_target().is_none());
+    assert_eq!(ui.get_selected_count(), 1);
+
+    begin(&mut input);
+    let released = input.finish_table_drag_selection(&scene, &layout).unwrap();
+    assert!(ui.control_at(&scene, &released.path, released.action));
+    assert_eq!(ui.get_selected_count(), 3);
+
+    begin(&mut input);
+    ui.model_records().sort_by(|a, b| a.cmp(b));
+    let (scene, layout) = prepare(&ui, &input);
+    let node = scene.at_path(&path).unwrap();
+    assert!(
+        input
+            .table_drag_preview(&path, node, layout.at_path(&path).unwrap())
+            .is_empty()
+    );
+    assert!(input.finish_table_drag_selection(&scene, &layout).is_none());
+    assert_eq!(ui.get_selected_count(), 3);
 }
 
 #[test]

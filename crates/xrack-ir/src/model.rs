@@ -65,8 +65,11 @@ pub enum Statement {
     CheckGroupCommand(CheckGroupCommand),
     SecondaryWindowCommand(SecondaryWindowCommand),
     FocusCommand(FocusCommand),
+    SwipeCancel { swipe_owner: String, span: Span },
     TextCommand(TextCommand),
     ScrollCommand(ScrollCommand),
+    CancelFlick { flick_viewport: String, span: Span },
+    ReturnToBounds { bounds_viewport: String, span: Span },
     MoveColumn(MoveColumn),
     SetRowHeight(SetRowHeight),
 }
@@ -200,6 +203,8 @@ pub struct Element {
     pub state_timings: Vec<StateTiming>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub initial_focus: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scroll_target: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub callbacks: Vec<Callback>,
     pub handlers: Vec<Callback>,

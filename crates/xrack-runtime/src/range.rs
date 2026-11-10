@@ -8,6 +8,14 @@ pub enum DialInputMode {
     Vertical,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ScrollSnapMode {
+    #[default]
+    None,
+    Always,
+    OnRelease,
+}
+
 /// The normalized input understood by range controls, independent of the backend.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum RangeAction {
@@ -81,6 +89,59 @@ impl SliderRange {
 
 pub fn progress_value(node: &Node) -> f64 {
     node.number("progress").unwrap_or(0.0).clamp(0.0, 1.0)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ScrollBarRange {
+    pub position: f64,
+    pub size: f64,
+    pub step: f64,
+}
+
+impl ScrollBarRange {
+    pub const DEFAULT_SIZE: f64 = 0.0;
+    pub const DEFAULT_STEP: f64 = 0.1;
+
+    pub fn from_node(node: &Node) -> Self {
+        Self::new(
+            node.number("position").unwrap_or_default(),
+            node.number("size").unwrap_or(Self::DEFAULT_SIZE),
+            node.number("step-size").unwrap_or(Self::DEFAULT_STEP),
+        )
+    }
+
+    pub fn new(position: f64, size: f64, step: f64) -> Self {
+        let unit = |value: f64, default| {
+            if value.is_finite() {
+                value.clamp(0.0, 1.0)
+            } else {
+                default
+            }
+        };
+        let size = unit(size, Self::DEFAULT_SIZE);
+        Self {
+            position: unit(position, 0.0).min(1.0 - size),
+            size,
+            step: unit(step, Self::DEFAULT_STEP),
+        }
+    }
+
+    pub fn maximum(self) -> f64 {
+        1.0 - self.size
+    }
+
+    pub fn apply(self, action: RangeAction) -> Option<f64> {
+        let next = match action {
+            RangeAction::SetFraction(fraction) if fraction.is_finite() => fraction * self.maximum(),
+            RangeAction::Decrease => self.position - self.step,
+            RangeAction::Increase => self.position + self.step,
+            RangeAction::Minimum => 0.0,
+            RangeAction::Maximum => self.maximum(),
+            _ => return None,
+        }
+        .clamp(0.0, self.maximum());
+        (next != self.position).then_some(next)
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]

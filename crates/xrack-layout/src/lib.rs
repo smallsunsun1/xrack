@@ -22,11 +22,13 @@ mod linear;
 mod list_anchor;
 mod menu;
 mod modal;
+mod overscroll;
 mod page;
 mod page_indicator;
 mod password;
 mod popup;
 mod range;
+mod scale_rotate;
 mod scroll_bar;
 mod scroll_gesture;
 mod search;
@@ -37,7 +39,9 @@ mod split;
 mod stack_transition;
 mod styled_text;
 mod swipe_delegate;
+mod swipe_gesture;
 mod table;
+mod table_drag_selection;
 mod text_area;
 mod tooltip;
 mod transform;
@@ -61,16 +65,18 @@ pub use group_box::group_header;
 pub use history::EditSource;
 pub use image::{ImagePlacement, ImagePresentation, ImageRegion, fitted_rect, tile_extent};
 pub use input::{
-    ActivationKey, ControlInput, Interaction, NavigationKey, RangeInput, SliderKey, SplitResize,
-    TablePasteDestination, TableSelectionKey, Target, TextLinkTarget,
+    ActivationKey, ControlInput, Interaction, NavigationKey, RangeInput, ScrollBarUpdate,
+    SliderKey, SplitResize, TablePasteDestination, TableSelectionKey, Target, TextLinkTarget,
 };
 pub use keyboard::KeyRoute;
 pub use label::{LabelLayout, LabelLine, LabelPlan, PlannedLabelLine, uses_label_layout};
 pub use menu::{MenuEntry, MenuKey, MenuPanel, MenuRow};
 pub use modal::{dialog_title_height, drawer_grip};
+pub use overscroll::OverscrollFrame;
 pub use page_indicator::{PageIndicatorGeometry, PageMarker};
 pub use password::PasswordMask;
 pub use range::{DialGeometry, SliderGeometry};
+pub use scale_rotate::{ScaleRotateTarget, TouchTransform, touch_centroid};
 pub use scroll_bar::ScrollBarGeometry;
 pub use scroll_gesture::{ScrollGestureEnd, ScrollGestureKind};
 pub use search::SearchGeometry;
@@ -82,6 +88,7 @@ pub use stack_transition::{StackSlide, StackTransitions};
 use std::{collections::BTreeMap, rc::Rc, sync::Arc};
 pub use styled_text::{StyledFragment, StyledTextLayout};
 pub use swipe_delegate::SwipeDelegateGeometry;
+pub use swipe_gesture::SwipeDelivery;
 pub use table::TableGeometry;
 pub use text_area::{TextAreaLayout, TextAreaMotion};
 pub use tooltip::{TooltipPopup, layout_tooltip};
@@ -166,7 +173,11 @@ pub struct LayoutNode {
     pub scroll: Option<ScrollLayout>,
     horizontal_scroll: Option<ScrollLayout>,
     viewport_handle: Option<xrack_runtime::ViewportHandle>,
+    attached_scroll_bar: Option<Box<scroll_bar::AttachedScrollBar>>,
     mouse_drag_pan: bool,
+    middle_mouse_pan: bool,
+    pan_axes: [bool; 2],
+    elastic: Option<overscroll::ElasticOptions>,
     pub table: Option<Box<TableGeometry>>,
     pub split: Option<Box<SplitGeometry>>,
     /// Header hit box of a tab, independent of the page visibility.
@@ -352,6 +363,16 @@ impl LayoutNode {
         }
     }
 
+    fn accepts_pan(&self, axis: Orientation, device: scroll_gesture::PanDevice) -> bool {
+        use scroll_gesture::PanDevice;
+        self.pan_axes[usize::from(axis == Orientation::Vertical)]
+            && match device {
+                PanDevice::Touch => true,
+                PanDevice::LeftMouse => self.mouse_drag_pan,
+                PanDevice::MiddleMouse => self.middle_mouse_pan,
+            }
+    }
+
     /// Paths of visible modal overlays, in declaration order.
     pub fn dialog_paths(&self) -> &[Vec<usize>] {
         self.overlays
@@ -454,7 +475,9 @@ pub fn layout_with_scroll(
     text: &mut impl TextMeasurer,
     offsets: &BTreeMap<Vec<usize>, f32>,
 ) -> LayoutNode {
-    layout_with_offsets(scene, viewport, text, offsets, None)
+    let mut layout = layout_with_offsets(scene, viewport, text, offsets, None);
+    scroll_bar::attach(scene, &mut layout);
+    layout
 }
 
 pub fn layout_with_input(
@@ -463,7 +486,10 @@ pub fn layout_with_input(
     text: &mut impl TextMeasurer,
     input: &Interaction,
 ) -> LayoutNode {
-    layout_with_offsets(scene, viewport, text, input.scroll_offsets(), Some(input))
+    let mut layout =
+        layout_with_offsets(scene, viewport, text, input.scroll_offsets(), Some(input));
+    scroll_bar::attach(scene, &mut layout);
+    layout
 }
 
 fn layout_with_offsets(
@@ -551,6 +577,7 @@ fn prepare_scene_with_offsets(
         .populate_lists(component, Rc::make_mut(&mut scene), &mut layout);
         modal::index_overlays(&scene, &mut layout);
     }
+    scroll_bar::attach(&scene, &mut layout);
     (scene, layout)
 }
 
@@ -842,7 +869,11 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
                 scroll: None,
                 horizontal_scroll: None,
                 viewport_handle: None,
+                attached_scroll_bar: None,
                 mouse_drag_pan: false,
+                middle_mouse_pan: false,
+                pan_axes: [false; 2],
+                elastic: None,
                 table: None,
                 split: None,
                 tab_header: None,
@@ -872,7 +903,8 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
         } else {
             None
         };
-        let overflow = node.kind == "Rectangle" && !node.boolean("clip", true);
+        let overflow =
+            matches!(node.kind, "Rectangle" | "Flickable") && !node.boolean("clip", true);
         let clipping = (node.kind == "Rectangle" && node.boolean("clip", false))
             .then(|| RoundedClip::content_box(node, bounds));
         let child_shape = clipping.filter(|shape| shape.radii.iter().any(|radius| *radius > 0.0));
@@ -936,7 +968,11 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
                 scroll: None,
                 horizontal_scroll: None,
                 viewport_handle: None,
+                attached_scroll_bar: None,
                 mouse_drag_pan: false,
+                middle_mouse_pan: false,
+                pan_axes: [false; 2],
+                elastic: None,
                 table: None,
                 split: None,
                 tab_header: None,
@@ -1082,8 +1118,8 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
                 Orientation::Vertical => scroll = Some(axis),
             }
             rects.into_iter().map(grid::Placement::plain).collect()
-        } else if node.kind == "ScrollView" {
-            let (rects, x, y) = self.scroll_view_children(node, bounds);
+        } else if matches!(node.kind, "ScrollView" | "Flickable") {
+            let (rects, x, y) = self.scroll_view_children(node, bounds, enabled);
             horizontal_scroll = Some(x);
             scroll = Some(y);
             rects.into_iter().map(grid::Placement::plain).collect()
@@ -1219,7 +1255,21 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
             scroll,
             horizontal_scroll,
             viewport_handle: node.viewport_handle.clone(),
-            mouse_drag_pan: node.boolean("mouse-drag-pan-enabled", false),
+            attached_scroll_bar: None,
+            mouse_drag_pan: node.boolean("mouse-drag-pan-enabled", node.kind == "Flickable"),
+            middle_mouse_pan: node.kind != "Flickable"
+                || node.boolean("mouse-drag-pan-enabled", true),
+            pan_axes: if node.kind == "Flickable" {
+                let direction = match node.properties.get("flick-direction") {
+                    Some(xrack_runtime::Value::FlickDirection(direction)) => *direction,
+                    _ => xrack_runtime::FlickDirection::Both,
+                };
+                [Orientation::Horizontal, Orientation::Vertical]
+                    .map(|axis| node.boolean("interactive", true) && direction.allows(axis))
+            } else {
+                [true; 2]
+            },
+            elastic: overscroll::ElasticOptions::from_node(node),
             table,
             split,
             tab_header: None,
@@ -1290,19 +1340,17 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
         &mut self,
         node: &Node,
         viewport: Rect,
+        enabled: bool,
     ) -> (Vec<Rect>, ScrollLayout, ScrollLayout) {
         // Keep percentage constraints tied to the viewport or explicit content size,
         // so an overflowing child cannot enlarge its own percentage reference.
+        let explicit_width = node.relative_length("content-width", viewport.width);
+        let explicit_height = node
+            .relative_length("content-height", viewport.height)
+            .or_else(|| node.length("viewport-height"));
         let reference = Size::new(
-            viewport.width.max(
-                node.relative_length("content-width", viewport.width)
-                    .unwrap_or(0.0),
-            ),
-            viewport.height.max(
-                node.relative_length("content-height", viewport.height)
-                    .or_else(|| node.length("viewport-height"))
-                    .unwrap_or(0.0),
-            ),
+            viewport.width.max(explicit_width.unwrap_or(0.0)),
+            viewport.height.max(explicit_height.unwrap_or(0.0)),
         );
         let mut extent = reference;
         let mut children = Vec::with_capacity(node.children.len());
@@ -1320,6 +1368,10 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
             extent.height = extent.height.max(y + height.preferred);
             children.push(Some((x, y, width, height)));
         }
+        if node.kind == "Flickable" {
+            extent.width = explicit_width.unwrap_or(extent.width).max(0.0);
+            extent.height = explicit_height.unwrap_or(extent.height).max(0.0);
+        }
         let horizontal = ScrollLayout::new(
             self.requested_scroll(node, Orientation::Horizontal),
             extent.width - viewport.width,
@@ -1328,9 +1380,36 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
             self.requested_scroll(node, Orientation::Vertical),
             extent.height - viewport.height,
         );
+        let elastic_offset = |axis| {
+            if !enabled
+                || !node.boolean("interactive", true)
+                || matches!(node.properties.get("flick-direction"), Some(xrack_runtime::Value::FlickDirection(direction)) if !direction.allows(axis))
+                || !overscroll::ElasticOptions::from_node(node)
+                    .is_some_and(overscroll::ElasticOptions::moves_contents)
+            {
+                return 0.0;
+            }
+            let offset = self
+                .input
+                .zip(node.viewport_handle.as_ref())
+                .map_or(0.0, |(input, handle)| input.visual_overscroll(handle, axis));
+            let scroll = if axis == Orientation::Horizontal {
+                horizontal
+            } else {
+                vertical
+            };
+            if scroll.max_offset > 0.0
+                && ((offset < 0.0 && scroll.offset == 0.0)
+                    || (offset > 0.0 && scroll.offset == scroll.max_offset))
+            {
+                offset
+            } else {
+                0.0
+            }
+        };
         let origin = Point {
-            x: viewport.x - horizontal.offset,
-            y: viewport.y - vertical.offset,
+            x: viewport.x - horizontal.offset - elastic_offset(Orientation::Horizontal),
+            y: viewport.y - vertical.offset - elastic_offset(Orientation::Vertical),
         };
         let rects = node
             .children

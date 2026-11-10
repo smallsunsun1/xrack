@@ -1,5 +1,5 @@
 use std::{collections::BTreeMap, rc::Rc};
-use xrack_layout::{Interaction, LayoutNode, Size};
+use xrack_layout::{Interaction, LayoutNode, OverscrollFrame, Size};
 use xrack_runtime::{ChangeSignal, Node, Property, RowKey};
 
 struct FrameInput {
@@ -9,6 +9,7 @@ struct FrameInput {
     horizontal_offsets: BTreeMap<Vec<usize>, f32>,
     tumbler_preview: Option<(Vec<usize>, f32)>,
     swipe_preview: Option<(Vec<usize>, Option<RowKey>, f32)>,
+    overscroll: OverscrollFrame,
 }
 
 /// Reuses layout until the base scene, geometry, or an observed row changes.
@@ -36,10 +37,12 @@ impl FrameCache {
         let horizontal_offsets = input.horizontal_scroll_offsets();
         let tumbler_preview = input.tumbler_preview();
         let swipe_preview = input.swipe_preview();
+        let overscroll = input.overscroll_frame();
         let same_geometry_inputs = self.input.as_ref().is_some_and(|last| {
             last.viewport == viewport
                 && &last.offsets == offsets
                 && &last.horizontal_offsets == horizontal_offsets
+                && last.overscroll == overscroll
                 && last
                     .tumbler_preview
                     .as_ref()
@@ -67,6 +70,7 @@ impl FrameCache {
                 viewport,
                 offsets: offsets.clone(),
                 horizontal_offsets: horizontal_offsets.clone(),
+                overscroll,
                 tumbler_preview: tumbler_preview.map(|(path, offset)| (path.to_vec(), offset)),
                 swipe_preview: swipe_preview
                     .map(|(path, key, offset)| (path.to_vec(), key, offset)),

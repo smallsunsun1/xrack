@@ -596,6 +596,394 @@ fn native_touch_adapter_activates_taps_and_keeps_pans_out_of_click_dispatch() {
 }
 
 #[test]
+fn native_swipe_routes_mouse_touch_scroll_and_callback_cancellation() {
+    use xrack_layout::{TextMeasurer, layout_with_input};
+    use xrack_runtime::{Length, SwipeHandle};
+
+    struct Measure;
+    impl TextMeasurer for Measure {
+        fn measure(&mut self, _: &str, _: f32, _: f32) -> Size {
+            Size::new(12.0, 16.0)
+        }
+    }
+    struct View {
+        scene: Node,
+        handle: SwipeHandle,
+        events: Vec<(String, bool, f64)>,
+        taps: usize,
+        cancel_on_move: bool,
+    }
+    impl Component for View {
+        fn render(&self) -> Node {
+            self.scene.clone()
+        }
+        fn dispatch(&mut self, id: &str, event: &str) -> bool {
+            if id == "tap" {
+                assert_eq!(event, "clicked");
+                self.taps += 1;
+            } else {
+                assert_eq!(id, "swipe");
+                self.events.push((
+                    event.into(),
+                    self.handle.swiping(),
+                    self.handle.current_x().0 - self.handle.pressed_x().0,
+                ));
+                if self.cancel_on_move && event == "moved" {
+                    self.handle.cancel();
+                }
+            }
+            true
+        }
+    }
+    let handle = SwipeHandle::default();
+    let mut view = Node::new("ScrollView", None);
+    view.properties
+        .insert("content-height", Length(400.0).into());
+    view.properties
+        .insert("mouse-drag-pan-enabled", true.into());
+    let mut swipe = Node::new("SwipeGestureHandler", Some("swipe"));
+    swipe.properties.insert("width", Length(180.0).into());
+    swipe.properties.insert("height", Length(400.0).into());
+    swipe.properties.insert("handle-swipe-right", true.into());
+    swipe.swipe_handle = Some(handle.clone());
+    let mut button = Node::new("Button", Some("tap"));
+    button.properties.insert("width", Length(100.0).into());
+    button.properties.insert("height", Length(80.0).into());
+    swipe.children.push(button);
+    view.children.push(swipe);
+    let mut app = Application::new(
+        View {
+            scene: view,
+            handle,
+            events: Vec::new(),
+            taps: 0,
+            cancel_on_move: false,
+        },
+        LocalExecutor::new(|| {}),
+        Inbox::<()>::new(|| {}),
+        |_: &mut View, _| {},
+    );
+    let viewport = Size::new(180.0, 140.0);
+    app.layout = Some(Rc::new(layout_with_input(
+        &app.scene,
+        viewport,
+        &mut Measure,
+        &app.input,
+    )));
+    let now = Instant::now();
+    let device = DeviceId::dummy();
+    let start = Point { x: 36.0, y: 40.0 };
+    let moved = Point { x: 76.0, y: 40.0 };
+    let released = Point { x: 96.0, y: 40.0 };
+    app.begin_direct_scroll(ScrollContact::MouseControl(start), start, now);
+    app.move_direct_scroll(moved, now + Duration::from_millis(20));
+    app.end_direct_scroll(released, now + Duration::from_millis(30));
+    assert_eq!(
+        app.component.events,
+        [
+            ("moved".into(), true, 40.0),
+            ("moved".into(), true, 60.0),
+            ("swiped".into(), false, 60.0),
+        ]
+    );
+    assert_eq!(app.component.taps, 0);
+    app.update_touch(device, 1, TouchPhase::Started, start, now);
+    app.update_touch(device, 1, TouchPhase::Ended, start, now);
+    assert_eq!(app.component.taps, 1);
+
+    app.component.cancel_on_move = true;
+    app.update_touch(device, 2, TouchPhase::Started, start, now);
+    app.update_touch(
+        device,
+        2,
+        TouchPhase::Moved,
+        moved,
+        now + Duration::from_millis(20),
+    );
+    app.update_touch(
+        device,
+        2,
+        TouchPhase::Ended,
+        released,
+        now + Duration::from_millis(30),
+    );
+    assert_eq!(
+        &app.component.events[3..],
+        &[
+            ("moved".into(), true, 40.0),
+            ("cancelled".into(), false, 40.0)
+        ]
+    );
+    assert_eq!(app.component.taps, 1);
+
+    app.component.cancel_on_move = false;
+    app.update_touch(device, 3, TouchPhase::Started, start, now);
+    app.update_touch(
+        device,
+        3,
+        TouchPhase::Moved,
+        moved,
+        now + Duration::from_millis(20),
+    );
+    Rc::make_mut(&mut app.scene).children[0]
+        .properties
+        .insert("enabled", false.into());
+    app.update_touch(
+        device,
+        3,
+        TouchPhase::Ended,
+        released,
+        now + Duration::from_millis(30),
+    );
+    assert_eq!(
+        &app.component.events[5..],
+        &[
+            ("moved".into(), true, 40.0),
+            ("cancelled".into(), false, 40.0)
+        ]
+    );
+    app.update_touch(device, 4, TouchPhase::Started, start, now);
+    app.update_touch(device, 4, TouchPhase::Ended, start, now);
+    assert_eq!(app.component.taps, 2);
+
+    let vertical_start = Point { x: 50.0, y: 105.0 };
+    let vertical_end = Point { x: 50.0, y: 50.0 };
+    app.update_touch(device, 5, TouchPhase::Started, vertical_start, now);
+    app.update_touch(
+        device,
+        5,
+        TouchPhase::Moved,
+        vertical_end,
+        now + Duration::from_millis(20),
+    );
+    app.update_touch(
+        device,
+        5,
+        TouchPhase::Ended,
+        vertical_end,
+        now + Duration::from_millis(30),
+    );
+    assert!(app.input.scroll_offsets()[&[][..]] > 40.0);
+    assert_eq!(app.component.events.len(), 7);
+    assert_eq!(app.component.taps, 2);
+}
+
+#[test]
+fn native_scale_rotate_arbitrates_touch_and_combines_trackpad_channels() {
+    use xrack_layout::{TextMeasurer, layout};
+    use xrack_runtime::{Length, ScaleRotateHandle, ScaleRotateSample};
+    struct Measure;
+    impl TextMeasurer for Measure {
+        fn measure(&mut self, _: &str, _: f32, _: f32) -> Size {
+            Size::new(12.0, 16.0)
+        }
+    }
+    struct View {
+        node: Node,
+        events: Vec<(String, bool, ScaleRotateSample)>,
+        taps: usize,
+    }
+    impl Component for View {
+        fn render(&self) -> Node {
+            self.node.clone()
+        }
+        fn dispatch(&mut self, id: &str, event: &str) -> bool {
+            if id == "tap" {
+                assert_eq!(event, "clicked");
+                self.taps += 1;
+                return true;
+            }
+            assert_eq!(id, "gesture");
+            let handle = self.node.children[0].scale_rotate_handle.as_ref().unwrap();
+            self.events.push((
+                event.to_owned(),
+                handle.active(),
+                ScaleRotateSample {
+                    scale: handle.scale(),
+                    rotation: handle.rotation(),
+                    center_x: handle.center_x(),
+                    center_y: handle.center_y(),
+                },
+            ));
+            true
+        }
+    }
+    let mut area = Node::new("ScaleRotateGestureHandler", Some("gesture"));
+    area.scale_rotate_handle = Some(ScaleRotateHandle::default());
+    for (name, value) in [
+        ("x", 20.0),
+        ("y", 10.0),
+        ("width", 200.0),
+        ("height", 160.0),
+    ] {
+        area.properties.insert(name, Length(value).into());
+    }
+    let mut button = Node::new("Button", Some("tap"));
+    for (name, value) in [("width", 100.0), ("height", 80.0)] {
+        button.properties.insert(name, Length(value).into());
+    }
+    area.children.push(button);
+    let mut window = Node::new("Window", None);
+    window.children.push(area);
+    let mut app = Application::new(
+        View {
+            node: window,
+            events: Vec::new(),
+            taps: 0,
+        },
+        LocalExecutor::new(|| {}),
+        Inbox::<()>::new(|| {}),
+        |_: &mut View, _| {},
+    );
+    let viewport = Size::new(280.0, 220.0);
+    app.layout = Some(Rc::new(layout(&app.scene, viewport, &mut Measure)));
+    let now = Instant::now();
+    let device = DeviceId::dummy();
+    let first = Point { x: 50.0, y: 55.0 };
+    let second = Point { x: 90.0, y: 55.0 };
+    let moved = Point { x: 50.0, y: 135.0 };
+    app.update_touch(device, 1, TouchPhase::Started, first, now);
+    app.update_touch(device, 2, TouchPhase::Started, second, now);
+    app.update_touch(device, 2, TouchPhase::Moved, moved, now);
+    assert_eq!(
+        app.component.events[1],
+        (
+            "updated".into(),
+            true,
+            ScaleRotateSample {
+                scale: 2.0,
+                rotation: 90.0,
+                center_x: Length(30.0),
+                center_y: Length(85.0),
+            }
+        )
+    );
+    let lifted = Point { x: 50.0, y: 155.0 };
+    app.update_touch(device, 2, TouchPhase::Ended, lifted, now);
+    app.update_touch(device, 1, TouchPhase::Ended, first, now);
+    assert_eq!(app.component.events[2].0, "updated");
+    assert_eq!(app.component.events[2].2.scale, 2.5);
+    assert_eq!(
+        app.component.events[3],
+        ("ended".into(), false, ScaleRotateSample::default())
+    );
+    assert_eq!(app.component.taps, 0);
+    app.update_touch(device, 3, TouchPhase::Started, first, now);
+    app.update_touch(device, 3, TouchPhase::Ended, first, now);
+    assert_eq!(app.component.taps, 1);
+
+    app.input
+        .pointer_move(&app.scene, app.layout.as_ref().unwrap(), first);
+    use scale_rotate::TrackpadDelta::{Rotation, Scale};
+    app.update_trackpad_gesture(device, TouchPhase::Started, Scale(0.25));
+    app.update_trackpad_gesture(device, TouchPhase::Started, Rotation(-30.0));
+    app.update_trackpad_gesture(device, TouchPhase::Ended, Scale(0.0));
+    assert!(app.scale_rotate.is_active());
+    let (_, active, sample) = app.component.events.last().unwrap();
+    assert!(*active);
+    assert_eq!((sample.scale, sample.rotation), (1.25, 30.0));
+    app.update_trackpad_gesture(device, TouchPhase::Cancelled, Rotation(0.0));
+    assert_eq!(
+        app.component.events.last().unwrap(),
+        &("cancelled".into(), false, ScaleRotateSample::default())
+    );
+    assert!(!app.scale_rotate.is_active());
+    app.update_trackpad_gesture(device, TouchPhase::Started, Scale(0.0));
+    app.update_trackpad_gesture(device, TouchPhase::Ended, Scale(0.2));
+    let events = &app.component.events;
+    assert_eq!(events[events.len() - 2].2.scale, 1.2);
+    assert_eq!(events.last().unwrap().0, "ended");
+
+    app.update_touch(device, 4, TouchPhase::Started, first, now);
+    app.update_touch(device, 5, TouchPhase::Started, second, now);
+    Rc::make_mut(&mut app.scene).children[0]
+        .properties
+        .insert("enabled", false.into());
+    app.update_touch(device, 5, TouchPhase::Moved, moved, now);
+    assert_eq!(app.component.events.last().unwrap().0, "cancelled");
+    app.update_touch(device, 5, TouchPhase::Ended, moved, now);
+    app.update_touch(device, 4, TouchPhase::Ended, first, now);
+    assert_eq!(app.component.taps, 1);
+}
+
+#[test]
+fn native_scroll_bar_touch_release_snaps_and_cancellation_keeps_the_dragged_position() {
+    use xrack_layout::{TextMeasurer, layout_with_input};
+    use xrack_runtime::{Length, ScrollSnapMode, ViewportHandle};
+
+    struct View(Node);
+    impl Component for View {
+        fn render(&self) -> Node {
+            self.0.clone()
+        }
+
+        fn dispatch(&mut self, _: &str, _: &str) -> bool {
+            false
+        }
+    }
+    struct Measure;
+    impl TextMeasurer for Measure {
+        fn measure(&mut self, _: &str, _: f32, _: f32) -> Size {
+            Size::new(12.0, 16.0)
+        }
+    }
+    let handle = ViewportHandle::default();
+    let mut view = Node::new("ScrollView", Some("view"));
+    view.viewport_handle = Some(handle.clone());
+    for (name, value) in [
+        ("width", 100.0),
+        ("height", 100.0),
+        ("content-height", 500.0),
+    ] {
+        view.properties.insert(name, Length(value).into());
+    }
+    let mut bar = Node::new("ScrollBar", Some("bar"));
+    bar.scroll_target = Some(handle);
+    bar.properties.insert("x", Length(120.0).into());
+    bar.properties.insert("width", Length(12.0).into());
+    bar.properties.insert("height", Length(100.0).into());
+    bar.properties
+        .insert("snap-mode", ScrollSnapMode::OnRelease.into());
+    bar.properties.insert("step-size", 0.25_f64.into());
+    let mut window = Node::new("Window", None);
+    window.children.extend([view, bar]);
+    let mut app = Application::new(
+        View(window),
+        LocalExecutor::new(|| {}),
+        Inbox::<()>::new(|| {}),
+        |_: &mut View, _| {},
+    );
+    let viewport = Size::new(160.0, 120.0);
+    let now = Instant::now();
+    let device = DeviceId::dummy();
+    for (id, fraction, phase, expected) in [
+        (1, 0.44, TouchPhase::Ended, 200.0),
+        (2, 0.31, TouchPhase::Cancelled, 124.0),
+    ] {
+        let layout = layout_with_input(&app.scene, viewport, &mut Measure, &app.input);
+        let bar = layout.children[1].attached_scroll_geometry().unwrap();
+        let start = Point {
+            x: bar.thumb.x + 6.0,
+            y: bar.thumb.y + bar.thumb.height * 0.5,
+        };
+        let end = Point {
+            x: start.x,
+            y: bar.track.y
+                + bar.thumb.height * 0.5
+                + (bar.track.height - bar.thumb.height) * fraction,
+        };
+        app.layout = Some(Rc::new(layout));
+        app.update_touch(device, id, TouchPhase::Started, start, now);
+        app.update_touch(device, id, TouchPhase::Moved, end, now);
+        let raw = app.input.scroll_offsets()[&[0][..]];
+        assert!((raw - fraction * 400.0).abs() < 0.001);
+        app.update_touch(device, id, phase, end, now);
+        assert!((app.input.scroll_offsets()[&[0][..]] - expected).abs() < 0.001);
+        assert!(!app.input.scroll_bar_captured());
+    }
+}
+
+#[test]
 fn touch_drag_claims_one_contact_and_dispatches_drop_or_cancel() {
     use xrack_layout::{TextMeasurer, layout};
     use xrack_runtime::{DragEvent, Length};
@@ -1029,6 +1417,55 @@ fn window_timer_schedule_tracks_the_active_component_layout() {
         assert_eq!(app.timers.deadline(), expected);
     }
     assert!(app.timers.next_due(at(280)).unwrap().fire());
+}
+
+#[test]
+fn elastic_displacement_invalidates_prepared_geometry_without_offset_changes() {
+    use xrack_layout::{ScrollGestureKind, TextMeasurer, layout_with_input};
+    use xrack_runtime::{FlickBoundsBehavior, Length, ViewportHandle};
+    struct Measure;
+    impl TextMeasurer for Measure {
+        fn measure(&mut self, _: &str, _: f32, _: f32) -> Size {
+            Size::new(12.0, 16.0)
+        }
+    }
+    let mut scene = Node::new("Flickable", None);
+    scene.viewport_handle = Some(ViewportHandle::for_flickable(false));
+    scene.properties.insert(
+        "bounds-behavior",
+        FlickBoundsBehavior::DragOverBounds.into(),
+    );
+    scene
+        .properties
+        .insert("content-height", Length(260.0).into());
+    scene.children.push(Node::new("Rectangle", None));
+    let scene = Rc::new(scene);
+    let viewport = Size::new(120.0, 100.0);
+    let mut input = Interaction::default();
+    let mut cache = FrameCache::default();
+    let prepare = |cache: &mut FrameCache, input: &Interaction| {
+        cache
+            .prepare(scene.clone(), viewport, input, |scene| {
+                let layout = layout_with_input(&scene, viewport, &mut Measure, input);
+                (scene, layout)
+            })
+            .1
+    };
+    let before = prepare(&mut cache, &input);
+    let now = Instant::now();
+    let start = Point { x: 45.0, y: 50.0 };
+    let end = Point { x: 45.0, y: 105.0 };
+    assert!(input.begin_scroll_gesture(&scene, &before, start, now, ScrollGestureKind::Touch));
+    assert!(input.move_scroll_gesture(&scene, &before, end, now + Duration::from_millis(20)));
+    let shifted = prepare(&mut cache, &input);
+    assert!(shifted.children[0].bounds.y > before.children[0].bounds.y);
+    assert_eq!(shifted.scroll, before.scroll);
+    input.end_scroll_gesture(&scene, &shifted, end, now + Duration::from_millis(30));
+    assert!(input.advance_scroll_motion(&scene, &shifted, now + Duration::from_millis(90)));
+    let returning = prepare(&mut cache, &input);
+    assert!(returning.children[0].bounds.y < shifted.children[0].bounds.y);
+    assert!(returning.children[0].bounds.y > before.children[0].bounds.y);
+    assert_eq!(returning.scroll, before.scroll);
 }
 
 #[test]

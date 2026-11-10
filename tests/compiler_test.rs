@@ -10,6 +10,398 @@ fn analyze(source: &str) -> Result<ir::Module, String> {
 }
 
 #[test]
+fn scroll_controls_require_a_local_viewport_reference() {
+    let source = r#"
+        component App inherits Window {
+            canvas := ScrollView { content-height: 400px; }
+            panel := Rectangle {}
+            ScrollBar { target: canvas; orientation: vertical; policy: always-on; }
+            ScrollIndicator { target: canvas; }
+        }
+    "#;
+    let compiled = compile(source, "scroll-controls.xr").unwrap();
+    assert_eq!(compiled.mlir.matches("\"xr.scroll_target\"").count(), 2);
+    assert!(compiled.rust.to_string().contains("scroll_target"));
+    for (replacement, expected) in [
+        ("target: panel;", "target requires the id of a viewport"),
+        ("target <=> canvas;", "target requires the id of a viewport"),
+        (
+            "target: canvas; position: 0.5;",
+            "attached scroll controls derive their range from the viewport",
+        ),
+    ] {
+        let invalid = source.replacen("target: canvas;", replacement, 1);
+        let error = compile(&invalid, "scroll-controls.xr")
+            .err()
+            .expect("invalid scroll control compiled");
+        assert!(error.contains(expected), "{error}");
+    }
+}
+
+#[test]
+fn system_tray_icon_is_a_windowless_root_with_typed_native_menu_inputs() {
+    let source = r#"export component Tray inherits SystemTrayIcon {
+        in property <image> artwork;
+        icon: root.artwork;
+        tooltip: "XRack tray";
+        icon-template: true;
+        visible: true;
+        clicked() => { }
+        open := Action { text: "Open"; }
+        Menu {
+            MenuItem { action: open; }
+            Menu { title: "Details"; MenuItem { text: "Status"; enabled: false; } }
+        }
+    }"#;
+    let output = compile(source, "system-tray.xr").unwrap();
+    assert!(output.mlir.contains("SystemTrayIcon"));
+    assert!(output.mlir.contains("\"xr.action_ref\""));
+    compile(
+        "export component ClickTray inherits SystemTrayIcon { clicked() => { } }",
+        "click-tray.xr",
+    )
+    .unwrap();
+    for (from, to, expected) in [
+        ("icon-template: true", "icon-template: 1", "type mismatch"),
+        ("Menu {\n", "Menu {} Menu {\n", "at most one Menu"),
+        ("Menu {\n", "if true : Menu {\n", "optional static Menu"),
+        ("Menu {\n", "Rectangle {} Menu {\n", "optional static Menu"),
+    ] {
+        let error = compile(&source.replacen(from, to, 1), "system-tray.xr")
+            .err()
+            .unwrap();
+        assert!(error.contains(expected), "{error}");
+    }
+    let nested = format!("{source}\ncomponent Host inherits Window {{ Tray {{}} }}");
+    assert!(
+        compile(&nested, "embedded-tray.xr")
+            .err()
+            .unwrap()
+            .contains("top-level component")
+    );
+}
+
+#[test]
+fn flickable_bounds_modes_lower_as_typed_options_and_effects() {
+    let source = r#"component App inherits Window {
+        out property <length> overshoot: canvas.horizontal-overshoot;
+        out property <bool> returning: canvas.rebounding;
+        callback reset();
+        reset() => { canvas.return-to-bounds(); }
+        canvas := Flickable {
+            bounds-behavior: FlickBoundsBehavior.drag-and-overshoot-bounds;
+            bounds-movement: FlickBoundsMovement.stop-at-bounds;
+            rebound-duration: 210;
+        }
+    }"#;
+    let compiled = compile(source, "elastic-bounds.xr").unwrap();
+    assert!(compiled.mlir.contains("!xr.flickboundsbehavior"));
+    assert!(compiled.mlir.contains("!xr.flickboundsmovement"));
+    assert!(compiled.mlir.contains("\"xr.return_to_bounds\""));
+    for (from, to, expected) in [
+        (
+            "rebound-duration: 210",
+            "rebound-duration: 210px",
+            "type mismatch",
+        ),
+        (
+            "rebound-duration: 210",
+            "horizontal-overshoot: 5px",
+            "read-only",
+        ),
+        (
+            "canvas.return-to-bounds()",
+            "canvas.return-to-bounds(2)",
+            "takes no arguments",
+        ),
+    ] {
+        let error = compile(&source.replace(from, to), "elastic-bounds.xr")
+            .err()
+            .unwrap();
+        assert!(error.contains(expected), "{error}");
+    }
+}
+
+#[test]
+fn flickable_lowers_motion_metrics_and_scoped_inertia_cancellation() {
+    let source = r#"component App inherits Window {
+        out property <bool> active: canvas.moving;
+        out property <length> position: canvas.content-x;
+        callback stop();
+        stop() => { canvas.cancel-flick(); }
+        canvas := Flickable {
+            clip: false;
+            interactive: true;
+            flick-direction: FlickDirection.horizontal;
+            content-width: 200%;
+            flicked() => { }
+            Rectangle { width: 100%; height: 40px; }
+        }
+        ScrollBar { target: canvas; orientation: horizontal; }
+    }"#;
+    let compiled = compile(source, "flickable.xr").unwrap();
+    assert!(compiled.mlir.contains("\"xr.flick_motion_read\""));
+    assert!(compiled.mlir.contains("\"xr.cancel_flick\""));
+    assert!(compiled.rust.to_string().contains("for_flickable"));
+    for (from, to, expected) in [
+        (
+            "flick-direction: FlickDirection.horizontal",
+            "flick-direction: true",
+            "type mismatch",
+        ),
+        ("interactive: true", "moving: true", "read-only"),
+        (
+            "canvas.cancel-flick()",
+            "canvas.cancel-flick(1)",
+            "takes no arguments",
+        ),
+        (
+            "canvas.cancel-flick()",
+            "canvas.position-view-at-index(1, beginning)",
+            "requires a list",
+        ),
+    ] {
+        let error = compile(&source.replace(from, to), "flickable.xr")
+            .err()
+            .unwrap();
+        assert!(error.contains(expected), "{error}");
+    }
+    let raw = lower(source, "flickable.xr");
+    let invalid = raw.replace(
+        "owner = \"canvas\", value = \"moving\"",
+        "owner = \"canvas\", value = \"enabled\"",
+    );
+    assert_ne!(raw, invalid);
+    assert!(
+        mlir::process(&invalid)
+            .unwrap_err()
+            .contains("motion property on Flickable")
+    );
+}
+
+#[test]
+fn swipe_gestures_lower_typed_metrics_and_cancel_effects() {
+    let source = r#"component App inherits Window {
+        out property <length> distance: swipe.current-x - swipe.pressed-x;
+        out property <bool> active: swipe.swiping;
+        callback stop();
+        stop() => { swipe.cancel(); }
+        swipe := SwipeGestureHandler {
+            handle-swipe-left: true;
+            moved() => { }
+            swiped() => { }
+            cancelled() => { }
+        }
+    }"#;
+    let compiled = compile(source, "swipe-gesture.xr").unwrap();
+    assert!(compiled.mlir.contains("\"xr.swipe_read\""));
+    assert!(compiled.mlir.contains("\"xr.swipe_cancel\""));
+    assert!(compiled.rust.to_string().contains("SwipeHandle"));
+    for (from, to, expected) in [
+        (
+            "handle-swipe-left: true",
+            "handle-swipe-left: 3",
+            "type mismatch",
+        ),
+        ("handle-swipe-left: true", "current-x: 20px", "read-only"),
+        ("swipe.cancel()", "swipe.cancel(1)", "takes no arguments"),
+        (
+            "moved() => { }",
+            "moved() => { swipe.swiping = false; }",
+            "read-only",
+        ),
+    ] {
+        let error = compile(&source.replace(from, to), "swipe-gesture.xr")
+            .err()
+            .unwrap();
+        assert!(error.contains(expected), "{error}");
+    }
+    let raw = lower(source, "swipe-gesture.xr");
+    let invalid = raw.replace(
+        "\"xr.swipe_cancel\"() <{owner = \"swipe\"}>",
+        "\"xr.swipe_cancel\"() <{owner = \"root\"}>",
+    );
+    assert_ne!(raw, invalid);
+    assert!(
+        mlir::process(&invalid)
+            .unwrap_err()
+            .contains("statically addressed swipe handler")
+    );
+}
+
+#[test]
+fn scale_rotate_handlers_expose_typed_read_only_metrics_and_lifecycle() {
+    let source = r#"component App inherits Window {
+        out property <float> factor: gesture.scale;
+        out property <float> angle: gesture.rotation;
+        out property <length> centroid: gesture.center-x;
+        out property <bool> recognizing: gesture.active;
+        gesture := ScaleRotateGestureHandler {
+            width: 200px;
+            updated() => { }
+            Rectangle { width: 100%; height: 100%; }
+        }
+    }"#;
+    let compiled = compile(source, "scale-rotate.xr").unwrap();
+    assert!(compiled.mlir.contains("\"xr.scale_rotate_read\""));
+    assert!(compiled.rust.to_string().contains("ScaleRotateHandle"));
+    for (from, to, expected) in [
+        ("width: 200px", "scale: 2.0", "read-only"),
+        (
+            "updated() => { }",
+            "updated() => { gesture.rotation = 20.0; }",
+            "read-only",
+        ),
+        ("updated()", "updated(value)", "takes no parameters"),
+    ] {
+        let error = compile(&source.replace(from, to), "scale-rotate.xr")
+            .err()
+            .unwrap();
+        assert!(error.contains(expected), "{error}");
+    }
+    let raw = lower(source, "scale-rotate.xr");
+    let invalid = raw.replacen("value = \"scale\"", "value = \"center-y\"", 1);
+    assert_ne!(raw, invalid);
+    assert!(
+        mlir::process(&invalid)
+            .unwrap_err()
+            .contains("typed metric")
+    );
+}
+
+#[test]
+fn scroll_snap_modes_are_typed_on_both_scroll_bar_modes() {
+    let source = r#"
+        component App inherits Window {
+            in property <ScrollSnapMode> mode: ScrollSnapMode.on-release;
+            view := ScrollView { content-height: 400px; }
+            ScrollBar { target: view; snap-mode: root.mode; step-size: 0.3; }
+            ScrollBar { size: 0.25; snap-mode: always; step-size: 0.25; }
+        }
+    "#;
+    let output = compile(source, "scroll-snap.xr").unwrap();
+    assert!(output.mlir.contains("!xr.scrollsnapmode"));
+    assert!(
+        output
+            .rust
+            .to_string()
+            .contains("ScrollSnapMode :: OnRelease")
+    );
+    for (from, to, expected) in [
+        ("snap-mode: always", "snap-mode: 1", "type mismatch"),
+        (
+            "ScrollBar { size: 0.25",
+            "ScrollIndicator { size: 0.25",
+            "snap-mode",
+        ),
+    ] {
+        let error = compile(&source.replace(from, to), "scroll-snap.xr")
+            .err()
+            .unwrap();
+        assert!(error.contains(expected), "{error}");
+    }
+    let raw = lower(source, "scroll-snap.xr");
+    let invalid = raw.replace("value = \"on-release\"", "value = \"unrecognized\"");
+    assert_ne!(raw, invalid);
+    assert!(
+        mlir::process(&invalid)
+            .unwrap_err()
+            .contains("literal spelling")
+    );
+}
+
+#[test]
+fn attached_scroll_metrics_are_read_only_and_follow_layout_phases() {
+    let source = r#"
+        component App inherits Window {
+            out property <float> extent: bar.size;
+            canvas := ScrollView { content-height: 400px; }
+            bar := ScrollBar { target: canvas; }
+            ScrollIndicator { position: bar.position; size: bar.size; }
+            open := Button {
+                details := PopupWindow { width: bar.size * 100px; height: 40px; }
+            }
+        }
+    "#;
+    let compiled = compile(source, "attached-ranges.xr").unwrap();
+    assert!(compiled.mlir.contains("\"xr.scroll_control_read\""));
+    assert!(compiled.rust.to_string().contains("scroll_size"));
+    for (from, to, expected) in [
+        (
+            "content-height: 400px",
+            "content-height: root.extent * 400px",
+            "layout feedback",
+        ),
+        (
+            "bar := ScrollBar { target: canvas; }",
+            "bar := ScrollBar { target: canvas; orientation: bar.position > 0.5 ? Orientation.horizontal : Orientation.vertical; }",
+            "cyclic property binding",
+        ),
+        (
+            "details := PopupWindow",
+            "details := Rectangle",
+            "layout feedback",
+        ),
+        (
+            "open := Button {",
+            "open := Button { clicked() => { bar.position = 0.5; }",
+            "read-only",
+        ),
+    ] {
+        let error = compile(&source.replace(from, to), "attached-ranges.xr")
+            .err()
+            .unwrap();
+        assert!(error.contains(expected), "{error}");
+    }
+    let raw = lower(source, "attached-ranges.xr");
+    let feedback = raw.replace("kind = \"PopupWindow\"", "kind = \"Rectangle\"");
+    assert_ne!(raw, feedback);
+    assert!(
+        mlir::process(&feedback)
+            .unwrap_err()
+            .contains("layout feedback")
+    );
+}
+
+#[test]
+fn standalone_scroll_controls_support_observable_normalized_ranges() {
+    let source = r#"
+        component App inherits Window {
+            in-out property <float> offset: 0;
+            out property <float> position: bar.position;
+            bar := ScrollBar { position <=> root.offset; size: 0.25; }
+            indicator := ScrollIndicator { position: bar.position; size: bar.size; }
+        }
+    "#;
+    let compiled = compile(source, "standalone-scroll.xr").unwrap();
+    assert!(compiled.mlir.contains("\"xr.scroll_control_read\""));
+    assert!(compiled.mlir.contains("\"xr.control_link\""));
+    assert!(compiled.rust.to_string().contains("ScrollBarRange"));
+    compile(
+        "component CustomBar inherits ScrollBar { out property <float> effective: self.position; size: 0.25; }",
+        "custom-scroll-bar.xr",
+    )
+    .unwrap();
+    for (from, to, expected) in [
+        (
+            "size: 0.25",
+            "size: root.position",
+            "cyclic property binding",
+        ),
+        (
+            "position: bar.position; size: bar.size;",
+            "position <=> root.offset;",
+            "two-way binding requires an editable control property",
+        ),
+    ] {
+        let error = compile(&source.replace(from, to), "standalone-scroll.xr")
+            .err()
+            .unwrap();
+        assert!(error.contains(expected), "{error}");
+    }
+}
+
+#[test]
 fn non_exclusive_button_groups_verify_members_reads_and_effects() {
     let source = r#"
         component App inherits Window {
@@ -852,6 +1244,7 @@ fn moving_table_columns_is_a_typed_effect_and_event() {
         outside := Rectangle {}
         table := TableView {
             movable-columns: true;
+            drag-select: true;
             column-moved(column, visual) => {}
             TableColumn { title: "A"; }
             TableColumn { title: "B"; }
@@ -862,12 +1255,14 @@ fn moving_table_columns_is_a_typed_effect_and_event() {
     let compiled = compile(source, "column-order.xr").unwrap();
     assert!(compiled.mlir.contains("\"xr.move_column\""));
     assert!(compiled.mlir.contains("name = \"column-moved\""));
+    assert!(compiled.mlir.contains("name = \"drag-select\""));
     for (from, to, error) in [
         (
             "movable-columns: true",
             "movable-columns: 2",
             "type mismatch",
         ),
+        ("drag-select: true", "drag-select: 2", "type mismatch"),
         (
             "column-moved(column, visual)",
             "column-moved(column)",

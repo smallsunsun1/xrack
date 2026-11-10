@@ -1,7 +1,7 @@
 use crate::{ControlInput, Point};
 use std::time::{Duration, Instant};
 
-const DRAG_THRESHOLD: f32 = 8.0;
+pub(crate) const DRAG_THRESHOLD: f32 = 8.0;
 const MIN_SPEED: f32 = 25.0;
 const MAX_SPEED: f32 = 3200.0;
 const DAMPING: f32 = 7.5;
@@ -13,6 +13,13 @@ pub enum ScrollGestureKind {
     MousePan,
     MouseTumbler,
     MouseControl,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PanDevice {
+    Touch,
+    LeftMouse,
+    MiddleMouse,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -41,10 +48,7 @@ impl DragMotion {
     }
 
     pub(crate) fn update(&mut self, point: Point, now: Instant) -> Option<Point> {
-        let mut delta = Point {
-            x: self.point.x - point.x,
-            y: self.point.y - point.y,
-        };
+        let mut delta = self.delta_to(point);
         let distance = delta.x.hypot(delta.y);
         if !distance.is_finite() || distance == 0.0 {
             return None;
@@ -75,6 +79,13 @@ impl DragMotion {
         self.updated = now;
         self.dragging = true;
         Some(delta)
+    }
+
+    pub(crate) fn delta_to(&self, point: Point) -> Point {
+        Point {
+            x: self.point.x - point.x,
+            y: self.point.y - point.y,
+        }
     }
 
     pub(crate) fn finish(self, now: Instant, axes: [bool; 2]) -> Option<FlingMotion> {

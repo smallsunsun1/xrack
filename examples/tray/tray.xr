@@ -1,0 +1,38 @@
+export component TrayDemo inherits SystemTrayIcon {
+    title: "XRack";
+    tooltip: root.paused ? "XRack is paused" : "XRack is running";
+    icon: @image-url("assets/status.svg");
+    icon-template: true;
+    in-out property <bool> paused: false;
+    callback open-window();
+    callback remove-tray();
+    clicked() => { root.open-window(); }
+
+    pause := Action {
+        text: "Paused";
+        checkable: true;
+        checked <=> root.paused;
+    }
+
+    Menu {
+        MenuItem { action: pause; }
+        MenuItem { text: "Open XRack window"; activated() => { root.open-window(); } }
+        Menu {
+            title: "Status";
+            MenuItem { text: root.paused ? "Paused" : "Running"; enabled: false; }
+        }
+        MenuSeparator {}
+        MenuItem { text: "Remove tray icon"; activated() => { root.remove-tray(); } }
+    }
+}
+
+export component TrayWindow inherits Window {
+    title: "XRack · System tray";
+    width: 400px;
+    height: 156px;
+    background: #192438;
+    Text {
+        x: 20px; y: 26px; color: #e5edff;
+        text: "The tray icon stays open when this window closes.";
+    }
+}

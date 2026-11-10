@@ -1447,13 +1447,27 @@ impl Renderer {
                     .fill_path(&path, &Paint::color(color(theme.role(Role::Divider))));
             }
         }
+        for rect in input.table_drag_preview(path, node, layout) {
+            let mut region = Path::new();
+            append_rect(&mut region, rect, [0.0; 4]);
+            let translucent = UiColor((theme.focus.0 & 0xffff_ff00) | 42);
+            self.canvas
+                .fill_path(&region, &Paint::color(color(translucent)));
+            let mut outline = Path::new();
+            append_rect(&mut outline, rect.inset(0.5), [0.0; 4]);
+            self.canvas
+                .stroke_path(&outline, &Paint::color(color(theme.focus)));
+        }
         for bar in layout.scroll_bars(node) {
             range::scroll_bar(
                 &mut self.canvas,
                 theme,
                 bar,
                 layout.enabled,
-                input.scroll_bar_highlighted(path, bar.orientation),
+                input.scroll_bar_highlighted(path, bar.orientation)
+                    || node.kind == "ScrollBar" && input.is_focused(path),
+                node.kind == "ScrollIndicator"
+                    || node.kind == "ScrollBar" && !node.boolean("interactive", true),
             );
         }
     }

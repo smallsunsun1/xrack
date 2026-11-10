@@ -1,6 +1,6 @@
 use crate::{Length, Orientation, Property};
 use std::{
-    cell::{OnceCell, RefCell},
+    cell::{Cell, OnceCell, RefCell},
     fmt,
     rc::Rc,
 };
@@ -17,6 +17,8 @@ pub enum ScrollAlignment {
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum ScrollAction {
+    CancelFlick,
+    ReturnToBounds,
     To {
         x: Length,
         y: Length,
@@ -27,6 +29,14 @@ pub enum ScrollAction {
     },
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ViewportMotion {
+    #[default]
+    Idle,
+    Dragging,
+    Flicking,
+}
+
 /// A viewport's stable identity and reactive geometry, owned by its component instance.
 #[derive(Clone, Default)]
 pub struct ViewportHandle(Rc<ViewportProperties>);
@@ -34,12 +44,53 @@ pub struct ViewportHandle(Rc<ViewportProperties>);
 #[derive(Default)]
 struct ViewportProperties {
     scroll_notifications: bool,
+    motion: Option<Box<MotionProperties>>,
     content_x: Property<Length>,
     content_y: Property<Length>,
     visible_width: Property<Length>,
     visible_height: Property<Length>,
+    ranges: [ViewportRange; 2],
     horizontal: OnceCell<OffsetBinding>,
     vertical: OnceCell<OffsetBinding>,
+}
+
+#[derive(Default)]
+struct MotionProperties {
+    phase: Cell<ViewportMotion>,
+    dragging: Property<bool>,
+    flicking: Property<bool>,
+    moving: Property<bool>,
+    overshoot: [RangeMetric; 2],
+    returning: Cell<[bool; 2]>,
+    rebounding: Property<bool>,
+}
+
+#[derive(Default)]
+struct ViewportRange {
+    position: RangeMetric,
+    size: RangeMetric,
+}
+
+/// Keep the latest layout sample and allocate a dependency only when it is read.
+#[derive(Default)]
+struct RangeMetric {
+    sample: Cell<f64>,
+    observed: OnceCell<Box<Property<f64>>>,
+}
+
+impl RangeMetric {
+    fn get(&self) -> f64 {
+        self.observed
+            .get_or_init(Default::default)
+            .get(|| self.sample.get())
+    }
+
+    fn publish(&self, value: f64) {
+        self.sample.set(value);
+        if let Some(property) = self.observed.get() {
+            property.set_if_changed(value);
+        }
+    }
 }
 
 struct OffsetBinding {
@@ -63,11 +114,101 @@ impl fmt::Debug for ViewportHandle {
 
 impl ViewportHandle {
     #[doc(hidden)]
+    pub fn identity(&self) -> usize {
+        Rc::as_ptr(&self.0) as usize
+    }
+
+    #[doc(hidden)]
     pub fn with_scroll_notifications() -> Self {
         Self(Rc::new(ViewportProperties {
             scroll_notifications: true,
             ..ViewportProperties::default()
         }))
+    }
+
+    #[doc(hidden)]
+    pub fn for_flickable(scroll_notifications: bool) -> Self {
+        Self(Rc::new(ViewportProperties {
+            scroll_notifications,
+            motion: Some(Box::default()),
+            ..ViewportProperties::default()
+        }))
+    }
+
+    pub fn dragging(&self) -> bool {
+        self.0
+            .motion
+            .as_ref()
+            .is_some_and(|state| state.dragging.get(|| false))
+    }
+    pub fn flicking(&self) -> bool {
+        self.0
+            .motion
+            .as_ref()
+            .is_some_and(|state| state.flicking.get(|| false))
+    }
+    pub fn moving(&self) -> bool {
+        self.0
+            .motion
+            .as_ref()
+            .is_some_and(|state| state.moving.get(|| false))
+    }
+
+    pub fn rebounding(&self) -> bool {
+        self.0
+            .motion
+            .as_ref()
+            .is_some_and(|state| state.rebounding.get(|| false))
+    }
+
+    pub fn horizontal_overshoot(&self) -> Length {
+        self.overshoot(Orientation::Horizontal)
+    }
+    pub fn vertical_overshoot(&self) -> Length {
+        self.overshoot(Orientation::Vertical)
+    }
+
+    fn overshoot(&self, axis: Orientation) -> Length {
+        Length(self.0.motion.as_ref().map_or(0.0, |state| {
+            state.overshoot[usize::from(axis == Orientation::Vertical)].get()
+        }))
+    }
+
+    #[doc(hidden)]
+    pub fn observes_motion(&self) -> bool {
+        self.0.motion.is_some()
+    }
+
+    #[doc(hidden)]
+    pub fn publish_motion(&self, motion: ViewportMotion) {
+        if let Some(state) = &self.0.motion {
+            state.phase.set(motion);
+            state
+                .dragging
+                .set_if_changed(motion == ViewportMotion::Dragging);
+            state
+                .flicking
+                .set_if_changed(motion == ViewportMotion::Flicking);
+            state.moving.set_if_changed(
+                motion != ViewportMotion::Idle || state.returning.get().contains(&true),
+            );
+        }
+    }
+
+    #[doc(hidden)]
+    pub fn publish_overshoot(&self, axis: Orientation, value: f32, returning: bool) {
+        if let Some(state) = &self.0.motion {
+            let index = usize::from(axis == Orientation::Vertical);
+            state.overshoot[index].publish(f64::from(value));
+            let mut phases = state.returning.get();
+            phases[index] = returning;
+            state.returning.set(phases);
+            let rebounding = phases.contains(&true);
+            state.rebounding.set_if_changed(rebounding);
+            state
+                .moving
+                .set_if_changed(state.phase.get() != ViewportMotion::Idle || rebounding);
+        }
     }
 
     #[doc(hidden)]
@@ -130,6 +271,34 @@ impl ViewportHandle {
         self.0.visible_height.get(Length::default)
     }
 
+    fn range(&self, axis: Orientation) -> &ViewportRange {
+        &self.0.ranges[usize::from(axis == Orientation::Vertical)]
+    }
+
+    pub fn scroll_position(&self, axis: Orientation) -> f64 {
+        self.range(axis).position.get()
+    }
+
+    pub fn scroll_size(&self, axis: Orientation) -> f64 {
+        self.range(axis).size.get()
+    }
+
+    #[doc(hidden)]
+    pub fn publish_scroll_range(&self, axis: Orientation, offset: f32, page: f32, maximum: f32) {
+        let page = f64::from(page);
+        let extent = page + f64::from(maximum);
+        let (position, size) =
+            if page > 0.0 && maximum >= 0.0 && extent.is_finite() && offset.is_finite() {
+                let size = page / extent;
+                ((f64::from(offset) / extent).clamp(0.0, 1.0 - size), size)
+            } else {
+                (0.0, 0.0)
+            };
+        let range = self.range(axis);
+        range.position.publish(position);
+        range.size.publish(size);
+    }
+
     #[doc(hidden)]
     pub fn publish(&self, x: Length, y: Length, width: Length, height: Length) {
         self.0.content_x.set_if_changed(x);
@@ -182,5 +351,70 @@ impl ScrollRequests {
 impl Drop for ScrollContext {
     fn drop(&mut self) {
         ACTIVE.with(|active| active.replace(self.0.take()));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn moving_binding_remains_cached_across_drag_to_flick_transition() {
+        let viewport = ViewportHandle::for_flickable(false);
+        let moving = Property::default();
+        let dragging = Property::default();
+        viewport.publish_motion(ViewportMotion::Dragging);
+        assert!(moving.get(|| viewport.moving()));
+        assert!(dragging.get(|| viewport.dragging()));
+        viewport.publish_motion(ViewportMotion::Flicking);
+        assert!(!moving.is_dirty());
+        assert!(dragging.is_dirty());
+        assert!(viewport.flicking());
+        viewport.publish_motion(ViewportMotion::Idle);
+        assert!(moving.is_dirty());
+        assert!(!moving.get(|| viewport.moving()));
+    }
+
+    #[test]
+    fn scroll_range_invalidates_only_the_changed_axis_and_metric() {
+        let viewport = ViewportHandle::default();
+        viewport.publish_scroll_range(Orientation::Horizontal, 0.0, 100.0, 100.0);
+        assert!(
+            viewport
+                .range(Orientation::Horizontal)
+                .size
+                .observed
+                .get()
+                .is_none()
+        );
+        let size = Property::default();
+        let position = Property::default();
+        let read_size = || viewport.scroll_size(Orientation::Horizontal);
+        let read_position = || viewport.scroll_position(Orientation::Horizontal);
+        assert_eq!(size.get(read_size), 0.5);
+        assert_eq!(position.get(read_position), 0.0);
+
+        viewport.publish_scroll_range(Orientation::Vertical, 30.0, 20.0, 80.0);
+        assert!(
+            viewport
+                .range(Orientation::Vertical)
+                .position
+                .observed
+                .get()
+                .is_none()
+        );
+        assert!(!position.is_dirty());
+        assert!(!size.is_dirty());
+        viewport.publish_scroll_range(Orientation::Horizontal, 50.0, 100.0, 100.0);
+        assert!(position.is_dirty());
+        assert!(!size.is_dirty());
+        assert_eq!(position.get(read_position), 0.25);
+
+        viewport.publish_scroll_range(Orientation::Horizontal, 50.0, 100.0, 100.0);
+        assert!(!position.is_dirty());
+        viewport.publish_scroll_range(Orientation::Horizontal, 0.0, 0.0, 0.0);
+        assert!(position.is_dirty());
+        assert!(size.is_dirty());
+        assert_eq!(size.get(read_size), 0.0);
     }
 }

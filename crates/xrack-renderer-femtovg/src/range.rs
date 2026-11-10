@@ -31,14 +31,17 @@ pub(crate) fn scroll_bar(
     geometry: ScrollBarGeometry,
     enabled: bool,
     highlighted: bool,
+    indicator: bool,
 ) {
     let thickness = geometry.track.width.min(geometry.track.height);
     let inset = (thickness * 0.15).min(1.5);
-    capsule(
-        canvas,
-        geometry.track.inset(inset),
-        theme.role(Role::ScrollTrack),
-    );
+    if !indicator {
+        capsule(
+            canvas,
+            geometry.track.inset(inset),
+            theme.role(Role::ScrollTrack),
+        );
+    }
     let tint = if !enabled || !geometry.scrollable() {
         theme.disabled_text
     } else if highlighted {
@@ -46,7 +49,8 @@ pub(crate) fn scroll_bar(
     } else {
         theme.role(Role::ScrollThumb)
     };
-    capsule(canvas, geometry.thumb.inset(inset), tint);
+    let thumb_inset = inset.min(geometry.thumb.width.min(geometry.thumb.height) * 0.25);
+    capsule(canvas, geometry.thumb.inset(thumb_inset), tint);
 }
 
 fn track(from: Point, to: Point, width: f32, orientation: Orientation) -> Rect {

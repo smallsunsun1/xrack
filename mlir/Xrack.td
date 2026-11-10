@@ -37,10 +37,14 @@ def XR_ImageRendering : XR_Type<"ImageRendering", "imagerendering">;
 def XR_LayoutAlignment : XR_Type<"LayoutAlignment", "layoutalignment">;
 def XR_CrossAxisAlignment : XR_Type<"CrossAxisAlignment", "crossaxisalignment">;
 def XR_Orientation : XR_Type<"Orientation", "orientation">;
+def XR_FlickDirection : XR_Type<"FlickDirection", "flickdirection">;
+def XR_FlickBoundsBehavior : XR_Type<"FlickBoundsBehavior", "flickboundsbehavior">;
+def XR_FlickBoundsMovement : XR_Type<"FlickBoundsMovement", "flickboundsmovement">;
 def XR_FlexboxLayoutDirection : XR_Type<"FlexboxLayoutDirection", "flexboxlayoutdirection">;
 def XR_FlexboxLayoutWrap : XR_Type<"FlexboxLayoutWrap", "flexboxlayoutwrap">;
 def XR_DialInputMode : XR_Type<"DialInputMode", "dialinputmode">;
 def XR_ScrollBarPolicy : XR_Type<"ScrollBarPolicy", "scrollbarpolicy">;
+def XR_ScrollSnapMode : XR_Type<"ScrollSnapMode", "scrollsnapmode">;
 def XR_ScrollAlignment : XR_Type<"ScrollAlignment", "scrollalignment">;
 def XR_TextWrap : XR_Type<"TextWrap", "textwrap">;
 def XR_TextHorizontalAlignment : XR_Type<"TextHorizontalAlignment", "texthorizontalalignment">;
@@ -70,7 +74,7 @@ def XR_Value : AnyTypeOf<[XR_Int, XR_Float, XR_Bool, XR_String, XR_StyledText, X
                          XR_EventResult, XR_FocusReason, XR_KeyEvent, XR_KeyModifiers,
                          XR_Brush, XR_Image, XR_ImageFit, XR_ImageTileMode,
                          XR_ImageHorizontalAlignment, XR_ImageVerticalAlignment, XR_ImageRendering, XR_LayoutAlignment, XR_CrossAxisAlignment,
-                         XR_Orientation, XR_FlexboxLayoutDirection, XR_FlexboxLayoutWrap, XR_DialInputMode, XR_ScrollBarPolicy, XR_ScrollAlignment, XR_TextWrap, XR_TextHorizontalAlignment, XR_TextVerticalAlignment, XR_TextOverflow, XR_InputType, XR_ColorScheme, XR_FileDialogMode, XR_MessageLevel, XR_MessageButtons, XR_CheckState, XR_DialogRole, XR_StandardButtonKind, XR_SwipeSide, XR_DragAction, XR_DrawerEdge, XR_PopupPlacement, XR_SelectionTarget, XR_Date, XR_Time]>;
+                         XR_Orientation, XR_FlickDirection, XR_FlickBoundsBehavior, XR_FlickBoundsMovement, XR_FlexboxLayoutDirection, XR_FlexboxLayoutWrap, XR_DialInputMode, XR_ScrollBarPolicy, XR_ScrollSnapMode, XR_ScrollAlignment, XR_TextWrap, XR_TextHorizontalAlignment, XR_TextVerticalAlignment, XR_TextOverflow, XR_InputType, XR_ColorScheme, XR_FileDialogMode, XR_MessageLevel, XR_MessageButtons, XR_CheckState, XR_DialogRole, XR_StandardButtonKind, XR_SwipeSide, XR_DragAction, XR_DrawerEdge, XR_PopupPlacement, XR_SelectionTarget, XR_Date, XR_Time]>;
 def XR_Stringifiable : AnyTypeOf<[XR_Int, XR_Float, XR_Bool, XR_Date, XR_Time]>;
 
 class XR_Op<string mnemonic, list<Trait> traits = []> : Op<Xrack_Dialect, mnemonic, traits>;
@@ -130,6 +134,9 @@ def XR_CheckGroupRefOp : XR_Op<"check_group_ref", [HasParent<"ElementOp">]> {
 def XR_FocusTargetOp : XR_Op<"focus_target", [HasParent<"ElementOp">]> {
   let arguments = (ins StrAttr:$target);
   let hasVerifier = 1;
+}
+def XR_ScrollTargetOp : XR_Op<"scroll_target", [HasParent<"ElementOp">]> {
+  let arguments = (ins StrAttr:$target);
 }
 def XR_ShowIfOp : XR_Op<"show_if"> {
   let arguments = (ins XR_Bool:$input, StrAttr:$name);
@@ -231,6 +238,10 @@ def XR_FocusCommandOp : XR_Op<"focus_command", [ParentOneOf<["CallbackOp", "Hand
   let arguments = (ins StrAttr:$target, StrAttr:$action);
   let hasVerifier = 1;
 }
+def XR_SwipeCancelOp : XR_Op<"swipe_cancel", [ParentOneOf<["CallbackOp", "HandlerOp"]>]> {
+  let arguments = (ins StrAttr:$owner);
+  let hasVerifier = 1;
+}
 def XR_TextCommandOp : XR_Op<"text_command", [ParentOneOf<["CallbackOp", "HandlerOp"]>]> {
   let arguments = (ins Variadic<XR_Int>:$offsets, StrAttr:$owner, StrAttr:$method);
   let hasVerifier = 1;
@@ -239,6 +250,14 @@ def XR_ScrollCommandOp : XR_Op<"scroll_command", [ParentOneOf<["CallbackOp", "Ha
   let arguments = (ins AnyTypeOf<[XR_Length, XR_Int]>:$position,
                        AnyTypeOf<[XR_Length, XR_ScrollAlignment]>:$alignmentOrY,
                        StrAttr:$owner, StrAttr:$method);
+  let hasVerifier = 1;
+}
+def XR_CancelFlickOp : XR_Op<"cancel_flick", [ParentOneOf<["CallbackOp", "HandlerOp"]>]> {
+  let arguments = (ins StrAttr:$owner);
+  let hasVerifier = 1;
+}
+def XR_ReturnToBoundsOp : XR_Op<"return_to_bounds", [ParentOneOf<["CallbackOp", "HandlerOp"]>]> {
+  let arguments = (ins StrAttr:$owner);
   let hasVerifier = 1;
 }
 def XR_MoveColumnOp : XR_Op<"move_column", [ParentOneOf<["CallbackOp", "HandlerOp"]>]> {
@@ -309,6 +328,10 @@ def XR_GeometryReadOp : XR_ExpressionOp<"geometry_read", (ins StrAttr:$owner), A
 def XR_ViewportReadOp : XR_ExpressionOp<"viewport_read", (ins StrAttr:$owner), XR_Length, [Pure]> {
   let hasVerifier = 1;
 }
+def XR_FlickMotionReadOp : XR_ExpressionOp<"flick_motion_read", (ins StrAttr:$owner), AnyTypeOf<[XR_Bool, XR_Length]>>;
+def XR_ScrollControlReadOp : XR_ExpressionOp<"scroll_control_read", (ins StrAttr:$owner), XR_Float>;
+def XR_ScaleRotateReadOp : XR_ExpressionOp<"scale_rotate_read", (ins StrAttr:$owner), AnyTypeOf<[XR_Bool, XR_Float, XR_Length]>>;
+def XR_SwipeReadOp : XR_ExpressionOp<"swipe_read", (ins StrAttr:$owner), AnyTypeOf<[XR_Bool, XR_Length]>>;
 def XR_ParamOp : XR_ExpressionOp<"param", (ins)>;
 def XR_CallOp : XR_ExpressionOp<"call", (ins Variadic<XR_Value>:$args, StrAttr:$owner)>;
 def XR_UnaryOp : XR_ExpressionOp<"unary", (ins XR_Value:$input), XR_Value,

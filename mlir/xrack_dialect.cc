@@ -41,7 +41,7 @@ void XrackDialect::initialize() {
 }
 
 static bool isExpression(Operation &op) {
-  return isa<LiteralOp, ReadOp, ControlReadOp, GeometryReadOp, StackReadOp, ImagePlaybackReadOp, WindowReadOp, CheckGroupReadOp, FocusReadOp, ViewportReadOp, ParamOp, UnaryOp, CastOp,
+  return isa<LiteralOp, ReadOp, ControlReadOp, GeometryReadOp, StackReadOp, ImagePlaybackReadOp, WindowReadOp, CheckGroupReadOp, FocusReadOp, ViewportReadOp, FlickMotionReadOp, ScrollControlReadOp, ScaleRotateReadOp, SwipeReadOp, ParamOp, UnaryOp, CastOp,
              StringifyOp, BinaryOp, SelectOp, SolidBrushOp, GradientStopOp,
              LinearGradientOp, RadialGradientOp, ImageUrlOp, ImageDimensionOp, NineSliceOp, MarkdownOp, ArrayOp, CallOp,
              ToRatioOp, MakeRecordOp, DefaultRecordOp, RecordArrayOp,
@@ -149,8 +149,31 @@ static bool isVirtualView(llvm::StringRef kind) {
          isTableView(kind) || kind == "TreeView";
 }
 
+static bool isContentViewport(llvm::StringRef kind) {
+  return kind == "ScrollView" || kind == "Flickable";
+}
+
 static bool isViewport(llvm::StringRef kind) {
-  return isVirtualView(kind) || kind == "ScrollView";
+  return isVirtualView(kind) || isContentViewport(kind);
+}
+
+static bool isScrollControl(llvm::StringRef kind) {
+  return kind == "ScrollBar" || kind == "ScrollIndicator";
+}
+
+static Type scaleRotateType(MLIRContext *context, llvm::StringRef name) {
+  return llvm::StringSwitch<Type>(name)
+      .Case("active", BoolType::get(context))
+      .Cases({"scale", "rotation"}, FloatType::get(context))
+      .Cases({"center-x", "center-y"}, LengthType::get(context))
+      .Default({});
+}
+
+static Type swipeType(MLIRContext *context, llvm::StringRef name) {
+  return llvm::StringSwitch<Type>(name)
+      .Case("swiping", BoolType::get(context))
+      .Cases({"pressed-x", "pressed-y", "current-x", "current-y"}, LengthType::get(context))
+      .Default({});
 }
 
 static bool isViewportProperty(llvm::StringRef name) {
@@ -160,7 +183,7 @@ static bool isViewportProperty(llvm::StringRef name) {
 
 static bool isViewportOffset(llvm::StringRef kind, llvm::StringRef name) {
   return (name == "content-y" && isViewport(kind)) ||
-         (name == "content-x" && (kind == "ScrollView" || isTableView(kind)));
+         (name == "content-x" && (isContentViewport(kind) || isTableView(kind)));
 }
 
 static bool isStaticViewport(ElementOp target) {
@@ -308,7 +331,7 @@ static bool validCompositionBinding(llvm::StringRef kind, llvm::StringRef name,
   return isa<FloatType>(type) &&
       !llvm::StringSwitch<bool>(kind)
           .Cases({"Action", "Timer", "FileDialog", "MessageDialog",
-                  "SecondaryWindow", "Shortcut", "MenuItem",
+                  "SecondaryWindow", "SystemTrayIcon", "Shortcut", "MenuItem",
                   "MenuSeparator", "TableColumn"}, true)
           .Default(false);
 }
@@ -565,6 +588,8 @@ LogicalResult ElementOp::verify() {
     return emitOpError("Tooltip requires a visual owner");
   if (kind == "PopupWindow" && root)
     return emitOpError("PopupWindow requires a visual owner");
+  if (kind == "SystemTrayIcon" && !root)
+    return emitOpError("SystemTrayIcon requires a top-level component");
   const bool pageSlot = kind == "PageHeader" || kind == "PageFooter";
   if (pageSlot && (root || parentKind != "Page"))
     return emitOpError() << kind << " requires a direct Page parent";
@@ -576,7 +601,7 @@ LogicalResult ElementOp::verify() {
       if (ancestor.getKind() == "Tooltip")
         return emitOpError("Tooltip content cannot be a popup or virtual view");
   if ((kind == "Menu" && parentKind != "MenuBar" && parentKind != "Menu" &&
-       parentKind != "ContextMenuArea") ||
+       parentKind != "ContextMenuArea" && parentKind != "SystemTrayIcon") ||
       ((kind == "MenuItem" || kind == "MenuSeparator") && parentKind != "Menu"))
     return emitOpError("requires a menu container");
   const bool table = isTableView(kind);
@@ -614,6 +639,11 @@ LogicalResult ElementOp::verify() {
   }
   auto groupRefs = body.getOps<RadioGroupRefOp>();
   auto checkRefs = body.getOps<CheckGroupRefOp>();
+  auto scrollTargets = body.getOps<ScrollTargetOp>();
+  const bool scrollControl = isScrollControl(kind);
+  const bool attachedScroll = !scrollTargets.empty();
+  if (attachedScroll && (!scrollControl || !llvm::hasSingleElement(scrollTargets)))
+    return emitOpError("a scroll control accepts a single target viewport");
   if (!checkRefs.empty() && ((kind != "CheckBox" && kind != "Switch") || !llvm::hasSingleElement(checkRefs)))
     return emitOpError("requires a single ButtonGroup on a CheckBox or Switch");
   const bool attachedRadio = !groupRefs.empty();
@@ -655,6 +685,25 @@ LogicalResult ElementOp::verify() {
   bool checkboxBoolean = false;
   bool checkboxState = false;
   for (Operation &child : body) {
+    if (kind == "SystemTrayIcon") {
+      if (isa<ElementOp, InstanceOp>(child)) {
+        auto element = dyn_cast<ElementOp>(child);
+        if (!element || (element.getKind() != "Menu" && element.getKind() != "Action"))
+          return child.emitOpError("SystemTrayIcon accepts one optional static Menu and named Actions");
+        if (element.getKind() == "Menu" && !element.getBody().empty() &&
+            (!element.getBody().front().getOps<ShowIfOp>().empty() ||
+             !element.getBody().front().getOps<RepeatOp>().empty()))
+          return child.emitOpError("SystemTrayIcon requires a static Menu");
+      }
+      if (auto bind = dyn_cast<BindOp>(child)) {
+        auto name = bind.getName();
+        auto type = bind.getInput().getType();
+        if (!((name == "icon" && isa<ImageType>(type)) ||
+              ((name == "title" || name == "tooltip") && isa<StringType>(type)) ||
+              ((name == "visible" || name == "icon-template") && isa<BoolType>(type))))
+          return child.emitOpError("invalid SystemTrayIcon property or type");
+      }
+    }
     if (auto animation = dyn_cast<AnimateOp>(child)) {
       if (root && kind == "Window")
         return child.emitOpError("animate a visual child instead of the Window");
@@ -936,8 +985,8 @@ LogicalResult ElementOp::verify() {
       if (!validTransformBinding(kind, name, bind.getInput().getType()))
         return child.emitOpError("incorrect visual transform property or type");
       if (name == "clip" &&
-          (kind != "Rectangle" || !isa<BoolType>(bind.getInput().getType())))
-        return child.emitOpError("clip requires a boolean on Rectangle");
+          ((kind != "Rectangle" && kind != "Flickable") || !isa<BoolType>(bind.getInput().getType())))
+        return child.emitOpError("clip requires a boolean on Rectangle or Flickable");
       if (!validBoxShadowBinding(kind, name, bind.getInput().getType()))
         return child.emitOpError("incorrect Rectangle shadow property type");
       if (!validCompositionBinding(kind, name, bind.getInput().getType()))
@@ -1194,9 +1243,22 @@ LogicalResult ElementOp::verify() {
               "requires a ScrollBarPolicy on a scrollable axis");
       }
       if ((name == "content-width" || name == "content-height") &&
-          (kind != "ScrollView" ||
+          (!isContentViewport(kind) ||
            !isa<LengthType, PercentType>(bind.getInput().getType())))
-        return child.emitOpError("requires a ScrollView content length");
+        return child.emitOpError("requires a scrollable content length");
+      if (name == "flick-direction" && (kind != "Flickable" || !isa<FlickDirectionType>(bind.getInput().getType())))
+        return child.emitOpError("requires a FlickDirection on Flickable");
+      if (name == "bounds-behavior" && (kind != "Flickable" || !isa<FlickBoundsBehaviorType>(bind.getInput().getType())))
+        return child.emitOpError("requires a FlickBoundsBehavior on Flickable");
+      if (name == "bounds-movement" && (kind != "Flickable" || !isa<FlickBoundsMovementType>(bind.getInput().getType())))
+        return child.emitOpError("requires a FlickBoundsMovement on Flickable");
+      if (name == "rebound-duration" && (kind != "Flickable" || !isa<IntType>(bind.getInput().getType())))
+        return child.emitOpError("requires an integer rebound duration on Flickable");
+      if (kind == "Flickable" && (name == "dragging" || name == "flicking" || name == "moving" || name == "rebounding" ||
+          name == "horizontal-overshoot" || name == "vertical-overshoot"))
+        return child.emitOpError("Flickable motion properties are read-only");
+      if (kind == "Flickable" && name == "interactive" && !isa<BoolType>(bind.getInput().getType()))
+        return child.emitOpError("Flickable interactive requires a boolean");
       if (kind == "TabBar" || kind == "TabButton") {
         auto type = bind.getInput().getType();
         if (((name == "enabled" || name == "visible") && !isa<BoolType>(type)) ||
@@ -1272,6 +1334,8 @@ LogicalResult ElementOp::verify() {
           return child.emitOpError("cell text requires a string value");
         ++cellTextBindings;
       }
+      if (name == "drag-select" && (!table || !isa<BoolType>(bind.getInput().getType())))
+        return child.emitOpError("drag-select requires a bool value on a table");
       if (((table && (bind.getName() == "resizable-columns" ||
                       bind.getName() == "multi-select")) ||
            (kind == "TableColumn" &&
@@ -1369,7 +1433,38 @@ LogicalResult ElementOp::verify() {
       return child.emitOpError() << kind << " cannot contain child elements";
     if (isa<PropertyOp, CallbackOp>(child) && (root || getKey().value_or(getId()).empty()))
       return child.emitOpError("requires a keyed non-root element");
-    if (!isa<BindOp, ActionRefOp, RadioGroupRefOp, CheckGroupRefOp, AnimateOp, ShowIfOp, RepeatOp, ControlLinkOp,
+    if (kind == "ScaleRotateGestureHandler" || kind == "SwipeGestureHandler") {
+      if (isa<RepeatOp>(child))
+        return child.emitOpError("repeated gesture handlers require a component delegate");
+      if (auto bind = dyn_cast<BindOp>(child)) {
+        auto name = bind.getName();
+        if (kind == "SwipeGestureHandler" ? swipeType(getContext(), name)
+                                            : scaleRotateType(getContext(), name))
+          return bind.emitOpError("gesture metrics are read-only");
+        if ((name == "enabled" || name.starts_with("handle-swipe-")) && !isa<BoolType>(bind.getInput().getType()))
+          return bind.emitOpError("gesture options require a boolean");
+      }
+    }
+    if (scrollControl) {
+      if (auto bind = dyn_cast<BindOp>(child)) {
+        auto type = bind.getInput().getType();
+        auto name = bind.getName();
+        const bool standaloneProperty = name == "position" || name == "size";
+        if (name == "target" || (attachedScroll && standaloneProperty))
+          return bind.emitOpError("invalid property for the scroll control mode");
+        if ((name == "orientation" && !isa<OrientationType>(type)) ||
+            (name == "policy" && !isa<ScrollBarPolicyType>(type)) ||
+            ((standaloneProperty || name == "minimum-size") && !isa<FloatType>(type)) ||
+            (name == "interactive" && (kind != "ScrollBar" || !isa<BoolType>(type))) ||
+            (name == "step-size" && (kind != "ScrollBar" || !isa<FloatType>(type))) ||
+            (name == "snap-mode" && (kind != "ScrollBar" || !isa<ScrollSnapModeType>(type))))
+          return bind.emitOpError("has an invalid scroll control property type");
+      }
+      if (isa<ElementOp, InstanceOp, RepeatOp>(child) ||
+          ((attachedScroll || kind == "ScrollIndicator") && isa<HandlerOp, ControlLinkOp>(child)))
+        return child.emitOpError("is invalid on a scroll control");
+    }
+    if (!isa<BindOp, ActionRefOp, RadioGroupRefOp, CheckGroupRefOp, ScrollTargetOp, AnimateOp, ShowIfOp, RepeatOp, ControlLinkOp,
              RowLinkOp, HandlerOp, CallbackOp, ElementOp, InstanceOp, PropertyOp, StateSelectOp,
              StateSetOp, StateTimingOp, FocusTargetOp, EndOp>(child) &&
         !isExpression(child))
@@ -1395,6 +1490,8 @@ LogicalResult ElementOp::verify() {
                        "the repeated TableRow");
   if (kind == "ContextMenuArea" && contextMenus != 1)
     return emitOpError("ContextMenuArea requires one direct Menu");
+  if (kind == "SystemTrayIcon" && contextMenus > 1)
+    return emitOpError("SystemTrayIcon accepts at most one Menu");
   if (tooltips > 1)
     return emitOpError("an element can contain at most one Tooltip");
   if (tooltipChildren > 1 || (tooltipChildren == 1 && tooltipText))
@@ -1640,8 +1737,8 @@ LogicalResult StateSetOp::verify() {
   if (!validTransformBinding(element.getKind(), getName(), getInput().getType()))
     return emitOpError("incorrect visual transform property or type");
   if (getName() == "clip" &&
-      (element.getKind() != "Rectangle" || !isa<BoolType>(getInput().getType())))
-    return emitOpError("clip requires a boolean on Rectangle");
+      ((element.getKind() != "Rectangle" && element.getKind() != "Flickable") || !isa<BoolType>(getInput().getType())))
+    return emitOpError("clip requires a boolean on Rectangle or Flickable");
   if (!validBoxShadowBinding(element.getKind(), getName(), getInput().getType()))
     return emitOpError("incorrect Rectangle shadow property type");
   if (!validCompositionBinding(element.getKind(), getName(), getInput().getType()))
@@ -1714,6 +1811,7 @@ LogicalResult ControlLinkOp::verify() {
       isWindowOverlay(kind) && getName() == "open" && isa<BoolType>(type);
   const bool range =
       (((kind == "Slider" || kind == "Dial") && getName() == "value") ||
+       (kind == "ScrollBar" && getName() == "position") ||
        (kind == "RangeSlider" &&
         (getName() == "lower-value" || getName() == "upper-value"))) &&
       isa<FloatType>(type);
@@ -1824,6 +1922,27 @@ LogicalResult FocusCommandOp::verify() {
   if (auto callback = (*this)->getParentOfType<CallbackOp>();
       callback && callback.getPure().value_or("false") == "true")
     return emitOpError("focus commands are not allowed in pure callbacks");
+  return success();
+}
+
+LogicalResult SwipeCancelOp::verify() {
+  if (auto callback = (*this)->getParentOfType<CallbackOp>();
+      callback && callback.getPure().value_or("false") == "true")
+    return emitOpError("swipe cancellation is not allowed in pure callbacks");
+  return success();
+}
+
+LogicalResult CancelFlickOp::verify() {
+  if (auto callback = (*this)->getParentOfType<CallbackOp>();
+      callback && callback.getPure().value_or("false") == "true")
+    return emitOpError("cancel-flick is not allowed in pure callbacks");
+  return success();
+}
+
+LogicalResult ReturnToBoundsOp::verify() {
+  if (auto callback = (*this)->getParentOfType<CallbackOp>();
+      callback && callback.getPure().value_or("false") == "true")
+    return emitOpError("return-to-bounds is not allowed in pure callbacks");
   return success();
 }
 
@@ -2059,7 +2178,20 @@ static LogicalResult verifyCallback(Operation *op, Region &body,
     auto element = cast<ElementOp>(op->getParentOp());
     auto kind = element.getKind();
     auto results = body.front().getOps<ReturnOp>();
-    if (handler.getName() == "column-moved") {
+    if (kind == "SystemTrayIcon") {
+      if (handler.getName() != "clicked" || !args->empty() || !results.empty())
+        return handler.emitOpError("SystemTrayIcon requires clicked() with no parameters");
+    } else if (kind == "SwipeGestureHandler") {
+      auto name = handler.getName();
+      if ((name != "moved" && name != "swiped" && name != "cancelled") ||
+          !args->empty() || !results.empty())
+        return handler.emitOpError("requires a zero-argument swipe gesture event");
+    } else if (kind == "ScaleRotateGestureHandler") {
+      auto name = handler.getName();
+      if ((name != "started" && name != "updated" && name != "ended" && name != "cancelled") ||
+          !args->empty() || !results.empty())
+        return handler.emitOpError("requires a zero-argument scale/rotate gesture event");
+    } else if (handler.getName() == "column-moved") {
       if (!isTableView(kind) || args->size() != 2 || !results.empty() ||
           !llvm::all_of(*args, [](const llvm::json::Value &value) {
             auto *arg = value.getAsObject();
@@ -2067,8 +2199,11 @@ static LogicalResult verifyCallback(Operation *op, Region &body,
           }))
         return handler.emitOpError("requires column-moved(int, int) on a table");
     } else if (handler.getName() == "scrolled") {
-      if (!isViewport(kind) || !args->empty() || !results.empty())
+      if (!isViewport(kind) || kind == "Flickable" || !args->empty() || !results.empty())
         return handler.emitOpError("requires scrolled() on a scrollable element");
+    } else if (handler.getName() == "flicked") {
+      if (kind != "Flickable" || !args->empty() || !results.empty())
+        return handler.emitOpError("requires flicked() on Flickable");
     } else if (handler.getName() == "close-requested") {
       if (kind != "Window" || !isa<ComponentOp>(element->getParentOp()))
         return handler.emitOpError("close-requested requires the component's root Window");
@@ -2219,7 +2354,7 @@ static LogicalResult verifyCallback(Operation *op, Region &body,
             arg && arg->getString("ty") == type && arg->getString("name")))
         return handler.emitOpError("invalid picker event or signature");
     }
-    const bool scalarRange = kind == "Slider" || kind == "Dial";
+    const bool scalarRange = kind == "Slider" || kind == "Dial" || kind == "ScrollBar";
     const bool calendar = kind == "Calendar";
     const bool search = kind == "SearchField";
     const bool spin = kind == "SpinBox" || kind == "DoubleSpinBox";
@@ -2238,7 +2373,7 @@ static LogicalResult verifyCallback(Operation *op, Region &body,
       const bool known =
           calendar ? name == "changed" || name == "month-changed"
           : search ? name == "accepted" || name == "edited" || name == "selected" || name == "search-triggered"
-          : scalarRange ? name == "changed" || name == "released"
+          : scalarRange ? name == "changed" || (kind != "ScrollBar" && name == "released")
           : (spin || multiline) ? name == "edited"
           : kind == "ComboBox"
               ? name == "selected" || name == "edited" || name == "accepted"
@@ -2260,7 +2395,7 @@ static LogicalResult verifyCallback(Operation *op, Region &body,
       return child.emitOpError("must be immediately before xr.end");
     if (!isa<AssignOp, InvokeOp, NavigateOp, TimerCommandOp, PopupCommandOp,
              FileDialogOpenOp, NativeDialogOpenOp, WindowCloseOp, WindowCommandOp, CheckGroupCommandOp,
-             SecondaryWindowCommandOp, FocusCommandOp, TextCommandOp, ScrollCommandOp, MoveColumnOp,
+             SecondaryWindowCommandOp, FocusCommandOp, SwipeCancelOp, TextCommandOp, ScrollCommandOp, CancelFlickOp, ReturnToBoundsOp, MoveColumnOp,
              SetRowHeightOp, ReturnOp, EndOp>(child) &&
         !isExpression(child))
       return child.emitOpError("is not valid in a callback or event handler");
@@ -2322,6 +2457,13 @@ LogicalResult LiteralOp::verify() {
             spelling == "start" || spelling == "end" || spelling == "center";
   } else if (isa<OrientationType>(type)) {
     valid = spelling == "horizontal" || spelling == "vertical";
+  } else if (isa<FlickDirectionType>(type)) {
+    valid = spelling == "both" || spelling == "horizontal" || spelling == "vertical";
+  } else if (isa<FlickBoundsBehaviorType>(type)) {
+    valid = spelling == "stop-at-bounds" || spelling == "drag-over-bounds" ||
+            spelling == "overshoot-bounds" || spelling == "drag-and-overshoot-bounds";
+  } else if (isa<FlickBoundsMovementType>(type)) {
+    valid = spelling == "follow-bounds-behavior" || spelling == "stop-at-bounds";
   } else if (isa<FlexboxLayoutDirectionType>(type)) {
     valid = spelling == "row" || spelling == "row-reverse" ||
             spelling == "column" || spelling == "column-reverse";
@@ -2333,6 +2475,8 @@ LogicalResult LiteralOp::verify() {
   } else if (isa<ScrollBarPolicyType>(type)) {
     valid = spelling == "as-needed" || spelling == "always-on" ||
             spelling == "always-off";
+  } else if (isa<ScrollSnapModeType>(type)) {
+    valid = spelling == "none" || spelling == "always" || spelling == "on-release";
   } else if (isa<ScrollAlignmentType>(type)) {
     valid = spelling == "beginning" || spelling == "center" ||
             spelling == "end" || spelling == "visible" || spelling == "contain";
@@ -2485,7 +2629,8 @@ static LogicalResult verifyDirectGeometryFlow(Operation *op, const Owners &owner
     return llvm::StringSwitch<bool>(name)
         .Cases({"x", "y", "width", "height", "min-width", "min-height",
                 "preferred-width", "preferred-height", "max-width", "max-height",
-                "visible", "spacing", "layout-order", "row", "col"}, true)
+                "visible", "spacing", "layout-order", "row", "col", "orientation",
+                "content-width", "content-height", "viewport-height", "content-x", "content-y"}, true)
         .Default(false) || name.starts_with("padding-") ||
         name.starts_with("transform-") || name == "padding";
   };
@@ -2494,6 +2639,8 @@ static LogicalResult verifyDirectGeometryFlow(Operation *op, const Owners &owner
     values.push_back(bind.getInput());
   else if (auto bind = dyn_cast<LayoutBindOp>(op); bind && dimension(bind.getName()))
     values.push_back(bind.getInput());
+  else if (auto link = dyn_cast<ControlLinkOp>(op); link && dimension(link.getName()))
+    values.push_back(link.getInput());
   else if (auto state = dyn_cast<StateSetOp>(op); state && dimension(state.getName()))
     llvm::append_range(values, state->getOperands());
   else if (auto condition = dyn_cast<ShowIfOp>(op))
@@ -2506,9 +2653,18 @@ static LogicalResult verifyDirectGeometryFlow(Operation *op, const Owners &owner
     auto *definition = values.pop_back_val().getDefiningOp();
     if (!definition || !seen.insert(definition).second)
       continue;
-    if (auto read = dyn_cast<GeometryReadOp>(definition);
-        read && (!overlayGeometryDomain(op) ||
-                 overlayGeometryDomain(owners.lookup(read.getOwner()))))
+    Operation *geometrySource = nullptr;
+    if (auto read = dyn_cast<GeometryReadOp>(definition)) {
+      geometrySource = owners.lookup(read.getOwner());
+    } else if (auto read = dyn_cast<ScrollControlReadOp>(definition)) {
+      if (auto bar = dyn_cast_or_null<ElementOp>(owners.lookup(read.getOwner()));
+          bar && !bar.getBody().empty()) {
+        auto targets = bar.getBody().front().getOps<ScrollTargetOp>();
+        if (llvm::hasSingleElement(targets))
+          geometrySource = owners.lookup((*targets.begin()).getTarget());
+      }
+    }
+    if (geometrySource && (!overlayGeometryDomain(op) || overlayGeometryDomain(geometrySource)))
       return op->emitOpError("layout feedback from a geometry read");
     llvm::append_range(values, definition->getOperands());
   }
@@ -2742,7 +2898,7 @@ static bool focusTargetKind(llvm::StringRef kind) {
   return llvm::StringSwitch<bool>(kind)
       .Cases({"FocusScope", "TextInput", "LineEdit", "TextEdit", "TextArea", "SearchField",
               "Button", "ToolButton", "DelayButton", "DialogButton", "StandardButton",
-              "Slider", "Dial", "SpinBox", "DoubleSpinBox", "ComboBox", "Calendar",
+              "Slider", "Dial", "SpinBox", "DoubleSpinBox", "ComboBox", "Calendar", "ScrollBar",
               "CheckBox", "Switch", "RadioButton", "Tab", "TabButton", "SwipeView",
               "SwipeDelegate", "StackView", "ListView", "GridView", "StandardListView",
               "TreeView", "TableView", "StandardTableView", "GroupBox", "PageIndicator",
@@ -2863,11 +3019,47 @@ static LogicalResult verifyReferences(ComponentOp component,
       }
       if (!element || !staticPropertyOwner(owner) ||
           element.getKind() == "Action" || element.getKind() == "ButtonGroup" || element.getKind() == "Timer" ||
-          element.getKind() == "SecondaryWindow" || element.getKind() == "TableColumn" ||
+          element.getKind() == "SecondaryWindow" || element.getKind() == "SystemTrayIcon" || element.getKind() == "TableColumn" ||
           isNativeDialog(element.getKind()))
         result = op->emitOpError("layout geometry requires a statically addressed visual target");
     } else if (auto read = dyn_cast<ViewportReadOp>(op)) {
       result = verifyViewport(op, read.getOwner(), false);
+    } else if (auto read = dyn_cast<FlickMotionReadOp>(op)) {
+      auto target = elementOwner(read.getOwner());
+      auto metric = read.getValue();
+      auto type = read.getResult().getType();
+      const bool valid = ((metric == "dragging" || metric == "flicking" || metric == "moving" || metric == "rebounding") && isa<BoolType>(type)) ||
+                         ((metric == "horizontal-overshoot" || metric == "vertical-overshoot") && isa<LengthType>(type));
+      if (!target || target.getKind() != "Flickable" || !isStaticViewport(target) ||
+          !valid)
+        result = op->emitOpError("requires a motion property on Flickable");
+    } else if (auto command = dyn_cast<CancelFlickOp>(op)) {
+      auto target = elementOwner(command.getOwner());
+      if (!target || target.getKind() != "Flickable" || !isStaticViewport(target))
+        result = op->emitOpError("requires a statically addressed Flickable");
+    } else if (auto command = dyn_cast<ReturnToBoundsOp>(op)) {
+      auto target = elementOwner(command.getOwner());
+      if (!target || target.getKind() != "Flickable" || !isStaticViewport(target))
+        result = op->emitOpError("requires a statically addressed Flickable");
+    } else if (auto read = dyn_cast<ScrollControlReadOp>(op)) {
+      auto target = elementOwner(read.getOwner());
+      if (!target || !isScrollControl(target.getKind()) || !isStaticViewport(target) ||
+          (read.getValue() != "position" && read.getValue() != "size"))
+        result = op->emitOpError("requires position or size on a scroll control");
+    } else if (auto read = dyn_cast<ScaleRotateReadOp>(op)) {
+      auto target = elementOwner(read.getOwner());
+      if (!target || target.getKind() != "ScaleRotateGestureHandler" || !isStaticViewport(target) ||
+          scaleRotateType(op->getContext(), read.getValue()) != read.getResult().getType())
+        result = op->emitOpError("requires a typed metric on a statically addressed gesture handler");
+    } else if (auto read = dyn_cast<SwipeReadOp>(op)) {
+      auto target = elementOwner(read.getOwner());
+      if (!target || target.getKind() != "SwipeGestureHandler" || !isStaticViewport(target) ||
+          swipeType(op->getContext(), read.getValue()) != read.getResult().getType())
+        result = op->emitOpError("requires a typed metric on a statically addressed swipe handler");
+    } else if (auto command = dyn_cast<SwipeCancelOp>(op)) {
+      auto target = elementOwner(command.getOwner());
+      if (!target || target.getKind() != "SwipeGestureHandler" || !isStaticViewport(target))
+        result = op->emitOpError("requires a statically addressed swipe handler");
     } else if (auto command = dyn_cast<ScrollCommandOp>(op)) {
       result = verifyViewport(op, command.getOwner(), command.getMethod() == "position-view-at-index");
     } else if (isa<MoveColumnOp, SetRowHeightOp>(op)) {
@@ -2917,6 +3109,12 @@ static LogicalResult verifyReferences(ComponentOp component,
             break;
           }
       }
+    } else if (auto scroll = dyn_cast<ScrollTargetOp>(op)) {
+      auto target = elementOwner(scroll.getTarget());
+      auto control = cast<ElementOp>(op->getParentOp());
+      if (!target || !isViewport(target.getKind()) || !isStaticViewport(target) ||
+          !isStaticViewport(control))
+        result = op->emitOpError("requires a static viewport and scroll control in the same component");
     } else if (auto group = dyn_cast<RadioGroupRefOp>(op)) {
       auto target = dyn_cast_or_null<ElementOp>(owners.lookup(group.getGroup()));
       if (!target || target.getKind() != "ButtonGroup" || !staticPropertyOwner(op->getParentOp()))
@@ -3119,8 +3317,12 @@ static LogicalResult verifyInstanceTree(ComponentOp component,
     return component.emitOpError("cyclic component instantiation");
   auto result = component.walk([&](InstanceOp instance) -> WalkResult {
     auto child = components.lookup(instance.getComponent());
+    auto roots = child.getBody().front().getOps<ElementOp>();
+    if (llvm::hasSingleElement(roots) && (*roots.begin()).getKind() == "SystemTrayIcon") {
+      instance.emitOpError("SystemTrayIcon requires a top-level component");
+      return WalkResult::interrupt();
+    }
     if (cast<ElementOp>(instance->getParentOp()).getKind() == "SecondaryWindow") {
-      auto roots = child.getBody().front().getOps<ElementOp>();
       if (!llvm::hasSingleElement(roots) || (*roots.begin()).getKind() != "Window") {
         instance.emitOpError("SecondaryWindow requires a component rooted in Window");
         return WalkResult::interrupt();
@@ -3184,7 +3386,7 @@ static bool recordScalarType(llvm::StringRef type) {
       .Cases({"int", "float", "bool", "string", "styled-text", "length", "color", "brush",
               "image", "ImageFit", "ImageTileMode", "ImageHorizontalAlignment", "ImageVerticalAlignment", "ImageRendering",
               "LayoutAlignment", "CrossAxisAlignment",
-              "Orientation", "FlexboxLayoutDirection", "FlexboxLayoutWrap", "DialInputMode", "ScrollBarPolicy", "ScrollAlignment", "TextWrap",
+              "Orientation", "FlickDirection", "FlickBoundsBehavior", "FlickBoundsMovement", "FlexboxLayoutDirection", "FlexboxLayoutWrap", "DialInputMode", "ScrollBarPolicy", "ScrollSnapMode", "ScrollAlignment", "TextWrap",
               "TextHorizontalAlignment", "TextVerticalAlignment", "TextOverflow", "InputType", "ColorScheme", "FileDialogMode", "MessageLevel", "MessageButtons",
               "DialogRole", "StandardButtonKind", "SwipeSide", "DragAction", "KeyEvent", "KeyModifiers", "EventResult", "FocusReason", "DrawerEdge", "PopupPlacement", "SelectionTarget", "Date", "Time", "CheckState"},
              true)

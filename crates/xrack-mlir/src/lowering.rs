@@ -263,6 +263,15 @@ impl Builder {
                     ]);
                     self.emit("focus_command", command.span, &[], &[], &attrs)?;
                 }
+                ir::Statement::SwipeCancel { swipe_owner, span } => {
+                    self.emit(
+                        "swipe_cancel",
+                        *span,
+                        &[],
+                        &[],
+                        &self.strings(&[("owner", swipe_owner)]),
+                    )?;
+                }
                 ir::Statement::TextCommand(command) => {
                     let operands = self.operands(&command.args)?;
                     let attrs =
@@ -274,6 +283,30 @@ impl Builder {
                     let attrs =
                         self.strings(&[("owner", &command.viewport), ("method", &command.method)]);
                     self.emit("scroll_command", command.span, &operands, &[], &attrs)?;
+                }
+                ir::Statement::CancelFlick {
+                    flick_viewport,
+                    span,
+                } => {
+                    self.emit(
+                        "cancel_flick",
+                        *span,
+                        &[],
+                        &[],
+                        &self.strings(&[("owner", flick_viewport)]),
+                    )?;
+                }
+                ir::Statement::ReturnToBounds {
+                    bounds_viewport,
+                    span,
+                } => {
+                    self.emit(
+                        "return_to_bounds",
+                        *span,
+                        &[],
+                        &[],
+                        &self.strings(&[("owner", bounds_viewport)]),
+                    )?;
                 }
                 ir::Statement::MoveColumn(command) => {
                     let operands = self.operands(&command.positions)?;
@@ -377,6 +410,15 @@ impl Builder {
                         &[],
                         &[],
                         &self.strings(&[("owner", &owner)]),
+                    )?;
+                }
+                LoweredMember::ScrollTarget { target, span } => {
+                    self.emit(
+                        "scroll_target",
+                        span,
+                        &[],
+                        &[],
+                        &self.strings(&[("target", &target)]),
                     )?;
                 }
                 LoweredMember::InstanceLayout(b) => {

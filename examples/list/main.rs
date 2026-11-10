@@ -1,6 +1,6 @@
 use list_ui::{
-    AnchoredListDemo, DirectoryItem, GridDemo, LinkedScrollDemo, ListDemo, ScrollPositionDemo,
-    StandardListDemo,
+    AnchoredListDemo, DirectoryItem, GridDemo, LinkedScrollDemo, ListDemo, ScrollBarsDemo,
+    ScrollPositionDemo, StandaloneScrollDemo, StandardListDemo,
 };
 
 fn records() -> Vec<DirectoryItem> {
@@ -16,6 +16,8 @@ fn main() -> std::process::ExitCode {
     let result = match std::env::args().nth(1).as_deref() {
         Some("--position") => xrack_platform_winit::run(ScrollPositionDemo::new()),
         Some("--linked") => xrack_platform_winit::run(LinkedScrollDemo::new()),
+        Some("--scroll-bars") => xrack_platform_winit::run(ScrollBarsDemo::new()),
+        Some("--standalone-scroll") => xrack_platform_winit::run(StandaloneScrollDemo::new()),
         Some("--anchor") => {
             let mut ui = AnchoredListDemo::new();
             ui.set_records(records());

@@ -50,6 +50,7 @@ pub fn viewport_kind(kind: &str) -> bool {
     matches!(
         kind,
         "ScrollView"
+            | "Flickable"
             | "ListView"
             | "GridView"
             | "StandardListView"
@@ -57,6 +58,54 @@ pub fn viewport_kind(kind: &str) -> bool {
             | "TableView"
             | "StandardTableView"
     )
+}
+
+pub fn content_viewport(kind: &str) -> bool {
+    matches!(kind, "ScrollView" | "Flickable")
+}
+
+fn flick_motion_property(kind: &str, name: &str) -> Option<Type> {
+    if kind != "Flickable" {
+        return None;
+    }
+    match name {
+        "dragging" | "flicking" | "moving" | "rebounding" => Some(Type::Bool),
+        "horizontal-overshoot" | "vertical-overshoot" => Some(Type::Length),
+        _ => None,
+    }
+}
+
+fn scroll_control(kind: &str) -> bool {
+    matches!(kind, "ScrollBar" | "ScrollIndicator")
+}
+
+pub fn scale_rotate_property(kind: &str, name: &str) -> Option<Type> {
+    if kind != "ScaleRotateGestureHandler" {
+        return None;
+    }
+    Some(match name {
+        "active" => Type::Bool,
+        "scale" | "rotation" => Type::Float,
+        "center-x" | "center-y" => Type::Length,
+        _ => return None,
+    })
+}
+
+pub fn swipe_property(kind: &str, name: &str) -> Option<Type> {
+    if kind != "SwipeGestureHandler" {
+        return None;
+    }
+    Some(match name {
+        "swiping" => Type::Bool,
+        "pressed-x" | "pressed-y" | "current-x" | "current-y" => Type::Length,
+        _ => return None,
+    })
+}
+
+fn has_scroll_target(members: &[Member]) -> bool {
+    members
+        .iter()
+        .any(|member| matches!(member, Member::Binding(b) if b.name == "target"))
 }
 
 fn row_height_view(kind: &str) -> bool {
@@ -77,7 +126,7 @@ fn viewport_property(kind: &str, name: &str) -> bool {
 pub fn viewport_offset_property(kind: &str, name: &str) -> bool {
     match name {
         "content-y" => viewport_kind(kind),
-        "content-x" => matches!(kind, "ScrollView" | "TableView" | "StandardTableView"),
+        "content-x" => content_viewport(kind) || table_view(kind),
         _ => false,
     }
 }
@@ -101,6 +150,14 @@ pub fn builtin_property(kind: &str, name: &str) -> Option<Type> {
     if !is_builtin(kind) {
         return None;
     }
+    if kind == "SystemTrayIcon" {
+        return match name {
+            "icon" => Some(Type::Image),
+            "title" | "tooltip" => Some(Type::String),
+            "visible" | "icon-template" => Some(Type::Bool),
+            _ => None,
+        };
+    }
     if geometry_owner(kind)
         && let Some(ty) = geometry_property(name)
     {
@@ -115,7 +172,7 @@ pub fn builtin_property(kind: &str, name: &str) -> Option<Type> {
     if name == "mouse-drag-pan-enabled" && viewport_kind(kind) {
         return Some(Type::Bool);
     }
-    if name == "preserve-scroll-anchor" && viewport_kind(kind) && kind != "ScrollView" {
+    if name == "preserve-scroll-anchor" && viewport_kind(kind) && !content_viewport(kind) {
         return Some(Type::Bool);
     }
     if name.starts_with("transform-")
@@ -141,7 +198,7 @@ pub fn builtin_property(kind: &str, name: &str) -> Option<Type> {
         return None;
     }
     if name == "clip" {
-        return (kind == "Rectangle").then_some(Type::Bool);
+        return matches!(kind, "Rectangle" | "Flickable").then_some(Type::Bool);
     }
     if let Some(ty) = box_shadow_type(name) {
         return (kind == "Rectangle").then_some(ty);
@@ -274,7 +331,23 @@ pub fn builtin_property(kind: &str, name: &str) -> Option<Type> {
         {
             Type::Bool
         }
-        "enabled" if matches!(kind, "DragArea" | "DropArea" | "WindowMoveArea") => Type::Bool,
+        "enabled"
+            if matches!(
+                kind,
+                "DragArea"
+                    | "DropArea"
+                    | "WindowMoveArea"
+                    | "ScaleRotateGestureHandler"
+                    | "SwipeGestureHandler"
+            ) =>
+        {
+            Type::Bool
+        }
+        "handle-swipe-left" | "handle-swipe-right" | "handle-swipe-up" | "handle-swipe-down"
+            if kind == "SwipeGestureHandler" =>
+        {
+            Type::Bool
+        }
         "data" | "drag-key" if kind == "DragArea" => Type::String,
         "allow-copy" | "allow-move" | "allow-link" if kind == "DragArea" => Type::Bool,
         "keys" if kind == "DropArea" => Type::StringList,
@@ -444,6 +517,7 @@ pub fn builtin_property(kind: &str, name: &str) -> Option<Type> {
                     | "PageHeader"
                     | "PageFooter"
                     | "ScrollView"
+                    | "Flickable"
                     | "ListView"
                     | "GridView"
                     | "StandardListView"
@@ -495,6 +569,8 @@ pub fn builtin_property(kind: &str, name: &str) -> Option<Type> {
                 kind,
                 "Slider"
                     | "RangeSlider"
+                    | "ScrollBar"
+                    | "ScrollIndicator"
                     | "RadioGroup"
                     | "TabWidget"
                     | "TabBar"
@@ -596,6 +672,7 @@ pub fn builtin_property(kind: &str, name: &str) -> Option<Type> {
         }
         "pasteable" if kind == "TableView" => Type::Bool,
         "multi-select" if table_view(kind) || kind == "TreeView" => Type::Bool,
+        "drag-select" if table_view(kind) => Type::Bool,
         "selection-target" if table_view(kind) => Type::SelectionTarget,
         "sortable" | "resizable" if kind == "TableColumn" => Type::Bool,
         "current-value" if matches!(kind, "ComboBox" | "RadioGroup") => Type::String,
@@ -633,9 +710,8 @@ pub fn builtin_property(kind: &str, name: &str) -> Option<Type> {
             Type::Bool
         }
         "padding" if matches!(kind, "TableCell" | "TreeCell" | "Tooltip") => Type::Length,
-        "content-width" | "content-height" | "viewport-height" if kind == "ScrollView" => {
-            Type::Length
-        }
+        "content-width" | "content-height" if content_viewport(kind) => Type::Length,
+        "viewport-height" if kind == "ScrollView" => Type::Length,
         "vertical-scroll-bar-policy"
             if matches!(
                 kind,
@@ -656,6 +732,15 @@ pub fn builtin_property(kind: &str, name: &str) -> Option<Type> {
         {
             Type::ScrollBarPolicy
         }
+        "policy" if scroll_control(kind) => Type::ScrollBarPolicy,
+        "position" | "size" | "minimum-size" if scroll_control(kind) => Type::Float,
+        "step-size" if kind == "ScrollBar" => Type::Float,
+        "snap-mode" if kind == "ScrollBar" => Type::ScrollSnapMode,
+        "interactive" if matches!(kind, "ScrollBar" | "Flickable") => Type::Bool,
+        "flick-direction" if kind == "Flickable" => Type::FlickDirection,
+        "bounds-behavior" if kind == "Flickable" => Type::FlickBoundsBehavior,
+        "bounds-movement" if kind == "Flickable" => Type::FlickBoundsMovement,
+        "rebound-duration" if kind == "Flickable" => Type::Int,
         "spacing" | "padding" | "padding-left" | "padding-right" | "padding-top"
         | "padding-bottom"
             if linear_layout(kind)
@@ -740,7 +825,7 @@ pub fn geometry_property(name: &str) -> Option<Type> {
 }
 
 pub fn geometry_owner(kind: &str) -> bool {
-    !nonvisual_element(kind) && kind != "TableColumn"
+    !nonvisual_element(kind) && !matches!(kind, "TableColumn" | "SystemTrayIcon")
 }
 
 pub fn layout_item_property(name: &str) -> Option<Type> {
@@ -786,6 +871,8 @@ pub fn is_builtin(s: &str) -> bool {
             s,
             "Window"
                 | "WindowMoveArea"
+                | "ScaleRotateGestureHandler"
+                | "SwipeGestureHandler"
                 | "Rectangle"
                 | "Page"
                 | "Text"
@@ -806,6 +893,7 @@ pub fn is_builtin(s: &str) -> bool {
                 | "Dialog"
                 | "Drawer"
                 | "MenuBar"
+                | "SystemTrayIcon"
                 | "Menu"
                 | "MenuItem"
                 | "MenuSeparator"
@@ -820,6 +908,9 @@ pub fn is_builtin(s: &str) -> bool {
                 | "GridLayout"
                 | "Row"
                 | "ScrollView"
+                | "Flickable"
+                | "ScrollBar"
+                | "ScrollIndicator"
                 | "ListView"
                 | "GridView"
                 | "StandardListView"
@@ -883,6 +974,7 @@ fn focus_target_kind(kind: &str) -> bool {
                 | "DialogButton"
                 | "StandardButton"
                 | "Slider"
+                | "ScrollBar"
                 | "Dial"
                 | "SpinBox"
                 | "DoubleSpinBox"
@@ -974,8 +1066,20 @@ fn key_handler(event: &str) -> bool {
 }
 
 fn control_event(kind: &str, event: &str) -> bool {
+    if kind == "SystemTrayIcon" {
+        return event == "clicked";
+    }
+    if kind == "SwipeGestureHandler" {
+        return matches!(event, "moved" | "swiped" | "cancelled");
+    }
+    if kind == "ScaleRotateGestureHandler" {
+        return matches!(event, "started" | "updated" | "ended" | "cancelled");
+    }
     if event == "scrolled" {
-        return viewport_kind(kind);
+        return viewport_kind(kind) && kind != "Flickable";
+    }
+    if event == "flicked" {
+        return kind == "Flickable";
     }
     if kind == "TreeView" {
         return matches!(
@@ -997,6 +1101,7 @@ fn control_event(kind: &str, event: &str) -> bool {
         || kind == "CheckBox" && event == "check-state-changed"
         || matches!(kind, "Slider" | "RangeSlider" | "Dial")
             && matches!(event, "changed" | "released")
+        || kind == "ScrollBar" && event == "changed"
         || matches!(kind, "SpinBox" | "DoubleSpinBox") && event == "edited"
         || matches!(kind, "ComboBox" | "RadioGroup" | "ButtonGroup") && event == "selected"
         || kind == "ComboBox" && matches!(event, "edited" | "accepted" | "value-selected")
@@ -1069,7 +1174,7 @@ fn event_parameters<'a>(
     combo_value: Option<&'a Type>,
     span: Span,
 ) -> Result<&'a [Type]> {
-    let scrolled = event == "scrolled";
+    let scrolled = matches!(event, "scrolled" | "flicked");
     let key_handler = kind == "FocusScope" && key_handler(event);
     Ok(match kind {
         _ if scrolled => &[],
@@ -1077,7 +1182,7 @@ fn event_parameters<'a>(
         "FocusScope" if key_handler => &[Type::KeyEvent],
         "FocusScope" if event == "focus-within-changed" => &[Type::Bool, Type::FocusReason],
         "FocusScope" if focus_handler(&event) => &[Type::FocusReason],
-        "Slider" | "Dial" | "DoubleSpinBox" => &[Type::Float],
+        "Slider" | "Dial" | "DoubleSpinBox" | "ScrollBar" => &[Type::Float],
         "RangeSlider" => &[Type::Float, Type::Float],
         "Calendar" => &[Type::Date],
         "TimePicker" => &[Type::Time],
@@ -1137,6 +1242,10 @@ pub enum LoweredMember<'a> {
     Binding(ir::Binding),
     ActionRef {
         owner: String,
+        span: Span,
+    },
+    ScrollTarget {
+        target: String,
         span: Span,
     },
     RadioGroupRef {
@@ -1853,6 +1962,14 @@ impl<'a> Scope<'a> {
             );
         }
         let instance = !is_builtin(kind);
+        if parent.is_some()
+            && (kind == "SystemTrayIcon"
+                || definitions
+                    .get(kind)
+                    .is_some_and(|definition| definition.base == "SystemTrayIcon"))
+        {
+            return fail(span, "SystemTrayIcon requires a top-level component");
+        }
         let property_members = if instance {
             &definitions
                 .get(kind)
@@ -1932,6 +2049,28 @@ impl<'a> Scope<'a> {
             return fail(span, format!("duplicate element id `{owner}`"));
         }
         if !instance {
+            if kind == "SystemTrayIcon" {
+                let mut menus = 0;
+                for element in members.iter().filter_map(|member| match member {
+                    Member::Element(element) => Some(element),
+                    _ => None,
+                }) {
+                    if element.ty == "Menu"
+                        && element.repeat.is_none()
+                        && element.condition.is_none()
+                    {
+                        menus += 1;
+                    } else if element.ty != "Action" {
+                        return fail(
+                            element.span,
+                            "SystemTrayIcon accepts one optional static Menu and named Actions",
+                        );
+                    }
+                }
+                if menus > 1 {
+                    return fail(span, "SystemTrayIcon accepts at most one Menu");
+                }
+            }
             if kind == "SecondaryWindow" {
                 let mut children = members.iter().filter_map(|member| match member {
                     Member::Element(child) => Some(child),
@@ -2138,7 +2277,11 @@ impl<'a> Scope<'a> {
                         || kind == "MenuBar" && e.ty != "Menu"
                         || kind == "Menu"
                             && !matches!(e.ty.as_str(), "Menu" | "MenuItem" | "MenuSeparator")
-                        || e.ty == "Menu" && !matches!(kind, "MenuBar" | "Menu" | "ContextMenuArea")
+                        || e.ty == "Menu"
+                            && !matches!(
+                                kind,
+                                "MenuBar" | "Menu" | "ContextMenuArea" | "SystemTrayIcon"
+                            )
                         || matches!(e.ty.as_str(), "MenuItem" | "MenuSeparator") && kind != "Menu"
                     {
                         return fail(e.span, format!("{} is not a valid child of {kind}", e.ty));
@@ -2300,7 +2443,11 @@ impl<'a> Scope<'a> {
                 || self.check_group_read(reference, span)?.is_some()
                 || self.image_playback_read(current, reference, span).is_some()
                 || self.viewport_read(current, reference, span)?.is_some()
+                || self
+                    .scroll_control_read(current, reference, span)?
+                    .is_some()
                 || self.geometry_read(current, reference, span)?.is_some()
+                || self.gesture_read(current, reference, span)?.is_some()
                 || self.focus_read(current, reference, span)?.is_some())
         {
             return fail(span, format!("property `{reference}` is read-only"));
@@ -2419,6 +2566,69 @@ impl<'a> Scope<'a> {
         Ok(())
     }
 
+    fn gesture_read(&self, current: &str, reference: &str, span: Span) -> Result<Option<ir::Expr>> {
+        let Some((id, name)) = reference.split_once('.') else {
+            return Ok(None);
+        };
+        let owner = if id == "self" { current } else { id };
+        let Some(element) = self.owners.get(owner).filter(|element| !element.instance) else {
+            return Ok(None);
+        };
+        let metric = scale_rotate_property(&element.kind, name)
+            .map(|ty| ("scale_rotate_read", ty))
+            .or_else(|| swipe_property(&element.kind, name).map(|ty| ("swipe_read", ty)));
+        let Some((op, ty)) = metric else {
+            return Ok(None);
+        };
+        let mut ancestor = Some(owner);
+        while let Some(key) = ancestor {
+            let element = &self.owners[key];
+            if element.repeated {
+                return fail(
+                    span,
+                    "gesture reads in repeated elements require a component delegate",
+                );
+            }
+            ancestor = element.parent.as_deref();
+        }
+        Ok(Some(ir::Expr {
+            op: op.into(),
+            owner: Some(owner.into()),
+            value: name.into(),
+            ty,
+            args: vec![],
+            span,
+        }))
+    }
+
+    fn scroll_control_read(
+        &self,
+        current: &str,
+        reference: &str,
+        span: Span,
+    ) -> Result<Option<ir::Expr>> {
+        let Some((id, name @ ("position" | "size"))) = reference.split_once('.') else {
+            return Ok(None);
+        };
+        let owner = if id == "self" { current } else { id };
+        if !self
+            .owners
+            .get(owner)
+            .is_some_and(|element| !element.instance && scroll_control(&element.kind))
+        {
+            return Ok(None);
+        }
+        self.require_static_viewport(owner, span)?;
+        Ok(Some(ir::Expr {
+            op: "scroll_control_read".into(),
+            owner: Some(owner.into()),
+            value: name.into(),
+            ty: Type::Float,
+            args: vec![],
+            span,
+        }))
+    }
+
     fn viewport_read(
         &self,
         current: &str,
@@ -2427,21 +2637,29 @@ impl<'a> Scope<'a> {
     ) -> Result<Option<ir::Expr>> {
         let Ok((owner, property)) =
             self.member_owner(current, reference, "property", span, |element, name| {
-                element.properties.contains_key(name) || viewport_property(&element.kind, name)
+                element.properties.contains_key(name)
+                    || viewport_property(&element.kind, name)
+                    || flick_motion_property(&element.kind, name).is_some()
             })
         else {
             return Ok(None);
         };
         let element = &self.owners[owner];
-        if element.instance || !viewport_property(&element.kind, property) {
+        let motion = flick_motion_property(&element.kind, property);
+        if element.instance || !(motion.is_some() || viewport_property(&element.kind, property)) {
             return Ok(None);
         }
         self.require_static_viewport(owner, span)?;
         Ok(Some(ir::Expr {
-            op: "viewport_read".into(),
+            op: if motion.is_some() {
+                "flick_motion_read"
+            } else {
+                "viewport_read"
+            }
+            .into(),
             owner: Some(owner.into()),
             value: property.into(),
-            ty: Type::Length,
+            ty: motion.unwrap_or(Type::Length),
             args: Vec::new(),
             span,
         }))
@@ -2692,6 +2910,35 @@ impl<'a> Scope<'a> {
                     span: call.span,
                 }));
             }
+            if matches!(method, "cancel-flick" | "return-to-bounds")
+                && self.owners.get(owner).is_some_and(|target| {
+                    !target.instance
+                        && target.kind == "Flickable"
+                        && !target.callbacks.contains_key(method)
+                })
+            {
+                if !self.effects_allowed {
+                    return fail(
+                        call.span,
+                        format!("{method}() is not allowed in a pure callback"),
+                    );
+                }
+                if !call.arguments.is_empty() {
+                    return fail(call.span, format!("{method}() takes no arguments"));
+                }
+                self.require_static_viewport(owner, call.span)?;
+                return Ok(if method == "cancel-flick" {
+                    ir::Statement::CancelFlick {
+                        flick_viewport: owner.into(),
+                        span: call.span,
+                    }
+                } else {
+                    ir::Statement::ReturnToBounds {
+                        bounds_viewport: owner.into(),
+                        span: call.span,
+                    }
+                });
+            }
             if matches!(method, "scroll-to" | "position-view-at-index")
                 && let Some(target) = self.owners.get(owner)
                 && !target.instance
@@ -2707,7 +2954,7 @@ impl<'a> Scope<'a> {
                 if call.arguments.len() != 2 {
                     return fail(call.span, format!("{method}() takes two arguments"));
                 }
-                if method == "position-view-at-index" && target.kind == "ScrollView" {
+                if method == "position-view-at-index" && content_viewport(&target.kind) {
                     return fail(
                         call.span,
                         "position-view-at-index() requires a list, grid, tree, or table",
@@ -2783,6 +3030,38 @@ impl<'a> Scope<'a> {
                     args,
                     span: call.span,
                 }));
+            }
+            if method == "cancel"
+                && self.owners.get(owner).is_some_and(|target| {
+                    !target.instance
+                        && target.kind == "SwipeGestureHandler"
+                        && !target.callbacks.contains_key(method)
+                })
+            {
+                if !self.effects_allowed {
+                    return fail(
+                        call.span,
+                        "swipe cancellation is not allowed in a pure callback",
+                    );
+                }
+                if !call.arguments.is_empty() {
+                    return fail(call.span, "cancel() takes no arguments");
+                }
+                let mut ancestor = Some(owner);
+                while let Some(key) = ancestor {
+                    let element = &self.owners[key];
+                    if element.repeated {
+                        return fail(
+                            call.span,
+                            "cancel() requires a statically addressed swipe handler",
+                        );
+                    }
+                    ancestor = element.parent.as_deref();
+                }
+                return Ok(ir::Statement::SwipeCancel {
+                    swipe_owner: owner.into(),
+                    span: call.span,
+                });
             }
             if matches!(method, "focus" | "clear-focus")
                 && let Some(target) = self.owners.get(owner)
@@ -3673,6 +3952,8 @@ fn element<'a>(
         None
     };
     let clipboard_parser = clipboard.is_some();
+    let scroll_control = scroll_control(kind);
+    let attached_scroll = scroll_control && has_scroll_target(members);
     if let Some(clipboard) = clipboard {
         lowered.push(LoweredMember::ClipboardPaste(clipboard));
     }
@@ -3685,6 +3966,15 @@ fn element<'a>(
         }
     }
     for (index, m) in members.iter().enumerate() {
+        if scroll_control && matches!(m, Member::Element(_)) {
+            return fail(m.span(), format!("{kind} cannot contain child elements"));
+        }
+        if attached_scroll && matches!(m, Member::Handler(h) if control_event(kind, &h.name)) {
+            return fail(
+                m.span(),
+                "handle scrolling on the target viewport with scrolled()",
+            );
+        }
         if kind == "ButtonGroup" && !matches!(m, Member::Binding(_) | Member::Handler(_)) {
             return fail(
                 m.span(),
@@ -3764,6 +4054,9 @@ fn element<'a>(
                 }
                 let viewport_offset = viewport_offset_property(kind, &b.name);
                 if geometry_property(&b.name).is_some()
+                    || scale_rotate_property(kind, &b.name).is_some()
+                    || swipe_property(kind, &b.name).is_some()
+                    || flick_motion_property(kind, &b.name).is_some()
                     || focus_property(kind, &b.name)
                     || kind == "Window" && window_status_property(&b.name)
                     || viewport_property(kind, &b.name) && !viewport_offset
@@ -3787,6 +4080,32 @@ fn element<'a>(
                 }
                 if !bindings.insert(b.name.as_str()) {
                     return fail(b.span, format!("duplicate binding `{}`", b.name));
+                }
+                if scroll_control && b.name == "target" {
+                    if !b.two_way
+                        && let ExprKind::Reference(target) = &b.value.kind
+                        && scope.owners.get(target).is_some_and(|element| {
+                            !element.instance && viewport_kind(&element.kind)
+                        })
+                    {
+                        scope.require_static_viewport(owner, b.span)?;
+                        scope.require_static_viewport(target, b.span)?;
+                        lowered.push(LoweredMember::ScrollTarget {
+                            target: target.clone(),
+                            span: b.span,
+                        });
+                        continue;
+                    }
+                    return fail(
+                        b.span,
+                        "target requires the id of a viewport in this component",
+                    );
+                }
+                if attached_scroll && matches!(b.name.as_str(), "position" | "size") {
+                    return fail(
+                        b.span,
+                        "attached scroll controls derive their range from the viewport",
+                    );
                 }
                 if clipboard_parser && b.name == "clipboard-target" {
                     continue;
@@ -4118,6 +4437,7 @@ fn element<'a>(
                         ("TimePicker" | "TimePickerPopup", "time") => Type::Time,
                         ("ColorPickerPopup", "color") => Type::Color,
                         ("Slider" | "Dial" | "DoubleSpinBox", "value") => Type::Float,
+                        ("ScrollBar", "position") => Type::Float,
                         ("RangeSlider", "lower-value" | "upper-value") => Type::Float,
                         ("SpinBox", "value")
                         | (
@@ -4367,7 +4687,7 @@ fn element<'a>(
                     return fail(h.span, format!("unknown event `{kind}.{}`", h.name));
                 }
                 let close_requested = kind == "Window" && h.name == "close-requested";
-                let scrolled = h.name == "scrolled";
+                let scrolled = matches!(h.name.as_str(), "scrolled" | "flicked");
                 let key_handler = kind == "FocusScope" && key_handler(&h.name);
                 if close_requested && !root {
                     return fail(
@@ -4854,7 +5174,7 @@ fn relative_size(kind: &str, name: &str, ty: &Type) -> bool {
                 | "preferred-height"
                 | "transform-origin-x"
                 | "transform-origin-y"
-        ) || kind == "ScrollView" && matches!(name, "content-width" | "content-height"))
+        ) || content_viewport(kind) && matches!(name, "content-width" | "content-height"))
 }
 
 fn lower_animation(
@@ -5269,9 +5589,13 @@ fn validate_template(
                 | "Shortcut"
                 | "ContextMenuArea"
                 | "TouchArea"
+                | "ScaleRotateGestureHandler"
+                | "SwipeGestureHandler"
                 | "CheckBox"
                 | "Switch"
                 | "Slider"
+                | "ScrollBar"
+                | "ScrollIndicator"
                 | "Dial"
                 | "RangeSlider"
                 | "SpinBox"
@@ -5433,6 +5757,10 @@ fn default(ty: Type, span: Span) -> ir::Expr {
         Type::FlexboxLayoutWrap => "wrap",
         Type::DialInputMode => "circular",
         Type::ScrollBarPolicy => "as-needed",
+        Type::FlickDirection => "both",
+        Type::FlickBoundsBehavior => "stop-at-bounds",
+        Type::FlickBoundsMovement => "follow-bounds-behavior",
+        Type::ScrollSnapMode => "none",
         Type::ScrollAlignment => "contain",
         Type::TextWrap => "word-wrap",
         Type::TextHorizontalAlignment => "start",
@@ -5781,10 +6109,14 @@ fn expression(e: &ast::Expr, scope: &Scope<'_>, owner: &str) -> Result<ir::Expr>
                         | "LayoutAlignment"
                         | "CrossAxisAlignment"
                         | "Orientation"
+                        | "FlickDirection"
+                        | "FlickBoundsBehavior"
+                        | "FlickBoundsMovement"
                         | "FlexboxLayoutDirection"
                         | "FlexboxLayoutWrap"
                         | "DialInputMode"
                         | "ScrollBarPolicy"
+                        | "ScrollSnapMode"
                         | "ScrollAlignment"
                         | "TextWrap"
                         | "TextHorizontalAlignment"
@@ -5915,7 +6247,9 @@ fn expression(e: &ast::Expr, scope: &Scope<'_>, owner: &str) -> Result<ir::Expr>
             if let Some(read) = scope
                 .focus_read(owner, s, span)?
                 .or(scope.viewport_read(owner, s, span)?)
+                .or(scope.scroll_control_read(owner, s, span)?)
                 .or(scope.geometry_read(owner, s, span)?)
+                .or(scope.gesture_read(owner, s, span)?)
                 .or(scope.check_group_read(s, span)?)
             {
                 return Ok(read);
@@ -6264,7 +6598,9 @@ fn geometry_safe_binding(kind: &str, property: &str, fixed_label: bool) -> bool 
             | "accessible-description"
             | "opacity"
             | "z"
-    ) || kind == "Window" && property == "title"
+    ) || scroll_control(kind) && matches!(property, "position" | "size" | "minimum-size" | "policy")
+        || matches!(kind, "ProgressIndicator" | "Spinner") && property == "progress"
+        || kind == "Window" && property == "title"
         || property == "text" && fixed_label
 }
 
@@ -6311,12 +6647,21 @@ fn collect_bindings(
 
     fn dependencies(e: &ir::Expr, path: &impl Fn(&str, &str) -> String, out: &mut Vec<String>) {
         // The host publishes these values, so they are inputs to the graph.
-        if matches!(e.op.as_str(), "focus_read" | "image_playback_read")
-            || e.op == "viewport_read" && !matches!(e.value.as_str(), "content-x" | "content-y")
+        if matches!(
+            e.op.as_str(),
+            "focus_read"
+                | "image_playback_read"
+                | "scale_rotate_read"
+                | "swipe_read"
+                | "flick_motion_read"
+        ) || e.op == "viewport_read" && !matches!(e.value.as_str(), "content-x" | "content-y")
         {
             return;
         }
         if let Some(owner) = &e.owner {
+            if e.op == "scroll_control_read" && e.value == "position" {
+                out.push(path(owner, "size"));
+            }
             let name = if e.op == "stack_read" {
                 "@stack"
             } else {
@@ -6367,6 +6712,17 @@ fn collect_bindings(
                     for offset in ["content-x", "content-y"] {
                         edges.insert(path(key, offset), (*span, Vec::new()));
                     }
+                }
+                continue;
+            }
+            LoweredMember::ScrollTarget { target, span } => {
+                let owner = owners.last().unwrap();
+                let source = format!("@geometry:{}", path(target, "scroll-range"));
+                for metric in ["position", "size"] {
+                    edges.insert(
+                        path(owner, metric),
+                        (*span, vec![source.clone(), path(owner, "orientation")]),
+                    );
                 }
                 continue;
             }
@@ -6547,6 +6903,9 @@ fn collect_bindings(
                         | ir::Statement::NativeDialogOpen(_)
                         | ir::Statement::SecondaryWindowCommand(_)
                         | ir::Statement::FocusCommand(_)
+                        | ir::Statement::SwipeCancel { .. }
+                        | ir::Statement::CancelFlick { .. }
+                        | ir::Statement::ReturnToBounds { .. }
                         | ir::Statement::WindowClose { .. } => {}
                     }
                 }

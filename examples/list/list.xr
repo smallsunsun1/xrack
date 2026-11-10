@@ -30,6 +30,140 @@ export component ListDemo inherits Window {
     }
 }
 
+export component ScrollBarsDemo inherits Window {
+    title: "XRack · External scroll controls";
+    width: 352px;
+    height: 272px;
+    background: #f0f3fa;
+    in-out property <length> horizontal: 0px;
+    in-out property <length> vertical: 0px;
+    in property <length> canvas-height: 588px;
+    in property <bool> scroll-enabled: true;
+    in property <bool> canvas-visible: true;
+    in property <Orientation> readout-axis: Orientation.vertical;
+    in property <ScrollSnapMode> snap-mode: ScrollSnapMode.none;
+    out property <int> scrolls: 0;
+    out property <float> vertical-position: vertical-bar.position;
+    out property <float> vertical-size: vertical-bar.size;
+    out property <float> readout-position: readout.position;
+    out property <float> readout-size: readout.size;
+    out property <float> last-scroll-position: 0;
+
+    canvas := ScrollView {
+        x: 16px; y: 16px; width: 260px; height: 196px;
+        content-width: 520px; content-height: root.canvas-height;
+        content-x <=> root.horizontal;
+        content-y <=> root.vertical;
+        enabled: root.scroll-enabled;
+        visible: root.canvas-visible;
+        horizontal-scroll-bar-policy: always-off;
+        vertical-scroll-bar-policy: always-off;
+        scrolled() => {
+            root.scrolls += 1;
+            root.last-scroll-position = vertical-bar.position;
+        }
+        Rectangle { width: 100%; height: 100%; background: #263750; }
+        Rectangle { x: 24px; y: 24px; width: 88px; height: 64px; background: #59bf94; }
+        Rectangle { x: 340px; y: 24px; width: 88px; height: 64px; background: #efab56; }
+        if root.canvas-height >= 496px : Rectangle {
+            x: 24px; y: 432px; width: 88px; height: 64px; background: #72a9ee;
+        }
+    }
+    vertical-bar := ScrollBar {
+        target: canvas;
+        snap-mode: root.snap-mode;
+        step-size: 0.3;
+        x: 288px; y: 16px; width: 14px; height: 196px;
+        accessible-name: "Canvas vertical scroll";
+    }
+    vertical-indicator := ScrollIndicator {
+        target: canvas;
+        x: 316px; y: 16px; width: 8px; height: 196px;
+    }
+    horizontal-bar := ScrollBar {
+        target: canvas;
+        orientation: Orientation.horizontal;
+        x: 16px; y: 224px; width: 260px; height: 14px;
+        accessible-name: "Canvas horizontal scroll";
+    }
+    readout := ScrollIndicator {
+        target: canvas;
+        orientation: root.readout-axis;
+        policy: always-off;
+    }
+    ScrollIndicator {
+        position: readout.position;
+        size: readout.size;
+        orientation: Orientation.horizontal;
+        visible: root.canvas-visible;
+        x: 16px; y: 248px; width: 260px; height: 8px;
+    }
+}
+
+export component StandaloneScrollDemo inherits Window {
+    title: "XRack · Standalone scroll controls";
+    width: 352px;
+    height: 272px;
+    background: #f0f3fa;
+    in-out property <float> offset: 0;
+    in property <float> thumb-size: 0.25;
+    in property <bool> interactive: true;
+    in property <ScrollSnapMode> snap-mode: ScrollSnapMode.none;
+    in-out property <bool> snap-on-release: false;
+    out property <float> position: bar.position;
+    out property <float> size: bar.size;
+    out property <float> horizontal-position: horizontal-bar.position;
+    out property <int> changes: 0;
+    out property <float> last-change: 0;
+    out property <float> before-jump: 0;
+    out property <float> after-jump: 0;
+    callback jump();
+    jump() => {
+        root.before-jump = bar.position;
+        root.offset = 0.5;
+        root.after-jump = bar.position;
+    }
+
+    Rectangle {
+        x: 16px; y: 16px; width: 260px; height: 196px; clip: true;
+        canvas := Rectangle {
+            x: -horizontal-bar.position * 520px;
+            y: -bar.position * 784px;
+            width: 520px; height: 784px; background: #263750;
+            Rectangle { x: 24px; y: 24px; width: 88px; height: 64px; background: #59bf94; }
+            Rectangle { x: 24px; y: 612px; width: 88px; height: 64px; background: #72a9ee; }
+            Rectangle { x: 340px; y: 24px; width: 88px; height: 64px; background: #efab56; }
+        }
+    }
+    bar := ScrollBar {
+        x: 288px; y: 16px; width: 14px; height: 196px;
+        position <=> root.offset;
+        size: root.thumb-size;
+        minimum-size: 0.4;
+        step-size: 0.125;
+        snap-mode: root.snap-on-release ? ScrollSnapMode.on-release : root.snap-mode;
+        interactive: root.interactive;
+        accessible-name: "Canvas position";
+        changed(value) => { root.changes += 1; root.last-change = value; }
+    }
+    indicator := ScrollIndicator {
+        x: 316px; y: 16px; width: 8px; height: 196px;
+        position: bar.position;
+        size: bar.size;
+    }
+    horizontal-bar := ScrollBar {
+        x: 16px; y: 224px; width: 260px; height: 14px;
+        orientation: horizontal;
+        size: 0.5;
+        accessible-name: "Canvas horizontal position";
+    }
+    snap-toggle := CheckBox {
+        x: 16px; y: 242px; width: 172px; height: 24px;
+        checked <=> root.snap-on-release;
+        text: "Snap on release";
+    }
+}
+
 export component ScrollPositionDemo inherits Window {
     title: "XRack · 滚动定位";
     width: 540px; height: 300px;

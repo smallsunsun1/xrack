@@ -41,6 +41,7 @@ pub fn analyze(doc: &Document) -> Result<ir::Module, Vec<Diagnostic>> {
                     state_bindings: vec![],
                     state_timings: vec![],
                     initial_focus: None,
+                    scroll_target: None,
                     callbacks: vec![],
                     handlers: vec![],
                     clipboard_paste: None,
@@ -51,6 +52,9 @@ pub fn analyze(doc: &Document) -> Result<ir::Module, Vec<Diagnostic>> {
                 }
                 LoweredMember::ActionRef { owner, .. } => {
                     elements.last_mut().unwrap().action = Some(owner)
+                }
+                LoweredMember::ScrollTarget { target, .. } => {
+                    elements.last_mut().unwrap().scroll_target = Some(target)
                 }
                 LoweredMember::RadioGroupRef { group, .. }
                 | LoweredMember::CheckGroupRef { group, .. } => {

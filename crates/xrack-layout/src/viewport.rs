@@ -1,9 +1,123 @@
-use crate::{Interaction, LayoutNode, Rect, ScrollLayout, view_cells::ViewCells};
+use crate::{
+    Interaction, LayoutNode, Rect, ScrollLayout, scroll_gesture::PanDevice, view_cells::ViewCells,
+};
 use std::collections::BTreeMap;
 use xrack_runtime::{
     Component, GeometryHandle, Length, Node, Orientation, ScrollAction, ScrollAlignment,
-    ScrollRequest, ViewportHandle,
+    ScrollRequest, ViewportHandle, ViewportMotion,
 };
+
+pub(crate) type MotionOwners = Vec<(ViewportHandle, [bool; 2])>;
+
+pub(crate) fn record_motion(owners: &mut MotionOwners, item: &LayoutNode, axis: Orientation) {
+    let Some(handle) = item
+        .viewport_handle
+        .as_ref()
+        .filter(|handle| handle.observes_motion())
+    else {
+        return;
+    };
+    record_motion_owner(owners, handle, axis);
+}
+
+pub(crate) fn record_motion_owner(
+    owners: &mut MotionOwners,
+    handle: &ViewportHandle,
+    axis: Orientation,
+) {
+    let index = usize::from(axis == Orientation::Vertical);
+    if let Some((_, axes)) = owners.iter_mut().find(|(owner, _)| owner == handle) {
+        axes[index] = true;
+    } else {
+        let mut axes = [false; 2];
+        axes[index] = true;
+        owners.push((handle.clone(), axes));
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+pub(crate) struct MotionState {
+    owners: MotionOwners,
+}
+
+impl MotionState {
+    pub fn update(&mut self, owners: MotionOwners, motion: ViewportMotion) {
+        for (handle, _) in self.owners.drain(..) {
+            if !owners.iter().any(|(owner, _)| owner == &handle) {
+                handle.publish_motion(ViewportMotion::Idle);
+            }
+        }
+        self.owners = owners;
+        self.set_phase(motion);
+    }
+
+    pub fn set_phase(&self, motion: ViewportMotion) {
+        for (handle, _) in &self.owners {
+            handle.publish_motion(motion);
+        }
+    }
+
+    pub fn retain_axes(&mut self, axes: [bool; 2]) {
+        self.owners.retain_mut(|(handle, owned)| {
+            for (owned, axis) in owned.iter_mut().zip(axes) {
+                *owned &= axis;
+            }
+            let keep = owned.contains(&true);
+            if !keep {
+                handle.publish_motion(ViewportMotion::Idle);
+            }
+            keep
+        });
+    }
+
+    pub fn contains(&self, handle: &ViewportHandle) -> bool {
+        self.owners.iter().any(|(owner, _)| owner == handle)
+    }
+
+    pub fn clear(&mut self) {
+        self.set_phase(ViewportMotion::Idle);
+        self.owners.clear();
+    }
+
+    pub fn reconcile(&mut self, layout: &LayoutNode, device: PanDevice) {
+        fn live(
+            item: &LayoutNode,
+            handle: &ViewportHandle,
+            axes: [bool; 2],
+            device: PanDevice,
+        ) -> bool {
+            if !item.visible || !item.enabled {
+                return false;
+            }
+            if item.viewport_handle.as_ref() == Some(handle) {
+                let bounds = item.clip_rect(item.bounds);
+                bounds.width > 0.0
+                    && bounds.height > 0.0
+                    && [Orientation::Horizontal, Orientation::Vertical]
+                        .into_iter()
+                        .zip(axes)
+                        .any(|(axis, moved)| {
+                            moved
+                                && item.accepts_pan(axis, device)
+                                && item
+                                    .scroll_on(axis)
+                                    .is_some_and(|scroll| scroll.max_offset > 0.0)
+                        })
+            } else {
+                item.children
+                    .iter()
+                    .any(|child| live(child, handle, axes, device))
+            }
+        }
+        self.owners.retain(|(handle, axes)| {
+            let keep = live(layout, handle, *axes, device);
+            if !keep {
+                handle.publish_motion(ViewportMotion::Idle);
+            }
+            keep
+        });
+    }
+}
 
 #[derive(Clone, Debug)]
 pub(crate) struct UserScrollChange {
@@ -51,6 +165,15 @@ impl UserScrollChange {
 }
 
 impl LayoutNode {
+    pub(crate) fn scroll_viewport(&self, axis: Orientation) -> Rect {
+        self.table
+            .as_deref()
+            .map_or(self.bounds, |table| match axis {
+                Orientation::Horizontal => table.scrollable_body(),
+                Orientation::Vertical => table.body,
+            })
+    }
+
     pub(crate) fn bound_offset(&self, axis: Orientation) -> Option<f32> {
         self.viewport_handle.as_ref()?.bound_offset(axis)
     }
@@ -70,15 +193,20 @@ pub struct ScrollDelivery {
 
 impl ScrollDelivery {
     pub fn apply(&self, component: &mut impl Component, scene: &Node) -> bool {
-        if scene
+        scene
             .at_path(&self.path)
-            .and_then(|node| node.viewport_handle.as_ref())
-            == Some(&self.target)
-        {
-            component.dispatch_at(scene, &self.path, "scrolled")
-        } else {
-            false
-        }
+            .filter(|node| node.viewport_handle.as_ref() == Some(&self.target))
+            .is_some_and(|node| {
+                component.dispatch_at(
+                    scene,
+                    &self.path,
+                    if node.kind == "Flickable" {
+                        "flicked"
+                    } else {
+                        "scrolled"
+                    },
+                )
+            })
     }
 }
 
@@ -110,6 +238,18 @@ impl LayoutObservers {
                     Length(f64::from(viewport.width)),
                     Length(f64::from(viewport.height)),
                 );
+                for axis in [Orientation::Horizontal, Orientation::Vertical] {
+                    let rect = item.scroll_viewport(axis);
+                    let page = match axis {
+                        Orientation::Horizontal => rect.width,
+                        Orientation::Vertical => rect.height,
+                    };
+                    let scroll = item.scroll_on(axis).unwrap_or(ScrollLayout {
+                        offset: 0.0,
+                        max_offset: 0.0,
+                    });
+                    handle.publish_scroll_range(axis, scroll.offset, page, scroll.max_offset);
+                }
                 viewports.push(handle.clone());
             }
             if item.visible
@@ -170,6 +310,9 @@ impl LayoutObservers {
 fn reset(handle: &ViewportHandle) {
     let zero = Length::default();
     handle.publish(zero, zero, zero, zero);
+    for axis in [Orientation::Horizontal, Orientation::Vertical] {
+        handle.publish_scroll_range(axis, 0.0, 0.0, 0.0);
+    }
 }
 
 fn viewport(item: &LayoutNode) -> Rect {
@@ -242,6 +385,12 @@ impl Interaction {
                 continue;
             };
             match request.action {
+                ScrollAction::CancelFlick => {
+                    changed |= self.cancel_viewport_flick(&request.target);
+                }
+                ScrollAction::ReturnToBounds => {
+                    changed |= self.return_viewport_to_bounds(&request.target);
+                }
                 ScrollAction::To { x, y } => {
                     for (axis, offset) in [(Orientation::Horizontal, x), (Orientation::Vertical, y)]
                     {

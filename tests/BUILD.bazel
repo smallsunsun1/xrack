@@ -95,6 +95,7 @@ rust_test(
         "//examples/table:table_ui",
         "//examples/tooltip:tooltip_ui",
         "//examples/tree:tree_ui",
+        "//examples/tray:tray_ui",
     ],
 )
 
