@@ -22,8 +22,9 @@ def output(*args):
 
 
 def cargo_licenses(host):
-    metadata = json.loads(output(
-        "cargo", "metadata", "--locked", "--format-version", "1", "--filter-platform", host,
+    metadata = json.loads(subprocess.check_output(
+        ("cargo", "metadata", "--locked", "--format-version", "1", "--filter-platform", host),
+        cwd=ROOT,
     ))
     packages = {package["id"]: package for package in metadata["packages"]}
     dependencies = {node["id"]: node["deps"] for node in metadata["resolve"]["nodes"]}
