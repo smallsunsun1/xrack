@@ -37,9 +37,13 @@ osx.frameworks(names = [
     "AppKit",
     "ApplicationServices",
     "Carbon",
+    "CFNetwork",
+    "CollectionViewCore",
     "ColorSync",
     "CoreFoundation",
     "CoreGraphics",
+    "CoreImage",
+    "CoreServices",
     "CoreText",
     "CoreVideo",
     "FontServices",
@@ -51,6 +55,7 @@ osx.frameworks(names = [
     "QuartzCore",
     "Security",
     "SystemConfiguration",
+    "UIFoundation",
     "UniformTypeIdentifiers",
 ])
 
