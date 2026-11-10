@@ -13,6 +13,7 @@ single_version_override(
     module_name = "rules_rust_bindgen",
     patches = [
         "//bazel:bindgen_libclang_runtime.patch",
+        "//bazel:bindgen_toolchain_headers.patch",
         "//bazel:bindgen_windows_imports.patch",
     ],
     patch_strip = 1,

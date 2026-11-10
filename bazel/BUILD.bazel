@@ -1,6 +1,7 @@
 exports_files([
     "accesskit_macos_mixed_state.patch",
     "bindgen_libclang_runtime.patch",
+    "bindgen_toolchain_headers.patch",
     "bindgen_windows_imports.patch",
     "xrack.bzl",
 ])
