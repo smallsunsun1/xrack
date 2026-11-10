@@ -67,6 +67,100 @@ fn a_deferred_focus_command_is_consumed_with_an_unchanged_scene() {
 }
 
 #[test]
+fn a_deferred_scroll_command_is_consumed_with_an_unchanged_scene() {
+    use xrack_layout::{TextMeasurer, layout};
+    use xrack_runtime::{Length, ScrollAction, ViewportHandle};
+
+    struct View(Rc<Node>);
+    impl Component for View {
+        fn render(&self) -> Node {
+            self.0.as_ref().clone()
+        }
+        fn render_shared(&self) -> Rc<Node> {
+            self.0.clone()
+        }
+        fn dispatch(&mut self, _: &str, _: &str) -> bool {
+            false
+        }
+    }
+    struct Measure;
+    impl TextMeasurer for Measure {
+        fn measure(&mut self, _: &str, _: f32, _: f32) -> Size {
+            Size::default()
+        }
+    }
+    let handle = ViewportHandle::default();
+    let mut scene = Node::new("ScrollView", Some("viewport"));
+    scene.viewport_handle = Some(handle.clone());
+    scene
+        .properties
+        .insert("content-height", Length(320.0).into());
+    let mut app = Application::new(
+        View(Rc::new(scene)),
+        LocalExecutor::new(|| {}),
+        Inbox::<()>::new(|| {}),
+        |_: &mut View, _| {},
+    );
+    app.layout = Some(Rc::new(layout(
+        &app.scene,
+        Size::new(160.0, 100.0),
+        &mut Measure,
+    )));
+    {
+        let _scroll = app.scroll_requests.enter();
+        handle.request(ScrollAction::To {
+            x: Length(0.0),
+            y: Length(80.0),
+        });
+    }
+    assert!(app.input.scroll_offsets().is_empty());
+    app.refresh_dependencies();
+    assert_eq!(app.input.scroll_offsets().get(&[][..]), Some(&80.0));
+    assert!(app.scroll_requests.is_empty());
+}
+
+#[test]
+fn bound_scroll_offsets_invalidate_layout_without_rebuilding_the_scene() {
+    use xrack_layout::{TextMeasurer, layout};
+    use xrack_runtime::{Length, Property, ViewportHandle};
+
+    struct Measure;
+    impl TextMeasurer for Measure {
+        fn measure(&mut self, _: &str, _: f32, _: f32) -> Size {
+            Size::default()
+        }
+    }
+    let position = Rc::new(Property::default());
+    let reader = position.clone();
+    let writer = position.clone();
+    let handle = ViewportHandle::default();
+    handle.bind_offset(
+        Orientation::Vertical,
+        move || reader.get(Length::default),
+        move |value| writer.set_if_changed(value),
+    );
+    let mut node = Node::new("ScrollView", Some("viewport"));
+    node.viewport_handle = Some(handle);
+    node.properties
+        .insert("content-height", Length(320.0).into());
+    let scene = Rc::new(node);
+    let size = Size::new(160.0, 100.0);
+    let input = Interaction::default();
+    let mut cache = FrameCache::default();
+    let prepare = |scene: Rc<Node>| {
+        let frame = layout(&scene, size, &mut Measure);
+        (scene, frame)
+    };
+    let (first_scene, first_layout) = cache.prepare(scene.clone(), size, &input, prepare);
+    assert_eq!(first_layout.scroll.unwrap().offset, 0.0);
+    position.set(Length(-80.0));
+    assert!(cache.is_dirty());
+    let (next_scene, next_layout) = cache.prepare(scene, size, &input, prepare);
+    assert!(Rc::ptr_eq(&first_scene, &next_scene));
+    assert_eq!(next_layout.scroll.unwrap().offset, 80.0);
+}
+
+#[test]
 fn paint_only_updates_replace_the_scene_without_resolving_layout() {
     use xrack_layout::{TextMeasurer, layout};
     use xrack_runtime::{Color, Length};
@@ -634,28 +728,47 @@ fn clipboard_reply_commits_only_for_the_current_selection() {
 
     let context = EditContext::capture(&app.input, &app.scene).unwrap();
     assert_eq!(context.selection(), "初始");
-    app.pending_clipboard = Some((1, context));
+    app.pending_clipboard = Some((1, ClipboardContext::Edit(context)));
     app.process_user_event(UserEvent::Clipboard(ClipboardReply {
         id: 1,
         result: Err("test write failure".into()),
     }));
     assert_eq!(app.component.0, "初始");
 
-    app.pending_clipboard = Some((2, EditContext::capture(&app.input, &app.scene).unwrap()));
+    app.pending_clipboard = Some((
+        5,
+        ClipboardContext::Edit(EditContext::capture(&app.input, &app.scene).unwrap()),
+    ));
+    app.process_user_event(UserEvent::Clipboard(ClipboardReply {
+        id: 5,
+        result: Ok(ClipboardValue::Text(String::new())),
+    }));
+    assert_eq!(app.component.0, "初始");
+
+    app.pending_clipboard = Some((
+        2,
+        ClipboardContext::Edit(EditContext::capture(&app.input, &app.scene).unwrap()),
+    ));
     app.process_user_event(UserEvent::Clipboard(ClipboardReply {
         id: 2,
         result: Ok(ClipboardValue::Written),
     }));
     assert_eq!(app.base_scene.text("text"), Some(""));
     app.scene = app.base_scene.clone();
-    app.pending_clipboard = Some((3, EditContext::capture(&app.input, &app.scene).unwrap()));
+    app.pending_clipboard = Some((
+        3,
+        ClipboardContext::Edit(EditContext::capture(&app.input, &app.scene).unwrap()),
+    ));
     app.process_user_event(UserEvent::Clipboard(ClipboardReply {
         id: 3,
         result: Ok(ClipboardValue::Text("一\r\n二".into())),
     }));
     assert_eq!(app.base_scene.text("text"), Some("一\n二"));
     app.scene = app.base_scene.clone();
-    app.pending_clipboard = Some((4, EditContext::capture(&app.input, &app.scene).unwrap()));
+    app.pending_clipboard = Some((
+        4,
+        ClipboardContext::Edit(EditContext::capture(&app.input, &app.scene).unwrap()),
+    ));
     app.component.0 = "后台更新".into();
     app.scene = app.component.render_shared();
     app.process_user_event(UserEvent::Clipboard(ClipboardReply {

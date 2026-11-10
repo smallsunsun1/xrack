@@ -175,6 +175,7 @@ pub enum Type {
     FlexboxLayoutWrap,
     DialInputMode,
     ScrollBarPolicy,
+    ScrollAlignment,
     TextWrap,
     TextHorizontalAlignment,
     TextVerticalAlignment,
@@ -252,6 +253,7 @@ impl Type {
             Self::FlexboxLayoutWrap => "flexboxlayoutwrap",
             Self::DialInputMode => "dialinputmode",
             Self::ScrollBarPolicy => "scrollbarpolicy",
+            Self::ScrollAlignment => "scrollalignment",
             Self::TextWrap => "textwrap",
             Self::TextHorizontalAlignment => "texthorizontalalignment",
             Self::TextVerticalAlignment => "textverticalalignment",
@@ -305,6 +307,7 @@ impl Type {
             "flexboxlayoutwrap" | "FlexboxLayoutWrap" => Self::FlexboxLayoutWrap,
             "dialinputmode" | "DialInputMode" => Self::DialInputMode,
             "scrollbarpolicy" | "ScrollBarPolicy" => Self::ScrollBarPolicy,
+            "scrollalignment" | "ScrollAlignment" => Self::ScrollAlignment,
             "textwrap" | "TextWrap" => Self::TextWrap,
             "texthorizontalalignment" | "TextHorizontalAlignment" => Self::TextHorizontalAlignment,
             "textverticalalignment" | "TextVerticalAlignment" => Self::TextVerticalAlignment,
@@ -373,6 +376,7 @@ impl Type {
             Self::FlexboxLayoutWrap => &["wrap", "no-wrap", "wrap-reverse"],
             Self::DialInputMode => &["circular", "horizontal", "vertical"],
             Self::ScrollBarPolicy => &["as-needed", "always-on", "always-off"],
+            Self::ScrollAlignment => &["beginning", "center", "end", "visible", "contain"],
             Self::TextWrap => &["word-wrap", "no-wrap", "char-wrap"],
             Self::TextHorizontalAlignment => &["start", "end", "left", "center", "right"],
             Self::TextVerticalAlignment => &["top", "center", "bottom"],
@@ -444,6 +448,7 @@ impl Serialize for Type {
             Self::FlexboxLayoutWrap => serializer.serialize_str("FlexboxLayoutWrap"),
             Self::DialInputMode => serializer.serialize_str("DialInputMode"),
             Self::ScrollBarPolicy => serializer.serialize_str("ScrollBarPolicy"),
+            Self::ScrollAlignment => serializer.serialize_str("ScrollAlignment"),
             Self::TextWrap => serializer.serialize_str("TextWrap"),
             Self::TextHorizontalAlignment => serializer.serialize_str("TextHorizontalAlignment"),
             Self::TextVerticalAlignment => serializer.serialize_str("TextVerticalAlignment"),
@@ -485,6 +490,8 @@ pub struct Property {
     pub ty: Type,
     pub visibility: String,
     pub value: Option<Expr>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub two_way: bool,
     pub span: Span,
 }
 
@@ -497,6 +504,8 @@ pub struct Callback {
     pub return_type: Option<Type>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub pure: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub alias: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

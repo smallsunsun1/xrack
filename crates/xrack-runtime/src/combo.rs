@@ -6,9 +6,15 @@ trait Rows {
     fn len(&self) -> usize;
     fn label(&self, index: usize) -> Option<String>;
     fn value(&self, index: usize) -> Option<Value>;
+    fn enabled(&self, index: usize) -> bool;
     fn key(&self, index: usize) -> Option<RowKey>;
     fn index(&self, key: RowKey) -> Option<usize>;
-    fn find_label(&self, predicate: &mut dyn FnMut(&str) -> bool) -> Option<usize>;
+    fn find_label(
+        &self,
+        range: Range<usize>,
+        enabled_only: bool,
+        predicate: &mut dyn FnMut(&str) -> bool,
+    ) -> Option<usize>;
     fn find_value(&self, value: &Value) -> Option<usize>;
 }
 
@@ -16,6 +22,7 @@ struct RecordRows<T> {
     model: VecModel<T>,
     label: fn(&T) -> &str,
     value: fn(&T) -> Value,
+    enabled: fn(&T) -> bool,
 }
 
 impl<T> Rows for RecordRows<T> {
@@ -32,19 +39,30 @@ impl<T> Rows for RecordRows<T> {
     fn value(&self, index: usize) -> Option<Value> {
         self.model.project_row_untracked(index, self.value)
     }
+    fn enabled(&self, index: usize) -> bool {
+        self.model
+            .project_row_untracked(index, self.enabled)
+            .unwrap_or(false)
+    }
     fn key(&self, index: usize) -> Option<RowKey> {
         self.model.row_key(index)
     }
     fn index(&self, key: RowKey) -> Option<usize> {
         self.model.row_index(key)
     }
-    fn find_label(&self, predicate: &mut dyn FnMut(&str) -> bool) -> Option<usize> {
-        self.model
-            .position_untracked(|row| predicate((self.label)(row)))
+    fn find_label(
+        &self,
+        range: Range<usize>,
+        enabled_only: bool,
+        predicate: &mut dyn FnMut(&str) -> bool,
+    ) -> Option<usize> {
+        self.model.position_untracked(range, |row| {
+            (!enabled_only || (self.enabled)(row)) && predicate((self.label)(row))
+        })
     }
     fn find_value(&self, value: &Value) -> Option<usize> {
         self.model
-            .position_untracked(|row| (self.value)(row) == *value)
+            .position_untracked(0..self.model.len(), |row| (self.value)(row) == *value)
     }
 }
 
@@ -62,13 +80,26 @@ impl ComboItems {
         label: fn(&T) -> &str,
         value: fn(&T) -> Value,
     ) -> Self {
-        let changes =
-            model.observe_projection(usize::MAX, move |row| (label(row).to_owned(), value(row)));
+        Self::with_enabled(model, label, value, |_| true)
+    }
+
+    pub fn with_enabled<T: 'static>(
+        model: VecModel<T>,
+        label: fn(&T) -> &str,
+        value: fn(&T) -> Value,
+        enabled: fn(&T) -> bool,
+    ) -> Self {
+        let changes = model.observe_projection_changes(usize::MAX, move |_, before, after| {
+            enabled(before) != enabled(after)
+                || label(before) != label(after)
+                || value(before) != value(after)
+        });
         Self {
             rows: Rc::new(RecordRows {
                 model,
                 label,
                 value,
+                enabled,
             }),
             changes,
         }
@@ -172,12 +203,53 @@ pub fn combo_labels(node: &Node, range: Range<usize>) -> Cow<'_, [String]> {
 
 pub fn combo_find_label(node: &Node, mut predicate: impl FnMut(&str) -> bool) -> Option<usize> {
     match model(node) {
-        Some(model) => model.items.rows.find_label(&mut predicate),
+        Some(model) => {
+            model
+                .items
+                .rows
+                .find_label(0..model.items.rows.len(), false, &mut predicate)
+        }
         None => node
             .strings("model")
             .iter()
             .position(|text| predicate(text)),
     }
+}
+
+/// Search enabled rows from a model index, wrapping to the beginning once.
+pub fn combo_find_enabled_label(
+    node: &Node,
+    start: usize,
+    mut predicate: impl FnMut(&str) -> bool,
+) -> Option<usize> {
+    let len = combo_count(node);
+    let start = start.min(len);
+    [start..len, 0..start].into_iter().find_map(|range| {
+        if let Some(model) = model(node) {
+            model.items.rows.find_label(range, true, &mut predicate)
+        } else {
+            let start = range.start;
+            node.strings("model")[range]
+                .iter()
+                .position(|text| predicate(text))
+                .map(|offset| start + offset)
+        }
+    })
+}
+
+pub fn choice_enabled(node: &Node, index: usize) -> bool {
+    if node.kind == "SearchField" {
+        return crate::search_suggestion(node, index).is_some();
+    }
+    model(node).map_or_else(
+        || index < node.strings("model").len(),
+        |model| model.items.rows.enabled(index),
+    )
+}
+
+#[doc(hidden)]
+pub fn combo_model_is_current<T>(node: &Node, source: &VecModel<T>) -> bool {
+    model(node).is_some_and(|model| model.structure == source.structure_stamp())
 }
 
 #[doc(hidden)]

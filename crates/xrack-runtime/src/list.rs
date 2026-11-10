@@ -1,5 +1,10 @@
 use crate::{Node, VecModel};
-use std::{ops::Range, rc::Weak};
+use std::{
+    collections::HashMap,
+    fmt,
+    ops::Range,
+    rc::{Rc, Weak},
+};
 
 pub(crate) const MAX_ROWS: usize = 1_000_000;
 
@@ -29,7 +34,17 @@ pub struct ListMetrics {
 
 impl ListMetrics {
     pub fn row_height(node: &Node) -> f32 {
-        node.length("row-height").unwrap_or(32.0).clamp(12.0, 512.0)
+        Self::clamp_row_height(node.length("row-height").unwrap_or(32.0))
+    }
+
+    pub fn clamp_row_height(height: f32) -> f32 {
+        height.clamp(12.0, 512.0)
+    }
+
+    pub fn row_height_at(node: &Node, index: usize) -> f32 {
+        node.row_heights
+            .as_ref()
+            .map_or_else(|| Self::row_height(node), |heights| heights.height(index))
     }
 
     pub fn selection(node: &Node) -> Option<i64> {
@@ -43,6 +58,78 @@ impl ListMetrics {
         } else {
             "current-index"
         })
+    }
+}
+
+/// Resolves stable model row identities without constructing their delegates.
+#[derive(Clone)]
+#[doc(hidden)]
+pub struct ListRowLocator(Rc<dyn RowPositions>);
+
+trait RowPositions {
+    fn first_position(&self, candidates: &[(RowKey, usize)]) -> Option<(usize, usize)>;
+}
+
+impl<M: ListModel> RowPositions for M {
+    fn first_position(&self, candidates: &[(RowKey, usize)]) -> Option<(usize, usize)> {
+        let &(first, hint) = candidates.first()?;
+        let count = self.row_count();
+        if count == 0 || self.row_key(0).model != first.model {
+            return None;
+        }
+        if hint < count && self.row_key(hint) == first {
+            return Some((0, hint));
+        }
+        // Nearby insertions and removals are common, including in deep lists.
+        let nearby = hint.saturating_sub(4)..count.min(hint.saturating_add(5));
+        if let Some(index) = nearby
+            .into_iter()
+            .find(|&index| self.row_key(index) == first)
+        {
+            return Some((0, index));
+        }
+
+        // Resolve all fallback rows in one pass when a whole page was removed.
+        let priorities: HashMap<_, _> = candidates
+            .iter()
+            .enumerate()
+            .map(|(priority, &(key, _))| (key, priority))
+            .collect();
+        let mut best = None;
+        let mut index = 0;
+        self.visit_row_keys(0..count, |key| {
+            if let Some(&priority) = priorities.get(&key)
+                && best.is_none_or(|(previous, _)| priority < previous)
+            {
+                best = Some((priority, index));
+            }
+            index += 1;
+        });
+        best
+    }
+}
+
+impl ListRowLocator {
+    pub fn new(model: Rc<impl ListModel + 'static>) -> Self {
+        Self(model)
+    }
+
+    pub fn first_position(&self, candidates: &[(RowKey, usize)]) -> Option<(usize, usize)> {
+        self.0.first_position(candidates)
+    }
+}
+
+impl PartialEq for ListRowLocator {
+    fn eq(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl fmt::Debug for ListRowLocator {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ListRowLocator")
+            .finish_non_exhaustive()
     }
 }
 

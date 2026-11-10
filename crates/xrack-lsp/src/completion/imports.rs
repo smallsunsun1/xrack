@@ -27,7 +27,10 @@ impl<'a> Workspace<'a> {
         let mut modules = BTreeMap::new();
         import_targets(&self.entry, tokens)
             .into_iter()
-            .map(|(alias, target)| (alias, self.interface(target, &mut modules)))
+            .filter_map(|(alias, target)| {
+                self.interface(target, &mut modules)
+                    .map(|members| (alias, members))
+            })
             .collect()
     }
 
@@ -88,10 +91,11 @@ impl<'a> Workspace<'a> {
         &self,
         mut target: Target,
         modules: &mut BTreeMap<PathBuf, Module>,
-    ) -> Vec<Member> {
+    ) -> Option<Vec<Member>> {
         let mut members = Vec::new();
         let mut visited = BTreeSet::new();
         let mut exported = true;
+        let mut resolved = false;
         loop {
             let canonical = normalize(&target.file);
             if !visited.insert((canonical.clone(), target.name.clone())) {
@@ -107,6 +111,7 @@ impl<'a> Workspace<'a> {
             if exported && !component.exported {
                 break;
             }
+            resolved = true;
             members.extend(
                 component
                     .members
@@ -124,7 +129,7 @@ impl<'a> Workspace<'a> {
                 break;
             }
         }
-        members
+        resolved.then_some(members)
     }
 }
 

@@ -1,5 +1,8 @@
 use crate::{DecimalSpinRange, Node, SpinDecimal};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{
+    Arc,
+    atomic::{AtomicU64, Ordering},
+};
 
 /// Identity shared by all presentations of one component instance's Action.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -40,7 +43,11 @@ pub enum ControlAction {
     Spin(SpinAction),
     Calendar(crate::CalendarAction),
     Select(usize),
-    PickTumbler { index: usize, row: crate::RowKey },
+    ActivateRadioOption,
+    PickTumbler {
+        index: usize,
+        row: crate::RowKey,
+    },
     TableSelection(crate::TableSelectionAction),
     Tree(crate::TreeAction),
     Dialog(DialogRole),
@@ -49,8 +56,11 @@ pub enum ControlAction {
     Popup(bool),
     SwipeDelegate(SwipeSide),
     DelayButton(bool),
-    StackBack { revision: u64 },
+    StackBack {
+        revision: u64,
+    },
     ActivateMenuItem,
+    TextCommand(crate::TextCommand),
     ActivateTextLink(usize),
     ActivateAction,
     ActivateShortcut,
@@ -59,7 +69,19 @@ pub enum ControlAction {
     SubmitSearch,
     ClearSearch,
     SortColumn(usize),
-    ResizeColumn { column: usize, width: u32 },
+    ResizeColumn {
+        column: usize,
+        width: u32,
+    },
+    ResizeRow {
+        row: usize,
+        key: crate::RowKey,
+        height: u32,
+    },
+    MoveColumn {
+        from: usize,
+        to: usize,
+    },
 }
 
 pub fn is_modal_overlay(kind: &str) -> bool {
@@ -84,6 +106,41 @@ pub enum PopupPlacement {
 pub struct TableSort {
     pub column: usize,
     pub descending: bool,
+}
+
+/// Visual positions map to the declaration indices used by cells and model actions.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct TableColumnOrder(Option<Arc<[usize]>>);
+
+impl TableColumnOrder {
+    pub fn as_slice(&self, count: usize) -> Option<&[usize]> {
+        self.0.as_deref().filter(|order| order.len() == count)
+    }
+
+    pub fn iter(&self, count: usize) -> impl DoubleEndedIterator<Item = usize> + ExactSizeIterator {
+        let order = self.as_slice(count);
+        (0..count).map(move |visual| order.map_or(visual, |order| order[visual]))
+    }
+
+    pub fn visual_index(&self, count: usize, column: usize) -> Option<usize> {
+        if let Some(order) = self.as_slice(count) {
+            order.iter().position(|&logical| logical == column)
+        } else {
+            (column < count).then_some(column)
+        }
+    }
+
+    #[doc(hidden)]
+    pub fn moved(&self, count: usize, from: usize, to: usize) -> Option<(usize, Self)> {
+        if from >= count || to >= count || from == to {
+            return None;
+        }
+        let mut order: Vec<_> = self.iter(count).collect();
+        let column = order.remove(from);
+        order.insert(to, column);
+        let reordered = order.iter().copied().ne(0..count);
+        Some((column, Self(reordered.then(|| order.into()))))
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -409,7 +466,7 @@ pub fn group_index(node: &Node) -> Option<usize> {
     {
         return node.children.iter().enumerate().find_map(|(index, _)| {
             group_item(node, index)
-                .filter(|item| item.text("text").unwrap_or("") == value)
+                .filter(|item| crate::radio_value(item) == value)
                 .map(|_| index)
         });
     }

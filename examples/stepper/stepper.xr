@@ -48,3 +48,113 @@ component Stepper inherits VerticalBox {
         }
     }
 }
+
+export struct LinkedTask {
+    name: string,
+    done: bool,
+}
+
+export component LinkedControlsDemo inherits Window {
+    title: "XRack · 双向组件链接";
+    width: 560px;
+    height: 340px;
+    background: #18202b;
+    in-out property <string> shared: "共享草稿";
+    in-out property <[LinkedTask]> tasks: [
+        LinkedTask { name: "检查模型", done: true },
+        LinkedTask { name: "编辑第二行", done: false },
+        LinkedTask { name: "排序后继续编辑", done: false },
+    ];
+    in-out property <[string]> tags: ["界面", "编译器", "虚拟列表"];
+    out property <string> read-back: second.draft;
+    out property <string> last-submitted: "按 Enter 提交";
+    out property <int> submitted-index: -1;
+    callback reset-through-second;
+    reset-through-second => { second.draft = "由兄弟组件写回"; }
+    callback sort-tasks;
+
+    VerticalLayout {
+        padding: 16px;
+        spacing: 8px;
+        Text { text: "两个编辑器通过组件链接共享值"; }
+        first := LinkedEditorWrapper {
+            draft <=> root.shared;
+            submitted => { root.last-submitted = root.shared; root.submitted-index = -1; }
+        }
+        second := LinkedEditorWithDefault { draft <=> first.draft; }
+        reset-link := Button { text: root.last-submitted; clicked => { root.reset-through-second(); } }
+        sort-rows := Button { text: "按名称排序"; clicked => { root.sort-tasks(); } }
+        HorizontalLayout {
+            spacing: 12px;
+            vertical-stretch: 1;
+            rows := ListView {
+                row-height: 44px;
+                horizontal-stretch: 1;
+                for item[index] in root.tasks : LinkedEditor {
+                    draft <=> item.name;
+                    caption: item.done ? "完成" : "待办";
+                    submitted => { root.last-submitted = item.name; root.submitted-index = index; }
+                }
+            }
+            labels := ListView {
+                row-height: 44px;
+                horizontal-stretch: 1;
+                for tag in root.tags : LinkedEditor {
+                    draft <=> tag;
+                    caption: "标签";
+                }
+            }
+        }
+    }
+}
+
+component LinkedEditorWrapper inherits HorizontalLayout {
+    property <string> storage: "包装控件默认值";
+    in-out property <string> draft <=> editor.alternate;
+    callback submitted <=> editor.submitted;
+    editor := LinkedEditor { draft <=> root.storage; caption: "共享"; }
+}
+
+component LinkedEditor inherits HorizontalLayout {
+    in-out property <string> draft <=> entry.text;
+    in-out property <string> alternate <=> entry.text;
+    callback submitted <=> entry.accepted;
+    in property <string> caption: "同步";
+    spacing: 8px;
+    Text { text: root.caption; width: 52px; color: #ffffff; }
+    entry := LineEdit {
+        accessible-name: root.caption;
+        text: "编辑器默认值";
+        horizontal-stretch: 1;
+    }
+}
+
+component LinkedEditorWithDefault inherits HorizontalLayout {
+    in-out property <string> draft <=> editor.alternate;
+    editor := LinkedEditor { draft: "内部默认值"; caption: "同步"; }
+}
+
+export component AliasDefaultsDemo inherits Window {
+    in-out property <string> document <=> editor.draft;
+    out property <int> confirmations: 0;
+    callback confirmed <=> editor.submitted;
+    confirmed => { root.confirmations += 1; }
+    editor := LinkedEditor {}
+}
+
+export component CallbackProbe inherits Window {
+    in-out property <int> bias: 2;
+    out property <int> answer: root.calculation(4);
+    pure callback calculation <=> tool.score;
+    tool := ScoreWrapper {
+        score(value) => { value + root.bias }
+    }
+}
+
+component ScoreWrapper inherits Rectangle {
+    pure callback score <=> leaf.score;
+    leaf := Rectangle {
+        pure callback score(int) -> int;
+        score(value) => { value + 1 }
+    }
+}

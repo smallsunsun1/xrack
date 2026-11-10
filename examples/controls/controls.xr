@@ -412,6 +412,60 @@ export component CheckStateDemo inherits Window {
     }
 }
 
+export component CheckGroupDemo inherits Window {
+    title: "XRack · 复选组";
+    width: 520px; height: 266px;
+    background: #162034;
+    in-out property <bool> assets: true;
+    in-out property <bool> metadata: false;
+    in-out property <CheckState> validation: CheckState.partially-checked;
+    in-out property <bool> background-work: false;
+    in-out property <bool> show-validation: true;
+    in-out property <bool> allow-metadata: false;
+    in-out property <bool> group-enabled: true;
+    out property <CheckState> summary: options.check-state;
+    out property <CheckState> master-result;
+    out property <CheckState> before-bulk;
+    out property <int> child-edits: 0;
+    callback apply-all(CheckState);
+    apply-all(state) => {
+        root.before-bulk = options.check-state;
+        options.set-check-state(state);
+        root.master-result = options.check-state;
+    }
+
+    options := ButtonGroup { exclusive: false; accessible-name: "导出选项"; enabled: root.group-enabled; }
+    VerticalLayout {
+        padding: 16px; spacing: 8px;
+        Label { text: "导出选项 · 跨布局汇总"; font-size: 22px; }
+        select-all := CheckBox {
+            text: "全选导出选项";
+            enabled: root.group-enabled;
+            check-state <=> options.check-state;
+            check-state-changed(state) => { root.master-result = options.check-state; }
+        }
+        HorizontalLayout {
+            spacing: 16px;
+            VerticalLayout {
+                include-assets := CheckBox {
+                    group: options; text: "资源"; checked <=> root.assets;
+                    toggled => { root.child-edits += 1; }
+                }
+                include-metadata := CheckBox { group: options; text: "元数据"; enabled: root.allow-metadata; checked <=> root.metadata; }
+            }
+            VerticalLayout {
+                if root.show-validation : run-validation := CheckBox {
+                    group: options; text: "校验"; tristate: true; check-state <=> root.validation;
+                }
+                use-background := Switch { group: options; text: "后台执行"; checked <=> root.background-work; }
+            }
+        }
+        show-validation-toggle := CheckBox { text: "显示校验选项"; checked <=> root.show-validation; }
+        allow-metadata-toggle := CheckBox { text: "允许单独操作元数据"; checked <=> root.allow-metadata; }
+        Label { text: "全选会更新全部导出选项，包括当前隐藏的项。"; }
+    }
+}
+
 export component GroupBoxDemo inherits Window {
     title: "XRack · 表单分组";
     width: 470px;

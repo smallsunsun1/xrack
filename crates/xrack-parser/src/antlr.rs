@@ -248,13 +248,18 @@ fn state_block(block: &StateBlockContextAll<'_>) -> StateBlock {
 
 fn member(ctx: &MemberContextAll<'_>) -> Member {
     if let Some(property) = ctx.property() {
+        let alias = property.reference();
         Member::Property(Property {
             name: property.identifier().expect("property name").get_text(),
             ty: Type::from_source(&property.typeName().expect("property type").get_text()),
             visibility: property
                 .visibility()
                 .map_or_else(|| "private".into(), |v| v.get_text()),
-            value: property.expression().as_deref().map(expression),
+            value: alias
+                .as_deref()
+                .map(reference_expr)
+                .or_else(|| property.expression().as_deref().map(expression)),
+            two_way: alias.is_some(),
             span: span(&*property),
         })
     } else if let Some(callback) = ctx.callback() {
@@ -277,6 +282,7 @@ fn member(ctx: &MemberContextAll<'_>) -> Member {
                 .typeName()
                 .map(|ty| Type::from_source(&ty.get_text())),
             pure: starts_with(&*callback, "pure"),
+            alias: callback.reference().map(|reference| reference.get_text()),
         })
     } else if let Some(binding) = ctx.binding() {
         let reference = binding.reference();

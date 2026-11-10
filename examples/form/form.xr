@@ -144,6 +144,91 @@ export component CloseGuardDemo inherits Window {
     }
 }
 
+export component BidiEditorDemo inherits Window {
+    title: "XRack · 双向文字编辑";
+    width: 520px;
+    height: 300px;
+    in-out property <string> line: "Order אבג 123 — مرحبا";
+    in-out property <string> document: "Order אבג 123 — مرحبا\nעברית 45 text — العربية";
+
+    VerticalLayout {
+        padding: 16px; spacing: 10px;
+        Text { text: "单行 · 用方向键移动，用 Shift 扩展选区"; }
+        entry := LineEdit {
+            accessible-name: "混排单行";
+            text <=> root.line;
+            font-size: 22px;
+        }
+        Text { text: "多行 · 上下键保留屏幕横坐标"; }
+        paragraph := TextArea {
+            accessible-name: "混排段落";
+            text <=> root.document;
+            font-size: 22px;
+            wrap: word-wrap;
+            vertical-stretch: 1;
+        }
+    }
+}
+
+export component EditorCommandsDemo inherits Window {
+    title: "XRack · 编辑命令";
+    width: 620px;
+    height: 240px;
+    in-out property <string> document: "任务：在这里编辑文本";
+    callback select-prefix;
+    select-prefix => { entry.focus(); entry.set-selection-offsets(0, 9); }
+    callback paste-selected;
+    paste-selected => { entry.paste(); }
+    callback undo-edit;
+    undo-edit => { entry.undo(); }
+    callback redo-edit;
+    redo-edit => { entry.redo(); }
+
+    VerticalLayout {
+        padding: 16px; spacing: 12px;
+        HorizontalLayout {
+            spacing: 6px;
+            prefix-tool := Button { text: "选前缀"; focus-on-click: false; clicked => { root.select-prefix(); } }
+            select-tool := Button { text: "全选"; focus-on-click: false; clicked => { entry.select-all(); } }
+            clear-tool := Button { text: "取消选区"; focus-on-click: false; clicked => { entry.clear-selection(); } }
+            cut-selection := Button { text: "剪切"; focus-on-click: false; clicked => { entry.cut(); } }
+            copy-selection := Button { text: "复制"; focus-on-click: false; clicked => { entry.copy(); } }
+            paste-tool := Button { text: "粘贴"; focus-on-click: false; clicked => { root.paste-selected(); } }
+            undo-tool := Button { text: "撤销"; focus-on-click: false; clicked => { root.undo-edit(); } }
+            redo-tool := Button { text: "重做"; focus-on-click: false; clicked => { root.redo-edit(); } }
+        }
+        entry := TextEdit {
+            accessible-name: "正文";
+            vertical-stretch: 1;
+            text <=> root.document;
+        }
+    }
+}
+
+export component EditorMenuDemo inherits Window {
+    title: "XRack · 编辑器右键菜单";
+    width: 540px; height: 420px;
+    background: #182331;
+    in-out property <string> document: "Select a word, then right-click";
+    in-out property <int> quantity: 42;
+    out property <int> custom-actions: 0;
+
+    VerticalLayout {
+        padding: 16px; spacing: 8px;
+        Label { text: "右键或 Shift+F10 打开编辑菜单"; font-size: 21px; }
+        entry := LineEdit { text <=> root.document; accessible-name: "笔记标题"; }
+        read-only := LineEdit { text: "Copy from this read-only field"; read-only: true; }
+        secret := LineEdit { text: "sample-password"; input-type: password; }
+        quantity := SpinBox { value <=> root.quantity; minimum: 0; maximum: 999; }
+        body := TextArea { text: "A multi-line draft.\nEdits can be undone."; vertical-stretch: 1; }
+        ContextMenuArea {
+            custom := LineEdit { text: "Application menu"; }
+            Menu { MenuItem { text: "Custom action"; activated => { root.custom-actions += 1; } } }
+        }
+        quiet := LineEdit { text: "Context menu disabled"; context-menu-enabled: false; }
+    }
+}
+
 export component FormDemo inherits Window {
     in-out property <string> query: "";
     out property <int> edits: 0;

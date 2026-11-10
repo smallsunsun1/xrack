@@ -211,6 +211,15 @@ impl Loader {
         for mut record in doc.records {
             record.name = names[&record.name].clone();
             for field in &mut record.fields {
+                if let ast::Type::Record(name) = &field.ty
+                    && !names.contains_key(name.as_ref())
+                {
+                    return Err(CompilerError::at(
+                        file,
+                        field.span,
+                        format!("unknown record type `{name}`"),
+                    ));
+                }
                 rewrite_record_type(&mut field.ty, &names);
             }
             self.records.push(record);

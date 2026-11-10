@@ -174,16 +174,21 @@ fn imported_aliases_resolve_exported_members_and_bases_from_open_buffers() {
     let inputs = labels_at("component Demo inherits Window { card := Tile { ");
     assert!(inputs.iter().any(|label| label == "title"));
     assert!(inputs.iter().any(|label| label == "enabled-count"));
-    assert!(
-        !inputs
-            .iter()
-            .any(|label| matches!(label.as_str(), "size" | "activate"))
-    );
+    assert!(!inputs.iter().any(|label| label == "size"));
+    assert!(inputs.iter().any(|label| label == "activate"));
 
     let derived = labels_at("component Demo inherits Tile { Text { text: root.");
     assert!(derived.iter().any(|label| label == "activate"));
     let other = labels_at("component Demo inherits Window { card := Other {} Text { text: card.");
-    assert_eq!(other, ["different"]);
+    assert!(other.iter().any(|label| label == "layout-width"));
+    assert_eq!(
+        other
+            .iter()
+            .filter(|label| xrack_ir::semantic::geometry_property(label).is_none())
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+        ["different"]
+    );
 }
 
 #[test]
@@ -218,6 +223,7 @@ fn completion_ignores_non_exported_imports_and_terminates_on_inheritance_cycles(
         complete("Visible")
             .iter()
             .map(|item| item["label"].as_str().unwrap())
+            .filter(|label| xrack_ir::semantic::geometry_property(label).is_none())
             .collect::<Vec<_>>(),
         ["first", "call"]
     );

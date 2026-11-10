@@ -1,10 +1,13 @@
-use crate::{Point, Rect, TextEdit, TextPosition};
+use crate::{EditAction, Point, Rect, TextEdit, TextPosition, VisualTextLine};
 use std::{ops::Range, sync::Arc};
+use unicode_bidi::BidiInfo;
 use unicode_segmentation::UnicodeSegmentation;
 use xrack_runtime::TextWrap;
 
 #[derive(Clone, Copy, Debug)]
 pub enum TextAreaMotion {
+    Left,
+    Right,
     Up,
     Down,
     Home,
@@ -20,6 +23,7 @@ pub struct TextAreaLayout {
     pub line_height: f32,
     pub lines: Arc<[Range<usize>]>,
     pub max_scroll: Point,
+    visual: Option<Arc<[VisualTextLine]>>,
 }
 
 pub(crate) fn grapheme_boundaries(text: &str) -> Vec<usize> {
@@ -74,10 +78,45 @@ impl TextAreaLayout {
         advance: impl Fn(&str) -> f32,
         word_break: impl Fn(&str) -> usize,
     ) -> Self {
+        let lines = Self::wrap_lines(text, area.width, wrap, &advance, word_break, false);
+        let width = lines
+            .iter()
+            .map(|line| advance(&text[line.clone()]))
+            .fold(0.0, f32::max);
+        Self::from_lines(area, line_height, lines, width, None)
+    }
+
+    pub fn shaped(
+        text: &str,
+        area: Rect,
+        line_height: f32,
+        wrap: TextWrap,
+        advance: impl Fn(&str) -> f32,
+        word_break: impl Fn(&str) -> usize,
+        shape: impl Fn(&str) -> VisualTextLine,
+    ) -> Self {
+        let has_bidi = wrap == TextWrap::WordWrap && BidiInfo::new(text, None).has_rtl();
+        let lines = Self::wrap_lines(text, area.width, wrap, &advance, word_break, has_bidi);
+        let visual: Arc<[_]> = lines
+            .iter()
+            .map(|line| shape(&text[line.clone()]))
+            .collect();
+        let width = visual.iter().map(VisualTextLine::width).fold(0.0, f32::max);
+        Self::from_lines(area, line_height, lines, width, Some(visual))
+    }
+
+    fn wrap_lines(
+        text: &str,
+        width: f32,
+        wrap: TextWrap,
+        advance: impl Fn(&str) -> f32,
+        word_break: impl Fn(&str) -> usize,
+        has_bidi: bool,
+    ) -> Vec<Range<usize>> {
         let mut lines = Vec::new();
         let mut paragraph = |range: Range<usize>| {
             let content = &text[range.clone()];
-            if content.is_empty() || wrap == TextWrap::NoWrap || area.width <= 0.0 {
+            if content.is_empty() || wrap == TextWrap::NoWrap || width <= 0.0 {
                 lines.push(range);
                 return;
             }
@@ -86,16 +125,28 @@ impl TextAreaLayout {
             while start < breaks.len() - 1 {
                 let next = match wrap {
                     TextWrap::CharWrap => fitting_prefix(start, breaks.len() - 1, |index| {
-                        advance(&content[breaks[start]..breaks[index]]) <= area.width
+                        advance(&content[breaks[start]..breaks[index]]) <= width
                     })
                     .max(start + 1),
                     TextWrap::WordWrap => {
-                        let end =
-                            breaks[start].saturating_add(word_break(&content[breaks[start]..]));
-                        breaks
-                            .partition_point(|&byte| byte <= end)
-                            .saturating_sub(1)
+                        let tail = &content[breaks[start]..];
+                        let prefix = if has_bidi {
+                            logical_word_prefix(tail, width, &advance)
+                        } else {
+                            word_break(tail)
+                        };
+                        if prefix == 0 && has_bidi {
+                            fitting_prefix(start, breaks.len() - 1, |index| {
+                                advance(&content[breaks[start]..breaks[index]]) <= width
+                            })
                             .max(start + 1)
+                        } else {
+                            let end = breaks[start].saturating_add(prefix);
+                            breaks
+                                .partition_point(|&byte| byte <= end)
+                                .saturating_sub(1)
+                                .max(start + 1)
+                        }
                     }
                     TextWrap::NoWrap => unreachable!(),
                 };
@@ -106,10 +157,16 @@ impl TextAreaLayout {
         for range in paragraphs(text) {
             paragraph(range);
         }
-        let width = lines
-            .iter()
-            .map(|line| advance(&text[line.clone()]))
-            .fold(0.0, f32::max);
+        lines
+    }
+
+    fn from_lines(
+        area: Rect,
+        line_height: f32,
+        lines: Vec<Range<usize>>,
+        width: f32,
+        visual: Option<Arc<[VisualTextLine]>>,
+    ) -> Self {
         let max_scroll = Point {
             x: (width + 1.0 - area.width).max(0.0),
             y: (lines.len() as f32 * line_height - area.height).max(0.0),
@@ -119,7 +176,12 @@ impl TextAreaLayout {
             line_height,
             lines: lines.into(),
             max_scroll,
+            visual,
         }
+    }
+
+    pub fn visual_line(&self, index: usize) -> Option<&VisualTextLine> {
+        self.visual.as_ref()?.get(index)
     }
 
     pub fn with_viewport(mut self, area: Rect) -> Self {
@@ -174,7 +236,15 @@ impl TextAreaLayout {
         let range = &self.lines[line];
         let end = position.offset.clamp(range.start, range.end);
         Point {
-            x: advance(&text[range.start..end]),
+            x: self.visual_line(line).map_or_else(
+                || advance(&text[range.start..end]),
+                |visual| {
+                    visual.caret_x(TextPosition {
+                        offset: end - range.start,
+                        trailing: position.trailing,
+                    })
+                },
+            ),
             y: line as f32 * self.line_height,
         }
     }
@@ -187,6 +257,9 @@ impl TextAreaLayout {
         advance: impl Fn(&str) -> f32,
     ) -> TextPosition {
         let range = &self.lines[line];
+        if let Some(visual) = self.visual_line(line) {
+            return line_offset(visual.hit(x), range.start);
+        }
         let content = &text[range.clone()];
         let breaks = grapheme_boundaries(content);
         let after = breaks.partition_point(|&byte| advance(&content[..byte]) < x);
@@ -231,22 +304,75 @@ impl TextAreaLayout {
         let line = self.line_index(caret);
         let range = &self.lines[line];
         match motion {
-            TextAreaMotion::Home => editor.place_caret(
-                text,
-                TextPosition {
-                    offset: range.start,
-                    trailing: false,
-                },
-                selecting,
-            ),
-            TextAreaMotion::End => editor.place_caret(
-                text,
-                TextPosition {
-                    offset: range.end,
-                    trailing: true,
-                },
-                selecting,
-            ),
+            TextAreaMotion::Left | TextAreaMotion::Right => {
+                let right = matches!(motion, TextAreaMotion::Right);
+                let Some(visual) = self.visual_line(line) else {
+                    editor.apply_multiline(
+                        text,
+                        if right {
+                            EditAction::Right(selecting)
+                        } else {
+                            EditAction::Left(selecting)
+                        },
+                    );
+                    return;
+                };
+                let selection = editor.selection(text);
+                if !selecting && !selection.is_empty() {
+                    let edge = if right {
+                        selection.end
+                    } else {
+                        selection.start
+                    };
+                    let selected_line = self.line_index(TextPosition {
+                        offset: edge,
+                        trailing: right,
+                    });
+                    let start = self.lines[selected_line].start;
+                    let bytes =
+                        selection.start.saturating_sub(start)..selection.end.saturating_sub(start);
+                    if let Some(position) = self
+                        .visual_line(selected_line)
+                        .and_then(|visual| visual.selection_edge(bytes, right))
+                    {
+                        editor.place_caret(text, line_offset(position, start), false);
+                        return;
+                    }
+                }
+                let local = TextPosition {
+                    offset: caret.offset - range.start,
+                    trailing: caret.trailing,
+                };
+                let position = visual
+                    .step(local, right)
+                    .map(|position| line_offset(position, range.start))
+                    .or_else(|| {
+                        let next = if right != visual.is_rtl() {
+                            line.checked_add(1)
+                        } else {
+                            line.checked_sub(1)
+                        }?;
+                        let next_visual = self.visual_line(next)?;
+                        Some(line_offset(
+                            next_visual.edge(!right),
+                            self.lines[next].start,
+                        ))
+                    });
+                if let Some(position) = position {
+                    editor.place_caret(text, position, selecting);
+                }
+            }
+            TextAreaMotion::Home | TextAreaMotion::End => {
+                let end = matches!(motion, TextAreaMotion::End);
+                let position = self.visual_line(line).map_or(
+                    TextPosition {
+                        offset: if end { range.end } else { range.start },
+                        trailing: end,
+                    },
+                    |visual| line_offset(visual.edge(end != visual.is_rtl()), range.start),
+                );
+                editor.place_caret(text, position, selecting);
+            }
             _ => {
                 let page = (self.area.height / self.line_height).floor().max(1.0) as usize;
                 let next = match motion {
@@ -254,7 +380,10 @@ impl TextAreaLayout {
                     TextAreaMotion::Down => (line + 1).min(self.lines.len() - 1),
                     TextAreaMotion::PageUp => line.saturating_sub(page),
                     TextAreaMotion::PageDown => (line + page).min(self.lines.len() - 1),
-                    TextAreaMotion::Home | TextAreaMotion::End => unreachable!(),
+                    TextAreaMotion::Home
+                    | TextAreaMotion::End
+                    | TextAreaMotion::Left
+                    | TextAreaMotion::Right => unreachable!(),
                 };
                 let x = editor
                     .preferred_x()
@@ -267,10 +396,22 @@ impl TextAreaLayout {
     }
 }
 
+fn line_offset(mut position: TextPosition, start: usize) -> TextPosition {
+    position.offset += start;
+    position
+}
+
+fn logical_word_prefix(text: &str, width: f32, advance: impl Fn(&str) -> f32) -> usize {
+    text.split_word_bound_indices()
+        .map(|(index, word)| index + word.len())
+        .take_while(|&end| advance(&text[..end]) <= width)
+        .last()
+        .unwrap_or(0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::EditAction;
 
     fn advance(text: &str) -> f32 {
         text.graphemes(true).count() as f32

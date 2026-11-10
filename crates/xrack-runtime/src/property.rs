@@ -237,10 +237,107 @@ impl<T: Clone> Property<T> {
     }
 }
 
+/// Storage for a generated component input. Linked inputs track the actual
+/// source property and forward writes without allocating a second value slot.
+#[doc(hidden)]
+pub enum InputProperty<T> {
+    Local(Property<T>),
+    Linked {
+        read: Box<dyn Fn() -> Option<T>>,
+        write: Box<dyn Fn(T)>,
+    },
+    State {
+        value: Property<T>,
+        read: Box<dyn Fn() -> Option<T>>,
+        base: Box<Self>,
+    },
+}
+
+impl<T> Default for InputProperty<T> {
+    fn default() -> Self {
+        Self::Local(Property::default())
+    }
+}
+
+impl<T> InputProperty<T> {
+    pub fn bound(read: impl Fn() -> T + 'static) -> Self {
+        Self::Local(Property::new(Some(Box::new(read))))
+    }
+
+    pub fn linked(read: impl Fn() -> Option<T> + 'static, write: impl Fn(T) + 'static) -> Self {
+        Self::Linked {
+            read: Box::new(read),
+            write: Box::new(write),
+        }
+    }
+
+    /// Add a lazy state binding above an existing input. An explicit write
+    /// replaces this binding until reset, including when the value is equal.
+    pub fn with_state(self, read: impl Fn() -> Option<T> + 'static) -> Self {
+        Self::State {
+            value: Property::default(),
+            read: Box::new(read),
+            base: Box::new(self),
+        }
+    }
+
+    pub fn reset(&self) {
+        match self {
+            Self::Local(value) | Self::State { value, .. } => value.reset(),
+            Self::Linked { .. } => {}
+        }
+    }
+}
+
+impl<T: Clone> InputProperty<T> {
+    pub fn get(&self, default: impl FnOnce() -> T) -> T {
+        match self {
+            Self::Local(property) => property.get(default),
+            Self::Linked { read, .. } => read().unwrap_or_else(default),
+            Self::State { value, read, base } => {
+                value.get(|| read().unwrap_or_else(|| base.get(default)))
+            }
+        }
+    }
+}
+
+impl<T: PartialEq> InputProperty<T> {
+    pub fn set_if_changed(&self, value: T) {
+        match self {
+            Self::Local(property)
+            | Self::State {
+                value: property, ..
+            } => property.set_if_changed(value),
+            Self::Linked { write, .. } => write(value),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::panic::{AssertUnwindSafe, catch_unwind};
+
+    #[test]
+    fn state_input_restores_the_live_fallback_after_reset() {
+        let active = Rc::new(Property::default());
+        active.set(true);
+        let base = Property::default();
+        base.set(1);
+        let state = active.clone();
+        let input = InputProperty::default().with_state(move || state.get(|| false).then_some(2));
+        let read = || input.get(|| base.get(|| 0));
+
+        assert_eq!(read(), 2);
+        input.set_if_changed(2);
+        active.set(false);
+        base.set(3);
+        assert_eq!(read(), 2);
+        input.reset();
+        assert_eq!(read(), 3);
+        active.set(true);
+        assert_eq!(read(), 2);
+    }
 
     #[test]
     fn invalidation_reaches_a_diamond_once() {

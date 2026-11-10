@@ -455,7 +455,7 @@ pub(crate) fn table_header(
         theme.role(Role::TableHeader),
     );
     for (index, (column, bounds)) in header.columns.iter().zip(&geometry.columns).enumerate() {
-        let visible = bounds.intersect(clip);
+        let visible = bounds.intersect(geometry.column_clip(index, clip));
         if visible.width <= 0.0 || visible.height <= 0.0 {
             continue;
         }
@@ -655,12 +655,17 @@ pub(crate) fn menu(
                 .or_else(|| text.default_font_size())
                 .unwrap_or(14.0)
                 .clamp(1.0, (row.height / 1.4).max(1.0));
+            let foreground = if menu.row_enabled(offset) {
+                theme.text
+            } else {
+                theme.disabled_text
+            };
             canvas
                 .fill_text(
                     row.x + 10.0,
                     row.y + ((row.height - size * 1.4) * 0.5).max(0.0),
                     label,
-                    &text.paint_node_at_size(menu.control, size, color(theme.text), false),
+                    &text.paint_node_at_size(menu.control, size, color(foreground), false),
                 )
                 .map_err(|err| format!("combobox popup drawing failed: {err}"))?;
         }

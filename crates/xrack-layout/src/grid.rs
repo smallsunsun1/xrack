@@ -180,7 +180,24 @@ pub(crate) fn measure(node: &Node, available: Size, text: &mut impl TextMeasurer
 
 pub(crate) struct Placement {
     pub(crate) bounds: Rect,
-    pub(crate) row_children: Option<Vec<Rect>>,
+    pub(crate) row_children: Option<Vec<CellPlacement>>,
+    pub(crate) clip: Option<std::sync::Arc<crate::table::PaneClip>>,
+}
+
+impl Placement {
+    pub(crate) fn plain(bounds: Rect) -> Self {
+        Self {
+            bounds,
+            row_children: None,
+            clip: None,
+        }
+    }
+}
+
+#[derive(Clone)]
+pub(crate) struct CellPlacement {
+    pub(crate) bounds: Rect,
+    pub(crate) clip: Option<std::sync::Arc<crate::table::PaneClip>>,
 }
 
 pub(crate) fn children(node: &Node, bounds: Rect, text: &mut impl TextMeasurer) -> Vec<Placement> {
@@ -208,13 +225,17 @@ pub(crate) fn children(node: &Node, bounds: Rect, text: &mut impl TextMeasurer) 
             if child.kind == "Row" && child.boolean("visible", true) {
                 Placement {
                     bounds: inner,
-                    row_children: Some(vec![hidden; child.children.len()]),
+                    row_children: Some(vec![
+                        CellPlacement {
+                            bounds: hidden,
+                            clip: None
+                        };
+                        child.children.len()
+                    ]),
+                    clip: None,
                 }
             } else {
-                Placement {
-                    bounds: hidden,
-                    row_children: None,
-                }
+                Placement::plain(hidden)
             }
         })
         .collect::<Vec<_>>();
@@ -229,7 +250,7 @@ pub(crate) fn children(node: &Node, bounds: Rect, text: &mut impl TextMeasurer) 
         );
         let placement = &mut placements[cell.index];
         if let Some(child) = cell.child_index {
-            placement.row_children.as_mut().unwrap()[child] = rect;
+            placement.row_children.as_mut().unwrap()[child].bounds = rect;
         } else {
             placement.bounds = rect;
         }

@@ -21,6 +21,8 @@ impl LayoutNode {
         }
         let table = self.table.as_deref();
         let viewport = table.map_or(self.bounds, |table| table.body);
+        let horizontal_viewport = table.map_or(viewport, |table| table.scrollable_body());
+        let horizontal_visible = horizontal_viewport.intersect(self.clip).inset(2.0);
         let visible = viewport.intersect(self.clip).inset(2.0);
         let thickness = 10.0_f32
             .min(visible.width * 0.25)
@@ -28,6 +30,9 @@ impl LayoutNode {
         let axes = [Orientation::Horizontal, Orientation::Vertical];
         let scrolls: [_; 2] = std::array::from_fn(|index| {
             self.scroll_on(axes[index])
+                .filter(|_| {
+                    axes[index] != Orientation::Horizontal || horizontal_visible.width > 0.0
+                })
                 .filter(|scroll| match node.scroll_bar_policy(axes[index]) {
                     ScrollBarPolicy::AsNeeded => scroll.max_offset > 0.0,
                     ScrollBarPolicy::AlwaysOn => true,
@@ -48,12 +53,12 @@ impl LayoutNode {
             let (track, page) = match orientation {
                 Orientation::Horizontal => (
                     Rect::new(
-                        visible.x,
+                        horizontal_visible.x,
                         visible.y + visible.height - thickness,
-                        visible.width - corner,
+                        horizontal_visible.width - corner,
                         thickness,
                     ),
-                    viewport.width,
+                    horizontal_viewport.width,
                 ),
                 Orientation::Vertical => (
                     Rect::new(

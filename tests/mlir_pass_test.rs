@@ -33,6 +33,49 @@ fn visual_slots(module: &Module) -> usize {
 }
 
 #[test]
+fn cse_preserves_scroll_command_order_and_live_viewport_reads() {
+    let optimized = raw(
+        r#"export component Demo inherits Window {
+            out property <length> position: view.content-x + view.content-y;
+            view := ScrollView {}
+            jump := Button { clicked() => {
+                view.scroll-to(8px, 12px);
+                view.scroll-to(8px, 12px);
+                view.scroll-to(16px, 20px);
+            } }
+        }"#,
+        "scroll-effects.xr",
+    )
+    .optimize()
+    .unwrap();
+    let component = optimized.operations().next().unwrap();
+    let position = definition(member(component, "xr.property", "position"), 0);
+    assert_eq!(
+        definition(position, 0).attribute("value"),
+        Some("content-x")
+    );
+    assert_eq!(
+        definition(position, 1).attribute("value"),
+        Some("content-y")
+    );
+    let window = component
+        .children()
+        .find(|op| op.name() == "xr.element")
+        .unwrap();
+    let button = window
+        .children()
+        .find(|op| op.attribute("id") == Some("jump"))
+        .unwrap();
+    let handler = member(button, "xr.handler", "clicked");
+    let offsets: Vec<_> = handler
+        .children()
+        .filter(|op| op.name() == "xr.scroll_command")
+        .map(|op| definition(op, 0).attribute("value").unwrap())
+        .collect();
+    assert_eq!(offsets, ["8", "8", "16"]);
+}
+
+#[test]
 fn static_gradient_plans_exclude_live_colors() {
     let input = raw(
         r#"export component Demo inherits Window {

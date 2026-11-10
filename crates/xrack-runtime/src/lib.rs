@@ -5,6 +5,7 @@
 pub const CODEGEN_ABI_VERSION: u32 = 1;
 
 mod animation;
+mod button_group;
 mod calendar;
 mod child_window;
 mod color_picker;
@@ -14,6 +15,7 @@ mod delegate;
 mod double_spin;
 mod drag;
 mod focus;
+mod geometry;
 mod image_animation;
 mod keyboard;
 mod list;
@@ -23,17 +25,27 @@ mod picker;
 mod property;
 mod range;
 mod repeat;
+mod row_heights;
 mod scene_plan;
 mod split;
 mod stack;
 mod styled_text;
+mod table_clipboard;
+mod table_history;
 mod table_selection;
 mod text_input;
 mod time_picker;
 mod timer;
 mod tree;
 mod tumbler;
+mod viewport;
+mod window_status;
 pub use animation::{Animation, Easing, SceneTransition, StateTiming};
+#[doc(hidden)]
+pub use button_group::{
+    ButtonGroup, ButtonGroupMembership, ButtonGroupSelection, RadioMembership, bind_button_group,
+    bind_check_group, radio_value, summarize_checks,
+};
 pub use calendar::{CalendarAction, CalendarState, Date};
 #[doc(hidden)]
 pub use calendar::{DateBounds, DatePopupState};
@@ -42,16 +54,17 @@ pub use child_window::{SecondaryWindowRegistration, SecondaryWindowSlot};
 #[doc(hidden)]
 pub use color_picker::ColorPopupState;
 pub use combo::{
-    ChoiceIdentity, choice_identity, combo_count, combo_find_label, combo_index, combo_label,
-    combo_labels, combo_row_index, combo_row_key, combo_text,
+    ChoiceIdentity, choice_enabled, choice_identity, combo_count, combo_find_enabled_label,
+    combo_find_label, combo_index, combo_label, combo_labels, combo_row_index, combo_row_key,
+    combo_text,
 };
 #[doc(hidden)]
-pub use combo::{ComboItems, ComboModel, combo_value};
+pub use combo::{ComboItems, ComboModel, combo_model_is_current, combo_value};
 pub use controls::{
     ActionKey, ControlAction, DialogCommand, DialogRole, PopupPlacement, SpinAction, SpinRange,
-    StandardButtonKind, SwipeSide, TableHeader, TableSort, button_text, combo_editable,
-    delay_millis, dialog_button_action, group_index, group_item, is_button, is_modal_overlay,
-    is_spin_box, is_window_overlay, page_indicator_count, page_indicator_index,
+    StandardButtonKind, SwipeSide, TableColumnOrder, TableHeader, TableSort, button_text,
+    combo_editable, delay_millis, dialog_button_action, group_index, group_item, is_button,
+    is_modal_overlay, is_spin_box, is_window_overlay, page_indicator_count, page_indicator_index,
     resizable_table_column, resolve_swipe_index, search_suggestion, search_suggestions,
     spin_editable, spin_text, spin_value_after, text_input_value,
 };
@@ -63,14 +76,17 @@ pub use double_spin::{
 pub use drag::{DragAction, DragEvent, is_drag_area};
 pub use focus::{
     FocusAction, FocusContext, FocusEvent, FocusHandle, FocusReason, FocusRequest, FocusRequests,
+    TextCommand,
 };
+#[doc(hidden)]
+pub use geometry::{GeometryHandle, GeometryMetric};
 pub use image_animation::{ImageAnimation, ImageAnimationFrame};
 #[doc(hidden)]
 pub use image_animation::{ImagePlaybackQueue, ImagePlaybackRegistration, ImagePlaybackSlot};
 pub use keyboard::{EventResult, KeyEvent, KeyModifiers, KeyPhase};
 pub use list::{ListMetrics, RowKey};
 #[doc(hidden)]
-pub use list::{ListModel, RowLifetime, standard_list_rows, standard_table_rows};
+pub use list::{ListModel, ListRowLocator, RowLifetime, standard_list_rows, standard_table_rows};
 pub use model::VecModel;
 pub use native_dialog::{
     FileDialogMode, FileDialogOptions, MessageButtons, MessageDialogOptions, MessageLevel,
@@ -80,7 +96,7 @@ pub use native_dialog::{
     NativeDialogOptions, NativeDialogPresentation, NativeDialogQueue, NativeDialogRegistration,
     NativeDialogResult, NativeDialogSlot,
 };
-pub use property::{ChangeSignal, Property};
+pub use property::{ChangeSignal, InputProperty, Property};
 pub use range::{
     DialInputMode, IndicatorState, RangeAction, SliderInterval, SliderRange, indicator_state,
     progress_value,
@@ -88,12 +104,21 @@ pub use range::{
 #[doc(hidden)]
 pub use repeat::Repeater;
 #[doc(hidden)]
+pub use row_heights::{RowHeightOverrides, RowHeightProjection, RowHeights};
+#[doc(hidden)]
 pub use scene_plan::{
     GridCellPosition, GridCellSlot, GridPlanner, GridTrackInput, StaticVectorPath, VectorSegment,
 };
 pub use stack::{StackNavigation, StackSnapshot, StackState};
 use std::{collections::BTreeMap, rc::Rc, sync::Arc};
 pub use styled_text::{StyledLink, StyledRun, StyledText, StyledTextError, TextStyle};
+#[doc(hidden)]
+pub use table_clipboard::{
+    TablePaste, TablePasteInput, paste_table_text, table_paste_bool, table_paste_check_state,
+};
+#[doc(hidden)]
+pub use table_history::{TablePasteHistory, TableRowPatch};
+pub use table_selection::copy_table_text;
 pub use table_selection::{
     RowSelection, SelectionTarget, TableSelection, TableSelectionAction, TableSelectionSnapshot,
 };
@@ -107,6 +132,12 @@ pub use timer::{
 };
 pub use tree::{TreeAction, TreeItem, TreeSelectionAction, TreeSnapshot, TreeState};
 pub use tumbler::{Tumbler, TumblerItems};
+pub use viewport::{
+    ScrollAction, ScrollAlignment, ScrollContext, ScrollRequest, ScrollRequests, ViewportHandle,
+};
+pub use window_status::{WindowCommand, WindowStatus};
+#[doc(hidden)]
+pub use window_status::{WindowMetric, WindowStatusBinding};
 
 /// A UI-thread handle that can be captured by callbacks without keeping a component alive.
 pub struct WeakComponent<C>(Rc<dyn Fn() -> Option<C>>);
@@ -153,6 +184,19 @@ pub trait Component {
         false
     }
 
+    /// Consume presentation commands in the order emitted by the component.
+    fn take_window_commands(&mut self) -> Vec<WindowCommand> {
+        Vec::new()
+    }
+
+    #[doc(hidden)]
+    fn has_window_commands(&self) -> bool {
+        false
+    }
+
+    /// Publish native state after reading it from the window backend.
+    fn publish_window_status(&self, _status: WindowStatus) {}
+
     /// Native child windows currently requested by this component.
     #[doc(hidden)]
     fn secondary_windows(&self) -> Option<Rc<[SecondaryWindowRegistration]>> {
@@ -162,6 +206,27 @@ pub trait Component {
     /// Render the requested model rows of a virtual view in a base scene.
     fn list_rows(&self, _path: &[usize], _rows: std::ops::Range<usize>) -> Vec<Node> {
         Vec::new()
+    }
+
+    #[doc(hidden)]
+    fn copy_table_at(&self, _scene: &Node, _path: &[usize], _columns: &[usize]) -> Option<String> {
+        None
+    }
+
+    #[doc(hidden)]
+    fn prepare_table_paste(
+        &self,
+        _scene: &Node,
+        _path: &[usize],
+        _row: usize,
+        _columns: Vec<usize>,
+    ) -> Option<TablePaste> {
+        None
+    }
+
+    #[doc(hidden)]
+    fn replay_table_paste_at(&self, _scene: &Node, _path: &[usize], _redo: bool) -> bool {
+        false
     }
 
     fn dispatch(&mut self, element_id: &str, event: &str) -> bool;
@@ -261,12 +326,39 @@ impl<T: Component + ?Sized> Component for Box<T> {
     fn take_window_close_request(&mut self) -> bool {
         (**self).take_window_close_request()
     }
+    fn take_window_commands(&mut self) -> Vec<WindowCommand> {
+        (**self).take_window_commands()
+    }
+    fn has_window_commands(&self) -> bool {
+        (**self).has_window_commands()
+    }
+    fn publish_window_status(&self, status: WindowStatus) {
+        (**self).publish_window_status(status);
+    }
     fn secondary_windows(&self) -> Option<Rc<[SecondaryWindowRegistration]>> {
         (**self).secondary_windows()
     }
 
     fn list_rows(&self, path: &[usize], rows: std::ops::Range<usize>) -> Vec<Node> {
         (**self).list_rows(path, rows)
+    }
+
+    fn copy_table_at(&self, scene: &Node, path: &[usize], columns: &[usize]) -> Option<String> {
+        (**self).copy_table_at(scene, path, columns)
+    }
+
+    fn prepare_table_paste(
+        &self,
+        scene: &Node,
+        path: &[usize],
+        row: usize,
+        columns: Vec<usize>,
+    ) -> Option<TablePaste> {
+        (**self).prepare_table_paste(scene, path, row, columns)
+    }
+
+    fn replay_table_paste_at(&self, scene: &Node, path: &[usize], redo: bool) -> bool {
+        (**self).replay_table_paste_at(scene, path, redo)
     }
 
     fn dispatch(&mut self, element_id: &str, event: &str) -> bool {
@@ -687,6 +779,7 @@ pub enum Value {
     FlexboxLayoutWrap(FlexboxLayoutWrap),
     DialInputMode(DialInputMode),
     ScrollBarPolicy(ScrollBarPolicy),
+    ScrollAlignment(ScrollAlignment),
     TextWrap(TextWrap),
     TextHorizontalAlignment(TextHorizontalAlignment),
     TextVerticalAlignment(TextVerticalAlignment),
@@ -745,6 +838,7 @@ value_from!(FlexboxLayoutDirection, FlexboxLayoutDirection);
 value_from!(FlexboxLayoutWrap, FlexboxLayoutWrap);
 value_from!(DialInputMode, DialInputMode);
 value_from!(ScrollBarPolicy, ScrollBarPolicy);
+value_from!(ScrollAlignment, ScrollAlignment);
 value_from!(TextWrap, TextWrap);
 value_from!(TextHorizontalAlignment, TextHorizontalAlignment);
 value_from!(TextVerticalAlignment, TextVerticalAlignment);
@@ -807,18 +901,32 @@ pub struct NodeData {
     #[doc(hidden)]
     pub focus_handle: Option<FocusHandle>,
     #[doc(hidden)]
+    pub viewport_handle: Option<ViewportHandle>,
+    #[doc(hidden)]
+    pub geometry_handle: Option<GeometryHandle>,
+    #[doc(hidden)]
+    pub instance_geometry_handle: Option<GeometryHandle>,
+    #[doc(hidden)]
     pub initial_focus: Option<FocusHandle>,
     #[doc(hidden)]
     pub key_handlers: u8,
     pub list: Option<ListMetrics>,
+    #[doc(hidden)]
+    pub row_locator: Option<ListRowLocator>,
+    #[doc(hidden)]
+    pub row_heights: Option<Arc<RowHeights>>,
     /// Selection snapshot for model-backed views. Retains the generated field name.
     #[doc(hidden)]
     pub standard_list_stamp: Option<(u64, u64)>,
     pub table_header: Option<Box<TableHeader>>,
+    #[doc(hidden)]
+    pub table_column_order: TableColumnOrder,
     pub table_selection: Option<Box<TableSelectionSnapshot>>,
     pub tree: Option<Arc<TreeSnapshot>>,
     pub stack: Option<Arc<StackSnapshot>>,
     pub action: Option<ActionKey>,
+    #[doc(hidden)]
+    pub button_group: Option<ButtonGroupMembership>,
     /// Selected TreeView business keys and model row identities, including folded descendants.
     pub tree_selection: Option<Arc<BTreeMap<i64, RowKey>>>,
     pub split_weights: Option<Arc<[Option<f32>]>>,
@@ -877,15 +985,22 @@ impl NodeData {
             animations,
             state_timings,
             focus_handle,
+            viewport_handle,
+            geometry_handle,
+            instance_geometry_handle,
             initial_focus,
             key_handlers,
             list,
+            row_locator,
+            row_heights,
             standard_list_stamp,
             table_header,
+            table_column_order,
             table_selection,
             tree,
             stack,
             action,
+            button_group,
             tree_selection,
             split_weights,
             row_key,
@@ -916,7 +1031,7 @@ pub fn is_toggle(kind: &str) -> bool {
 impl Node {
     #[doc(hidden)]
     pub fn enables_children(&self) -> bool {
-        is_drag_area(self.kind) || self.boolean("enabled", true)
+        is_drag_area(self.kind) || self.kind == "WindowMoveArea" || self.boolean("enabled", true)
     }
     pub fn check_state(&self) -> CheckState {
         match self.properties.get("check-state") {
@@ -953,15 +1068,22 @@ impl Node {
             animations: BTreeMap::new(),
             state_timings: None,
             focus_handle: None,
+            viewport_handle: None,
+            geometry_handle: None,
+            instance_geometry_handle: None,
             initial_focus: None,
             key_handlers: 0,
             list: None,
+            row_locator: None,
+            row_heights: None,
             standard_list_stamp: None,
             table_header: None,
+            table_column_order: TableColumnOrder::default(),
             table_selection: None,
             tree: None,
             stack: None,
             action: None,
+            button_group: None,
             tree_selection: None,
             split_weights: None,
             row_key: None,
@@ -1033,6 +1155,16 @@ impl Node {
         let relevant = |(name, _): &(&&str, &Value)| match **name {
             "background" => !ignore_background,
             "opacity" => false,
+            "drop-shadow-blur"
+            | "drop-shadow-color"
+            | "drop-shadow-offset-x"
+            | "drop-shadow-offset-y"
+            | "drop-shadow-spread"
+            | "inner-shadow-blur"
+            | "inner-shadow-color"
+            | "inner-shadow-offset-x"
+            | "inner-shadow-offset-y"
+            | "inner-shadow-spread" => self.kind != "Rectangle",
             "current-frame" => !ignore_frame,
             "colorize" => !ignore_colorize,
             _ => true,

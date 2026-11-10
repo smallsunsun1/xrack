@@ -1,7 +1,9 @@
 use femtovg::{Align, Baseline, Color, FontId, Paint, TextContext, TextDecoration, TextMetrics};
 use fontdb::{Database, Family, Query, Style, Weight};
 use std::{cell::RefCell, collections::HashMap, ops::Range, rc::Rc, sync::Arc};
-use xrack_layout::{LabelLayout, Rect, Size, StyledTextLayout, TextAreaLayout, TextMeasurer};
+use xrack_layout::{
+    LabelLayout, Rect, Size, StyledTextLayout, TextAreaLayout, TextMeasurer, VisualTextLine,
+};
 use xrack_runtime::{EmbeddedFonts, Node, TextStyle, TextWrap};
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
@@ -183,6 +185,13 @@ struct EditLayout {
     layout: TextAreaLayout,
 }
 
+struct EditLine {
+    text: String,
+    size: f32,
+    face: Option<StyledFace>,
+    geometry: Rc<VisualTextLine>,
+}
+
 /// One font registry and shaping cache shared by measurement and drawing.
 pub struct TextSystem {
     base: FontContext,
@@ -194,6 +203,7 @@ pub struct TextSystem {
     default_italic: bool,
     default_size: Option<f32>,
     edit_layout: RefCell<Option<EditLayout>>,
+    edit_line: RefCell<Option<EditLine>>,
 }
 
 impl TextSystem {
@@ -323,6 +333,7 @@ impl TextSystem {
             default_italic: false,
             default_size: None,
             edit_layout: RefCell::default(),
+            edit_line: RefCell::default(),
         }
     }
 
@@ -335,6 +346,7 @@ impl TextSystem {
             }
             self.active_fonts = scene.fonts;
             self.edit_layout.get_mut().take();
+            self.edit_line.get_mut().take();
         }
         self.default_family.clear();
         self.default_family
@@ -505,6 +517,41 @@ impl TextSystem {
         }
     }
 
+    fn shape_visual_line(&self, text: &str, paint: &Paint) -> VisualTextLine {
+        let metrics = self
+            .context()
+            .measure_text(0.0, 0.0, text, paint)
+            .unwrap_or_default();
+        VisualTextLine::new(
+            text,
+            metrics
+                .glyphs
+                .into_iter()
+                .map(|glyph| (glyph.byte_index, glyph.advance_x)),
+        )
+    }
+
+    pub fn single_line_layout(&self, node: &Node, text: &str) -> Rc<VisualTextLine> {
+        let size = self.font_size(node);
+        let face = self.face(Some(node), TextStyle::default());
+        if let Some(last) = &*self.edit_line.borrow()
+            && last.size == size
+            && last.face == face
+            && last.text == text
+        {
+            return last.geometry.clone();
+        }
+        let paint = self.paint_face(face, size, Color::white(), false);
+        let geometry = Rc::new(self.shape_visual_line(text, &paint));
+        self.edit_line.replace(Some(EditLine {
+            text: text.into(),
+            size,
+            face,
+            geometry: geometry.clone(),
+        }));
+        geometry
+    }
+
     pub fn text_area_layout(&self, node: &Node, bounds: Rect, text: &str) -> TextAreaLayout {
         let area = bounds.inset(node.length("padding").unwrap_or(6.0).max(0.0));
         let size = self.font_size(node);
@@ -520,7 +567,7 @@ impl TextSystem {
             return last.layout.clone().with_viewport(area);
         }
         let paint = self.paint_face(face, size, Color::white(), false);
-        let layout = TextAreaLayout::new(
+        let layout = TextAreaLayout::shaped(
             text,
             area,
             size * 1.4,
@@ -531,6 +578,7 @@ impl TextSystem {
                     .break_text(area.width + 0.01, text, &paint)
                     .unwrap_or(text.len())
             },
+            |text| self.shape_visual_line(text, &paint),
         );
         self.edit_layout.replace(Some(EditLayout {
             text: text.into(),

@@ -5,11 +5,15 @@ mod image;
 mod image_colorize;
 mod nine_slice;
 mod range;
+mod shadow;
 mod styled_text;
 mod text;
 mod theme;
 mod vector;
-use femtovg::{Canvas, Color, LayerEffects, Paint, Path, Solidity, renderer::WGPURenderer};
+use femtovg::{
+    Canvas, Color, FillRule, LayerEffects, Paint, Path, Solidity, Transform2D,
+    renderer::WGPURenderer,
+};
 use std::{
     fs::File,
     io::BufWriter,
@@ -21,8 +25,9 @@ pub use text::TextSystem;
 pub use theme::Theme;
 use theme::{Palette, PaletteRole as Role};
 use xrack_layout::{
-    ButtonContent, ComboCompletion, ImagePresentation, Interaction, LayoutNode, Rect, Size,
-    SpinGeometry, StackTransitions, TextMeasurer, TreeRowGeometry, dialog_title_height,
+    Affine, ButtonContent, ComboCompletion, ImagePresentation, Interaction, LayoutNode, Point,
+    Rect, Size, SpinGeometry, StackTransitions, TextMeasurer, TreeRowGeometry, corner_radii,
+    dialog_title_height,
 };
 use xrack_runtime::{
     Brush, Color as UiColor, ColorScheme, Component, GradientStop, Node, StandardButtonKind, Value,
@@ -60,15 +65,27 @@ fn tint(value: UiColor, factor: f32) -> UiColor {
 }
 
 fn brush_paint(node: &Node, name: &str, bounds: Rect, shade: f32) -> Option<Paint> {
+    brush_paint_with(node, name, bounds, |value| color(tint(value, shade)))
+}
+
+fn brush_paint_with(
+    node: &Node,
+    name: &str,
+    bounds: Rect,
+    map: impl Fn(UiColor) -> Color,
+) -> Option<Paint> {
     match node.properties.get(name)? {
-        Value::Color(value) => Some(Paint::color(color(tint(*value, shade)))),
-        Value::Brush(brush) => Some(paint_brush(brush, bounds, shade)),
+        Value::Color(value) => Some(Paint::color(map(*value))),
+        Value::Brush(brush) => Some(paint_brush_with(brush, bounds, map)),
         _ => None,
     }
 }
 
 fn paint_brush(brush: &Brush, bounds: Rect, shade: f32) -> Paint {
-    let tinted = |value| color(tint(value, shade));
+    paint_brush_with(brush, bounds, |value| color(tint(value, shade)))
+}
+
+fn paint_brush_with(brush: &Brush, bounds: Rect, tinted: impl Fn(UiColor) -> Color) -> Paint {
     let stop = |stop: &GradientStop| (stop.offset as f32, tinted(stop.color));
     let cx = bounds.x + bounds.width * 0.5;
     let cy = bounds.y + bounds.height * 0.5;
@@ -445,14 +462,92 @@ impl Renderer {
         frame: PaintFrame<'_>,
         in_layout: bool,
     ) -> Result<(), String> {
-        if !layout.visible {
+        let local = layout.local_transform();
+        let pane = layout.table_pane_clip();
+        if local == Affine::IDENTITY && pane.is_none() {
+            return self.paint_in_space(node, layout, path, frame, in_layout);
+        }
+        self.canvas.save();
+        if let Some((bounds, transform)) = pane {
+            let corners = [
+                Point {
+                    x: bounds.x,
+                    y: bounds.y,
+                },
+                Point {
+                    x: bounds.x + bounds.width,
+                    y: bounds.y,
+                },
+                Point {
+                    x: bounds.x + bounds.width,
+                    y: bounds.y + bounds.height,
+                },
+                Point {
+                    x: bounds.x,
+                    y: bounds.y + bounds.height,
+                },
+            ]
+            .map(|point| transform.map_point(point));
+            let mut mask = Path::new();
+            mask.move_to(corners[0].x, corners[0].y);
+            for point in &corners[1..] {
+                mask.line_to(point.x, point.y);
+            }
+            mask.close();
+            self.canvas.clip_path(&mask, FillRule::NonZero);
+        }
+        if local != Affine::IDENTITY {
+            self.canvas.set_transform(&Transform2D(local.0));
+        }
+        let result = self.paint_in_space(node, layout, path, frame, in_layout);
+        self.canvas.restore();
+        result
+    }
+
+    fn paint_in_space(
+        &mut self,
+        node: &Node,
+        layout: &LayoutNode,
+        path: &mut Vec<usize>,
+        frame: PaintFrame<'_>,
+        in_layout: bool,
+    ) -> Result<(), String> {
+        let opacity = node.opacity();
+        if !layout.visible || opacity == 0.0 {
             return Ok(());
         }
-        self.paint_group(
-            layout.clip.intersect(layout.bounds),
-            node.opacity(),
-            |renderer| renderer.paint_element(node, layout, path, frame, in_layout),
+        let content = layout.clip.intersect(layout.bounds);
+        let shadow = shadow::OuterShadow::for_node(
+            node,
+            layout.bounds,
+            frame.scale * layout.world_transform().max_scale(),
+            frame.theme.role(Role::Border),
         )
+        .and_then(|shadow| {
+            let effect = layout.clip.intersect(shadow.paint_bounds());
+            shadow::nonempty(effect).then_some((shadow, effect))
+        });
+        if layout.allows_overflow() {
+            // The group must cover descendants outside the box, including their
+            // paint-only effects. The enclosing viewport is its hard bound.
+            return self.paint_group(layout.clip, opacity, |renderer| {
+                if let Some((shadow, effect)) = shadow {
+                    shadow.draw(&mut renderer.canvas, effect);
+                }
+                renderer.paint_element(node, layout, path, frame, in_layout)
+            });
+        }
+        if let Some((shadow, effect)) = shadow {
+            return self.paint_group(shadow::union(content, effect), opacity, |renderer| {
+                shadow.draw(&mut renderer.canvas, effect);
+                renderer.paint_group(content, 1.0, |renderer| {
+                    renderer.paint_element(node, layout, path, frame, in_layout)
+                })
+            });
+        }
+        self.paint_group(content, opacity, |renderer| {
+            renderer.paint_element(node, layout, path, frame, in_layout)
+        })
     }
 
     fn paint_group(
@@ -465,8 +560,25 @@ impl Renderer {
             return Ok(());
         }
         self.canvas.save();
-        self.canvas
-            .intersect_scissor(clip.x, clip.y, clip.width, clip.height);
+        let transform = self.canvas.transform();
+        let [_, b, c, _, _, _] = transform.0;
+        if b == 0.0 && c == 0.0 {
+            self.canvas
+                .intersect_scissor(clip.x, clip.y, clip.width, clip.height);
+        } else {
+            if opacity < 1.0 {
+                // Bound the offscreen allocation in device space while keeping
+                // the exact rotated clip for the final composite.
+                let capture = Affine(transform.0).map_rect(clip).inset(-1.0);
+                self.canvas.reset_transform();
+                self.canvas
+                    .intersect_scissor(capture.x, capture.y, capture.width, capture.height);
+                self.canvas.set_transform(&transform);
+            }
+            let mut mask = Path::new();
+            mask.rect(clip.x, clip.y, clip.width, clip.height);
+            self.canvas.clip_path(&mask, FillRule::NonZero);
+        }
         let layer = opacity < 1.0;
         if layer {
             // FemtoVG supplies a pass-through fallback when it cannot reserve a layer.
@@ -490,12 +602,53 @@ impl Renderer {
         frame: PaintFrame<'_>,
         in_layout: bool,
     ) -> Result<(), String> {
+        let content = layout.clip.intersect(layout.bounds);
+        if layout.allows_overflow() {
+            self.paint_group(content, 1.0, |renderer| {
+                renderer.paint_surface(node, layout, path, frame, in_layout)
+            })?;
+        } else {
+            self.paint_surface(node, layout, path, frame, in_layout)?;
+        }
+        if matches!(node.kind, "Menu" | "SplitHandle") {
+            return Ok(());
+        }
+        if let Some(clip) = layout.child_clip_shape() {
+            let mut path_clip = Path::new();
+            append_rect(&mut path_clip, clip.bounds, clip.radii);
+            self.canvas.save();
+            self.canvas.clip_path(&path_clip, FillRule::NonZero);
+            let result = self.paint_children(node, layout, path, frame);
+            self.canvas.restore();
+            result?;
+        } else {
+            self.paint_children(node, layout, path, frame)?;
+        }
+        if layout.allows_overflow() {
+            self.paint_group(content, 1.0, |renderer| {
+                renderer.paint_chrome(node, layout, path, frame);
+                Ok(())
+            })
+        } else {
+            self.paint_chrome(node, layout, path, frame);
+            Ok(())
+        }
+    }
+
+    fn paint_surface(
+        &mut self,
+        node: &Node,
+        layout: &LayoutNode,
+        path: &mut Vec<usize>,
+        frame: PaintFrame<'_>,
+        in_layout: bool,
+    ) -> Result<(), String> {
         let PaintFrame {
             input,
             scale,
-            transitions,
             indicator_phase,
             theme,
+            ..
         } = frame;
         let bounds = layout.bounds;
         let group_header = (node.kind == "GroupBox").then(|| layout.group_header(node));
@@ -602,6 +755,8 @@ impl Renderer {
             append_rect(&mut path, bounds, radii);
             self.canvas.fill_path(&path, &background);
         }
+        let image_scale = scale * layout.world_transform().max_scale();
+        shadow::draw_inner(&mut self.canvas, node, bounds, radii, image_scale);
         if node.kind == "DelayButton" {
             let (fraction, pending) = input.delay_progress(path).unwrap_or((0.0, false));
             let fraction = if checked { 1.0 } else { fraction };
@@ -683,13 +838,7 @@ impl Renderer {
             .max(0.0)
             .min(bounds.width.min(bounds.height));
         if border > 0.0 {
-            let mut path = Path::new();
-            append_rect(&mut path, bounds, radii);
-            let inner = bounds.inset(border);
-            if inner.width > 0.0 && inner.height > 0.0 {
-                append_rect(&mut path, inner, radii.map(|r| (r - border).max(0.0)));
-                path.solidity(Solidity::Hole);
-            }
+            let path = border_path(bounds, radii, border);
             let paint = brush_paint(node, "border-color", bounds, 0.0)
                 .unwrap_or_else(|| Paint::color(color(theme.role(Role::Border))));
             self.canvas.fill_path(&path, &paint);
@@ -729,7 +878,7 @@ impl Renderer {
                 &mut self.canvas,
                 image,
                 bounds,
-                scale,
+                image_scale,
                 presentation,
                 image::Colorize::from_value(node.properties.get("colorize")),
             )?;
@@ -1110,7 +1259,35 @@ impl Renderer {
                     )
                 },
             )?;
+            if let Some(x) = input.table_column_move_marker(path, node, layout) {
+                let marker = Rect::new(x - 1.0, table.header.y, 2.0, table.header.height)
+                    .intersect(table.header)
+                    .intersect(layout.clip);
+                if marker.width > 0.0 && marker.height > 0.0 {
+                    let mut path = Path::new();
+                    path.rect(marker.x, marker.y, marker.width, marker.height);
+                    self.canvas
+                        .fill_path(&path, &Paint::color(color(theme.focus)));
+                }
+            }
         }
+        Ok(())
+    }
+
+    fn paint_children(
+        &mut self,
+        node: &Node,
+        layout: &LayoutNode,
+        path: &mut Vec<usize>,
+        frame: PaintFrame<'_>,
+    ) -> Result<(), String> {
+        let PaintFrame {
+            transitions,
+            scale,
+            theme,
+            ..
+        } = frame;
+        let bounds = layout.bounds;
         let is_layout = xrack_layout::is_layout(node.kind);
         let slide = transitions.and_then(|transitions| transitions.at(path));
         let slide_viewport = bounds.intersect(layout.clip);
@@ -1155,6 +1332,18 @@ impl Renderer {
             path.pop();
             result?;
         }
+        Ok(())
+    }
+
+    fn paint_chrome(
+        &mut self,
+        node: &Node,
+        layout: &LayoutNode,
+        path: &[usize],
+        frame: PaintFrame<'_>,
+    ) {
+        let PaintFrame { input, theme, .. } = frame;
+        let bounds = layout.bounds;
         if let Some((rect, _)) = layout
             .swipe_delegate
             .as_deref()
@@ -1201,6 +1390,20 @@ impl Renderer {
                         .split_last()
                         .is_some_and(|(_, table)| input.is_focused(table)),
             );
+            if let Some((_, table)) = path.split_last()
+                && node
+                    .row_key
+                    .is_some_and(|key| input.table_resize_row(table) == Some(key))
+            {
+                let grip = Rect::new(bounds.x, bounds.y + bounds.height - 2.0, bounds.width, 2.0)
+                    .intersect(layout.clip);
+                if grip.width > 0.0 && grip.height > 0.0 {
+                    let mut path = Path::new();
+                    path.rect(grip.x, grip.y, grip.width, grip.height);
+                    self.canvas
+                        .fill_path(&path, &Paint::color(color(theme.focus)));
+                }
+            }
             if node.boolean("tree-has-children", false)
                 && let Some(tree) = TreeRowGeometry::new(node, bounds)
             {
@@ -1227,6 +1430,23 @@ impl Renderer {
                 cell_current,
             );
         }
+        if let Some(table) = &layout.table
+            && let Some(boundary) = table.frozen_boundary()
+        {
+            let seam = Rect::new(
+                boundary - 1.0,
+                table.header.y,
+                1.0,
+                table.header.height + table.body.height,
+            )
+            .intersect(layout.clip);
+            if seam.width > 0.0 && seam.height > 0.0 {
+                let mut path = Path::new();
+                path.rect(seam.x, seam.y, seam.width, seam.height);
+                self.canvas
+                    .fill_path(&path, &Paint::color(color(theme.role(Role::Divider))));
+            }
+        }
         for bar in layout.scroll_bars(node) {
             range::scroll_bar(
                 &mut self.canvas,
@@ -1236,7 +1456,6 @@ impl Renderer {
                 input.scroll_bar_highlighted(path, bar.orientation),
             );
         }
-        Ok(())
     }
 
     /// Actual GPU rendering followed by bounded GPU→CPU readback for PNGs/tests.
@@ -1396,34 +1615,19 @@ impl Renderer {
     }
 }
 
-fn corner_radii(node: &Node, bounds: Rect) -> [f32; 4] {
-    let radius = node
-        .length("border-radius")
-        .unwrap_or(if node.kind == "Dialog" {
-            12.0
-        } else if is_button(node.kind) || is_text_input(node.kind) {
-            7.0
-        } else {
-            0.0
-        });
-    let radii = [
-        "border-top-left-radius",
-        "border-top-right-radius",
-        "border-bottom-right-radius",
-        "border-bottom-left-radius",
-    ]
-    .map(|name| node.length(name).unwrap_or(radius).max(0.0));
-    let [tl, tr, br, bl] = radii;
-    let scale = [
-        (bounds.width, tl + tr),
-        (bounds.width, bl + br),
-        (bounds.height, tl + bl),
-        (bounds.height, tr + br),
-    ]
-    .into_iter()
-    .filter(|(_, sum)| *sum > 0.0)
-    .fold(1.0_f32, |scale, (side, sum)| scale.min(side / sum));
-    radii.map(|radius| radius * scale)
+fn border_path(bounds: Rect, radii: [f32; 4], border: f32) -> Path {
+    let mut path = Path::new();
+    append_rect(&mut path, bounds, radii);
+    let inner = bounds.inset(border);
+    if inner.width > 0.0 && inner.height > 0.0 {
+        append_rect(
+            &mut path,
+            inner,
+            radii.map(|radius| (radius - border).max(0.0)),
+        );
+        path.solidity(Solidity::Hole);
+    }
+    path
 }
 
 fn append_rect(path: &mut Path, bounds: Rect, [tl, tr, br, bl]: [f32; 4]) {

@@ -41,6 +41,7 @@ def XR_FlexboxLayoutDirection : XR_Type<"FlexboxLayoutDirection", "flexboxlayout
 def XR_FlexboxLayoutWrap : XR_Type<"FlexboxLayoutWrap", "flexboxlayoutwrap">;
 def XR_DialInputMode : XR_Type<"DialInputMode", "dialinputmode">;
 def XR_ScrollBarPolicy : XR_Type<"ScrollBarPolicy", "scrollbarpolicy">;
+def XR_ScrollAlignment : XR_Type<"ScrollAlignment", "scrollalignment">;
 def XR_TextWrap : XR_Type<"TextWrap", "textwrap">;
 def XR_TextHorizontalAlignment : XR_Type<"TextHorizontalAlignment", "texthorizontalalignment">;
 def XR_TextVerticalAlignment : XR_Type<"TextVerticalAlignment", "textverticalalignment">;
@@ -69,7 +70,7 @@ def XR_Value : AnyTypeOf<[XR_Int, XR_Float, XR_Bool, XR_String, XR_StyledText, X
                          XR_EventResult, XR_FocusReason, XR_KeyEvent, XR_KeyModifiers,
                          XR_Brush, XR_Image, XR_ImageFit, XR_ImageTileMode,
                          XR_ImageHorizontalAlignment, XR_ImageVerticalAlignment, XR_ImageRendering, XR_LayoutAlignment, XR_CrossAxisAlignment,
-                         XR_Orientation, XR_FlexboxLayoutDirection, XR_FlexboxLayoutWrap, XR_DialInputMode, XR_ScrollBarPolicy, XR_TextWrap, XR_TextHorizontalAlignment, XR_TextVerticalAlignment, XR_TextOverflow, XR_InputType, XR_ColorScheme, XR_FileDialogMode, XR_MessageLevel, XR_MessageButtons, XR_CheckState, XR_DialogRole, XR_StandardButtonKind, XR_SwipeSide, XR_DragAction, XR_DrawerEdge, XR_PopupPlacement, XR_SelectionTarget, XR_Date, XR_Time]>;
+                         XR_Orientation, XR_FlexboxLayoutDirection, XR_FlexboxLayoutWrap, XR_DialInputMode, XR_ScrollBarPolicy, XR_ScrollAlignment, XR_TextWrap, XR_TextHorizontalAlignment, XR_TextVerticalAlignment, XR_TextOverflow, XR_InputType, XR_ColorScheme, XR_FileDialogMode, XR_MessageLevel, XR_MessageButtons, XR_CheckState, XR_DialogRole, XR_StandardButtonKind, XR_SwipeSide, XR_DragAction, XR_DrawerEdge, XR_PopupPlacement, XR_SelectionTarget, XR_Date, XR_Time]>;
 def XR_Stringifiable : AnyTypeOf<[XR_Int, XR_Float, XR_Bool, XR_Date, XR_Time]>;
 
 class XR_Op<string mnemonic, list<Trait> traits = []> : Op<Xrack_Dialect, mnemonic, traits>;
@@ -99,8 +100,10 @@ def XR_InstanceOp : XR_ScopeOp<"instance", [HasParent<"ElementOp">]> {
   let arguments = (ins FlatSymbolRefAttr:$component, StrAttr:$id, StrAttr:$key);
   let hasVerifier = 1;
 }
-def XR_CallbackOp : XR_ScopeOp<"callback", [HasParent<"ComponentOp">]> {
-  let arguments = (ins StrAttr:$name, StrAttr:$parameters, OptionalAttr<StrAttr>:$pure);
+def XR_CallbackOp : XR_ScopeOp<"callback", [ParentOneOf<["ComponentOp", "ElementOp", "InstanceOp"]>]> {
+  let arguments = (ins StrAttr:$name, StrAttr:$parameters, OptionalAttr<StrAttr>:$pure,
+                       OptionalAttr<StrAttr>:$alias_owner, OptionalAttr<StrAttr>:$alias_name,
+                       OptionalAttr<StrAttr>:$implementation);
   let hasVerifier = 1;
 }
 def XR_HandlerOp : XR_ScopeOp<"handler", [HasParent<"ElementOp">]> {
@@ -109,13 +112,20 @@ def XR_HandlerOp : XR_ScopeOp<"handler", [HasParent<"ElementOp">]> {
 }
 
 def XR_PropertyOp : XR_Op<"property"> {
-  let arguments = (ins XR_Value:$initial, StrAttr:$name, StrAttr:$visibility);
+  let arguments = (ins XR_Value:$initial, StrAttr:$name, StrAttr:$visibility, OptionalAttr<StrAttr>:$alias);
+  let hasVerifier = 1;
 }
 def XR_BindOp : XR_Op<"bind"> {
   let arguments = (ins XR_Value:$input, StrAttr:$name);
 }
 def XR_ActionRefOp : XR_Op<"action_ref", [HasParent<"ElementOp">]> {
   let arguments = (ins StrAttr:$owner);
+}
+def XR_RadioGroupRefOp : XR_Op<"radio_group_ref", [HasParent<"ElementOp">]> {
+  let arguments = (ins StrAttr:$group);
+}
+def XR_CheckGroupRefOp : XR_Op<"check_group_ref", [HasParent<"ElementOp">]> {
+  let arguments = (ins StrAttr:$group, StrAttr:$property);
 }
 def XR_FocusTargetOp : XR_Op<"focus_target", [HasParent<"ElementOp">]> {
   let arguments = (ins StrAttr:$target);
@@ -129,16 +139,20 @@ def XR_AnimateOp : XR_Op<"animate", [HasParent<"ElementOp">]> {
                        OptionalAttr<I64Attr>:$delay, OptionalAttr<DenseF64ArrayAttr>:$curve);
   let hasVerifier = 1;
 }
-def XR_StateSelectOp : XR_Op<"state_select", [HasParent<"ElementOp">]> {
+def XR_StateSelectOp : XR_Op<"state_select", [ParentOneOf<["ElementOp", "InstanceOp"]>]> {
   let arguments = (ins Variadic<XR_Bool>:$conditions, StrAttr:$owner, ArrayAttr:$names);
   let results = (outs XR_Int:$selected);
   let hasVerifier = 1;
 }
-def XR_StateSetOp : XR_Op<"state_set", [HasParent<"ElementOp">]> {
+def XR_StateSetOp : XR_Op<"state_set", [ParentOneOf<["ElementOp", "InstanceOp"]>]> {
   let arguments = (ins XR_Int:$selector, XR_Value:$input, StrAttr:$name, I64Attr:$case_index);
   let hasVerifier = 1;
 }
-def XR_StateTimingOp : XR_Op<"state_timing", [HasParent<"ElementOp">]> {
+def XR_InstanceStateOp : XR_Op<"instance_state", [HasParent<"InstanceOp">]> {
+  let arguments = (ins XR_Int:$selector, XR_Value:$input, StrAttr:$name, I64Attr:$case_index);
+  let hasVerifier = 1;
+}
+def XR_StateTimingOp : XR_Op<"state_timing", [ParentOneOf<["ElementOp", "InstanceOp"]>]> {
   let arguments = (ins XR_Int:$selector, XR_Int:$input, Optional<XR_Bool>:$enabled,
                        StrAttr:$name, I64Attr:$case_index, StrAttr:$direction,
                        OptionalAttr<I64Attr>:$delay, OptionalAttr<DenseF64ArrayAttr>:$curve);
@@ -150,7 +164,15 @@ def XR_RepeatOp : XR_Op<"repeat", [ParentOneOf<["ElementOp", "InstanceOp"]>]> {
 }
 def XR_ControlLinkOp : XR_Op<"control_link", [HasParent<"ElementOp">]> {
   let arguments = (ins AnyTypeOf<[XR_String, XR_Bool, XR_Float, XR_Int, XR_Date, XR_Time,
-                                 XR_CheckState, XR_SwipeSide, XR_Color]>:$input, StrAttr:$name);
+                                 XR_CheckState, XR_SwipeSide, XR_Color, XR_Length]>:$input, StrAttr:$name);
+  let hasVerifier = 1;
+}
+def XR_InstanceLinkOp : XR_Op<"instance_link", [HasParent<"InstanceOp">]> {
+  let arguments = (ins XR_Value:$input, StrAttr:$name);
+  let hasVerifier = 1;
+}
+def XR_ClipboardPasteOp : XR_ScopeOp<"clipboard_paste", [HasParent<"InstanceOp">]> {
+  let arguments = (ins StrAttr:$target, StrAttr:$text_parameter);
   let hasVerifier = 1;
 }
 def XR_RowLinkOp : XR_Op<"row_link", [HasParent<"ElementOp">]> {
@@ -164,7 +186,7 @@ def XR_LayoutBindOp : XR_Op<"layout_bind", [HasParent<"InstanceOp">]> {
 def XR_AssignOp : XR_Op<"assign"> {
   let arguments = (ins XR_Value:$input, StrAttr:$name, OptionalAttr<StrAttr>:$owner);
 }
-def XR_ReturnOp : XR_Op<"return", [ParentOneOf<["CallbackOp", "HandlerOp"]>]> {
+def XR_ReturnOp : XR_Op<"return", [ParentOneOf<["CallbackOp", "HandlerOp", "ClipboardPasteOp"]>]> {
   let arguments = (ins XR_Value:$input, StrAttr:$name);
 }
 def XR_InvokeOp : XR_Op<"invoke"> {
@@ -193,12 +215,38 @@ def XR_NativeDialogOpenOp : XR_Op<"native_dialog_open"> {
 def XR_WindowCloseOp : XR_Op<"window_close", [ParentOneOf<["CallbackOp", "HandlerOp"]>]> {
   let hasVerifier = 1;
 }
+def XR_WindowCommandOp : XR_Op<"window_command", [ParentOneOf<["CallbackOp", "HandlerOp"]>]> {
+  let arguments = (ins Optional<XR_Bool>:$enabled, StrAttr:$command);
+  let hasVerifier = 1;
+}
+def XR_CheckGroupCommandOp : XR_Op<"check_group_command", [ParentOneOf<["CallbackOp", "HandlerOp"]>]> {
+  let arguments = (ins XR_CheckState:$state, StrAttr:$owner);
+  let hasVerifier = 1;
+}
 def XR_SecondaryWindowCommandOp : XR_Op<"secondary_window_command", [ParentOneOf<["CallbackOp", "HandlerOp"]>]> {
   let arguments = (ins StrAttr:$owner, StrAttr:$command);
   let hasVerifier = 1;
 }
 def XR_FocusCommandOp : XR_Op<"focus_command", [ParentOneOf<["CallbackOp", "HandlerOp"]>]> {
   let arguments = (ins StrAttr:$target, StrAttr:$action);
+  let hasVerifier = 1;
+}
+def XR_TextCommandOp : XR_Op<"text_command", [ParentOneOf<["CallbackOp", "HandlerOp"]>]> {
+  let arguments = (ins Variadic<XR_Int>:$offsets, StrAttr:$owner, StrAttr:$method);
+  let hasVerifier = 1;
+}
+def XR_ScrollCommandOp : XR_Op<"scroll_command", [ParentOneOf<["CallbackOp", "HandlerOp"]>]> {
+  let arguments = (ins AnyTypeOf<[XR_Length, XR_Int]>:$position,
+                       AnyTypeOf<[XR_Length, XR_ScrollAlignment]>:$alignmentOrY,
+                       StrAttr:$owner, StrAttr:$method);
+  let hasVerifier = 1;
+}
+def XR_MoveColumnOp : XR_Op<"move_column", [ParentOneOf<["CallbackOp", "HandlerOp"]>]> {
+  let arguments = (ins XR_Int:$source, XR_Int:$destination, StrAttr:$owner);
+  let hasVerifier = 1;
+}
+def XR_SetRowHeightOp : XR_Op<"set_row_height", [ParentOneOf<["CallbackOp", "HandlerOp"]>]> {
+  let arguments = (ins XR_Int:$row, XR_Length:$height, StrAttr:$owner);
   let hasVerifier = 1;
 }
 
@@ -245,7 +293,20 @@ def XR_StackReadOp : XR_ExpressionOp<"stack_read", (ins StrAttr:$owner), AnyType
 def XR_ImagePlaybackReadOp : XR_ExpressionOp<"image_playback_read", (ins StrAttr:$owner), XR_Int> {
   let hasVerifier = 1;
 }
+def XR_WindowReadOp : XR_ExpressionOp<"window_read", (ins), XR_Bool, [Pure]> {
+  let hasVerifier = 1;
+}
+def XR_CheckGroupReadOp : XR_ExpressionOp<"check_group_read", (ins StrAttr:$owner), XR_CheckState>;
 def XR_FocusReadOp : XR_ExpressionOp<"focus_read", (ins StrAttr:$owner), XR_Bool, [Pure]> {
+  let hasVerifier = 1;
+}
+def XR_ControlReadOp : XR_ExpressionOp<"control_read", (ins StrAttr:$owner), XR_Value, [Pure]> {
+  let hasVerifier = 1;
+}
+def XR_GeometryReadOp : XR_ExpressionOp<"geometry_read", (ins StrAttr:$owner), AnyTypeOf<[XR_Length, XR_Bool]>, [Pure]> {
+  let hasVerifier = 1;
+}
+def XR_ViewportReadOp : XR_ExpressionOp<"viewport_read", (ins StrAttr:$owner), XR_Length, [Pure]> {
   let hasVerifier = 1;
 }
 def XR_ParamOp : XR_ExpressionOp<"param", (ins)>;
