@@ -37,7 +37,7 @@ jobs:
         run: rustup set default-host aarch64-pc-windows-msvc
       - name: Test Cargo runtime and desktop host
         run: >-
-          cargo test --locked
+          cargo test --release --locked
           -p xrack-runtime -p xrack-assets -p xrack-layout
           -p xrack-renderer-femtovg -p xrack-platform-winit
       - name: Verify publishable crates
@@ -113,7 +113,7 @@ jobs:
           cache-save: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
           bazelrc: |
             build --jobs=${{ runner.os == 'macOS' && '3' || '4' }}
-            build --experimental_disk_cache_gc_max_size=30G
+            build --experimental_disk_cache_gc_max_size=100G
       - name: Check Rust formatting through Bazel
         if: runner.os == 'macOS'
         run: |
@@ -158,7 +158,7 @@ jobs:
               app = stage / "app"
               shutil.copytree("examples/cargo-consumer", app)
               result = subprocess.run(
-                  ["cargo", "run", "--config",
+                  ["cargo", "run", "--release", "--config",
                    f"patch.crates-io.xrack-runtime.path={json.dumps(runtime.as_posix())}"],
                   cwd=app, check=True, text=True, stdout=subprocess.PIPE,
                   env={**os.environ, "XRACKC": str(compiler), "RUSTUP_TOOLCHAIN": toolchain},

@@ -136,11 +136,11 @@ C++ 使用 clangd。运行 **Bazel: Generate compile_commands.json** 或 `python
 
 本地并发数由 Bazel 根据宿主资源自动确定，需要临时调整时可传 `--jobs=N`。GitHub Actions 为 Linux 和 Windows runner 设置 4 个 job，为 macOS arm64 runner 设置 3 个。
 
-本地回收策略为 `--experimental_disk_cache_gc_max_size=60G` 和 `--experimental_disk_cache_gc_max_age=30d`，给 LLVM/MLIR 及不同目标平台的产物留出空间。GitHub Actions 继续使用 30 GiB。Bazel 在空闲时回收，容量是清理目标。空间有限时可在命令上覆盖，例如 `--experimental_disk_cache_gc_max_size=30G`。
+本地回收策略为 `--experimental_disk_cache_gc_max_size=60G` 和 `--experimental_disk_cache_gc_max_age=30d`，给 LLVM/MLIR 及不同目标平台的产物留出空间。GitHub Actions 将 runner 的 Bazel 缓存清理目标设为 100 GiB，实际可用空间由 runner 提供。空间有限时可在命令上覆盖，例如 `--experimental_disk_cache_gc_max_size=30G`。
 
 可用 `bazel info --announce_rc output_base` 检查实际加载的配置。构建摘要里的 `disk cache hit` 表示从共享磁盘缓存取回产物，`action cache hit` 表示当前 output base 已有产物。Bazel 在命中磁盘缓存时也会回放动作保存的编译警告，可用摘要里的 sandbox 执行数确认实际执行量。切换编译模式、目标平台、工具链或编译选项会形成不同的动作缓存键。
 
-GitHub Actions 由 `main` 的 push 构建保存缓存，PR 和发布 tag 可以恢复该缓存。合并后的首次 `main` 构建负责填充缓存。
+GitHub Actions 由 `main` 的 push 构建保存缓存，PR 和发布 tag 可以恢复该缓存。合并后的首次 `main` 构建负责填充缓存。CI 的 Bazel 构建使用默认 `opt` 模式，Cargo 运行时测试和独立消费示例使用 `--release`。
 
 ## Crate 分层
 
