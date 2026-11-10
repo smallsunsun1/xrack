@@ -1,9 +1,7 @@
-mod ui {
-    include!(concat!(env!("OUT_DIR"), "/ui.rs"));
-}
+xrack::include_modules!();
 
 fn main() {
-    let mut counter = ui::Counter::new();
+    let mut counter = Counter::new();
     counter.dispatch("increment", "clicked");
     println!(
         "count={}, doubled={}",

@@ -1,0 +1,12 @@
+[package]
+name = "xrackc-bin-aarch64-pc-windows-msvc"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+description = "Prebuilt XRack compiler for aarch64-pc-windows-msvc"
+publish = false
+
+[lib]
+path = "../stub.rs"

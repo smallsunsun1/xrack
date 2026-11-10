@@ -1,4 +1,5 @@
 use clap::{Parser, ValueEnum};
+use proc_macro2::{Group, Ident, Spacing, TokenStream, TokenTree};
 use std::{fs, io, path::PathBuf, process::ExitCode};
 use xrack_compiler::{
     CompilerError, check_resources, compile_with_inputs, generate_rust, lower, mlir, parse,
@@ -45,6 +46,10 @@ struct Args {
     #[arg(long, requires = "output", conflicts_with_all = ["emit", "check"])]
     cargo: bool,
 
+    /// Resolve runtime symbols through the alias supplied by xrack::include_modules!().
+    #[arg(long, requires = "cargo")]
+    cargo_facade: bool,
+
     /// Resolve images and fonts only from the declared assets.
     #[arg(long)]
     restrict_assets: bool,
@@ -88,6 +93,11 @@ fn run(args: Args) -> Result<(), CompilerError> {
                     })
             })
             .collect::<Result<Vec<_>, _>>()?;
+        let rust = if args.cargo_facade {
+            use_facade_runtime(rust)
+        } else {
+            rust
+        };
         write_output(args.output, rust_source(rust))?;
         for path in directives {
             println!("cargo::rerun-if-changed={path}");
@@ -111,6 +121,44 @@ fn run(args: Args) -> Result<(), CompilerError> {
         }
     };
     write_output(args.output, text)
+}
+
+fn use_facade_runtime(tokens: TokenStream) -> TokenStream {
+    let mut tokens = tokens.into_iter().peekable();
+    let mut result = TokenStream::new();
+    while let Some(token) = tokens.next() {
+        match token {
+            TokenTree::Group(group) => {
+                let mut rewritten =
+                    Group::new(group.delimiter(), use_facade_runtime(group.stream()));
+                rewritten.set_span(group.span());
+                result.extend([TokenTree::Group(rewritten)]);
+            }
+            TokenTree::Punct(first)
+                if first.as_char() == ':' && first.spacing() == Spacing::Joint =>
+            {
+                let second = tokens.next_if(|next| {
+                    matches!(next, TokenTree::Punct(punctuation) if punctuation.as_char() == ':')
+                });
+                if let Some(second) = second {
+                    if let Some(runtime) = tokens.next_if(
+                        |next| matches!(next, TokenTree::Ident(name) if name == "xrack_runtime"),
+                    ) {
+                        result.extend([TokenTree::Ident(Ident::new(
+                            "__xrack_runtime",
+                            runtime.span(),
+                        ))]);
+                    } else {
+                        result.extend([TokenTree::Punct(first), second]);
+                    }
+                } else {
+                    result.extend([TokenTree::Punct(first)]);
+                }
+            }
+            other => result.extend([other]),
+        }
+    }
+    result
 }
 
 fn rust_source(tokens: impl std::fmt::Display) -> String {

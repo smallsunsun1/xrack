@@ -3789,8 +3789,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b9cc00251562a284751c9973bace760d86c0276c471b4be569fe6b068ee97a56"
 
 [[package]]
+name = "xrack"
+version = "0.1.1"
+dependencies = [
+ "xrack-assets",
+ "xrack-layout",
+ "xrack-platform-winit",
+ "xrack-renderer-femtovg",
+ "xrack-runtime",
+]
+
+[[package]]
 name = "xrack-assets"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "png",
  "resvg",
@@ -3799,8 +3810,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "xrack-build"
+version = "0.1.1"
+dependencies = [
+ "flate2",
+ "xrackc-bin-aarch64-apple-darwin",
+ "xrackc-bin-aarch64-pc-windows-msvc",
+ "xrackc-bin-aarch64-unknown-linux-gnu",
+ "xrackc-bin-x86_64-pc-windows-msvc",
+ "xrackc-bin-x86_64-unknown-linux-gnu",
+]
+
+[[package]]
 name = "xrack-codegen"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -3813,7 +3836,7 @@ dependencies = [
 
 [[package]]
 name = "xrack-compiler"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "clap",
  "gif",
@@ -3834,7 +3857,7 @@ dependencies = [
 
 [[package]]
 name = "xrack-ir"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -3843,7 +3866,7 @@ dependencies = [
 
 [[package]]
 name = "xrack-layout"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "unicode-bidi",
  "unicode-segmentation",
@@ -3852,7 +3875,7 @@ dependencies = [
 
 [[package]]
 name = "xrack-lsp"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "serde_json",
  "xrack-ir",
@@ -3861,7 +3884,7 @@ dependencies = [
 
 [[package]]
 name = "xrack-mlir"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "serde_json",
  "xrack-ir",
@@ -3870,7 +3893,7 @@ dependencies = [
 
 [[package]]
 name = "xrack-parser"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "antlr4rust",
  "serde_json",
@@ -3879,7 +3902,7 @@ dependencies = [
 
 [[package]]
 name = "xrack-platform-winit"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "accesskit",
  "accesskit_winit",
@@ -3904,7 +3927,7 @@ dependencies = [
 
 [[package]]
 name = "xrack-renderer-femtovg"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "femtovg",
  "fontdb",
@@ -3920,7 +3943,7 @@ dependencies = [
 
 [[package]]
 name = "xrack-runtime"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "pulldown-cmark",
  "thiserror 2.0.21",
@@ -3929,10 +3952,30 @@ dependencies = [
 
 [[package]]
 name = "xrack-syntax"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "serde",
 ]
+
+[[package]]
+name = "xrackc-bin-aarch64-apple-darwin"
+version = "0.1.1"
+
+[[package]]
+name = "xrackc-bin-aarch64-pc-windows-msvc"
+version = "0.1.1"
+
+[[package]]
+name = "xrackc-bin-aarch64-unknown-linux-gnu"
+version = "0.1.1"
+
+[[package]]
+name = "xrackc-bin-x86_64-pc-windows-msvc"
+version = "0.1.1"
+
+[[package]]
+name = "xrackc-bin-x86_64-unknown-linux-gnu"
+version = "0.1.1"
 
 [[package]]
 name = "zbus"
