@@ -3,6 +3,7 @@ exports_files([
     "bindgen_libclang_runtime.patch",
     "bindgen_toolchain_headers.patch",
     "bindgen_windows_imports.patch",
+    "rust_llvm_msvc_linker.patch",
     "xrack.bzl",
 ])
 

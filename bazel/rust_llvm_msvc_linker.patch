@@ -1,0 +1,51 @@
+--- a/rust/private/rustc.bzl
++++ b/rust/private/rustc.bzl
+@@ -378,1 +378,34 @@
+-def get_linker_and_args(ctx, crate_type, toolchain, cc_toolchain, feature_configuration, rpaths, add_flags_for_binary = False):
++def _llvm_msvc_linker_args(flags):
++    # clang-cl processes /clang: options after its own driver options.
++    forwarded = [flag[len("/clang:"):] for flag in flags if flag.startswith("/clang:")]
++    driver = [flag for flag in flags if not flag.startswith("/clang:")]
++    linker_args = []
++    resource_dir = None
++    triple = None
++    for stream in [driver, forwarded]:
++        next_is_linker_arg = False
++        for flag in stream:
++            if next_is_linker_arg:
++                linker_args.append(flag)
++                next_is_linker_arg = False
++            elif flag == "-Xlinker":
++                next_is_linker_arg = True
++            elif flag.startswith("-Wl,"):
++                linker_args.extend(flag[4:].split(","))
++            elif flag.lower().startswith(("/libpath:", "-libpath:")) or flag == "/Brepro":
++                linker_args.append(flag)
++            elif flag.startswith("-resource-dir="):
++                resource_dir = flag.split("=", 1)[1]
++            elif flag.startswith("--target="):
++                triple = flag.split("=", 1)[1]
++
++    if "-rtlib=compiler-rt" in flags:
++        if not resource_dir or not triple:
++            fail("LLVM MSVC linking needs a target and resource directory")
++        # clang-cl normally adds this archive when linking with compiler-rt.
++        builtins_dir = paths.join(resource_dir, "lib", triple)
++        linker_args.append("/LIBPATH:" + builtins_dir)
++        linker_args.append(paths.join(builtins_dir, "clang_rt.builtins.lib"))
++    return linker_args
++
++def get_linker_and_args(ctx, crate_type, toolchain, cc_toolchain, feature_configuration, rpaths, add_flags_for_binary = False):
+@@ -507,1 +540,11 @@
+-    if "LIB" in link_env:
++    # The LLVM C++ toolchain declares lld-link alongside clang-cl. Rust emits
++    # native MSVC linker arguments, so use the declared linker directly.
++    if (
++        toolchain.target_abi == "msvc" and
++        paths.basename(ld) in ("clang-cl", "clang-cl.exe") and
++        link_env.get("LIB") == "__hermetic_llvm_empty_lib__"
++    ):
++        linker = "lld-link.exe" if ld.endswith(".exe") else "lld-link"
++        return paths.join(paths.dirname(ld), linker), True, _llvm_msvc_linker_args(link_args), link_env
++
++    if "LIB" in link_env:
