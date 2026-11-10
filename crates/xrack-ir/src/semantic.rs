@@ -1750,11 +1750,17 @@ fn nonvisual_element(kind: &str) -> bool {
     matches!(kind, "Action" | "ButtonGroup" | "Timer" | "SecondaryWindow") || native_dialog(kind)
 }
 
+fn exclusive_binding(members: &[Member]) -> Option<&ast::Binding> {
+    members.iter().find_map(|member| match member {
+        Member::Binding(binding) if binding.name == "exclusive" => Some(binding),
+        _ => None,
+    })
+}
+
 fn non_exclusive_group(members: &[Member]) -> bool {
-    members.iter().any(|member| {
-        matches!(member, Member::Binding(binding)
-        if binding.name == "exclusive" && matches!(&binding.value.kind,
-            ExprKind::Literal { value, ty: Type::Bool } if value == "false"))
+    exclusive_binding(members).is_some_and(|binding| {
+        matches!(&binding.value.kind,
+        ExprKind::Literal { value, ty: Type::Bool } if value == "false")
     })
 }
 
@@ -1836,6 +1842,16 @@ impl<'a> Scope<'a> {
         parent: Option<&str>,
         span: Span,
     ) -> Result<()> {
+        if kind == "ButtonGroup"
+            && let Some(binding) = exclusive_binding(members)
+            && (binding.two_way
+                || !matches!(binding.value.kind, ExprKind::Literal { ty: Type::Bool, .. }))
+        {
+            return fail(
+                binding.span,
+                "ButtonGroup exclusive requires a literal bool",
+            );
+        }
         let instance = !is_builtin(kind);
         let property_members = if instance {
             &definitions
@@ -3728,12 +3744,6 @@ fn element<'a>(
         match m {
             Member::Binding(b) => {
                 if kind == "ButtonGroup" {
-                    if b.name == "exclusive"
-                        && (b.two_way
-                            || !matches!(b.value.kind, ExprKind::Literal { ty: Type::Bool, .. }))
-                    {
-                        return fail(b.span, "ButtonGroup exclusive requires a literal bool");
-                    }
                     if b.name == "check-state" {
                         return fail(
                             b.span,

@@ -56,7 +56,7 @@ fn non_exclusive_button_groups_verify_members_reads_and_effects() {
         ),
         (
             "group: checks; text: \"Option\"",
-            "group: checks; checked: checks.check-state == CheckState.checked;",
+            "group: checks; checked: checks.check-state == CheckState.checked",
             "cyclic property binding",
         ),
         (
@@ -92,6 +92,33 @@ fn non_exclusive_button_groups_verify_members_reads_and_effects() {
         mlir::process(&wrong_owner)
             .unwrap_err()
             .contains("non-exclusive ButtonGroup")
+    );
+}
+
+#[test]
+fn native_check_groups_reject_cycles_between_aggregate_checkboxes() {
+    let source = r#"
+        component App inherits Window {
+            outer := ButtonGroup { exclusive: false; }
+            inner := ButtonGroup { exclusive: false; }
+            CheckBox { group: outer; check-state <=> inner.check-state; }
+            CheckBox { group: inner; }
+        }
+    "#;
+    assert!(compile(source, "nested-check-groups.xr").is_ok());
+    let raw = lower(source, "nested-check-groups.xr");
+    let read = raw
+        .lines()
+        .find(|line| line.contains("\"xr.check_group_read\""))
+        .unwrap();
+    let wrong = raw.replace(
+        read,
+        &read.replace("owner = \"inner\"", "owner = \"outer\""),
+    );
+    assert!(
+        mlir::process(&wrong)
+            .unwrap_err()
+            .contains("cyclic check group links")
     );
 }
 

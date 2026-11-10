@@ -51,6 +51,7 @@ cc_library(
     name = "xrack_dialect",
     srcs = ["xrack_dialect.cc"],
     hdrs = ["xrack_dialect.h"],
+    linkstatic = True,
     deps = [
         ":xrack_inc_gen",
         "@llvm-project//llvm:Support",
@@ -67,6 +68,7 @@ cc_library(
         "xrack_visual_cache.cc",
     ],
     hdrs = ["xrack_passes.h"],
+    linkstatic = True,
     deps = [
         ":xrack_dialect",
         ":xrack_passes_inc_gen",
@@ -94,6 +96,7 @@ cc_library(
     name = "xrack_c_api",
     srcs = ["bridge.cc"],
     hdrs = ["c_api.h"],
+    linkstatic = True,
     deps = [
         ":xrack_dialect",
         ":xrack_inc_gen",
