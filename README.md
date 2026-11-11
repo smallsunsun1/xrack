@@ -167,6 +167,8 @@ Cargo 会验证打包后的源码，并在发布时按依赖顺序上传这些 c
 
 在 GitHub 的 `crates-io` 环境配置 `CARGO_REGISTRY_TOKEN` secret，并允许发布 tag 使用该环境。首次发布使用允许发布新 crate 的 token。上传中断后，可从同一次 workflow 重试，脚本会校验已发布的版本及对应的源码提交。升版本时同步 workspace 版本、内部 crate 依赖、宿主包版本、Bazel 目标版本和 Cargo 消费示例。
 
+如果已有 tag 的流水线需要使用更新后的 CI 配置，在 `main` 上手动运行 **Release XRack**，输入版本并勾选 **Publish an existing release tag from main**。`crates-io` 环境需允许 `main` 发布。工作流会从已有 tag 对应的提交重新构建并验证所有平台的产物。
+
 ### GitHub Actions
 
 [CI](.github/workflows/ci.yml) 在 macOS arm64、Linux x64 与 arm64、Windows x64 与 arm64 上测试 Cargo 桌面依赖栈与 Bazel 编译器。每个平台把编译器归档暂存为宿主 crate，再用 Cargo 运行仓库外的门面示例。成功的任务上传对应的编译器归档和校验文件，Linux x64 任务额外上传通过 Cargo 验证的运行时和门面包。真实 GPU 测试使用本地显式目标 `//tests:gpu_test`。

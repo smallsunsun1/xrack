@@ -9,6 +9,10 @@ on:
         description: Workspace version to release
         required: true
         type: string
+      publish:
+        description: Publish an existing release tag from main
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -18,38 +22,65 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  XRACK_RELEASE_VERSION: ${{ github.ref_type == 'tag' && github.ref_name || inputs.version }}
+  XRACK_RELEASE_VERSION: ${{ github.event_name == 'push' && github.ref_name || inputs.version }}
 
 jobs:
   verify:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
+    outputs:
+      commit: ${{ steps.source.outputs.commit }}
+      tag: ${{ steps.source.outputs.tag }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           fetch-depth: 0
           persist-credentials: false
-      - name: Check release tag
-        if: github.event_name == 'push'
+      - name: Resolve release source
+        id: source
+        env:
+          PUBLISH: ${{ github.event_name == 'push' || inputs.publish }}
         run: |
-          if ! git merge-base --is-ancestor HEAD origin/main; then
-            echo "::error::The release tag must point to a commit on main."
+          commit=$(git rev-parse HEAD)
+          tag="v${XRACK_RELEASE_VERSION#v}"
+          if [[ ! "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::Expected a version tag such as v0.2.0."
             exit 1
           fi
+          if [[ "$PUBLISH" == true ]]; then
+            if [[ "$GITHUB_EVENT_NAME" == workflow_dispatch && "$GITHUB_REF" != refs/heads/main ]]; then
+              echo "::error::Dispatch an existing tag release from main."
+              exit 1
+            fi
+            commit=$(git rev-parse --verify "refs/tags/${tag}^{commit}")
+            if ! git merge-base --is-ancestor "$commit" origin/main; then
+              echo "::error::The release tag must point to a commit on main."
+              exit 1
+            fi
+            if [[ "$GITHUB_EVENT_NAME" == push && "$commit" != "$(git rev-parse HEAD)" ]]; then
+              echo "::error::The release tag moved after the workflow started."
+              exit 1
+            fi
+          fi
+          printf 'commit=%s\ntag=%s\n' "$commit" "$tag" >> "$GITHUB_OUTPUT"
       - name: Install Linux desktop build dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y pkg-config libdbus-1-dev libwayland-dev libxkbcommon-dev
+        run: bash tools/install_ci_linux_deps.sh
       - name: Verify crate release
-        run: python3 tools/publish_crates.py -- "${XRACK_RELEASE_VERSION#v}"
+        env:
+          SOURCE_SHA: ${{ steps.source.outputs.commit }}
+        run: |
+          git switch --detach "$SOURCE_SHA"
+          python3 tools/publish_crates.py -- "${XRACK_RELEASE_VERSION#v}"
 
   build:
-    if: github.event_name == 'push'
+    if: github.event_name == 'push' || inputs.publish
     needs: verify
     uses: ./.github/workflows/ci.yml
+    with:
+      source-sha: ${{ needs.verify.outputs.commit }}
 
   publish:
-    if: github.event_name == 'push'
+    if: github.event_name == 'push' || inputs.publish
     needs: [verify, build]
     runs-on: ubuntu-24.04
     timeout-minutes: 20
@@ -59,6 +90,7 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
+          ref: ${{ needs.verify.outputs.commit }}
           persist-credentials: false
       - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
         with:
@@ -74,13 +106,14 @@ jobs:
       - name: Publish GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.verify.outputs.tag }}
         run: |
           files=(.tools/release/xrackc-*.tar.gz .tools/release/xrackc-*.tar.gz.sha256)
-          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null; then
-            gh release upload "$GITHUB_REF_NAME" "${files[@]}" --repo "$GITHUB_REPOSITORY" --clobber
+          if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null; then
+            gh release upload "$RELEASE_TAG" "${files[@]}" --repo "$GITHUB_REPOSITORY" --clobber
           else
             options=()
-            if [[ "$GITHUB_REF_NAME" == *-* ]]; then options+=(--prerelease); fi
-            gh release create "$GITHUB_REF_NAME" "${files[@]}" --repo "$GITHUB_REPOSITORY" \
+            if [[ "$RELEASE_TAG" == *-* ]]; then options+=(--prerelease); fi
+            gh release create "$RELEASE_TAG" "${files[@]}" --repo "$GITHUB_REPOSITORY" \
               --verify-tag --generate-notes "${options[@]}"
           fi
