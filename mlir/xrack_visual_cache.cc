@@ -28,7 +28,8 @@ constexpr llvm::StringLiteral repeatSubexpressionGroup =
 Operation *visualScope(Operation *binding) {
   auto *parent = binding->getParentOp();
   if (auto element = dyn_cast_or_null<ElementOp>(parent)) {
-    if (element.getKind() == "Action" || !isa<BindOp, ShowIfOp>(binding))
+    if (element.getKind() == "Action" || element.getKind() == "ActionGroup" ||
+        !isa<BindOp, ShowIfOp>(binding))
       return nullptr;
   } else if (!isa_and_nonnull<InstanceOp>(parent) ||
              !isa<LayoutBindOp, ShowIfOp>(binding)) {
@@ -38,6 +39,9 @@ Operation *visualScope(Operation *binding) {
   // The backend has a cache per component instance and a separate cache in
   // each row of the nearest repeat. Never share across those boundaries.
   for (auto *op = parent; op; op = op->getParentOp()) {
+    if (auto element = dyn_cast<ElementOp>(op);
+        element && (element.getKind() == "DayCell" || element.getKind() == "SplitHandle"))
+      return nullptr; // The runtime caches each template instance separately.
     if (isa<ComponentOp>(op))
       return op;
     if (isa<ElementOp, InstanceOp>(op) &&

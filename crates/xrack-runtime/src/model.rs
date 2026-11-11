@@ -122,6 +122,7 @@ impl<T> VecModel<T> {
         self.0.rows.borrow().get(index).map(|entry| RowKey {
             model: self.0.id,
             row: entry.id,
+            scope: 0,
         })
     }
 
@@ -144,6 +145,7 @@ impl<T> VecModel<T> {
             visit(RowKey {
                 model: self.0.id,
                 row: entry.id,
+                scope: 0,
             });
         }
     }
@@ -165,6 +167,7 @@ impl<T> VecModel<T> {
                 RowKey {
                     model: self.0.id,
                     row: entry.id,
+                    scope: 0,
                 },
                 &entry.value,
             );
@@ -288,17 +291,39 @@ impl<T> VecModel<T> {
         Some(removed.value)
     }
 
-    /// Stably reorder rows, retaining their keys and delegate lifetimes.
-    pub fn sort_by(&self, mut compare: impl FnMut(&T, &T) -> Comparison) -> bool {
+    pub(crate) fn sorted_indices_untracked(
+        &self,
+        limit: usize,
+        compare: impl FnMut(&T, &T) -> Comparison,
+    ) -> Vec<usize> {
+        self.projected_indices_untracked(limit, None, |_| true, Some(compare))
+    }
+
+    pub(crate) fn projected_indices_untracked(
+        &self,
+        limit: usize,
+        base_order: Option<&[usize]>,
+        include: impl Fn(&T) -> bool,
+        compare: Option<impl FnMut(&T, &T) -> Comparison>,
+    ) -> Vec<usize> {
         let rows = self.0.rows.borrow();
-        let mut order: Vec<_> = (0..rows.len()).collect();
-        order.sort_by(|&a, &b| compare(&rows[a].value, &rows[b].value));
+        let mut order: Vec<_> = (0..rows.len().min(limit))
+            .map(|index| base_order.map_or(index, |order| order[index]))
+            .filter(|&index| include(&rows[index].value))
+            .collect();
+        if let Some(mut compare) = compare {
+            order.sort_by(|&a, &b| compare(&rows[a].value, &rows[b].value));
+        }
+        order
+    }
+
+    /// Stably reorder rows, retaining their keys and delegate lifetimes.
+    pub fn sort_by(&self, compare: impl FnMut(&T, &T) -> Comparison) -> bool {
+        let order = self.sorted_indices_untracked(usize::MAX, compare);
         let Some(first_changed) = order.iter().enumerate().position(|(new, old)| new != *old)
         else {
             return false;
         };
-        drop(rows);
-
         {
             let mut rows = self.0.rows.borrow_mut();
             let mut source: Vec<_> = rows.drain(first_changed..).map(Some).collect();
@@ -399,33 +424,6 @@ impl<T: PartialEq> VecModel<T> {
             };
             self.swap_row(index, &mut current.value, &mut value)
         };
-        if changed {
-            self.values_changed();
-        }
-        changed
-    }
-
-    pub(crate) fn replace_range_if_current(
-        &self,
-        stamp: (u64, u64),
-        start: usize,
-        mut values: Vec<T>,
-    ) -> bool {
-        if self.edit_stamp() != stamp {
-            return false;
-        }
-        let Some(end) = start.checked_add(values.len()) else {
-            return false;
-        };
-        let mut rows = self.0.rows.borrow_mut();
-        let Some(entries) = rows.get_mut(start..end) else {
-            return false;
-        };
-        let mut changed = false;
-        for (offset, (entry, value)) in entries.iter_mut().zip(&mut values).enumerate() {
-            changed |= self.swap_row(start + offset, &mut entry.value, value);
-        }
-        drop(rows);
         if changed {
             self.values_changed();
         }

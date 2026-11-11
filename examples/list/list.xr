@@ -1,3 +1,286 @@
+export struct DelegateSetting {
+    label: string,
+    selected: CheckState,
+    enabled: bool,
+}
+
+export struct ListVisibilityFlags {
+    shown: bool,
+}
+
+export struct ListVisibilityRecord {
+    label: string,
+    height: length,
+    flags: ListVisibilityFlags,
+}
+
+component VisibilityTile inherits Button {
+    in property <string> caption;
+    property <int> presses: 0;
+    callback activated();
+    text: root.caption + " · " + root.presses;
+    clicked => { root.presses += 1; root.activated(); }
+}
+
+export component ListVisibilityDemo inherits Window {
+    title: "XRack · 列表与网格的记录可见性";
+    width: 660px; height: 320px;
+    background: #182331;
+    in-out property <[ListVisibilityRecord]> records: [
+        ListVisibilityRecord { label: "文档", height: 30px, flags: ListVisibilityFlags { shown: true } },
+        ListVisibilityRecord { label: "临时项", height: 30px, flags: ListVisibilityFlags { shown: false } },
+        ListVisibilityRecord { label: "图片", height: 52px, flags: ListVisibilityFlags { shown: true } },
+        ListVisibilityRecord { label: "音频", height: 30px, flags: ListVisibilityFlags { shown: true } },
+    ];
+    in-out property <int> standard-index: 0;
+    in property <int> inspected-source: 2;
+    out property <int> visible-index: entries.view-index-for-source(root.inspected-source);
+    out property <int> selected-source: summary.source-index-for-view(root.standard-index);
+    out property <int> last-source-index: -1;
+    callback reveal-all();
+    callback select-source(int);
+    select-source(source) => {
+        entries.select-source-index(source);
+        tiles.select-source-index(source);
+        summary.select-source-index(source);
+    }
+    callback locate-source(int);
+    locate-source(source) => {
+        entries.position-view-at-source-index(source, beginning);
+        tiles.position-view-at-source-index(source, beginning);
+        summary.position-view-at-source-index(source, beginning);
+    }
+
+    HorizontalLayout {
+        x: 12px; y: 8px; width: 636px; height: 32px;
+        spacing: 8px;
+        reveal := Button { text: "显示全部记录"; clicked => { root.reveal-all(); } }
+        Text { text: "取消左侧勾选会隐藏记录 · 网格点击次数随记录保留"; }
+    }
+    entries := ListView {
+        x: 12px; y: 48px; width: 200px; height: 254px;
+        row-height: 30px; row-height-field: "height";
+        row-visible-field: "flags.shown";
+        preserve-scroll-anchor: true;
+        for entry[source] in root.records : CheckDelegate {
+            text: entry.label;
+            checked <=> entry.flags.shown;
+            toggled => { root.last-source-index = source; }
+        }
+    }
+    tiles := GridView {
+        x: 228px; y: 48px; width: 204px; height: 254px;
+        cell-width: 94px; cell-height: 44px; spacing: 6px;
+        row-visible-field: "flags.shown";
+        for entry[source] in root.records : VisibilityTile {
+            caption: entry.label;
+            activated => { root.last-source-index = source; }
+        }
+    }
+    summary := StandardListView {
+        x: 448px; y: 48px; width: 200px; height: 254px;
+        model: root.records; text-role: "label";
+        row-height: 30px; row-height-field: "height";
+        row-visible-field: "flags.shown";
+        current-index <=> root.standard-index;
+    }
+}
+
+component NestedTrack inherits Button {
+    in property <string> caption;
+    property <int> plays: 0;
+    callback played(string);
+    text: root.caption + " · " + root.plays;
+    clicked => {
+        root.plays += 1;
+        root.played(root.caption);
+    }
+}
+
+component NestedAlbum inherits Rectangle {
+    in property <string> name;
+    in property <[string]> tracks;
+    callback played(string);
+    background: #26374e;
+    Text { x: 10px; y: 7px; text: root.name; }
+    tracks-view := ListView {
+        x: 10px; y: 31px;
+        width: 95%; height: 96px;
+        row-height: 24px;
+        preserve-scroll-anchor: true;
+        for track in root.tracks : NestedTrack {
+            caption: track;
+            played(caption) => { root.played(caption); }
+        }
+    }
+}
+
+export component NestedListsDemo inherits Window {
+    title: "XRack · 嵌套虚拟列表";
+    width: 580px; height: 330px;
+    background: #182331;
+    in property <[string]> albums: ["文档", "图片", "音频", "视频"];
+    in property <[string]> tracks: ["条目 0", "条目 1", "条目 2", "条目 3", "条目 4", "条目 5"];
+    out property <string> last-played: "请选择一项";
+    Text { x: 14px; y: 9px; text: root.last-played; }
+    albums-view := ListView {
+        x: 10px; y: 38px;
+        width: 96%; height: 280px;
+        row-height: 140px;
+        for album in root.albums : NestedAlbum {
+            name: album;
+            tracks: root.tracks;
+            played(caption) => { root.last-played = album + " · " + caption; }
+        }
+    }
+}
+
+export struct WorkspaceRecord {
+    key: int,
+    parent: int,
+    title: string,
+    quantity: int,
+    note: string,
+}
+
+component WorkspaceRow inherits Rectangle {
+    in property <string> label;
+    in-out property <[WorkspaceRecord]> records;
+    in property <int> branch: -1;
+    background: #26374e;
+    Text { x: 10px; y: 5px; text: root.label; }
+    entries := StandardTableView {
+        x: 10px; y: 30px; width: 52%; height: 120px;
+        accessible-name: "工作表";
+        row-height: 24px; header-height: 24px;
+        row-header-width: 30px;
+        current-row: 0;
+        selection-target: SelectionTarget.cells;
+        copyable: true;
+        pasteable: true;
+        undoable: true;
+        edit-on-tab: true;
+        movable-rows: true;
+        frozen-columns: 1;
+        model: root.records;
+        TableColumn { title: "名称"; field: "title"; width: 150px; editable: true; }
+        TableColumn { title: "数量"; field: "quantity"; width: 110px; editable: true; }
+        TableColumn { title: "备注"; field: "note"; width: 230px; editable: true; }
+    }
+    folders := TreeView {
+        x: 390px; y: 30px; width: 41%; height: 120px;
+        accessible-name: "目录";
+        row-height: 24px;
+        root-key: root.branch;
+        for record in root.records : TreeRow {
+            key: record.key;
+            parent-key: record.parent;
+            TreeCell { text <=> record.title; }
+        }
+    }
+}
+
+export component NestedDataDemo inherits Window {
+    title: "XRack · 嵌套表格和树";
+    width: 720px; height: 364px;
+    background: #182331;
+    in property <[string]> groups: ["项目 A", "项目 B", "项目 C"];
+    in-out property <[WorkspaceRecord]> records: [
+        WorkspaceRecord { key: 1, parent: -1, title: "资料", quantity: 1, note: "目录" },
+        WorkspaceRecord { key: 2, parent: 1, title: "需求", quantity: 2, note: "文档" },
+        WorkspaceRecord { key: 3, parent: 1, title: "设计", quantity: 3, note: "文档" },
+        WorkspaceRecord { key: 4, parent: -1, title: "测试", quantity: 4, note: "目录" },
+        WorkspaceRecord { key: 5, parent: 4, title: "报告", quantity: 5, note: "文档" },
+        WorkspaceRecord { key: 6, parent: -1, title: "归档", quantity: 6, note: "目录" },
+    ];
+    in property <int> branch: -1;
+    Text { x: 14px; y: 8px; text: "工作表和目录共用记录 · 双击名称编辑"; }
+    projects := ListView {
+        x: 10px; y: 34px; width: 97%; height: 320px;
+        row-height: 160px;
+        for group in root.groups : WorkspaceRow {
+            label: group;
+            records: root.records;
+            branch: root.branch;
+        }
+    }
+}
+
+export component ItemDelegatesDemo inherits Window {
+    title: "XRack · 列表委托";
+    width: 644px;
+    height: 398px;
+    background: #182331;
+
+    in-out property <int> current-action: 0;
+    in-out property <int> current-mode: 0;
+    in-out property <[DelegateSetting]> settings: [
+        DelegateSetting { label: "文档", selected: CheckState.unchecked, enabled: true },
+        DelegateSetting { label: "图片", selected: CheckState.partially-checked, enabled: false },
+        DelegateSetting { label: "音频", selected: CheckState.checked, enabled: true },
+    ];
+    out property <string> last-action: "打开工作区";
+    out property <int> edits: 0;
+
+    VerticalLayout {
+        padding: 16px;
+        spacing: 12px;
+        HorizontalLayout {
+            spacing: 12px;
+            VerticalLayout {
+                spacing: 6px;
+                Text { text: "常用操作"; }
+                actions := ListView {
+                    row-height: 36px;
+                    current-index <=> root.current-action;
+                    for label[index] in ["打开工作区", "显示最近文件", "查看归档"] : ItemDelegate {
+                        text: label;
+                        clicked => { root.last-action = label + " · " + (index + 1); }
+                    }
+                }
+            }
+            VerticalLayout {
+                spacing: 6px;
+                Text { text: "显示模式"; }
+                modes := ListView {
+                    row-height: 36px;
+                    current-index <=> root.current-mode;
+                    for label in ["详细", "紧凑", "仅文件名"] : RadioDelegate { text: label; }
+                }
+            }
+        }
+        HorizontalLayout {
+            spacing: 12px;
+            VerticalLayout {
+                spacing: 6px;
+                Text { text: "同步范围"; }
+                checks := ListView {
+                    row-height: 36px;
+                    for setting in root.settings : CheckDelegate {
+                        text: setting.label;
+                        tristate: true;
+                        check-state <=> setting.selected;
+                        check-state-changed(state) => { root.edits += 1; }
+                    }
+                }
+            }
+            VerticalLayout {
+                spacing: 6px;
+                Text { text: "离线可用"; }
+                switches := ListView {
+                    row-height: 36px;
+                    for setting in root.settings : SwitchDelegate {
+                        text: setting.label;
+                        checked <=> setting.enabled;
+                        toggled => { root.edits += 1; }
+                    }
+                }
+            }
+        }
+        Text { text: root.last-action; color: #acc0db; }
+    }
+}
+
 export component ListDemo inherits Window {
     title: "XRack · ListView";
     width: 540px;

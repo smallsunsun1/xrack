@@ -36,7 +36,7 @@ fn cells(node: &Node) -> Vec<Cell<'_>> {
             .map(|&slot| {
                 let mut child = node.children.get(slot.index)?;
                 if let Some(index) = slot.child_index {
-                    child = child.children.get(index)?;
+                    child = child.child_at(index)?;
                 }
                 Some(Cell::from_slot(child, slot))
             })

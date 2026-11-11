@@ -1,11 +1,20 @@
-use table_ui::{InventoryRow, LogRow, ProjectedRowsDemo, StandardTableDemo, TableDemo};
+use table_ui::{
+    InventoryRow, LogRow, ProjectedRowsDemo, RowVisibilityDemo, RowVisibilityFlags,
+    RowVisibilityRecord, StandardTableDemo, TableDemo, TableSortViewsDemo, WideTableDemo,
+};
 use xrack_runtime::{Length, SelectionTarget, Time};
 
 fn main() -> std::process::ExitCode {
     let mode = std::env::args().nth(1);
     let result = match mode.as_deref() {
-        Some("--standard" | "--frozen" | "--rows") => run_standard(mode.as_deref()),
+        Some(
+            "--standard" | "--frozen" | "--rows" | "--row-headers" | "--move-rows" | "--sort-state"
+            | "--selection-api" | "--position-cells" | "--editable",
+        ) => run_standard(mode.as_deref()),
         Some("--row-field") => run_row_field(),
+        Some("--row-visibility") => run_row_visibility(),
+        Some("--sorted-views") => run_sorted_views(),
+        Some("--wide") => xrack_platform_winit::run(WideTableDemo::new()),
         mode => run_table(mode),
     };
     match result {
@@ -15,6 +24,27 @@ fn main() -> std::process::ExitCode {
             std::process::ExitCode::FAILURE
         }
     }
+}
+
+fn run_row_visibility() -> Result<(), String> {
+    let mut ui = RowVisibilityDemo::new();
+    let records = ui.model_records();
+    for index in 4..64 {
+        records.push(RowVisibilityRecord {
+            name: format!("设备 {index:02}"),
+            rank: 64 - index,
+            flags: RowVisibilityFlags {
+                shown: index % 7 != 1,
+            },
+        });
+    }
+    ui.on_toggle_first(move || {
+        if let Some(mut row) = records.row(0) {
+            row.flags.shown = !row.flags.shown;
+            records.set_row(0, row);
+        }
+    });
+    xrack_platform_winit::run(ui)
 }
 
 fn run_row_field() -> Result<(), String> {
@@ -47,6 +77,7 @@ fn run_table(mode: Option<&str>) -> Result<(), String> {
     match mode {
         Some("--cells") => ui.set_target(SelectionTarget::Cells),
         Some("--columns") => ui.set_target(SelectionTarget::Columns),
+        Some("--row-numbers") => ui.set_row_header_size(Length(56.0)),
         _ => {}
     }
     ui.set_records(
@@ -68,6 +99,14 @@ fn run_standard(mode: Option<&str>) -> Result<(), String> {
         ui.set_pinned(1);
         ui.set_window_width(Length(480.0));
     }
+    if matches!(mode, Some("--row-headers" | "--move-rows")) {
+        ui.set_row_header_size(Length(116.0));
+        ui.set_target(SelectionTarget::Cells);
+        ui.set_pinned(1);
+        ui.set_window_width(Length(540.0));
+        ui.set_resize_rows(true);
+        ui.set_move_rows(mode == Some("--move-rows"));
+    }
     ui.set_inventory(
         (0..50_000)
             .map(|index| InventoryRow {
@@ -83,6 +122,14 @@ fn run_standard(mode: Option<&str>) -> Result<(), String> {
             .collect(),
     );
     ui.set_target_row(49_999);
+    if mode == Some("--editable") {
+        ui.set_edit_columns(true);
+        ui.set_filter_tools(true);
+        ui.set_paste_cells(true);
+        ui.set_auto_sort_fields(true);
+        ui.set_target(SelectionTarget::Cells);
+        return xrack_platform_winit::run(ui);
+    }
     if mode == Some("--rows") {
         ui.set_resize_rows(true);
         ui.invoke_set_height(0, Length(64.0));
@@ -99,5 +146,33 @@ fn run_standard(mode: Option<&str>) -> Result<(), String> {
             if descending { order.reverse() } else { order }
         });
     });
+    if mode == Some("--sort-state") {
+        ui.set_sort_tools(true);
+        ui.invoke_sort_rows(1, false);
+    }
+    if mode == Some("--selection-api") {
+        ui.set_selection_tools(true);
+        ui.set_target(SelectionTarget::Cells);
+    }
+    if mode == Some("--position-cells") {
+        ui.set_position_tools(true);
+        ui.set_pinned(1);
+        ui.set_row_header_size(Length(56.0));
+        ui.set_window_width(Length(500.0));
+        ui.set_target(SelectionTarget::Cells);
+    }
+    xrack_platform_winit::run(ui)
+}
+
+fn run_sorted_views() -> Result<(), String> {
+    let mut ui = TableSortViewsDemo::new();
+    let inventory = ui.model_inventory();
+    ui.on_reduce_zulu(move || {
+        if let Some(mut row) = inventory.row(0) {
+            row.units = (row.units - 25).max(0);
+            inventory.set_row(0, row);
+        }
+    });
+    ui.invoke_initialize();
     xrack_platform_winit::run(ui)
 }

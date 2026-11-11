@@ -2,6 +2,37 @@ use crate::{Point, Rect};
 use std::f64::consts::{PI, TAU};
 use xrack_runtime::{DialInputMode, Node, Orientation};
 
+/// Shared geometry for the saturation and brightness color field.
+pub struct ColorPlaneGeometry {
+    pub field: Rect,
+}
+
+impl ColorPlaneGeometry {
+    pub fn new(bounds: Rect) -> Self {
+        Self {
+            field: bounds.inset(6.0),
+        }
+    }
+
+    pub fn point(&self, saturation: f64, brightness: f64) -> Point {
+        Point {
+            x: self.field.x + self.field.width * saturation.clamp(0.0, 1.0) as f32,
+            y: self.field.y + self.field.height * (1.0 - brightness.clamp(0.0, 1.0)) as f32,
+        }
+    }
+
+    pub fn action_at(&self, point: Point) -> Option<xrack_runtime::RangeAction> {
+        let area = self.field;
+        if area.width <= 0.0 || area.height <= 0.0 || !point.x.is_finite() || !point.y.is_finite() {
+            return None;
+        }
+        Some(xrack_runtime::RangeAction::SetPoint {
+            x: f64::from(((point.x - area.x) / area.width).clamp(0.0, 1.0)),
+            y: f64::from((1.0 - (point.y - area.y) / area.height).clamp(0.0, 1.0)),
+        })
+    }
+}
+
 /// Shared thumb travel for hit mapping and painting.
 pub struct SliderGeometry {
     start: Point,

@@ -3,31 +3,36 @@ use crate::accessibility_text::{
     EditorState, TextDocument, focused_editor, project_text, supports_ranges,
 };
 use accesskit::{
-    Action, ActionData, HasPopup, Live, Node as AccessibleNode, NodeId, Role, ScrollUnit,
-    SortDirection, Toggled, TreeId, TreeInfo, TreeUpdate,
+    Action, ActionData, CustomAction, HasPopup, Invalid, Live, Node as AccessibleNode, NodeId,
+    Role, ScrollUnit, SortDirection, Toggled, TreeId, TreeInfo, TreeUpdate,
 };
 use std::{collections::BTreeMap, rc::Rc};
 use xrack_layout::{
-    CalendarGeometry, Interaction, LayoutNode, MenuEntry, MenuPanel, Rect, SearchGeometry, Target,
-    TextPosition,
+    CalendarGeometry, Interaction, LayoutNode, MenuEntry, MenuPanel, NavigationKey, Rect,
+    SearchGeometry, SplitHandleRange, Target, TextPosition,
 };
 use xrack_renderer_femtovg::TextSystem;
 use xrack_runtime::{
     CalendarAction, CalendarState, CheckState, ControlAction, DecimalSpinRange, IndicatorState,
     InputType, ListMetrics, Node, Orientation, RangeAction, RowKey, ScrollBarRange, SliderInterval,
     SliderRange, SpinRange, StandardButtonKind, SwipeSide, Value, button_text, choice_identity,
-    combo_editable, combo_text, group_index, indicator_state, is_window_overlay, spin_editable,
-    text_input_value,
+    combo_editable, combo_text, group_index, indicator_state, is_calendar_control,
+    is_window_overlay, spin_editable, text_input_value,
 };
 
 const ROOT: NodeId = NodeId(0);
+
+pub(crate) const TABLE_ROW_MOVE_ACTIONS: [(i32, NavigationKey, &str); 2] = [
+    (0, NavigationKey::Up, "Move row up"),
+    (1, NavigationKey::Down, "Move row down"),
+];
 
 fn overlay_row(scene: &Node, path: &[usize]) -> Option<(RowKey, usize)> {
     let mut node = scene;
     let mut row = None;
     for (depth, &index) in path.iter().enumerate() {
-        node = node.children.get(index)?;
-        if let Some(key) = node.row_key {
+        node = node.child_at(index)?;
+        if let Some(key) = node.routing_row_key() {
             row = Some((key, depth + 1));
         }
     }
@@ -41,6 +46,11 @@ pub(crate) enum Route {
         kind: &'static str,
         standard_kind: Option<StandardButtonKind>,
     },
+    SplitHandle {
+        target: Target,
+        trailing_pane: usize,
+        orientation: Orientation,
+    },
     TextLink(Target),
     Choice {
         target: Target,
@@ -52,6 +62,7 @@ pub(crate) enum Route {
         target: Target,
         action: ControlAction,
     },
+    TableRowHeader(Target),
     MenuEntry {
         trigger: Target,
         entry: MenuEntry,
@@ -82,13 +93,18 @@ struct Key {
     row_option: Option<RowKey>,
     text_run: Option<(usize, String)>,
     menu_session: Option<u64>,
+    split_handle: Option<(usize, bool)>,
 }
 
 impl Key {
     fn element(node: &Node, path: &[usize], row: Option<(RowKey, usize)>) -> Self {
         let location = match row {
             Some((key, depth)) => Location::Row {
-                view: path[..depth - 1].to_vec(),
+                view: if key.has_view_scope() {
+                    Vec::new()
+                } else {
+                    path[..depth - 1].to_vec()
+                },
                 key,
                 child: path[depth..].to_vec(),
             },
@@ -104,6 +120,7 @@ impl Key {
             row_option: None,
             text_run: None,
             menu_session: None,
+            split_handle: None,
         }
     }
 }
@@ -404,10 +421,13 @@ impl Builder<'_> {
         row: Option<(RowKey, usize)>,
         view: Option<&'static str>,
     ) -> Vec<NodeId> {
+        if node.kind == "SplitHandle" {
+            return Vec::new();
+        }
         xrack_layout::child_reading_order(node)
             .filter_map(|index| {
-                let (child, layout) = node.children.get(index).zip(item.children.get(index))?;
-                if is_window_overlay(child.kind) {
+                let (child, layout) = node.child_at(index).zip(item.child_at(index))?;
+                if is_window_overlay(child.kind) || child.kind == "CalendarCells" {
                     return None;
                 }
                 path.push(index);
@@ -481,11 +501,19 @@ impl Builder<'_> {
             return None;
         }
         let row = node
-            .row_key
+            .routing_row_key()
             .filter(|_| !path.is_empty())
             .map(|key| (key, path.len()))
             .or(row);
         let role = role(node, view);
+        let split = (node.kind == "SplitHandle")
+            .then(|| self.layout.split_handle_range(path))
+            .flatten();
+        let primary_pane = split.and_then(|split| {
+            let mut pane_path = path.clone();
+            *pane_path.last_mut()? = split.leading_pane;
+            Some((self.scene.at_path(&pane_path)?, pane_path))
+        });
         let child_view = match node.kind {
             "ListView" | "GridView" | "StandardListView" | "TreeView" | "TableView" => {
                 Some(node.kind)
@@ -498,12 +526,20 @@ impl Builder<'_> {
         }
         let label = node
             .text("accessible-name")
+            .or_else(|| {
+                primary_pane
+                    .as_ref()
+                    .and_then(|(pane, _)| pane.text("accessible-name"))
+            })
             .or_else(|| match role {
                 Role::Button | Role::CheckBox | Role::Switch | Role::RadioButton => {
                     Some(button_text(node))
                 }
                 Role::Tab if node.kind == "TabButton" => node.text("text"),
                 Role::Group if node.kind == "Calendar" => Some("Calendar"),
+                Role::Group if node.kind == "MonthGrid" => Some("Month grid"),
+                Role::Group if node.kind == "DayOfWeekRow" => Some("Days of week"),
+                Role::Group if node.kind == "WeekNumberColumn" => Some("Week numbers"),
                 Role::Group if node.kind == "StyledText" => node.text("text"),
                 Role::Group if matches!(node.kind, "GroupBox" | "Page") => node.text("title"),
                 Role::ProgressIndicator if node.kind == "BusyIndicator" => Some("Loading"),
@@ -531,7 +567,15 @@ impl Builder<'_> {
             return None;
         }
 
-        let id = self.id(Key::element(node, path, row));
+        let mut key = Key::element(node, path, row);
+        // A divider can keep its scene slot when its neighbor or axis changes.
+        key.split_handle = split.map(|split| {
+            (
+                split.trailing_pane,
+                split.orientation == Orientation::Vertical,
+            )
+        });
+        let id = self.id(key);
         let mut accessible = AccessibleNode::new(role);
         if let Some(group) = self.attached_button_group(node, path, row) {
             accessible.set_member_of(group);
@@ -541,6 +585,8 @@ impl Builder<'_> {
         }
         if let Some(label) = label {
             accessible.set_label(label);
+        } else if let Some(split) = split {
+            accessible.set_label(format!("Pane divider {}", split.leading_pane + 1));
         }
         if let Some(description) = description {
             accessible.set_description(description);
@@ -548,9 +594,11 @@ impl Builder<'_> {
         if !item.enabled {
             accessible.set_disabled();
         }
-        if node.kind == "Calendar" {
+        if is_calendar_control(node.kind) {
             accessible.set_value(CalendarState::from_node(node).selected.to_string());
             children.extend(self.calendar_parts(node, item, path, row));
+        } else if matches!(node.kind, "DayOfWeekRow" | "WeekNumberColumn") {
+            children.extend(self.calendar_labels(node, item, path, row));
         }
         match role {
             Role::Label => accessible.set_value(node.text("text").unwrap_or("")),
@@ -642,6 +690,11 @@ impl Builder<'_> {
                     && let Some(list) = self.scene.at_path(parent).and_then(|table| table.list)
                 {
                     accessible.set_row_index(list.first_row + slot);
+                    if let Some(header) =
+                        self.table_row_header(node, path, row, list.first_row + slot)
+                    {
+                        children.insert(0, header);
+                    }
                 }
                 if node.boolean("tree-has-children", false) {
                     accessible.set_expanded(node.boolean("tree-expanded", false));
@@ -651,8 +704,8 @@ impl Builder<'_> {
                 if let Some(list) = node.list {
                     accessible.set_row_count(list.row_count);
                 }
-                if let Some(header) = &node.table_header {
-                    accessible.set_column_count(header.columns.len());
+                if let Some(geometry) = &item.table {
+                    accessible.set_column_count(geometry.visible_column_count());
                     children.splice(..0, self.table_headers(node, item, path, row));
                 }
             }
@@ -665,12 +718,22 @@ impl Builder<'_> {
                         .layout
                         .at_path(table)
                         .and_then(|item| item.table.as_ref())
-                        .and_then(|geometry| geometry.visual_index(*column))
+                        .and_then(|geometry| geometry.visible_column_index(*column))
                     {
                         accessible.set_column_index(visual);
                     }
                 }
                 accessible.set_selected(node.boolean("table-selected", false));
+                if node.table_cell_editor.is_some() {
+                    if self.input.table_cell_editing(path) {
+                        accessible.set_value(self.input.editor_value(node).into_owned());
+                        if self.input.table_cell_edit_invalid(node, path) {
+                            accessible.set_invalid(Invalid::True);
+                        }
+                    } else {
+                        accessible.set_value(node.text("text").unwrap_or_default());
+                    }
+                }
             }
             Role::TextInput
             | Role::MultilineTextInput
@@ -767,6 +830,32 @@ impl Builder<'_> {
                     }
                 }
             }
+            Role::Splitter | Role::Slider if node.kind == "SplitHandle" => {
+                if let Some(split) = split {
+                    if role == Role::Slider {
+                        accessible.set_role_description("splitter");
+                    }
+                    // The splitter itself runs perpendicular to the resize axis.
+                    accessible.set_orientation(match split.orientation {
+                        Orientation::Horizontal => accesskit::Orientation::Vertical,
+                        Orientation::Vertical => accesskit::Orientation::Horizontal,
+                    });
+                    accessible.set_numeric_value(split.value);
+                    accessible.set_min_numeric_value(split.minimum);
+                    accessible.set_max_numeric_value(split.maximum);
+                    accessible.set_numeric_value_step(SplitHandleRange::STEP);
+                    if !item.enabled {
+                        accessible.set_read_only();
+                    }
+                    if let Some((pane, path)) = &primary_pane
+                        && let Some(&id) =
+                            self.ids
+                                .get(&Key::element(pane, path, overlay_row(self.scene, path)))
+                    {
+                        accessible.set_controls(vec![id]);
+                    }
+                }
+            }
             Role::Slider => {
                 let range_node = if node.kind == "RangeThumb" {
                     self.scene
@@ -777,16 +866,21 @@ impl Builder<'_> {
                 };
                 let min = range_node.number("minimum").unwrap_or(0.0);
                 let max = range_node.number("maximum").unwrap_or(100.0).max(min);
-                let value = if node.kind == "RangeThumb" {
+                let (min, max, value) = if node.kind == "RangeThumb" {
                     let index = path.last().copied().unwrap_or(0).min(1);
                     accessible.set_label(if index == 0 {
                         "Lower value"
                     } else {
                         "Upper value"
                     });
-                    SliderInterval::from_node(range_node).values()[index]
+                    let [lower, upper] = SliderInterval::from_node(range_node).values();
+                    if index == 0 {
+                        (min, upper, lower)
+                    } else {
+                        (lower, max, upper)
+                    }
                 } else {
-                    SliderRange::from_node(node).value()
+                    (min, max, SliderRange::from_node(node).value())
                 };
                 accessible.set_min_numeric_value(min);
                 accessible.set_max_numeric_value(max);
@@ -884,13 +978,17 @@ impl Builder<'_> {
                     children.push(id);
                 }
             }
-            if supports_text_value(node) || node.kind == "DoubleSpinBox" && spin_editable(node) {
+            if role == Role::Slider && split.is_none()
+                || supports_text_value(node)
+                || node.kind == "DoubleSpinBox" && spin_editable(node)
+            {
                 accessible.add_action(Action::SetValue);
             }
             if text_editor && target.focusable {
                 accessible.add_action(Action::SetTextSelection);
             }
-            if role == Role::Slider || role == Role::SpinButton && !node.boolean("read-only", false)
+            if role == Role::Slider && split.is_none()
+                || role == Role::SpinButton && !node.boolean("read-only", false)
             {
                 accessible.add_action(Action::Increment);
                 accessible.add_action(Action::Decrement);
@@ -933,14 +1031,27 @@ impl Builder<'_> {
                     }
                 }
             }
-            self.routes.insert(
-                id,
+            let route = if let Some(split) = split {
+                accessible.add_action(Action::SetValue);
+                if split.can_increase() {
+                    accessible.add_action(Action::Increment);
+                }
+                if split.can_decrease() {
+                    accessible.add_action(Action::Decrement);
+                }
+                Route::SplitHandle {
+                    target,
+                    trailing_pane: split.trailing_pane,
+                    orientation: split.orientation,
+                }
+            } else {
                 Route::Element {
                     target,
                     kind: node.kind,
                     standard_kind: node.standard_button_kind(),
-                },
-            );
+                }
+            };
+            self.routes.insert(id, route);
         }
         accessible.set_children(children);
         self.nodes.push((id, accessible));
@@ -1018,7 +1129,7 @@ impl Builder<'_> {
             .accessibility_target(self.scene, self.layout, path);
         let clip = item.clip_rect(geometry.header);
         geometry
-            .visual_columns()
+            .visible_columns()
             .enumerate()
             .filter_map(|(visual, index)| {
                 let column = &header.columns[index];
@@ -1062,6 +1173,62 @@ impl Builder<'_> {
                 Some(id)
             })
             .collect()
+    }
+
+    fn table_row_header(
+        &mut self,
+        node: &Node,
+        path: &[usize],
+        row: Option<(RowKey, usize)>,
+        index: usize,
+    ) -> Option<NodeId> {
+        let (&slot, parent) = path.split_last()?;
+        let table = self.scene.at_path(parent)?;
+        let item = self.layout.at_path(parent)?;
+        let geometry = item.table.as_ref()?;
+        let label = node.text("row-header-text")?;
+        let rect = item.visible_window_bounds(
+            geometry
+                .row_header_cell(item.children.get(slot)?.bounds)
+                .intersect(geometry.row_header),
+        );
+        if rect.width <= 0.0 || rect.height <= 0.0 {
+            return None;
+        }
+        let mut key = Key::element(node, path, row);
+        key.kind = "TableRowHeader";
+        let id = self.id(key);
+        let mut part = AccessibleNode::new(Role::RowHeader);
+        part.set_bounds(bounds(rect, self.scale));
+        part.set_row_index(index);
+        part.set_label(label);
+        if let Some((row, view)) = node.row_key.zip(table.table_selection.as_deref()) {
+            part.set_selected(view.row_header_selected(row));
+        }
+        if !item.enabled {
+            part.set_disabled();
+        } else if let Some(target) = self
+            .input
+            .accessibility_target(self.scene, self.layout, path)
+        {
+            part.add_action(Action::Click);
+            for (id, direction, description) in TABLE_ROW_MOVE_ACTIONS {
+                if self
+                    .input
+                    .table_row_header_move(self.scene, self.layout, &target, direction)
+                    .is_some()
+                {
+                    part.add_action(Action::CustomAction);
+                    part.push_custom_action(CustomAction {
+                        id,
+                        description: description.into(),
+                    });
+                }
+            }
+            self.routes.insert(id, Route::TableRowHeader(target));
+        }
+        self.nodes.push((id, part));
+        Some(id)
     }
 
     fn group_toggle(
@@ -1134,56 +1301,107 @@ impl Builder<'_> {
             .navigation()
             .into_iter()
             .zip(["Previous month", "Next month"])
-            .map(|((rect, action), label)| (rect, action, label.to_owned(), None));
+            .map(|((rect, action), label)| (rect, action, label.to_owned(), None, false, None));
         let days = geometry.days().map(|day| {
             (
                 day.bounds,
-                day.enabled.then_some(CalendarAction::Select(day.date)),
+                day.enabled.then_some(geometry.day_action(day.date)),
                 day.date.to_string(),
                 Some(day.selected),
+                day.today,
+                node.calendar_cells()
+                    .and_then(|cells| cells.get(day.slot))
+                    .and_then(|cell| cell.text("accessible-description"))
+                    .filter(|description| !description.is_empty()),
             )
         });
         navigation
             .chain(days)
             .enumerate()
-            .filter_map(|(index, (rect, action, label, selected))| {
-                let rect = rect.intersect(item.clip);
+            .filter_map(
+                |(index, (rect, action, label, selected, today, description))| {
+                    let rect = rect.intersect(item.clip);
+                    if rect.width <= 0.0 || rect.height <= 0.0 {
+                        return None;
+                    }
+                    let mut key = Key::element(node, path, row);
+                    let identity = match action {
+                        Some(CalendarAction::Browse(month)) => month.to_string(),
+                        _ => label.clone(),
+                    };
+                    key.option = Some((if node.kind == "MonthGrid" { 0 } else { index }, identity));
+                    let id = self.id(key);
+                    let mut part = AccessibleNode::new(if selected.is_some() {
+                        Role::RadioButton
+                    } else {
+                        Role::Button
+                    });
+                    part.set_label(label);
+                    match (today, description) {
+                        (true, Some(description)) => {
+                            part.set_description(format!("Today. {description}"))
+                        }
+                        (true, None) => part.set_description("Today"),
+                        (false, Some(description)) => part.set_description(description),
+                        (false, None) => {}
+                    }
+                    part.set_bounds(bounds(item.visible_window_bounds(rect), self.scale));
+                    if let Some(selected) = selected {
+                        part.set_toggled(if selected {
+                            Toggled::True
+                        } else {
+                            Toggled::False
+                        });
+                    }
+                    if !item.enabled || action.is_none() {
+                        part.set_disabled();
+                    } else if let (Some(target), Some(action)) = (&target, action) {
+                        part.add_action(Action::Click);
+                        self.routes.insert(
+                            id,
+                            Route::ControlPart {
+                                target: target.clone(),
+                                action: ControlAction::Calendar(action),
+                            },
+                        );
+                    }
+                    self.nodes.push((id, part));
+                    Some(id)
+                },
+            )
+            .collect()
+    }
+
+    fn calendar_labels(
+        &mut self,
+        node: &Node,
+        item: &LayoutNode,
+        path: &[usize],
+        row: Option<(RowKey, usize)>,
+    ) -> Vec<NodeId> {
+        let geometry = CalendarGeometry::new(node, item.bounds);
+        let days = geometry
+            .weekdays(node)
+            .map(|(rect, name)| (rect, name.to_owned()));
+        let weeks = geometry.weeks().map(|week| {
+            (
+                week.bounds,
+                format!("Week {} of {}", week.number, week.year),
+            )
+        });
+        days.chain(weeks)
+            .enumerate()
+            .filter_map(|(index, (rect, label))| {
+                let rect = item.visible_window_bounds(rect);
                 if rect.width <= 0.0 || rect.height <= 0.0 {
                     return None;
                 }
                 let mut key = Key::element(node, path, row);
-                let identity = match action {
-                    Some(CalendarAction::Browse(month)) => month.to_string(),
-                    _ => label.clone(),
-                };
-                key.option = Some((index, identity));
+                key.option = Some((index, label.clone()));
                 let id = self.id(key);
-                let mut part = AccessibleNode::new(if selected.is_some() {
-                    Role::RadioButton
-                } else {
-                    Role::Button
-                });
-                part.set_label(label);
-                part.set_bounds(bounds(item.visible_window_bounds(rect), self.scale));
-                if let Some(selected) = selected {
-                    part.set_toggled(if selected {
-                        Toggled::True
-                    } else {
-                        Toggled::False
-                    });
-                }
-                if !item.enabled || action.is_none() {
-                    part.set_disabled();
-                } else if let (Some(target), Some(action)) = (&target, action) {
-                    part.add_action(Action::Click);
-                    self.routes.insert(
-                        id,
-                        Route::ControlPart {
-                            target: target.clone(),
-                            action: ControlAction::Calendar(action),
-                        },
-                    );
-                }
+                let mut part = AccessibleNode::new(Role::Label);
+                part.set_value(label);
+                part.set_bounds(bounds(rect, self.scale));
                 self.nodes.push((id, part));
                 Some(id)
             })
@@ -1442,7 +1660,7 @@ fn bounds(rect: Rect, scale: f64) -> accesskit::Rect {
 
 fn role(node: &Node, view: Option<&str>) -> Role {
     match node.kind {
-        "Button" | "ToolButton" | "DelayButton" | "DialogButton" | "TouchArea"
+        "Button" | "ToolButton" | "RoundButton" | "DelayButton" | "DialogButton" | "TouchArea"
         | "SwipeDelegate" => Role::Button,
         "CheckBox" => Role::CheckBox,
         "Switch" => Role::Switch,
@@ -1471,6 +1689,9 @@ fn role(node: &Node, view: Option<&str>) -> Role {
         "ComboBox" if combo_editable(node) => Role::EditableComboBox,
         "ComboBox" => Role::ComboBox,
         "Slider" | "Dial" | "RangeThumb" => Role::Slider,
+        // AccessKit's Windows range provider treats Splitter as read-only.
+        "SplitHandle" if cfg!(target_os = "windows") => Role::Slider,
+        "SplitHandle" => Role::Splitter,
         "SpinBox" | "DoubleSpinBox" => Role::SpinButton,
         "ProgressIndicator" | "Spinner" | "BusyIndicator" => Role::ProgressIndicator,
         "MenuBar" => Role::MenuBar,
@@ -1633,6 +1854,7 @@ pub(crate) fn supports_click(kind: &str) -> bool {
         kind,
         "Button"
             | "ToolButton"
+            | "RoundButton"
             | "DelayButton"
             | "GroupBox"
             | "DialogButton"
@@ -1650,7 +1872,9 @@ pub(crate) fn supports_click(kind: &str) -> bool {
 }
 
 pub(crate) fn supports_text_value(node: &Node) -> bool {
-    (xrack_runtime::is_text_input(node.kind) || combo_editable(node))
+    (xrack_runtime::is_text_input(node.kind)
+        || combo_editable(node)
+        || node.table_cell_editor.is_some() && xrack_runtime::editable_table_cell(node))
         && !node.boolean("read-only", false)
 }
 
@@ -1686,6 +1910,260 @@ mod tests {
             .iter()
             .find_map(|(id, node)| (node.label() == Some(label)).then_some((*id, node)))
             .unwrap()
+    }
+
+    #[test]
+    fn sparse_table_cells_keep_accessible_routes_when_dense_positions_change() {
+        use xrack_runtime::{TableColumnWindow, TableHeader};
+
+        let model = VecModel::from(vec![0]);
+        let mut table = Node::new("TableView", None);
+        table.list = Some(ListMetrics {
+            row_count: 1,
+            first_row: 0,
+        });
+        let mut column = Node::new("TableColumn", None);
+        length(&mut column, "width", 48.0);
+        table.table_header = Some(Box::new(TableHeader {
+            columns: vec![column; 12],
+            sort: None,
+            column_widths: Vec::new(),
+        }));
+        let (_, order) = table.table_column_order.moved(12, 11, 1).unwrap();
+        table.table_column_order = order.clone();
+        let mut row = Node::new("ListRow", None);
+        row.row_key = model.row_key(0);
+        let mut cells = Node::new("TableRow", None);
+        cells.table_column_order = order;
+        let cell = |label: &'static str| {
+            let mut cell = Node::new("TableCell", None);
+            cell.properties.insert("text", label.to_owned().into());
+            cell
+        };
+        cells.table_column_window =
+            TableColumnWindow::new((0..12).map(|column| matches!(column, 0 | 11)));
+        cells.children = vec![cell("First value"), cell("Last value")];
+        row.children.push(cells);
+        table.children.push(row);
+        let mut scene = Rc::new(table);
+        let viewport = Size::new(210.0, 100.0);
+        let input = Interaction::default();
+        let mut projection = Projection::default();
+        let frame = Rc::new(layout(&scene, viewport, &mut Text));
+        let update = projection
+            .update(&scene, &frame, &input, 1.0, None)
+            .unwrap();
+        let (last, last_cell) = named(&update, "Last value");
+        assert_eq!(last_cell.column_index(), Some(1));
+        assert!(
+            matches!(projection.route(last), Some(Route::Element { target, .. })
+            if target.path == [0, 0, 11])
+        );
+        let cells = &mut Rc::make_mut(&mut scene).children[0].children[0];
+        cells.table_column_window =
+            TableColumnWindow::new((0..12).map(|column| matches!(column, 0 | 1 | 11)));
+        cells.children.insert(1, cell("New visible value"));
+        let frame = Rc::new(layout(&scene, viewport, &mut Text));
+        let update = projection
+            .update(&scene, &frame, &input, 1.0, None)
+            .unwrap();
+        assert_eq!(named(&update, "Last value").0, last);
+        assert!(
+            matches!(projection.route(last), Some(Route::Element { target, .. })
+            if target.path == [0, 0, 11])
+        );
+        let table = Rc::make_mut(&mut scene);
+        table.table_header.as_mut().unwrap().columns[0]
+            .properties
+            .insert("visible", false.into());
+        let cells = &mut table.children[0].children[0];
+        cells.table_column_window =
+            TableColumnWindow::new((0..12).map(|column| matches!(column, 1 | 11)));
+        cells.children.remove(0);
+        let frame = Rc::new(layout(&scene, viewport, &mut Text));
+        let update = projection
+            .update(&scene, &frame, &input, 1.0, None)
+            .unwrap();
+        let (id, cell) = named(&update, "Last value");
+        assert_eq!(id, last);
+        assert_eq!(cell.column_index(), Some(0));
+        assert!(
+            update
+                .nodes
+                .iter()
+                .any(|(_, node)| node.role() == Role::Table && node.column_count() == Some(11))
+        );
+        assert!(
+            !update
+                .nodes
+                .iter()
+                .any(|(_, node)| node.label() == Some("First value"))
+        );
+    }
+
+    #[test]
+    fn nested_rows_of_a_shared_model_keep_distinct_ids_when_outer_slots_swap() {
+        let model = VecModel::from(vec!["shared".to_owned()]);
+        let shared = model.row_key(0).unwrap();
+        let outer = VecModel::from(vec![0, 1]);
+        let mut view = Node::new("ListView", None);
+        view.list = Some(ListMetrics {
+            row_count: 2,
+            first_row: 0,
+        });
+        length(&mut view, "row-height", 64.0);
+        for (index, label) in ["Left scope", "Right scope"].into_iter().enumerate() {
+            let mut nested = Node::new("ListView", None);
+            length(&mut nested, "height", 48.0);
+            nested.list = Some(ListMetrics {
+                row_count: 1,
+                first_row: 0,
+            });
+            let mut row = Node::new("ListRow", None);
+            row.row_key = Some(shared);
+            row.row_scope = xrack_runtime::ListRowRenderer::new(|_| Vec::new()).scope();
+            row.children.push(button("shared", label, 0.0));
+            nested.children.push(row);
+            let mut group = Node::new("ListRow", None);
+            group.row_key = outer.row_key(index);
+            group.children.push(nested);
+            view.children.push(group);
+        }
+        let mut scene = Rc::new(view);
+        let viewport = Size::new(180.0, 128.0);
+        let input = Interaction::default();
+        let mut projection = Projection::default();
+        let frame = Rc::new(layout(&scene, viewport, &mut Text));
+        let update = projection
+            .update(&scene, &frame, &input, 1.0, None)
+            .unwrap();
+        let left = named(&update, "Left scope").0;
+        let right = named(&update, "Right scope").0;
+        assert_ne!(left, right);
+        Rc::make_mut(&mut scene).children.swap(0, 1);
+        let frame = Rc::new(layout(&scene, viewport, &mut Text));
+        let update = projection
+            .update(&scene, &frame, &input, 1.0, None)
+            .unwrap();
+        assert_eq!(named(&update, "Left scope").0, left);
+        assert_eq!(named(&update, "Right scope").0, right);
+        assert!(
+            matches!(projection.route(left), Some(Route::Element { target, .. })
+            if target.path == [1, 0, 0, 0])
+        );
+    }
+
+    #[test]
+    fn a_constrained_vertical_splitter_reports_its_horizontal_orientation_and_fixed_value() {
+        let mut view = Node::new("SplitView", None);
+        view.properties
+            .insert("orientation", Orientation::Vertical.into());
+        for height in [80.0, 112.0] {
+            let mut pane = Node::new("Rectangle", None);
+            length(&mut pane, "min-height", height);
+            length(&mut pane, "max-height", height);
+            view.children.push(pane);
+        }
+        view.add_split_handles();
+        let scene = Rc::new(view);
+        let layout = Rc::new(layout(&scene, Size::new(160.0, 200.0), &mut Text));
+        let mut projection = Projection::default();
+        let update = projection
+            .update(&scene, &layout, &Interaction::default(), 1.0, None)
+            .unwrap();
+        let (id, splitter) = named(&update, "Pane divider 1");
+        assert_eq!(
+            splitter.orientation(),
+            Some(accesskit::Orientation::Horizontal)
+        );
+        assert_eq!(splitter.numeric_value(), Some(80.0));
+        assert_eq!(splitter.min_numeric_value(), Some(80.0));
+        assert_eq!(splitter.max_numeric_value(), Some(80.0));
+        assert!(splitter.is_disabled());
+        assert!(splitter.is_read_only());
+        assert!(!splitter.supports_action(Action::Focus));
+        assert!(!splitter.supports_action(Action::SetValue));
+        assert!(projection.route(id).is_none());
+    }
+
+    #[test]
+    fn round_button_exposes_button_actions_and_skips_decorative_separators() {
+        let mut window = Node::new("Window", None);
+        let mut round = Node::new("RoundButton", Some("round"));
+        round
+            .properties
+            .insert("accessible-name", "Toggle grid".to_owned().into());
+        length(&mut round, "width", 48.0);
+        length(&mut round, "height", 48.0);
+        let mut separator = Node::new("ToolSeparator", Some("separator"));
+        length(&mut separator, "x", 54.0);
+        window.children.extend([round, separator]);
+        let scene = Rc::new(window);
+        let layout = Rc::new(layout(&scene, Size::new(200.0, 150.0), &mut Text));
+        let input = Interaction::default();
+        let update = Projection::default()
+            .update(&scene, &layout, &input, 1.0, None)
+            .unwrap();
+        let (_, round) = named(&update, "Toggle grid");
+        assert_eq!(round.role(), Role::Button);
+        assert!(round.supports_action(Action::Focus));
+        assert!(round.supports_action(Action::Click));
+        assert_eq!(update.nodes.len(), 2);
+    }
+
+    #[test]
+    fn frame_groups_accessible_children_and_inherits_disabled_state() {
+        let mut window = Node::new("Window", None);
+        let mut frame = Node::new("ControlFrame", Some("group"));
+        frame
+            .properties
+            .insert("accessible-name", "Actions".to_owned().into());
+        frame.children.push(button("child", "Apply", 0.0));
+        window.children.push(frame);
+        let input = Interaction::default();
+        let mut projection = Projection::default();
+        for enabled in [true, false] {
+            window.children[0]
+                .properties
+                .insert("enabled", enabled.into());
+            let scene = Rc::new(window.clone());
+            let layout = Rc::new(layout(&scene, Size::new(200.0, 150.0), &mut Text));
+            let update = projection
+                .update(&scene, &layout, &input, 1.0, None)
+                .unwrap();
+            let (_, frame) = named(&update, "Actions");
+            let (child_id, child) = named(&update, "Apply");
+            assert_eq!(frame.role(), Role::Group);
+            assert!(frame.children().contains(&child_id));
+            assert_eq!(frame.is_disabled(), !enabled);
+            assert_eq!(child.supports_action(Action::Click), enabled);
+        }
+    }
+
+    #[test]
+    fn disabled_touch_area_keeps_child_accessibility_actions() {
+        let mut window = Node::new("Window", None);
+        let mut area = Node::new("TouchArea", Some("area"));
+        length(&mut area, "width", 160.0);
+        length(&mut area, "height", 80.0);
+        area.properties
+            .insert("accessible-name", "Overlay".to_owned().into());
+        area.properties.insert("enabled", false.into());
+        area.children.push(button("child", "Child", 8.0));
+        window.children.push(area);
+        let scene = Rc::new(window);
+        let frame = Rc::new(layout(&scene, Size::new(200.0, 150.0), &mut Text));
+        let input = Interaction::default();
+        let update = Projection::default()
+            .update(&scene, &frame, &input, 1.0, None)
+            .unwrap();
+        let (_, area) = named(&update, "Overlay");
+        let (child_id, child) = named(&update, "Child");
+        assert!(area.is_disabled());
+        assert!(!area.supports_action(Action::Click));
+        assert!(area.children().contains(&child_id));
+        assert!(!child.is_disabled());
+        assert!(child.supports_action(Action::Click));
     }
 
     #[test]
@@ -2173,6 +2651,80 @@ mod tests {
     }
 
     #[test]
+    fn month_grid_exposes_date_actions_and_calendar_headings() {
+        use xrack_runtime::{Date, Length};
+        let date = |year, month, day| Date::new(year, month, day).unwrap();
+        let mut scene = Node::new("Window", None);
+        let part = |kind, x, y, width, height| {
+            let mut part = Node::new(kind, None);
+            for (name, value) in [("x", x), ("y", y), ("width", width), ("height", height)] {
+                part.properties.insert(name, Length(value).into());
+            }
+            part.properties.insert("week-start", 7_i64.into());
+            part
+        };
+        let mut grid = part("MonthGrid", 44.0, 28.0, 280.0, 216.0);
+        grid.properties
+            .insert("display-month", date(2021, 1, 1).into());
+        grid.properties.insert("date", date(2021, 1, 8).into());
+        grid.properties.insert("today", date(2021, 1, 8).into());
+        grid.properties
+            .insert("minimum-date", date(2020, 12, 28).into());
+        let cells = xrack_runtime::CalendarCells::default().render(&grid, |day| {
+            let mut cell = Node::new("Rectangle", None);
+            if day.today {
+                cell.properties
+                    .insert("accessible-description", "Release review".to_owned().into());
+                let mut text = Node::new("Text", None);
+                text.properties
+                    .insert("text", "Template label".to_owned().into());
+                cell.children.push(text);
+            }
+            cell
+        });
+        grid.children.push(cells);
+        let weekdays = part("DayOfWeekRow", 44.0, 0.0, 280.0, 28.0);
+        let mut weeks = part("WeekNumberColumn", 0.0, 28.0, 44.0, 216.0);
+        weeks
+            .properties
+            .insert("display-month", date(2021, 1, 1).into());
+        scene.children.extend([grid, weekdays, weeks]);
+        let scene = Rc::new(scene);
+        let frame = Rc::new(layout(&scene, Size::new(324.0, 244.0), &mut Text));
+        let mut projection = Projection::default();
+        let update = projection
+            .update(&scene, &frame, &Interaction::default(), 1.0, None)
+            .unwrap();
+        let (id, selected) = named(&update, "2021-01-08");
+        assert_eq!(selected.toggled(), Some(Toggled::True));
+        assert_eq!(selected.description(), Some("Today. Release review"));
+        assert!(
+            !update
+                .nodes
+                .iter()
+                .any(|(_, node)| node.value() == Some("Template label"))
+        );
+        assert!(matches!(
+            projection.route(id),
+            Some(Route::ControlPart {
+                action: ControlAction::Calendar(CalendarAction::Activate(day)),
+                ..
+            }) if day == date(2021, 1, 8)
+        ));
+        let (id, disabled) = named(&update, "2020-12-27");
+        assert!(disabled.is_disabled());
+        assert!(projection.route(id).is_none());
+        for value in ["Sun", "Week 53 of 2020", "Week 1 of 2021"] {
+            assert!(
+                update
+                    .nodes
+                    .iter()
+                    .any(|(_, node)| node.role() == Role::Label && node.value() == Some(value))
+            );
+        }
+    }
+
+    #[test]
     fn virtual_table_exposes_absolute_cell_positions_and_sortable_headers() {
         let mut table = Node::new("TableView", Some("inventory"));
         table
@@ -2182,6 +2734,19 @@ mod tests {
             row_count: 50_000,
             first_row: 200,
         });
+        table
+            .properties
+            .insert("row-header-width", xrack_runtime::Length(64.0).into());
+        table.properties.insert("movable-rows", true.into());
+        table.standard_list_stamp = Some((0, 1));
+        let model = 50_000_i64;
+        table.table_selection = Some(Box::new(xrack_runtime::TableSelection::default().snapshot(
+            &model,
+            Some(200),
+            xrack_runtime::SelectionTarget::Rows,
+            1,
+            true,
+        )));
         let mut column = Node::new("TableColumn", None);
         column
             .properties
@@ -2195,6 +2760,9 @@ mod tests {
             column_widths: Vec::new(),
         }));
         let mut row = Node::new("ListRow", None);
+        row.row_key = Some(xrack_runtime::ListModel::row_key(&model, 200));
+        row.properties
+            .insert("row-header-text", "Device 200".to_owned().into());
         let mut record = Node::new("TableRow", None);
         let mut cell = Node::new("TableCell", None);
         cell.properties.insert("text", "47 units".to_owned().into());
@@ -2230,6 +2798,44 @@ mod tests {
         let (_, cell) = named(&update, "47 units");
         assert_eq!(cell.row_index(), Some(200));
         assert_eq!(cell.column_index(), Some(0));
+        let (id, header) = named(&update, "Device 200");
+        assert_eq!(header.role(), Role::RowHeader);
+        assert_eq!(header.row_index(), Some(200));
+        assert_eq!(header.is_selected(), Some(true));
+        assert!(header.supports_action(Action::Click));
+        assert!(header.supports_action(Action::CustomAction));
+        assert_eq!(
+            header.custom_actions(),
+            [
+                CustomAction {
+                    id: 0,
+                    description: "Move row up".into()
+                },
+                CustomAction {
+                    id: 1,
+                    description: "Move row down".into()
+                },
+            ]
+        );
+        let Some(Route::TableRowHeader(target)) = projection.route(id) else {
+            panic!("expected a row header action");
+        };
+        assert_eq!(target.row_key, scene.children[0].row_key);
+        let action = Interaction::default()
+            .table_row_header_selection(
+                &scene,
+                &frame,
+                &target,
+                xrack_runtime::RowSelection::Replace,
+            )
+            .unwrap();
+        assert_eq!(
+            action.action,
+            ControlAction::TableSelection(xrack_runtime::TableSelectionAction::Row {
+                index: 200,
+                operation: xrack_runtime::RowSelection::Replace,
+            })
+        );
     }
 
     #[test]
@@ -2296,6 +2902,10 @@ mod tests {
             let mut cell = Node::new("TableCell", None);
             cell.properties
                 .insert("text", format!("Cell {label}").into());
+            if label == "B" {
+                cell.properties.insert("editable", true.into());
+                cell.table_cell_editor = Some(xrack_runtime::TableCellEditor::String);
+            }
             record.children.push(cell);
             column
         });
@@ -2318,6 +2928,9 @@ mod tests {
             .update(&scene, &frame, &input, 1.0, None)
             .unwrap();
         let (id, frozen) = named(&first, "Cell B");
+        assert_eq!(frozen.value(), Some("Cell B"));
+        assert!(frozen.supports_action(Action::SetValue));
+        assert!(!named(&first, "Cell A").1.supports_action(Action::SetValue));
         let bounds = frozen.bounds();
         assert!(input.accessibility_scroll_to(&frame, &[], Orientation::Horizontal, 100.0));
         let frame = Rc::new(xrack_layout::layout_with_input(
@@ -2449,6 +3062,42 @@ mod tests {
         assert_eq!(tile.position_in_set(), Some(300));
         assert_eq!(tile.is_selected(), Some(true));
         assert_eq!(named(&update, "Pin").1.role(), Role::Button);
+    }
+
+    #[test]
+    fn application_window_accessibility_uses_the_visual_band_order() {
+        let mut window = Node::new("Window", None);
+        window.application_window = true;
+        window
+            .properties
+            .insert("title", "Editor".to_owned().into());
+        let mut footer = Node::new("PageFooter", None);
+        footer
+            .properties
+            .insert("accessible-name", "Footer".to_owned().into());
+        footer.children.push(button("save", "Save", 0.0));
+        let mut header = Node::new("PageHeader", None);
+        header
+            .properties
+            .insert("accessible-name", "Header".to_owned().into());
+        header.children.push(button("back", "Back", 0.0));
+        let mut menu = Node::new("MenuBar", None);
+        menu.properties
+            .insert("accessible-name", "Menu".to_owned().into());
+        let mut file = Node::new("Menu", None);
+        file.properties.insert("title", "File".to_owned().into());
+        menu.children.push(file);
+        window.children = vec![footer, button("body", "Content", 0.0), menu, header];
+        let scene = Rc::new(window);
+        let frame = Rc::new(layout(&scene, Size::new(240.0, 180.0), &mut Text));
+        let update = Projection::default()
+            .update(&scene, &frame, &Interaction::default(), 1.0, None)
+            .unwrap();
+        let (_, root) = named(&update, "Editor");
+        assert_eq!(
+            root.children(),
+            &["Menu", "Header", "Content", "Footer"].map(|label| named(&update, label).0)
+        );
     }
 
     #[test]

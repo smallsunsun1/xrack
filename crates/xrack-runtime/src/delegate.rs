@@ -1,4 +1,6 @@
-use crate::{ListModel, Node, Property, RowKey, RowLifetime, VecModel};
+use crate::{
+    ListModel, Node, Property, RowKey, RowLifetime, TableEditHistory, TableRowPatch, VecModel,
+};
 use std::{
     cell::{Cell, RefCell},
     collections::BTreeMap,
@@ -57,10 +59,38 @@ impl<Item: Clone + PartialEq> RowContext<Item> {
 
     #[doc(hidden)]
     pub fn update_in(&self, model: &VecModel<Item>, update: impl FnOnce(&Item) -> Item) {
+        self.write_in(model, |index, key| {
+            model.update_row_if_key(index, key, |row| Some(update(row)))
+        });
+    }
+
+    #[doc(hidden)]
+    pub fn update_in_with_history(
+        &self,
+        model: &VecModel<Item>,
+        history: &TableEditHistory<Item>,
+        enabled: bool,
+        update: impl FnOnce(&Item) -> Item,
+        capture: impl Fn(&Item, &Item, &mut TableRowPatch<Item>),
+    ) {
+        self.write_in(model, |index, key| {
+            if enabled {
+                history.commit_cell(model, index, key, |row| Some(update(row)), capture)
+            } else {
+                let changed = model.update_row_if_key(index, key, |row| Some(update(row)));
+                if changed {
+                    history.clear();
+                }
+                changed
+            }
+        });
+    }
+
+    fn write_in(&self, model: &VecModel<Item>, write: impl FnOnce(usize, RowKey) -> bool) {
         let Some(index) = self.current_index(model) else {
             return;
         };
-        if model.update_row_if_key(index, self.0.key, |row| Some(update(row))) {
+        if write(index, self.0.key) {
             self.0.item.set_if_changed(model.item(index));
         }
     }

@@ -182,7 +182,7 @@ pub(crate) fn index_overlays(scene: &Node, layout: &mut LayoutNode) {
                 overlays.modal.push(path.clone());
             }
         }
-        for (index, (child, item)) in scene.children.iter().zip(&layout.children).enumerate() {
+        for (index, child, item) in layout.children_in_scene_order(scene) {
             path.push(index);
             visit(child, item, path, overlays);
             path.pop();

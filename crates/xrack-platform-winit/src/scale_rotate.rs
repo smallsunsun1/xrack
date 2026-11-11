@@ -80,6 +80,13 @@ impl Gestures {
         self.capture.is_some()
     }
 
+    pub fn captured_touch_pair(&self) -> Option<[ContactId; 2]> {
+        match &self.capture.as_ref()?.source {
+            Source::Touch { pair, .. } => Some(pair.map(|contact| contact.id)),
+            Source::Trackpad { .. } => None,
+        }
+    }
+
     pub fn cancel(&mut self) -> Option<Delivery> {
         self.pending = None;
         self.capture
@@ -113,14 +120,18 @@ impl Gestures {
     ) -> (bool, [Option<Delivery>; 2]) {
         let terminal = matches!(phase, TouchPhase::Ended | TouchPhase::Cancelled);
         if let Some(cancelled) = self.reconcile(context) {
+            let consumed = self.held.contains(&id) || phase == TouchPhase::Started;
             if terminal {
                 self.held.retain(|held| *held != id);
             } else if phase == TouchPhase::Started && !self.held.contains(&id) {
                 self.held.push(id);
             }
-            return (true, [Some(cancelled), None]);
+            return (consumed, [Some(cancelled), None]);
         }
         if let Some(capture) = &mut self.capture {
+            if phase != TouchPhase::Started && !self.held.contains(&id) {
+                return (false, [None, None]);
+            }
             if phase == TouchPhase::Started && !self.held.contains(&id) {
                 self.held.push(id);
             }

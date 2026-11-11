@@ -319,9 +319,12 @@ impl<C: Component, T: TextMeasurer> UiDriver<C, T> {
     }
 
     pub fn click(&mut self, id: &str) {
+        self.click_at_path(&self.path(id));
+    }
+
+    pub fn click_at_path(&mut self, path: &[usize]) {
         let _scroll = self.scroll_requests.enter();
-        let path = self.path(id);
-        self.move_to(&path);
+        self.move_to(path);
         if self.input.menu_press(&self.scene, &self.layout) {
             self.release_menu();
             return;
@@ -332,7 +335,7 @@ impl<C: Component, T: TextMeasurer> UiDriver<C, T> {
                     .control_at(&self.scene, &close.path, close.action)
             );
             self.refresh();
-            self.move_to(&path);
+            self.move_to(path);
         }
         if let Some(update) = self.input.scroll_bar_press(&self.scene, &self.layout) {
             self.apply_scroll_bar(update);
@@ -342,14 +345,29 @@ impl<C: Component, T: TextMeasurer> UiDriver<C, T> {
             return;
         }
         self.input.pointer_press_in_scene(&self.scene, &self.layout);
-        let target = self
+        let mut target = self
             .input
             .pointer_release_target()
-            .unwrap_or_else(|| panic!("click did not reach {id:?}"));
-        assert_eq!(
-            target.path, path,
-            "click hit a different control than {id:?}"
-        );
+            .unwrap_or_else(|| panic!("click did not reach {path:?}"));
+        assert_eq!(target.path, path, "click hit a different control");
+        if let Some(selection) =
+            self.input
+                .list_item_delegate_selection(&self.scene, &self.layout, &target)
+        {
+            let row = target.row_key.unwrap();
+            assert!(
+                self.component
+                    .control_at(&self.scene, &selection.path, selection.action)
+            );
+            self.refresh();
+            let Some(resolved) =
+                self.input
+                    .resolve_item_delegate(&self.scene, &self.layout, &selection.path, row)
+            else {
+                return;
+            };
+            target = resolved;
+        }
         let action = self
             .input
             .dialog_button(&self.scene, &self.layout, &target)
@@ -380,7 +398,50 @@ impl<C: Component, T: TextMeasurer> UiDriver<C, T> {
     }
 
     pub fn tab(&mut self) {
-        if self.input.focus_next(&self.scene, &self.layout, false) {
+        self.tab_with_direction(false);
+    }
+
+    pub fn begin_table_edit(&mut self) -> bool {
+        self.input.begin_table_edit(&self.scene, &self.layout)
+    }
+
+    pub fn tab_with_direction(&mut self, backward: bool) {
+        if let Some(origin) = self.input.tab_edit_origin(&self.scene) {
+            use xrack_layout::TableEditCommit;
+            let result = self
+                .input
+                .finish_table_edit(&mut self.component, &self.scene);
+            if result == TableEditCommit::Kept {
+                return;
+            }
+            self.refresh();
+            if matches!(
+                result,
+                TableEditCommit::Changed | TableEditCommit::Unchanged
+            ) && let Some(target) = self.input.next_table_edit_target(
+                &self.component,
+                &self.scene,
+                &self.layout,
+                &origin,
+                backward,
+            ) {
+                if self.input.apply_scroll_requests(
+                    &self.scene,
+                    &self.layout,
+                    [target.scroll_request()],
+                ) {
+                    self.prepare();
+                }
+                if self
+                    .input
+                    .begin_table_edit_target(&self.scene, &self.layout, &target)
+                {
+                    self.refresh();
+                    return;
+                }
+            }
+        }
+        if self.input.focus_next(&self.scene, &self.layout, backward) {
             self.refresh();
         }
     }

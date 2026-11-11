@@ -138,6 +138,7 @@ impl FallbackFace {
 
 struct FontContext {
     identity: Rc<()>,
+    families: Vec<String>,
     context: TextContext,
     fallback: Vec<FontId>,
     catalog: RefCell<FontCatalog>,
@@ -161,14 +162,16 @@ impl FontContext {
             })
             .collect();
         let system = self.catalog.borrow().db.clone();
-        let catalog = RefCell::new(FontCatalog::new(system, loaded, fallback.first().copied()));
         let mut db = Database::new();
         for &source in fonts.sources() {
             db.load_font_source(fontdb::Source::Binary(Arc::new(source)));
         }
+        let families = font_family_names(&system, Some(&db));
+        let catalog = RefCell::new(FontCatalog::new(system, loaded, fallback.first().copied()));
         let bundled = Some(RefCell::new(FontCatalog::new(db, HashMap::new(), None)));
         Self {
             identity: Rc::new(()),
+            families,
             context,
             fallback,
             catalog,
@@ -190,6 +193,18 @@ struct EditLine {
     size: f32,
     face: Option<StyledFace>,
     geometry: Rc<VisualTextLine>,
+}
+
+fn font_family_names(system: &Database, bundled: Option<&Database>) -> Vec<String> {
+    let mut families: Vec<_> = system
+        .faces()
+        .chain(bundled.into_iter().flat_map(Database::faces))
+        .filter_map(|face| face.families.first())
+        .map(|(family, _)| family.clone())
+        .collect();
+    families.sort_by_cached_key(|family| (family.to_ascii_lowercase(), family.clone()));
+    families.dedup_by(|a, b| a.eq_ignore_ascii_case(b));
+    families
 }
 
 /// One font registry and shaping cache shared by measurement and drawing.
@@ -316,10 +331,12 @@ impl TextSystem {
         loaded: HashMap<fontdb::ID, Option<FontId>>,
         fallback_sources: Vec<FallbackFace>,
     ) -> Self {
+        let families = font_family_names(&db, None);
         let catalog = RefCell::new(FontCatalog::new(db, loaded, fallback.first().copied()));
         Self {
             base: FontContext {
                 identity: Rc::new(()),
+                families,
                 context,
                 fallback,
                 catalog,
@@ -348,12 +365,23 @@ impl TextSystem {
             self.edit_layout.get_mut().take();
             self.edit_line.get_mut().take();
         }
+        let font = scene.font("default-font");
         self.default_family.clear();
-        self.default_family
-            .push_str(scene.text("default-font-family").unwrap_or("").trim());
-        self.default_weight = weight(scene.int("default-font-weight"), 400);
-        self.default_italic = scene.boolean("default-font-italic", false);
-        self.default_size = scene.length("default-font-size").filter(|size| *size > 0.0);
+        let family = scene
+            .text("default-font-family")
+            .or_else(|| font.map(|font| font.family.as_str()))
+            .unwrap_or("");
+        self.default_family.push_str(family.trim());
+        let default_weight = scene
+            .int("default-font-weight")
+            .or_else(|| font.map(|font| font.weight));
+        self.default_weight = weight(default_weight, 400);
+        self.default_italic =
+            scene.boolean("default-font-italic", font.is_some_and(|font| font.italic));
+        self.default_size = scene
+            .length("default-font-size")
+            .or_else(|| font.and_then(xrack_runtime::Font::finite_size))
+            .filter(|size| *size > 0.0);
     }
 
     fn font_context(&self) -> &FontContext {
@@ -372,17 +400,23 @@ impl TextSystem {
     }
 
     fn face(&self, node: Option<&Node>, style: TextStyle) -> Option<StyledFace> {
+        let font = node.and_then(|node| node.font("font"));
         let family = node
             .and_then(|node| node.text("font-family"))
+            .or_else(|| font.map(|font| font.family.as_str()))
             .map(str::trim)
             .filter(|family| !family.is_empty())
             .unwrap_or(&self.default_family);
         let weight = weight(
-            node.and_then(|node| node.int("font-weight")),
+            node.and_then(|node| node.int("font-weight"))
+                .or_else(|| font.map(|font| font.weight)),
             self.default_weight,
         );
         let italic = node.map_or(self.default_italic, |node| {
-            node.boolean("font-italic", self.default_italic)
+            node.boolean(
+                "font-italic",
+                font.map_or(self.default_italic, |font| font.italic),
+            )
         });
         let family = if style.monospace { "monospace" } else { family };
         let weight = if style.bold { weight.max(700) } else { weight };
@@ -631,6 +665,10 @@ impl TextSystem {
 impl TextMeasurer for TextSystem {
     fn begin_window(&mut self, scene: &Node) {
         self.set_window(scene);
+    }
+
+    fn font_families(&self) -> &[String] {
+        &self.font_context().families
     }
 
     fn default_font_size(&self) -> Option<f32> {

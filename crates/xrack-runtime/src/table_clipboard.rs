@@ -91,16 +91,17 @@ pub fn paste_table_text<T: Clone + PartialEq>(
         columns,
         text,
     };
-    let staged = stage_table_text(model, input, assign, |_, _, _| {})?;
-    Some(model.replace_range_if_current(stamp, start, staged))
+    let staged = stage_table_text(model, input, Some, assign, |_, _, _| {})?;
+    Some(model.replace_rows_if_current(stamp, staged))
 }
 
 pub(crate) fn stage_table_text<T: Clone + PartialEq>(
     model: &VecModel<T>,
     input: TablePasteInput<'_>,
+    source_index: impl Fn(usize) -> Option<usize>,
     mut assign: impl FnMut(usize, usize, &T, &mut T, &str) -> Option<()>,
     mut capture: impl FnMut(usize, &T, &T),
-) -> Option<Vec<T>> {
+) -> Option<Vec<(usize, T)>> {
     if model.edit_stamp() != input.stamp {
         return None;
     }
@@ -112,14 +113,14 @@ pub(crate) fn stage_table_text<T: Clone + PartialEq>(
     }
     let mut staged = Vec::with_capacity(height);
     for (offset, row) in cells.chunks_exact(width).enumerate() {
-        let index = input.row + offset;
+        let index = source_index(input.row + offset)?;
         let current = model.row(index)?;
         let mut next = current.clone();
         for (&column, value) in columns.iter().zip(row) {
             assign(index, column, &current, &mut next, value)?;
         }
         capture(index, &current, &next);
-        staged.push(next);
+        staged.push((index, next));
     }
     Some(staged)
 }

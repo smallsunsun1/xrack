@@ -60,17 +60,39 @@ pub enum Statement {
     Timer(TimerEffect),
     Popup(PopupEffect),
     NativeDialogOpen(NativeDialogOpen),
-    WindowClose { window_close: Span },
+    WindowClose {
+        window_close: Span,
+    },
     WindowCommand(WindowCommand),
     CheckGroupCommand(CheckGroupCommand),
     SecondaryWindowCommand(SecondaryWindowCommand),
     FocusCommand(FocusCommand),
-    SwipeCancel { swipe_owner: String, span: Span },
+    SwipeCancel {
+        swipe_owner: String,
+        span: Span,
+    },
     TextCommand(TextCommand),
     ScrollCommand(ScrollCommand),
-    CancelFlick { flick_viewport: String, span: Span },
-    ReturnToBounds { bounds_viewport: String, span: Span },
-    MoveColumn(MoveColumn),
+    SourceSelection(SourceSelection),
+    TreeCommand(TreeCommand),
+    RestoreSplit(RestoreSplit),
+    TableSortCommand(TableSortCommand),
+    TableSelectionCommand(TableSelectionCommand),
+    TableHistoryCommand {
+        history_owner: String,
+        redo: bool,
+        span: Span,
+    },
+    CancelFlick {
+        flick_viewport: String,
+        span: Span,
+    },
+    ReturnToBounds {
+        bounds_viewport: String,
+        span: Span,
+    },
+    MoveColumn(MoveTableItem),
+    MoveRow(MoveTableItem),
     SetRowHeight(SetRowHeight),
 }
 
@@ -82,15 +104,54 @@ pub struct SetRowHeight {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct MoveColumn {
+pub struct MoveTableItem {
     pub table_owner: String,
     pub positions: [Expr; 2],
     pub span: Span,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct TableSelectionCommand {
+    pub selection_owner: String,
+    pub method: String,
+    pub args: Vec<Expr>,
+    pub span: Span,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct TableSortCommand {
+    pub sort_owner: String,
+    pub method: String,
+    pub args: Vec<Expr>,
+    pub span: Span,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct RestoreSplit {
+    pub split_owner: String,
+    pub state: Expr,
+    pub span: Span,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct TreeCommand {
+    pub tree_owner: String,
+    pub method: String,
+    pub args: Vec<Expr>,
+    pub span: Span,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ScrollCommand {
     pub viewport: String,
+    pub method: String,
+    pub args: Vec<Expr>,
+    pub span: Span,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SourceSelection {
+    pub source_view: String,
     pub method: String,
     pub args: Vec<Expr>,
     pub span: Span,
@@ -189,6 +250,8 @@ pub struct Element {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub action: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub action_group: Option<ActionGroupRef>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub button_group: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub properties: Vec<Property>,
@@ -205,6 +268,8 @@ pub struct Element {
     pub initial_focus: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scroll_target: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub split_fill: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub callbacks: Vec<Callback>,
     pub handlers: Vec<Callback>,
@@ -212,6 +277,12 @@ pub struct Element {
     pub clipboard_paste: Option<ClipboardPaste>,
     pub children: Vec<Element>,
     pub span: Span,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ActionGroupRef {
+    pub group: String,
+    pub value: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

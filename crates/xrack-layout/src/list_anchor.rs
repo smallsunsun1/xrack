@@ -5,6 +5,7 @@ use xrack_runtime::{ListMetrics, Node, Orientation, RowKey};
 #[derive(Clone, Debug)]
 pub(crate) struct ListAnchor {
     pub offset: f32,
+    pub scope: Option<u64>,
     cells: ViewCells,
     selection: Option<i64>,
     rows: Vec<(RowKey, usize)>,
@@ -52,6 +53,10 @@ impl ListAnchor {
         };
         Some(Self {
             offset,
+            scope: layout
+                .nested_list
+                .as_ref()
+                .map(xrack_runtime::ListRowRenderer::scope),
             cells: ViewCells::new(node, width),
             selection: ListMetrics::selection(node),
             rows,
@@ -102,13 +107,36 @@ pub(crate) fn capture_list_anchors(
         anchors: &mut BTreeMap<Vec<usize>, ListAnchor>,
     ) {
         if scene.list.is_some() {
+            if let Some(renderer) = &layout.nested_list
+                && layout.visible
+            {
+                let width = layout
+                    .table
+                    .as_ref()
+                    .map_or(layout.bounds.width, |table| table.body.width);
+                let cells = ViewCells::new(scene, width);
+                renderer.remember_selection(crate::input::scroll_selection(scene), cells.columns);
+                if let Some(tree) = &scene.tree {
+                    renderer.remember_tree_root(tree.root_identity());
+                }
+                for axis in [Orientation::Horizontal, Orientation::Vertical] {
+                    let bound = layout
+                        .viewport_handle
+                        .as_ref()
+                        .is_some_and(|handle| handle.has_bound_offset(axis));
+                    if !bound
+                        && let Some(scroll) = layout.scroll_on(axis)
+                        && (scroll.offset > 0.0 || renderer.offset(axis).is_some())
+                    {
+                        renderer.set_offset(axis, scroll.offset);
+                    }
+                }
+            }
             if let Some(anchor) = ListAnchor::capture(scene, layout) {
                 anchors.insert(path.clone(), anchor);
             }
-            // Virtual view delegates cannot contain virtual views.
-            return;
         }
-        for (index, (child, item)) in scene.children.iter().zip(&layout.children).enumerate() {
+        for (index, child, item) in layout.children_in_scene_order(scene) {
             path.push(index);
             visit(child, item, path, anchors);
             path.pop();

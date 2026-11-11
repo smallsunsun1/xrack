@@ -167,6 +167,15 @@ impl<T> Property<T> {
         self.dependency.dirty.get()
     }
 
+    /// Inspect the current explicit or clean cached value without evaluating a binding.
+    pub(crate) fn matches_current(&self, predicate: impl FnOnce(&T) -> bool) -> bool {
+        match &*self.value.borrow() {
+            Stored::Explicit(value) => predicate(value),
+            Stored::Cached(value) if !self.dependency.dirty.get() => predicate(value),
+            _ => false,
+        }
+    }
+
     pub fn reset(&self) {
         if matches!(*self.value.borrow(), Stored::Explicit(_)) {
             self.replace(Stored::Unset, true);

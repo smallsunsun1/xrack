@@ -170,7 +170,7 @@ impl LayoutNode {
             .as_deref()
             .map_or(self.bounds, |table| match axis {
                 Orientation::Horizontal => table.scrollable_body(),
-                Orientation::Vertical => table.body,
+                Orientation::Vertical => table.rows_area(),
             })
     }
 
@@ -257,12 +257,22 @@ impl LayoutObservers {
             {
                 let rect = item.bounds;
                 let window = item.window_bounds(rect);
+                let available = if xrack_runtime::is_pane(node.kind) {
+                    let inner = crate::linear::Padding::read(node).inner_rect(rect);
+                    [inner.width, inner.height]
+                } else if node.application_window {
+                    item.content_bounds
+                        .as_deref()
+                        .map_or([0.0; 2], |rect| [rect.width, rect.height])
+                } else {
+                    [0.0; 2]
+                };
                 for handle in node
                     .geometry_handle
                     .iter()
                     .chain(node.instance_geometry_handle.iter())
                 {
-                    handle.publish(
+                    handle.publish_with_content(
                         [
                             rect.x - parent.x,
                             rect.y - parent.y,
@@ -270,6 +280,7 @@ impl LayoutObservers {
                             rect.height,
                         ],
                         [window.x, window.y, window.width, window.height],
+                        available,
                         true,
                     );
                     geometry.insert(handle.identity(), handle.clone());
@@ -323,7 +334,7 @@ fn find_path(node: &Node, handle: &ViewportHandle, path: &mut Vec<usize>) -> boo
     if node.viewport_handle.as_ref() == Some(handle) {
         return true;
     }
-    for (index, child) in node.children.iter().enumerate() {
+    for (index, child) in node.materialized_children() {
         path.push(index);
         if find_path(child, handle, path) {
             return true;
@@ -398,40 +409,171 @@ impl Interaction {
                     }
                 }
                 ScrollAction::ToIndex { index, alignment } => {
-                    let Some((list, scroll)) = node.list.zip(item.scroll) else {
-                        continue;
-                    };
-                    let Ok(index) = usize::try_from(index) else {
-                        continue;
-                    };
-                    if index >= list.row_count {
-                        continue;
+                    if let Ok(index) = usize::try_from(index) {
+                        changed |= self.position_row(&path, node, item, index, alignment);
                     }
-                    let viewport = viewport(item);
-                    let cells = ViewCells::new(node, viewport.width);
-                    let top = cells.top(index) as f32;
-                    let current = item
-                        .bound_offset(Orientation::Vertical)
-                        .or_else(|| self.scroll_offsets().get(path.as_slice()).copied())
-                        .unwrap_or(scroll.offset);
-                    let current = ScrollLayout::new(current, scroll.max_offset);
-                    let offset = position(
-                        current,
-                        top,
-                        cells.height(index),
-                        viewport.height,
-                        alignment,
-                    );
-                    changed |= self.set_viewport_offset(
-                        &path,
-                        item,
-                        Orientation::Vertical,
-                        f64::from(offset),
-                    );
+                }
+                ScrollAction::ToRowKey {
+                    key,
+                    source_index,
+                    alignment,
+                } => {
+                    if let Some(index) = node.displayed_row_for_key(key, source_index) {
+                        changed |= self.position_row(&path, node, item, index, alignment);
+                    }
+                }
+                ScrollAction::ToColumn { column, alignment } => {
+                    changed |= self.position_column(&path, item, column, alignment);
+                }
+                ScrollAction::ToCell {
+                    row,
+                    column,
+                    horizontal,
+                    vertical,
+                } => {
+                    if let Ok(row) = usize::try_from(row) {
+                        changed |= self.position_cell(
+                            &path,
+                            node,
+                            item,
+                            (row, column),
+                            (horizontal, vertical),
+                        );
+                    }
+                }
+                ScrollAction::ToCellAtRowKey {
+                    key,
+                    source_index,
+                    column,
+                    horizontal,
+                    vertical,
+                } => {
+                    if let Some(row) = node.displayed_row_for_key(key, source_index) {
+                        changed |= self.position_cell(
+                            &path,
+                            node,
+                            item,
+                            (row, column),
+                            (horizontal, vertical),
+                        );
+                    }
                 }
             }
         }
         changed
+    }
+
+    fn position_cell(
+        &mut self,
+        path: &[usize],
+        node: &Node,
+        item: &LayoutNode,
+        (row, column): (usize, i64),
+        (horizontal, vertical): (ScrollAlignment, ScrollAlignment),
+    ) -> bool {
+        // Geometry comes from the fresh scene, including column visibility and resizing.
+        if !node
+            .list
+            .zip(item.table.as_ref())
+            .is_some_and(|(list, table)| {
+                row < list.row_count
+                    && usize::try_from(column).is_ok_and(|column| table.is_column_visible(column))
+            })
+        {
+            return false;
+        }
+        let x = self.position_column(path, item, column, horizontal);
+        let y = self.position_row(path, node, item, row, vertical);
+        x || y
+    }
+
+    fn position_row(
+        &mut self,
+        path: &[usize],
+        node: &Node,
+        item: &LayoutNode,
+        index: usize,
+        alignment: ScrollAlignment,
+    ) -> bool {
+        if !node.list.is_some_and(|list| index < list.row_count) {
+            return false;
+        }
+        let cells = ViewCells::new(node, viewport(item).width);
+        self.position_axis(
+            path,
+            item,
+            Orientation::Vertical,
+            cells.top(index) as f32,
+            cells.height(index),
+            alignment,
+        )
+    }
+
+    fn position_column(
+        &mut self,
+        path: &[usize],
+        item: &LayoutNode,
+        column: i64,
+        alignment: ScrollAlignment,
+    ) -> bool {
+        let Some((column, table)) = usize::try_from(column).ok().zip(item.table.as_ref()) else {
+            return false;
+        };
+        let Some(bounds) = table
+            .columns
+            .get(column)
+            .filter(|bounds| bounds.width > 0.0 && !table.is_frozen(column))
+        else {
+            return false;
+        };
+        let left = bounds.x + table.horizontal.offset - table.scrollable_body().x;
+        self.position_axis(
+            path,
+            item,
+            Orientation::Horizontal,
+            left,
+            bounds.width,
+            alignment,
+        )
+    }
+
+    fn position_axis(
+        &mut self,
+        path: &[usize],
+        item: &LayoutNode,
+        axis: Orientation,
+        start: f32,
+        length: f32,
+        alignment: ScrollAlignment,
+    ) -> bool {
+        let Some(scroll) = item.scroll_on(axis) else {
+            return false;
+        };
+        let offsets = match axis {
+            Orientation::Horizontal => self.horizontal_scroll_offsets(),
+            Orientation::Vertical => self.scroll_offsets(),
+        };
+        // Earlier commands in this delivery may have moved the same axis already.
+        let current = item
+            .bound_offset(axis)
+            .or_else(|| offsets.get(path).copied())
+            .unwrap_or(scroll.offset);
+        let viewport = item.scroll_viewport(axis);
+        let page = match axis {
+            Orientation::Horizontal => viewport.width,
+            Orientation::Vertical => viewport.height,
+        };
+        if page <= 0.0 {
+            return false;
+        }
+        let offset = position(
+            ScrollLayout::new(current, scroll.max_offset),
+            start,
+            length,
+            page,
+            alignment,
+        );
+        self.set_viewport_offset(path, item, axis, f64::from(offset))
     }
 }
 

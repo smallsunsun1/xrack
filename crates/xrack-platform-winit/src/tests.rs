@@ -13,6 +13,186 @@ use std::{
 use xrack_runtime::Value;
 
 #[test]
+fn native_cursor_resolution_prefers_resize_then_explicit_shapes_then_text() {
+    use xrack_layout::{TextMeasurer, layout};
+    use xrack_runtime::{HoverHandle, Length};
+
+    struct View(Rc<Node>);
+    impl Component for View {
+        fn render(&self) -> Node {
+            self.0.as_ref().clone()
+        }
+        fn render_shared(&self) -> Rc<Node> {
+            self.0.clone()
+        }
+        fn dispatch(&mut self, _: &str, _: &str) -> bool {
+            false
+        }
+    }
+    struct Measure;
+    impl TextMeasurer for Measure {
+        fn measure(&mut self, _: &str, _: f32, _: f32) -> Size {
+            Size::default()
+        }
+    }
+    let rect = |kind, x, y, width, height| {
+        let mut node = Node::new(kind, None);
+        for (name, value) in [("x", x), ("y", y), ("width", width), ("height", height)] {
+            node.properties.insert(name, Length(value).into());
+        }
+        node
+    };
+    let mut scene = Node::new("Window", None);
+    let mut outer = rect("HoverHandler", 0.0, 0.0, 280.0, 160.0);
+    outer.hover_handle = Some(HoverHandle::default());
+    outer
+        .properties
+        .insert("cursor-shape", CursorShape::Crosshair.into());
+    let mut inner = rect("HoverHandler", 12.0, 12.0, 110.0, 44.0);
+    inner.hover_handle = Some(HoverHandle::default());
+    inner
+        .properties
+        .insert("cursor-shape", CursorShape::Pointer.into());
+    inner.children.push(rect("LineEdit", 0.0, 0.0, 110.0, 44.0));
+    outer.children.push(inner);
+    let mut touch = rect("TouchArea", 140.0, 12.0, 110.0, 44.0);
+    touch
+        .properties
+        .insert("cursor-shape", CursorShape::Grab.into());
+    outer.children.push(touch);
+    let mut split = rect("SplitView", 12.0, 82.0, 230.0, 54.0);
+    split.children.push(Node::new("Rectangle", None));
+    split.children.push(Node::new("Rectangle", None));
+    split.add_split_handles();
+    outer.children.push(split);
+    scene.children.push(outer);
+    let mut app = Application::new(
+        View(Rc::new(scene)),
+        LocalExecutor::new(|| {}),
+        Inbox::<()>::new(|| {}),
+        |_: &mut View, _| {},
+    );
+    let size = Size::new(280.0, 160.0);
+    let mut measure = Measure;
+    let sync = |app: &mut Application<View, (), _>, measure: &mut Measure, point: Point| {
+        let frame = Rc::new(layout(&app.scene, size, measure));
+        app.input.pointer_move(&app.scene, &frame, point);
+        app.hover_pointer = Some(PhysicalPosition::new(
+            f64::from(point.x),
+            f64::from(point.y),
+        ));
+        let events = app
+            .hover_observers
+            .sync(&app.input, &app.scene, &frame, Some(point));
+        app.layout = Some(frame);
+        events
+    };
+    let text = Point { x: 30.0, y: 30.0 };
+    assert_eq!(sync(&mut app, &mut measure, text).len(), 2);
+    assert_eq!(app.pointer_cursor(), CursorIcon::Pointer);
+
+    Rc::make_mut(&mut app.scene).children[0].children[0]
+        .properties
+        .insert("cursor-shape", CursorShape::Auto.into());
+    assert!(sync(&mut app, &mut measure, text).is_empty());
+    assert_eq!(app.pointer_cursor(), CursorIcon::Crosshair);
+    Rc::make_mut(&mut app.scene).children[0].children[0]
+        .properties
+        .insert("blocking", true.into());
+    sync(&mut app, &mut measure, text);
+    assert_eq!(app.pointer_cursor(), CursorIcon::Text);
+
+    sync(&mut app, &mut measure, Point { x: 175.0, y: 30.0 });
+    assert_eq!(app.pointer_cursor(), CursorIcon::Grab);
+    let split = [0, 2];
+    let handle = app
+        .scene
+        .at_path(&split)
+        .unwrap()
+        .children
+        .iter()
+        .position(|node| node.kind == "SplitHandle")
+        .unwrap();
+    let bounds = app
+        .layout
+        .as_ref()
+        .unwrap()
+        .at_path(&[0, 2, handle])
+        .unwrap()
+        .bounds;
+    let grip = Point {
+        x: bounds.x + bounds.width * 0.5,
+        y: bounds.y + bounds.height * 0.5,
+    };
+    sync(&mut app, &mut measure, grip);
+    assert_eq!(app.hover_observers.cursor_shape(), CursorShape::Crosshair);
+    assert_eq!(app.pointer_cursor(), CursorIcon::ColResize);
+
+    let touch = Point { x: 175.0, y: 30.0 };
+    sync(&mut app, &mut measure, touch);
+    assert_eq!(app.pointer_cursor(), CursorIcon::Grab);
+    let mut dialog = rect("Dialog", 0.0, 0.0, 100.0, 60.0);
+    dialog.properties.insert("open", true.into());
+    Rc::make_mut(&mut app.scene).children.push(dialog);
+    let frame = Rc::new(layout(&app.scene, size, &mut measure));
+    app.hover_observers
+        .sync(&app.input, &app.scene, &frame, Some(touch));
+    app.layout = Some(frame);
+    assert_eq!(app.pointer_cursor(), CursorIcon::Default);
+
+    app.input.pointer_leave();
+    app.hover_pointer = None;
+    app.hover_observers
+        .sync(&app.input, &app.scene, app.layout.as_ref().unwrap(), None);
+    assert_eq!(app.pointer_cursor(), CursorIcon::Default);
+}
+
+#[test]
+fn a_denied_control_publishes_guard_side_effects_without_claiming_navigation_success() {
+    #[derive(Default)]
+    struct View {
+        prompt: bool,
+        dirty: Cell<bool>,
+    }
+    impl Component for View {
+        fn render(&self) -> Node {
+            let mut scene = Node::new("Window", None);
+            scene.properties.insert("prompt", self.prompt.into());
+            self.dirty.set(false);
+            scene
+        }
+
+        fn scene_dirty(&self) -> bool {
+            self.dirty.get()
+        }
+
+        fn dispatch(&mut self, _: &str, _: &str) -> bool {
+            false
+        }
+
+        fn control_at(&mut self, _: &Node, _: &[usize], action: ControlAction) -> bool {
+            assert!(matches!(action, ControlAction::StackBack { .. }));
+            self.prompt = true;
+            self.dirty.set(true);
+            false
+        }
+    }
+    let mut app = Application::new(
+        View::default(),
+        LocalExecutor::new(|| {}),
+        Inbox::<()>::new(|| {}),
+        |_: &mut View, _| {},
+    );
+    assert!(!app.base_scene.boolean("prompt", false));
+    app.apply_control(ControlInput {
+        path: vec![],
+        action: ControlAction::StackBack { revision: 1 },
+    });
+    assert!(app.base_scene.boolean("prompt", false));
+    assert!(!app.component.scene_dirty());
+}
+
+#[test]
 fn a_deferred_focus_command_is_consumed_with_an_unchanged_scene() {
     use xrack_layout::{TextMeasurer, layout};
     use xrack_runtime::{FocusAction, FocusHandle, Length};
@@ -399,10 +579,207 @@ fn accessibility_scrolls_the_requested_container_without_moving_its_parent() {
 }
 
 #[test]
+fn accessibility_resizes_the_addressed_splitter_and_rejects_an_old_neighbor() {
+    use accesskit::{NodeId, Role};
+    use xrack_layout::{TextMeasurer, layout};
+    use xrack_runtime::Length;
+
+    #[derive(Default)]
+    struct View {
+        sizes: Option<Arc<[Option<f32>]>>,
+        hide_middle: bool,
+        edits: usize,
+    }
+
+    impl Component for View {
+        fn render(&self) -> Node {
+            let mut window = Node::new("Window", None);
+            let mut view = Node::new("SplitView", Some("work"));
+            view.properties.insert("width", Length(300.0).into());
+            view.properties.insert("height", Length(100.0).into());
+            view.properties
+                .insert("accessible-name", "Workspace".to_owned().into());
+            view.split_fill_pane = Some("middle");
+            view.split_sizes = self.sizes.clone();
+            for (id, title, preferred, min, max, visible) in [
+                ("left", "Navigation", 100.0, 80.0, 140.0, true),
+                ("middle", "Editor", 100.0, 60.0, 180.0, !self.hide_middle),
+                ("right", "Inspector", 70.0, 60.0, 180.0, true),
+            ] {
+                let mut pane = Node::new("Rectangle", Some(id));
+                pane.properties
+                    .insert("accessible-name", title.to_owned().into());
+                pane.properties
+                    .insert("preferred-width", Length(preferred).into());
+                pane.properties.insert("min-width", Length(min).into());
+                pane.properties.insert("max-width", Length(max).into());
+                pane.properties.insert("visible", visible.into());
+                view.children.push(pane);
+            }
+            view.add_split_handles();
+            window.children.push(view);
+            window
+        }
+
+        fn dispatch(&mut self, _: &str, _: &str) -> bool {
+            false
+        }
+
+        fn resize_split_sizes_at(
+            &mut self,
+            scene: &Node,
+            path: &[usize],
+            sizes: &[(usize, f32)],
+        ) -> bool {
+            assert_eq!(path, &[0]);
+            let Some(next) = scene.at_path(path).unwrap().resized_split_sizes(sizes) else {
+                return false;
+            };
+            self.sizes = Some(next);
+            self.edits += 1;
+            true
+        }
+    }
+
+    struct Measure;
+    impl TextMeasurer for Measure {
+        fn measure(&mut self, _: &str, _: f32, _: f32) -> Size {
+            Size::new(30.0, 16.0)
+        }
+    }
+
+    let mut app = Application::new(
+        View::default(),
+        LocalExecutor::new(|| {}),
+        Inbox::<()>::new(|| {}),
+        |_: &mut View, _| {},
+    );
+    let frame = |app: &mut Application<View, (), _>| {
+        app.scene = Rc::new(app.component.render());
+        let layout = Rc::new(layout(&app.scene, Size::new(320.0, 140.0), &mut Measure));
+        app.layout = Some(layout.clone());
+        layout
+    };
+    let request = |node, action, data| ActionRequest {
+        action,
+        target_tree: TreeId::ROOT,
+        target_node: node,
+        data,
+    };
+    let role = if cfg!(target_os = "windows") {
+        Role::Slider
+    } else {
+        Role::Splitter
+    };
+    let mut projection = Projection::default();
+    let layout = frame(&mut app);
+    let update = projection
+        .update(&app.scene, &layout, &app.input, 2.0, None)
+        .unwrap();
+    let lookup = |label| {
+        update
+            .nodes
+            .iter()
+            .find(|(_, node)| node.label() == Some(label) && node.role() == Role::Group)
+            .unwrap()
+    };
+    let navigation = lookup("Navigation").0;
+    let editor = lookup("Editor").0;
+    let inspector = lookup("Inspector").0;
+    let (_, split) = lookup("Workspace");
+    let [left, first, middle, second, right] = <[NodeId; 5]>::try_from(split.children()).unwrap();
+    assert_eq!([left, middle, right], [navigation, editor, inspector]);
+    let splitter = update
+        .nodes
+        .iter()
+        .find(|(id, _)| *id == first)
+        .unwrap()
+        .1
+        .clone();
+    assert_eq!(splitter.role(), role);
+    assert_eq!(splitter.label(), Some("Navigation"));
+    assert_eq!(splitter.controls(), &[navigation]);
+    assert_eq!(
+        splitter.orientation(),
+        Some(accesskit::Orientation::Vertical)
+    );
+    assert_eq!(splitter.numeric_value(), Some(100.0));
+    assert_eq!(splitter.min_numeric_value(), Some(80.0));
+    assert_eq!(splitter.max_numeric_value(), Some(140.0));
+    assert_eq!(splitter.numeric_value_step(), Some(8.0));
+    let route = projection.route(first).unwrap();
+    app.accessibility_action(route.clone(), request(first, AccessibleAction::Focus, None));
+    assert!(app.input.is_focused(&[0, 3]));
+    app.accessibility_action(
+        route.clone(),
+        request(first, AccessibleAction::Increment, None),
+    );
+    assert_eq!(app.component.sizes.as_deref().unwrap()[0], Some(108.0));
+
+    frame(&mut app);
+    app.accessibility_action(
+        route.clone(),
+        request(
+            first,
+            AccessibleAction::SetValue,
+            Some(ActionData::NumericValue(f64::NAN)),
+        ),
+    );
+    assert_eq!(app.component.edits, 1);
+    app.accessibility_action(
+        route.clone(),
+        request(
+            first,
+            AccessibleAction::SetValue,
+            Some(ActionData::Value("500".into())),
+        ),
+    );
+    assert_eq!(
+        app.component.sizes.as_deref().unwrap(),
+        &[Some(140.0), Some(74.0), None]
+    );
+    let layout = frame(&mut app);
+    let update = projection
+        .update(&app.scene, &layout, &app.input, 2.0, None)
+        .unwrap();
+    let max = update.nodes.iter().find(|(id, _)| *id == first).unwrap();
+    assert_eq!(max.1.numeric_value(), Some(140.0));
+    assert!(!max.1.supports_action(AccessibleAction::Increment));
+    assert!(max.1.supports_action(AccessibleAction::Decrement));
+    assert_eq!(update.focus, first);
+    app.accessibility_action(
+        route.clone(),
+        request(first, AccessibleAction::Increment, None),
+    );
+    assert_eq!(app.component.edits, 2);
+    app.accessibility_action(
+        route.clone(),
+        request(first, AccessibleAction::Decrement, None),
+    );
+    assert_eq!(app.component.sizes.as_deref().unwrap()[0], Some(132.0));
+
+    app.component.hide_middle = true;
+    let layout = frame(&mut app);
+    app.accessibility_action(route, request(first, AccessibleAction::Decrement, None));
+    assert_eq!(app.component.edits, 3);
+    let update = projection
+        .update(&app.scene, &layout, &app.input, 2.0, None)
+        .unwrap();
+    let splitters: Vec<_> = update
+        .nodes
+        .iter()
+        .filter(|(_, item)| item.role() == role)
+        .collect();
+    assert_eq!(splitters.len(), 1);
+    assert_ne!(splitters[0].0, first);
+    assert!(projection.route(first).is_none() && projection.route(second).is_none());
+}
+
+#[test]
 fn accessibility_dispatches_clicks_and_edits_and_rejects_a_stale_path() {
     use accesskit::NodeId;
     use xrack_layout::{TextMeasurer, layout};
-    use xrack_runtime::{InputType, Length};
+    use xrack_runtime::{InputType, Length, ScrollSnapMode, SliderRange};
 
     struct Measure;
     impl TextMeasurer for Measure {
@@ -414,6 +791,7 @@ fn accessibility_dispatches_clicks_and_edits_and_rejects_a_stale_path() {
     struct View {
         clicks: usize,
         text: String,
+        slider: f64,
     }
     impl Component for View {
         fn render(&self) -> Node {
@@ -427,12 +805,29 @@ fn accessibility_dispatches_clicks_and_edits_and_rejects_a_stale_path() {
                 .insert("input-type", InputType::Search.into());
             editor.properties.insert("maximum-length", 3_i64.into());
             editor.properties.insert("text", self.text.clone().into());
-            root.children = vec![button, editor];
+            let mut slider = Node::new("Slider", Some("volume"));
+            slider.properties.insert("y", Length(90.0).into());
+            slider.properties.insert("value", self.slider.into());
+            slider.properties.insert("step", 10.0_f64.into());
+            slider
+                .properties
+                .insert("snap-mode", ScrollSnapMode::OnRelease.into());
+            root.children = vec![button, editor, slider];
             root
         }
         fn dispatch(&mut self, id: &str, event: &str) -> bool {
             assert_eq!((id, event), ("save", "clicked"));
             self.clicks += 1;
+            true
+        }
+        fn adjust_range_at(&mut self, scene: &Node, path: &[usize], action: RangeAction) -> bool {
+            assert_eq!(path, &[2]);
+            let range =
+                SliderRange::from_node(scene.at_path(path).unwrap()).with_value(self.slider);
+            let Some(value) = range.apply(action) else {
+                return false;
+            };
+            self.slider = value;
             true
         }
         fn edit_at(&mut self, _: &Node, path: &[usize], value: String) -> bool {
@@ -470,6 +865,22 @@ fn accessibility_dispatches_clicks_and_edits_and_rejects_a_stale_path() {
         target_node,
         data,
     };
+    let slider = id(accesskit::Role::Slider);
+    assert!(
+        update
+            .nodes
+            .iter()
+            .any(|(id, node)| *id == slider && node.supports_action(AccessibleAction::SetValue))
+    );
+    app.accessibility_action(
+        projection.route(slider).unwrap(),
+        request(
+            slider,
+            AccessibleAction::SetValue,
+            Some(ActionData::NumericValue(46.0)),
+        ),
+    );
+    assert_eq!(app.component.slider, 50.0);
     let route = projection.route(click).unwrap();
     app.accessibility_action(route.clone(), request(click, AccessibleAction::Click, None));
     assert_eq!(app.component.clicks, 1);
@@ -508,6 +919,200 @@ fn accessibility_dispatches_clicks_and_edits_and_rejects_a_stale_path() {
     app.layout = Some(Rc::new(layout(&app.scene, viewport, &mut Measure)));
     app.accessibility_action(route, request(click, AccessibleAction::Click, None));
     assert_eq!(app.component.clicks, 1);
+}
+
+#[test]
+fn native_touch_keeps_range_capture_until_its_own_contact_ends() {
+    use xrack_layout::{ColorPlaneGeometry, SliderGeometry, TextMeasurer, layout};
+    use xrack_runtime::{Length, RangeAction};
+
+    #[derive(Default)]
+    struct View(Vec<RangeAction>);
+
+    impl Component for View {
+        fn render(&self) -> Node {
+            let mut root = Node::new("Window", None);
+            let mut plane = Node::new("ColorPlane", Some("plane"));
+            plane.properties.insert("width", Length(120.0).into());
+            plane.properties.insert("height", Length(80.0).into());
+            let mut slider = Node::new("Slider", Some("deferred"));
+            slider.properties.insert("y", Length(96.0).into());
+            slider.properties.insert("width", Length(120.0).into());
+            slider.properties.insert("height", Length(28.0).into());
+            slider.properties.insert("live", false.into());
+            root.children.extend([plane, slider]);
+            root
+        }
+
+        fn dispatch(&mut self, _: &str, _: &str) -> bool {
+            panic!("a captured touch must not dispatch a click");
+        }
+
+        fn adjust_range_at(&mut self, _scene: &Node, path: &[usize], action: RangeAction) -> bool {
+            assert_eq!(
+                path,
+                if matches!(action, RangeAction::CommitFraction(_)) {
+                    &[1]
+                } else {
+                    &[0]
+                }
+            );
+            self.0.push(action);
+            true
+        }
+    }
+
+    struct Measure;
+    impl TextMeasurer for Measure {
+        fn measure(&mut self, _: &str, _: f32, _: f32) -> Size {
+            Size::new(12.0, 16.0)
+        }
+    }
+
+    let mut app = Application::new(
+        View::default(),
+        LocalExecutor::new(|| {}),
+        Inbox::<()>::new(|| {}),
+        |_: &mut View, _| {},
+    );
+    let layout = Rc::new(layout(&app.scene, Size::new(180.0, 150.0), &mut Measure));
+    let geometry = ColorPlaneGeometry::new(layout.at_path(&[0]).unwrap().bounds);
+    let slider = SliderGeometry::new(
+        layout.at_path(&[1]).unwrap().bounds,
+        Orientation::Horizontal,
+    );
+    app.layout = Some(layout);
+    let start = geometry.point(0.0, 1.0);
+    let outside = Point { x: 165.0, y: 110.0 };
+    let now = Instant::now();
+    let device = DeviceId::dummy();
+
+    app.update_touch(device, 1, TouchPhase::Started, start, now);
+    app.update_touch(device, 2, TouchPhase::Started, start, now);
+    app.update_touch(device, 2, TouchPhase::Ended, outside, now);
+    assert_eq!(app.component.0, [RangeAction::SetPoint { x: 0.0, y: 1.0 }]);
+    assert!(app.input.touch_range_captured());
+    app.update_touch(device, 1, TouchPhase::Moved, outside, now);
+    app.update_touch(device, 1, TouchPhase::Ended, outside, now);
+    assert_eq!(
+        app.component.0,
+        [
+            RangeAction::SetPoint { x: 0.0, y: 1.0 },
+            RangeAction::SetPoint { x: 1.0, y: 0.0 },
+            RangeAction::Release,
+        ]
+    );
+    assert!(!app.input.touch_range_captured());
+
+    app.update_touch(device, 3, TouchPhase::Started, start, now);
+    app.update_touch(device, 3, TouchPhase::Cancelled, start, now);
+    app.update_touch(device, 3, TouchPhase::Moved, outside, now);
+    assert_eq!(app.component.0.len(), 4);
+    assert!(!app.input.touch_range_captured());
+    assert!(app.input.pressed.is_none());
+
+    app.update_touch(device, 4, TouchPhase::Started, slider.position(0.4), now);
+    app.update_touch(device, 4, TouchPhase::Moved, slider.position(0.8), now);
+    assert!(app.input.slider_preview(&[1]).is_some());
+    assert_eq!(app.component.0.len(), 4);
+    app.update_touch(device, 4, TouchPhase::Ended, slider.position(1.0), now);
+    assert_eq!(
+        app.component.0.last(),
+        Some(&RangeAction::CommitFraction(1.0))
+    );
+    assert!(app.input.slider_preview(&[1]).is_none());
+}
+
+#[test]
+fn native_split_drag_uses_one_touch_contact_and_cancels_without_a_tap() {
+    use xrack_layout::{TextMeasurer, layout};
+    use xrack_runtime::{Length, SplitResizeHandle};
+
+    #[derive(Default)]
+    struct View {
+        resizing: SplitResizeHandle,
+        updates: Vec<Vec<(usize, f32)>>,
+    }
+
+    impl Component for View {
+        fn render(&self) -> Node {
+            let mut root = Node::new("Window", None);
+            let mut split = Node::new("SplitView", Some("split"));
+            split.properties.insert("width", Length(160.0).into());
+            split.properties.insert("height", Length(64.0).into());
+            split
+                .properties
+                .insert("handle-hit-size", Length(24.0).into());
+            split.split_resize_handle = Some(self.resizing.clone());
+            for id in ["left", "right"] {
+                let mut pane = Node::new("Button", Some(id));
+                pane.properties
+                    .insert("preferred-width", Length(76.0).into());
+                split.children.push(pane);
+            }
+            split.add_split_handles();
+            root.children.push(split);
+            root
+        }
+
+        fn dispatch(&mut self, _: &str, _: &str) -> bool {
+            panic!("a split drag must not dispatch a pane click");
+        }
+
+        fn resize_split_at(&mut self, _: &Node, path: &[usize], weights: &[(usize, f32)]) -> bool {
+            assert_eq!(path, &[0]);
+            self.updates.push(weights.to_vec());
+            true
+        }
+    }
+
+    struct Measure;
+    impl TextMeasurer for Measure {
+        fn measure(&mut self, _: &str, _: f32, _: f32) -> Size {
+            Size::new(12.0, 16.0)
+        }
+    }
+
+    let mut app = Application::new(
+        View::default(),
+        LocalExecutor::new(|| {}),
+        Inbox::<()>::new(|| {}),
+        |_: &mut View, _| {},
+    );
+    let layout = Rc::new(layout(&app.scene, Size::new(180.0, 100.0), &mut Measure));
+    let handle = layout.at_path(&[0, 2]).unwrap().bounds;
+    app.layout = Some(layout);
+    let start = Point {
+        x: handle.x - 5.0,
+        y: handle.y + 16.0,
+    };
+    let moved = Point {
+        x: start.x + 15.0,
+        ..start
+    };
+    let device = DeviceId::dummy();
+    let now = Instant::now();
+
+    app.update_touch(device, 1, TouchPhase::Started, start, now);
+    assert!(app.component.resizing.resizing());
+    app.update_touch(device, 2, TouchPhase::Started, start, now);
+    app.update_touch(device, 2, TouchPhase::Ended, moved, now);
+    assert!(app.component.resizing.resizing());
+    assert!(app.component.updates.is_empty());
+    app.update_touch(device, 1, TouchPhase::Ended, moved, now);
+    assert_eq!(app.component.updates.len(), 1);
+    assert!(app.component.updates[0][0].1 > 0.5);
+    assert!(!app.component.resizing.resizing());
+    assert!(app.scroll_contact.is_none());
+
+    app.update_touch(device, 3, TouchPhase::Started, start, now);
+    assert!(app.component.resizing.resizing());
+    app.update_touch(device, 3, TouchPhase::Cancelled, moved, now);
+    assert_eq!(app.component.updates.len(), 1);
+    assert!(!app.component.resizing.resizing());
+    assert!(app.input.pressed.is_none());
+    assert!(app.input.pointer_position().is_none());
+    assert!(app.scroll_contact.is_none());
 }
 
 #[test]
@@ -596,6 +1201,267 @@ fn native_touch_adapter_activates_taps_and_keeps_pans_out_of_click_dispatch() {
 }
 
 #[test]
+fn native_pointer_delivers_release_clicks_double_click_and_pan_cancel_in_order() {
+    use xrack_layout::{TextMeasurer, layout_with_input};
+    use xrack_runtime::Length;
+
+    #[derive(Default)]
+    struct View {
+        pointer: PointerHandle,
+        events: Vec<PointerEvent>,
+        clicks: Vec<String>,
+    }
+
+    impl Component for View {
+        fn render(&self) -> Node {
+            let mut scroll = Node::new("ScrollView", None);
+            scroll
+                .properties
+                .insert("content-height", Length(480.0).into());
+            let mut area = Node::new("TouchArea", Some("area"));
+            area.properties.insert("width", Length(150.0).into());
+            area.properties.insert("height", Length(80.0).into());
+            area.pointer_handle = Some(self.pointer.clone());
+            area.press_and_hold_handler = true;
+            area.properties
+                .insert("press-and-hold-interval", 120_i64.into());
+            scroll.children.push(area);
+            scroll
+        }
+
+        fn pointer_event_at(&mut self, _: &Node, path: &[usize], event: &PointerEvent) -> bool {
+            assert_eq!(path, &[0]);
+            assert_eq!(event.button, PointerButton::Primary);
+            self.events.push(*event);
+            true
+        }
+
+        fn dispatch(&mut self, id: &str, event: &str) -> bool {
+            if event == "press-and-hold" {
+                assert_eq!(id, "area");
+                assert!(self.pointer.pressed());
+                assert_eq!(self.events.last().unwrap().kind, PointerEventKind::Down);
+                self.clicks.push(event.into());
+                return true;
+            }
+            if !matches!(event, "clicked" | "double-clicked") {
+                return false;
+            }
+            assert_eq!(id, "area");
+            assert_eq!(self.events.last().unwrap().kind, PointerEventKind::Up);
+            assert!(!self.pointer.pressed());
+            self.clicks.push(event.into());
+            true
+        }
+    }
+
+    struct Measure;
+    impl TextMeasurer for Measure {
+        fn measure(&mut self, _: &str, _: f32, _: f32) -> Size {
+            Size::new(12.0, 16.0)
+        }
+    }
+
+    let mut app = Application::new(
+        View::default(),
+        LocalExecutor::new(|| {}),
+        Inbox::<()>::new(|| {}),
+        |_: &mut View, _| {},
+    );
+    app.layout = Some(Rc::new(layout_with_input(
+        &app.scene,
+        Size::new(180.0, 120.0),
+        &mut Measure,
+        &app.input,
+    )));
+    let start = Point { x: 30.0, y: 50.0 };
+    let device = DeviceId::dummy();
+    let now = Instant::now();
+    let deadline = now + Duration::from_millis(120);
+    app.update_touch(device, 8, TouchPhase::Started, start, now);
+    assert_eq!(app.refresh_deadline(now), Some(deadline));
+    app.tick(deadline - Duration::from_millis(1));
+    assert!(app.component.clicks.is_empty());
+    app.tick(deadline);
+    app.tick(deadline + Duration::from_millis(1));
+    assert_eq!(app.component.clicks, ["press-and-hold"]);
+    assert!(app.component.pointer.pressed());
+    app.update_touch(
+        device,
+        8,
+        TouchPhase::Ended,
+        start,
+        deadline + Duration::from_millis(20),
+    );
+    assert_eq!(app.component.clicks, ["press-and-hold"]);
+    assert_eq!(
+        app.component.events.last().unwrap().kind,
+        PointerEventKind::Up
+    );
+    assert!(!app.component.pointer.pressed());
+    app.component.clicks.clear();
+    app.component.events.clear();
+
+    let mouse = PointerContact::Mouse(PointerButton::Primary);
+    app.input
+        .pointer_move(&app.scene, app.layout.as_ref().unwrap(), start);
+    app.left_pointer(ElementState::Pressed, None);
+    app.start_pointer(mouse, start, now);
+    app.release_pointer(mouse, start, deadline);
+    app.left_pointer(
+        ElementState::Released,
+        Some(PointerClick {
+            touch_device: None,
+            point: start,
+            time: deadline,
+        }),
+    );
+    assert_eq!(app.component.clicks, ["press-and-hold"]);
+    assert_eq!(
+        app.component.events.last().unwrap().kind,
+        PointerEventKind::Up
+    );
+    app.component.clicks.clear();
+    app.component.events.clear();
+
+    app.update_touch(device, 0, TouchPhase::Started, start, now);
+    let capture = app.pointer_capture.as_ref().unwrap();
+    assert!(app.input.owns_pointer_press(capture.sequence.target()));
+    for enabled in [false, true] {
+        Rc::make_mut(&mut app.scene).children[0]
+            .properties
+            .insert("enabled", enabled.into());
+        let layout = Rc::new(layout_with_input(
+            &app.scene,
+            Size::new(180.0, 120.0),
+            &mut Measure,
+            &app.input,
+        ));
+        app.input.reconcile(&app.scene, &layout);
+        app.layout = Some(layout);
+        app.reconcile_pointer();
+    }
+    app.update_touch(
+        device,
+        0,
+        TouchPhase::Ended,
+        start,
+        now + Duration::from_millis(10),
+    );
+    assert!(app.component.clicks.is_empty());
+    assert_eq!(
+        app.component
+            .events
+            .iter()
+            .map(|event| event.kind)
+            .collect::<Vec<_>>(),
+        [PointerEventKind::Down, PointerEventKind::Cancel]
+    );
+    app.component.events.clear();
+    for (id, phase, y, millis) in [
+        (1, TouchPhase::Started, 50.0, 0),
+        (2, TouchPhase::Started, 50.0, 5),
+        (2, TouchPhase::Ended, 50.0, 10),
+        (1, TouchPhase::Moved, 49.0, 15),
+        (1, TouchPhase::Ended, 49.0, 20),
+        (3, TouchPhase::Started, 51.0, 130),
+        (3, TouchPhase::Ended, 51.0, 150),
+        (4, TouchPhase::Started, 50.0, 180),
+        (4, TouchPhase::Ended, 50.0, 200),
+        (5, TouchPhase::Started, 50.0, 220),
+        (5, TouchPhase::Cancelled, 50.0, 230),
+        (6, TouchPhase::Started, 50.0, 245),
+        (6, TouchPhase::Ended, 50.0, 255),
+        (7, TouchPhase::Started, 50.0, 280),
+        (7, TouchPhase::Moved, 10.0, 300),
+        (7, TouchPhase::Ended, 8.0, 320),
+    ] {
+        app.update_touch(
+            device,
+            id,
+            phase,
+            Point { y, ..start },
+            now + Duration::from_millis(millis),
+        );
+    }
+    let kinds: Vec<_> = app
+        .component
+        .events
+        .iter()
+        .map(|event| event.kind)
+        .collect();
+    assert_eq!(
+        kinds,
+        [
+            PointerEventKind::Down,
+            PointerEventKind::Move,
+            PointerEventKind::Up,
+            PointerEventKind::Down,
+            PointerEventKind::Up,
+            PointerEventKind::Down,
+            PointerEventKind::Up,
+            PointerEventKind::Down,
+            PointerEventKind::Cancel,
+            PointerEventKind::Down,
+            PointerEventKind::Up,
+            PointerEventKind::Down,
+            PointerEventKind::Cancel,
+        ]
+    );
+    assert_eq!(
+        app.component.clicks,
+        ["clicked", "clicked", "double-clicked", "clicked", "clicked"]
+    );
+    assert!(app.input.scroll_offsets()[&[][..]] > 0.0);
+    assert!(app.pointer_capture.is_none());
+    assert!(app.component.events.iter().all(|event| event.is_touch));
+
+    app.component.clicks.clear();
+    app.component.events.clear();
+    for (x, millis) in [
+        (30.0, 400),
+        (32.0, 500),
+        (30.0, 600),
+        (60.0, 700),
+        (60.0, 1250),
+    ] {
+        let point = Point { x, ..start };
+        let time = now + Duration::from_millis(millis);
+        let mouse = PointerContact::Mouse(PointerButton::Primary);
+        app.input
+            .pointer_move(&app.scene, app.layout.as_ref().unwrap(), point);
+        app.left_pointer(ElementState::Pressed, None);
+        app.start_pointer(mouse, point, time);
+        app.release_pointer(mouse, point, time);
+        app.left_pointer(
+            ElementState::Released,
+            Some(PointerClick {
+                touch_device: None,
+                point,
+                time,
+            }),
+        );
+    }
+    assert!(
+        app.component
+            .events
+            .iter()
+            .all(|event| !event.is_touch && event.touch_finger_id == 0)
+    );
+    assert_eq!(
+        app.component.clicks,
+        [
+            "clicked",
+            "clicked",
+            "double-clicked",
+            "clicked",
+            "clicked",
+            "clicked"
+        ]
+    );
+}
+
+#[test]
 fn native_swipe_routes_mouse_touch_scroll_and_callback_cancellation() {
     use xrack_layout::{TextMeasurer, layout_with_input};
     use xrack_runtime::{Length, SwipeHandle};
@@ -610,6 +1476,7 @@ fn native_swipe_routes_mouse_touch_scroll_and_callback_cancellation() {
         scene: Node,
         handle: SwipeHandle,
         events: Vec<(String, bool, f64)>,
+        pointer_events: Vec<PointerEvent>,
         taps: usize,
         cancel_on_move: bool,
     }
@@ -617,9 +1484,20 @@ fn native_swipe_routes_mouse_touch_scroll_and_callback_cancellation() {
         fn render(&self) -> Node {
             self.scene.clone()
         }
+        fn pointer_event_at(&mut self, _: &Node, path: &[usize], event: &PointerEvent) -> bool {
+            assert_eq!(path, &[0, 0]);
+            self.pointer_events.push(*event);
+            true
+        }
         fn dispatch(&mut self, id: &str, event: &str) -> bool {
             if id == "tap" {
-                assert_eq!(event, "clicked");
+                if event != "clicked" {
+                    return false;
+                }
+                assert_eq!(
+                    self.pointer_events.last().unwrap().kind,
+                    PointerEventKind::Up
+                );
                 self.taps += 1;
             } else {
                 assert_eq!(id, "swipe");
@@ -646,16 +1524,18 @@ fn native_swipe_routes_mouse_touch_scroll_and_callback_cancellation() {
     swipe.properties.insert("height", Length(400.0).into());
     swipe.properties.insert("handle-swipe-right", true.into());
     swipe.swipe_handle = Some(handle.clone());
-    let mut button = Node::new("Button", Some("tap"));
-    button.properties.insert("width", Length(100.0).into());
-    button.properties.insert("height", Length(80.0).into());
-    swipe.children.push(button);
+    let mut area = Node::new("TouchArea", Some("tap"));
+    area.properties.insert("width", Length(100.0).into());
+    area.properties.insert("height", Length(80.0).into());
+    area.pointer_handle = Some(Default::default());
+    swipe.children.push(area);
     view.children.push(swipe);
     let mut app = Application::new(
         View {
             scene: view,
             handle,
             events: Vec::new(),
+            pointer_events: Vec::new(),
             taps: 0,
             cancel_on_move: false,
         },
@@ -675,8 +1555,12 @@ fn native_swipe_routes_mouse_touch_scroll_and_callback_cancellation() {
     let start = Point { x: 36.0, y: 40.0 };
     let moved = Point { x: 76.0, y: 40.0 };
     let released = Point { x: 96.0, y: 40.0 };
+    let mouse = PointerContact::Mouse(PointerButton::Primary);
     app.begin_direct_scroll(ScrollContact::MouseControl(start), start, now);
+    app.start_pointer(mouse, start, now);
     app.move_direct_scroll(moved, now + Duration::from_millis(20));
+    app.move_mouse_pointer(moved);
+    app.release_pointer(mouse, released, now + Duration::from_millis(30));
     app.end_direct_scroll(released, now + Duration::from_millis(30));
     assert_eq!(
         app.component.events,
@@ -684,6 +1568,17 @@ fn native_swipe_routes_mouse_touch_scroll_and_callback_cancellation() {
             ("moved".into(), true, 40.0),
             ("moved".into(), true, 60.0),
             ("swiped".into(), false, 60.0),
+        ]
+    );
+    assert_eq!(
+        app.component
+            .pointer_events
+            .iter()
+            .map(|event| (event.kind, event.is_touch))
+            .collect::<Vec<_>>(),
+        [
+            (PointerEventKind::Down, false),
+            (PointerEventKind::Cancel, false)
         ]
     );
     assert_eq!(app.component.taps, 0);
@@ -769,6 +1664,123 @@ fn native_swipe_routes_mouse_touch_scroll_and_callback_cancellation() {
 }
 
 #[test]
+fn native_multi_touch_keeps_contact_ids_and_releases_each_contact_independently() {
+    use xrack_layout::{TextMeasurer, layout};
+    use xrack_runtime::Length;
+
+    struct Measure;
+    impl TextMeasurer for Measure {
+        fn measure(&mut self, _: &str, _: f32, _: f32) -> Size {
+            Size::default()
+        }
+    }
+    struct View {
+        area: Node,
+        events: Vec<PointerEvent>,
+        clicks: usize,
+    }
+    impl Component for View {
+        fn render(&self) -> Node {
+            self.area.clone()
+        }
+        fn pointer_event_at(&mut self, _: &Node, path: &[usize], event: &PointerEvent) -> bool {
+            assert!(path.is_empty());
+            self.events.push(*event);
+            true
+        }
+        fn dispatch(&mut self, id: &str, event: &str) -> bool {
+            if event != "clicked" {
+                return false;
+            }
+            assert_eq!(id, "area");
+            self.clicks += 1;
+            true
+        }
+    }
+    let handle = PointerHandle::default();
+    let mut area = Node::new("TouchArea", Some("area"));
+    area.pointer_handle = Some(handle.clone());
+    area.properties.insert("width", Length(180.0).into());
+    area.properties.insert("height", Length(140.0).into());
+    area.properties.insert("multi-touch", true.into());
+    let mut app = Application::new(
+        View {
+            area,
+            events: Vec::new(),
+            clicks: 0,
+        },
+        LocalExecutor::new(|| {}),
+        Inbox::<()>::new(|| {}),
+        |_: &mut View, _| {},
+    );
+    app.layout = Some(Rc::new(layout(
+        &app.scene,
+        Size::new(180.0, 140.0),
+        &mut Measure,
+    )));
+    let device = DeviceId::dummy();
+    let now = Instant::now();
+    let first = Point { x: 20.0, y: 30.0 };
+    let second = Point { x: 80.0, y: 45.0 };
+    app.update_touch(device, 0, TouchPhase::Started, first, now);
+    app.update_touch(device, u64::MAX, TouchPhase::Started, second, now);
+    assert_eq!(handle.active_touch_count(), 2);
+    let ids = [
+        app.component.events[0].touch_finger_id,
+        app.component.events[1].touch_finger_id,
+    ];
+    assert!(ids[0] > 0 && ids[1] > 0 && ids[0] != ids[1]);
+    app.update_touch(device, 0, TouchPhase::Ended, first, now);
+    assert_eq!(app.component.events[2].touch_finger_id, ids[0]);
+    assert_eq!(app.component.events[2].kind, PointerEventKind::Up);
+    assert!(handle.pressed() && handle.contains_press());
+    assert_eq!(handle.active_touch_count(), 1);
+    app.update_touch(
+        device,
+        u64::MAX,
+        TouchPhase::Moved,
+        Point { x: 95.0, ..second },
+        now,
+    );
+    assert_eq!(app.component.events[3].touch_finger_id, ids[1]);
+    assert_eq!(app.component.events[3].x, Length(95.0));
+    app.update_touch(device, u64::MAX, TouchPhase::Cancelled, second, now);
+    assert_eq!(app.component.events[4].touch_finger_id, ids[1]);
+    assert_eq!(app.component.events[4].kind, PointerEventKind::Cancel);
+    assert_eq!(handle.active_touch_count(), 0);
+    assert!(!handle.pressed());
+    assert_eq!(app.component.clicks, 0);
+
+    app.update_touch(device, 0, TouchPhase::Started, first, now);
+    app.update_touch(device, 0, TouchPhase::Ended, first, now);
+    let reused = app.component.events[5].touch_finger_id;
+    assert!(!ids.contains(&reused));
+    assert_eq!(app.component.events[6].touch_finger_id, reused);
+    assert_eq!(app.component.clicks, 1);
+
+    app.update_touch(device, 3, TouchPhase::Started, first, now);
+    app.update_touch(device, 4, TouchPhase::Started, second, now);
+    let extra_id = app.component.events.last().unwrap().touch_finger_id;
+    Rc::make_mut(&mut app.scene)
+        .properties
+        .insert("multi-touch", false.into());
+    app.reconcile_pointer();
+    assert_eq!(handle.active_touch_count(), 1);
+    assert_eq!(
+        app.component.events.last().unwrap().kind,
+        PointerEventKind::Cancel
+    );
+    assert_eq!(
+        app.component.events.last().unwrap().touch_finger_id,
+        extra_id
+    );
+    app.update_touch(device, 4, TouchPhase::Ended, second, now);
+    app.update_touch(device, 3, TouchPhase::Ended, first, now);
+    assert_eq!(handle.active_touch_count(), 0);
+    assert_eq!(app.component.clicks, 1);
+}
+
+#[test]
 fn native_scale_rotate_arbitrates_touch_and_combines_trackpad_channels() {
     use xrack_layout::{TextMeasurer, layout};
     use xrack_runtime::{Length, ScaleRotateHandle, ScaleRotateSample};
@@ -781,17 +1793,27 @@ fn native_scale_rotate_arbitrates_touch_and_combines_trackpad_channels() {
     struct View {
         node: Node,
         events: Vec<(String, bool, ScaleRotateSample)>,
+        pointers: Vec<(Vec<usize>, PointerEvent)>,
         taps: usize,
     }
     impl Component for View {
         fn render(&self) -> Node {
             self.node.clone()
         }
+        fn pointer_event_at(&mut self, _: &Node, path: &[usize], event: &PointerEvent) -> bool {
+            self.pointers.push((path.to_vec(), *event));
+            true
+        }
         fn dispatch(&mut self, id: &str, event: &str) -> bool {
             if id == "tap" {
-                assert_eq!(event, "clicked");
-                self.taps += 1;
-                return true;
+                if event == "clicked" {
+                    self.taps += 1;
+                    return true;
+                }
+                return false;
+            }
+            if id == "independent" {
+                return false;
             }
             assert_eq!(id, "gesture");
             let handle = self.node.children[0].scale_rotate_handle.as_ref().unwrap();
@@ -818,17 +1840,26 @@ fn native_scale_rotate_arbitrates_touch_and_combines_trackpad_channels() {
     ] {
         area.properties.insert(name, Length(value).into());
     }
-    let mut button = Node::new("Button", Some("tap"));
+    let mut button = Node::new("TouchArea", Some("tap"));
+    button.pointer_handle = Some(PointerHandle::default());
     for (name, value) in [("width", 100.0), ("height", 80.0)] {
         button.properties.insert(name, Length(value).into());
     }
     area.children.push(button);
     let mut window = Node::new("Window", None);
     window.children.push(area);
+    let mut independent = Node::new("TouchArea", Some("independent"));
+    independent.pointer_handle = Some(PointerHandle::default());
+    independent.properties.insert("multi-touch", true.into());
+    for (name, value) in [("x", 230.0), ("width", 40.0), ("height", 80.0)] {
+        independent.properties.insert(name, Length(value).into());
+    }
+    window.children.push(independent);
     let mut app = Application::new(
         View {
             node: window,
             events: Vec::new(),
+            pointers: Vec::new(),
             taps: 0,
         },
         LocalExecutor::new(|| {}),
@@ -843,7 +1874,39 @@ fn native_scale_rotate_arbitrates_touch_and_combines_trackpad_channels() {
     let second = Point { x: 90.0, y: 55.0 };
     let moved = Point { x: 50.0, y: 135.0 };
     app.update_touch(device, 1, TouchPhase::Started, first, now);
+    let third = Point { x: 245.0, y: 35.0 };
+    app.update_touch(device, 9, TouchPhase::Started, third, now);
     app.update_touch(device, 2, TouchPhase::Started, second, now);
+    app.update_touch(
+        device,
+        9,
+        TouchPhase::Moved,
+        Point { x: 250.0, ..third },
+        now,
+    );
+    app.update_touch(device, 9, TouchPhase::Ended, third, now);
+    let pointer_events = &app.component.pointers;
+    assert_eq!(
+        pointer_events
+            .iter()
+            .map(|(path, event)| (path.as_slice(), event.kind))
+            .collect::<Vec<_>>(),
+        [
+            (&[0, 0][..], PointerEventKind::Down),
+            (&[1][..], PointerEventKind::Down),
+            (&[0, 0][..], PointerEventKind::Cancel),
+            (&[1][..], PointerEventKind::Move),
+            (&[1][..], PointerEventKind::Up),
+        ]
+    );
+    assert_eq!(
+        pointer_events[0].1.touch_finger_id,
+        pointer_events[2].1.touch_finger_id
+    );
+    assert_eq!(
+        pointer_events[1].1.touch_finger_id,
+        pointer_events[4].1.touch_finger_id
+    );
     app.update_touch(device, 2, TouchPhase::Moved, moved, now);
     assert_eq!(
         app.component.events[1],
@@ -904,6 +1967,88 @@ fn native_scale_rotate_arbitrates_touch_and_combines_trackpad_channels() {
     app.update_touch(device, 5, TouchPhase::Ended, moved, now);
     app.update_touch(device, 4, TouchPhase::Ended, first, now);
     assert_eq!(app.component.taps, 1);
+}
+
+#[test]
+fn native_wheel_preserves_another_spin_draft_and_active_ime_composition() {
+    use xrack_layout::{TextMeasurer, layout};
+    use xrack_runtime::{Length, spin_value_after};
+
+    struct View(Node);
+    impl Component for View {
+        fn render(&self) -> Node {
+            self.0.clone()
+        }
+
+        fn dispatch(&mut self, _: &str, _: &str) -> bool {
+            false
+        }
+
+        fn control_at(&mut self, scene: &Node, path: &[usize], action: ControlAction) -> bool {
+            if let [slot] = path
+                && let ControlAction::Spin(action) = action
+                && let Some(value) = scene
+                    .at_path(path)
+                    .and_then(|node| spin_value_after(node, action))
+            {
+                self.0.children[*slot]
+                    .properties
+                    .insert("value", value.into());
+                return true;
+            }
+            false
+        }
+    }
+
+    struct Measure;
+    impl TextMeasurer for Measure {
+        fn measure(&mut self, _: &str, _: f32, _: f32) -> Size {
+            Size::new(12.0, 16.0)
+        }
+    }
+    let mut scene = Node::new("Window", None);
+    for (id, x) in [("editor", 0.0), ("other", 128.0)] {
+        let mut spin = Node::new("SpinBox", Some(id));
+        for (name, value) in [("x", x), ("width", 100.0), ("height", 40.0)] {
+            spin.properties.insert(name, Length(value).into());
+        }
+        spin.properties.insert("wheel-enabled", true.into());
+        spin.properties.insert("value", 10_i64.into());
+        scene.children.push(spin);
+    }
+    let mut app = Application::new(
+        View(scene),
+        LocalExecutor::new(|| {}),
+        Inbox::<()>::new(|| {}),
+        |_: &mut View, _| {},
+    );
+    let frame = Rc::new(layout(&app.scene, Size::new(250.0, 100.0), &mut Measure));
+    app.layout = Some(frame.clone());
+    let target = app
+        .input
+        .accessibility_target(&app.scene, &frame, &[0])
+        .unwrap();
+    app.input.focus_target(&app.scene, &frame, target);
+    app.input
+        .edit_spin(&app.scene.children[0], EditAction::ReplaceAll("37"));
+    assert_eq!(app.input.editor_value(&app.scene.children[0]), "37");
+    app.input
+        .pointer_move(&app.scene, &frame, Point { x: 158.0, y: 18.0 });
+    let event = app.wheel_event(Point { x: 0.0, y: -28.0 }, Some(Point { x: 0.0, y: -1.0 }));
+    assert!(app.adjust_wheel(event, Instant::now()));
+    assert_eq!(app.component.0.children[1].int("value"), Some(11));
+    assert_eq!(app.input.editor_value(&app.scene.children[0]), "37");
+
+    app.input
+        .editor
+        .as_mut()
+        .unwrap()
+        .set_preedit("3".into(), None);
+    app.input
+        .pointer_move(&app.scene, &frame, Point { x: 40.0, y: 18.0 });
+    assert!(!app.adjust_wheel(event, Instant::now()));
+    assert_eq!(app.component.0.children[0].int("value"), Some(10));
+    assert_eq!(app.input.editor_value(&app.scene.children[0]), "37");
 }
 
 #[test]
@@ -980,6 +2125,174 @@ fn native_scroll_bar_touch_release_snaps_and_cancellation_keeps_the_dragged_posi
         app.update_touch(device, id, phase, end, now);
         assert!((app.input.scroll_offsets()[&[0][..]] - expected).abs() < 0.001);
         assert!(!app.input.scroll_bar_captured());
+    }
+}
+
+#[test]
+fn touch_table_range_commits_only_the_owned_contact_on_release() {
+    touch_table_drag_commits_only_the_owned_contact(false);
+}
+
+#[test]
+fn touch_table_reorder_commits_only_the_owned_contact_on_release() {
+    touch_table_drag_commits_only_the_owned_contact(true);
+}
+
+fn touch_table_drag_commits_only_the_owned_contact(reorder: bool) {
+    use xrack_layout::{TextMeasurer, layout};
+    use xrack_runtime::{
+        Length, ListMetrics, SelectionTarget, TableHeader, TableSelection, VecModel,
+    };
+
+    struct View {
+        model: VecModel<i64>,
+        selection: TableSelection,
+        actions: Vec<ControlAction>,
+    }
+    impl Component for View {
+        fn render(&self) -> Node {
+            let mut window = Node::new("Window", None);
+            let mut table = Node::new("TableView", Some("table"));
+            table.properties.insert("width", Length(180.0).into());
+            table.properties.insert("height", Length(120.0).into());
+            table.properties.insert("drag-select", true.into());
+            table
+                .properties
+                .insert("row-header-width", Length(24.0).into());
+            table.properties.insert("movable-rows", true.into());
+            table.standard_list_stamp = Some((10, 1));
+            table.table_header = Some(Box::new(TableHeader {
+                columns: vec![Node::new("TableColumn", None)],
+                sort: None,
+                column_widths: Vec::new(),
+            }));
+            table.table_selection = Some(Box::new(self.selection.snapshot(
+                &self.model,
+                None,
+                SelectionTarget::Cells,
+                1,
+                true,
+            )));
+            table.list = Some(ListMetrics {
+                row_count: 2,
+                first_row: 0,
+            });
+            table.children.extend((0..2).map(|index| {
+                let mut row = Node::new("ListRow", None);
+                row.row_key = self.model.row_key(index);
+                row.properties
+                    .insert("row-header-text", (index + 1).to_string().into());
+                row
+            }));
+            window.children.push(table);
+            window
+        }
+        fn dispatch(&mut self, _: &str, _: &str) -> bool {
+            false
+        }
+        fn control_at(&mut self, _: &Node, path: &[usize], action: ControlAction) -> bool {
+            assert_eq!(path, [0]);
+            self.actions.push(action);
+            true
+        }
+    }
+    struct Measure;
+    impl TextMeasurer for Measure {
+        fn measure(&mut self, _: &str, _: f32, _: f32) -> Size {
+            Size::default()
+        }
+    }
+    let mut app = Application::new(
+        View {
+            model: VecModel::from(vec![0, 1]),
+            selection: TableSelection::default(),
+            actions: Vec::new(),
+        },
+        LocalExecutor::new(|| {}),
+        Inbox::<()>::new(|| {}),
+        |_: &mut View, _| {},
+    );
+    let frame = layout(&app.scene, Size::new(200.0, 130.0), &mut Measure);
+    let table = &frame.children[0];
+    let x = if reorder { 12.0 } else { 30.0 };
+    let row = app.component.model.row_key(0).unwrap();
+    let start = Point {
+        x,
+        y: table.children[0].bounds.y + 16.0,
+    };
+    let end = Point {
+        x,
+        y: table.children[1].bounds.y + 24.0,
+    };
+    app.layout = Some(Rc::new(frame));
+    let device = DeviceId::dummy();
+    let now = Instant::now();
+    let deadline = now + Duration::from_millis(500);
+    if reorder {
+        app.update_touch(device, 0, TouchPhase::Started, start, now);
+        app.update_touch(
+            device,
+            0,
+            TouchPhase::Ended,
+            start,
+            now + Duration::from_millis(100),
+        );
+        assert_eq!(
+            app.component.actions.remove(0),
+            ControlAction::TableSelection(xrack_runtime::TableSelectionAction::Row {
+                index: 0,
+                operation: RowSelection::Replace
+            },)
+        );
+    }
+    app.update_touch(device, 1, TouchPhase::Started, start, now);
+    app.tick(deadline);
+    assert!(app.input.touch_table_drag_claimed());
+    assert_eq!(app.input.table_row_move_claimed(), reorder);
+    app.update_touch(device, 1, TouchPhase::Moved, end, deadline);
+    app.update_touch(device, 2, TouchPhase::Ended, end, deadline);
+    assert!(app.component.actions.is_empty());
+    app.update_touch(device, 1, TouchPhase::Cancelled, end, deadline);
+    assert!(!app.input.touch_table_drag_claimed());
+    assert!(app.component.actions.is_empty());
+
+    app.update_touch(device, 3, TouchPhase::Started, start, now);
+    app.update_touch(device, 3, TouchPhase::Moved, end, deadline);
+    assert!(app.input.touch_table_drag_claimed());
+    app.update_touch(device, 3, TouchPhase::Ended, end, deadline);
+    let expected = if reorder {
+        ControlAction::MoveRow {
+            from: 0,
+            to: 1,
+            row,
+            stamp: (10, 1),
+        }
+    } else {
+        ControlAction::TableSelection(xrack_runtime::TableSelectionAction::DragRange {
+            anchor: (0, 0),
+            end: (1, 0),
+            additive: false,
+        })
+    };
+    assert_eq!(app.component.actions, [expected]);
+    assert!(app.scroll_contact.is_none());
+
+    if reorder {
+        let target = app
+            .input
+            .accessibility_target(&app.scene, app.layout.as_ref().unwrap(), &[0, 0])
+            .unwrap();
+        let request = |id| ActionRequest {
+            action: AccessibleAction::CustomAction,
+            target_tree: TreeId::ROOT,
+            target_node: accesskit::NodeId(1),
+            data: Some(ActionData::CustomAction(id)),
+        };
+        app.component.actions.clear();
+        app.accessibility_action(Route::TableRowHeader(target.clone()), request(0));
+        assert!(app.component.actions.is_empty());
+        app.accessibility_action(Route::TableRowHeader(target), request(1));
+        assert_eq!(app.component.actions, [expected]);
     }
 }
 

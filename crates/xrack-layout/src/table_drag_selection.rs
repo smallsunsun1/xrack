@@ -9,6 +9,7 @@ pub(crate) struct TableDragSelection {
     pub path: Vec<usize>,
     pub start: Point,
     pub claimed: bool,
+    pub touch: bool,
     pub scroll_wake: Option<Instant>,
     pub parent_row: Option<RowKey>,
     id: Option<&'static str>,
@@ -17,6 +18,12 @@ pub(crate) struct TableDragSelection {
     order: TableColumnOrder,
     target: SelectionTarget,
     additive: bool,
+    adjusted_range: Option<[(usize, usize); 2]>,
+}
+
+pub(crate) struct TableSelectionHandle {
+    pub bounds: Rect,
+    pub opposite: (usize, usize),
 }
 
 impl TableDragSelection {
@@ -33,8 +40,7 @@ impl TableDragSelection {
     pub fn new(
         path: Vec<usize>,
         node: &Node,
-        item: &LayoutNode,
-        row: usize,
+        anchor: (usize, usize),
         start: Point,
         additive: bool,
         parent_row: Option<RowKey>,
@@ -43,21 +49,26 @@ impl TableDragSelection {
         if !view.multiple() || !node.boolean("drag-select", false) {
             return None;
         }
-        let point = item.map_from_window(start)?;
-        let column = item.table.as_ref()?.body_column_at(point)?;
         Some(Self {
             path,
             start,
             claimed: false,
+            touch: false,
             scroll_wake: None,
             parent_row,
             id: node.id,
-            anchor: (row, column),
+            anchor,
             stamp: view.structure_stamp(),
             order: node.table_column_order.clone(),
             target: view.target(),
             additive,
+            adjusted_range: None,
         })
+    }
+
+    pub fn adjust_range(&mut self, range: [(usize, usize); 2]) {
+        self.adjusted_range = Some(range);
+        self.claimed = true;
     }
 
     pub fn valid(&self, node: &Node, item: &LayoutNode) -> bool {
@@ -67,10 +78,22 @@ impl TableDragSelection {
             && node.table_column_order == self.order
             && item.visible
             && item.enabled
+            && (self.target == SelectionTarget::Rows
+                || item.table.as_ref().is_some_and(|table| {
+                    table.is_column_visible(self.anchor.1)
+                        && self.adjusted_range.is_none_or(|range| {
+                            range
+                                .iter()
+                                .all(|&(_, column)| table.is_column_visible(column))
+                        })
+                }))
             && node.table_selection.as_ref().is_some_and(|view| {
                 view.multiple()
                     && view.target() == self.target
                     && view.structure_stamp() == self.stamp
+                    && self
+                        .adjusted_range
+                        .is_none_or(|range| view.drag_range() == Some(range))
             })
     }
 
@@ -80,6 +103,9 @@ impl TableDragSelection {
         item: &LayoutNode,
         point: Point,
     ) -> Option<TableSelectionAction> {
+        if self.adjusted_range.is_some() && point == self.start {
+            return None;
+        }
         Some(TableSelectionAction::DragRange {
             anchor: self.anchor,
             end: self.endpoint(node, item, point)?,
@@ -188,6 +214,73 @@ impl TableDragSelection {
     }
 }
 
+pub(crate) fn selection_handles(
+    node: &Node,
+    item: &LayoutNode,
+) -> Option<[Option<TableSelectionHandle>; 2]> {
+    let view = node.table_selection.as_ref()?;
+    if !node.boolean("drag-select", false) || !item.visible || !item.enabled {
+        return None;
+    }
+    let [(row_a, col_a), (row_b, col_b)] = view.drag_range()?;
+    let table = item.table.as_ref()?;
+    let (left, right) = if table.visual_index(col_a)? <= table.visual_index(col_b)? {
+        (col_a, col_b)
+    } else {
+        (col_b, col_a)
+    };
+    let first = (row_a.min(row_b), left);
+    let last = (row_a.max(row_b), right);
+    let body = table.body.intersect(item.clip);
+    let handle = |(row, column): (usize, usize), opposite, leading| {
+        let (row_bounds, column_bounds, clip) = (
+            if view.target() == SelectionTarget::Columns {
+                body
+            } else {
+                let slot = row.checked_sub(node.list?.first_row)?;
+                let row = item.children.get(slot)?;
+                row.visible.then_some(row.bounds)?
+            },
+            if view.target() == SelectionTarget::Rows {
+                body
+            } else {
+                *table.columns.get(column)?
+            },
+            if view.target() == SelectionTarget::Rows {
+                body
+            } else {
+                table.column_clip(column, body)
+            },
+        );
+        let cell = Rect::new(
+            column_bounds.x,
+            row_bounds.y,
+            column_bounds.width,
+            row_bounds.height,
+        );
+        let x = if leading { cell.x } else { cell.x + cell.width };
+        let y = if leading {
+            cell.y
+        } else {
+            cell.y + cell.height
+        };
+        if x < clip.x || x > clip.x + clip.width || y < clip.y || y > clip.y + clip.height {
+            return None;
+        }
+        let visible = cell.intersect(clip);
+        let size = 20.0_f32.min(visible.width * 0.5).min(visible.height * 0.5);
+        (size > 0.0).then_some(TableSelectionHandle {
+            bounds: if leading {
+                Rect::new(x, y, size, size)
+            } else {
+                Rect::new(x - size, y - size, size, size)
+            },
+            opposite,
+        })
+    };
+    Some([handle(first, last, true), handle(last, first, false)])
+}
+
 fn span(a: usize, b: usize) -> std::ops::RangeInclusive<usize> {
     a.min(b)..=a.max(b)
 }
@@ -218,7 +311,7 @@ fn distance(value: f32, start: f32, length: f32) -> f32 {
     (start - value).max(value - start - length).max(0.0)
 }
 
-fn edge_delta(value: f32, start: f32, length: f32) -> f32 {
+pub(crate) fn edge_delta(value: f32, start: f32, length: f32) -> f32 {
     let edge = (length * 0.25).min(24.0);
     if edge <= 0.0 {
         return 0.0;

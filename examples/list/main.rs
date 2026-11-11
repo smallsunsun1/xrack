@@ -1,6 +1,7 @@
 use list_ui::{
-    AnchoredListDemo, DirectoryItem, GridDemo, LinkedScrollDemo, ListDemo, ScrollBarsDemo,
-    ScrollPositionDemo, StandaloneScrollDemo, StandardListDemo,
+    AnchoredListDemo, DirectoryItem, GridDemo, ItemDelegatesDemo, LinkedScrollDemo, ListDemo,
+    ListVisibilityDemo, NestedDataDemo, NestedListsDemo, ScrollBarsDemo, ScrollPositionDemo,
+    StandaloneScrollDemo, StandardListDemo,
 };
 
 fn records() -> Vec<DirectoryItem> {
@@ -18,6 +19,37 @@ fn main() -> std::process::ExitCode {
         Some("--linked") => xrack_platform_winit::run(LinkedScrollDemo::new()),
         Some("--scroll-bars") => xrack_platform_winit::run(ScrollBarsDemo::new()),
         Some("--standalone-scroll") => xrack_platform_winit::run(StandaloneScrollDemo::new()),
+        Some("--item-delegates") => xrack_platform_winit::run(ItemDelegatesDemo::new()),
+        Some("--visibility") => {
+            let mut ui = ListVisibilityDemo::new();
+            let records = ui.model_records();
+            ui.on_reveal_all(move || {
+                for index in 0..records.len() {
+                    if let Some(mut record) = records.row(index)
+                        && !record.flags.shown
+                    {
+                        record.flags.shown = true;
+                        records.set_row(index, record);
+                    }
+                }
+            });
+            xrack_platform_winit::run(ui)
+        }
+        Some("--nested-data") => xrack_platform_winit::run(NestedDataDemo::new()),
+        Some("--nested") => {
+            let mut ui = NestedListsDemo::new();
+            ui.set_albums(
+                (0..10_000)
+                    .map(|index| format!("分组 {index:05}"))
+                    .collect(),
+            );
+            ui.set_tracks(
+                (0..50_000)
+                    .map(|index| format!("条目 {index:05}"))
+                    .collect(),
+            );
+            xrack_platform_winit::run(ui)
+        }
         Some("--anchor") => {
             let mut ui = AnchoredListDemo::new();
             ui.set_records(records());

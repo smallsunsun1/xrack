@@ -450,7 +450,7 @@ struct PruneExpressions : impl::XrPruneExpressionsBase<PruneExpressions> {
             return;
           // These expressions are lowered at their use sites. An unused xr.call
           // never executes; standalone calls are represented by xr.invoke.
-          if (isa<ReadOp, StackReadOp, ParamOp, CallOp, UnaryOp, BinaryOp,
+          if (isa<ReadOp, StackReadOp, TreeQueryOp, ViewIndexOp, TableSortReadOp, TableSelectionReadOp, TableHistoryReadOp, SplitStateReadOp, ParamOp, CallOp, UnaryOp, BinaryOp,
                   CastOp, StringifyOp>(op) ||
               isOpTriviallyDead(op))
             op->erase();

@@ -28,10 +28,17 @@ pub fn analyze(doc: &Document) -> Result<ir::Module, Vec<Diagnostic>> {
                         callbacks.push(c);
                     }
                 }
-                LoweredMember::BeginElement { kind, id, span, .. } => elements.push(ir::Element {
-                    kind: kind.into(),
+                LoweredMember::BeginElement {
+                    kind,
+                    delegate,
+                    id,
+                    span,
+                    ..
+                } => elements.push(ir::Element {
+                    kind: delegate.unwrap_or(kind).into(),
                     id: id.map(str::to_owned),
                     action: None,
+                    action_group: None,
                     button_group: None,
                     span,
                     properties: vec![],
@@ -42,6 +49,7 @@ pub fn analyze(doc: &Document) -> Result<ir::Module, Vec<Diagnostic>> {
                     state_timings: vec![],
                     initial_focus: None,
                     scroll_target: None,
+                    split_fill: None,
                     callbacks: vec![],
                     handlers: vec![],
                     clipboard_paste: None,
@@ -53,8 +61,14 @@ pub fn analyze(doc: &Document) -> Result<ir::Module, Vec<Diagnostic>> {
                 LoweredMember::ActionRef { owner, .. } => {
                     elements.last_mut().unwrap().action = Some(owner)
                 }
+                LoweredMember::ActionGroupRef { membership, .. } => {
+                    elements.last_mut().unwrap().action_group = Some(membership);
+                }
                 LoweredMember::ScrollTarget { target, .. } => {
                     elements.last_mut().unwrap().scroll_target = Some(target)
+                }
+                LoweredMember::SplitFill { target, .. } => {
+                    elements.last_mut().unwrap().split_fill = Some(target);
                 }
                 LoweredMember::RadioGroupRef { group, .. }
                 | LoweredMember::CheckGroupRef { group, .. } => {

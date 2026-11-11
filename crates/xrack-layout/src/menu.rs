@@ -268,10 +268,10 @@ fn visit_presentations(
     if visible.width <= 0.0 || visible.height <= 0.0 {
         return;
     }
-    if matches!(node.kind, "Button" | "ToolButton") && node.action.is_some() {
+    if matches!(node.kind, "Button" | "ToolButton" | "RoundButton") && node.action.is_some() {
         visit(node, path);
     }
-    for (index, (child, item)) in node.children.iter().zip(&layout.children).enumerate() {
+    for (index, child, item) in layout.children_in_scene_order(node) {
         if is_window_overlay(child.kind) {
             continue;
         }

@@ -74,12 +74,18 @@ pub(crate) fn slider(
     bounds: Rect,
     enabled: bool,
     pressed: bool,
+    preview: Option<f64>,
 ) {
     let orientation = node.orientation();
     let geometry = SliderGeometry::new(bounds, orientation);
     let start = geometry.position(0.0);
     let end = geometry.position(1.0);
-    let thumb = geometry.position(SliderRange::from_node(node).fraction());
+    let range = SliderRange::from_node(node);
+    let fraction = preview.map_or_else(
+        || range.fraction(),
+        |fraction| range.preview_fraction(fraction),
+    );
+    let thumb = geometry.position(fraction);
     let thickness = (geometry.radius * 2.0).min(6.0);
     let fill = if enabled {
         theme.button
@@ -123,12 +129,16 @@ pub(crate) fn interval(
     bounds: Rect,
     enabled: bool,
     active: [bool; 2],
+    preview: Option<(usize, f64)>,
 ) {
     let orientation = node.orientation();
     let geometry = SliderGeometry::new(bounds, orientation);
-    let thumbs = SliderInterval::from_node(node)
-        .fractions()
-        .map(|t| geometry.position(t));
+    let interval = SliderInterval::from_node(node);
+    let fractions = preview.map_or_else(
+        || interval.fractions(),
+        |(handle, fraction)| interval.preview_fractions(handle, fraction),
+    );
+    let thumbs = fractions.map(|fraction| geometry.position(fraction));
     let thickness = (geometry.radius * 2.0).min(6.0);
     capsule(
         canvas,

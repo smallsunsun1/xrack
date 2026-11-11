@@ -361,7 +361,6 @@ pub(crate) fn toggle(
     enabled: bool,
 ) -> Result<(), String> {
     let box_size = 18.0_f32.min(bounds.height);
-    let x = bounds.x + 6.0;
     let y = bounds.y + (bounds.height - box_size) * 0.5;
     let state = if node.kind == "GroupBox" {
         node.boolean("checked", true).into()
@@ -380,6 +379,12 @@ pub(crate) fn toggle(
         box_size * 2.0
     } else {
         box_size
+    };
+    let item_delegate = node.is_item_delegate();
+    let x = if item_delegate {
+        bounds.x + (bounds.width - width - 12.0).max(0.0)
+    } else {
+        bounds.x + 6.0
     };
     let mut frame = Path::new();
     frame.rounded_rect(
@@ -434,12 +439,28 @@ pub(crate) fn toggle(
         canvas.stroke_path(&mark, &paint);
     }
     let size = text_system.font_size(node);
-    let color = color(if enabled {
+    let tint = if enabled {
         node.color("color").unwrap_or(theme.text)
     } else {
         theme.disabled_text
-    });
-    let paint = text_system.paint_node(node, color, false);
+    };
+    if item_delegate {
+        return crate::controls::label(
+            canvas,
+            text_system,
+            node,
+            Rect::new(
+                bounds.x + 12.0,
+                bounds.y,
+                (x - bounds.x - 22.0).max(0.0),
+                bounds.height,
+            ),
+            node.text("text").unwrap_or(""),
+            size,
+            tint,
+        );
+    }
+    let paint = text_system.paint_node(node, color(tint), false);
     canvas
         .fill_text(
             x + width + 7.0,

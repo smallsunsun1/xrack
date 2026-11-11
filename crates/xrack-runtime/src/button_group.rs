@@ -97,7 +97,7 @@ fn bind_group(scene: &mut Node, group: Rc<ButtonGroup>) {
     for (index, path) in group.paths.iter().enumerate() {
         let member = path
             .iter()
-            .try_fold(&mut *scene, |node, &index| node.children.get_mut(index));
+            .try_fold(&mut *scene, |node, &index| node.child_at_mut(index));
         let Some(member) = member.filter(|node| {
             if group.exclusive {
                 node.kind == "RadioButton"

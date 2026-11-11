@@ -37,9 +37,7 @@ pub(crate) fn attach(scene: &Node, layout: &mut LayoutNode) {
         if node.scroll_target.is_some() {
             controls.push((node, path.clone()));
         }
-        for (index_in_parent, (child, child_layout)) in
-            node.children.iter().zip(&item.children).enumerate()
-        {
+        for (index_in_parent, child, child_layout) in item.children_in_scene_order(node) {
             path.push(index_in_parent);
             index(child, child_layout, path, viewports, controls);
             path.pop();
@@ -83,7 +81,7 @@ pub(crate) fn attach(scene: &Node, layout: &mut LayoutNode) {
         let enabled = viewport.enabled;
         let item = path
             .iter()
-            .try_fold(&mut *layout, |item, &index| item.children.get_mut(index))
+            .try_fold(&mut *layout, |item, &index| item.child_at_mut(index))
             .expect("indexed scroll control path");
         let page = span(page, axis);
         if page > 0.0

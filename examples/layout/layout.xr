@@ -1144,3 +1144,310 @@ component GeometryPanel inherits Rectangle {
     background: #16857d;
     out property <length> measured-width: root.layout-width;
 }
+
+export component WheelDemo inherits Window {
+    title: "XRack · 滚轮缩放";
+    width: 460px; height: 300px;
+    background: #182331;
+    in property <bool> zoom-enabled: true;
+    out property <float> zoom: 1.0;
+    out property <length> pan-x: 0px;
+    out property <length> pan-y: 0px;
+    out property <length> last-x: 0px;
+    out property <length> last-y: 0px;
+    out property <float> last-lines: 0.0;
+    out property <int> inner-events: 0;
+    out property <int> outer-events: 0;
+    pure callback clamp-zoom(float) -> float;
+    clamp-zoom(value) => { value < 0.5 ? 0.5 : value > 3.0 ? 3.0 : value }
+    callback zoom-at(length, length, float, bool);
+    zoom-at(x, y, scale, active) => {
+        root.pan-x = active ? x - (x - root.pan-x) * (scale / root.zoom) : root.pan-x;
+        root.pan-y = active ? y - (y - root.pan-y) * (scale / root.zoom) : root.pan-y;
+        root.zoom = active ? scale : root.zoom;
+    }
+    Text { x: 16px; y: 12px; text: "Ctrl + 滚轮缩放画布 · 普通滚轮滚动"; font-size: 18px; }
+    viewport := ScrollView {
+        x: 16px; y: 44px; width: 428px; height: 210px;
+        content-height: 380px;
+        outer-wheel := WheelHandler {
+            width: 428px; height: 380px;
+            wheel(event) => { root.outer-events += 1; reject }
+            zoom-wheel := WheelHandler {
+                x: 16px; y: 16px; width: 388px; height: 154px;
+                orientation: vertical;
+                enabled: root.zoom-enabled;
+                wheel(event) => {
+                    root.inner-events += 1;
+                    root.last-x = event.x;
+                    root.last-y = event.y;
+                    root.last-lines = event.lines-y;
+                    root.zoom-at(event.x, event.y,
+                        root.clamp-zoom(root.zoom * (1.0 - event.delta-y / 240px)),
+                        event.modifiers.control);
+                    event.modifiers.control ? accept : reject
+                }
+                Rectangle {
+                    width: 388px; height: 154px;
+                    background: #25374c; clip: true;
+                    zoomed := Rectangle {
+                        x: root.pan-x; y: root.pan-y;
+                        width: 388px; height: 154px;
+                        transform-origin-x: 0px; transform-origin-y: 0px;
+                        transform-scale: root.zoom;
+                        Rectangle { x: 42px; y: 25px; width: 110px; height: 95px; background: #4969df; border-radius: 10px; }
+                        Rectangle { x: 192px; y: 43px; width: 140px; height: 75px; background: #3d907c; border-radius: 10px; }
+                    }
+                }
+            }
+            Text { x: 16px; y: 224px; text: "画布之外的内容"; }
+        }
+    }
+    Text { x: 16px; y: 267px; text: "缩放 " + root.zoom + "×"; color: #acc0db; }
+}
+
+export component HoverDemo inherits Window {
+    title: "XRack · 悬停与点击";
+    width: 420px; height: 240px;
+    background: #182331;
+    in property <bool> block-inner: false;
+    in property <bool> inner-enabled: true;
+    in property <length> inner-offset: 0px;
+    in-out property <bool> preview-open: false;
+    out property <bool> area-hovered: area.hovered;
+    out property <bool> button-hovered: button-area.hovered;
+    out property <length> position-x: area.hover-x;
+    out property <length> position-y: area.hover-y;
+    out property <int> area-entries: 0;
+    out property <int> area-exits: 0;
+    out property <int> button-entries: 0;
+    out property <int> button-exits: 0;
+    out property <int> button-moves: 0;
+    out property <bool> both-on-entry: false;
+    out property <int> clicks: 0;
+
+    Text { x: 16px; y: 12px; text: "移动光标查看悬停 · 点击打开预览"; font-size: 18px; }
+    area := HoverHandler {
+        x: 16px; y: 44px; width: 388px; height: 178px;
+        cursor-shape: crosshair;
+        entered() => { root.area-entries += 1; root.both-on-entry = button-area.hovered; }
+        exited() => { root.area-exits += 1; }
+        Rectangle {
+            width: 388px; height: 178px; clip: true; border-radius: 10px;
+            background: area.hovered ? #25446a : #25374c;
+            button-area := HoverHandler {
+                x: 26px + root.inner-offset; y: 64px; width: 154px; height: 46px;
+                cursor-shape: pointer;
+                enabled: root.inner-enabled;
+                blocking: root.block-inner;
+                entered() => { root.button-entries += 1; }
+                moved() => { root.button-moves += 1; }
+                exited() => { root.button-exits += 1; }
+                preview := Button {
+                    width: 154px; height: 46px;
+                    text: "打开预览";
+                    background: button-area.hovered ? #4969df : #344c80;
+                    clicked() => { root.clicks += 1; root.preview-open = true; }
+                }
+            }
+            Rectangle {
+                x: area.hover-x - 3px; y: area.hover-y - 3px;
+                width: 6px; height: 6px; border-radius: 3px;
+                visible: area.hovered; background: #9cdbbd;
+            }
+        }
+    }
+    preview-dialog := Dialog {
+        open <=> root.preview-open;
+        title: "预览";
+        width: 220px; height: 110px;
+        Text { x: 16px; y: 12px; text: "按钮点击已收到"; }
+    }
+}
+
+export component PointerDemo inherits Window {
+    title: "XRack · 指针事件";
+    width: 420px; height: 270px;
+    background: #182331;
+    in property <bool> area-enabled: true;
+    in property <int> hold-interval: 800;
+    out property <PointerEventKind> phase: cancel;
+    out property <PointerButton> last-button: primary;
+    out property <length> pointer-x: 0px;
+    out property <length> pointer-y: 0px;
+    out property <bool> inside: false;
+    out property <bool> touch: false;
+    out property <int> last-finger-id: 0;
+    out property <int> active-touches: area.active-touch-count;
+    out property <[TouchPoint]> touches: area.touch-points;
+    out property <bool> shift-held: false;
+    out property <int> events: 0;
+    out property <int> clicks: 0;
+    out property <int> double-clicks: 0;
+    out property <int> moves: 0;
+    out property <bool> pressed: area.pressed;
+    out property <bool> contains-press: area.contains-press;
+    out property <bool> has-hover: area.has-hover;
+    out property <length> mouse-x: area.mouse-x;
+    out property <length> mouse-y: area.mouse-y;
+    out property <length> pressed-x: area.pressed-x;
+    out property <length> pressed-y: area.pressed-y;
+    out property <bool> pressed-in-event: false;
+    out property <bool> click-saw-up: false;
+    out property <int> holds: 0;
+    out property <bool> hold-highlight: false;
+    out property <int> scroll-events: 0;
+    out property <int> outer-wheel-events: 0;
+    out property <length> wheel-x: 0px;
+    out property <length> wheel-y: 0px;
+    out property <bool> wheel-tint: false;
+
+    Text { x: 16px; y: 12px; text: "长按标记 · Ctrl + 滚轮切换底色"; font-size: 18px; }
+    viewport := ScrollView {
+        x: 16px; y: 48px; width: 388px; height: 170px;
+        content-height: 360px;
+        outer-wheel := WheelHandler {
+            width: 388px; height: 360px;
+            wheel(event) => {
+                root.outer-wheel-events += 1;
+                event.modifiers.shift ? accept : reject
+            }
+            area := TouchArea {
+                x: 16px; y: 16px; width: 340px; height: 104px;
+                enabled: root.area-enabled;
+                multi-touch: true;
+                press-and-hold-interval: root.hold-interval;
+                pointer-event(event) => {
+                    root.phase = event.kind;
+                    root.last-button = event.button;
+                    root.pointer-x = event.x;
+                    root.pointer-y = event.y;
+                    root.inside = event.inside;
+                    root.touch = event.is-touch;
+                    root.last-finger-id = event.touch-finger-id;
+                    root.shift-held = event.modifiers.shift;
+                    root.pressed-in-event = self.pressed;
+                    root.hold-highlight = event.kind == PointerEventKind.move && root.hold-highlight;
+                    root.events += 1;
+                }
+                press-and-hold() => {
+                    root.holds += 1;
+                    root.hold-highlight = true;
+                }
+                moved() => { root.moves += 1; }
+                clicked() => {
+                    root.clicks += 1;
+                    root.click-saw-up = root.phase == PointerEventKind.up;
+                }
+                double-clicked() => { root.double-clicks += 1; }
+                scroll-event(event) => {
+                    root.scroll-events += 1;
+                    root.wheel-x = event.x;
+                    root.wheel-y = event.y;
+                    root.wheel-tint = event.modifiers.control ? !root.wheel-tint : root.wheel-tint;
+                    event.modifiers.control ? accept : reject
+                }
+                Rectangle {
+                    width: 340px; height: 104px; clip: true; border-radius: 10px;
+                    background: root.active-touches > 1 ? #3a5676
+                        : root.hold-highlight ? #604277
+                        : root.wheel-tint ? #325449
+                        : area.contains-press ? #25446a : area.has-hover ? #2c425b : #25374c;
+                    Rectangle {
+                        x: area.mouse-x - 5px; y: area.mouse-y - 5px;
+                        width: 10px; height: 10px; border-radius: 5px;
+                        visible: root.active-touches == 0 && (area.contains-press || area.has-hover);
+                        background: #9cdbbd;
+                    }
+                    for point in area.touch-points : Rectangle {
+                        x: point.x - 6px; y: point.y - 6px;
+                        width: 12px; height: 12px; border-radius: 6px;
+                        visible: point.inside;
+                        background: #f6ce83;
+                    }
+                }
+            }
+            Text { x: 16px; y: 155px; text: "继续滚动以接管触摸手势"; }
+        }
+    }
+    Text {
+        x: 16px; y: 232px; color: #acc0db;
+        text: root.hold-highlight ? "已长按"
+            : root.phase == PointerEventKind.down ? "已按下"
+            : root.phase == PointerEventKind.move ? "正在移动"
+            : root.phase == PointerEventKind.up ? (root.double-clicks > 0 ? "双击完成" : "已释放")
+            : root.events > 0 ? "已取消" : "等待输入";
+    }
+    Text {
+        x: 184px; y: 232px; color: #acc0db;
+        text: "触点 " + root.active-touches + " · 最近 ID " + root.last-finger-id;
+    }
+}
+
+export component PointerPassThroughDemo inherits Window {
+    title: "XRack · 输入穿透";
+    width: 420px; height: 210px;
+    background: #182331;
+    in-out property <bool> overlay-enabled: true;
+    in-out property <bool> secondary-only: false;
+    out property <bool> overlay-hovered: overlay.has-hover;
+    out property <bool> lower-hovered: lower-hover.hovered;
+    out property <int> overlay-clicks: 0;
+    out property <int> lower-clicks: 0;
+    out property <int> child-clicks: 0;
+    out property <int> overlay-wheel-events: 0;
+    out property <int> lower-wheel-events: 0;
+    out property <int> secondary-releases: 0;
+
+    enable-overlay := CheckBox {
+        x: 16px; y: 16px; width: 208px; height: 32px;
+        text: "启用上层触控区";
+        checked <=> root.overlay-enabled;
+    }
+    lower-hover := HoverHandler {
+        x: 16px; y: 68px; width: 388px; height: 72px;
+        lower-wheel := WheelHandler {
+            width: 388px; height: 72px;
+            wheel(event) => { root.lower-wheel-events += 1; accept }
+            lower-button := Button {
+                width: 388px; height: 72px;
+                text: "底层按钮 · " + root.lower-clicks;
+                clicked() => { root.lower-clicks += 1; }
+            }
+        }
+    }
+    overlay := TouchArea {
+        x: 16px; y: 68px; width: 388px; height: 72px;
+        z: 1;
+        enabled: root.overlay-enabled;
+        accepted-buttons: root.secondary-only ? [secondary] : [primary, secondary, middle];
+        cursor-shape: grab;
+        accessible-name: "上层触控区";
+        clicked() => { root.overlay-clicks += 1; }
+        pointer-event(event) => {
+            root.secondary-releases += event.button == PointerButton.secondary
+                && event.kind == PointerEventKind.up && event.inside ? 1 : 0;
+        }
+        scroll-event(event) => { root.overlay-wheel-events += 1; accept }
+        Rectangle {
+            width: 388px; height: 72px;
+            border-radius: 8px; border-width: 2px;
+            border-color: root.overlay-enabled ? #81b5f3 : #9cdbbd;
+        }
+        child-button := Button {
+            x: 270px; y: 18px; width: 104px; height: 36px;
+            text: "子按钮 · " + root.child-clicks;
+            clicked() => { root.child-clicks += 1; }
+        }
+    }
+    Text {
+        x: 16px; y: 163px; color: #acc0db;
+        text: "上层点击 " + root.overlay-clicks + " · 右键 " + root.secondary-releases
+            + " · 滚轮 " + root.overlay-wheel-events + " / " + root.lower-wheel-events;
+    }
+    only-secondary := CheckBox {
+        x: 224px; y: 16px; width: 180px; height: 32px;
+        text: "上层仅接收右键";
+        checked <=> root.secondary-only;
+    }
+}

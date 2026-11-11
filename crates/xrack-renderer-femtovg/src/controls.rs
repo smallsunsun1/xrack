@@ -5,10 +5,10 @@ use crate::{
 };
 use femtovg::{Align, Canvas, Paint, Path, renderer::WGPURenderer};
 use xrack_layout::{
-    CalendarGeometry, ChoiceMenu, ComboGeometry, MenuPanel, PageIndicatorGeometry, Rect,
-    SpinGeometry, TableGeometry, TextMeasurer,
+    CalendarGeometry, ChoiceMenu, ColorPlaneGeometry, ComboGeometry, LayoutNode, MenuPanel,
+    PageIndicatorGeometry, Rect, SpinGeometry, TableGeometry, TextMeasurer,
 };
-use xrack_runtime::{Color, Node, Orientation, TableHeader, combo_editable, combo_text};
+use xrack_runtime::{Color, Node, Orientation, RowKey, TableHeader, combo_editable, combo_text};
 
 fn fill(canvas: &mut Canvas<WGPURenderer>, rect: Rect, radius: f32, tint: Color) {
     let mut path = Path::new();
@@ -33,6 +33,46 @@ pub(crate) fn color_preview(canvas: &mut Canvas<WGPURenderer>, bounds: Rect, tin
     fill(canvas, bounds, 0.0, tint);
 }
 
+pub(crate) fn color_plane(canvas: &mut Canvas<WGPURenderer>, node: &Node, bounds: Rect) {
+    let geometry = ColorPlaneGeometry::new(bounds);
+    let field = geometry.field;
+    if field.width <= 0.0 || field.height <= 0.0 {
+        return;
+    }
+    let white = color(Color(0xffffffff));
+    let black = color(Color(0x000000ff));
+    let hue = color(node.color("hue-color").unwrap_or(Color(0xff0000ff)));
+    let mut path = Path::new();
+    path.rect(field.x, field.y, field.width, field.height);
+    canvas.fill_path(
+        &path,
+        &Paint::linear_gradient(field.x, field.y, field.x + field.width, field.y, white, hue),
+    );
+    canvas.fill_path(
+        &path,
+        &Paint::linear_gradient(
+            field.x,
+            field.y,
+            field.x,
+            field.y + field.height,
+            color(Color(0x00000000)),
+            black,
+        ),
+    );
+
+    let marker = geometry.point(
+        node.number("saturation").unwrap_or_default(),
+        node.number("brightness").unwrap_or_default(),
+    );
+    let mut outline = Path::new();
+    outline.circle(marker.x, marker.y, 4.0);
+    for (tint, width) in [(black, 4.0), (white, 2.0)] {
+        let mut paint = Paint::color(tint);
+        paint.set_line_width(width);
+        canvas.stroke_path(&outline, &paint);
+    }
+}
+
 pub(crate) fn calendar(
     canvas: &mut Canvas<WGPURenderer>,
     text: &TextSystem,
@@ -42,6 +82,9 @@ pub(crate) fn calendar(
     enabled: bool,
 ) -> Result<(), String> {
     let draw = |canvas: &mut Canvas<WGPURenderer>, rect: Rect, label: &str, tint: Color| {
+        if rect.width <= 0.0 || rect.height <= 0.0 {
+            return Ok(());
+        }
         let size = text.font_size(node).min((rect.height * 0.56).max(1.0));
         let paint = text.paint_node_at_size(node, size, color(tint), true);
         canvas.save();
@@ -57,23 +100,36 @@ pub(crate) fn calendar(
             .map(|_| ())
             .map_err(|error| format!("calendar label drawing failed: {error}"))
     };
-    let month = geometry.state.month;
-    draw(
-        canvas,
-        geometry.title(),
-        &format!("{:04}-{:02}", month.year, month.month),
-        theme.text,
-    )?;
-    for ((rect, action), label) in geometry.navigation().into_iter().zip(["‹", "›"]) {
-        let tint = if enabled && action.is_some() {
-            theme.text
-        } else {
-            theme.disabled_text
-        };
-        draw(canvas, rect, label, tint)?;
+    if geometry.has_header() {
+        let month = geometry.state.month;
+        draw(
+            canvas,
+            geometry.title(),
+            &format!("{:04}-{:02}", month.year, month.month),
+            theme.text,
+        )?;
+        for ((rect, action), label) in geometry.navigation().into_iter().zip(["‹", "›"]) {
+            let tint = if enabled && action.is_some() {
+                theme.text
+            } else {
+                theme.disabled_text
+            };
+            draw(canvas, rect, label, tint)?;
+        }
     }
     for (rect, label) in geometry.weekdays(node) {
         draw(canvas, rect, label, theme.disabled_text)?;
+    }
+    for week in geometry.weeks() {
+        draw(
+            canvas,
+            week.bounds,
+            &week.number.to_string(),
+            theme.disabled_text,
+        )?;
+    }
+    if node.calendar_cells().is_some() {
+        return Ok(());
     }
     for day in geometry.days() {
         if day.selected {
@@ -90,6 +146,17 @@ pub(crate) fn calendar(
                     theme.disabled
                 },
             );
+        } else if day.today && day.enabled && enabled {
+            let rect = day.bounds.inset(
+                3.0_f32
+                    .min(day.bounds.width * 0.2)
+                    .min(day.bounds.height * 0.2),
+            );
+            let mut outline = Path::new();
+            outline.rounded_rect(rect.x, rect.y, rect.width, rect.height, 6.0);
+            let mut paint = Paint::color(color(theme.focus));
+            paint.set_line_width(1.5);
+            canvas.stroke_path(&outline, &paint);
         }
         let tint = if enabled && day.enabled && (day.in_month || day.selected) {
             if day.selected {
@@ -225,11 +292,13 @@ pub(crate) fn split_handle(
             theme.role(Role::InsetSurface)
         },
     );
-    let tint = if highlighted && enabled {
-        theme.focus
-    } else {
-        node.color("color").unwrap_or(theme.role(Role::Divider))
-    };
+    let tint = node.color("color").unwrap_or_else(|| {
+        if highlighted && enabled {
+            theme.focus
+        } else {
+            theme.role(Role::Divider)
+        }
+    });
     let width = bounds.width.min(2.0);
     let height = bounds.height.min(2.0);
     let strip = match node.orientation() {
@@ -324,7 +393,7 @@ pub(crate) fn menu_panel(
             };
             let size = row
                 .node
-                .length("font-size")
+                .font_size()
                 .or_else(|| text.default_font_size())
                 .unwrap_or(15.0)
                 .clamp(1.0, (rect.height / 1.4).max(1.0));
@@ -534,6 +603,112 @@ pub(crate) fn table_header(
     Ok(())
 }
 
+pub(crate) fn table_row_headers(
+    canvas: &mut Canvas<WGPURenderer>,
+    text: &TextSystem,
+    theme: Palette,
+    node: &Node,
+    layout: &LayoutNode,
+    highlights: impl Fn(usize, Option<RowKey>) -> (bool, bool),
+) -> Result<(), String> {
+    let Some(table) = &layout.table else {
+        return Ok(());
+    };
+    let gutter = table.row_header;
+    let corner = Rect::new(gutter.x, table.header.y, gutter.width, table.header.height);
+    let background = theme.role(Role::TableHeader);
+    fill(canvas, corner.intersect(layout.clip), 0.0, background);
+    let clip = gutter.intersect(layout.clip);
+    fill(canvas, clip, 0.0, background);
+    for (slot, (row, item)) in node.children.iter().zip(&layout.children).enumerate() {
+        let Some(label) = row.text("row-header-text") else {
+            continue;
+        };
+        let bounds = table.row_header_cell(item.bounds);
+        let visible = bounds.intersect(clip);
+        if !item.visible || visible.width <= 0.0 || visible.height <= 0.0 {
+            continue;
+        }
+        let (hovered, resizing) = highlights(slot, row.row_key);
+        let selected = row
+            .row_key
+            .zip(node.table_selection.as_deref())
+            .is_some_and(|(key, selection)| selection.row_header_selected(key));
+        if hovered || selected {
+            let role = match (hovered, selected) {
+                (true, true) => Role::ActiveColumn,
+                (false, true) => Role::SelectedColumn,
+                _ => Role::HoverSurface,
+            };
+            fill(canvas, visible, 0.0, theme.role(role));
+        }
+        let size = text
+            .default_font_size()
+            .unwrap_or(15.0)
+            .clamp(1.0, (bounds.height / 1.4).max(1.0));
+        let label_clip = Rect::new(
+            bounds.x + 6.0,
+            bounds.y,
+            (bounds.width - 12.0).max(0.0),
+            bounds.height,
+        )
+        .intersect(visible);
+        if label_clip.width > 0.0 {
+            canvas.save();
+            canvas.intersect_scissor(
+                label_clip.x,
+                label_clip.y,
+                label_clip.width,
+                label_clip.height,
+            );
+            let tint = if item.enabled {
+                theme.text
+            } else {
+                theme.disabled_text
+            };
+            let result = canvas.fill_text(
+                bounds.x + 6.0,
+                bounds.y + (bounds.height - size * 1.4).max(0.0) * 0.5,
+                label,
+                &text.paint(size, color(tint), false),
+            );
+            canvas.restore();
+            result.map_err(|error| format!("table row header drawing failed: {error}"))?;
+        }
+        let thickness = if resizing { 2.0 } else { 1.0 };
+        let line = Rect::new(
+            bounds.x,
+            bounds.y + bounds.height - thickness,
+            bounds.width,
+            thickness,
+        )
+        .intersect(visible);
+        fill(
+            canvas,
+            line,
+            0.0,
+            if resizing {
+                theme.focus
+            } else {
+                theme.role(Role::Divider)
+            },
+        );
+    }
+    let separator = Rect::new(
+        gutter.x + gutter.width - 1.0,
+        table.header.y,
+        1.0,
+        table.header.height + gutter.height,
+    );
+    fill(
+        canvas,
+        separator.intersect(layout.clip),
+        0.0,
+        theme.role(Role::Divider),
+    );
+    Ok(())
+}
+
 fn chevron(canvas: &mut Canvas<WGPURenderer>, x: f32, y: f32, size: f32, up: bool, tint: Color) {
     let direction = if up { -1.0 } else { 1.0 };
     let mut path = Path::new();
@@ -651,7 +826,7 @@ pub(crate) fn menu(
             }
             let size = menu
                 .control
-                .length("font-size")
+                .font_size()
                 .or_else(|| text.default_font_size())
                 .unwrap_or(14.0)
                 .clamp(1.0, (row.height / 1.4).max(1.0));
@@ -746,7 +921,12 @@ pub(crate) fn radio(
     enabled: bool,
 ) -> Result<(), String> {
     let radius = 8.0_f32.min(bounds.height * 0.5);
-    let x = bounds.x + 6.0 + radius;
+    let item_delegate = node.is_item_delegate();
+    let x = if item_delegate {
+        bounds.x + (bounds.width - 12.0 - radius).max(radius)
+    } else {
+        bounds.x + 6.0 + radius
+    };
     let y = bounds.y + bounds.height * 0.5;
     let foreground = if enabled {
         node.color("color").unwrap_or(theme.text)
@@ -774,16 +954,26 @@ pub(crate) fn radio(
             })),
         );
     }
-    label(
-        canvas,
-        text,
-        node,
+    let label_bounds = if item_delegate {
+        Rect::new(
+            bounds.x + 12.0,
+            bounds.y,
+            (x - radius - bounds.x - 22.0).max(0.0),
+            bounds.height,
+        )
+    } else {
         Rect::new(
             bounds.x + 28.0,
             bounds.y,
             (bounds.width - 28.0).max(0.0),
             bounds.height,
-        ),
+        )
+    };
+    label(
+        canvas,
+        text,
+        node,
+        label_bounds,
         node.text("text").unwrap_or(""),
         text.font_size(node),
         foreground,

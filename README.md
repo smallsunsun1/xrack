@@ -311,6 +311,12 @@ Markdown 链接用 `[文案](目标)` 声明，默认显示下划线并可配置
 
 `ScrollView` 和虚拟视图可以在回调中调用 `view.scroll-to(96px, 60px)`，参数为从内容原点量起的逻辑像素。列表、网格、树和表格也可用 `view.position-view-at-index(9000, ScrollAlignment.center)`。索引从零开始，树视图使用当前展开后的可见行序列。对齐方式有 `beginning`、`center`、`end`、`visible` 和 `contain`。`visible` 在目标已有一部分可见时保留位置，`contain` 尽量完整显示目标行。
 
+虚拟视图也可用 `position-view-at-source-index(source, alignment)`，表格可用 `position-view-at-source-cell(source, column, horizontal, vertical)`。源索引从零开始，列索引按声明顺序。调用时捕获源记录标识，布局时在最新的显示顺序中找到它，因此排队期间的排序和插入会保留定位目标。处理请求时，已隐藏、折叠、删除或来自旧模型的记录会被跳过。运行 `bazel run //examples/table:table -- --row-visibility`，用「定位源索引 24」在两个不同的显示顺序中找到同一条记录。
+
+`view-index-for-source(source)` 和 `source-index-for-view(index)` 在源模型顺序和当前显示顺序之间转换。两者都从零开始，可用于属性绑定。隐藏、折叠或越界的记录返回 `-1`，排序、筛选和模型变更会更新绑定结果。回调可用 `select-source-index(source)` 选择列表、网格、树或表格中的记录，也可用 `select-source-cell(source, column)` 选择表格单元格。选择遵循控件的选择模式，列索引按声明顺序。需要同时滚动时，可以接着调用对应的定位命令。
+
+`TableView` 和 `StandardTableView` 还提供 `position-view-at-cell(row, column, horizontal, vertical)`，两个方向分别接受 `ScrollAlignment`。`position-view-at-row(row, alignment)` 只移动纵轴，`position-view-at-column(column, alignment)` 只移动横轴。行号按当前显示顺序，列号按声明顺序，列重排后仍定位同一列。定位使用当前列宽、行高、行标题和冻结列的布局，冻结列保留横向偏移。这些命令保留光标和选区，无效单元格坐标取消整次定位。运行 `bazel run //examples/table:table -- --position-cells`，可在五万行模型中跳到末行末列，再重排列并比较定位结果。
+
 定位命令在回调结束并更新模型和布局后执行，结果限制在可滚动范围内。越界行索引会被忽略，定位本身不改变选择。读取 `content-x` 和 `content-y` 得到内容相对视口的实际位置，向右或向下滚动时为负值。`visible-width` 和 `visible-height` 是只读视口尺寸。表格的视口尺寸以表身为准。
 
 可用 `content-y: root.offset;` 提供响应式初值，或用 `content-y <=> root.offset;` 把滚动位置链接到可写的 `length` 属性。`ScrollView` 和表格的横轴也支持同样的绑定。单向绑定沿用其他可编辑控件的规则，视口首次主动移动后保留自己的位置。双向链接中的属性表示目标位置，各视口独立裁剪，内容尺寸变化本身不会写回。用户滚动和定位命令实际移动视口时，只将移动的轴写回绑定源。绑定纵轴的虚拟视图以目标位置为准，键盘导航可以更新它。运行 `bazel run //examples/list:list -- --linked` 可比较不同内容长度的联动画布。
@@ -359,6 +365,8 @@ Markdown 链接用 `[文案](目标)` 声明，默认显示下划线并可配置
 
 `Page` 可以单独使用，也可以放进 `SwipePage` 或 `StackPage`。直接声明可选的 `PageHeader` 和 `PageFooter`，各最多一个。两端占满页宽，默认按内部垂直布局的首选高度排布，也可设置 `height`。普通子项在中间区域按局部坐标布局，`padding` 作用于正文，`spacing` 留出正文与可见页眉和页脚之间的间距。正文可放一个 `width: 100%; height: 100%;` 的 `ScrollView`，滚动时两端保持固定。`title` 为无障碍提供页面名称。Tab 和无障碍按页眉、正文、页脚遍历，各区内部保持声明顺序。运行 `bazel run //examples/navigation:navigation -- --page` 体验。
 
+`ApplicationWindow` 是可直接运行的窗口根元素，沿用 `Window` 的主题、标题、尺寸和关闭回调。直接声明的 `MenuBar`、`PageHeader` 和 `PageFooter` 各最多一个，依次放在窗口顶部、菜单栏下方和底部。正文位于剩余区域，`padding` 及四边覆盖只作用于正文。`available-width/height` 发布实际正文尺寸，正文子项可用百分比填满。正文滚动时，菜单栏、页眉和页脚保持固定，弹层仍以窗口为范围。Tab 和无障碍按菜单栏、页眉、正文、页脚遍历。运行 `bazel run //examples/navigation:navigation -- --application-window` 可试用。
+
 `SwipeView` 的直接子元素为静态 `SwipePage`。用 `current-index <=> root.page;` 双向绑定声明顺序中的页索引，通过 `orientation` 选择横向或纵向。可用触摸、中键拖动或聚焦后按方向键切页，Home 和 End 跳到首尾可用页。手势在松手时切页，页内同轴滚动优先，滚到边界后下一次滑动可以切页。`interactive: false;` 暂停手势和键盘切页，应用仍可写入页索引。
 
 隐藏或禁用的页面在导航中跳过。索引不可用时显示首个可用页，用户切页后才写入新索引并触发 `changed(index)`。只有当前页的内容参与场景求值，页面里的组件状态会保留。运行 `bazel run //examples/navigation:navigation` 可体验。
@@ -368,6 +376,10 @@ Markdown 链接用 `[文案](目标)` 声明，默认显示下划线并可配置
 `StackView` 的直接子元素为带 ID 的静态 `StackPage`。例如 `home := StackPage { ... }` 的路由是 `"home"`。`initial-page` 设定初始路由，默认使用首个页面。事件处理器可调用 `navigation.push("details")`、`pop()`、`replace("summary")`、`pop-to("home")` 或 `reset("home")`。导航经 `xr.navigate` 校验，成功时触发 `changed(page, depth)`。同一路由在栈中占一个位置，根页可用 `reset` 更换。Rust 可通过 `navigate_stack(id, action)` 和 `stack_snapshot(id)` 操作和读取导航栈。
 
 `navigation.current-page`、`navigation.depth` 和 `navigation.can-go-back` 是可在绑定及纯回调中读取的实时状态。读取经 `xr.stack_read` 保留在 MLIR 中，源码语义检查会拒绝 `initial-page` 经属性或回调形成的初始化环。一次导航前后的读取各自获取当时的栈状态。
+
+`StackPage.active` 表示页面是否位于栈顶，`stack-index` 返回页面在栈中的零基索引，离栈时返回 `-1`。离开栈顶或移除栈中页面前，`leave-requested(destination, removing)` 可返回 `false` 取消整个导航，并可在处理器里显示确认对话框。栈顶先检查，再按栈顶到栈底的顺序检查其他将被移除的页面。也可声明 `callback can-leave-preview <=> preview.leave-requested;`，由 Rust 的 `on_can_leave_preview` 提供守卫。
+
+导航提交后依次触发旧栈顶的 `deactivated()`、各离栈页面的 `removed()`、新栈顶的 `activated()`，最后通知 `StackView.changed(page, depth)`。这些处理器读取到已提交的栈状态。初始路由通过 `active` 和 `stack-index` 可读，生命周期事件在导航提交时触发。运行 `bazel run //examples/navigation:navigation -- --stack-guard` 体验带未保存草稿的页面。
 
 `navigation.reset-to(["home", "details", "preview"])` 用完整路径恢复导航栈，`push-pages([...])` 则把一段路径追加到现有栈。路径可以来自 `[string]` 属性。整段路径都有效且路由唯一时才提交一次并触发一次 `changed`，当前只求值最终的栈顶页面。
 
@@ -386,6 +398,12 @@ Markdown 链接用 `[文案](目标)` 声明，默认显示下划线并可配置
 `check-state: expression;` 保留单向绑定，交互通过 `check-state-changed(state)` 报告请求的状态，适合汇总子项选择。`check-state <=> root.state;` 直接写入可写属性，也可绑定表格或树行的 `CheckState` 字段。运行 `bazel run //examples/controls:controls -- --check-state` 体验全选和独立三态循环。
 
 `RangeSlider` 使用 `lower-value` 和 `upper-value` 选择一个区间，两端可分别双向绑定到不同的 `float` 属性。Tab 在两个手柄之间移动焦点，方向键按 `step` 调整，Home 和 End 移到当前手柄可达的边界。点击轨道移动最近的手柄。手柄相遇时，向较小值拖动下限，向较大值拖动上限。横向和纵向都使用 `changed(lower, upper)` 和 `released(lower, upper)` 报告有效区间。外部写入交叉值时，显示的下限收拢到上限，下一次有效交互会写回有序区间。运行 `bazel run //examples/controls:controls` 体验。
+
+`Slider` 和 `RangeSlider` 支持 `snap-mode`。用 `ScrollSnapMode.always` 在拖动时吸附到以最小值为起点的步进刻度，或用 `on-release` 在松手时吸附。最大值也可作为终点。设置 `live: false;` 后，鼠标和触摸拖动先预览手柄位置，松手后提交，数值变化时触发 `changed`，随后触发 `released`。Escape 可取消待提交的预览，键盘和辅助技术可以直接调整数值。运行 `bazel run //examples/controls:controls -- --slider-snap` 体验。
+
+`Slider`、`RangeSlider`、`Dial`、`SpinBox` 和 `DoubleSpinBox` 可设置 `wheel-enabled: true`。滚轮向上或向右增加数值，`RangeSlider` 调整靠近指针的手柄。滚轮按系统报告的行增量计步，触控板每 28 个逻辑像素累计为一步。一次输入的多步合并提交，数值变化时触发 `changed` 或 `edited`。上层 `WheelHandler` 仍可先消费输入。非循环控件到达边界后，同方向的后续滚轮会交回外层视口。带修饰键的滚轮沿用原路由。运行 `bazel run //examples/controls:controls -- --wheel` 可试用。
+
+`Pane` 提供主题背景，`ControlFrame` 另有一像素的主题边框。两者默认内边距为 12 个逻辑像素，可分别设置四边。子元素的坐标相对于内边距内的内容区，也可以放入布局容器。未指定外部尺寸时会测量可见内容，`content-width/height` 可覆盖隐式内容尺寸。`available-width/height` 是布局完成后发布的只读内容区尺寸，子元素可用百分比尺寸填满内容区。空白区域拦截点击，`enabled: false` 会禁用其中的交互，`clip: true` 会按圆角裁剪子元素。运行 `bazel run //examples/controls:controls -- --panes` 可试用。
 
 `Dial` 的 `value` 同样可双向绑定。输入模式使用 `DialInputMode`，可取 `circular`、`horizontal` 或 `vertical`。圆形模式按角度定位，直线模式按水平或垂直位移相对调节。方向键按 `step` 调节，Home 和 End 移到端点。默认使用 280 度限位圆弧，`wrap: true;` 使用整圈并允许跨过端点。可用 `start-angle` 和 `end-angle` 自定义以十二点方向为零、顺时针递增的角度。事件 `changed(value)` 和 `released(value)` 与 `Slider` 相同。
 
@@ -431,17 +449,52 @@ Markdown 链接用 `[文案](目标)` 声明，默认显示下划线并可配置
 
 `DatePickerPopup` 通过 `open` 打开，复用 `Calendar` 的日期范围、星期设置和键盘导航。打开时从 `date` 读取独立草稿，翻月只改变视图。确认时按当前范围调整草稿，写回双向绑定并触发 `accepted(date)`，取消或按 Escape 触发 `canceled()`。`title`、`accept-text` 和 `cancel-text` 可自定义。运行 `bazel run //examples/controls:controls -- --calendar` 体验内联日历和日期弹层。
 
+`MonthGrid` 提供六行日期网格，可与 `DayOfWeekRow` 和 `WeekNumberColumn` 组合。让星期行和月份网格同宽、周数列和月份网格同高，并为三个控件绑定同一 `week-start`。周数列和月份网格共享 `display-month`。周数采用 ISO 8601，每行按该行的星期四归属，跨年时可显示上一年最后一周或下一年第一周。
+
+月份网格中的 `date` 和 `display-month` 可分别双向绑定。点击可用的相邻月份日期只更新选择，Page Up / Page Down 翻月。方向键改变日期，超出可见网格时随日期翻月。点击、Enter 或空格触发 `activated(date)`，包括再次触发同一日期。应用可传入 `today` 标记当天。运行 `bazel run //examples/controls:controls -- --month-grid` 体验自定义标题和周数列。
+
+在 `MonthGrid` 内声明一个匿名 `DayCell`，即可自定义每个日期的视觉内容。模板可读取 `cell-date`、零基 `cell-index`、`cell-weekday`、`cell-week`、`cell-week-year`、`cell-selected`、`cell-today`、`cell-in-month` 和 `cell-enabled`。`cell-week` 和 `cell-week-year` 表示该日期的 ISO 周数和周所属年份。网格为每个单元分配并裁剪内容区域，同时处理选择、键盘导航和无障碍日期动作。模板的 `accessible-description` 可补充日程信息。每个日期独立缓存模板绑定。运行 `bazel run //examples/controls:controls -- --calendar-agenda` 查看带日程标签的月份网格。
+
 `TimePicker` 和 `TimePickerPopup` 使用 `Time { hour: 23, minute: 58, second: 41 }`。字段省略时默认为零。构造时小时限制到 0–23，分秒限制到 0–59。`time` 可双向绑定，内联滚轮改值后触发 `changed(time)`。默认显示 24 小时制，设置 `use-24-hour-format: false;` 可显示 12 小时制和 AM/PM。`show-seconds: true;` 显示秒，隐藏时保留原值。滚轮支持鼠标、键盘和辅助技术操作。
 
 `TimePickerPopup` 通过 `open` 打开，打开时读取一次 `time` 作为草稿。确认后写回并触发 `accepted(time)`，取消或按 Escape 触发 `canceled()`。可用 `title`、`accept-text` 和 `cancel-text` 自定义文字。运行 `bazel run //examples/controls:controls -- --time` 体验。
 
-`ColorPickerPopup` 用 RGBA 滑条和 0–255 数值输入编辑 `color`。草稿会更新渐变轨道、棋盘格预览和十六进制显示。`show-alpha: true;` 显示透明度控件，隐藏控件时保留原有 alpha。`open` 和 `color` 支持双向绑定，确认时写回颜色并触发 `accepted(color)`，取消或按 Escape 丢弃草稿并触发 `canceled()`。运行 `bazel run //examples/controls:controls -- --color` 体验。
+`ColorPickerPopup` 支持 RGBA 滑条、0–255 数值输入和十六进制编辑。`show-color-plane: true;` 打开 HSV 色板和色相滑条，鼠标或触摸可拖动色板，方向键分别调整饱和度和明度。所有输入共享草稿并实时更新棋盘格上的预览。十六进制输入接受六位 RGB，也可以在 `show-alpha: true;` 时输入八位 RGBA。六位输入和隐藏透明度控件都会保留原有 alpha。格式无效时保留上一次有效预览，修正后可确认。
 
-在组件根部声明命名的 `FileDialog`，从回调调用 `picker.open()`。`mode` 可取 `open-file`、`open-files`、`save-file` 或 `select-folder`。可设置 `directory`、`file-name` 和 `name-filters`，扩展名过滤用 `"Text files (*.txt *.md)"` 这样的形式。宿主异步显示系统面板，并在 UI 线程触发 `accepted([string])`、`canceled()` 或 `failed(string)`。应用收到 UTF-8 本地路径后自行读写文件。同一窗口串行显示面板，同一个 `FileDialog` 的请求未结束时会合并重复调用。发起组件离开活动场景后，宿主丢弃该请求的结果。运行 `bazel run //examples/form:form -- --files` 体验。
+`open` 和 `color` 支持双向绑定。确认时写回颜色并触发 `accepted(color)`，取消或按 Escape 丢弃草稿并触发 `canceled()`。运行 `bazel run //examples/controls:controls -- --color` 体验带色板的版本。
+
+`FontPickerPopup` 通过 `open` 打开，使用当前窗口渲染器的系统字体和内嵌字体。可选择字体族、逻辑像素字号、1–1000 的字重以及斜体，`preview-text` 自定义预览内容。`font` 支持双向绑定，确认时一次写回整个 `Font` 并触发 `accepted(font)`，取消或按 Escape 丢弃草稿并触发 `canceled()`。用 `Text { font: root.selected; }` 应用选择，或将窗口的 `default-font` 绑定到同一值。单独设置的 `font-family`、`font-size`、`font-weight` 和 `font-italic` 覆盖对应字段。构造示例为 `Font { family: "sans-serif", size: 16px, weight: 400, italic: false }`。运行 `bazel run //examples/controls:controls -- --font-picker` 体验。
+
+在组件根部声明命名的 `FileDialog`，从回调调用 `picker.open()`。`mode` 可取 `open-file`、`open-files`、`save-file`、`select-folder` 或 `select-folders`。可设置 `directory`、`file-name` 和 `name-filters`，扩展名过滤用 `"Text files (*.txt *.md)"` 这样的形式。宿主异步显示系统面板，并在 UI 线程触发 `accepted([string])`、`canceled()` 或 `failed(string)`。应用收到 UTF-8 本地路径后自行读写文件。同一窗口串行显示面板，同一个 `FileDialog` 的请求未结束时会合并重复调用。发起组件离开活动场景后，宿主丢弃该请求的结果。运行 `bazel run //examples/form:form -- --files` 体验。
+
+`FileDialog.selected-files` 和 `selected-file` 可绑定到界面，分别提供上次确认的全部路径和第一条路径。确认结果在 `accepted` 执行前提交。取消、失败和弃用回执保留上一次结果。`FileDialog` 与 `MessageDialog` 都提供只读的 `pending`，排队和显示面板期间为真，结果回调执行前恢复为假。
 
 `MessageDialog` 也通过 `open()` 打开系统对话框，可设置 `title`、`text`、`informative-text` 和 `level`。`buttons` 可取 `ok`、`ok-cancel`、`yes-no` 或 `yes-no-cancel`。确认和拒绝分别触发 `accepted()` 与 `rejected()`，随后 `finished(StandardButtonKind)` 报告具体结果。系统关闭或取消返回 `cancel`，宿主检测到的打开错误通过 `failed(string)` 返回。文件面板与消息对话框按请求顺序共用窗口的异步队列。运行 `bazel run //examples/form:form -- --message` 体验。
 
 `SplitView` 把直接子元素排成横向或纵向面板，支持嵌套。面板沿分栏方向使用 `min-width`、`preferred-width`、`max-width` 或对应的高度属性。拖动分隔线只调整相邻的可见面板，并在当前实例中保存比例。用 Tab 聚焦分隔线后，可用方向键步进，Home 和 End 到达两个边界。`handle-size` 和 `handle-color` 设置分隔线，`resized()` 在比例更新后触发。隐藏面板不占空间，再显示时会恢复其比例。
+
+`SplitView.save-state()` 返回可持久化的布局字符串，`restore-state(state)` 在回调中恢复比例。命名面板按 ID 匹配，匿名面板按声明位置匹配。恢复会校验版本、面板集合和比例，再按当前尺寸约束布局。Rust 可用 `save_split_state(id)` 和 `restore_split_state(id, state)` 读写状态，后者返回是否接受了字符串。保存数据由应用负责。运行 `bazel run //examples/split:split`，用「保存布局」和「恢复布局」体验。
+
+`handle-hit-size` 设置鼠标和触摸可抓取的宽度，纵向分栏时设置高度。命中尺寸默认等于可见分隔线的尺寸，可设得更大以便触摸操作。命中区域重叠时选最近的可拖动分隔线。`resizing` 是只读布尔属性，鼠标或触摸抓住分隔线时变为 `true`，释放、取消或分隔线失效时恢复为 `false`。键盘仍按步长调整。示例的 `--fill-pane` 模式用 `handle-color: self.resizing ? #ffbf69 : #81a6e1;` 显示拖动反馈。
+
+原生辅助技术可聚焦可调整的分隔条，读取其方向、前侧面板尺寸及可调范围，按 8 个逻辑像素步进或设置具体尺寸。分隔条优先使用前侧面板的 `accessible-name`，例如给导航栏面板设置 `accessible-name: "导航"`。辅助技术的调整沿用面板尺寸约束和 `resized()` 回调。
+
+在 `SplitView` 中声明一个匿名 `SplitHandle` 模板，可以为每一条可见分隔线绘制自己的内容。模板和它的视觉子元素可以读取 `handle-hovered`、`handle-pressed`、`handle-orientation` 和 `handle-index`。索引是分隔线前方的面板槽位，从 0 开始，隐藏面板后仍保留原槽位。分隔条由 `SplitView` 统一处理命中、拖动和键盘焦点。运行 `bazel run //examples/split:split -- --custom-handle` 查看两个分隔条各自的状态。
+
+```xr
+SplitView {
+    handle-size: 8px;
+    handle-hit-size: 28px;
+    SplitHandle {
+        background: handle-pressed ? #ffbf69 :
+            handle-hovered ? #58c9c7 : #485e7e;
+    }
+    Rectangle { background: #26374e; }
+    Rectangle { background: #304663; }
+}
+```
+
+`SplitView { fill-pane: editor; }` 让指定的直接子面板吸收剩余空间。两侧面板使用首选尺寸，拖动后记住相邻面板的逻辑像素尺寸。窗口空间不足或填充面板触及尺寸限制时，布局会按当前约束调整。在受限布局中拖动会保存当时的可见尺寸，让其他侧栏留在原位。原填充面板隐藏时由最后一个可见面板填充。此模式用 `xrack-split/2` 保存像素尺寸，普通比例模式继续使用 `xrack-split/1`。运行 `bazel run //examples/split:split -- --fill-pane` 可体验。
 
 `MenuBar` 和 `ContextMenuArea` 分别通过顶部菜单和右键打开 `Menu`。菜单支持嵌套子菜单、禁用项、分隔线和可勾选的 `MenuItem`。`activated()` 在选中可用菜单项时触发。方向键导航，Escape 逐层关闭。右键菜单也可用 Shift+F10 打开。
 
@@ -455,25 +508,53 @@ Markdown 链接用 `[文案](目标)` 声明，默认显示下划线并可配置
 
 在组件根部声明命名的 `Action` 后，`Button`、`ToolButton` 和 `MenuItem` 可以通过 `action: command-id;` 共享命令。命令集中声明 `text`、`icon`、`shortcut`、`enabled`、`checkable`、`checked` 和 `activated()`。可勾选命令先切换 `checked` 再执行回调，也可用 `checked <=> root.some-flag;` 关联组件属性。控件可以覆盖显示文本和图标，也可额外限制自身的 `enabled`。同一命令的多个控件共用一个快捷键，按钮单独展示时也可以触发命令。每个组件实例独立持有命令状态。
 
+`ActionGroup` 可以包含命名的 `Action`，也可以让组件根部的命令用 `group: group-id;` 加入。互斥组默认只勾选 `current-value` 对应的命令。命令的 `value` 在组内唯一，省略时用命令 ID。用 `current-value <=> root.mode;` 和业务状态双向绑定，也可在一个成员上用 `checked: true;` 初始化。再次触发已勾选的命令会继续执行回调并保持选中。组内的普通命令可设 `checkable: false;`。
+
+设置 `exclusive: false;` 后，每个成员独立维护 `checked`。两种组都支持 `enabled`，禁用后菜单、工具栏和快捷键统一停止触发。命令自己的 `activated()` 在状态更新后先执行，随后调用组的 `activated(value)`。运行 `bazel run //examples/menu:menu -- --action-groups` 体验。
+
 `ToolBar` 默认横向排列子项，可用 `orientation: vertical;` 改为纵排。设置 `wrap: true;` 后可随可用空间换行或换列。工具按钮支持独立的 `clicked()`，也可绑定命令以同步勾选状态。`Button` 和 `ToolButton` 可用 `icon-size` 和 `icon-only` 控制图标显示。纯图标模式在没有图标时回退到文字。`icon` 使用已声明的 PNG 或 SVG 资源。运行 `bazel run //examples/menu:menu` 可体验共享图标和工具栏换行。
+
+`RoundButton` 沿用按钮的文字、图标、键盘激活和 `Action` 绑定。默认半径为宽高中较短边的一半，正方形尺寸会绘制为圆形，也可用 `radius` 指定半径。绘制和指针命中共用圆角几何，透明角落会把点击交给下层。`ToolSeparator` 默认绘制竖线，可在纵向工具栏里设 `orientation: horizontal`。`stroke-width`、`padding` 和 `color` 分别控制线宽、端部留白和颜色。分隔线参与布局，点击可以穿过它。运行 `bazel run //examples/menu:menu -- --round-tools` 可试用。
 
 在控件或视觉元素内声明 `Tooltip { text: "操作说明"; }`，可在悬停或通过 Tab 聚焦后显示提示。每个元素可附加一个 `Tooltip`，内容可用纯文本或单个自定义布局。`delay` 默认 600 毫秒，`timeout` 默认持续到离开、失焦或发生输入。提示浮在窗口内，靠近边缘时会避让，点击会穿过浮层。菜单和模态作用域会限制提示显示。
 
 `TableView` 使用静态 `TableColumn` 和一个 `for … : TableRow`。每行按列顺序声明一个展示单元格，支持文本、图像及嵌套布局。列宽支持 `width`、`min-width`、`preferred-width`、`max-width` 和 `horizontal-stretch`。超宽时可用触控板或 Shift+滚轮同步滚动表头和单元格。表头固定在垂直滚动区域上方，只创建可见的行。`current-row` 支持双向绑定，鼠标选择或键盘导航触发 `current-row-changed(int)`。可排序表头交替发出 `sort-ascending(int)` 和 `sort-descending(int)`，应用可用 `VecModel::sort_by` 稳定排序并保留行标识。
 
+`TableView` 和 `StandardTableView` 的只读属性 `current-sort-column`、`current-sort-descending` 提供当前排序标记。无排序标记时列索引为 `-1`。在回调中调用 `sort-by(column, descending)` 会设置标记，状态变化时触发对应的排序回调。列参数和读取结果均使用声明索引。`clear-sort()` 清除标记。Rust 可通过 `table_sort(id)` 和 `set_table_sort(id, sort)` 读取或设置同一状态。默认由应用的排序回调处理模型顺序。运行 `bazel run //examples/table:table -- --sort-state` 体验。
+
 表格可用 `movable-columns: true;` 开启表头拖动，默认关闭。拖到目标列的前半或后半时会显示插入位置，松手后提交。靠近表头可见边缘时会自动横向滚动。列宽拖柄和短按排序仍按原操作处理。回调可调用 `table.move-column(0, 2)` 移动显示位置，两个参数都是从零开始的显示索引。`column-moved(column, position)` 给出被移动的声明列索引和新的显示索引。排序、单元格编辑和既有选区保留声明列，键盘导航、Shift 选区和无障碍阅读使用显示顺序。运行 `bazel run //examples/table:table -- --standard` 可试用表头拖动和程序化移动。
 
-表格支持 `frozen-columns: 1;`。它冻结当前显示顺序中的前 N 列，列重排后按新顺序重新计算。冻结列随整表纵向滚动，横向滚动条和翻页只覆盖后面的滚动区。两区共享行标识、选区和编辑状态。窗口较窄且内容溢出时，布局减少实际冻结列数，为滚动区保留空间。默认值为 0。运行 `bazel run //examples/table:table -- --frozen` 可试用，Shift 加滚轮可横向滚动。
+表格支持 `frozen-columns: 1;`。它冻结当前显示顺序中的前 N 个可见列，列重排或可见性变化后重新计算。冻结列随整表纵向滚动，横向滚动条和翻页只覆盖后面的滚动区。两区共享行标识、选区和编辑状态。窗口较窄且内容溢出时，布局减少实际冻结列数，为滚动区保留空间。默认值为 0。运行 `bazel run //examples/table:table -- --frozen` 可试用，Shift 加滚轮可横向滚动。
+
+`TableColumn.visible` 可绑定应用状态，默认显示。隐藏列后，声明索引、重排顺序、手动列宽和选区仍保留。表头拖动按可见列命中，程序化 `move-column()` 按包含隐藏列的排列计数。键盘移动、剪贴板和无障碍按可见列处理。正在编辑的列隐藏时取消草稿，定位到隐藏列的请求会被拒绝。宽表示例的「编号列」和「二月列」可切换冻结列和普通列。
+
+`TableView` 和 `StandardTableView` 同时按行和列的可见区域生成单元格。冻结区和滚动区分别计算裁剪，可见行共享一份列索引映射，场景和布局只保存已生成的单元格。事件路径沿用声明索引。Rust 可用 `Node::child_at(column)` 或 `Node::at_path(path)` 查找已生成的逻辑列，用 `materialized_children()` 遍历已生成的单元格及其声明索引。自定义单元格绑定在首次进入视口时求值，已经访问过的组件单元格随行保留状态。复制选区仍从模型读取，包括视口外的记录和列。运行 `bazel run //examples/table:table -- --wide` 查看五万行、十二列的示例。
+
+表格可用 `row-header-width: 64px;` 显示左侧行标题，默认显示从 1 开始的显示行号。自定义表格在 `TableRow` 里绑定 `row-header-text`。标准表格用 `row-header-field: "name";` 投影记录字段，也接受点分路径。行标题复用可见行和行高，横向滚动时固定在左侧，启用行高调整后可在标题分隔线上拖动。点击标题可选中整行，单元格多选时选择该行所有单元格，列选择模式下保留已选列并移动当前行。辅助技术可读取可见的行标题及其行号。运行 `bazel run //examples/table:table -- --row-headers` 查看记录名称和冻结列，或用 `--row-numbers` 查看行号。
+
+开启 `movable-rows: true;` 后可用鼠标拖动行标题。移动期间显示插入线，靠近上下边缘会滚动，松手提交。可用 Escape 取消。回调可调用 `table.move-row(from, to)`，两个参数为零基显示行号。提交后触发 `row-moved(model-row, from, to)`，第一个参数是源模型索引。行顺序属于表格实例，共享模型的其他视图可保留自己的顺序。当前行、选区和手动行高随记录移动，编辑和粘贴按显示位置写回对应记录。源模型插入、删除、排序或替换时恢复源顺序。运行 `bazel run //examples/table:table -- --move-rows`，拖动左侧设备名称体验。
+
+触屏按住行标题 500 毫秒后可拖动该行，短按仍选择该行，提前滑动仍滚动表格。聚焦表格后按 Alt+↑ 或 Alt+↓ 可移动当前行，包括视口外的当前行。macOS 上用 Option 键。AccessKit 行标题公开上移、下移自定义动作，边界处只公开有效方向。
 
 表格可用 `resizable-rows: true;` 开启拖动行缝调整行高，默认关闭。回调也可调用 `table.set-row-height(20, 64px)`，按当前模型索引指定行高。行高限制在 12–512 个逻辑像素，传入负长度可恢复该行的默认 `row-height`。调整后的尺寸跟随记录标识，插删和排序后仍属于同一记录，记录移除时清理。列表虚拟化、键盘翻页、行锚定和按索引定位共用这份几何数据。运行 `bazel run //examples/table:table -- --rows` 可试用。
 
 基于记录模型的 `ListView`、`StandardListView`、`TreeView`、`TableView` 和 `StandardTableView` 可以用 `row-height-field: "height";` 指定行高字段。字段名须为常量，字段类型须为 `length`。非正或非有限值使用默认 `row-height`，正值裁剪到 12–512 个逻辑像素。用户拖动或命令设置的表格行高优先，清除覆盖后恢复记录中的最新高度。字段修改只更新对应记录的投影，树按展开后的顺序计算几何。运行 `bazel run //examples/table:table -- --row-field` 可查看共享模型的表格与列表，并对比记录修改和手动覆盖。
 
-`StandardTableView` 可直接绑定记录列表，例如 `model: root.inventory; TableColumn { title: "设备"; field: "name"; }`。`field` 是编译期校验的字段名，支持字符串、整数、浮点数、布尔值、`Date` 和 `Time`。控件为可见行生成只读文本单元格，复用固定表头、列宽调整、选择和排序回调。默认将程序选中的行滚入视口，可通过 `follow-current: false;` 关闭。辅助技术可读取可见的表头、行列位置和单元格值。运行 `bazel run //examples/table:table -- --standard` 体验五万行库存表。
+`StandardTableView` 可直接绑定记录列表，例如 `model: root.inventory; TableColumn { title: "设备"; field: "name"; }`。`field` 是编译期校验的字段名，支持字符串、整数、浮点数、布尔值、`Date` 和 `Time`。控件为可见行生成文本单元格，复用固定表头、列宽调整、选择和排序回调。默认将程序选中的行滚入视口，可通过 `follow-current: false;` 关闭。辅助技术可读取可见的表头、行列位置和单元格值。运行 `bazel run //examples/table:table -- --standard` 体验五万行库存表。
+
+标准表格的列可用 `editable: true;` 或布尔绑定启用内置文本编辑器。声明可编辑列时，`model` 须直接引用可写的记录列表属性。编辑器按 `field` 的类型解析文本，也支持嵌套字段。整数和有限浮点数接受十进制文本，布尔值接受 `true`、`false`、`1` 和 `0`，日期和时间使用 `YYYY-MM-DD` 与 `HH:MM:SS`。无效草稿显示错误边框，按 Enter 或 Tab 后仍可修正。提交核对行标识与原字段值，只修改目标字段。辅助技术设置单元格值时使用同一写回路径。运行 `bazel run //examples/table:table -- --editable` 体验。
+
+`StandardTableView` 可设置 `auto-sort: true;`，由控件按排序列的 `field` 对视图排序，排序回调仍会收到通知。多个视图可共享模型并使用不同顺序。排序保留记录标识、行高和多选，显式排序与清除排序时会按记录标识重定位当前行。排序字段更新时重新计算顺序，同值项保持源顺序，`current-row` 此时按新的显示顺序解释。清除排序后恢复源顺序，手动移动行可在此时使用。运行 `bazel run //examples/table:table -- --sorted-views` 体验。
+
+`StandardTableView` 可用 `filter-field: "name"; filter-text: root.query;` 按字符串字段筛选。字段支持嵌套路径，匹配会忽略大小写和查询首尾空白。筛选和自动排序可同时使用，编辑仍按记录标识写回共享模型。`current-row` 按当前显示位置解释，显式选区和手动行高按记录标识保留，复制和粘贴使用显示行。筛选期间暂停拖动行，清空查询后恢复基础顺序。若连续编辑的提交使记录退出筛选，Tab 从它原先的显示位置继续查找。运行 `bazel run //examples/table:table -- --editable`，用搜索框筛选五万条库存记录。
+
+`TableView` 和 `StandardTableView` 可用 `row-visible-field: "flags.shown";` 指定控制可见性的布尔字段。字段路径须为常量，值为 `false` 的记录退出视图，源模型、记录标识、选区和手动行高均保留。有隐藏行时暂停拖动排行，已有的手动顺序随记录保留。标准表格可同时按文本筛选和排序。行定位、复制和粘贴使用当前显示行号。开启 `preserve-scroll-anchor` 时，隐藏锚点前的记录会保留锚点记录在视口中的位置。运行 `bazel run //examples/table:table -- --row-visibility`，可在共享记录的两个表格里切换首行可见性。
 
 设置 `resizable-columns: true;` 后，可拖动表头分隔线调整列宽。可在单列设置 `resizable: false;` 锁定分隔线。手动宽度保存在当前表格实例，受声明的最小、最大宽度限制，排序和替换行模型时仍然有效。
 
 `multi-select: true;` 启用行多选。Shift+点击或 Shift+方向键选取范围，Ctrl/Cmd+点击或 Space 增减一行，Ctrl/Cmd+Shift 增加范围。Ctrl/Cmd+A 全选，Escape 清空，Ctrl/Cmd+方向键只移动 `current-row`。排序和插入保留已选行的标识，删除会移除对应的选择，替换模型会清空选择。`selection-changed(int)` 报告用户操作后的选中数量。Rust 宿主可通过场景节点的 `table_selection` 查询当前选择，使用 `keys()` 获取行标识或 `indices(&model)` 按模型顺序取得索引。
+
+`TableView` 和 `StandardTableView` 可通过 `current-column`、`selection-count` 和 `has-selection` 读取当前列与选区。`current-cell-changed(row, column)` 在光标行列变化时通知应用，列使用声明索引。回调可调用 `select-cell(row, column)`、`toggle-cell(row, column)` 和 `set-current-cell(row, column)` 操作单元格，或用 `select-range(first-row, first-column, last-row, last-column)` 选择矩形。行模式可用 `select-row(row)`，列模式可用 `select-column(column)`。`select-all()` 选择当前目标的全部项，`clear-selection()` 清空选区。`set-current-cell` 单独移动光标。Rust 可通过 `table_selection(id)` 和 `select_table(id, action)` 访问同一选择状态。运行 `bazel run //examples/table:table -- --selection-api` 体验。
 
 `selection-target` 接受 `rows`、`cells` 和 `columns`，默认按行选择。单元格模式下，Shift 扩展矩形选区，方向键移动焦点并滚动到当前单元格。列模式可点击表头或表身选择整列，Alt+点击表头排序。`multi-select` 在三种目标下都可启用。`selection-changed(int)` 按当前目标报告行、单元格或列数。Rust 可读取 `current_column()`、`columns()` 或 `cell_keys(column)`。单元格选择跟随记录标识，整列选择在替换行模型后保留。
 
@@ -481,9 +562,19 @@ Markdown 链接用 `[文案](目标)` 声明，默认显示下划线并可配置
 
 表格同时设置 `multi-select: true;` 和 `drag-select: true;` 后，可从表身用鼠标拖出选区。预览随 `selection-target` 显示行、单元格或列范围，靠近边缘时会继续滚动到离屏内容。松手后一次提交，按住 Ctrl 或 Command 可保留原选区。Escape、移出窗口、失去焦点或拖动期间改变行结构和列顺序会取消本次选择。已进入编辑状态的单元格和独立的交互控件仍处理自己的拖动。
 
+触屏上按住单元格 500 毫秒即可开始框选，随后拖动扩展范围，抬手提交。短按仍执行普通点击，长按生效前滑动仍滚动表格。系统取消触摸时会撤掉选区预览。
+
+提交连续选区后，可用鼠标或触屏拖动左上、右下角点来缩小或扩大选区，另一角固定。角点滚出视口时隐藏，行结构或列顺序变化后需重新框选。
+
 表格设置 `copyable: true;` 后，可用 Ctrl 或 Command 加 C 复制选区到系统剪贴板。复制按当前显示列顺序读取模型，包括离屏的已选行和列。单元格选区输出最小矩形，选区内的空洞保留为空字段。文本中的制表符、换行和引号会转义。自定义表格默认复制直接文本和双向绑定的模型值，也可在直接单元格上用 `clipboard-text` 指定导出文本。编辑中的文本选区优先。一次复制最多 100 万个字段或 8 MiB。
 
 `TableCell { text <=> item; }` 可编辑 `for item in root.records` 中可写 `[string]` 模型的一行。双击单元格，或在聚焦后按 Enter / F2 开始编辑。Enter 提交，Tab 提交并移动焦点，Escape 或切换到其他控件会丢弃草稿。应用在编辑期间重排模型时，仍可见的记录会按行标识保留草稿。滚出视口、删除记录或外部改值会结束编辑。文本输入、IME、剪贴板和撤销在草稿上工作，提交时才修改模型。
+
+`TableView` 和 `StandardTableView` 可组合布尔属性 `edit-on-click`、`edit-on-selected-click`、`edit-on-double-click`、`edit-on-key` 和 `edit-on-typing`。默认开启双击和 Enter / F2。选中后单击以本次点击之前的选区为准。输入可打印文字会打开编辑器，用第一段文字替换选中的原值，并将结果保存在草稿中。
+
+设置 `edit-on-tab: true;` 后，Tab 提交草稿并打开下一处可编辑文本单元格，Shift+Tab 向前查找。查找按当前显示行列顺序，跳过只读、隐藏或禁用的单元格，并在必要时滚动到离屏目标。若提交改变排序，起点按原记录标识重新定位。到达首尾时回到普通焦点顺序，无效草稿留在当前编辑器。连续编辑保留表格选区，可用 `bazel run //examples/table:table -- --editable` 体验。
+
+回调可调用 `table.edit-cell(row, column)`，行号按显示顺序，列号按声明顺序。命令将焦点移到可见、可写的文本单元格，保留表格选区。定位离屏单元格时，可在同一回调先调用 `position-view-at-cell`。切换到另一个编辑目标或调用 `table.cancel-edit()` 会丢弃该表的草稿。运行 `bazel run //examples/table:records -- --edit-triggers` 体验。
 
 结构化行可用 `export struct StockRow { name: string, units: int }` 声明，`property <[StockRow]>` 接收 `StockRow { name: "交换机", units: 12 }` 等记录字面量。在 `TableRow` 的直接子元素中，`TableCell { text <=> row.name; }` 编辑字符串，`SpinBox { value <=> row.units; }` 编辑整数，`Slider { value <=> row.load; }` 编辑浮点数，`CheckBox { checked <=> row.available; }` 或 `Switch` 编辑布尔值。提交核对行标识和被编辑字段的原值，再把改动合并进最新记录。Rust 使用生成的 `StockRow` 和 `VecModel<StockRow>`。运行 `bazel run //examples/table:records` 可体验独立字段编辑和按类型排序。
 
@@ -497,7 +588,13 @@ Markdown 链接用 `[文案](目标)` 声明，默认显示下划线并可配置
 
 `TableView` 可用 `pasteable: true;` 开启 Ctrl/Cmd+V 批量粘贴。选中单元格后，从该格沿显示列顺序写入 TSV，行选区从当前行的第一显示列开始。数据通过单元格的双向绑定写入，支持离屏行和包含制表符、换行、双引号的文本字段。数字使用十进制文本，布尔值接受 `true`、`false`、`1` 或 `0`。整块数据校验成功后才写入模型，保留行标识。只读、禁用、隐藏、类型不匹配、越界和过期剪贴板回执会取消整次粘贴。正在编辑文字时，快捷键交给文本编辑器。运行 `bazel run //examples/table:records -- --cells`，选中名称或负责人单元格后可粘贴多行数据。
 
-表格聚焦时用 Ctrl/Cmd+Z 撤销一整次粘贴，用 Ctrl/Cmd+Shift+Z 或 Ctrl+Y 重做。记录按行标识和实际变更字段保存，重排、滚动和列移动后仍可重放。每次重放先核对全部目标行和字段值。若目标行已删除或已改写某个目标字段，整笔历史失效，其余字段保留后续编辑。文本编辑器继续处理自己的撤销历史。每个表格实例最多保留 64 笔、约 8 MiB 的历史数据，超出单笔容量的粘贴仍提交并清空之前的历史。
+`StandardTableView` 也可用 `pasteable: true;` 将 TSV 批量写入声明为 `editable` 的列。它沿当前显示顺序定位行列，使用单元格编辑器的类型校验，包括布尔值、日期和时间。排序后的离屏行可参与同一次提交，任一目标只读或字段值无效时整块拒绝。剪贴板返回时会再次核对列顺序、模型版本和写入权限。运行 `bazel run //examples/table:table -- --editable`，选中数量列后可粘贴 `数量、可用、刷新时间` 三列，再用 Ctrl/Cmd+Z 撤销。
+
+表格可用 `undoable: true;` 开启编辑历史，`pasteable: true;` 也会启用。内置编辑器和自定义单元格组件通过模型绑定进行的每次有效写回各记一笔，整块粘贴也记一笔。滑块持续写入时，每次生效的值变化各记一笔。表格聚焦时用 Ctrl/Cmd+Z 撤销，用 Ctrl/Cmd+Shift+Z 或 Ctrl+Y 重做。具有草稿的单元格编辑器打开时，快捷键作用于当前草稿。
+
+历史按行标识和实际变更字段保存，重排、滚动和列移动后仍可重放。每次重放先核对全部目标行和字段值。若目标行已删除或目标字段已改写，整笔历史失效，其余字段保留后续编辑。每个表格实例最多保留 64 笔、约 8 MiB 的历史数据。超出单笔容量的修改仍会提交，并清空旧历史。关闭历史后提交修改也会清空旧历史。运行 `bazel run //examples/table:table -- --editable`，依次提交数量编辑、粘贴多行，再按快捷键逐笔撤销。
+
+工具栏和菜单可绑定表格的只读布尔属性 `can-undo` 和 `can-redo`，并在回调中调用 `table.undo()` 或 `table.redo()`。两个状态分别跟踪当前模型的待回放记录，执行时才核对字段值。冲突的记录会被丢弃，并更新按钮状态。`--editable` 示例也提供了绑定这两个属性的撤销与重做按钮。
 
 `background` 和 `border-color` 使用 `brush` 类型，纯色可直接绑定。线性渐变使用 `@linear-gradient(90deg, #536dfe 0%, root.accent 100%)`，径向渐变使用 `@radial-gradient(circle, #fff, #536dfe)`，中心和半径由元素尺寸决定。色标颜色可以引用属性，省略的位置会均匀插值，显式位置须在 0% 到 100% 之间且按升序排列。`Rectangle` 和 `Button` 可以用 `border-top-left-radius` 等属性分别覆盖四角的 `border-radius`。
 
@@ -514,6 +611,28 @@ Markdown 链接用 `[文案](目标)` 声明，默认显示下划线并可配置
 `ScaleRotateGestureHandler` 把触屏双指手势和 macOS 触控板手势统一成 `started()`、`updated()`、`ended()` 和 `cancelled()`。在 `started()` 保存初始状态，在 `updated()` 读取累计 `scale`、顺时针角度 `rotation` 和局部逻辑像素中心 `center-x/y`，再更新内容变换。手势结束或取消时，`active` 变回 `false`，读数回到默认值。两指须从同一个可用区域开始。第二指接管待提交的单指输入时，会取消原来的点击候选。关闭 `enabled` 会取消该区域的手势，子控件仍可接收单指操作。运行 `bazel run //examples/layout:layout -- --scale-rotate`。
 
 `SwipeGestureHandler` 用 `handle-swipe-left/right/up/down` 选择接收的方向，默认全部关闭。鼠标左键或单指触屏移动达到 8 逻辑像素后，最内层接受主方向的区域接管输入。其他方向可继续由滚动视图处理。`moved()` 中可读 `swiping` 与 `pressed-x/y`、`current-x/y`。坐标以按下时的局部坐标系计算。松手触发 `swiped()`，此时可以读取最终坐标。滑动期间调用 `cancel()`、禁用区域或失去窗口焦点会触发 `cancelled()`。轻触仍可点击内部按钮。运行 `bazel run //examples/layout:layout -- --swipe-gesture`，横拖移动卡片，竖拖滚动画布。
+
+`WheelHandler` 的 `wheel(event)` 接收类型化的 `WheelEvent`。其中 `x/y` 是处理器内的局部坐标，`delta-x/y` 是逻辑像素增量，向右和向下为正。行滚轮输入还提供 `is-line` 和 `lines-x/y`，`modifiers` 可读取修饰键。设置 `orientation` 可只接收含指定轴增量的事件，省略时接收双轴。处理器沿命中路径由内向外执行，返回 `accept` 即消费，返回 `reject` 则继续交给外层或默认滚动。裁剪与模态区域约束照常生效。运行 `bazel run //examples/layout:layout -- --wheel`，按住 Ctrl 滚动可围绕光标缩放画布。
+
+`TouchArea` 的 `pointer-event(event)` 接收 `down`、`move`、`up` 和 `cancel`。事件包含按钮、局部逻辑像素坐标 `x/y`、命中状态 `inside`、触摸标记 `is-touch` 和 `modifiers`。鼠标移出控件后仍由起始控件接收事件。滚动等手势接管时，起始控件收到 `cancel`。有效点击先收到 `up`，再执行 `clicked()`。运行 `bazel run //examples/layout:layout -- --pointer` 可试用。
+
+触摸事件的 `event.touch-finger-id` 是窗口分配的正整数，同一触点从按下到释放或取消都使用同一个 ID。鼠标为 `0`。设置 `multi-touch: true` 后，区域可以同时捕获多个触点，`active-touch-count` 可直接绑定。`pressed` 表示还有指针按住，`contains-press` 表示至少一个活动指针仍在区域内。每个窗口仍由一个触点驱动常规点击、长按和滚动。附加触点发送各自的指针事件，同一区域并发触摸会取消单指点击和长按候选。双指缩放接管时只取消它所用的触点。`--pointer` 示例显示当前触点数和最近事件的 ID，并在两个触点同时按住时改变底色。
+
+`area.touch-points` 是只读的 `[TouchPoint]` 模型，按按下顺序列出仍活动的触点。每行提供 `id`、局部坐标 `x/y`、按下时的坐标 `start-x/start-y` 和 `inside`。移动更新对应行，释放或取消移除该行，其余触点保留行身份。可用 `for point in area.touch-points : Rectangle { x: point.x; y: point.y; }` 绘制跟随标记。重复元素声明 `x` 或 `y` 时会按这些坐标放置。`--pointer` 示例为每根手指绘制一个标记。
+
+`TouchArea` 的只读属性可直接用于绑定。`pressed` 表示指针仍按住，`contains-press` 表示按住且当前位置在区域内，`has-hover` 表示鼠标命中该区域。`mouse-x/y` 保留最近一次局部坐标，`pressed-x/y` 保留按下时的坐标。状态先于回调更新，按住移动时会触发 `moved()`。同一实例的两次鼠标主键点击或同一触摸设备的两次轻触，在 450 毫秒内且释放位置相距不超过 6 个逻辑像素时，第二次 `clicked()` 后触发 `double-clicked()`。
+
+`TouchArea.scroll-event(event)` 使用与 `WheelHandler.wheel(event)` 相同的 `WheelEvent`，包含局部坐标、像素和行增量，以及修饰键。返回 `accept` 会停止传递。返回 `reject` 会继续交给外层处理器，若沿途都拒绝，则执行默认滚动。在 `--pointer` 示例中，Ctrl 加滚轮切换底色，Shift 加滚轮由外层接收，普通滚轮滚动页面。
+
+设置 `TouchArea.enabled: false` 会让点击、触摸、悬停和滚轮穿透到下层控件。区域内的子控件仍可交互。若禁用时指针仍按住，原区域收到一次 `cancel`，下层控件从下一次按下开始接收点击。运行 `bazel run //examples/layout:layout -- --pointer-pass-through`，切换上层触控区后，可在同一位置验证穿透。
+
+`TouchArea.accepted-buttons` 使用类型化的按钮集合，例如 `[primary, secondary]`。省略时接收主键、右键和中键，`[]` 让这些按键都穿透。单指触摸按主键过滤，`clicked()` 仍由主键或轻触触发。右键和中键可通过 `pointer-event(event)` 的 `button` 读取。过滤与悬停、光标样式和滚轮独立。若绑定变化排除了正在按住的按钮，当前序列收到 `cancel`。在 `--pointer-pass-through` 示例中勾选「上层仅接收右键」，同一区域的主键点击会落到底层按钮。
+
+`TouchArea.press-and-hold()` 支持鼠标主键和单指触摸。每次按下时读取 `press-and-hold-interval`，默认 800 毫秒，非正值关闭长按。移出区域、移动超过 6 个逻辑像素或被滚动接管会取消尚未触发的长按。长按每次按下只触发一次，可在回调中读取 `pressed-x/y`。松手仍会发送 `pointer-event` 的 `up`，本次长按会消费对应的点击。运行 `bazel run //examples/layout:layout -- --pointer`，按住画布可看到底色变化。
+
+`HoverHandler` 包住要观察的区域，子控件照常接收点击。可绑定只读 `hovered` 和局部逻辑像素坐标 `hover-x/y`，离开后坐标归零。`entered()`、`moved()` 和 `exited()` 在同一帧的悬停状态发布后执行。命中路径上的嵌套处理器可同时观察，设置 `blocking: true;` 会停止向外层传递。布局移动、禁用、裁剪和模态弹窗会重新计算悬停，即使光标静止。运行 `bazel run //examples/layout:layout -- --hover` 体验悬停样式和子按钮点击。
+
+`HoverHandler` 和 `TouchArea` 可绑定 `cursor-shape`，类型为 `CursorShape`。可用值包括 `pointer`、`crosshair`、`text`、`grab` 和 `zoom-in`。默认 `auto` 会沿当前命中路径查找显式形状，再使用控件默认光标。`default` 则明确使用系统箭头。实际命中的 `TouchArea` 优先于悬停处理器，嵌套悬停优先用内层的形状。拖放和分栏、表格、窗口调整大小仍使用原生操作光标，编辑区默认使用 I 形光标。`--hover` 示例中的外层区域使用十字，内层按钮区域使用手形。
 
 `Image` 的 `source: @image-url("assets/icon.svg");` 引用相对于 `.xr` 的本地 PNG 或 SVG。图片以 `!xr.image` 通过 MLIR，编译器检查资源后把编码字节嵌入 Rust。支持 `image-fit: fill | contain | cover | preserve`。布局内默认 `contain`，其他位置默认 `fill`。SVG 支持独立的矢量图形，由 resvg 按显示尺寸和 DPI 栅格化。SVG 文本和外链资源暂未支持。
 
@@ -548,7 +667,23 @@ setter 和 DSL 赋值覆盖绑定并解除订阅，`reset_*()` 恢复默认绑�
 
 `ListView` 接收一个 `for` 模板，支持整数计数、`[string]` 和命名记录列表，最多寻址 100 万行。固定的 `row-height` 决定滚动位置与行索引，只有与视口相交的行才会生成。`current-index` 可双向绑定，鼠标选择和键盘方向键、Home、End、PageUp、PageDown 会更新索引。选择按位置解释，插入或删除行后仍使用当前索引。
 
+`ListView`、`GridView` 和 `StandardListView` 支持 `row-visible-field: "flags.shown";`。布尔字段为 `false` 的记录退出视图，网格用剩下的记录重新排列。视图的 `current-index` 和滚动命令使用显示索引，`for entry[source]` 中的 `source` 仍是源模型索引。编辑和行组件状态按记录标识定位，开启 `preserve-scroll-anchor` 时可在隐藏视口前的记录后保持锚点。运行 `bazel run //examples/list:list -- --visibility` 体验三个共享模型的视图。
+
+`ItemDelegate`、`CheckDelegate`、`RadioDelegate` 和 `SwitchDelegate` 可作为 `ListView` 或 `GridView` 的直接行模板。整行可点击，默认高亮当前项，也可显式绑定 `highlighted`。聚焦列表后用方向键选行，按 Enter 或空格触发当前委托。`ItemDelegate.clicked()` 可读取重复项和索引，`RadioDelegate` 的勾选由列表的 `current-index` 派生。
+
+直接重复的 `CheckDelegate` 和 `SwitchDelegate` 用 `checked <=> row.field` 写回布尔字段。`CheckDelegate` 也支持 `check-state <=> row.state` 和 `tristate: true;`。交互会核对行标识和字段原值，确认写入后才执行状态回调。运行 `bazel run //examples/list:list -- --item-delegates` 查看四种控件。
+
 `TreeView` 接收一个重复的 `TreeRow`。在模板中用 `key: record.id; parent-key: record.parent-id;` 把两个整数记录字段声明为树的角色。非负键唯一，找不到父节点的记录显示为根，重复键的记录会被排除。循环在最小键处断开父链接。`current-key` 可双向绑定，展开状态按模型行标识保留，排序不会把展开状态转给别的记录。点击三角或按 Enter、Space 可切换展开，左右键可展开、折叠或移动到父子节点。只有视口内的可见节点会创建行内容。运行 `bazel run //examples/tree:tree` 查看示例。
+
+`TreeView` 提供 `expand(key)`、`collapse(key)`、`toggle-expanded(key)` 和 `expand-to(key)`。参数使用记录里的业务键。`expand-to` 展开目标的祖先路径，可结合 `row-for-key(key)` 和 `position-view-at-index(...)` 滚动到深层节点。`depth(key)` 返回当前视图中的层级，未知键返回 `-1`。`is-expanded(key)` 可读取当前展开状态，`row-for-key(key)` 在节点折叠隐藏时返回 `-1`。
+
+`expand-recursively(key, depth)` 展开一整支子树，`depth` 为 `1` 时的效果等同于单项展开，`-1` 展开到叶子。`collapse-recursively(key)` 同时清除隐藏后代的展开状态。省略键或传入 `-1` 时操作当前视图中的整棵树。批量操作一次更新状态，并触发一次 `expanded(key)` 或 `collapsed(key)`，全树操作的事件键为 `-1`。折叠后，当前项回退到最近可见的祖先，多选仍按记录标识保留。Rust 可用 `command_tree(id, TreeCommand)` 和 `tree_snapshot(id)` 调用与读取。运行 `bazel run //examples/tree:tree -- --commands` 体验。
+
+`TreeView.root-key` 指定浏览分支，默认 `-1` 显示完整模型。设为有效业务键时，从该节点的子项开始显示，子项的父键视为视图边界，缩进深度从零计算。未知键显示空视图。`depth`、`row-for-key` 和展开命令都针对当前分支，键盘导航停留在该分支内。切换分支后滚动位置回到顶部，显式绑定的滚动偏移仍由绑定控制。展开状态和多选按记录标识保存，切回原分支可继续使用。运行 `bazel run //examples/tree:tree -- --branches` 查看共享模型的两个独立视图。
+
+`TreeView` 可用 `filter-field: "label"; filter-text: root.query;` 搜索当前分支。字段名支持嵌套路径，字段类型为 `string`。搜索去除查询首尾空白并忽略大小写，保留命中节点及其祖先。搜索期间路径自动展开，可以用方向键在父子节点间移动。清空查询后恢复原来的展开状态。筛选和编辑共用同一模型，只有视口内的行会创建控件。双树示例右侧提供搜索框。
+
+`TreeView` 可用 `row-visible-field: "visibility.shown";` 从常量布尔字段路径读取可见性。值为 `false` 时隐藏该节点及其子树，搜索和 `root-key` 都遵守这层可见性。展开和选区按原业务键保留，重新显示时恢复。隐藏分支会取消其中的编辑草稿，拒绝基于旧场景发起的提交。开启 `preserve-scroll-anchor` 可在隐藏视口前方的子树时保持当前记录的位置。运行 `bazel run //examples/tree:tree -- --visibility` 切换分支并试用搜索。
 
 树拓扑单独订阅模型的结构变化和当前视图使用的键字段。修改名称或数值时，只比较被修改行的键和父键，二者相同就复用拓扑和导航顺序。行内容按视口跟踪，视口外的字段变化可以保留当前帧缓存。插入、删除、排序和父子关系变化会在下次读取时更新拓扑。
 
@@ -558,7 +693,11 @@ setter 和 DSL 赋值覆盖绑定并解除订阅，`reset_*()` 恢复默认绑�
 
 双击文本单元格或按 F2 开始重命名，Enter 提交，Escape 放弃。聚焦树并选定当前行后，按 Tab 可进入该行可用的复选框、数字框或滑块。重排后仍在视口内的记录会保留草稿，折叠隐藏记录或外部修改被编辑字段会丢弃草稿。树和表格的编辑器共用字段提交逻辑，核对行标识和字段原值后再合并到最新记录。
 
-`ListView` 的 `for` 也可直接实例化匿名行组件。组件可接收模型项和索引作为输入，包含输入框、按钮或其他控件。行状态按模型标识保留，滚出视口或因插入而移动时会跟随原行。已访问过的行组件保留到模型删除该行或替换模型。当前行模板以组件作为 `ListView` 的直接子项，支持组件组合，虚拟列表嵌套尚待实现。
+`ListView` 的 `for` 也可直接实例化匿名行组件。组件可接收模型项和索引作为输入，包含输入框、按钮或其他控件。行状态按模型标识保留，滚出视口或因插入而移动时会跟随原行。已访问过的行组件保留到模型删除该行或替换模型。
+
+虚拟行组件可以包含自己的 `ListView`、`GridView` 或 `StandardListView`。给内层视图设定高度后，两层视图分别按自己的可见区域生成行。内层滚动偏移随外层行实例保留。多个内层视图共享同一模型时，点击、焦点和无障碍操作仍能定位到各自的行。运行 `bazel run //examples/list:list -- --nested` 体验 1 万个分组共用 5 万条记录。
+
+行组件也可嵌套 `TableView`、`StandardTableView` 和 `TreeView`。表格的横纵滚动、选区和编辑历史，以及树的展开状态，都随所属行实例保留。Tab 编辑、复制、粘贴和撤销沿同一条组件路径找到内层表格。异步粘贴完成时会再次校验外层行和目标模型。运行 `bazel run //examples/list:list -- --nested-data` 查看共享记录的表格和目录树。
 
 Rust 可用 `model_<property>()` 取得列表属性的共享模型，用 `bind_model_<property>(model)` 接入已有的 `VecModel<T>`。`set_row`、`push`、`insert` 和 `remove` 分别通知行数据和结构变化。`get_<property>()`、`set_<property>(Vec<T>)` 和 Rust 回调使用 `Vec<T>` 快照。模型属于 UI 线程，后台任务可以通过 `UiSender` 把行索引和值交给消息处理器。winit 会复用没有受变化影响的视口场景与布局。
 

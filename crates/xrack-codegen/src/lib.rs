@@ -8,7 +8,7 @@ use proc_macro2::{Ident, Literal, Span, TokenStream};
 use quote::{format_ident, quote};
 pub use scene_plan::EmbeddedPath;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
-use xrack_ir::semantic::rust_name;
+use xrack_ir::semantic::{day_cell_inputs, is_window, rust_name, split_handle_inputs};
 use xrack_mlir::{Module, OperationRef, ValueRef};
 use xrack_runtime::{ImageFormat, is_multiline_text_input, is_text_input, is_toggle};
 use xrack_syntax::ast::{Parameter, Type};
@@ -76,6 +76,7 @@ fn ty(t: &Type) -> TokenStream {
         Type::TextVerticalAlignment => quote!(::xrack_runtime::TextVerticalAlignment),
         Type::TextOverflow => quote!(::xrack_runtime::TextOverflow),
         Type::InputType => quote!(::xrack_runtime::InputType),
+        Type::CursorShape => quote!(::xrack_runtime::CursorShape),
         Type::ColorScheme => quote!(::xrack_runtime::ColorScheme),
         Type::FileDialogMode => quote!(::xrack_runtime::FileDialogMode),
         Type::MessageLevel => quote!(::xrack_runtime::MessageLevel),
@@ -86,6 +87,13 @@ fn ty(t: &Type) -> TokenStream {
         Type::SwipeSide => quote!(::xrack_runtime::SwipeSide),
         Type::DragAction => quote!(::xrack_runtime::DragAction),
         Type::KeyEvent => quote!(::xrack_runtime::KeyEvent),
+        Type::WheelEvent => quote!(::xrack_runtime::WheelEvent),
+        Type::PointerEvent => quote!(::xrack_runtime::PointerEvent),
+        Type::PointerEventKind => quote!(::xrack_runtime::PointerEventKind),
+        Type::PointerButton => quote!(::xrack_runtime::PointerButton),
+        Type::PointerButtons => quote!(::xrack_runtime::PointerButtons),
+        Type::TouchPoint => quote!(::xrack_runtime::TouchPoint),
+        Type::TouchPoints => quote!(::xrack_runtime::TouchPoints),
         Type::KeyModifiers => quote!(::xrack_runtime::KeyModifiers),
         Type::EventResult => quote!(::xrack_runtime::EventResult),
         Type::FocusReason => quote!(::xrack_runtime::FocusReason),
@@ -94,6 +102,7 @@ fn ty(t: &Type) -> TokenStream {
         Type::SelectionTarget => quote!(::xrack_runtime::SelectionTarget),
         Type::Date => quote!(::xrack_runtime::Date),
         Type::Time => quote!(::xrack_runtime::Time),
+        Type::Font => quote!(::xrack_runtime::Font),
         Type::LayoutAlignment => quote!(::xrack_runtime::LayoutAlignment),
         Type::CrossAxisAlignment => quote!(::xrack_runtime::CrossAxisAlignment),
         Type::GradientStop => quote!(::xrack_runtime::GradientStop),
@@ -118,7 +127,9 @@ fn to_host(value: TokenStream, t: &Type) -> TokenStream {
 }
 
 fn from_host(value: TokenStream, t: &Type) -> TokenStream {
-    if t.list_item().is_some() {
+    if *t == Type::TouchPoints {
+        quote!(::xrack_runtime::TouchPoints::from(#value))
+    } else if t.list_item().is_some() {
         quote!(::xrack_runtime::VecModel::from(#value))
     } else {
         value
@@ -208,6 +219,9 @@ fn literal(value: &str, ty: Type) -> Result<TokenStream, String> {
         | Type::TextVerticalAlignment
         | Type::TextOverflow
         | Type::InputType
+        | Type::CursorShape
+        | Type::PointerEventKind
+        | Type::PointerButton
         | Type::ColorScheme
         | Type::FileDialogMode
         | Type::MessageLevel
@@ -233,7 +247,12 @@ fn literal(value: &str, ty: Type) -> Result<TokenStream, String> {
             let enum_type = self::ty(&ty);
             quote!(#enum_type::#variant)
         }
-        Type::KeyEvent | Type::KeyModifiers => {
+        Type::KeyEvent
+        | Type::KeyModifiers
+        | Type::WheelEvent
+        | Type::PointerEvent
+        | Type::TouchPoint
+        | Type::TouchPoints => {
             let ty = self::ty(&ty);
             quote!(<#ty as ::core::default::Default>::default())
         }
@@ -242,7 +261,9 @@ fn literal(value: &str, ty: Type) -> Result<TokenStream, String> {
         | Type::Image
         | Type::Date
         | Type::Time
+        | Type::Font
         | Type::StringList
+        | Type::PointerButtons
         | Type::StyledText
         | Type::Record(_)
         | Type::RecordList(_) => {
@@ -323,8 +344,21 @@ fn picker_value(kind: &str) -> Option<(&'static str, Type)> {
         "TimePickerPopup" => Some(("time", Type::Time)),
         "DatePickerPopup" => Some(("date", Type::Date)),
         "ColorPickerPopup" => Some(("color", Type::Color)),
+        "FontPickerPopup" => Some(("font", Type::Font)),
         _ => None,
     }
+}
+
+fn table_selection_method(key: &str) -> Ident {
+    format_ident!("__table_select_{}", rust_key(key))
+}
+
+fn table_selection_snapshot_method(key: &str) -> Ident {
+    format_ident!("__table_selection_snapshot_{}", rust_key(key))
+}
+
+fn table_sort_method(key: &str) -> Ident {
+    format_ident!("__table_sort_by_{}", rust_key(key))
 }
 
 fn table_sort_field(key: &str) -> Ident {
@@ -347,6 +381,18 @@ fn table_move_method(key: &str) -> Ident {
     format_ident!("__table_move_column_{}", rust_key(key))
 }
 
+fn table_rows_model_method(key: &str) -> Ident {
+    format_ident!("__table_rows_model_{}", rust_key(key))
+}
+
+fn table_row_order_field(key: &str) -> Ident {
+    format_ident!("__table_row_order_{}", rust_key(key))
+}
+
+fn table_move_row_method(key: &str) -> Ident {
+    format_ident!("__table_move_row_{}", rust_key(key))
+}
+
 fn table_row_heights_field(key: &str) -> Ident {
     format_ident!("__table_row_heights_{}", rust_key(key))
 }
@@ -359,12 +405,40 @@ fn row_height_projection_field(key: &str) -> Ident {
     format_ident!("__row_height_projection_{}", rust_key(key))
 }
 
-fn split_weights_field(key: &str) -> Ident {
-    format_ident!("__split_weights_{}", rust_key(key))
+fn split_state_field(key: &str) -> Ident {
+    format_ident!("__split_state_{}", rust_key(key))
+}
+
+fn split_resize_handle_field(key: &str) -> Ident {
+    format_ident!("__split_resize_handle_{}", rust_key(key))
+}
+
+fn split_save_method(key: &str) -> Ident {
+    format_ident!("__split_save_{}", rust_key(key))
+}
+
+fn split_restore_method(key: &str) -> Ident {
+    format_ident!("__split_restore_{}", rust_key(key))
+}
+
+fn split_update_method(key: &str) -> Ident {
+    format_ident!("__split_update_{}", rust_key(key))
 }
 
 fn tree_state_field(key: &str) -> Ident {
     format_ident!("__tree_state_{}", rust_key(key))
+}
+
+fn tree_snapshot_method(key: &str) -> Ident {
+    format_ident!("__tree_snapshot_{}", rust_key(key))
+}
+
+fn tree_command_method(key: &str) -> Ident {
+    format_ident!("__tree_command_{}", rust_key(key))
+}
+
+fn tree_selection_method(key: &str) -> Ident {
+    format_ident!("__tree_selection_{}", rust_key(key))
 }
 
 fn visual_field(value: usize) -> Ident {
@@ -408,6 +482,9 @@ fn check_state_binding(element: OperationRef<'_>) -> Option<OperationRef<'_>> {
 }
 
 fn controlled_property(element: OperationRef<'_>) -> Option<(&'static str, Type)> {
+    if element.attr("kind") == Ok("ActionGroup") {
+        return (!non_exclusive_group(element)).then_some(("current-value", Type::String));
+    }
     if children(element, "xr.row_link").next().is_some()
         || action_ref(element).is_some()
         || non_exclusive_button_group(element)
@@ -457,7 +534,7 @@ fn controlled_property(element: OperationRef<'_>) -> Option<(&'static str, Type)
         Some(("current-key", Type::Int))
     } else if matches!(element.attr("kind"), Ok("PageIndicator" | "Tumbler")) {
         Some(("current-index", Type::Int))
-    } else if element.attr("kind") == Ok("Calendar") {
+    } else if matches!(element.attr("kind"), Ok("Calendar" | "MonthGrid")) {
         Some(("date", Type::Date))
     } else if matches!(
         element.attr("kind"),
@@ -495,7 +572,7 @@ fn controlled_properties(element: OperationRef<'_>) -> impl Iterator<Item = (&'s
         ]
     } else if let Some(value) = element.attribute("kind").and_then(picker_value) {
         [controlled_property(element), Some(value)]
-    } else if element.attr("kind") == Ok("Calendar") {
+    } else if matches!(element.attr("kind"), Ok("Calendar" | "MonthGrid")) {
         [
             controlled_property(element),
             Some(("display-month", Type::Date)),
@@ -539,6 +616,26 @@ fn table_columns(element: OperationRef<'_>) -> impl Iterator<Item = OperationRef
     scene_children(element).filter(|column| column.attr("kind") == Ok("TableColumn"))
 }
 
+fn table_option_configured(element: OperationRef<'_>, name: &str) -> bool {
+    element.children().any(|binding| {
+        matches!(binding.name(), "xr.bind" | "xr.state_set") && binding.attr("name") == Ok(name)
+    })
+}
+
+fn table_history_configured(element: OperationRef<'_>) -> bool {
+    matches!(element.attr("kind"), Ok("TableView" | "StandardTableView"))
+        && (table_option_configured(element, "undoable")
+            || table_option_configured(element, "pasteable"))
+}
+
+fn table_history_field(key: &str) -> Ident {
+    format_ident!("__xr_table_history_{}", rust_key(key))
+}
+
+fn table_history_method(key: &str, action: &str) -> Ident {
+    format_ident!("__xr_table_history_{}_{}", action, rust_key(key))
+}
+
 fn control_link<'a>(element: OperationRef<'a>, property: &str) -> Option<OperationRef<'a>> {
     children(element, "xr.control_link").find(|link| link.attr("name") == Ok(property))
 }
@@ -576,6 +673,7 @@ fn typed_events(element: OperationRef<'_>) -> bool {
     matches!(
         element.attr("kind"),
         Ok("Slider"
+            | "WheelHandler"
             | "Dial"
             | "ScrollBar"
             | "RangeSlider"
@@ -590,13 +688,16 @@ fn typed_events(element: OperationRef<'_>) -> bool {
             | "SwipeView"
             | "SwipeDelegate"
             | "StackView"
+            | "StackPage"
             | "PageIndicator"
             | "Tumbler"
             | "Calendar"
+            | "MonthGrid"
             | "TimePicker"
             | "TimePickerPopup"
             | "DatePickerPopup"
             | "ColorPickerPopup"
+            | "FontPickerPopup"
             | "ListView"
             | "GridView"
             | "StandardListView"
@@ -636,13 +737,20 @@ fn radio_group_ref(element: OperationRef<'_>) -> Option<&str> {
 }
 
 fn non_exclusive_button_group(element: OperationRef<'_>) -> bool {
-    element.attr("kind") == Ok("ButtonGroup")
-        && children(element, "xr.bind")
-            .find(|bind| bind.attr("name") == Ok("exclusive"))
-            .and_then(|bind| bind.operand(0)?.defining_operation())
-            .is_some_and(|literal| {
-                literal.name() == "xr.literal" && literal.attr("value") == Ok("false")
-            })
+    element.attr("kind") == Ok("ButtonGroup") && non_exclusive_group(element)
+}
+
+fn non_exclusive_group(element: OperationRef<'_>) -> bool {
+    children(element, "xr.bind")
+        .find(|bind| bind.attr("name") == Ok("exclusive"))
+        .and_then(|bind| bind.operand(0)?.defining_operation())
+        .is_some_and(|literal| {
+            literal.name() == "xr.literal" && literal.attr("value") == Ok("false")
+        })
+}
+
+fn action_group_method(group: &str, operation: &str) -> Ident {
+    format_ident!("__xr_action_group_{}_{}", rust_key(group), operation)
 }
 
 fn check_group_method(group: &str, operation: &str) -> Ident {
@@ -721,6 +829,16 @@ fn swipe_handle(owner: &str) -> Ident {
     format_ident!("__xr_swipe_{encoded}")
 }
 
+fn hover_handle(owner: &str) -> Ident {
+    let encoded: String = owner.bytes().map(|byte| format!("{byte:02x}")).collect();
+    format_ident!("__xr_hover_{encoded}")
+}
+
+fn pointer_handle(owner: &str) -> Ident {
+    let encoded: String = owner.bytes().map(|byte| format!("{byte:02x}")).collect();
+    format_ident!("__xr_pointer_{encoded}")
+}
+
 fn viewport_handle(owner: &str) -> Ident {
     let encoded: String = owner.bytes().map(|byte| format!("{byte:02x}")).collect();
     format_ident!("__xr_viewport_{encoded}")
@@ -763,9 +881,64 @@ fn scene_children(op: OperationRef<'_>) -> impl Iterator<Item = OperationRef<'_>
     element_children(op).filter(|op| {
         !matches!(
             op.attr("kind"),
-            Ok("Action" | "ButtonGroup" | "Timer" | "SecondaryWindow")
+            Ok("Action"
+                | "ActionGroup"
+                | "ButtonGroup"
+                | "Timer"
+                | "SecondaryWindow"
+                | "DayCell"
+                | "SplitHandle")
         ) && !native_dialog(*op)
     })
+}
+
+fn has_virtual_rows(element: OperationRef<'_>) -> bool {
+    matches!(
+        element.attribute("kind"),
+        Some(
+            "ListView"
+                | "GridView"
+                | "StandardListView"
+                | "TableView"
+                | "StandardTableView"
+                | "TreeView"
+        )
+    )
+}
+
+fn has_list_visibility(element: OperationRef<'_>) -> bool {
+    matches!(
+        element.attribute("kind"),
+        Some("ListView" | "GridView" | "StandardListView")
+    ) && children(element, "xr.bind").any(|binding| binding.attr("name") == Ok("row-visible-field"))
+}
+
+fn visible_list_model(key: &str) -> Ident {
+    format_ident!("__visible_list_model_{}", rust_key(key))
+}
+
+fn view_index_method(key: &str) -> Ident {
+    format_ident!("__view_index_{}", rust_key(key))
+}
+
+fn source_selection_method(key: &str) -> Ident {
+    format_ident!("__select_source_{}", rust_key(key))
+}
+
+fn list_renderer_field(key: &str) -> Ident {
+    format_ident!("__list_renderer_{}", rust_key(key))
+}
+
+fn list_rows_method(key: &str) -> Ident {
+    format_ident!("__list_rows_{}", rust_key(key))
+}
+
+fn day_cell_template(element: OperationRef<'_>) -> Option<OperationRef<'_>> {
+    children(element, "xr.element").find(|child| child.attr("kind") == Ok("DayCell"))
+}
+
+fn calendar_cells_field(key: &str) -> Ident {
+    format_ident!("__calendar_cells_{}", rust_key(key))
 }
 
 fn static_children(op: OperationRef<'_>) -> impl Iterator<Item = (usize, OperationRef<'_>)> {
@@ -876,6 +1049,7 @@ struct RepeatScope<'a> {
     model: Type,
     row: VisualScope<'a>,
     delegates: Vec<(Vec<usize>, OperationRef<'a>)>,
+    table: bool,
 }
 
 impl RepeatScope<'_> {
@@ -1063,7 +1237,12 @@ impl<'a> VisualScope<'a> {
             let model_type = ty(&repeat.model);
             if !repeat.delegates.is_empty() {
                 let types = repeat.delegates.iter().map(|(_, delegate)| {
-                    ident(delegate.attr("component").expect("verified component"))
+                    let component = ident(delegate.attr("component").expect("verified component"));
+                    if repeat.table {
+                        quote!(::std::cell::LazyCell<#component, ::std::boxed::Box<dyn FnOnce() -> #component>>)
+                    } else {
+                        quote!(#component)
+                    }
                 });
                 fields.extend(quote!(#field: ::xrack_runtime::ComponentRepeater<#model_type, #row_type, (#(#types,)*)>,));
             } else {
@@ -1105,7 +1284,9 @@ struct Generator<'a> {
     animated_images: Vec<OperationRef<'a>>,
     native_dialogs: Vec<OperationRef<'a>>,
     focus_targets: BTreeSet<&'a str>,
+    pointer_targets: BTreeSet<&'a str>,
     viewport_targets: BTreeSet<&'a str>,
+    source_scroll_targets: BTreeSet<&'a str>,
     geometry_targets: BTreeSet<&'a str>,
     bound_viewports: Vec<OperationRef<'a>>,
     scroll_observers: BTreeSet<&'a str>,
@@ -1129,6 +1310,14 @@ struct TableClipboardArms {
     fields: TokenStream,
     defaults: TokenStream,
     methods: TokenStream,
+}
+
+struct StandardTableEditor {
+    column: usize,
+    field: String,
+    ty: Type,
+    enabled: TokenStream,
+    kind: Ident,
 }
 
 impl<'a> Generator<'a> {
@@ -1159,6 +1348,14 @@ impl<'a> Generator<'a> {
             "xr.element" => {
                 let key = element_key(op)?;
                 self.elements.insert(key, op);
+                if repeat.is_none() && op.attr("kind") == Ok("TouchArea") {
+                    self.pointer_targets.insert(key);
+                }
+                if matches!(op.attr("kind"), Ok("TableView" | "StandardTableView"))
+                    && table_option_configured(op, "edit-on-tab")
+                {
+                    self.viewport_targets.insert(key);
+                }
                 if op.attr("kind") == Ok("Flickable")
                     && children(op, "xr.bind")
                         .any(|bind| bind.attr("name") == Ok("bounds-behavior"))
@@ -1225,7 +1422,7 @@ impl<'a> Generator<'a> {
                     self.popups.push(op);
                 }
                 for (property, ty) in controlled_properties(op) {
-                    if control_link(op, property).is_none() {
+                    if op.attr("kind") != Ok("Action") && control_link(op, property).is_none() {
                         self.unlinked_controls.push((key, property, ty));
                     }
                 }
@@ -1275,7 +1472,17 @@ impl<'a> Generator<'a> {
                             | "xr.flick_motion_read"
                             | "xr.cancel_flick"
                             | "xr.return_to_bounds" => {
-                                self.viewport_targets.insert(effect.attr("owner")?);
+                                let owner = effect.attr("owner")?;
+                                self.viewport_targets.insert(owner);
+                                if effect.name() == "xr.scroll_command"
+                                    && matches!(
+                                        effect.attr("method"),
+                                        Ok("position-view-at-source-index"
+                                            | "position-view-at-source-cell")
+                                    )
+                                {
+                                    self.source_scroll_targets.insert(owner);
+                                }
                             }
                             "xr.geometry_read" => {
                                 self.geometry_targets.insert(effect.attr("owner")?);
@@ -1342,6 +1549,7 @@ impl<'a> Generator<'a> {
                     model,
                     row,
                     delegates,
+                    table: element.attr("kind") == Ok("TableRow"),
                 },
             );
         } else {
@@ -1487,6 +1695,12 @@ impl<'a> Generator<'a> {
                     .collect::<Result<Vec<_>, _>>()?;
                 quote!(::xrack_runtime::VecModel::from(::std::vec![#(#items),*]))
             }
+            "xr.pointer_buttons" => {
+                let items = (0..op.operand_count())
+                    .map(arg)
+                    .collect::<Result<Vec<_>, _>>()?;
+                quote!(::xrack_runtime::PointerButtons::from([#(#items),*]))
+            }
             "xr.default_record" => {
                 let record = ty(&value_type(op)?);
                 quote!(<#record as ::core::default::Default>::default())
@@ -1514,6 +1728,10 @@ impl<'a> Generator<'a> {
                 let (hour, minute, second) = (arg(0)?, arg(1)?, arg(2)?);
                 quote!((::xrack_runtime::Time { hour: #hour, minute: #minute, second: #second }).normalized())
             }
+            "xr.make_font" => {
+                let (family, size, weight, italic) = (arg(0)?, arg(1)?, arg(2)?, arg(3)?);
+                quote!(::xrack_runtime::Font { family: #family, size: #size, weight: #weight, italic: #italic })
+            }
             "xr.image_dimension" => {
                 let image = arg(0)?;
                 let axis = match value {
@@ -1523,7 +1741,14 @@ impl<'a> Generator<'a> {
                 };
                 quote!(::core::primitive::i64::from((#image).size()[#axis]))
             }
-            "xr.get_field" | "xr.date_field" | "xr.time_field" | "xr.key_field" => {
+            "xr.get_field"
+            | "xr.date_field"
+            | "xr.time_field"
+            | "xr.font_field"
+            | "xr.key_field"
+            | "xr.wheel_field"
+            | "xr.pointer_field"
+            | "xr.touch_point_field" => {
                 let record = arg(0)?;
                 let field = ident(value);
                 quote!((#record).#field)
@@ -1575,6 +1800,22 @@ impl<'a> Generator<'a> {
                     .ok_or("unknown alias control")?;
                 self.control_value(element, value, value_type(op)?)?
             }
+            "xr.action_group_read" => {
+                let getter = action_group_method(owner(op), "current");
+                quote!(#receiver.#getter())
+            }
+            "xr.native_dialog_read" => match value {
+                "pending" => {
+                    let slot = native_dialog_member(owner(op), "slot");
+                    quote!(#receiver.__state.#slot.pending())
+                }
+                "selected-file" | "selected-files" => {
+                    let selection = native_dialog_member(owner(op), "selection");
+                    let getter = ident(value);
+                    quote!(#receiver.__state.#selection.#getter())
+                }
+                _ => return Err("unknown native dialog result property".into()),
+            },
             "xr.scroll_control_read" => {
                 let getter = scroll_control_getter(owner(op), value);
                 quote!(#receiver.#getter())
@@ -1602,6 +1843,16 @@ impl<'a> Generator<'a> {
                     _ => return Err("unknown swipe metric".into()),
                 };
                 quote!(#receiver.__state.#handle.#metric())
+            }
+            "xr.hover_read" => {
+                let handle = hover_handle(owner(op));
+                let getter = ident(value);
+                quote!(#receiver.__state.#handle.#getter())
+            }
+            "xr.touch_area_read" => {
+                let handle = pointer_handle(owner(op));
+                let getter = ident(value);
+                quote!(#receiver.__state.#handle.#getter())
             }
             "xr.focus_read" => {
                 let handle = focus_handle(owner(op));
@@ -1651,6 +1902,8 @@ impl<'a> Generator<'a> {
                         "window-bounds-y" => quote!(WindowY),
                         "window-bounds-width" => quote!(WindowWidth),
                         "window-bounds-height" => quote!(WindowHeight),
+                        "available-width" => quote!(AvailableWidth),
+                        "available-height" => quote!(AvailableHeight),
                         _ => return Err("unknown geometry metric".into()),
                     };
                     quote!(#receiver.__state.#handle.read(::xrack_runtime::GeometryMetric::#metric))
@@ -1663,7 +1916,84 @@ impl<'a> Generator<'a> {
                     "current-page" => quote!(#snapshot.current().unwrap_or("").to_owned()),
                     "depth" => quote!(#snapshot.depth() as ::core::primitive::i64),
                     "can-go-back" => quote!(#snapshot.depth() > 1),
+                    "active" | "stack-index" => {
+                        let route = self.operand(op, 0)?;
+                        let route: String = serde_json::from_str(route.attr("value")?)
+                            .map_err(|error| error.to_string())?;
+                        if value == "active" {
+                            quote!(#snapshot.current() == ::core::option::Option::Some(#route))
+                        } else {
+                            quote!(#snapshot.index_of(#route).map_or(-1i64, |index| index as ::core::primitive::i64))
+                        }
+                    }
                     _ => return Err("unknown StackView state property".into()),
+                }
+            }
+            "xr.table_selection_read" => {
+                let snapshot = table_selection_snapshot_method(owner(op));
+                match value {
+                    "current-column" => {
+                        quote!(#receiver.#snapshot().current_column().map_or(-1i64, |column| column as ::core::primitive::i64))
+                    }
+                    "selection-count" => {
+                        quote!(#receiver.#snapshot().len() as ::core::primitive::i64)
+                    }
+                    "has-selection" => quote!(!#receiver.#snapshot().is_empty()),
+                    _ => return Err("unknown table selection property".into()),
+                }
+            }
+            "xr.table_sort_read" => {
+                let field = table_sort_field(owner(op));
+                let sort = quote!(#receiver.__state.#field.get(|| None));
+                match value {
+                    "current-sort-column" => {
+                        quote!(#sort.map_or(-1i64, |sort| sort.column as ::core::primitive::i64))
+                    }
+                    "current-sort-descending" => quote!(#sort.is_some_and(|sort| sort.descending)),
+                    _ => return Err("unknown table sort property".into()),
+                }
+            }
+            "xr.table_history_read" => {
+                let key = owner(op);
+                let table = *self.elements.get(key).ok_or("missing history table")?;
+                if self.table_history_item(table)?.is_some() {
+                    let method = table_history_method(key, "available");
+                    let redo = value == "can-redo";
+                    quote!(#receiver.#method(#redo))
+                } else {
+                    quote!(false)
+                }
+            }
+            "xr.split_state_read" => {
+                let save = split_save_method(owner(op));
+                quote!(#receiver.#save())
+            }
+            "xr.split_resizing" => {
+                let handle = split_resize_handle_field(owner(op));
+                quote!(#receiver.__state.#handle.resizing())
+            }
+            "xr.tree_query" => {
+                let snapshot = tree_snapshot_method(owner(op));
+                let key = arg(0)?;
+                match value {
+                    "is-expanded" => quote!(#receiver.#snapshot().is_expanded(#key)),
+                    "depth" => {
+                        quote!(#receiver.#snapshot().depth(#key).map_or(-1i64, |index| index as ::core::primitive::i64))
+                    }
+                    "row-for-key" => {
+                        quote!(#receiver.#snapshot().visible_index(#key).map_or(-1i64, |index| index as ::core::primitive::i64))
+                    }
+                    _ => return Err("unknown tree query".into()),
+                }
+            }
+            "xr.view_index" => {
+                let method = view_index_method(owner(op));
+                let index = arg(0)?;
+                let from_source = value == "view-index-for-source";
+                quote! {
+                    <::core::primitive::usize as ::core::convert::TryFrom<_>>::try_from(#index)
+                        .ok().and_then(|index| #receiver.#method(index, #from_source))
+                        .map_or(-1i64, |index| index as ::core::primitive::i64)
                 }
             }
             "xr.call" => from_host(self.callback_call(op, value, context)?, &value_type(op)?),
@@ -1963,7 +2293,19 @@ impl<'a> Generator<'a> {
                 }
                 "xr.text_command" => {
                     let handle = focus_handle(statement.attr("owner")?);
-                    let command = match statement.attr("method")? {
+                    let method = statement.attr("method")?;
+                    if matches!(method, "edit-cell" | "cancel-edit") {
+                        let action = if method == "edit-cell" {
+                            let row = self.expr(self.operand(statement, 0)?)?;
+                            let column = self.expr(self.operand(statement, 1)?)?;
+                            quote!(EditTableCell { row: #row, column: #column })
+                        } else {
+                            quote!(CancelTableEdit)
+                        };
+                        statements.extend(quote!(self.__state.#handle.request(::xrack_runtime::FocusAction::#action);));
+                        continue;
+                    }
+                    let command = match method {
                         "select-all" => quote!(SelectAll),
                         "clear-selection" => quote!(ClearSelection),
                         "undo" => quote!(Undo),
@@ -1985,25 +2327,202 @@ impl<'a> Generator<'a> {
                     });
                 }
                 "xr.scroll_command" => {
-                    let handle = viewport_handle(statement.attr("owner")?);
+                    let owner = statement.attr("owner")?;
+                    let handle = viewport_handle(owner);
                     let first = self.expr(self.operand(statement, 0)?)?;
                     let second = self.expr(self.operand(statement, 1)?)?;
-                    let action = match statement.attr("method")? {
+                    let method = statement.attr("method")?;
+                    if matches!(
+                        method,
+                        "position-view-at-source-index" | "position-view-at-source-cell"
+                    ) {
+                        let source = self.view_source_model(
+                            *self.elements.get(owner).ok_or("unknown source view")?,
+                        )?;
+                        let (arguments, action) = if method == "position-view-at-source-cell" {
+                            let horizontal = self.expr(self.operand(statement, 2)?)?;
+                            let vertical = self.expr(self.operand(statement, 3)?)?;
+                            (
+                                quote! {
+                                    let __xr_column = #second;
+                                    let __xr_horizontal = #horizontal;
+                                    let __xr_vertical = #vertical;
+                                },
+                                quote!(::xrack_runtime::ScrollAction::ToCellAtRowKey {
+                                    key: __xr_key,
+                                    source_index: __xr_index,
+                                    column: __xr_column,
+                                    horizontal: __xr_horizontal,
+                                    vertical: __xr_vertical,
+                                }),
+                            )
+                        } else {
+                            (
+                                quote!(let __xr_alignment = #second;),
+                                quote!(::xrack_runtime::ScrollAction::ToRowKey {
+                                    key: __xr_key,
+                                    source_index: __xr_index,
+                                    alignment: __xr_alignment,
+                                }),
+                            )
+                        };
+                        statements.extend(quote! {{
+                            let __xr_source = #first;
+                            #arguments
+                            if let Ok(__xr_index) = <::core::primitive::usize as ::core::convert::TryFrom<_>>::try_from(__xr_source) {
+                                let __xr_model = #source;
+                                if __xr_index < ::xrack_runtime::ListModel::row_count(&*__xr_model) {
+                                    let __xr_key = ::xrack_runtime::ListModel::row_key(&*__xr_model, __xr_index);
+                                    self.__state.#handle.request(#action);
+                                }
+                            }
+                        }});
+                        continue;
+                    }
+                    let action = match method {
                         "scroll-to" => {
                             quote!(::xrack_runtime::ScrollAction::To { x: #first, y: #second })
                         }
-                        "position-view-at-index" => quote!(::xrack_runtime::ScrollAction::ToIndex {
-                            index: #first, alignment: #second
-                        }),
+                        "position-view-at-index" | "position-view-at-row" => {
+                            quote!(::xrack_runtime::ScrollAction::ToIndex {
+                                index: #first, alignment: #second
+                            })
+                        }
+                        "position-view-at-column" => {
+                            quote!(::xrack_runtime::ScrollAction::ToColumn {
+                                column: #first, alignment: #second
+                            })
+                        }
+                        "position-view-at-cell" => {
+                            let horizontal = self.expr(self.operand(statement, 2)?)?;
+                            let vertical = self.expr(self.operand(statement, 3)?)?;
+                            quote!(::xrack_runtime::ScrollAction::ToCell {
+                                row: #first, column: #second, horizontal: #horizontal, vertical: #vertical
+                            })
+                        }
                         _ => return Err("unknown scroll command".into()),
                     };
                     statements.extend(quote!(self.__state.#handle.request(#action);));
                 }
-                "xr.move_column" => {
-                    let method = table_move_method(statement.attr("owner")?);
+                "xr.source_selection" => {
+                    let method = source_selection_method(statement.attr("owner")?);
+                    let source = self.expr(self.operand(statement, 0)?)?;
+                    let column = if statement.attr("method")? == "select-source-cell" {
+                        let column = self.expr(self.operand(statement, 1)?)?;
+                        quote!(Some(#column))
+                    } else {
+                        quote!(None)
+                    };
+                    statements.extend(quote!(self.#method(#source, #column);));
+                }
+                "xr.move_column" | "xr.move_row" => {
+                    let owner = statement.attr("owner")?;
+                    let method = if statement.name() == "xr.move_row" {
+                        table_move_row_method(owner)
+                    } else {
+                        table_move_method(owner)
+                    };
                     let from = self.expr(self.operand(statement, 0)?)?;
                     let to = self.expr(self.operand(statement, 1)?)?;
                     statements.extend(quote!(self.#method(#from, #to);));
+                }
+                "xr.table_selection_command" => {
+                    let method = table_selection_method(owner(statement));
+                    let operation = statement.attr("method")?;
+                    let names = (0..statement.operand_count())
+                        .map(|index| format_ident!("__xr_arg_{index}"))
+                        .collect::<Vec<_>>();
+                    let values = (0..statement.operand_count())
+                        .map(|index| self.expr(self.operand(statement, index)?))
+                        .collect::<Result<Vec<_>, _>>()?;
+                    let action = match operation {
+                        "select-all" => quote!(All),
+                        "clear-selection" => quote!(Clear),
+                        "select-row" => {
+                            let row = &names[0];
+                            quote!(Row { index: #row, operation: ::xrack_runtime::RowSelection::Replace })
+                        }
+                        "select-column" => {
+                            let column = &names[0];
+                            quote!(Column { column: #column, operation: ::xrack_runtime::RowSelection::Replace })
+                        }
+                        "select-cell" | "set-current-cell" | "toggle-cell" => {
+                            let row = &names[0];
+                            let column = &names[1];
+                            let selection = match operation {
+                                "set-current-cell" => quote!(Move),
+                                "toggle-cell" => quote!(Toggle),
+                                _ => quote!(Replace),
+                            };
+                            quote!(Cell { row: #row, column: #column, operation: ::xrack_runtime::RowSelection::#selection })
+                        }
+                        "select-range" => {
+                            let (a, b, c, d) = (&names[0], &names[1], &names[2], &names[3]);
+                            quote!(DragRange { anchor: (#a, #b), end: (#c, #d), additive: false })
+                        }
+                        _ => return Err("unknown table selection command".into()),
+                    };
+                    let apply = quote!(let _ = self.#method(::xrack_runtime::TableSelectionAction::#action););
+                    if names.is_empty() {
+                        statements.extend(apply);
+                    } else {
+                        statements.extend(quote! {
+                            if let [#(Ok(#names)),*] = [#(#values),*].map(|value| <::core::primitive::usize as ::core::convert::TryFrom<::core::primitive::i64>>::try_from(value)) {
+                                #apply
+                            }
+                        });
+                    }
+                }
+                "xr.table_history_command" => {
+                    let key = owner(statement);
+                    let table = *self.elements.get(key).ok_or("missing history table")?;
+                    if self.table_history_item(table)?.is_some() {
+                        let method = table_history_method(key, "replay");
+                        let redo = statement.attr("method")? == "redo";
+                        statements.extend(quote!(let _ = self.#method(#redo);));
+                    }
+                }
+                "xr.table_sort_command" => {
+                    let method = table_sort_method(owner(statement));
+                    match statement.attr("method")? {
+                        "clear-sort" => statements.extend(quote!(let _ = self.#method(None);)),
+                        "sort-by" => {
+                            let column = self.expr(self.operand(statement, 0)?)?;
+                            let descending = self.expr(self.operand(statement, 1)?)?;
+                            statements.extend(quote! {
+                                {
+                                    let __xr_column = #column;
+                                    let __xr_descending = #descending;
+                                    if let Ok(column) = <::core::primitive::usize as ::core::convert::TryFrom<_>>::try_from(__xr_column) {
+                                        let _ = self.#method(Some(::xrack_runtime::TableSort { column, descending: __xr_descending }));
+                                    }
+                                }
+                            });
+                        }
+                        _ => return Err("unknown table sort command".into()),
+                    }
+                }
+                "xr.split_restore" => {
+                    let restore = split_restore_method(owner(statement));
+                    let state = self.expr(self.operand(statement, 0)?)?;
+                    statements.extend(quote!(let _ = self.#restore(&(#state));));
+                }
+                "xr.tree_command" => {
+                    let method = tree_command_method(owner(statement));
+                    let key = self.expr(self.operand(statement, 0)?)?;
+                    let action = match statement.attr("method")? {
+                        "expand" => quote!(Expand(#key)),
+                        "collapse" => quote!(Collapse(#key)),
+                        "toggle-expanded" => quote!(ToggleExpanded(#key)),
+                        "collapse-recursively" => quote!(CollapseRecursively(#key)),
+                        "expand-to" => quote!(ExpandTo(#key)),
+                        "expand-recursively" => {
+                            let depth = self.expr(self.operand(statement, 1)?)?;
+                            quote!(ExpandRecursively { key: #key, depth: #depth })
+                        }
+                        _ => return Err("unknown tree command".into()),
+                    };
+                    statements.extend(quote!(self.#method(::xrack_runtime::TreeCommand::#action);));
                 }
                 "xr.set_row_height" => {
                     let method = table_row_height_method(statement.attr("owner")?);
@@ -2071,8 +2590,16 @@ impl<'a> Generator<'a> {
             let name = format_ident!("__xr_repeat_{}", *next);
             *next += 1;
             let row = self.repeat_row(element, repeat, model, next)?;
+            let render = if element.children().any(|op| {
+                matches!(op.name(), "xr.bind" | "xr.layout_bind")
+                    && matches!(op.attribute("name"), Some("x" | "y"))
+            }) {
+                quote!(render_positioned)
+            } else {
+                quote!(render)
+            };
             out.extend(quote! {
-                let #name = #receiver.#field.render(|| #expression, #row);
+                let #name = #receiver.#field.#render(|| #expression, #row);
             });
             Ok(name)
         } else if let Some(guard) = children(element, "xr.show_if").next() {
@@ -2125,6 +2652,8 @@ impl<'a> Generator<'a> {
         };
         let row_local = row_local(repeat.index());
         let delegate = (!repeat.delegates.is_empty()).then(|| quote!(__xr_delegates,));
+        let track_columns = (repeat.table && repeat.delegates.is_empty())
+            .then(|| quote!(__xr_columns_changed.track();));
         let mut body = TokenStream::new();
         let child = self.render_element(element, &repeat.row, &mut body, next, None)?;
         if element.attr("kind") == Ok("TableRow") {
@@ -2135,10 +2664,18 @@ impl<'a> Generator<'a> {
                 .copied()
                 .collect();
             for column in cells {
-                body.extend(quote!(#child.children[#column].properties.insert("table-delegate-cell", true.into());));
+                body.extend(quote! {
+                    if let Some(__xr_cell) = #child.child_at_mut(#column)
+                        && __xr_cell.is_visible()
+                    {
+                        __xr_cell.properties.insert("table-delegate-cell", true.into());
+                    }
+                });
             }
         }
-        Ok(quote!(|#delegate __xr_index, #item, #row_local| { #index_binding #body #child }))
+        Ok(
+            quote!(|#delegate __xr_index, #item, #row_local| { #track_columns #index_binding #body #child }),
+        )
     }
 
     fn list_template<'b>(
@@ -2180,8 +2717,56 @@ impl<'a> Generator<'a> {
         let key = role("key")?;
         let parent = role("parent-key")?;
         let state = tree_state_field(element_key(element)?);
+        let root = self.binding_value_or(element, "root-key", quote!(-1i64))?;
+        let filter = self.record_field_binding(element, "filter-field")?;
+        if let Some(visible) = self.record_field_binding(element, "row-visible-field")? {
+            let (_, repeat) = self.list_template(element)?;
+            let Some(Type::RecordList(record)) = operand_type(repeat) else {
+                return Err("tree row visibility requires a record list".into());
+            };
+            let record = ident(&record);
+            let visible = field_access(visible.split('.'));
+            let field = filter
+                .map(|field| {
+                    let field = field_access(field.split('.'));
+                    quote!(Some(|item: &#record| (item #field).as_str()))
+                })
+                .unwrap_or_else(|| quote!(None));
+            let query = self.binding_value_or(
+                element,
+                "filter-text",
+                quote!(::std::string::String::new()),
+            )?;
+            return Ok(quote! {
+                self.__state.#state.snapshot_projected(
+                    || #repeater.resolve_model(|| #model),
+                    |item| (item #key, item #parent),
+                    || #root,
+                    Some(|item: &#record| item #visible),
+                    #field,
+                    || #query,
+                )
+            });
+        }
+        if let Some(field) = filter {
+            let field = field_access(field.split('.'));
+            let query = self.binding_value_or(
+                element,
+                "filter-text",
+                quote!(::std::string::String::new()),
+            )?;
+            return Ok(quote! {
+                self.__state.#state.snapshot_filtered(
+                    || #repeater.resolve_model(|| #model),
+                    |item| (item #key, item #parent),
+                    || #root,
+                    || #query,
+                    |item| (item #field).as_str(),
+                )
+            });
+        }
         Ok(
-            quote!(self.__state.#state.snapshot(|| #repeater.resolve_model(|| #model), |item| (item #key, item #parent))),
+            quote!(self.__state.#state.snapshot_with_root(|| #repeater.resolve_model(|| #model), |item| (item #key, item #parent), || #root)),
         )
     }
 
@@ -2196,15 +2781,72 @@ impl<'a> Generator<'a> {
             out.extend(
                 quote!([#(#path,)* rest @ ..] => self.__state.#field.__list_rows(rest, __range),),
             );
-        } else if element.attr("kind") == Ok("StandardTableView") {
-            let model = self.standard_table_model(element, &self.visuals)?;
+        } else if has_virtual_rows(element) {
+            let method = list_rows_method(element_key(element)?);
+            out.extend(quote!([#(#path),*] => self.#method(__range, &::core::default::Default::default()),));
+        } else if children(element, "xr.repeat").next().is_none() {
+            for (index, child) in static_children(element) {
+                path.push(index);
+                self.list_arms(child, path, out)?;
+                path.pop();
+            }
+        }
+        Ok(())
+    }
+
+    fn list_row_body(&self, element: OperationRef<'a>) -> Result<TokenStream, String> {
+        if element.attr("kind") == Ok("StandardTableView") {
+            let model = self.table_model(element)?;
             let fields = self.standard_table_fields(element)?;
-            out.extend(quote! {
-                [#(#path),*] => ::xrack_runtime::standard_table_rows(&#model, __range, |item| [#(item #fields.to_string()),*]),
+            let count = fields.len();
+            let header = if let Some(binding) = children(element, "xr.bind")
+                .find(|binding| binding.attr("name") == Ok("row-header-field"))
+            {
+                let name: String = serde_json::from_str(self.operand(binding, 0)?.attr("value")?)
+                    .map_err(|error| error.to_string())?;
+                let field = field_access(name.split('.'));
+                quote!(::core::option::Option::Some(item #field.to_string()))
+            } else {
+                quote!(::core::option::Option::None)
+            };
+            let editors = self.standard_table_editors(element)?;
+            let mut column_editors = vec![quote!(None); count];
+            for StandardTableEditor {
+                column,
+                enabled,
+                kind,
+                ..
+            } in editors
+            {
+                column_editors[column] =
+                    quote!((#enabled).then_some(::xrack_runtime::TableCellEditor::#kind));
+            }
+            let cells = fields
+                .iter()
+                .enumerate()
+                .map(|(column, field)| quote!(#column => item #field.to_string(),));
+            let editors = column_editors
+                .iter()
+                .enumerate()
+                .map(|(column, editor)| quote!(#column => #editor,));
+            return Ok(quote! {
+                ::xrack_runtime::project_standard_table_rows(
+                    #model, __range, __xr_columns, #count, |item| #header,
+                    |item, column| match column { #(#cells)* _ => ::core::unreachable!() },
+                    |column| match column { #(#editors)* _ => ::core::option::Option::None },
+                )
             });
         } else if element.attr("kind") == Ok("StandardListView") {
             if let Some(binding) = model_binding(element) {
-                let model = self.visual_value(binding, &self.visuals)?;
+                let (model, rows) = if has_list_visibility(element) {
+                    let visible = visible_list_model(element_key(element)?);
+                    (quote!(self.#visible()), quote!(standard_list_rows_in_view))
+                } else {
+                    (
+                        self.visual_value(binding, &self.visuals)?,
+                        quote!(standard_list_rows),
+                    )
+                };
                 let label = if matches!(value_type(self.operand(binding, 0)?)?, Type::RecordList(_))
                 {
                     let field = children(element, "xr.bind")
@@ -2220,8 +2862,8 @@ impl<'a> Generator<'a> {
                 } else {
                     quote!(|__xr_item| __xr_item)
                 };
-                out.extend(quote! {
-                    [#(#path),*] => ::xrack_runtime::standard_list_rows(&#model, __range, #label),
+                return Ok(quote! {
+                    ::xrack_runtime::#rows(&#model, __range, #label)
                 });
             }
         } else if matches!(
@@ -2241,8 +2883,20 @@ impl<'a> Generator<'a> {
                     let component = delegate.attr("component")?;
                     let name = ident(component);
                     let inputs = format_ident!("__Inputs_{}", rust_name(component));
-                    let bindings = self.instance_inputs(*delegate, Some(model))?;
-                    instances.extend(quote!(#name::__new(#inputs { #bindings ..::core::default::Default::default() }),));
+                    let table = table_history_configured(element).then_some(element);
+                    let bindings = self.instance_inputs(*delegate, Some(model), table)?;
+                    let instance = quote!(#name::__new(#inputs { #bindings ..::core::default::Default::default() }));
+                    if repeat.table {
+                        instances.extend(quote!({
+                            let __context = __context.clone();
+                            let __parent = __parent.clone();
+                            ::std::cell::LazyCell::new(
+                                ::std::boxed::Box::new(move || #instance) as ::std::boxed::Box<dyn FnOnce() -> #name>
+                            )
+                        },));
+                    } else {
+                        instances.extend(quote!(#instance,));
+                    }
                 }
                 quote!(|__context| {
                     let __parent = ::std::rc::Rc::downgrade(&self.__state);
@@ -2256,26 +2910,39 @@ impl<'a> Generator<'a> {
                     quote!(self.__state.__visuals.#field),
                     &model_expr,
                 )?;
-                out.extend(quote! {
-                    [#(#path),*] => {
+                return Ok(quote! {{
                         let tree = #tree;
                         let rows = tree.rows().get(__range).unwrap_or_default();
                         self.__state.__visuals.#field.render_indices(|| #model_expr, rows.iter().map(|row| row.model_index), #create #row_expr)
-                    },
-                });
-                return Ok(());
+                }});
             }
-            out.extend(quote! {
-                [#(#path),*] => self.__state.__visuals.#field.render_range(|| #model_expr, __range, #create #row_expr),
+            if element.attr("kind") == Ok("TableView") || has_list_visibility(element) {
+                let rows = if element.attr("kind") == Ok("TableView") {
+                    self.table_model(element)?
+                } else {
+                    let visible = visible_list_model(element_key(element)?);
+                    quote!(&self.#visible())
+                };
+                let track_columns = (repeat.table && repeat.delegates.is_empty()).then(
+                    || quote!(let __xr_columns_changed = repeater.column_window(__xr_columns);),
+                );
+                return Ok(quote! {{
+                        let repeater = &self.__state.__visuals.#field;
+                        #track_columns
+                        let rows = #rows;
+                        let positions = rows.positions();
+                        if positions.reordered() {
+                            repeater.render_indices(|| #model_expr, __range.filter_map(|row| positions.source_index(row)), #create #row_expr)
+                        } else {
+                            repeater.render_range(|| #model_expr, __range, #create #row_expr)
+                        }
+                }});
+            }
+            return Ok(quote! {
+                self.__state.__visuals.#field.render_range(|| #model_expr, __range, #create #row_expr)
             });
-        } else if children(element, "xr.repeat").next().is_none() {
-            for (index, child) in scene_children(element).enumerate() {
-                path.push(index);
-                self.list_arms(child, path, out)?;
-                path.pop();
-            }
         }
-        Ok(())
+        Ok(quote!(::std::vec::Vec::new()))
     }
 
     fn delegate_event_arms(
@@ -2283,46 +2950,114 @@ impl<'a> Generator<'a> {
         element: OperationRef<'a>,
         path: &mut Vec<usize>,
         out: &mut TokenStream,
+        delegates: &mut TokenStream,
     ) -> Result<(), String> {
         if element.name() == "xr.instance" {
             let field = instance_field(element_key(element)?);
+            let component = ident(element.attr("component")?);
+            delegates.extend(quote! {
+                [#(#path,)* rest @ ..] => Some(scene.at_path(&[#(#path),*]).map_or_else(
+                    ::core::default::Default::default,
+                    |child| {
+                        let mut ui = #component { __state: self.__state.#field.__state.clone() };
+                        visit(&mut ui, child, rest)
+                    },
+                )),
+            });
+        } else if element.attr("kind") == Ok("StandardTableView") {
+            let editors = self.standard_table_editors(element)?;
+            if editors.is_empty() {
+                return Ok(());
+            }
+            let model = self.table_model(element)?;
+            let writes = editors.iter().map(|StandardTableEditor { column, field, enabled, kind, ty }| {
+                let field_path: Vec<_> = field.split('.').collect();
+                let field = field_access(field_path.iter().copied());
+                let update = quote!(|record| {
+                        if record #field.to_string() != *original { return None; }
+                        let mut updated = record.clone();
+                        updated #field = next;
+                        Some(updated)
+                });
+                let commit = self.table_cell_commit(element, quote!(rows.source()), field_path, ty.clone(), update)?;
+                Ok(quote! {
+                    #column if #enabled => {
+                        let ::xrack_runtime::Value::#kind(next) = ::xrack_runtime::TableCellEditor::#kind.parse(text)? else {
+                            return Some(false);
+                        };
+                        #commit
+                    },
+                })
+            }).collect::<Result<TokenStream, String>>()?;
             out.extend(quote! {
-                [#(#path,)* rest @ ..] => self.__state.#field.__route_delegate(scene.at_path(&[#(#path),*])?, rest, action),
+                [#(#path,)* slot, 0, column] => {
+                    let ::xrack_runtime::RoutedEvent::CommitCell { original, text } = action else { return Some(false); };
+                    let view = scene.at_path(&[#(#path),*])?;
+                    let row = view.children.get(*slot)?;
+                    let key = row.row_key?;
+                    let index = view.list?.first_row.checked_add(*slot)?;
+                    let rows = #model;
+                    if view.standard_list_stamp != Some(rows.positions().stamp()) { return Some(false); }
+                    let index = rows.positions().source_index(index)?;
+                    Some(match *column { #writes _ => false })
+                }
             });
         } else if matches!(
             element.attr("kind"),
             Ok("ListView" | "GridView" | "TableView" | "TreeView")
         ) {
             let (row, model) = self.list_template(element)?;
+            if row.attribute("delegate").is_some() {
+                return self.item_delegate_events(element, row, model, path, out);
+            }
             let repeat = &self.visuals.repeats[element_key(row)?];
             let model_index = if element.attr("kind") == Ok("TreeView") {
+                let live = children(element, "xr.bind")
+                    .any(|binding| binding.attr("name") == Ok("row-visible-field"));
+                let live_guard = if live {
+                    let snapshot = tree_snapshot_method(element_key(element)?);
+                    quote! {
+                        let live = self.#snapshot();
+                        let current = live.rows().get(live.visible_index(item.key)?)?;
+                        if current.row != key || current.model_index != item.model_index { return None; }
+                    }
+                } else {
+                    TokenStream::new()
+                };
                 quote! {
                     let item = view.tree.as_ref()?.rows().get(index)?;
-                    if item.row != key { return Some(false); }
+                    if item.row != key { return None; }
+                    #live_guard
                     let index = item.model_index;
                 }
+            } else if element.attr("kind") == Ok("TableView") {
+                let model = self.table_model(element)?;
+                quote! {
+                    let rows = #model;
+                    if view.standard_list_stamp != Some(rows.positions().stamp()) { return None; }
+                    let index = rows.positions().source_index(index)?;
+                }
             } else {
-                TokenStream::new()
+                self.list_source_index(element, &format_ident!("index"))?
             };
             for (delegate_slot, (delegate_path, delegate)) in repeat.delegates.iter().enumerate() {
                 let field = repeat_field(repeat.index());
                 let delegate_slot = Literal::usize_unsuffixed(delegate_slot);
                 let component = ident(delegate.attr("component")?);
                 let model_expr = self.expr(self.operand(model, 0)?)?;
-                out.extend(quote! {
-                    [#(#path,)* slot, 0, #(#delegate_path,)* rest @ ..] => {
+                delegates.extend(quote! {
+                    [#(#path,)* slot, 0, #(#delegate_path,)* rest @ ..] => Some((|| {
                         let view = scene.at_path(&[#(#path),*])?;
                         let row = view.children.get(*slot)?;
                         let index = view.list?.first_row.checked_add(*slot)?;
                         let key = row.row_key?;
                         let child = row.children.first()?.at_path(&[#(#delegate_path),*])?;
                         #model_index
-                        let result = self.__state.__visuals.#field.with_row(|| #model_expr, index, key, |delegates| {
+                        self.__state.__visuals.#field.with_row(|| #model_expr, index, key, |delegates| {
                             let mut ui = #component { __state: delegates.#delegate_slot.__state.clone() };
-                            action.apply(&mut ui, child, rest)
-                        });
-                        Some(result.unwrap_or(false))
-                    },
+                            visit(&mut ui, child, rest)
+                        })
+                    })().unwrap_or_default()),
                 });
             }
             if matches!(element.attr("kind"), Ok("TableView" | "TreeView")) {
@@ -2367,30 +3102,43 @@ impl<'a> Generator<'a> {
                         },
                         _ => return Err("unsupported row editor field type".into()),
                     };
-                    let commit = if operand.name() == "xr.get_field" {
-                        let field = field_access(self.record_path(operand)?);
+                    let field_path = self.record_path(operand)?;
+                    let update = if !field_path.is_empty() {
+                        let field = field_access(field_path.iter().copied());
                         let value = if value_type == Type::String {
                             quote!(next.into())
                         } else {
                             quote!(next)
                         };
                         quote! {
-                            model.update_row_if_key(index, key, |record| {
+                            |record| {
                                 if record #field != expected { return None; }
                                 let mut updated = record.clone();
                                 updated #field = #value;
                                 Some(updated)
-                            })
+                            }
                         }
                     } else {
-                        quote!(model.set_row_if_current(index, key, &expected.into(), next.into()))
+                        quote!(|record| (record == expected).then(|| next.into()))
                     };
+                    let commit = self.table_cell_commit(
+                        element,
+                        quote!(model),
+                        field_path,
+                        value_type,
+                        update,
+                    )?;
                     writes.extend(quote!([#(#cell_path),*] => { #prepare #commit },));
                 }
                 if !writes.is_empty() {
-                    let model_expr = self.expr(self.operand(model, 0)?)?;
+                    let model_expr = if element.attr("kind") == Ok("TableView") {
+                        quote!(rows.source())
+                    } else {
+                        let model = self.expr(self.operand(model, 0)?)?;
+                        quote!(&#model)
+                    };
                     out.extend(quote! {
-                        [#(#path,)* slot, 0, rest @ ..] => {
+                        [#(#path,)* slot, 0, rest @ ..] => Some((|| {
                             let view = scene.at_path(&[#(#path),*])?;
                             let row = view.children.get(*slot)?;
                             let index = view.list?.first_row.checked_add(*slot)?;
@@ -2399,36 +3147,157 @@ impl<'a> Generator<'a> {
                             #model_index
                             let model = #model_expr;
                             Some(match rest { #writes _ => false })
-                        },
+                        })().unwrap_or(false)),
                     });
                 }
             }
         } else {
             if element.attr("kind") == Ok("SplitView") {
-                let field = split_weights_field(element_key(element)?);
-                let resized = children(element, "xr.handler")
-                    .find(|handler| handler.attr("name") == Ok("resized"))
-                    .map(|handler| self.statements(handler))
-                    .transpose()?
-                    .unwrap_or_default();
+                let key = element_key(element)?;
+                let field = split_state_field(key);
+                let update = split_update_method(key);
+                let (event, snapshot, validate) =
+                    if children(element, "xr.split_fill").next().is_some() {
+                        (
+                            quote!(ResizeSplitSizes),
+                            quote!(split_sizes),
+                            quote!(resized_split_sizes),
+                        )
+                    } else {
+                        (
+                            quote!(ResizeSplit),
+                            quote!(split_weights),
+                            quote!(resized_split_weights),
+                        )
+                    };
                 out.extend(quote! {
                     [#(#path),*] => {
-                        let ::xrack_runtime::RoutedEvent::ResizeSplit(weights) = action else { return None; };
+                        let ::xrack_runtime::RoutedEvent::#event(values) = action else { return None; };
                         let node = scene.interactive_at_path(path)?;
-                        let Some(next) = node.resized_split_weights(weights) else { return Some(false); };
-                        if self.__state.#field.get(|| None).as_deref() == Some(next.as_ref()) { return Some(false); }
-                        self.__state.#field.set(Some(next));
-                        #resized
-                        Some(true)
+                        if self.__state.#field.get(|| None).as_deref() != node.#snapshot.as_deref() {
+                            return Some(false);
+                        }
+                        let Some(next) = node.#validate(values) else { return Some(false); };
+                        Some(self.#update(Some(next)))
                     },
                 });
             }
             for (index, child) in static_children(element) {
                 path.push(index);
-                self.delegate_event_arms(child, path, out)?;
+                self.delegate_event_arms(child, path, out, delegates)?;
                 path.pop();
             }
         }
+        Ok(())
+    }
+
+    fn list_source_index(
+        &self,
+        element: OperationRef<'a>,
+        index: &Ident,
+    ) -> Result<TokenStream, String> {
+        if !has_list_visibility(element) {
+            return Ok(TokenStream::new());
+        }
+        let model = visible_list_model(element_key(element)?);
+        Ok(quote! {
+            let __xr_view_rows = self.#model();
+            if view.standard_list_stamp != Some(__xr_view_rows.positions().stamp()) { return None; }
+            let #index = __xr_view_rows.positions().source_index(#index)?;
+        })
+    }
+
+    fn item_delegate_events(
+        &self,
+        element: OperationRef<'a>,
+        row: OperationRef<'a>,
+        repeat: OperationRef<'a>,
+        path: &[usize],
+        out: &mut TokenStream,
+    ) -> Result<(), String> {
+        let parameter = ident(repeat.attr("item")?);
+        let index = repeat.attr("index")?;
+        let index = (!index.is_empty()).then(|| {
+            let index = ident(index);
+            quote!(let #index = __xr_index as ::core::primitive::i64;)
+        });
+        let parameters = quote! {
+            let #parameter = ::xrack_runtime::ListModel::item(&*__xr_model, __xr_index);
+            #index
+        };
+        let click = if let Some(action) = action_ref(row) {
+            let activate = action_activate_method(action);
+            quote! {
+                if !matches!(action, ::xrack_runtime::RoutedEvent::Dispatch("clicked") |
+                    ::xrack_runtime::RoutedEvent::Control(::xrack_runtime::ControlAction::ActivateAction)) {
+                    return Some(false);
+                }
+                Some(self.#activate())
+            }
+        } else if let Some(link) = children(row, "xr.row_link").next() {
+            let operand = self.operand(link, 0)?;
+            let field = field_access(self.record_path(operand)?);
+            let (expected, next, changed) = if link.attr("name")? == "check-state" {
+                let changed = self.typed_event(row, "check-state-changed", &quote!(__xr_next))?;
+                (
+                    quote!(node.check_state()),
+                    quote!(__xr_expected.next(node.boolean("tristate", false))),
+                    changed,
+                )
+            } else {
+                (
+                    quote!(node.boolean("checked", false)),
+                    quote!(!__xr_expected),
+                    TokenStream::new(),
+                )
+            };
+            let toggled = self.typed_event_values(row, "toggled", &[])?;
+            quote! {
+                if !matches!(action, ::xrack_runtime::RoutedEvent::Dispatch("clicked")) { return Some(false); }
+                let __xr_expected = #expected;
+                let __xr_next = #next;
+                if !__xr_model.update_row_if_key(__xr_index, __xr_key, |record| {
+                    if record #field != __xr_expected { return None; }
+                    let mut record = record.clone();
+                    record #field = __xr_next;
+                    Some(record)
+                }) { return Some(false); }
+                #parameters
+                #toggled
+                #changed
+                Some(true)
+            }
+        } else if let Some(handler) =
+            children(row, "xr.handler").find(|handler| handler.attr("name") == Ok("clicked"))
+        {
+            let statements = self.statements(handler)?;
+            quote! {
+                if !matches!(action, ::xrack_runtime::RoutedEvent::Dispatch("clicked")) { return Some(false); }
+                #parameters
+                #statements
+                Some(true)
+            }
+        } else {
+            return Ok(());
+        };
+        let field = repeat_field(self.visuals.repeats[element_key(row)?].index());
+        let model = self.expr(self.operand(repeat, 0)?)?;
+        let source_index = self.list_source_index(element, &format_ident!("__xr_index"))?;
+        out.extend(quote! {
+            [#(#path,)* slot, 0] => {
+                let view = scene.interactive_at_path(&[#(#path),*])?;
+                let __xr_index = view.list?.first_row.checked_add(*slot)?;
+                #source_index
+                let __xr_key = view.children.get(*slot)?.row_key?;
+                let node = view.interactive_at_path(&[*slot, 0])?;
+                let __xr_model = self.__state.__visuals.#field.resolve_model(|| #model);
+                if __xr_index >= ::xrack_runtime::ListModel::row_count(&*__xr_model)
+                    || ::xrack_runtime::ListModel::row_key(&*__xr_model, __xr_index) != __xr_key {
+                    return Some(false);
+                }
+                #click
+            },
+        });
         Ok(())
     }
 
@@ -2450,6 +3319,7 @@ impl<'a> Generator<'a> {
             }
             None if ty == Type::Date => quote!(::xrack_runtime::Date::default()),
             None if ty == Type::Time => quote!(::xrack_runtime::Time::default()),
+            None if ty == Type::Font => quote!(::xrack_runtime::Font::default()),
             None if ty == Type::Color => quote!(::xrack_runtime::Color(0xffffffff)),
             None if ty == Type::SwipeSide => quote!(::xrack_runtime::SwipeSide::Closed),
             None if ty == Type::CheckState => quote!(::xrack_runtime::CheckState::Unchecked),
@@ -2578,6 +3448,161 @@ impl<'a> Generator<'a> {
             .collect()
     }
 
+    fn standard_table_editors(
+        &self,
+        element: OperationRef<'a>,
+    ) -> Result<Vec<StandardTableEditor>, String> {
+        let model = model_binding(element).ok_or("standard table requires a model")?;
+        let Type::RecordList(record) = value_type(self.operand(model, 0)?)? else {
+            return Err("standard table requires a record model".into());
+        };
+        let mut editors = Vec::new();
+        for (column, element) in table_columns(element).enumerate() {
+            let Some(binding) =
+                children(element, "xr.bind").find(|binding| binding.attr("name") == Ok("editable"))
+            else {
+                continue;
+            };
+            let name = self
+                .record_field_binding(element, "field")?
+                .ok_or("standard table column requires a field")?;
+            let ty = self.record_field_type(record.clone(), &name)?;
+            let kind = match ty {
+                Type::String => "String",
+                Type::Int => "Int",
+                Type::Float => "Float",
+                Type::Bool => "Bool",
+                Type::Date => "Date",
+                Type::Time => "Time",
+                _ => return Err("unsupported editable table field type".into()),
+            };
+            editors.push(StandardTableEditor {
+                column,
+                field: name,
+                ty,
+                enabled: self.visual_value(binding, &self.visuals)?,
+                kind: ident(kind),
+            });
+        }
+        Ok(editors)
+    }
+
+    fn table_cell_commit(
+        &self,
+        element: OperationRef<'a>,
+        model: TokenStream,
+        path: Vec<&str>,
+        ty: Type,
+        update: TokenStream,
+    ) -> Result<TokenStream, String> {
+        let direct = quote!((#model).update_row_if_key(index, key, #update));
+        if !table_history_configured(element) {
+            return Ok(direct);
+        }
+        let history = table_history_field(element_key(element)?);
+        let enabled = table_history_method(element_key(element)?, "enabled");
+        let capture = Self::table_edit_capture(BTreeMap::from([(path, ty)]));
+        Ok(quote! {
+            if self.#enabled() {
+                self.__state.#history.commit_cell(#model, index, key, #update, #capture)
+            } else {
+                let changed = #direct;
+                if changed { self.__state.#history.clear(); }
+                changed
+            }
+        })
+    }
+
+    fn table_edit_navigation_arms(
+        &self,
+        element: OperationRef<'a>,
+        path: &mut Vec<usize>,
+        out: &mut TokenStream,
+    ) -> Result<(), String> {
+        if element.name() == "xr.instance" {
+            return Ok(());
+        }
+        if matches!(element.attr("kind"), Ok("TableView" | "StandardTableView"))
+            && table_option_configured(element, "edit-on-tab")
+            && let Some((guard, projection)) = self.table_edit_navigation_projection(element)?
+        {
+            let rows = self.table_model(element)?;
+            out.extend(quote! {
+                [#(#path),*] => {
+                    let view = scene.interactive_at_path(path)?;
+                    if !view.boolean("edit-on-tab", false) { return None; }
+                    #guard
+                    let rows = #rows;
+                    if view.standard_list_stamp != Some(rows.positions().stamp()) { return None; }
+                    ::xrack_runtime::next_table_edit_cell(rows, origin, columns, backward, #projection)
+                },
+            });
+        }
+        for (index, child) in static_children(element) {
+            path.push(index);
+            self.table_edit_navigation_arms(child, path, out)?;
+            path.pop();
+        }
+        Ok(())
+    }
+
+    fn table_edit_navigation_projection(
+        &self,
+        element: OperationRef<'a>,
+    ) -> Result<Option<(TokenStream, TokenStream)>, String> {
+        if element.attr("kind") == Ok("StandardTableView") {
+            return Ok(Some((
+                quote! {
+                    let header = view.table_header.as_ref()?;
+                    let editable = |column: ::core::primitive::usize| {
+                        header.columns.get(column).is_some_and(|column| column.boolean("editable", false))
+                    };
+                    if !columns.iter().copied().any(editable) { return None; }
+                },
+                quote!(|_, column, _| editable(column)),
+            )));
+        }
+        let (row, repeat) = self.list_template(element)?;
+        let item = ident(repeat.attr("item")?);
+        let index = repeat.attr("index")?;
+        let index_binding = (!index.is_empty()).then(|| {
+            let index = ident(index);
+            quote!(let #index = || __xr_index as ::core::primitive::i64;)
+        });
+        let receiver = quote!(self);
+        let context = ExpressionContext {
+            receiver: &receiver,
+            repeat_parameters: true,
+            hoist_repeat_subexpressions: false,
+        };
+        let mut columns = Vec::new();
+        let mut editors = TokenStream::new();
+        for (column, cell) in scene_children(row).enumerate() {
+            if cell.attr("kind") == Ok("TableCell")
+                && children(cell, "xr.row_link").next().is_some()
+            {
+                columns.push(column);
+                let editable = self.row_editable(cell, context)?;
+                editors.extend(quote!(#column => #editable,));
+            }
+        }
+        if columns.is_empty() {
+            return Ok(None);
+        }
+        let visible = self.row_shown(row, context)?;
+        let enabled = self.row_binding_or(row, "enabled", quote!(true), context)?;
+        Ok(Some((
+            quote! {
+                if !columns.iter().any(|column| [#(#columns),*].contains(column)) { return None; }
+            },
+            quote!(|__xr_index, column, __xr_record| {
+                let #item = || (*__xr_record).clone();
+                #index_binding
+                (#visible) && (#enabled) && match column { #editors _ => false }
+            }),
+        )))
+    }
+
     fn table_clipboard_arms(
         &self,
         element: OperationRef<'a>,
@@ -2585,16 +3610,6 @@ impl<'a> Generator<'a> {
         arms: &mut TableClipboardArms,
     ) -> Result<(), String> {
         if element.name() == "xr.instance" {
-            let instance = instance_field(element_key(element)?);
-            arms.copies.extend(quote! {
-                [#(#path,)* rest @ ..] => self.__state.#instance.__copy_table_path(rest, node, columns),
-            });
-            arms.pastes.extend(quote! {
-                [#(#path,)* rest @ ..] => self.__state.#instance.__prepare_table_paste(rest, row, columns),
-            });
-            arms.replays.extend(quote! {
-                [#(#path,)* rest @ ..] => self.__state.#instance.__replay_table_paste(rest, redo),
-            });
             return Ok(());
         }
         if matches!(element.attr("kind"), Ok("TableView" | "StandardTableView"))
@@ -2614,57 +3629,120 @@ impl<'a> Generator<'a> {
                 self.custom_table_projection(element)?
             };
             arms.copies.extend(quote! {
-                [#(#path),*] => ::xrack_runtime::copy_table_text(#model, node, columns, #projection),
+                [#(#path),*] => ::xrack_runtime::copy_table_text_in_order(#model, node, columns, #projection),
             });
         }
-        if element.attr("kind") == Ok("TableView")
-            && element.children().any(|binding| {
-                matches!(binding.name(), "xr.bind" | "xr.state_set")
-                    && binding.attr("name") == Ok("pasteable")
-            })
-            && let Some((projection, capture)) = self.table_paste_projection(element)?
-        {
-            let model = self.table_model(element)?;
-            let (_, repeat) = self.list_template(element)?;
-            let item = ty(&value_type(self.operand(repeat, 0)?)?
-                .list_item()
-                .ok_or("writable table model requires list items")?);
-            let key = rust_key(element_key(element)?);
-            let method = format_ident!("__xr_table_paste_{}", key);
-            let history = format_ident!("__xr_table_history_{}", key);
-            arms.fields
-                .extend(quote!(#history: ::xrack_runtime::TablePasteHistory<#item>,));
-            arms.defaults
-                .extend(quote!(#history: ::core::default::Default::default(),));
-            arms.methods.extend(quote! {
-                fn #method(
-                    &self, stamp: (::core::primitive::u64, ::core::primitive::u64),
-                    row: ::core::primitive::usize, columns: &[::core::primitive::usize],
-                    text: &::core::primitive::str,
-                ) -> ::core::primitive::bool {
-                    let input = ::xrack_runtime::TablePasteInput { stamp, row, columns, text };
-                    self.__state.#history.paste(#model, input, #projection, #capture)
-                        .unwrap_or(false)
-                }
-            });
-            arms.pastes.extend(quote! {
-                [#(#path),*] => {
-                    let stamp = (#model).edit_stamp();
-                    let weak = self.as_weak();
-                    ::core::option::Option::Some(::std::boxed::Box::new(move |text| {
-                        weak.upgrade().is_some_and(|ui| ui.#method(stamp, row, &columns, text))
-                    }))
-                }
-            });
-            arms.replays.extend(quote! {
-                [#(#path),*] => self.__state.#history.replay(#model, redo),
-            });
+        if table_history_configured(element) {
+            self.table_history_arms(element, path, arms)?;
         }
         for (index, child) in static_children(element) {
             path.push(index);
             self.table_clipboard_arms(child, path, arms)?;
             path.pop();
         }
+        Ok(())
+    }
+
+    fn table_history_item(&self, element: OperationRef<'a>) -> Result<Option<Type>, String> {
+        if !table_history_configured(element) {
+            return Ok(None);
+        }
+        let model_source = if element.attr("kind") == Ok("StandardTableView") {
+            model_binding(element).ok_or("standard table requires a model")?
+        } else {
+            self.list_template(element)?.1
+        };
+        Ok(value_type(self.operand(model_source, 0)?)?.list_item())
+    }
+
+    fn table_history_arms(
+        &self,
+        element: OperationRef<'a>,
+        path: &[usize],
+        arms: &mut TableClipboardArms,
+    ) -> Result<(), String> {
+        let Some(item) = self.table_history_item(element)? else {
+            return Ok(());
+        };
+        let item = ty(&item);
+        let key = element_key(element)?;
+        let history = table_history_field(key);
+        let active = table_history_method(key, "enabled");
+        let available = table_history_method(key, "available");
+        let replay = table_history_method(key, "replay");
+        let source = self.view_source_model(element)?;
+        let receiver = quote!(self);
+        let context = ExpressionContext::new(&receiver);
+        let flag = |name| {
+            let base = self.row_binding_or(element, name, quote!(false), context)?;
+            self.row_state_value(element, name, base, context)
+        };
+        let undoable = flag("undoable")?;
+        let pasteable = flag("pasteable")?;
+        arms.fields
+            .extend(quote!(#history: ::xrack_runtime::TableEditHistory<#item>,));
+        arms.defaults
+            .extend(quote!(#history: ::core::default::Default::default(),));
+        arms.replays.extend(quote! {
+            [#(#path),*] => self.#replay(redo),
+        });
+        arms.methods.extend(quote! {
+            fn #active(&self) -> ::core::primitive::bool {
+                #undoable || #pasteable
+            }
+            fn #available(&self, redo: ::core::primitive::bool) -> ::core::primitive::bool {
+                self.#active() && self.__state.#history.can_replay(&#source, redo)
+            }
+            fn #replay(&self, redo: ::core::primitive::bool) -> ::core::primitive::bool {
+                self.#active() && self.__state.#history.replay(&#source, redo)
+            }
+        });
+        if !table_option_configured(element, "pasteable") {
+            return Ok(());
+        }
+        let Some((projection, capture)) = self.table_paste_projection(element)? else {
+            return Ok(());
+        };
+        let method = format_ident!("__xr_table_paste_{}", rust_key(key));
+        let model = self.table_model(element)?;
+        let column_order = table_order_field(key);
+        let enabled = self.row_binding_or(element, "enabled", quote!(true), context)?;
+        let enabled = self.row_state_value(element, "enabled", enabled, context)?;
+        let shown = self.row_shown(element, context)?;
+        arms.methods.extend(quote! {
+                fn #method(
+                    &self,
+                    order_stamp: (::core::primitive::u64, ::core::primitive::u64),
+                    column_order: &::xrack_runtime::TableColumnOrder,
+                    input: ::xrack_runtime::TablePasteInput<'_>,
+                ) -> ::core::primitive::bool {
+                    if !(#pasteable && #enabled && #shown)
+                        || self.__state.#column_order.get(::core::default::Default::default) != *column_order
+                    {
+                        return false;
+                    }
+                    let rows = #model;
+                    if rows.positions().stamp() != order_stamp { return false; }
+                    self.__state.#history.paste_in_order(rows, input, #projection, #capture)
+                        .unwrap_or(false)
+                }
+            });
+        arms.pastes.extend(quote! {
+                [#(#path),*] => {
+                    let rows = #model;
+                    let stamp = rows.source().edit_stamp();
+                    let order_stamp = rows.positions().stamp();
+                    if node.standard_list_stamp != Some(order_stamp) {
+                        return ::core::option::Option::None;
+                    }
+                    let column_order = node.table_column_order.clone();
+                    let weak = self.as_weak();
+                    ::core::option::Option::Some(::std::boxed::Box::new(move |text| {
+                        let input = ::xrack_runtime::TablePasteInput { stamp, row, columns: &columns, text };
+                        weak.upgrade().is_some_and(|ui| ui.#method(order_stamp, &column_order, input))
+                    }))
+                }
+            });
         Ok(())
     }
 
@@ -2740,6 +3818,7 @@ impl<'a> Generator<'a> {
             .transpose()?
             .unwrap_or_else(|| quote!(true));
         let visible = self.row_binding_or(element, "visible", quote!(true), context)?;
+        let visible = self.row_state_value(element, "visible", visible, context)?;
         Ok(quote!((#shown) && (#visible)))
     }
 
@@ -2747,6 +3826,42 @@ impl<'a> Generator<'a> {
         &self,
         element: OperationRef<'a>,
     ) -> Result<Option<(TokenStream, TokenStream)>, String> {
+        if element.attr("kind") == Ok("StandardTableView") {
+            let editors = self.standard_table_editors(element)?;
+            if editors.is_empty() {
+                return Ok(None);
+            }
+            let mut edited_fields = BTreeMap::new();
+            let mut writes = TokenStream::new();
+            for StandardTableEditor {
+                column,
+                field,
+                ty,
+                enabled,
+                kind,
+            } in &editors
+            {
+                let path: Vec<_> = field.split('.').collect();
+                let access = field_access(path.iter().copied());
+                edited_fields.insert(path, ty.clone());
+                writes.extend(quote! {
+                    #column if #enabled => {
+                        let ::xrack_runtime::Value::#kind(value) =
+                            ::xrack_runtime::TableCellEditor::#kind.parse(text)?
+                        else {
+                            return ::core::option::Option::None;
+                        };
+                        next #access = value;
+                        ::core::option::Option::Some(())
+                    }
+                });
+            }
+            let projection = quote!(|_, column, _, next, text| match column {
+                #writes
+                _ => ::core::option::Option::None,
+            });
+            return Ok(Some((projection, Self::table_edit_capture(edited_fields))));
+        }
         let (row, repeat) = self.list_template(element)?;
         let item = ident(repeat.attr("item")?);
         let index = repeat.attr("index")?;
@@ -2861,6 +3976,10 @@ impl<'a> Generator<'a> {
             }
             match __xr_column { #writes _ => ::core::option::Option::None }
         });
+        Ok(Some((projection, Self::table_edit_capture(edited_fields))))
+    }
+
+    fn table_edit_capture(edited_fields: BTreeMap<Vec<&str>, Type>) -> TokenStream {
         let fields = edited_fields.into_iter().map(|(path, value_type)| {
             let (before, after, access) = if !path.is_empty() {
                 let field = field_access(path);
@@ -2900,8 +4019,7 @@ impl<'a> Generator<'a> {
             };
             quote!(patch.record(#before, #after, #access, #same, #bytes);)
         });
-        let capture = quote!(|before, after, patch| { #(#fields)* });
-        Ok(Some((projection, capture)))
+        quote!(|before, after, patch| { #(#fields)* })
     }
 
     fn paste_field(
@@ -3011,6 +4129,7 @@ impl<'a> Generator<'a> {
         let order = table_order_field(key);
         let heights = table_row_heights_field(key);
         let selection = table_selection_field(key);
+        let snapshot = table_selection_snapshot_method(key);
         let base = quote!(::xrack_runtime::ListMetrics::row_height(&#name));
         let geometry =
             if let Some(projected) = self.project_row_heights(element, name, model, None)? {
@@ -3028,12 +4147,9 @@ impl<'a> Generator<'a> {
             #name.row_heights = #geometry;
             let target = #name.selection_target();
             let multiple = #name.boolean("multi-select", false);
-            if multiple || target != ::xrack_runtime::SelectionTarget::Rows {
-                let current = #name.int("current-row").and_then(|value| <::core::primitive::usize as ::core::convert::TryFrom<_>>::try_from(value).ok());
-                #name.table_selection = Some(::std::boxed::Box::new(
-                    self.__state.#selection.snapshot(#model, current, target, #name.table_header.as_ref().map_or(0, |header| header.columns.len()), multiple)
-                        .with_column_order(#name.table_column_order.clone())
-                ));
+            let snapshot = self.#snapshot();
+            if multiple || target != ::xrack_runtime::SelectionTarget::Rows || self.__state.#selection.has_explicit_selection() {
+                #name.table_selection = Some(::std::boxed::Box::new(snapshot));
             }
         });
         Ok(())
@@ -3048,27 +4164,36 @@ impl<'a> Generator<'a> {
             return Err("expected a record ComboBox model".into());
         };
         let text = self
-            .combo_role(element, "text-role")?
+            .record_field_binding(element, "text-role")?
             .unwrap_or_else(|| "text".into());
         let value = self
-            .combo_role(element, "value-role")?
+            .record_field_binding(element, "value-role")?
             .unwrap_or_else(|| text.clone());
+        let ty = self.record_field_type(record, &value)?;
+        Ok((text, value, ty))
+    }
+
+    fn record_field_type(&self, record: Box<str>, path: &str) -> Result<Type, String> {
         let mut ty = Type::Record(record);
-        for name in value.split('.') {
+        for name in path.split('.') {
             let Type::Record(record) = ty else {
-                return Err("missing verified ComboBox value field".into());
+                return Err(format!("missing verified record field {path}"));
             };
             ty = self.records[record.as_ref()]
                 .iter()
                 .find(|field| field.name == name)
-                .ok_or("missing verified ComboBox value field")?
+                .ok_or_else(|| format!("missing verified record field {path}"))?
                 .ty
                 .clone();
         }
-        Ok((text, value, ty))
+        Ok(ty)
     }
 
-    fn combo_role(&self, element: OperationRef<'a>, name: &str) -> Result<Option<String>, String> {
+    fn record_field_binding(
+        &self,
+        element: OperationRef<'a>,
+        name: &str,
+    ) -> Result<Option<String>, String> {
         children(element, "xr.bind")
             .find(|binding| binding.attr("name") == Ok(name))
             .map(|role| {
@@ -3093,7 +4218,11 @@ impl<'a> Generator<'a> {
         let field = field_access(field.split('.'));
         let projection = row_height_projection_field(element_key(element)?);
         let base = quote!(::xrack_runtime::ListMetrics::row_height(&#node));
-        let value = if let Some(tree) = tree {
+        let value = if matches!(element.attr("kind"), Ok("TableView" | "StandardTableView"))
+            || has_list_visibility(element)
+        {
+            quote!(self.__state.#projection.table_snapshot((#model).source(), #base, (#model).positions(), |row| row #field))
+        } else if let Some(tree) = tree {
             quote!(self.__state.#projection.tree_snapshot(#model, #base, #tree, |row| row #field))
         } else {
             quote!(self.__state.#projection.snapshot(#model, #base, |row| row #field))
@@ -3102,15 +4231,118 @@ impl<'a> Generator<'a> {
     }
 
     fn table_model(&self, element: OperationRef<'a>) -> Result<TokenStream, String> {
+        let rows = self.table_rows_model(element)?;
+        Ok(quote!(&#rows))
+    }
+
+    fn table_rows_model(&self, element: OperationRef<'a>) -> Result<TokenStream, String> {
+        if element.attr("kind") == Ok("StandardTableView")
+            || children(element, "xr.bind")
+                .any(|binding| binding.attr("name") == Ok("row-visible-field"))
+        {
+            let rows = table_rows_model_method(element_key(element)?);
+            return Ok(quote!(self.#rows()));
+        }
+        let source = self.view_source_model(element)?;
+        let order = table_row_order_field(element_key(element)?);
+        Ok(quote!(self.__state.#order.rows(#source)))
+    }
+
+    fn view_source_model(&self, element: OperationRef<'a>) -> Result<TokenStream, String> {
         if element.attr("kind") == Ok("StandardTableView") {
             let model = self.standard_table_model(element, &self.visuals)?;
-            Ok(quote!(&#model))
+            Ok(quote!(::std::rc::Rc::new(#model)))
+        } else if element.attr("kind") == Ok("StandardListView") {
+            let model = model_binding(element)
+                .map(|binding| self.visual_value(binding, &self.visuals))
+                .transpose()?
+                .unwrap_or_else(|| quote!(<::xrack_runtime::VecModel<::std::string::String> as ::core::default::Default>::default()));
+            Ok(quote!(::std::rc::Rc::new(#model)))
         } else {
             let (row, repeat) = self.list_template(element)?;
             let repeater = repeat_field(self.visuals.repeats[element_key(row)?].index());
             let model = self.expr(self.operand(repeat, 0)?)?;
-            Ok(quote!(&*self.__state.__visuals.#repeater.resolve_model(|| #model)))
+            Ok(quote!(self.__state.__visuals.#repeater.resolve_model(|| #model)))
         }
+    }
+
+    fn view_index_body(&self, element: OperationRef<'a>) -> Result<TokenStream, String> {
+        let key = element_key(element)?;
+        if element.attr("kind") == Ok("TreeView") {
+            let snapshot = tree_snapshot_method(key);
+            return Ok(quote! {
+                let tree = self.#snapshot();
+                if from_source { tree.visible_index_for_source(index) }
+                else { tree.rows().get(index).map(|item| item.model_index) }
+            });
+        }
+        let model = if matches!(element.attr("kind"), Ok("TableView" | "StandardTableView")) {
+            Some(self.table_model(element)?)
+        } else if has_list_visibility(element) {
+            let model = visible_list_model(key);
+            Some(quote!(&self.#model()))
+        } else {
+            None
+        };
+        if let Some(model) = model {
+            Ok(quote! {
+                let rows = #model;
+                if from_source { rows.positions().visual_index(index) }
+                else { rows.positions().source_index(index) }
+            })
+        } else {
+            let model = self.view_source_model(element)?;
+            Ok(quote!((index < ::xrack_runtime::ListModel::row_count(&*#model)).then_some(index)))
+        }
+    }
+
+    fn source_selection_body(&self, element: OperationRef<'a>) -> Result<TokenStream, String> {
+        let key = element_key(element)?;
+        if matches!(element.attr("kind"), Ok("TableView" | "StandardTableView")) {
+            let select = table_selection_method(key);
+            let snapshot = table_selection_snapshot_method(key);
+            return Ok(quote! {
+                let action = if let Some(column) = column {
+                    let Ok(column) = <::core::primitive::usize as ::core::convert::TryFrom<_>>::try_from(column) else { return; };
+                    ::xrack_runtime::TableSelectionAction::Cell {
+                        row: index, column, operation: ::xrack_runtime::RowSelection::Replace,
+                    }
+                } else {
+                    let selection = self.#snapshot();
+                    let operation = match selection.target() {
+                        ::xrack_runtime::SelectionTarget::Rows => ::xrack_runtime::RowSelection::Replace,
+                        ::xrack_runtime::SelectionTarget::Cells if selection.multiple() => ::xrack_runtime::RowSelection::Replace,
+                        _ => ::xrack_runtime::RowSelection::Move,
+                    };
+                    ::xrack_runtime::TableSelectionAction::Row { index, operation }
+                };
+                self.#select(action);
+            });
+        }
+        if element.attr("kind") == Ok("TreeView") {
+            let snapshot = tree_snapshot_method(key);
+            let select = tree_selection_method(key);
+            let multiple = self.binding_value_or(element, "multi-select", quote!(false))?;
+            return Ok(quote! {
+                let tree = self.#snapshot();
+                let Some(item) = tree.visible_index_for_source(source).and_then(|index| tree.rows().get(index))
+                else { return; };
+                let action = ::xrack_runtime::TreeSelectionAction::Row {
+                    key: item.key, row: item.row, operation: ::xrack_runtime::RowSelection::Replace,
+                };
+                self.#select(&tree, #multiple, action);
+            });
+        }
+        let current = self.control_value(element, "current-index", Type::Int)?;
+        let value = quote!(index as ::core::primitive::i64);
+        let set = self.set_control(element, &value)?;
+        let changed = self.typed_event(element, "changed", &value)?;
+        Ok(quote! {
+            if #current != #value {
+                #set
+                #changed
+            }
+        })
     }
 
     fn render_combo_model(
@@ -3137,7 +4369,9 @@ impl<'a> Generator<'a> {
         };
         let project_label = quote!(|record| record #label.as_str());
         let project_value = quote!(|record| ::xrack_runtime::Value::from(record #value.clone()));
-        let items_input = if let Some(enabled) = self.combo_role(element, "enabled-role")? {
+        let items_input = if let Some(enabled) =
+            self.record_field_binding(element, "enabled-role")?
+        {
             let enabled = field_access(enabled.split('.'));
             quote!(::xrack_runtime::ComboItems::with_enabled(#model, #project_label, #project_value, |record| record #enabled))
         } else {
@@ -3336,13 +4570,22 @@ impl<'a> Generator<'a> {
             "xr.layout_bind"
         } else {
             let kind = element.attr("kind")?;
+            let application_window = kind == "ApplicationWindow";
             let kind = match kind {
                 kind if picker_value(kind).is_some() => "Dialog",
+                "ApplicationWindow" => "Window",
                 "StandardTableView" => "TableView",
                 "StandardButton" => "Button",
+                "DayCell" | "SplitHandle" => "Rectangle",
                 kind => kind,
             };
             out.extend(quote!(let mut #name = ::xrack_runtime::Node::new(#kind, #id);));
+            if application_window {
+                out.extend(quote!(#name.application_window = true;));
+            }
+            if element.attribute("delegate").is_some() {
+                out.extend(quote!(#name.properties.insert("__item-delegate", ::xrack_runtime::Value::Bool(true));));
+            }
             if self.with_fonts && element.attr("id")? == "root" {
                 out.extend(quote!(#name.fonts = ::core::option::Option::Some(&__XR_FONTS);));
             }
@@ -3359,6 +4602,20 @@ impl<'a> Generator<'a> {
             }
         }
         let key = element_key(element)?;
+        if has_virtual_rows(element) {
+            let field = list_renderer_field(key);
+            let method = list_rows_method(key);
+            out.extend(quote! {
+                #name.list_row_renderer = Some(self.__state.#field.get_or_init(|| {
+                    let __xr_weak = ::std::rc::Rc::downgrade(&self.__state);
+                    ::xrack_runtime::ListRowRenderer::with_columns(move |__range, __xr_columns| {
+                        __xr_weak.upgrade().map_or_else(::std::vec::Vec::new, |__state| {
+                            Self { __state }.#method(__range, __xr_columns)
+                        })
+                    })
+                }).clone());
+            });
+        }
         if self.focus_targets.contains(key) {
             let handle = focus_handle(key);
             out.extend(quote!(#name.focus_handle = Some(self.__state.#handle.clone());));
@@ -3370,6 +4627,21 @@ impl<'a> Generator<'a> {
         if element.attr("kind") == Ok("SwipeGestureHandler") {
             let handle = swipe_handle(key);
             out.extend(quote!(#name.swipe_handle = Some(self.__state.#handle.clone());));
+        }
+        if element.attr("kind") == Ok("HoverHandler") {
+            let handle = hover_handle(key);
+            out.extend(quote!(#name.hover_handle = Some(self.__state.#handle.clone());));
+        }
+        if self.pointer_targets.contains(key) {
+            let handle = pointer_handle(key);
+            out.extend(quote!(#name.pointer_handle = Some(self.__state.#handle.clone());));
+            for handler in children(element, "xr.handler") {
+                match handler.attr("name")? {
+                    "scroll-event" => out.extend(quote!(#name.scroll_event_handler = true;)),
+                    "press-and-hold" => out.extend(quote!(#name.press_and_hold_handler = true;)),
+                    _ => {}
+                }
+            }
         }
         if self.viewport_targets.contains(key) {
             let handle = viewport_handle(key);
@@ -3400,16 +4672,25 @@ impl<'a> Generator<'a> {
                 .push(binding);
         }
         let action = action_ref(element);
+        let action_enabled = format_ident!("{name}_action_enabled");
         if let Some(action) = action {
             let render = action_render_method(action);
-            out.extend(quote!(self.#render(&mut #name);));
+            out.extend(quote! {
+                self.#render(&mut #name);
+                let #action_enabled = #name.boolean("enabled", true);
+            });
         }
         for binding in children(element, binding_op) {
             let key = binding.attr("name")?;
             if binding_op == "xr.bind"
                 && matches!(
                     key,
-                    "content-x" | "content-y" | "row-height-field" | "clipboard-text"
+                    "content-x"
+                        | "content-y"
+                        | "row-height-field"
+                        | "row-visible-field"
+                        | "row-header-field"
+                        | "clipboard-text"
                 )
             {
                 continue;
@@ -3435,15 +4716,12 @@ impl<'a> Generator<'a> {
             if controlled_properties(element).any(|(property, _)| key == property) {
                 continue;
             }
-            let mut value = self.visual_value(binding, scope)?;
+            let value = self.visual_value(binding, scope)?;
             if key == "model" && element.attr("kind") == Ok("Tumbler") {
                 out.extend(quote! {
                     #name.tumbler_items = Some(::xrack_runtime::TumblerItems::new(#value));
                 });
                 continue;
-            }
-            if key == "enabled" && action.is_some() {
-                value = quote!(#name.boolean("enabled", true) && #value);
             }
             out.extend(quote! {
                 #name.properties.insert(#key, ::xrack_runtime::Value::from(#value));
@@ -3468,10 +4746,14 @@ impl<'a> Generator<'a> {
                 "table-editor"
             };
             let value = self.visual_value(link, scope)?;
-            out.extend(quote! {
-                #name.properties.insert(#property, ::xrack_runtime::Value::from(#value));
-                #name.properties.insert(#flag, ::xrack_runtime::Value::Bool(true));
-            });
+            out.extend(
+                quote!(#name.properties.insert(#property, ::xrack_runtime::Value::from(#value));),
+            );
+            if element.attribute("delegate").is_none() {
+                out.extend(
+                    quote!(#name.properties.insert(#flag, ::xrack_runtime::Value::Bool(true));),
+                );
+            }
         }
         let popup_value = element.attribute("kind").and_then(picker_value);
         for (property, ty) in controlled_properties(element) {
@@ -3499,6 +4781,12 @@ impl<'a> Generator<'a> {
             self.render_combo_model(element, binding, scope, &name, out)?;
         }
         self.render_state_overrides(element, scope, &name, &state_overrides, out)?;
+        if action.is_some() {
+            out.extend(quote! {
+                let #action_enabled = #action_enabled && #name.boolean("enabled", true);
+                #name.properties.insert("enabled", ::xrack_runtime::Value::Bool(#action_enabled));
+            });
+        }
         if element.attribute("kind") == Some("AnimatedImage") {
             let slot = playback_slot(key);
             let finished = format_ident!("{}_finished", slot);
@@ -3517,6 +4805,7 @@ impl<'a> Generator<'a> {
             });
         }
         let kind = element.attribute("kind");
+        let source_scroll = self.source_scroll_targets.contains(key);
         for timer in element_children(element).filter(|child| child.attr("kind") == Ok("Timer")) {
             let register = timer_member(element_key(timer)?, "register");
             out.extend(quote! { #name.timers.extend(self.#register()); });
@@ -3533,7 +4822,12 @@ impl<'a> Generator<'a> {
         if let Some((property, ty)) = popup_value {
             let popup = picker_field(element_key(element)?);
             let value = self.control_value(element, property, ty)?;
-            out.extend(quote! { self.__state.#popup.populate(&mut #name, || #value); });
+            let populate = if element.attr("kind") == Ok("ColorPickerPopup") {
+                format_ident!("populate_editor")
+            } else {
+                format_ident!("populate")
+            };
+            out.extend(quote! { self.__state.#popup.#populate(&mut #name, || #value); });
             return Ok(name);
         }
         if kind == Some("TimePicker") {
@@ -3549,6 +4843,24 @@ impl<'a> Generator<'a> {
                 #name.children.push(::xrack_runtime::Node::new("RangeThumb", None));
             });
         }
+        if has_list_visibility(element) {
+            let model = visible_list_model(element_key(element)?);
+            let projected = self
+                .project_row_heights(element, &name, &quote!(&*__xr_view_model), None)?
+                .map(|value| quote!(#name.row_heights = #value;));
+            out.extend(quote! {
+                let __xr_view_model = ::std::rc::Rc::new(self.#model());
+                #name.list = Some(::xrack_runtime::ListMetrics {
+                    row_count: ::xrack_runtime::ListModel::row_count(&*__xr_view_model), first_row: 0,
+                });
+                #name.standard_list_stamp = Some(__xr_view_model.positions().stamp());
+                if #source_scroll || #name.boolean("preserve-scroll-anchor", false) {
+                    #name.row_locator = Some(::xrack_runtime::ListRowLocator::new(__xr_view_model.clone()));
+                }
+                #projected
+            });
+            return Ok(name);
+        }
         if kind == Some("StandardListView") {
             if let Some(binding) = model_binding(element) {
                 let model = self.visual_value(binding, scope)?;
@@ -3562,7 +4874,7 @@ impl<'a> Generator<'a> {
                     });
                     #name.standard_list_stamp = Some(::xrack_runtime::ListModel::structure_stamp(&__xr_model));
                     #projected
-                    if #name.boolean("preserve-scroll-anchor", false) {
+                    if #source_scroll || #name.boolean("preserve-scroll-anchor", false) {
                         #name.row_locator = Some(::xrack_runtime::ListRowLocator::new(::std::rc::Rc::new(__xr_model)));
                     }
                 });
@@ -3572,20 +4884,31 @@ impl<'a> Generator<'a> {
             return Ok(name);
         }
         if kind == Some("StandardTableView") {
-            let model = self.standard_table_model(element, scope)?;
+            let key = element_key(element)?;
+            let rows = table_rows_model_method(key);
             out.extend(quote! {
-                let __xr_table_model = #model;
+                let __xr_table_model = ::std::rc::Rc::new(self.#rows());
+                if __xr_table_model.positions().projected() {
+                    #name.properties.insert("movable-rows", ::xrack_runtime::Value::Bool(false));
+                }
                 #name.list = Some(::xrack_runtime::ListMetrics {
-                    row_count: ::xrack_runtime::ListModel::row_count(&__xr_table_model), first_row: 0,
+                    row_count: ::xrack_runtime::ListModel::row_count(&*__xr_table_model), first_row: 0,
                 });
-                #name.standard_list_stamp = Some(::xrack_runtime::ListModel::structure_stamp(&__xr_table_model));
-                if #name.boolean("preserve-scroll-anchor", false) {
-                    #name.row_locator = Some(::xrack_runtime::ListRowLocator::new(::std::rc::Rc::new(__xr_table_model.clone())));
+                #name.standard_list_stamp = Some(__xr_table_model.positions().stamp());
+                if #source_scroll || #name.boolean("preserve-scroll-anchor", false) || #name.boolean("movable-rows", false) {
+                    #name.row_locator = Some(::xrack_runtime::ListRowLocator::new(__xr_table_model.clone()));
                 }
                 #name.properties.insert("__standard-table", ::xrack_runtime::Value::Bool(true));
                 #name.properties.entry("follow-current").or_insert(::xrack_runtime::Value::Bool(true));
             });
-            self.render_table_header(element, scope, out, next, &name, &quote!(&__xr_table_model))?;
+            self.render_table_header(
+                element,
+                scope,
+                out,
+                next,
+                &name,
+                &quote!(&*__xr_table_model),
+            )?;
             return Ok(name);
         }
         if matches!(
@@ -3615,24 +4938,46 @@ impl<'a> Generator<'a> {
                 });
                 return Ok(name);
             }
+            if kind == Some("TableView") {
+                let rows = self.table_rows_model(element)?;
+                out.extend(quote! {
+                    let __xr_view_model = ::std::rc::Rc::new(#rows);
+                    if __xr_view_model.positions().projected() {
+                        #name.properties.insert("movable-rows", ::xrack_runtime::Value::Bool(false));
+                    }
+                    #name.list = Some(::xrack_runtime::ListMetrics {
+                        row_count: ::xrack_runtime::ListModel::row_count(&*__xr_view_model), first_row: 0,
+                    });
+                    #name.standard_list_stamp = Some(__xr_view_model.positions().stamp());
+                    if #source_scroll || #name.boolean("preserve-scroll-anchor", false) || #name.boolean("movable-rows", false) {
+                        #name.row_locator = Some(::xrack_runtime::ListRowLocator::new(__xr_view_model.clone()));
+                    }
+                });
+                self.render_table_header(
+                    element,
+                    scope,
+                    out,
+                    next,
+                    &name,
+                    &quote!(&*__xr_view_model),
+                )?;
+                return Ok(name);
+            }
             out.extend(quote! {
                 let __xr_view_model = #receiver.#field.resolve_model(|| #model);
                 #name.list = Some(::xrack_runtime::ListMetrics {
                     row_count: ::xrack_runtime::ListModel::row_count(&*__xr_view_model), first_row: 0,
                 });
-                if #name.boolean("preserve-scroll-anchor", false) {
+                if #source_scroll || #name.boolean("preserve-scroll-anchor", false) {
                     #name.row_locator = Some(::xrack_runtime::ListRowLocator::new(__xr_view_model.clone()));
                 }
             });
-            if kind == Some("GridView") {
+            if kind == Some("GridView") || row.attribute("delegate").is_some() {
                 out.extend(quote! {
                     #name.standard_list_stamp = Some(::xrack_runtime::ListModel::structure_stamp(&*__xr_view_model));
                 });
             }
-            if kind == Some("TableView") {
-                let model = quote!(&*__xr_view_model);
-                self.render_table_header(element, scope, out, next, &name, &model)?;
-            } else if let Some(projected) =
+            if let Some(projected) =
                 self.project_row_heights(element, &name, &quote!(&*__xr_view_model), None)?
             {
                 out.extend(quote!(#name.row_heights = #projected;));
@@ -3667,7 +5012,21 @@ impl<'a> Generator<'a> {
                     ::xrack_runtime::resolve_swipe_index(#name.int("current-index"), [#(#available),*]);
             });
         }
+        let mut table_cells = TokenStream::new();
+        let mut table_columns = 0usize;
         for (index, child) in scene_children(element).enumerate() {
+            if kind == Some("TableRow") {
+                let mut cell = TokenStream::new();
+                let child = self.render(child, scope, &mut cell, next)?;
+                table_cells.extend(quote! {
+                    #index => {
+                        #cell
+                        #name.children.push(#child);
+                    },
+                });
+                table_columns = index + 1;
+                continue;
+            }
             let repeated_option = matches!(kind, Some("RadioGroup" | "TabBar"))
                 && children(child, "xr.repeat").next().is_some();
             let child = if kind == Some("TabWidget") {
@@ -3690,6 +5049,37 @@ impl<'a> Generator<'a> {
                 content.extend(quote!(#name.children.push(#child);));
             }
         }
+        if kind == Some("TableRow") {
+            content.extend(quote! {
+                #name.table_column_window = __xr_columns.clone();
+                for __xr_column in __xr_columns.columns(#table_columns) {
+                    match __xr_column {
+                        #table_cells
+                        _ => ::core::unreachable!(),
+                    }
+                }
+            });
+        }
+        if let Some(template) = day_cell_template(element) {
+            let field = calendar_cells_field(element_key(element)?);
+            let mut cell = TokenStream::new();
+            let template = self.render(template, &VisualScope::default(), &mut cell, next)?;
+            let inputs = day_cell_inputs().map(|(name, _)| {
+                let binding = ident(name);
+                let field = ident(name.trim_start_matches("cell-"));
+                quote!(let #binding = __xr_cell.#field;)
+            });
+            content.extend(quote! {
+                if #name.is_visible() {
+                    let __xr_cells = self.__state.#field.render(&#name, |__xr_cell| {
+                        #(#inputs)*
+                        #cell
+                        #template
+                    });
+                    #name.children.push(__xr_cells);
+                }
+            });
+        }
         if matches!(kind, Some("Dialog" | "Drawer" | "PopupWindow")) {
             out.extend(quote! { if #name.is_visible() { #content } });
         } else if let Some(active) = include_children {
@@ -3710,11 +5100,41 @@ impl<'a> Generator<'a> {
             });
         }
         if kind == Some("SplitView") {
-            let field = split_weights_field(element_key(element)?);
+            let key = element_key(element)?;
+            let field = split_state_field(key);
+            let handle = split_resize_handle_field(key);
+            if let Some(fill) = children(element, "xr.split_fill").next() {
+                let target = fill.attr("target")?;
+                out.extend(quote! {
+                    #name.split_fill_pane = Some(#target);
+                    #name.split_sizes = self.__state.#field.get(|| None);
+                });
+            } else {
+                out.extend(quote!(#name.split_weights = self.__state.#field.get(|| None);));
+            }
             out.extend(quote! {
-                #name.split_weights = self.__state.#field.get(|| None);
+                #name.split_resize_handle = Some(self.__state.#handle.clone());
                 #name.add_split_handles();
             });
+            if let Some(template) = children(element, "xr.element")
+                .find(|child| child.attr("kind") == Ok("SplitHandle"))
+            {
+                let mut decoration = TokenStream::new();
+                let template =
+                    self.render(template, &VisualScope::default(), &mut decoration, next)?;
+                let inputs = split_handle_inputs().map(|(name, _)| {
+                    let binding = ident(name);
+                    let field = ident(name.trim_start_matches("handle-"));
+                    quote!(let #binding = __xr_handle.#field;)
+                });
+                out.extend(quote! {
+                    self.__state.#handle.decorate(&mut #name, |__xr_handle| {
+                        #(#inputs)*
+                        #decoration
+                        #template
+                    });
+                });
+            }
         }
         if self.use_visual_plan && element.attribute("xr.static_grid") == Some("true") {
             out.extend(scene_plan::static_grid(element, &name)?);
@@ -3829,13 +5249,18 @@ impl<'a> Generator<'a> {
                 || (!typed_events(element)
                     && !matches!(
                         handler.attr("name"),
-                        Ok("check-state-changed" | "close-requested")
+                        Ok("check-state-changed"
+                            | "close-requested"
+                            | "pointer-event"
+                            | "scroll-event")
                     ))
                 || (element.attr("kind") == Ok("SwipeDelegate")
                     && handler.attr("name") == Ok("clicked"))
         };
-        if matches!(element.attr("kind"), Ok("Button" | "ToolButton"))
-            && let Some(action) = action_ref(element)
+        if matches!(
+            element.attr("kind"),
+            Ok("Button" | "ToolButton" | "RoundButton")
+        ) && let Some(action) = action_ref(element)
         {
             let activate = action_activate_method(action);
             paths.extend(quote!([#(#path),*] => event == "clicked" && self.#activate(),));
@@ -3929,7 +5354,7 @@ impl<'a> Generator<'a> {
         if element.name() == "xr.instance" {
             let instance = instance_field(element_key(element)?);
             out.extend(
-                quote!([#(#path,)* rest @ ..] => self.__state.#instance.__edit_path(rest, text),),
+                quote!([#(#path,)* rest @ ..] => self.__state.#instance.__edit_path(rest, node, text),),
             );
             return Ok(());
         }
@@ -3937,6 +5362,13 @@ impl<'a> Generator<'a> {
             let set = self.set_control_property(element, "edit-text", &quote!(text.clone()))?;
             let edited = self.typed_event(element, "edited", &quote!(text))?;
             out.extend(quote!([#(#path),*] => { #set #edited true },));
+        } else if element.attr("kind") == Ok("ColorPickerPopup") {
+            let popup = picker_field(element_key(element)?);
+            let open = self.control_value(element, "open", Type::Bool)?;
+            let show_alpha = self.binding_value_or(element, "show-alpha", quote!(false))?;
+            out.extend(quote! {
+                [#(#path,)* 0, 0, 1] => (#open) && self.__state.#popup.edit_hex(#show_alpha, node, text),
+            });
         } else if element.attr("kind") == Ok("SearchField") {
             let set = self.set_control(element, &quote!(text.clone()))?;
             let edited = self.typed_event(element, "edited", &quote!(text.clone()))?;
@@ -4101,6 +5533,55 @@ impl<'a> Generator<'a> {
         Ok(())
     }
 
+    fn pointer_input_arms(
+        &self,
+        element: OperationRef<'a>,
+        path: &mut Vec<usize>,
+        wheel: &mut TokenStream,
+        pointer: &mut TokenStream,
+    ) -> Result<(), String> {
+        if element.name() == "xr.instance" {
+            let instance = instance_field(element_key(element)?);
+            wheel.extend(
+                quote!([#(#path,)* rest @ ..] => self.__state.#instance.__wheel_path(rest, event),),
+            );
+            pointer.extend(
+                quote!([#(#path,)* rest @ ..] => self.__state.#instance.__pointer_path(rest, event),),
+            );
+            return Ok(());
+        }
+        let kind = element.attr("kind")?;
+        for handler in children(element, "xr.handler") {
+            let returns_result = match (kind, handler.attr("name")?) {
+                ("WheelHandler", "wheel") | ("TouchArea", "scroll-event") => true,
+                ("TouchArea", "pointer-event") => false,
+                _ => continue,
+            };
+            let params: Vec<Parameter> = serde_json::from_str(handler.attr("parameters")?)
+                .map_err(|error| error.to_string())?;
+            let [parameter] = params.as_slice() else {
+                return Err("pointer input handler requires an event parameter".into());
+            };
+            let name = ident(&parameter.name);
+            let body = self.statements(handler)?;
+            if returns_result {
+                let result = children(handler, "xr.return")
+                    .next()
+                    .ok_or("wheel handler requires a result")?;
+                let result = self.expr(self.operand(result, 0)?)?;
+                wheel.extend(quote! { [#(#path),*] => { let #name = *event; #body #result }, });
+            } else {
+                pointer.extend(quote! { [#(#path),*] => { let #name = *event; #body true }, });
+            }
+        }
+        for (index, child) in static_children(element) {
+            path.push(index);
+            self.pointer_input_arms(child, path, wheel, pointer)?;
+            path.pop();
+        }
+        Ok(())
+    }
+
     fn drag_arms(
         &self,
         element: OperationRef<'a>,
@@ -4182,19 +5663,22 @@ impl<'a> Generator<'a> {
             return Ok(());
         }
         if matches!(element.attr("kind"), Ok("Slider" | "Dial")) {
+            let current = self.control_value(element, "value", Type::Float)?;
             let set = self.set_control(element, &quote!(value))?;
             let changed = self.typed_event(element, "changed", &quote!(value))?;
             let released = self.typed_event(element, "released", &quote!(value))?;
             out.extend(quote! {
                 [#(#path),*] => {
-                    let range = ::xrack_runtime::SliderRange::from_node(node);
-                    if action == ::xrack_runtime::RangeAction::Release {
-                        let value = range.value();
-                        #released
-                    } else {
-                        let Some(value) = range.apply(action) else { return false; };
+                    let range = ::xrack_runtime::SliderRange::from_node(node).with_value(#current);
+                    if let Some(value) = range.apply(action) {
                         #set
                         #changed
+                    } else if !action.is_release() {
+                        return false;
+                    }
+                    if action.is_release() {
+                        let value = range.with_value(#current).value();
+                        #released
                     }
                     true
                 },
@@ -4218,7 +5702,9 @@ impl<'a> Generator<'a> {
             let popup = picker_field(element_key(element)?);
             let open = self.control_value(element, "open", Type::Bool)?;
             let show_alpha = self.binding_value_or(element, "show-alpha", quote!(false))?;
+            let show_plane = self.binding_value_or(element, "show-color-plane", quote!(false))?;
             out.extend(quote! {
+                [#(#path,)* 0, 5, ..] => (#open) && (#show_plane) && self.__state.#popup.adjust_plane(node, action),
                 [#(#path,)* 0, ..] => (#open) && self.__state.#popup.slide(#show_alpha, node, action),
             });
         } else if element.attr("kind") == Ok("RangeSlider") {
@@ -4236,16 +5722,19 @@ impl<'a> Generator<'a> {
                     let raw_lower = #lower;
                     let raw_upper = #upper;
                     let interval = ::xrack_runtime::SliderInterval::from_values(node, raw_lower, raw_upper);
-                    if action == ::xrack_runtime::RangeAction::Release {
-                        let [__xr_lower, __xr_upper] = interval.values();
-                        #released
-                    } else {
-                        let Some([next_lower, next_upper]) = interval.apply(*handle, action) else { return false; };
+                    if let Some([next_lower, next_upper]) = interval.apply(*handle, action) {
                         if next_lower != raw_lower { #set_lower }
                         if next_upper != raw_upper { #set_upper }
                         let [__xr_lower, __xr_upper] =
                             ::xrack_runtime::SliderInterval::from_values(node, #lower, #upper).values();
                         #changed
+                    } else if !action.is_release() {
+                        return false;
+                    }
+                    if action.is_release() {
+                        let [__xr_lower, __xr_upper] =
+                            ::xrack_runtime::SliderInterval::from_values(node, #lower, #upper).values();
+                        #released
                     }
                     true
                 },
@@ -4380,7 +5869,7 @@ impl<'a> Generator<'a> {
                 });
             }
 
-            kind @ ("MenuItem" | "Button" | "ToolButton" | "Shortcut")
+            kind @ ("MenuItem" | "Button" | "ToolButton" | "RoundButton" | "Shortcut")
                 if action_ref(element).is_some() =>
             {
                 let activate = action_activate_method(action_ref(element).unwrap());
@@ -4532,33 +6021,22 @@ impl<'a> Generator<'a> {
                 });
             }
             "TreeView" => {
-                let (row, repeat) = self.list_template(element)?;
-                let repeater = repeat_field(self.visuals.repeats[element_key(row)?].index());
-                let model = self.expr(self.operand(repeat, 0)?)?;
-                let tree = self.tree_snapshot(
-                    element,
-                    row,
-                    quote!(self.__state.__visuals.#repeater),
-                    &model,
-                )?;
-                let state = tree_state_field(element_key(element)?);
+                let key = element_key(element)?;
+                let tree = tree_snapshot_method(key);
+                let state = tree_state_field(key);
+                let select = tree_selection_method(key);
                 let current = self.control_value(element, "current-key", Type::Int)?;
                 let key = quote!(key);
                 let set = self.set_control(element, &key)?;
                 let changed = self.typed_event(element, "changed", &key)?;
                 let expanded_event = self.typed_event(element, "expanded", &key)?;
                 let collapsed_event = self.typed_event(element, "collapsed", &key)?;
-                let selected = self.typed_event(
-                    element,
-                    "selection-changed",
-                    &quote!(count as ::core::primitive::i64),
-                )?;
                 out.extend(quote! {
                     [#(#path),*] => {
                         let Some(snapshot) = &node.tree else { return false; };
-                        let live = #tree;
-                        let current = #current;
+                        let live = self.#tree();
                         if let ::xrack_runtime::ControlAction::Tree(::xrack_runtime::TreeAction::SetExpanded { key, row, expanded }) = action {
+                            let current = #current;
                             if !self.__state.#state.set_expanded(&live, key, row, expanded) { return false; }
                             if expanded {
                                 #expanded_event
@@ -4582,26 +6060,21 @@ impl<'a> Generator<'a> {
                             ::xrack_runtime::ControlAction::Tree(::xrack_runtime::TreeAction::Selection(action)) if multiple => action,
                             _ => return false,
                         };
-                        if multiple {
-                            if !snapshot.same_model(&live) { return false; }
-                            let Some(change) = self.__state.#state.select(&live, current, action) else { return false; };
-                            if let Some(key) = change.current { #set #changed }
-                            if let Some(count) = change.selected_count { #selected }
-                            return change.current.is_some() || change.selected_count.is_some();
-                        }
-                        let ::xrack_runtime::TreeSelectionAction::Row { key, row, .. } = action else { return false; };
-                        if current == key
-                            || !live.visible_index(key).and_then(|index| live.rows().get(index)).is_some_and(|item| item.row == row)
-                        { return false; }
-                        #set
-                        #changed
-                        true
+                        if multiple && !snapshot.same_model(&live) { return false; }
+                        self.#select(&live, multiple, action)
                     },
                 });
             }
             kind @ ("ListView" | "GridView" | "StandardListView" | "TableView"
             | "StandardTableView") => {
-                let source_guard = if matches!(kind, "StandardListView" | "StandardTableView")
+                let source_guard = if has_list_visibility(element) {
+                    let model = visible_list_model(element_key(element)?);
+                    quote! {
+                        if node.standard_list_stamp != Some(self.#model().positions().stamp()) {
+                            return false;
+                        }
+                    }
+                } else if kind == "StandardListView"
                     && let Some(binding) = model_binding(element)
                 {
                     let model = self.visual_value(binding, &self.visuals)?;
@@ -4610,7 +6083,10 @@ impl<'a> Generator<'a> {
                             return false;
                         }
                     }
-                } else if kind == "GridView" {
+                } else if kind == "GridView"
+                    || kind == "ListView"
+                        && scene_children(element).any(|row| row.attribute("delegate").is_some())
+                {
                     let (row, repeat) = self.list_template(element)?;
                     let field = repeat_field(self.visuals.repeats[element_key(row)?].index());
                     let model = self.expr(self.operand(repeat, 0)?)?;
@@ -4638,28 +6114,32 @@ impl<'a> Generator<'a> {
                 )?;
                 let header_actions = if table {
                     let field = table_sort_field(element_key(element)?);
+                    let sort_table = table_sort_method(element_key(element)?);
                     let widths = table_widths_field(element_key(element)?);
                     let order = table_order_field(element_key(element)?);
                     let move_column = table_move_method(element_key(element)?);
-                    let selection = table_selection_field(element_key(element)?);
+                    let move_row = table_move_row_method(element_key(element)?);
                     let heights = table_row_heights_field(element_key(element)?);
                     let model = self.table_model(element)?;
-                    let selected = self.typed_event(
-                        element,
-                        "selection-changed",
-                        &quote!(count as ::core::primitive::i64),
-                    )?;
-                    let ascending = self.typed_event(element, "sort-ascending", &value)?;
-                    let descending = self.typed_event(element, "sort-descending", &value)?;
+                    let select_table = table_selection_method(element_key(element)?);
                     quote! {
+                        let model = #model;
+                        if node.standard_list_stamp != Some(model.positions().stamp()) { return false; }
                         if let ::xrack_runtime::ControlAction::ResizeRow { row, key, height } = action {
                             return node.boolean("resizable-rows", false)
-                                && self.__state.#heights.set(#model, row, Some(key), ::core::primitive::f64::from(height));
+                                && self.__state.#heights.set(model, row, Some(key), ::core::primitive::f64::from(height));
                         }
                         if let ::xrack_runtime::ControlAction::MoveColumn { from, to } = action {
                             return node.boolean("movable-columns", false)
                                 && node.table_column_order == self.__state.#order.get(::core::default::Default::default)
                                 && self.#move_column(from as ::core::primitive::i64, to as ::core::primitive::i64);
+                        }
+                        if let ::xrack_runtime::ControlAction::MoveRow { from, to, row, stamp } = action {
+                            return node.boolean("movable-rows", false)
+                                && model.positions().stamp() == stamp
+                                && from < ::xrack_runtime::ListModel::row_count(model)
+                                && ::xrack_runtime::ListModel::row_key(model, from) == row
+                                && self.#move_row(from as ::core::primitive::i64, to as ::core::primitive::i64);
                         }
                         if let ::xrack_runtime::ControlAction::ResizeColumn { column, width } = action {
                             if ::xrack_runtime::resizable_table_column(node, column).is_none() { return false; }
@@ -4671,10 +6151,10 @@ impl<'a> Generator<'a> {
                             return true;
                         }
                         if let ::xrack_runtime::ControlAction::SortColumn(index) = action {
-                            let Some(sort) = node.table_header.as_ref().and_then(|header| header.next_sort(index)) else { return false; };
-                            self.__state.#field.set_if_changed(Some(sort));
-                            if sort.descending { #descending } else { #ascending }
-                            return true;
+                            let Some(header) = node.table_header.as_ref() else { return false; };
+                            if header.sort != self.__state.#field.get(|| None) { return false; }
+                            let Some(sort) = header.next_sort(index) else { return false; };
+                            return self.#sort_table(Some(sort));
                         }
                         if let Some(view) = &node.table_selection {
                             if node.table_column_order != self.__state.#order.get(::core::default::Default::default) { return false; }
@@ -4687,11 +6167,7 @@ impl<'a> Generator<'a> {
                             };
                             if matches!(action, ::xrack_runtime::TableSelectionAction::DragRange { .. })
                                 && !node.boolean("drag-select", false) { return false; }
-                            let current = node.int("current-row").and_then(|value| <::core::primitive::usize as ::core::convert::TryFrom<_>>::try_from(value).ok());
-                            let Some(change) = self.__state.#selection.apply(#model, view, current, action) else { return false; };
-                            if let Some(index) = change.current { #set #event }
-                            if let Some(count) = change.selected_count { #selected }
-                            return change.current.is_some() || change.column_changed || change.selected_count.is_some();
+                            return self.#select_table(action);
                         }
                     }
                 } else {
@@ -4794,7 +6270,7 @@ impl<'a> Generator<'a> {
                                 __xr_text
                             }
                             ControlAction::ClearSearch if !node.boolean("read-only", false) && !current.is_empty() =>
-                                return self.__edit_path(path, ::std::string::String::new()),
+                                return self.__edit_path(path, node, ::std::string::String::new()),
                             _ => return false,
                         };
                         #search
@@ -4846,21 +6322,56 @@ impl<'a> Generator<'a> {
                     },
                 });
             }
-            "Calendar" => {
+            kind @ ("Calendar" | "MonthGrid") => {
                 let set_date = self.set_control_property(element, "date", &quote!(__xr_date))?;
                 let set_month =
                     self.set_control_property(element, "display-month", &quote!(__xr_month))?;
                 let date_changed = self.typed_event(element, "changed", &quote!(__xr_date))?;
                 let month_changed =
                     self.typed_event(element, "month-changed", &quote!(__xr_month))?;
+                let (source_guard, selection_month, activation, browse, activated) = if kind
+                    == "MonthGrid"
+                {
+                    (
+                        quote! {
+                            let live_scene = ::xrack_runtime::Component::render_shared(self);
+                            let Some(live) = live_scene.interactive_at_path(path) else { return false; };
+                            if ::xrack_runtime::CalendarState::from_node(live) != calendar
+                                || live.int("week-start") != node.int("week-start")
+                            { return false; }
+                            let week_start = live.int("week-start").unwrap_or(1);
+                        },
+                        quote!(if calendar.shows(date, week_start) {
+                            calendar.month
+                        } else {
+                            date.first_of_month()
+                        }),
+                        quote! {
+                            CalendarAction::Activate(date) if calendar.allows(date) && calendar.shows(date, week_start) =>
+                                (Some(date), calendar.month),
+                        },
+                        quote!(month.valid() && month.day == 1),
+                        self.typed_event(element, "activated", &quote!(__xr_activated))?,
+                    )
+                } else {
+                    (
+                        TokenStream::new(),
+                        quote!(date.first_of_month()),
+                        TokenStream::new(),
+                        quote!(calendar.allows_month(month)),
+                        TokenStream::new(),
+                    )
+                };
                 out.extend(quote! {
                     [#(#path),*] => {
                         use ::xrack_runtime::CalendarAction;
                         let ::xrack_runtime::ControlAction::Calendar(action) = action else { return false; };
                         let calendar = ::xrack_runtime::CalendarState::from_node(node);
+                        #source_guard
                         let (__xr_date, __xr_month) = match action {
-                            CalendarAction::Select(date) if calendar.allows(date) => (Some(date), date.first_of_month()),
-                            CalendarAction::Browse(month) if calendar.allows_month(month) => (None, month),
+                            CalendarAction::Select(date) if calendar.allows(date) => (Some(date), #selection_month),
+                            #activation
+                            CalendarAction::Browse(month) if #browse => (None, month),
                             _ => return false,
                         };
                         let date_changed = __xr_date.is_some_and(|date| node.date("date") != Some(date));
@@ -4869,6 +6380,10 @@ impl<'a> Generator<'a> {
                         if month_changed { #set_month }
                         if let Some(__xr_date) = __xr_date.filter(|_| date_changed) { #date_changed }
                         if month_changed { #month_changed }
+                        if let CalendarAction::Activate(__xr_activated) = action {
+                            #activated
+                            return true;
+                        }
                         date_changed || month_changed
                     },
                 });
@@ -4887,12 +6402,18 @@ impl<'a> Generator<'a> {
                     },
                 });
             }
-            kind @ ("TimePickerPopup" | "DatePickerPopup" | "ColorPickerPopup") => {
+            kind @ ("TimePickerPopup" | "DatePickerPopup" | "ColorPickerPopup"
+            | "FontPickerPopup") => {
                 let popup = picker_field(element_key(element)?);
                 let open = self.control_value(element, "open", Type::Bool)?;
                 let close = self.set_control_property(element, "open", &quote!(false))?;
                 let (property, _) = picker_value(kind).ok_or("missing picker value")?;
-                let set = self.set_control_property(element, property, &quote!(__xr_value))?;
+                let assignment = if kind == "FontPickerPopup" {
+                    quote!(__xr_value.clone())
+                } else {
+                    quote!(__xr_value)
+                };
+                let set = self.set_control_property(element, property, &assignment)?;
                 let accepted = self.typed_event(element, "accepted", &quote!(__xr_value))?;
                 let canceled = self.typed_event_values(element, "canceled", &[])?;
                 let finish = match kind {
@@ -4910,6 +6431,12 @@ impl<'a> Generator<'a> {
                         });
                         quote!(self.__state.#popup.finish(#bounds, node))
                     }
+                    "FontPickerPopup" => {
+                        out.extend(quote! {
+                            [#(#path,)* 0, ..] => (#open) && self.__state.#popup.edit(node, action),
+                        });
+                        quote!(self.__state.#popup.finish(node))
+                    }
                     _ => {
                         let show_alpha =
                             self.binding_value_or(element, "show-alpha", quote!(false))?;
@@ -4919,7 +6446,7 @@ impl<'a> Generator<'a> {
                                 (#open) && self.__state.#popup.spin(#show_alpha, node, action)
                             },
                         });
-                        quote!(self.__state.#popup.finish(node))
+                        quote!(self.__state.#popup.finish_editor(#show_alpha, node, role))
                     }
                 };
                 out.extend(quote! {
@@ -5058,6 +6585,7 @@ impl<'a> Generator<'a> {
         &self,
         instance: OperationRef<'a>,
         repeat: Option<OperationRef<'a>>,
+        history_table: Option<OperationRef<'a>>,
     ) -> Result<TokenStream, String> {
         let mut inputs = BTreeMap::new();
         let mut links = BTreeSet::new();
@@ -5127,7 +6655,8 @@ impl<'a> Generator<'a> {
                     "instance binds multiple inputs to the same property at {name}"
                 ));
             }
-            let link = self.instance_link_input(self.operand(binding, 0)?, repeat)?;
+            let link =
+                self.instance_link_input(self.operand(binding, 0)?, repeat, history_table)?;
             links.insert(endpoint.clone());
             inputs.insert(
                 endpoint,
@@ -5416,6 +6945,7 @@ impl<'a> Generator<'a> {
         &self,
         target: OperationRef<'a>,
         repeat: Option<OperationRef<'a>>,
+        history_table: Option<OperationRef<'a>>,
     ) -> Result<TokenStream, String> {
         let receiver = quote!(__ui);
         let context = ExpressionContext::new(&receiver);
@@ -5437,8 +6967,9 @@ impl<'a> Generator<'a> {
             let model = self.expr_in(self.operand(repeat, 0)?, context)?;
             let capture =
                 quote!(let __read_row = __context.clone(); let __write_row = __context.clone(););
-            let (project, update) = if target.name() == "xr.get_field" {
-                let field = field_access(self.record_path(target)?);
+            let mut field_path = self.record_path(target)?;
+            let (project, update) = if !field_path.is_empty() {
+                let field = field_access(field_path.iter().copied());
                 (
                     quote!(|row| row #field.clone()),
                     quote!(|row| {
@@ -5450,10 +6981,22 @@ impl<'a> Generator<'a> {
             } else {
                 (quote!(|row| row.clone()), quote!(|_| __value))
             };
+            let write = if let Some(table) = history_table {
+                let history = table_history_field(element_key(table)?);
+                let enabled = table_history_method(element_key(table)?, "enabled");
+                let mut fields = BTreeMap::new();
+                self.record_paste_leaves(&mut field_path, &value_type(target)?, &mut fields);
+                let patch = Self::table_edit_capture(fields);
+                quote!(__write_row.update_in_with_history(
+                    &#model, &__ui.__state.#history, __ui.#enabled(), #update, #patch,
+                );)
+            } else {
+                quote!(__write_row.update_in(&#model, #update);)
+            };
             (
                 capture,
                 quote!(__read_row.read_from(&#model, #project)),
-                quote!(__write_row.update_in(&#model, #update);),
+                write,
             )
         };
         Ok(quote!({
@@ -5542,6 +7085,16 @@ impl<'a> Generator<'a> {
                 fields.extend(quote!(#handle: ::xrack_runtime::SwipeHandle,));
                 defaults.extend(quote!(#handle: ::core::default::Default::default(),));
             }
+            if element.attr("kind") == Ok("HoverHandler") {
+                let handle = hover_handle(key);
+                fields.extend(quote!(#handle: ::xrack_runtime::HoverHandle,));
+                defaults.extend(quote!(#handle: ::core::default::Default::default(),));
+            }
+        }
+        for &key in &self.pointer_targets {
+            let handle = pointer_handle(key);
+            fields.extend(quote!(#handle: ::xrack_runtime::PointerHandle,));
+            defaults.extend(quote!(#handle: ::core::default::Default::default(),));
         }
         for &target in &self.viewport_targets {
             let handle = viewport_handle(target);
@@ -5774,6 +7327,28 @@ impl<'a> Generator<'a> {
                 defaults.extend(quote!(#field: ::core::default::Default::default(),));
             }
         }
+        for (&key, &group) in &self.elements {
+            if day_cell_template(group).is_some() {
+                let field = calendar_cells_field(key);
+                fields.extend(quote!(#field: ::xrack_runtime::CalendarCells,));
+                defaults.extend(quote!(#field: ::core::default::Default::default(),));
+            }
+            if group.attr("kind") != Ok("ActionGroup") {
+                continue;
+            }
+            if !non_exclusive_group(group) {
+                let current = action_group_method(key, "current");
+                let value = self.control_value(group, "current-value", Type::String)?;
+                methods.extend(quote! {
+                    fn #current(&self) -> ::std::string::String { #value }
+                });
+            }
+            let trigger = action_group_method(key, "activated");
+            let activated = self.typed_event_values(group, "activated", &[quote!(__xr_value)])?;
+            methods.extend(quote! {
+                fn #trigger(&self, __xr_value: ::std::string::String) { #activated }
+            });
+        }
         for (&key, &action) in &self.actions {
             let identity = action_key_field(key);
             fields.extend(quote!(#identity: ::xrack_runtime::ActionKey,));
@@ -5786,11 +7361,46 @@ impl<'a> Generator<'a> {
                     .map(|binding| self.visual_value(binding, &self.visuals))
                     .transpose()
             };
+            let member = children(action, "xr.action_group_ref").next();
+            let group = member
+                .map(|member| -> Result<_, String> {
+                    let name = member.attr("group")?;
+                    let group = *self.elements.get(name).ok_or("unknown ActionGroup")?;
+                    Ok((name, group, member.attr("value")?))
+                })
+                .transpose()?;
+            let exclusive = group.filter(|(_, group, _)| !non_exclusive_group(*group));
             let enabled = binding("enabled")?.unwrap_or_else(|| quote!(true));
-            let checkable = binding("checkable")?.unwrap_or_else(|| quote!(false));
-            let checked = self.control_value(action, "checked", Type::Bool)?;
-            let toggle = self.set_control(action, &quote!(!(#checked)))?;
+            let enabled = if let Some((_, group, _)) = group {
+                let group_enabled = self.binding_value_or(group, "enabled", quote!(true))?;
+                quote!((#group_enabled) && (#enabled))
+            } else {
+                enabled
+            };
+            let default_checkable = exclusive.is_some();
+            let checkable = binding("checkable")?.unwrap_or_else(|| quote!(#default_checkable));
+            let (checked, toggle) = if let Some((name, group, value)) = exclusive {
+                let current = action_group_method(name, "current");
+                let select =
+                    self.set_control(group, &quote!(::std::string::String::from(#value)))?;
+                (quote!(__xr_checkable && self.#current() == #value), select)
+            } else {
+                if control_link(action, "checked").is_none() {
+                    let field = control_field(key, "checked");
+                    fields.extend(
+                        quote!(#field: ::xrack_runtime::Property<::core::primitive::bool>,),
+                    );
+                    defaults.extend(quote!(#field: ::core::default::Default::default(),));
+                }
+                let checked = self.control_value(action, "checked", Type::Bool)?;
+                let toggle = self.set_control(action, &quote!(!(#checked)))?;
+                (checked, toggle)
+            };
             let activated = self.typed_event_values(action, "activated", &[])?;
+            let group_activated = group.map(|(name, _, value)| {
+                let trigger = action_group_method(name, "activated");
+                quote!(self.#trigger(::std::string::String::from(#value));)
+            });
             let mut labels = TokenStream::new();
             for name in ["text", "shortcut", "icon"] {
                 if let Some(value) = binding(name)? {
@@ -5799,9 +7409,10 @@ impl<'a> Generator<'a> {
             }
             methods.extend(quote! {
                 fn #render(&self, node: &mut ::xrack_runtime::Node) {
+                    let __xr_checkable = #checkable;
                     node.action = Some(self.__state.#identity);
                     node.properties.insert("enabled", ::xrack_runtime::Value::Bool(#enabled));
-                    node.properties.insert("checkable", ::xrack_runtime::Value::Bool(#checkable));
+                    node.properties.insert("checkable", ::xrack_runtime::Value::Bool(__xr_checkable));
                     node.properties.insert("checked", ::xrack_runtime::Value::Bool(#checked));
                     #labels
                 }
@@ -5809,6 +7420,7 @@ impl<'a> Generator<'a> {
                     if !(#enabled) { return false; }
                     if #checkable { #toggle }
                     #activated
+                    #group_activated
                     true
                 }
             });
@@ -5824,6 +7436,9 @@ impl<'a> Generator<'a> {
                 |name| self.binding_value_or(dialog, name, quote!(::std::string::String::new()));
             let title = string("title")?;
             let (options, handlers) = if dialog.attr("kind") == Ok("FileDialog") {
+                let selection = native_dialog_member(key, "selection");
+                fields.extend(quote!(#selection: ::xrack_runtime::FileDialogSelection,));
+                defaults.extend(quote!(#selection: ::core::default::Default::default(),));
                 let mode = self.binding_value_or(
                     dialog,
                     "mode",
@@ -5851,7 +7466,10 @@ impl<'a> Generator<'a> {
                         name_filters: (#name_filters).snapshot(),
                     })),
                     quote! {
-                        ::xrack_runtime::NativeDialogResult::Files(paths) => { #accepted }
+                        ::xrack_runtime::NativeDialogResult::Files(paths) => {
+                            self.__state.#selection.commit(&paths);
+                            #accepted
+                        }
                         ::xrack_runtime::NativeDialogResult::Canceled => { #canceled }
                     },
                 )
@@ -5992,16 +7610,224 @@ impl<'a> Generator<'a> {
                 }
             });
         }
+        let mut selection_reads = TokenStream::new();
+        let mut selection_writes = TokenStream::new();
+        let mut sort_reads = TokenStream::new();
+        let mut sort_writes = TokenStream::new();
         for &table in &self.tables {
             let key = element_key(table)?;
             let field = table_sort_field(key);
+            let sort_table = table_sort_method(key);
+            let column_value = quote!(__xr_sort.column as ::core::primitive::i64);
+            let ascending = self.typed_event(table, "sort-ascending", &column_value)?;
+            let descending = self.typed_event(table, "sort-descending", &column_value)?;
+            let sortable = table_columns(table)
+                .enumerate()
+                .map(|(index, column)| {
+                    let allowed = self.binding_value_or(column, "sortable", quote!(true))?;
+                    Ok(quote!(#index => #allowed,))
+                })
+                .collect::<Result<TokenStream, String>>()?;
+            let id = table.attr("id")?;
+            let id = if id.is_empty() && key == "root" {
+                "root"
+            } else {
+                id
+            };
+            if !id.is_empty() {
+                sort_reads.extend(quote!(#id => self.__state.#field.get(|| None),));
+                sort_writes.extend(quote!(#id => self.#sort_table(sort),));
+            }
+
             let widths = table_widths_field(key);
             let selection = table_selection_field(key);
             let order = table_order_field(key);
             let move_column = table_move_method(key);
+            let row_order = table_row_order_field(key);
+            let move_row = table_move_row_method(key);
             let heights = table_row_heights_field(key);
             let set_height = table_row_height_method(key);
             let model = self.table_model(table)?;
+            let source = self.view_source_model(table)?;
+            let current_row = self.control_value(table, "current-row", Type::Int)?;
+            let set_current_row = self.set_control(table, &quote!(__xr_next))?;
+            let current_row_changed =
+                self.typed_event(table, "current-row-changed", &quote!(__xr_next))?;
+            let selection_snapshot = table_selection_snapshot_method(key);
+            let select_table = table_selection_method(key);
+            let target = self.binding_value_or(
+                table,
+                "selection-target",
+                quote!(::xrack_runtime::SelectionTarget::Rows),
+            )?;
+            let multiple = self.binding_value_or(table, "multi-select", quote!(false))?;
+            let selected = self.typed_event(
+                table,
+                "selection-changed",
+                &quote!(count as ::core::primitive::i64),
+            )?;
+            let cell_changed = self.typed_event_values(
+                table,
+                "current-cell-changed",
+                &[current_row.clone(), quote!(__xr_column)],
+            )?;
+            if !id.is_empty() {
+                selection_reads.extend(quote!(#id => Some(self.#selection_snapshot()),));
+                selection_writes.extend(quote!(#id => self.#select_table(action),));
+            }
+            let column_count = table_columns(table).count();
+            methods.extend(quote! {
+                fn #selection_snapshot(&self) -> ::xrack_runtime::TableSelectionSnapshot {
+                    let model = #model;
+                    let current = <::core::primitive::usize as ::core::convert::TryFrom<_>>::try_from(#current_row).ok();
+                    self.__state.#selection.snapshot(model, current, #target, #column_count, #multiple)
+                        .with_column_order(self.__state.#order.get(::core::default::Default::default))
+                }
+                fn #select_table(&self, action: ::xrack_runtime::TableSelectionAction) -> ::core::primitive::bool {
+                    let model = #model;
+                    let view = self.#selection_snapshot();
+                    let current = <::core::primitive::usize as ::core::convert::TryFrom<_>>::try_from(#current_row).ok();
+                    let Some(change) = self.__state.#selection.apply(model, &view, current, action) else { return false; };
+                    if let Some(index) = change.current {
+                        let __xr_next = index as ::core::primitive::i64;
+                        #set_current_row
+                        #current_row_changed
+                    }
+                    if change.current.is_some() || change.column_changed {
+                        let __xr_column = self.#selection_snapshot().current_column().map_or(-1i64, |column| column as ::core::primitive::i64);
+                        #cell_changed
+                    }
+                    if let Some(count) = change.selected_count { #selected }
+                    change.current.is_some() || change.column_changed || change.selected_count.is_some()
+                }
+            });
+
+            let auto_sort = table.attr("kind") == Ok("StandardTableView")
+                && children(table, "xr.bind").any(|bind| bind.attr("name") == Ok("auto-sort"));
+            let auto_sort_enabled = self.binding_value_or(table, "auto-sort", quote!(false))?;
+            let filter_field = self.record_field_binding(table, "filter-field")?;
+            let visible_field = self.record_field_binding(table, "row-visible-field")?;
+            let projected = auto_sort || filter_field.is_some() || visible_field.is_some();
+            let standard = table.attr("kind") == Ok("StandardTableView");
+            if standard || visible_field.is_some() {
+                let binding = if standard {
+                    model_binding(table).ok_or("standard table requires a model")?
+                } else {
+                    self.list_template(table)?.1
+                };
+                let Some(Type::RecordList(record)) = operand_type(binding) else {
+                    return Err("table row projection requires a record list".into());
+                };
+                let row_type = ident(&record);
+                let rows = table_rows_model_method(key);
+                let body = if projected {
+                    let compare = if auto_sort {
+                        table_columns(table)
+                            .enumerate()
+                            .map(|(index, column)| {
+                                let name = self
+                                    .record_field_binding(column, "field")?
+                                    .ok_or("standard table column requires a field")?;
+                                let field = field_access(name.split('.'));
+                                let ty = self.record_field_type(record.clone(), &name)?;
+                                let compare = if ty == Type::Float {
+                                    quote!((left #field).total_cmp(&(right #field)))
+                                } else {
+                                    quote!((left #field).cmp(&(right #field)))
+                                };
+                                Ok(quote!(#index => #compare,))
+                            })
+                            .collect::<Result<TokenStream, String>>()?
+                    } else {
+                        TokenStream::new()
+                    };
+                    let sort = quote!(|| if #auto_sort_enabled { self.__state.#field.get(|| None) } else { None });
+                    let compare = quote!(|column, left, right| match column { #compare _ => ::core::cmp::Ordering::Equal });
+                    if let Some(visible) = visible_field {
+                        let visible = field_access(visible.split('.'));
+                        let filter = filter_field
+                            .as_ref()
+                            .map(|filter| {
+                                let filter = field_access(filter.split('.'));
+                                quote!(Some(|item: &#row_type| (item #filter).as_str()))
+                            })
+                            .unwrap_or_else(|| quote!(None));
+                        let query = self.binding_value_or(
+                            table,
+                            "filter-text",
+                            quote!(::std::string::String::new()),
+                        )?;
+                        quote! {
+                            self.__state.#row_order.projected_rows_with_visibility(
+                                || #source, #sort, #compare, #filter, || #query, Some(|item: &#row_type| item #visible),
+                            )
+                        }
+                    } else if let Some(filter) = filter_field {
+                        let filter = field_access(filter.split('.'));
+                        let query = self.binding_value_or(
+                            table,
+                            "filter-text",
+                            quote!(::std::string::String::new()),
+                        )?;
+                        quote! {
+                            self.__state.#row_order.projected_rows(
+                                || #source, #sort, #compare, Some(|item| (item #filter).as_str()), || #query,
+                            )
+                        }
+                    } else {
+                        quote!(self.__state.#row_order.sorted_rows(|| #source, #sort, #compare))
+                    }
+                } else {
+                    quote!(self.__state.#row_order.rows(#source))
+                };
+                methods.extend(quote! {
+                    fn #rows(&self) -> ::xrack_runtime::TableRows<::xrack_runtime::VecModel<#row_type>> {
+                        #body
+                    }
+                });
+            }
+            let (capture_current, restore_current, move_guard) = if auto_sort {
+                (
+                    quote! {
+                        let __xr_cursor = if #auto_sort_enabled {
+                            let model = #model;
+                            let index = <::core::primitive::usize as ::core::convert::TryFrom<_>>::try_from(#current_row).ok();
+                            index.filter(|index| *index < ::xrack_runtime::ListModel::row_count(model))
+                                .map(|index| ::xrack_runtime::ListModel::row_key(model, index))
+                        } else { None };
+                    },
+                    quote! {
+                        if let Some(key) = __xr_cursor
+                            && let Some(index) = ::xrack_runtime::ListModel::index_of_key(#model, key)
+                            && index as ::core::primitive::i64 != #current_row
+                        {
+                            let __xr_next = index as ::core::primitive::i64;
+                            #set_current_row
+                            #current_row_changed
+                        }
+                    },
+                    quote! {
+                        if #auto_sort_enabled && self.__state.#field.get(|| None).is_some() { return false; }
+                    },
+                )
+            } else {
+                (TokenStream::new(), TokenStream::new(), TokenStream::new())
+            };
+            let row_positions = if projected {
+                quote!((#model).positions().clone())
+            } else {
+                quote!(self.__state.#row_order.positions(&*__xr_source))
+            };
+
+            let row_moved = self.typed_event_values(
+                table,
+                "row-moved",
+                &[
+                    quote!(__xr_row as ::core::primitive::i64),
+                    quote!(from),
+                    quote!(to),
+                ],
+            )?;
             let count = table_columns(table).count();
             let moved = self.typed_event_values(
                 table,
@@ -6015,6 +7841,7 @@ impl<'a> Generator<'a> {
             fields.extend(quote!(#widths: ::xrack_runtime::Property<::std::vec::Vec<::core::option::Option<::core::primitive::u32>>>,));
             fields.extend(quote!(#selection: ::xrack_runtime::TableSelection,));
             fields.extend(quote!(#heights: ::xrack_runtime::RowHeightOverrides,));
+            fields.extend(quote!(#row_order: ::xrack_runtime::TableRowOrder,));
             fields.extend(
                 quote!(#order: ::xrack_runtime::Property<::xrack_runtime::TableColumnOrder>,),
             );
@@ -6023,7 +7850,22 @@ impl<'a> Generator<'a> {
             defaults.extend(quote!(#selection: ::core::default::Default::default(),));
             defaults.extend(quote!(#order: ::core::default::Default::default(),));
             defaults.extend(quote!(#heights: ::core::default::Default::default(),));
+            defaults.extend(quote!(#row_order: ::core::default::Default::default(),));
             methods.extend(quote! {
+                fn #sort_table(&self, sort: ::core::option::Option<::xrack_runtime::TableSort>) -> ::core::primitive::bool {
+                    if self.__state.#field.get(|| None) == sort { return false; }
+                    if let Some(candidate) = sort {
+                        let allowed = match candidate.column { #sortable _ => false };
+                        if !allowed { return false; }
+                    }
+                    #capture_current
+                    self.__state.#field.set(sort);
+                    #restore_current
+                    if let Some(__xr_sort) = sort {
+                        if __xr_sort.descending { #descending } else { #ascending }
+                    }
+                    true
+                }
                 fn #set_height(&self, row: ::core::primitive::i64, height: ::xrack_runtime::Length) -> ::core::primitive::bool {
                     let Ok(index) = <::core::primitive::usize as ::core::convert::TryFrom<_>>::try_from(row)
                     else { return false; };
@@ -6041,6 +7883,49 @@ impl<'a> Generator<'a> {
                     #moved
                     true
                 }
+                fn #move_row(&self, from: ::core::primitive::i64, to: ::core::primitive::i64) -> ::core::primitive::bool {
+                    #move_guard
+                    let (Ok(__xr_from), Ok(__xr_to)) = (
+                        <::core::primitive::usize as ::core::convert::TryFrom<_>>::try_from(from),
+                        <::core::primitive::usize as ::core::convert::TryFrom<_>>::try_from(to),
+                    ) else { return false; };
+                    let __xr_source = #source;
+                    let __xr_before = #row_positions;
+                    let __xr_current = #current_row;
+                    let __xr_current_source = <::core::primitive::usize as ::core::convert::TryFrom<_>>::try_from(__xr_current)
+                        .ok().and_then(|index| __xr_before.source_index(index));
+                    let Some(__xr_row) = self.__state.#row_order.move_row(&*__xr_source, __xr_from, __xr_to)
+                    else { return false; };
+                    let __xr_after = #row_positions;
+                    if let Some(__xr_next) = __xr_current_source.and_then(|index| __xr_after.visual_index(index))
+                        .map(|index| index as ::core::primitive::i64).filter(|index| *index != __xr_current)
+                    {
+                        #set_current_row
+                        #current_row_changed
+                    }
+                    #row_moved
+                    true
+                }
+            });
+        }
+        if !selection_reads.is_empty() {
+            methods.extend(quote! {
+                pub fn table_selection(&self, id: &::core::primitive::str) -> ::core::option::Option<::xrack_runtime::TableSelectionSnapshot> {
+                    match id { #selection_reads _ => None }
+                }
+                pub fn select_table(&mut self, id: &::core::primitive::str, action: ::xrack_runtime::TableSelectionAction) -> ::core::primitive::bool {
+                    match id { #selection_writes _ => false }
+                }
+            });
+        }
+        if !sort_reads.is_empty() {
+            methods.extend(quote! {
+                pub fn table_sort(&self, id: &::core::primitive::str) -> ::core::option::Option<::xrack_runtime::TableSort> {
+                    match id { #sort_reads _ => None }
+                }
+                pub fn set_table_sort(&mut self, id: &::core::primitive::str, sort: ::core::option::Option<::xrack_runtime::TableSort>) -> ::core::primitive::bool {
+                    match id { #sort_writes _ => false }
+                }
             });
         }
         for (key, ty) in &self.picker_popups {
@@ -6049,20 +7934,174 @@ impl<'a> Generator<'a> {
                 Type::Date => quote!(::xrack_runtime::DatePopupState),
                 Type::Time => quote!(::xrack_runtime::TimePopupState),
                 Type::Color => quote!(::xrack_runtime::ColorPopupState),
+                Type::Font => quote!(::xrack_runtime::FontPopupState),
                 _ => return Err("unsupported picker state".into()),
             };
             fields.extend(quote!(#field: #state,));
             defaults.extend(quote!(#field: ::core::default::Default::default(),));
         }
+        let mut split_saves = TokenStream::new();
+        let mut split_restores = TokenStream::new();
         for key in &self.splits {
-            let field = split_weights_field(key);
-            fields.extend(quote!(#field: ::xrack_runtime::Property<::core::option::Option<::std::sync::Arc<[::core::option::Option<::core::primitive::f32>]>>>,));
+            let field = split_state_field(key);
+            let handle = split_resize_handle_field(key);
+            let element = self.elements[key];
+            let save = split_save_method(key);
+            let restore = split_restore_method(key);
+            let update = split_update_method(key);
+            let panes = scene_children(element)
+                .enumerate()
+                .map(|(index, pane)| {
+                    let id = pane.attr("id")?;
+                    Ok(if id.is_empty() {
+                        format!("@{index}")
+                    } else {
+                        id.to_owned()
+                    })
+                })
+                .collect::<Result<Vec<_>, String>>()?;
+            let resized = self.typed_event_values(element, "resized", &[])?;
+            let (encode, decode) = if children(element, "xr.split_fill").next().is_some() {
+                (quote!(encode_split_sizes), quote!(decode_split_sizes))
+            } else {
+                (quote!(encode_split_state), quote!(decode_split_state))
+            };
+            let weights = quote!(
+                ::core::option::Option<
+                    ::std::sync::Arc<[::core::option::Option<::core::primitive::f32>]>,
+                >
+            );
+            fields.extend(quote!(#field: ::xrack_runtime::Property<#weights>,));
             defaults.extend(quote!(#field: ::core::default::Default::default(),));
+            fields.extend(quote!(#handle: ::xrack_runtime::SplitResizeHandle,));
+            defaults.extend(quote!(#handle: ::core::default::Default::default(),));
+            methods.extend(quote! {
+                fn #save(&self) -> ::std::string::String {
+                    let weights = self.__state.#field.get(|| None);
+                    ::xrack_runtime::#encode(&[#(#panes),*], weights.as_deref())
+                }
+                fn #restore(&self, state: &::core::primitive::str) -> ::core::primitive::bool {
+                    let Some(weights) = ::xrack_runtime::#decode(&[#(#panes),*], state) else { return false; };
+                    let next = weights.iter().any(::core::option::Option::is_some).then_some(weights);
+                    self.#update(next);
+                    true
+                }
+                fn #update(&self, next: #weights) -> ::core::primitive::bool {
+                    if self.__state.#field.get(|| None) == next {
+                        return false;
+                    }
+                    self.__state.#field.set(next);
+                    #resized
+                    true
+                }
+            });
+            let id = element.attr("id")?;
+            let id = if id.is_empty() && *key == "root" {
+                "root"
+            } else {
+                id
+            };
+            if !id.is_empty() {
+                split_saves.extend(quote!(#id => Some(self.#save()),));
+                split_restores.extend(quote!(#id => self.#restore(state),));
+            }
         }
+        if !split_saves.is_empty() {
+            methods.extend(quote! {
+                pub fn save_split_state(&self, id: &::core::primitive::str) -> ::core::option::Option<::std::string::String> {
+                    match id { #split_saves _ => None }
+                }
+                pub fn restore_split_state(&mut self, id: &::core::primitive::str, state: &::core::primitive::str) -> ::core::primitive::bool {
+                    match id { #split_restores _ => false }
+                }
+            });
+        }
+        let mut tree_reads = TokenStream::new();
+        let mut tree_writes = TokenStream::new();
         for key in &self.trees {
             let field = tree_state_field(key);
+            let element = self.elements[key];
+            let (row, repeat) = self.list_template(element)?;
+            let repeater = repeat_field(self.visuals.repeats[element_key(row)?].index());
+            let model = self.expr(self.operand(repeat, 0)?)?;
+            let tree = self.tree_snapshot(
+                element,
+                row,
+                quote!(self.__state.__visuals.#repeater),
+                &model,
+            )?;
+            let snapshot = tree_snapshot_method(key);
+            let command = tree_command_method(key);
+            let select = tree_selection_method(key);
+            let current = self.control_value(element, "current-key", Type::Int)?;
+            let set = self.set_control(element, &quote!(key))?;
+            let changed = self.typed_event(element, "changed", &quote!(key))?;
+            let expanded = self.typed_event(element, "expanded", &quote!(__xr_change.key))?;
+            let collapsed = self.typed_event(element, "collapsed", &quote!(__xr_change.key))?;
+            let selected = self.typed_event(
+                element,
+                "selection-changed",
+                &quote!(count as ::core::primitive::i64),
+            )?;
             fields.extend(quote!(#field: ::xrack_runtime::TreeState,));
             defaults.extend(quote!(#field: ::core::default::Default::default(),));
+            methods.extend(quote! {
+                fn #snapshot(&self) -> ::std::sync::Arc<::xrack_runtime::TreeSnapshot> {
+                    #tree
+                }
+                fn #select(
+                    &self,
+                    live: &::xrack_runtime::TreeSnapshot,
+                    multiple: bool,
+                    action: ::xrack_runtime::TreeSelectionAction,
+                ) -> bool {
+                    let current = #current;
+                    if multiple {
+                        let Some(change) = self.__state.#field.select(live, current, action) else { return false; };
+                        if let Some(key) = change.current { #set #changed }
+                        if let Some(count) = change.selected_count { #selected }
+                        return change.current.is_some() || change.selected_count.is_some();
+                    }
+                    let ::xrack_runtime::TreeSelectionAction::Row { key, row, .. } = action else { return false; };
+                    if current == key
+                        || !live.visible_index(key).and_then(|index| live.rows().get(index)).is_some_and(|item| item.row == row)
+                    { return false; }
+                    #set
+                    #changed
+                    true
+                }
+                fn #command(&self, command: ::xrack_runtime::TreeCommand) -> bool {
+                    let live = self.#snapshot();
+                    let Some(__xr_change) = self.__state.#field.command(&live, command) else { return false; };
+                    let current = #current;
+                    if let Some(key) = self.#snapshot().nearest_visible_ancestor(current).filter(|key| *key != current) {
+                        #set
+                        #changed
+                    }
+                    if __xr_change.expanded { #expanded } else { #collapsed }
+                    true
+                }
+            });
+            let id = element.attr("id")?;
+            let id = if id.is_empty() && *key == "root" {
+                "root"
+            } else {
+                id
+            };
+            if !id.is_empty() {
+                tree_reads.extend(quote!(#id => Some(self.#snapshot()),));
+                tree_writes.extend(quote!(#id => self.#command(command),));
+            }
+        }
+        if !tree_reads.is_empty() {
+            methods.extend(quote! {
+                pub fn tree_snapshot(&self, id: &str) -> Option<::std::sync::Arc<::xrack_runtime::TreeSnapshot>> {
+                    match id { #tree_reads _ => None }
+                }
+                pub fn command_tree(&mut self, id: &str, command: ::xrack_runtime::TreeCommand) -> bool {
+                    match id { #tree_writes _ => false }
+                }
+            });
         }
         let mut stack_reads = TokenStream::new();
         let mut stack_writes = TokenStream::new();
@@ -6070,9 +8109,61 @@ impl<'a> Generator<'a> {
             let field = stack_field(key);
             let snapshot = stack_snapshot_method(key);
             let navigate = stack_navigate_method(key);
-            let routes = scene_children(view)
-                .map(|page| page.attr("id"))
-                .collect::<Result<Vec<_>, _>>()?;
+            let mut routes = Vec::new();
+            let mut guards = TokenStream::new();
+            let mut activated = TokenStream::new();
+            let mut deactivated = TokenStream::new();
+            let mut removed = TokenStream::new();
+            for page in scene_children(view) {
+                let route = page.attr("id")?;
+                routes.push(route);
+                if let Some(handler) = children(page, "xr.handler")
+                    .find(|handler| handler.attr("name") == Ok("leave-requested"))
+                {
+                    let body = self.typed_event_values(
+                        page,
+                        "leave-requested",
+                        &[quote!(__xr_destination.to_owned()), quote!(__xr_removing)],
+                    )?;
+                    let result = children(handler, "xr.return")
+                        .next()
+                        .ok_or("missing leave-requested result")?;
+                    let result = self.expr(self.operand(result, 0)?)?;
+                    guards.extend(quote!(#route => { #body #result },));
+                }
+                for (event, arms) in [
+                    ("activated", &mut activated),
+                    ("deactivated", &mut deactivated),
+                    ("removed", &mut removed),
+                ] {
+                    let body = self.typed_event_values(page, event, &[])?;
+                    if !body.is_empty() {
+                        arms.extend(quote!(#route => { #body },));
+                    }
+                }
+            }
+            let mut lifecycle = TokenStream::new();
+            if !deactivated.is_empty() {
+                lifecycle.extend(quote! {
+                    if let Some(__xr_route) = __xr_change.deactivated() {
+                        match __xr_route { #deactivated _ => {} }
+                    }
+                });
+            }
+            if !removed.is_empty() {
+                lifecycle.extend(quote! {
+                    for __xr_route in __xr_change.removed() {
+                        match __xr_route { #removed _ => {} }
+                    }
+                });
+            }
+            if !activated.is_empty() {
+                lifecycle.extend(quote! {
+                    if let Some(__xr_route) = __xr_change.activated() {
+                        match __xr_route { #activated _ => {} }
+                    }
+                });
+            }
             let initial = children(view, "xr.bind")
                 .find(|binding| binding.attr("name") == Ok("initial-page"))
                 .map(|binding| self.visual_value(binding, &self.visuals))
@@ -6082,8 +8173,8 @@ impl<'a> Generator<'a> {
                 view,
                 "changed",
                 &[
-                    quote!(__xr_snapshot.current().unwrap_or("").to_owned()),
-                    quote!(__xr_snapshot.depth() as ::core::primitive::i64),
+                    quote!(__xr_change.after.current().unwrap_or("").to_owned()),
+                    quote!(__xr_change.after.depth() as ::core::primitive::i64),
                 ],
             )?;
             fields.extend(quote!(#field: ::xrack_runtime::StackState,));
@@ -6093,8 +8184,12 @@ impl<'a> Generator<'a> {
                     self.__state.#field.snapshot(&[#(#routes),*], || #initial)
                 }
                 fn #navigate(&self, expected: Option<::core::primitive::u64>, action: ::xrack_runtime::StackNavigation<'_>) -> bool {
-                    self.__state.#field.navigate(
-                        &[#(#routes),*], || #initial, expected, action, |__xr_snapshot| { #changed },
+                    self.__state.#field.navigate_guarded(
+                        &[#(#routes),*], || #initial, expected, action,
+                        |__xr_route, __xr_destination, __xr_removing| {
+                            match __xr_route { #guards _ => true }
+                        },
+                        |__xr_change| { #lifecycle #changed },
                     )
                 }
             });
@@ -6125,7 +8220,7 @@ impl<'a> Generator<'a> {
             let component_name = instance.attr("component")?;
             let component = ident(component_name);
             let child_inputs = format_ident!("__Inputs_{}", rust_name(component_name));
-            let bindings = self.instance_inputs(instance, None)?;
+            let bindings = self.instance_inputs(instance, None, None)?;
             fields.extend(quote!(#field: #component,));
             defaults.extend(quote! {
                 #field: #component::__new(#child_inputs {
@@ -6286,7 +8381,7 @@ impl<'a> Generator<'a> {
             }
         };
 
-        let window_lifecycle = if root.attr("kind") == Ok("Window") {
+        let window_lifecycle = if root.attr("kind").is_ok_and(is_window) {
             fields.extend(quote! {
                 __window_close: ::core::cell::Cell<::core::primitive::bool>,
                 __window_commands: ::core::cell::RefCell<::std::vec::Vec<::xrack_runtime::WindowCommand>>,
@@ -6353,10 +8448,89 @@ impl<'a> Generator<'a> {
         self.focus_arms(root, &mut Vec::new(), &mut focus)?;
         let mut keys = TokenStream::new();
         self.key_arms(root, &mut Vec::new(), &mut keys)?;
+        let mut wheels = TokenStream::new();
+        let mut pointers = TokenStream::new();
+        self.pointer_input_arms(root, &mut Vec::new(), &mut wheels, &mut pointers)?;
         let mut drag = TokenStream::new();
         self.drag_arms(root, &mut Vec::new(), &mut drag)?;
         let mut lists = TokenStream::new();
         self.list_arms(root, &mut Vec::new(), &mut lists)?;
+        for (&key, &view) in &self.elements {
+            if !has_virtual_rows(view) {
+                continue;
+            }
+            let lookup = view_index_method(key);
+            let index_body = self.view_index_body(view)?;
+            let select = source_selection_method(key);
+            let selection_body = self.source_selection_body(view)?;
+            let map_source = if view.attr("kind") == Ok("TreeView") {
+                TokenStream::new()
+            } else {
+                quote!(let Some(index) = self.#lookup(source, true) else { return; };)
+            };
+            methods.extend(quote! {
+                fn #lookup(
+                    &self, index: ::core::primitive::usize, from_source: ::core::primitive::bool,
+                ) -> ::core::option::Option<::core::primitive::usize> {
+                    #index_body
+                }
+
+                fn #select(&self, source: ::core::primitive::i64, column: ::core::option::Option<::core::primitive::i64>) {
+                    let Ok(source) = <::core::primitive::usize as ::core::convert::TryFrom<_>>::try_from(source)
+                    else { return; };
+                    #map_source
+                    #selection_body
+                }
+            });
+            if has_list_visibility(view) {
+                let (binding, source) = if view.attr("kind") == Ok("StandardListView") {
+                    let binding = model_binding(view).ok_or("list visibility requires a model")?;
+                    let model = self.visual_value(binding, &self.visuals)?;
+                    (binding, quote!(::std::rc::Rc::new(#model)))
+                } else {
+                    let (row, repeat) = self.list_template(view)?;
+                    let field = repeat_field(self.visuals.repeats[element_key(row)?].index());
+                    let model = self.expr(self.operand(repeat, 0)?)?;
+                    (
+                        repeat,
+                        quote!(self.__state.__visuals.#field.resolve_model(|| #model)),
+                    )
+                };
+                let Some(Type::RecordList(record)) = operand_type(binding) else {
+                    return Err("list visibility requires a record list".into());
+                };
+                let record = ident(&record);
+                let path = self
+                    .record_field_binding(view, "row-visible-field")?
+                    .ok_or("missing list visibility field")?;
+                let visible = field_access(path.split('.'));
+                let model = visible_list_model(key);
+                let order = format_ident!("__list_visibility_order_{}", rust_key(key));
+                fields.extend(quote!(#order: ::xrack_runtime::TableRowOrder,));
+                defaults.extend(quote!(#order: ::core::default::Default::default(),));
+                methods.extend(quote! {
+                    fn #model(&self) -> ::xrack_runtime::TableRows<::xrack_runtime::VecModel<#record>> {
+                        self.__state.#order.visible_rows(|| #source, |item: &#record| item #visible)
+                    }
+                });
+            }
+            let field = list_renderer_field(key);
+            let method = list_rows_method(key);
+            let body = self.list_row_body(view)?;
+            fields.extend(quote!(#field: ::std::cell::OnceCell<::xrack_runtime::ListRowRenderer>,));
+            defaults.extend(quote!(#field: ::core::default::Default::default(),));
+            methods.extend(quote! {
+                fn #method(
+                    &self,
+                    __range: ::core::ops::Range<::core::primitive::usize>,
+                    __xr_columns: &::xrack_runtime::TableColumnWindow,
+                ) -> ::std::vec::Vec<::xrack_runtime::Node> {
+                    #body
+                }
+            });
+        }
+        let mut edit_navigation = TokenStream::new();
+        self.table_edit_navigation_arms(root, &mut Vec::new(), &mut edit_navigation)?;
         let mut clipboard = TableClipboardArms::default();
         self.table_clipboard_arms(root, &mut Vec::new(), &mut clipboard)?;
         let TableClipboardArms {
@@ -6371,7 +8545,8 @@ impl<'a> Generator<'a> {
         defaults.extend(history_defaults);
         methods.extend(history_methods);
         let mut delegate_events = TokenStream::new();
-        self.delegate_event_arms(root, &mut Vec::new(), &mut delegate_events)?;
+        let mut delegates = TokenStream::new();
+        self.delegate_event_arms(root, &mut Vec::new(), &mut delegate_events, &mut delegates)?;
         Ok(quote! {
             #visual_declarations
 
@@ -6446,15 +8621,33 @@ impl<'a> Generator<'a> {
                     match path { #copies _ => ::core::option::Option::None }
                 }
 
+                fn __next_table_edit_cell(
+                    &self, scene: &::xrack_runtime::Node, path: &[::core::primitive::usize],
+                    origin: ::xrack_runtime::TableEditPosition, columns: &[::core::primitive::usize],
+                    backward: ::core::primitive::bool,
+                ) -> ::core::option::Option<::xrack_runtime::TableEditPosition> {
+                    match path { #edit_navigation _ => ::core::option::Option::None }
+                }
+
                 fn __prepare_table_paste(
                     &self, path: &[::core::primitive::usize],
+                    node: &::xrack_runtime::Node,
                     row: ::core::primitive::usize, columns: ::std::vec::Vec<::core::primitive::usize>,
                 ) -> ::core::option::Option<::xrack_runtime::TablePaste> {
                     match path { #pastes _ => ::core::option::Option::None }
                 }
 
-                fn __replay_table_paste(&self, path: &[::core::primitive::usize], redo: ::core::primitive::bool) -> ::core::primitive::bool {
+                fn __replay_table_edit(&self, path: &[::core::primitive::usize], redo: ::core::primitive::bool) -> ::core::primitive::bool {
                     match path { #replays _ => false }
+                }
+
+                fn __with_delegate<R: ::core::default::Default>(
+                    &self,
+                    scene: &::xrack_runtime::Node,
+                    path: &[::core::primitive::usize],
+                    visit: impl FnOnce(&mut dyn ::xrack_runtime::Component, &::xrack_runtime::Node, &[::core::primitive::usize]) -> R,
+                ) -> ::core::option::Option<R> {
+                    match path { #delegates _ => None }
                 }
 
                 fn __route_delegate(
@@ -6463,6 +8656,9 @@ impl<'a> Generator<'a> {
                     path: &[::core::primitive::usize],
                     action: &::xrack_runtime::RoutedEvent<'_>,
                 ) -> ::core::option::Option<::core::primitive::bool> {
+                    if let Some(result) = self.__with_delegate(scene, path, |ui, child, rest| action.apply(ui, child, rest)) {
+                        return Some(result);
+                    }
                     match path {
                         #delegate_events
                         _ => None,
@@ -6523,6 +8719,14 @@ impl<'a> Generator<'a> {
                     match path { #keys _ => ::xrack_runtime::EventResult::Reject }
                 }
 
+                fn __wheel_path(&self, path: &[::core::primitive::usize], event: &::xrack_runtime::WheelEvent) -> ::xrack_runtime::EventResult {
+                    match path { #wheels _ => ::xrack_runtime::EventResult::Reject }
+                }
+
+                fn __pointer_path(&self, path: &[::core::primitive::usize], event: &::xrack_runtime::PointerEvent) -> ::core::primitive::bool {
+                    match path { #pointers _ => false }
+                }
+
                 fn __drag_path(&self, path: &[::core::primitive::usize], event: &::xrack_runtime::DragEvent) -> ::core::primitive::bool {
                     match path { #drag _ => false }
                 }
@@ -6534,7 +8738,7 @@ impl<'a> Generator<'a> {
                     }
                 }
 
-                fn __edit_path(&self, path: &[::core::primitive::usize], text: ::std::string::String) -> ::core::primitive::bool {
+                fn __edit_path(&self, path: &[::core::primitive::usize], node: &::xrack_runtime::Node, text: ::std::string::String) -> ::core::primitive::bool {
                     match path {
                         #edits
                         _ => false,
@@ -6583,7 +8787,17 @@ impl<'a> Generator<'a> {
                 ) -> ::core::option::Option<::std::string::String> {
                     let node = scene.interactive_at_path(path)?;
                     if !node.boolean("copyable", false) { return ::core::option::Option::None; }
-                    self.__copy_table_path(path, node, columns)
+                    self.__with_delegate(scene, path, |ui, child, rest| ui.copy_table_at(child, rest, columns))
+                        .unwrap_or_else(|| self.__copy_table_path(path, node, columns))
+                }
+
+                fn next_table_edit_cell(
+                    &self, scene: &::xrack_runtime::Node, path: &[::core::primitive::usize],
+                    origin: ::xrack_runtime::TableEditPosition, columns: &[::core::primitive::usize],
+                    backward: ::core::primitive::bool,
+                ) -> ::core::option::Option<::xrack_runtime::TableEditPosition> {
+                    self.__with_delegate(scene, path, |ui, child, rest| ui.next_table_edit_cell(child, rest, origin, columns, backward))
+                        .unwrap_or_else(|| self.__next_table_edit_cell(scene, path, origin, columns, backward))
                 }
 
                 fn prepare_table_paste(
@@ -6594,14 +8808,37 @@ impl<'a> Generator<'a> {
                     if !node.boolean("pasteable", false) {
                         return ::core::option::Option::None;
                     }
-                    self.__prepare_table_paste(path, row, columns)
+                    match self.__with_delegate(scene, path, |ui, child, rest| {
+                        ui.prepare_table_paste(child, rest, row, columns.clone())
+                    }) {
+                        Some(result) => {
+                            let apply = result?;
+                            let weak = self.as_weak();
+                            let snapshot = scene.clone();
+                            let path = path.to_vec();
+                            Some(::std::boxed::Box::new(move |text| {
+                                weak.upgrade().is_some_and(|ui| {
+                                    ui.__with_delegate(&snapshot, &path, |_, _, _| true) == Some(true)
+                                        && apply(text)
+                                })
+                            }))
+                        }
+                        None => self.__prepare_table_paste(path, node, row, columns),
+                    }
                 }
 
                 fn replay_table_paste_at(
                     &self, scene: &::xrack_runtime::Node, path: &[::core::primitive::usize], redo: ::core::primitive::bool,
                 ) -> ::core::primitive::bool {
-                    scene.interactive_at_path(path).is_some_and(|node| node.boolean("pasteable", false))
-                        && self.__replay_table_paste(path, redo)
+                    self.replay_table_edit_at(scene, path, redo)
+                }
+
+                fn replay_table_edit_at(
+                    &self, scene: &::xrack_runtime::Node, path: &[::core::primitive::usize], redo: ::core::primitive::bool,
+                ) -> ::core::primitive::bool {
+                    scene.interactive_at_path(path).is_some_and(::xrack_runtime::Node::table_edit_history_enabled)
+                        && self.__with_delegate(scene, path, |ui, child, rest| ui.replay_table_edit_at(child, rest, redo))
+                            .unwrap_or_else(|| self.__replay_table_edit(path, redo))
                 }
 
                 fn dispatch(
@@ -6622,7 +8859,7 @@ impl<'a> Generator<'a> {
                         return false;
                     };
                     let node = match target.kind {
-                        "Slider" | "Dial" | "ScrollBar" => target,
+                        "Slider" | "Dial" | "ScrollBar" | "ColorPlane" => target,
                         "RangeThumb" => {
                             let Some((_, parent)) = path.split_last() else { return false; };
                             let Some(node) = scene.at_path(parent).filter(|node| node.kind == "RangeSlider") else { return false; };
@@ -6674,6 +8911,34 @@ impl<'a> Generator<'a> {
                     }
                 }
 
+                fn wheel_event_at(
+                    &mut self, scene: &::xrack_runtime::Node, path: &[::core::primitive::usize],
+                    event: &::xrack_runtime::WheelEvent,
+                ) -> ::xrack_runtime::EventResult {
+                    use ::xrack_runtime::EventResult;
+                    if !scene.interactive_at_path(path).is_some_and(|node| node.handles_wheel() && node.boolean("enabled", true)) {
+                        return EventResult::Reject;
+                    }
+                    if let Some(accepted) = self.__route_delegate(scene, path, &::xrack_runtime::RoutedEvent::Wheel(event)) {
+                        return if accepted { EventResult::Accept } else { EventResult::Reject };
+                    }
+                    self.__wheel_path(path, event)
+                }
+
+                fn pointer_event_at(
+                    &mut self, scene: &::xrack_runtime::Node, path: &[::core::primitive::usize],
+                    event: &::xrack_runtime::PointerEvent,
+                ) -> ::core::primitive::bool {
+                    let node = if event.kind == ::xrack_runtime::PointerEventKind::Cancel {
+                        scene.at_path(path)
+                    } else {
+                        scene.interactive_at_path(path)
+                    };
+                    node.is_some_and(|node| node.pointer_handle.is_some())
+                        && self.__route_delegate(scene, path, &::xrack_runtime::RoutedEvent::Pointer(event))
+                            .unwrap_or_else(|| self.__pointer_path(path, event))
+                }
+
                 fn drag_event_at(&mut self, scene: &::xrack_runtime::Node, path: &[::core::primitive::usize], event: &::xrack_runtime::DragEvent) -> ::core::primitive::bool {
                     let target = if event.is_terminal() { scene.at_path(path) } else { scene.interactive_at_path(path) };
                     target.is_some_and(|node| node.kind == event.target_kind()) && self
@@ -6692,22 +8957,32 @@ impl<'a> Generator<'a> {
                     })
                 }
 
+                fn resize_split_sizes_at(
+                    &mut self,
+                    scene: &::xrack_runtime::Node,
+                    path: &[::core::primitive::usize],
+                    sizes: &[(::core::primitive::usize, ::core::primitive::f32)],
+                ) -> ::core::primitive::bool {
+                    scene.interactive_at_path(path).is_some_and(|node| {
+                        node.kind == "SplitView" && self.__route_delegate(scene, path, &::xrack_runtime::RoutedEvent::ResizeSplitSizes(sizes)).unwrap_or(false)
+                    })
+                }
+
                 fn edit_at(
                     &mut self,
                     scene: &::xrack_runtime::Node,
                     path: &[::core::primitive::usize],
                     text: ::std::string::String,
                 ) -> ::core::primitive::bool {
-                    if scene.interactive_at_path(path).is_some_and(|node| {
-                        (::xrack_runtime::is_text_input(node.kind) || ::xrack_runtime::combo_editable(node))
-                            && !node.boolean("read-only", false)
-                            && ::xrack_runtime::text_input_value(node) != text
-                    }) {
-                        self.__route_delegate(scene, path, &::xrack_runtime::RoutedEvent::Edit(&text))
-                            .unwrap_or_else(|| self.__edit_path(path, text))
-                    } else {
-                        false
+                    let Some(node) = scene.interactive_at_path(path) else { return false; };
+                    if !(::xrack_runtime::is_text_input(node.kind) || ::xrack_runtime::combo_editable(node))
+                        || node.boolean("read-only", false)
+                        || ::xrack_runtime::text_input_value(node) == text
+                    {
+                        return false;
                     }
+                    self.__route_delegate(scene, path, &::xrack_runtime::RoutedEvent::Edit(&text))
+                        .unwrap_or_else(|| self.__edit_path(path, node, text))
                 }
 
                 fn commit_table_cell(
@@ -6731,7 +9006,8 @@ impl<'a> Generator<'a> {
                     event: &::core::primitive::str,
                 ) -> ::core::primitive::bool {
                     let terminal = scene.at_path(path).is_some_and(|node| matches!((node.kind, event),
-                        ("ScaleRotateGestureHandler", "ended" | "cancelled") | ("SwipeGestureHandler", "swiped" | "cancelled")));
+                        ("ScaleRotateGestureHandler", "ended" | "cancelled") |
+                        ("SwipeGestureHandler", "swiped" | "cancelled") | ("HoverHandler", "exited")));
                     let target = if terminal {
                         scene.at_path(path)
                     } else {
@@ -6897,7 +9173,9 @@ pub fn generate_with_resource_plans(
             animated_images: Vec::new(),
             native_dialogs: Vec::new(),
             focus_targets: BTreeSet::new(),
+            pointer_targets: BTreeSet::new(),
             viewport_targets: BTreeSet::new(),
+            source_scroll_targets: BTreeSet::new(),
             geometry_targets: BTreeSet::new(),
             bound_viewports: Vec::new(),
             scroll_observers: BTreeSet::new(),

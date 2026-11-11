@@ -2,8 +2,9 @@ use async_ui::AsyncDemo;
 use bundled_ui::BundledFontsDemo;
 pub mod ui_driver;
 use controls_ui::{
-    CalendarDemo, CheckStateDemo, ColorDemo, ControlsDemo, DecimalSpinDemo, DelayDemo,
-    GroupBoxDemo, IndicatorsDemo, ThemeDemo, TimeDemo, TimerDemo, TumblerDemo,
+    CalendarAgendaDemo, CalendarDemo, CheckStateDemo, ColorDemo, ControlsDemo, DecimalSpinDemo,
+    DelayDemo, FontPickerDemo, GroupBoxDemo, IndicatorsDemo, MonthGridDemo, SnapSlidersDemo,
+    ThemeDemo, TimeDemo, TimerDemo, TumblerDemo,
 };
 use counter_ui::Counter;
 use delegates_ui::{DelegatesDemo, SwipeDemo};
@@ -12,24 +13,299 @@ use form_ui::{BidiEditorDemo, DragDropDemo, FileDropDemo, FormDemo, PasswordDemo
 use layout_ui::{
     AnimationsDemo, FlexDemo, FlowDemo, FontsDemo, LabelsDemo, LayoutDemo, StatesDemo,
 };
-use list_ui::{DirectoryItem, GridDemo, ListDemo, StandardListDemo};
+use list_ui::{DirectoryItem, GridDemo, ItemDelegatesDemo, ListDemo, StandardListDemo};
 use media_ui::MediaDemo;
-use menu_ui::MenuDemo;
-use navigation_ui::{NavigationDemo, PageDemo, StackDemo, TabBarDemo};
+use menu_ui::{ActionGroupDemo, MenuDemo};
+use navigation_ui::{NavigationDemo, PageDemo, StackDemo, StackGuardDemo, TabBarDemo};
 use notes_ui::NotesDemo;
 use painting_ui::Gallery;
 use records_ui::RecordTableDemo;
 use selection_ui::{EditableChoiceDemo, SelectionDemo};
 use split_ui::SplitDemo;
-use table_ui::{InventoryRow, StandardTableDemo, TableDemo};
+use table_ui::{InventoryRow, StandardTableDemo, TableDemo, TableSortViewsDemo};
 use tooltip_ui::TooltipDemo;
-use tree_ui::TreeDemo;
+use tree_ui::{TreeBranchesDemo, TreeCommandsDemo, TreeDemo};
 use ui_driver::UiDriver;
 use xrack_layout::{
     ChoiceKey, DialGeometry, EditAction, EditSource, Interaction, MenuKey, NavigationKey, Point,
     RangeInput, Size, SliderGeometry, SliderKey, SpinGeometry, TextAreaMotion, TextEdit,
-    TextPosition, font_size,
+    TextMeasurer, TextPosition, font_size,
 };
+
+#[test]
+fn disabled_touch_area_keeps_its_border_and_the_child_buttons_enabled_style() {
+    use layout_ui::PointerPassThroughDemo;
+    use xrack_runtime::Component;
+
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))
+    .unwrap();
+    let mut ui = PointerPassThroughDemo::new();
+    let input = Interaction::default();
+    let (scene, _) =
+        renderer.prepare_scene(&ui, ui.render_shared(), Size::new(420.0, 210.0), &input);
+    let enabled = renderer.snapshot(&scene, 420, 210, 1.0, &input).unwrap();
+    ui.set_overlay_enabled(false);
+    let (scene, _) =
+        renderer.prepare_scene(&ui, ui.render_shared(), Size::new(420.0, 210.0), &input);
+    let disabled = renderer.snapshot(&scene, 420, 210, 1.0, &input).unwrap();
+    assert_eq!(enabled.pixel(64, 69), Some([0x81, 0xb5, 0xf3, 255]));
+    assert_eq!(disabled.pixel(64, 69), Some([0x9c, 0xdb, 0xbd, 255]));
+    assert_eq!(enabled.pixel(298, 96), disabled.pixel(298, 96));
+}
+
+#[test]
+fn touch_point_model_draws_each_contact_at_its_coordinates() {
+    use layout_ui::PointerDemo;
+    use xrack_runtime::{Component, PointerEvent, PointerEventKind};
+
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))
+    .unwrap();
+    let mut ui = PointerDemo::new();
+    let input = Interaction::default();
+    let size = Size::new(420.0, 270.0);
+    let (scene, layout) = renderer.prepare_scene(&ui, ui.render_shared(), size, &input);
+    let begin = |touch_finger_id, point| {
+        input
+            .begin_pointer_sequence(
+                &scene,
+                &layout,
+                point,
+                PointerEvent {
+                    is_touch: true,
+                    touch_finger_id,
+                    ..Default::default()
+                },
+                std::time::Instant::now(),
+            )
+            .unwrap()
+    };
+    let (first, down) = begin(101, Point { x: 100.0, y: 100.0 });
+    assert!(down.apply(&mut ui, &scene));
+    let point = Point { x: 215.0, y: 125.0 };
+    let (mut second, down) = begin(102, point);
+    assert!(down.apply(&mut ui, &scene));
+    let (scene, layout) = renderer.prepare_scene(&ui, ui.render_shared(), size, &input);
+    let both = renderer.snapshot(&scene, 420, 270, 1.0, &input).unwrap();
+    assert_eq!(both.pixel(125, 100), Some([0x3a, 0x56, 0x76, 255]));
+    assert_eq!(both.pixel(100, 100), Some([0xf6, 0xce, 0x83, 255]));
+    assert_eq!(both.pixel(215, 125), Some([0xf6, 0xce, 0x83, 255]));
+    let up = second
+        .sample(
+            &input,
+            &scene,
+            &layout,
+            point,
+            PointerEventKind::Up,
+            Default::default(),
+        )
+        .unwrap();
+    assert!(up.apply(&mut ui, &scene));
+    let (scene, _) = renderer.prepare_scene(&ui, ui.render_shared(), size, &input);
+    let one = renderer.snapshot(&scene, 420, 270, 1.0, &input).unwrap();
+    assert_eq!(one.pixel(125, 100), Some([0x25, 0x44, 0x6a, 255]));
+    assert_eq!(one.pixel(100, 100), both.pixel(100, 100));
+    assert_eq!(one.pixel(215, 125), one.pixel(125, 100));
+    assert!(first.cancel(Default::default()).apply(&mut ui, &scene));
+}
+
+#[test]
+fn touch_area_paints_hover_press_and_release_from_reactive_state() {
+    use layout_ui::PointerDemo;
+    use xrack_layout::HoverObservers;
+    use xrack_runtime::{
+        Component, EventResult, KeyModifiers, Length, PointerEvent, PointerEventKind, WheelEvent,
+    };
+
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))
+    .unwrap();
+    let mut ui = PointerDemo::new();
+    let mut input = Interaction::default();
+    let size = Size::new(420.0, 270.0);
+    let (scene, layout) = renderer.prepare_scene(&ui, ui.render_shared(), size, &input);
+    let area = layout.at_path(&[1, 0, 0]).unwrap().bounds;
+    let point = Point {
+        x: area.x + 70.0,
+        y: area.y + 35.0,
+    };
+    let before = renderer.snapshot(&scene, 420, 270, 1.0, &input).unwrap();
+    let mut hover = HoverObservers::default();
+    hover.sync(&input, &scene, &layout, Some(point));
+    let (scene, layout) = renderer.prepare_scene(&ui, ui.render_shared(), size, &input);
+    let hovered = renderer.snapshot(&scene, 420, 270, 1.0, &input).unwrap();
+    let now = std::time::Instant::now();
+    let (mut sequence, down) = input
+        .begin_pointer_sequence(&scene, &layout, point, PointerEvent::default(), now)
+        .unwrap();
+    assert!(down.apply(&mut ui, &scene));
+    let (scene, layout) = renderer.prepare_scene(&ui, ui.render_shared(), size, &input);
+    let after = renderer.snapshot(&scene, 420, 270, 1.0, &input).unwrap();
+    let (x, y) = (point.x as u32, point.y as u32);
+    assert_eq!(before.pixel(x + 18, y), Some([0x25, 0x37, 0x4c, 255]));
+    assert_eq!(hovered.pixel(x + 18, y), Some([0x2c, 0x42, 0x5b, 255]));
+    assert_eq!(after.pixel(x + 18, y), Some([0x25, 0x44, 0x6a, 255]));
+    assert_eq!(after.pixel(x, y), Some([0x9c, 0xdb, 0xbd, 255]));
+    let deadline = now + std::time::Duration::from_millis(800);
+    assert!(!sequence.advance_press_and_hold(
+        &input,
+        &scene,
+        &layout,
+        &mut ui,
+        deadline - std::time::Duration::from_millis(1)
+    ));
+    assert!(sequence.advance_press_and_hold(&input, &scene, &layout, &mut ui, deadline));
+    assert!(!sequence.advance_press_and_hold(&input, &scene, &layout, &mut ui, deadline));
+    assert_eq!(ui.get_holds(), 1);
+    let (scene, layout) = renderer.prepare_scene(&ui, ui.render_shared(), size, &input);
+    let held = renderer.snapshot(&scene, 420, 270, 1.0, &input).unwrap();
+    assert_eq!(held.pixel(x + 18, y), Some([0x60, 0x42, 0x77, 255]));
+    let up = sequence
+        .sample(
+            &input,
+            &scene,
+            &layout,
+            point,
+            PointerEventKind::Up,
+            Default::default(),
+        )
+        .unwrap();
+    assert!(up.apply(&mut ui, &scene));
+    let (scene, _) = renderer.prepare_scene(&ui, ui.render_shared(), size, &input);
+    let released = renderer.snapshot(&scene, 420, 270, 1.0, &input).unwrap();
+    assert_eq!(released.pixel(x + 18, y), hovered.pixel(x + 18, y));
+    assert_eq!(released.pixel(x, y), hovered.pixel(x, y));
+    let (scene, layout) = renderer.prepare_scene(&ui, ui.render_shared(), size, &input);
+    input.pointer_move(&scene, &layout, point);
+    let route = input
+        .wheel_route(
+            &scene,
+            &layout,
+            WheelEvent {
+                delta_y: Length(28.0),
+                modifiers: KeyModifiers {
+                    control: true,
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    assert_eq!(route.dispatch(&mut ui, &scene), EventResult::Accept);
+    let (scene, _) = renderer.prepare_scene(&ui, ui.render_shared(), size, &input);
+    let tinted = renderer.snapshot(&scene, 420, 270, 1.0, &input).unwrap();
+    assert_eq!(tinted.pixel(x + 18, y), Some([0x32, 0x54, 0x49, 255]));
+    assert!(input.scroll_offsets().is_empty());
+    if let Ok(path) = std::env::var("TEST_UNDECLARED_OUTPUTS_DIR") {
+        after
+            .save_png(std::path::Path::new(&path).join("pointer-event.png"))
+            .unwrap();
+    }
+}
+
+#[test]
+fn wheel_zoom_keeps_the_pointer_anchor_and_paints_the_scaled_canvas() {
+    use layout_ui::WheelDemo;
+    use xrack_runtime::{Component, EventResult, KeyModifiers, Length, WheelEvent};
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))
+    .unwrap();
+    let mut ui = WheelDemo::new();
+    let mut input = Interaction::default();
+    let size = Size::new(460.0, 300.0);
+    let (scene, layout) = renderer.prepare_scene(&ui, ui.render_shared(), size, &input);
+    let canvas = layout.at_path(&[1, 0, 0]).unwrap().bounds;
+    let before = renderer.snapshot(&scene, 460, 300, 1.0, &input).unwrap();
+    input.pointer_move(
+        &scene,
+        &layout,
+        Point {
+            x: canvas.x + 80.0,
+            y: canvas.y + 60.0,
+        },
+    );
+    let route = input
+        .wheel_route(
+            &scene,
+            &layout,
+            WheelEvent {
+                delta_y: Length(-120.0),
+                modifiers: KeyModifiers {
+                    control: true,
+                    ..KeyModifiers::default()
+                },
+                ..WheelEvent::default()
+            },
+        )
+        .unwrap();
+    assert_eq!(route.dispatch(&mut ui, &scene), EventResult::Accept);
+    let (scene, _) = renderer.prepare_scene(&ui, ui.render_shared(), size, &input);
+    let after = renderer.snapshot(&scene, 460, 300, 1.0, &input).unwrap();
+    let (x, y) = ((canvas.x + 31.0) as u32, (canvas.y + 47.0) as u32);
+    assert_eq!(before.pixel(x, y), Some([0x25, 0x37, 0x4c, 255]));
+    assert_eq!(after.pixel(x, y), Some([0x49, 0x69, 0xdf, 255]));
+    if let Ok(path) = std::env::var("TEST_UNDECLARED_OUTPUTS_DIR") {
+        after
+            .save_png(std::path::Path::new(&path).join("wheel-zoom.png"))
+            .unwrap();
+    }
+}
+
+#[test]
+fn hover_bindings_change_painted_controls_without_replacing_their_geometry() {
+    use layout_ui::HoverDemo;
+    use xrack_layout::HoverObservers;
+    use xrack_runtime::Component;
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))
+    .unwrap();
+    let mut ui = HoverDemo::new();
+    let input = Interaction::default();
+    let size = Size::new(420.0, 240.0);
+    let (scene, layout) = renderer.prepare_scene(&ui, ui.render_shared(), size, &input);
+    let area = layout.at_path(&[1]).unwrap().bounds;
+    let button = layout.at_path(&[1, 0, 0, 0]).unwrap().bounds;
+    let point = Point {
+        x: button.x + 30.0,
+        y: button.y + 15.0,
+    };
+    let before = renderer.snapshot(&scene, 420, 240, 1.0, &input).unwrap();
+    for event in HoverObservers::default().sync(&input, &scene, &layout, Some(point)) {
+        event.apply(&mut ui, &scene);
+    }
+    let (scene, layout) = renderer.prepare_scene(&ui, ui.render_shared(), size, &input);
+    assert_eq!(layout.at_path(&[1, 0, 0, 0]).unwrap().bounds, button);
+    let after = renderer.snapshot(&scene, 420, 240, 1.0, &input).unwrap();
+    let sample = ((area.x + 12.0) as u32, (area.y + 40.0) as u32);
+    assert_eq!(
+        before.pixel(sample.0, sample.1),
+        Some([0x25, 0x37, 0x4c, 255])
+    );
+    assert_eq!(
+        after.pixel(sample.0, sample.1),
+        Some([0x25, 0x44, 0x6a, 255])
+    );
+    assert_eq!(
+        after.pixel(point.x as u32, point.y as u32),
+        Some([0x9c, 0xdb, 0xbd, 255])
+    );
+    if let Ok(path) = std::env::var("TEST_UNDECLARED_OUTPUTS_DIR") {
+        after
+            .save_png(std::path::Path::new(&path).join("hover-handler.png"))
+            .unwrap();
+    }
+}
 
 #[test]
 fn flickable_overshoot_rebounds_and_supports_stationary_edge_feedback() {
@@ -765,6 +1041,99 @@ fn bundled_font_collection_shapes_and_paints_without_system_fonts() {
 }
 
 #[test]
+fn font_picker_prepares_system_and_embedded_families_and_paints_the_draft() {
+    use xrack_runtime::{Length, Node, SpinAction, SpinDecimal};
+
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))
+    .unwrap();
+    let mut ui = FontPickerDemo::new();
+    ui.set_picker_open(true);
+    let original = ui.get_selected();
+    let embedded = BundledFontsDemo::new().render().fonts;
+    let input = Interaction::default();
+    let viewport = Size::new(510.0, 430.0);
+    let family = [3, 0, 0, 1];
+    let size = [3, 0, 1, 1];
+    let preview = [3, 0, 4];
+    let prepare = |ui: &FontPickerDemo, renderer: &mut Renderer, fonts| {
+        let mut scene = ui.render();
+        scene.fonts = fonts;
+        renderer.prepare_scene(ui, scene.into(), viewport, &input).0
+    };
+    let system = prepare(&ui, &mut renderer, None);
+    let system_names = system.at_path(&family).unwrap().strings("model");
+    assert!(system_names.len() > 1);
+    assert!(!system_names.iter().any(|family| family == "XRack Demo"));
+    let scene = prepare(&ui, &mut renderer, embedded);
+    let names = scene.at_path(&family).unwrap().strings("model");
+    assert!(system_names.iter().all(|family| names.contains(family)));
+    let index = names
+        .iter()
+        .position(|family| family == "XRack Demo")
+        .unwrap();
+    let before = renderer.snapshot(&scene, 510, 430, 1.0, &input).unwrap();
+
+    assert!(ui.control_at(&scene, &family, ControlAction::Select(index)));
+    let value = SpinDecimal::new(44.0).unwrap();
+    assert!(ui.control_at(
+        &scene,
+        &size,
+        ControlAction::Spin(SpinAction::CommitDecimal(value))
+    ));
+    let draft = prepare(&ui, &mut renderer, embedded);
+    let after = renderer.snapshot(&draft, 510, 430, 1.0, &input).unwrap();
+    let sample = draft.at_path(&preview).unwrap();
+    assert_eq!(sample.font("font").unwrap().family, "XRack Demo");
+    assert!((renderer.text.advance_node(sample, "WWWW") - 105.6).abs() < 0.2);
+    let area = after.layout.at_path(&preview).unwrap().bounds;
+    assert!((area.y as u32..(area.y + area.height) as u32).any(|y| {
+        (area.x as u32..(area.x + area.width) as u32)
+            .any(|x| before.pixel(x, y) != after.pixel(x, y))
+    }));
+    assert_eq!(ui.get_selected(), original);
+
+    let chosen = sample.font("font").unwrap().clone();
+    let mut window = Node::new("Window", None);
+    window.fonts = embedded;
+    window
+        .properties
+        .insert("default-font", chosen.clone().into());
+    renderer.text.set_window(&window);
+    let mut label = Node::new("Text", None);
+    assert!((renderer.text.advance_node(&label, "WWWW") - 105.6).abs() < 0.2);
+    label.properties.insert("font", chosen.into());
+    label.properties.insert("font-size", Length(24.0).into());
+    label.properties.insert("font-weight", 700_i64.into());
+    assert!((renderer.text.advance_node(&label, "WWWW") - 72.0).abs() < 0.2);
+
+    let reset = prepare(&ui, &mut renderer, None);
+    assert!(
+        !renderer
+            .text
+            .font_families()
+            .iter()
+            .any(|name| name == "XRack Demo")
+    );
+    assert_eq!(
+        reset
+            .at_path(&family)
+            .unwrap()
+            .strings("model")
+            .first()
+            .map(String::as_str),
+        Some("XRack Demo")
+    );
+    if let Ok(path) = std::env::var("TEST_UNDECLARED_OUTPUTS_DIR") {
+        before
+            .save_png(std::path::Path::new(&path).join("font-picker.png"))
+            .unwrap();
+    }
+}
+
+#[test]
 fn window_fonts_update_layout_gpu_paint_and_editor_geometry_together() {
     let mut renderer = pollster::block_on(Renderer::new(
         wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
@@ -934,6 +1303,40 @@ fn page_paints_bands_and_clips_the_body_across_resize_and_visibility() {
         .unwrap();
     assert_eq!(frame.pixel(390, 20), Some([0x38, 0x60, 0x55, 255]));
     assert_eq!(frame.pixel(390, 290), Some([0x25, 0x3f, 0x51, 255]));
+}
+
+#[test]
+fn item_delegates_paint_selection_and_trailing_check_indicators() {
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))
+    .unwrap();
+    let mut ui = UiDriver::new(
+        ItemDelegatesDemo::new(),
+        xrack_renderer_femtovg::TextSystem::system().unwrap(),
+        Size::new(644.0, 398.0),
+    );
+    let before = renderer
+        .snapshot(ui.scene(), 644, 398, 1.0, ui.input())
+        .unwrap();
+    let path = [0, 1, 0, 1, 0, 0];
+    let bounds = before.layout.at_path(&path).unwrap().bounds;
+    ui.click_at_path(&path);
+    let after = renderer
+        .snapshot(ui.scene(), 644, 398, 1.0, ui.input())
+        .unwrap();
+    let y = (bounds.y + bounds.height * 0.5) as u32;
+    let indicator = (bounds.x + bounds.width - 21.0) as u32;
+    let background = (bounds.x + bounds.width * 0.5) as u32;
+    assert_ne!(before.pixel(indicator, y), after.pixel(indicator, y));
+    assert_ne!(before.pixel(background, y), after.pixel(background, y));
+    assert_ne!(after.pixel(indicator, y), after.pixel(background, y));
+    if let Ok(path) = std::env::var("TEST_UNDECLARED_OUTPUTS_DIR") {
+        after
+            .save_png(std::path::Path::new(&path).join("item-delegates.png"))
+            .unwrap();
+    }
 }
 
 #[test]
@@ -1155,6 +1558,155 @@ fn color_picker_paints_channel_gradients_and_alpha_over_checkerboard() {
     assert_eq!(swatch(&opaque, 0.0), [64, 128, 192, 255]);
     assert_eq!(swatch(&opaque, 0.0), swatch(&opaque, 1.0));
     assert_eq!(ui.get_selected(), Color(0x4080c080));
+}
+
+#[test]
+fn hsv_color_picker_paints_its_plane_and_synchronizes_hex() {
+    use xrack_layout::ColorPlaneGeometry;
+
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))
+    .unwrap();
+    let mut ui = ColorDemo::new();
+    ui.set_plane_visible(true);
+    ui.set_picker_open(true);
+    ui.set_selected(Color(0xff000080));
+    let input = Interaction::default();
+    let plane = [5, 0, 5, 0];
+    let hue = [5, 0, 5, 1];
+    let hex = [5, 0, 0, 1];
+    let scene = ui.render_shared();
+    let before = renderer.snapshot(&scene, 478, 540, 1.0, &input).unwrap();
+    let geometry = ColorPlaneGeometry::new(before.layout.at_path(&plane).unwrap().bounds);
+    let pixel = |snapshot: &xrack_renderer_femtovg::Snapshot, s, v| {
+        let point = geometry.point(s, v);
+        snapshot.pixel(point.x as u32, point.y as u32).unwrap()
+    };
+    let pale = pixel(&before, 0.08, 0.92);
+    let red = pixel(&before, 0.92, 0.92);
+    let dark = pixel(&before, 0.92, 0.08);
+    assert!(pale[1] > 190 && pale[2] > 190, "{pale:?}");
+    assert!(red[0] > 210 && red[1] < 45 && red[2] < 45, "{red:?}");
+    assert!(dark[0] < 50 && dark[1] < 30 && dark[2] < 30, "{dark:?}");
+
+    assert!(ui.adjust_range_at(&scene, &hue, RangeAction::SetFraction(1.0 / 3.0)));
+    let draft = ui.render_shared();
+    assert_eq!(draft.at_path(&hex).unwrap().text("text"), Some("#00FF0080"));
+    let after = renderer.snapshot(&draft, 478, 540, 1.0, &input).unwrap();
+    let green = pixel(&after, 0.92, 0.92);
+    assert!(
+        green[1] > 210 && green[0] < 45 && green[2] < 45,
+        "{green:?}"
+    );
+    assert_eq!(ui.get_selected(), Color(0xff000080));
+    if let Ok(path) = std::env::var("TEST_UNDECLARED_OUTPUTS_DIR") {
+        after
+            .save_png(std::path::Path::new(&path).join("color-picker.png"))
+            .unwrap();
+    }
+}
+
+#[test]
+fn application_window_keeps_its_bands_outside_the_scrolled_content() {
+    use navigation_ui::ApplicationWindowDemo;
+    use xrack_runtime::Component;
+
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))
+    .unwrap();
+    let ui = ApplicationWindowDemo::new();
+    let scene = ui.render();
+    let mut input = Interaction::default();
+    let before = renderer.snapshot(&scene, 500, 340, 1.0, &input).unwrap();
+    for (x, y, expected) in [
+        (470, 16, [0x27, 0x35, 0x4d, 255]),
+        (470, 50, [0x30, 0x47, 0x65, 255]),
+        (470, 318, [0x29, 0x39, 0x4c, 255]),
+        (9, 160, [0x18, 0x23, 0x31, 255]),
+    ] {
+        assert_eq!(before.pixel(x, y), Some(expected));
+    }
+    input.pointer_move(&scene, &before.layout, Point { x: 415.0, y: 180.0 });
+    assert!(input.scroll_wheel(&before.layout, Point { x: 0.0, y: 95.0 }, false));
+    let after = renderer.snapshot(&scene, 500, 340, 1.0, &input).unwrap();
+    for (x, y) in [(470, 16), (470, 50), (470, 318), (9, 160)] {
+        assert_eq!(after.pixel(x, y), before.pixel(x, y));
+    }
+    assert_ne!(before.pixel(49, 130), after.pixel(49, 130));
+    assert_eq!(after.pixel(49, 130), Some([0x1d, 0x2b, 0x3a, 255]));
+}
+
+#[test]
+fn round_toolbar_paints_the_button_cutout_and_both_separator_orientations() {
+    use menu_ui::RoundToolbarDemo;
+    use xrack_runtime::Component;
+
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))
+    .unwrap();
+    let scene = RoundToolbarDemo::new().render();
+    let input = Interaction::default();
+    let frame = renderer.snapshot(&scene, 480, 280, 1.0, &input).unwrap();
+    assert_eq!(frame.pixel(25, 57), Some([0x38, 0x49, 0x60, 255]));
+    assert_eq!(frame.pixel(51, 69), Some([0x49, 0x69, 0xdf, 255]));
+    let line = |toolbar| {
+        let parent = scene
+            .children
+            .iter()
+            .position(|node| node.id == Some(toolbar))
+            .unwrap();
+        frame.layout.at_path(&[parent, 1]).unwrap().bounds
+    };
+    let vertical = line("horizontal");
+    let horizontal = line("vertical");
+    assert_eq!(vertical.width, 12.0);
+    assert_eq!(horizontal.height, 12.0);
+    let x = (vertical.x + vertical.width * 0.5) as u32;
+    let y = (vertical.y + vertical.height * 0.5) as u32;
+    assert_eq!(frame.pixel(x, y), Some([0xe4, 0xb6, 0x78, 255]));
+    assert_ne!(frame.pixel(x, vertical.y as u32 + 1), frame.pixel(x, y));
+    let x = (horizontal.x + horizontal.width * 0.5) as u32;
+    let y = (horizontal.y + horizontal.height * 0.5) as u32;
+    assert_eq!(frame.pixel(x, y), Some([0x9c, 0xdb, 0xbd, 255]));
+    assert_ne!(frame.pixel(horizontal.x as u32 + 1, y), frame.pixel(x, y));
+}
+
+#[test]
+fn pane_and_frame_paint_their_surfaces_and_clip_children_to_rounded_bounds() {
+    use controls_ui::PaneFrameDemo;
+    use xrack_runtime::{Component, Length, Node};
+
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))
+    .unwrap();
+    let ui = PaneFrameDemo::new();
+    let input = Interaction::default();
+    let scene = ui.render();
+    let before = renderer.snapshot(&scene, 460, 270, 1.0, &input).unwrap();
+    assert_eq!(before.pixel(408, 178), Some([0x27, 0x35, 0x4d, 255]));
+    assert_eq!(before.pixel(110, 74), Some([0x75, 0x85, 0x9a, 255]));
+    assert_eq!(before.pixel(52, 102), Some([0x30, 0x3d, 0x52, 255]));
+
+    let mut scene = scene;
+    let mut swatch = Node::new("Rectangle", None);
+    for (name, value) in [("x", -8.0), ("y", -8.0), ("width", 22.0), ("height", 18.0)] {
+        swatch.properties.insert(name, Length(value).into());
+    }
+    swatch
+        .properties
+        .insert("background", xrack_runtime::Color(0xd76555ff).into());
+    scene.children[2].children[0].children.push(swatch);
+    let clipped = renderer.snapshot(&scene, 460, 270, 1.0, &input).unwrap();
+    assert_eq!(clipped.pixel(49, 75), before.pixel(49, 75));
+    assert_eq!(clipped.pixel(60, 83), Some([0xd7, 0x65, 0x55, 255]));
 }
 
 #[test]
@@ -1411,6 +1963,117 @@ fn decimal_spin_box_paints_its_configured_decimal_separator() {
 }
 
 #[test]
+fn custom_calendar_content_paints_and_updates_the_corresponding_date() {
+    use xrack_layout::CalendarGeometry;
+    use xrack_runtime::Date;
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))
+    .unwrap();
+    let mut ui = CalendarAgendaDemo::new();
+    let input = Interaction::default();
+    let scene = ui.render_shared();
+    let before = renderer.snapshot(&scene, 576, 478, 1.0, &input).unwrap();
+    let path = [6];
+    let geometry = CalendarGeometry::new(
+        scene.at_path(&path).unwrap(),
+        before.layout.at_path(&path).unwrap().bounds,
+    );
+    let chip = |day| {
+        let rect = geometry
+            .days()
+            .find(|cell| cell.date == Date::new(2026, 11, day).unwrap())
+            .unwrap()
+            .bounds;
+        ((rect.x + 12.0) as u32, (rect.y + 34.0) as u32)
+    };
+    let review = chip(12);
+    let release = chip(19);
+    assert_ne!(
+        before.pixel(review.0, review.1),
+        before.pixel(release.0, release.1)
+    );
+    let slot = geometry
+        .days()
+        .find(|day| day.date == ui.get_review_date())
+        .unwrap()
+        .slot;
+    let mut oversized = scene.clone();
+    let month = &mut std::rc::Rc::make_mut(&mut oversized).children[6];
+    let marker = &mut month.children[0].children[slot].children[1];
+    marker
+        .properties
+        .insert("x", xrack_runtime::Length(-140.0).into());
+    marker
+        .properties
+        .insert("width", xrack_runtime::Length(210.0).into());
+    let clipped = renderer
+        .snapshot(&oversized, 576, 478, 1.0, &input)
+        .unwrap();
+    let neighbor = chip(11);
+    assert_eq!(
+        before.pixel(neighbor.0, neighbor.1),
+        clipped.pixel(neighbor.0, neighbor.1)
+    );
+    ui.set_review_date(Date::new(2027, 1, 1).unwrap());
+    let after = renderer
+        .snapshot(&ui.render_shared(), 576, 478, 1.0, &input)
+        .unwrap();
+    assert_ne!(
+        before.pixel(review.0, review.1),
+        after.pixel(review.0, review.1)
+    );
+    assert_eq!(
+        before.pixel(release.0, release.1),
+        after.pixel(release.0, release.1)
+    );
+    if let Ok(path) = std::env::var("TEST_UNDECLARED_OUTPUTS_DIR") {
+        before
+            .save_png(std::path::Path::new(&path).join("calendar-agenda.png"))
+            .unwrap();
+    }
+}
+
+#[test]
+fn month_grid_renders_a_selected_adjacent_day_with_composed_headers() {
+    use xrack_layout::CalendarGeometry;
+    use xrack_runtime::{CalendarAction, Date};
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))
+    .unwrap();
+    let mut ui = MonthGridDemo::new();
+    let input = Interaction::default();
+    let scene = ui.render_shared();
+    let before = renderer.snapshot(&scene, 444, 372, 1.0, &input).unwrap();
+    let path = [6];
+    let geometry = CalendarGeometry::new(
+        scene.at_path(&path).unwrap(),
+        before.layout.at_path(&path).unwrap().bounds,
+    );
+    let adjacent = Date::new(2020, 12, 31).unwrap();
+    let action = CalendarAction::Activate(adjacent);
+    let rect = geometry.action_bounds(action).unwrap();
+    let sample = ((rect.x + 10.0) as u32, (rect.y + 9.0) as u32);
+    assert!(ui.control_at(&scene, &path, ControlAction::Calendar(action)));
+    let after = renderer
+        .snapshot(&ui.render_shared(), 444, 372, 1.0, &input)
+        .unwrap();
+    assert_ne!(
+        before.pixel(sample.0, sample.1),
+        after.pixel(sample.0, sample.1)
+    );
+    assert_eq!(before.pixel(20, 64), after.pixel(20, 64));
+    if let Ok(path) = std::env::var("TEST_UNDECLARED_OUTPUTS_DIR") {
+        after
+            .save_png(std::path::Path::new(&path).join("month-grid.png"))
+            .unwrap();
+    }
+}
+
+#[test]
 fn calendar_draws_the_selected_leap_day_using_its_hit_geometry() {
     use xrack_layout::CalendarGeometry;
     use xrack_runtime::{CalendarAction, Date};
@@ -1527,6 +2190,317 @@ fn time_popup_paints_visible_wheels_and_the_draft_before_accepting() {
             .any(|x| before.pixel(x, y) != after.pixel(x, y))
     }));
     assert_eq!(ui.get_selected(), committed);
+}
+
+#[test]
+fn source_cell_scroll_paints_the_queued_record_after_its_source_index_moves() {
+    use table_ui::{RowVisibilityDemo, RowVisibilityFlags, RowVisibilityRecord};
+    use xrack_runtime::ScrollRequests;
+
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))
+    .unwrap();
+    let mut ui = RowVisibilityDemo::new();
+    ui.set_records(
+        (0..64)
+            .map(|index| RowVisibilityRecord {
+                name: format!("Device {index}"),
+                rank: index,
+                flags: RowVisibilityFlags {
+                    shown: index % 7 != 1,
+                },
+            })
+            .collect(),
+    );
+    let model = ui.model_records();
+    let key = model.row_key(37).unwrap();
+    let viewport = Size::new(720.0, 320.0);
+    let mut input = Interaction::default();
+    let (initial, _) = renderer.prepare_scene(&ui, ui.render_shared(), viewport, &input);
+    let before = renderer.snapshot(&initial, 720, 320, 1.0, &input).unwrap();
+    let requests = ScrollRequests::default();
+    {
+        let _active = requests.enter();
+        ui.invoke_locate_source_cell(37, 1);
+    }
+    model.remove(0);
+    let (scene, layout) = renderer.prepare_scene(&ui, ui.render_shared(), viewport, &input);
+    assert!(input.apply_scroll_requests(&scene, &layout, requests.drain()));
+    let (scene, layout) = renderer.prepare_scene(&ui, ui.render_shared(), viewport, &input);
+    let after = renderer.snapshot(&scene, 720, 320, 1.0, &input).unwrap();
+    assert_eq!(scene.at_path(&[2, 0]).unwrap().row_key, Some(key));
+    assert_eq!(model.row_index(key), Some(36));
+    let row = layout.at_path(&[2, 0]).unwrap().bounds;
+    assert!((row.y as u32..(row.y + row.height) as u32).any(|y| {
+        (row.x as u32..(row.x + row.width) as u32).any(|x| before.pixel(x, y) != after.pixel(x, y))
+    }));
+
+    ui.invoke_select_source(36, 1);
+    assert!(
+        ui.table_selection("standard")
+            .unwrap()
+            .contains_cell(key, 1)
+    );
+    let (scene, layout) = renderer.prepare_scene(&ui, ui.render_shared(), viewport, &input);
+    let selected = renderer.snapshot(&scene, 720, 320, 1.0, &input).unwrap();
+    let row = layout.at_path(&[2, 0]).unwrap().bounds;
+    assert!((row.y as u32..(row.y + row.height) as u32).any(|y| {
+        (row.x as u32..(row.x + row.width) as u32)
+            .any(|x| after.pixel(x, y) != selected.pixel(x, y))
+    }));
+}
+
+#[test]
+fn filtered_list_and_grid_draw_the_next_visible_record_in_the_freed_slot() {
+    use list_ui::ListVisibilityDemo;
+
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))
+    .unwrap();
+    let mut ui = ListVisibilityDemo::new();
+    let viewport = Size::new(660.0, 320.0);
+    let input = Interaction::default();
+    let model = ui.model_records();
+    let (scene, _) = renderer.prepare_scene(&ui, ui.render_shared(), viewport, &input);
+    let before = renderer.snapshot(&scene, 660, 320, 1.0, &input).unwrap();
+    assert!(ui.dispatch_at(&scene, &[1, 0, 0], "clicked"));
+    let (scene, layout) = renderer.prepare_scene(&ui, ui.render_shared(), viewport, &input);
+    let after = renderer.snapshot(&scene, 660, 320, 1.0, &input).unwrap();
+    for view in 1..=3 {
+        assert_eq!(scene.at_path(&[view, 0]).unwrap().row_key, model.row_key(2));
+        let bounds = layout.at_path(&[view, 0, 0]).unwrap().bounds;
+        assert!(
+            (bounds.y as u32..(bounds.y + bounds.height) as u32).any(|y| {
+                (bounds.x as u32..(bounds.x + bounds.width) as u32)
+                    .any(|x| before.pixel(x, y) != after.pixel(x, y))
+            })
+        );
+    }
+}
+
+#[test]
+fn hidden_tree_subtrees_release_their_gpu_row_slots() {
+    use tree_ui::VisibilityTreeDemo;
+
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))
+    .unwrap();
+    let mut ui = VisibilityTreeDemo::new();
+    ui.invoke_initialize();
+    let viewport = Size::new(540.0, 312.0);
+    let input = Interaction::default();
+    let model = ui.model_records();
+    let (initial, _) = renderer.prepare_scene(&ui, ui.render_shared(), viewport, &input);
+    let before = renderer.snapshot(&initial, 540, 312, 1.0, &input).unwrap();
+    assert_eq!(initial.at_path(&[1, 1]).unwrap().row_key, model.row_key(1));
+    let mut branch = model.row(1).unwrap();
+    branch.visibility.shown = false;
+    model.set_row(1, branch);
+    let (scene, layout) = renderer.prepare_scene(&ui, ui.render_shared(), viewport, &input);
+    let after = renderer.snapshot(&scene, 540, 312, 1.0, &input).unwrap();
+    assert_eq!(scene.at_path(&[1]).unwrap().list.unwrap().row_count, 3);
+    assert_eq!(scene.at_path(&[1, 1]).unwrap().row_key, model.row_key(3));
+    let bounds = layout.at_path(&[1, 1, 0, 0]).unwrap().bounds;
+    assert!(
+        (bounds.y as u32..(bounds.y + bounds.height) as u32).any(|y| {
+            (bounds.x as u32..(bounds.x + bounds.width) as u32)
+                .any(|x| before.pixel(x, y) != after.pixel(x, y))
+        })
+    );
+}
+
+#[test]
+fn hidden_table_records_release_their_slots_in_both_gpu_views() {
+    use table_ui::RowVisibilityDemo;
+
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))
+    .unwrap();
+    let ui = RowVisibilityDemo::new();
+    let viewport = Size::new(720.0, 320.0);
+    let input = Interaction::default();
+    let model = ui.model_records();
+    let (initial, _) = renderer.prepare_scene(&ui, ui.render_shared(), viewport, &input);
+    let before = renderer.snapshot(&initial, 720, 320, 1.0, &input).unwrap();
+    let first_key = model.row_key(0);
+    let next_key = model.row_key(1);
+    let mut first = model.row(0).unwrap();
+    first.flags.shown = false;
+    model.set_row(0, first);
+    let (scene, layout) = renderer.prepare_scene(&ui, ui.render_shared(), viewport, &input);
+    let after = renderer.snapshot(&scene, 720, 320, 1.0, &input).unwrap();
+    for table in [1, 2] {
+        let path = [table, 0];
+        assert_eq!(initial.at_path(&path).unwrap().row_key, first_key);
+        assert_eq!(scene.at_path(&path).unwrap().row_key, next_key);
+        assert_eq!(scene.at_path(&[table]).unwrap().list.unwrap().row_count, 2);
+        let bounds = layout.at_path(&[table, 0, 0, 0]).unwrap().bounds;
+        assert!(
+            (bounds.y as u32..(bounds.y + bounds.height) as u32).any(|y| {
+                (bounds.x as u32..(bounds.x + bounds.width) as u32)
+                    .any(|x| before.pixel(x, y) != after.pixel(x, y))
+            })
+        );
+    }
+    assert_eq!(model.len(), 4);
+}
+
+#[test]
+fn hiding_a_frozen_column_repaints_the_next_visible_column_at_the_left_edge() {
+    use table_ui::WideTableDemo;
+
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))
+    .unwrap();
+    let mut ui = WideTableDemo::new();
+    let viewport = Size::new(620.0, 320.0);
+    let input = Interaction::default();
+    let (initial, layout) = renderer.prepare_scene(&ui, ui.render_shared(), viewport, &input);
+    let before = renderer.snapshot(&initial, 620, 320, 1.0, &input).unwrap();
+    let first = layout.at_path(&[1, 0, 0, 0]).unwrap().bounds;
+    ui.set_show_number(false);
+    let (scene, layout) = renderer.prepare_scene(&ui, ui.render_shared(), viewport, &input);
+    let after = renderer.snapshot(&scene, 620, 320, 1.0, &input).unwrap();
+    assert!(scene.at_path(&[1, 0, 0, 0]).is_none());
+    assert!(
+        layout
+            .at_path(&[1])
+            .unwrap()
+            .table
+            .as_ref()
+            .unwrap()
+            .is_frozen(1)
+    );
+    let next = layout.at_path(&[1, 0, 0, 1]).unwrap().bounds;
+    assert_eq!(next.x, first.x);
+    let changed = (first.y as u32..(first.y + first.height) as u32).any(|y| {
+        (first.x as u32..(first.x + first.width) as u32)
+            .any(|x| before.pixel(x, y) != after.pixel(x, y))
+    });
+    assert!(changed);
+}
+
+#[test]
+fn wide_table_draws_newly_materialized_columns_beside_its_frozen_column() {
+    use table_ui::WideTableDemo;
+    use xrack_runtime::Orientation;
+
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))
+    .unwrap();
+    let ui = WideTableDemo::new();
+    let viewport = Size::new(620.0, 320.0);
+    let mut input = Interaction::default();
+    let (initial, layout) = renderer.prepare_scene(&ui, ui.render_shared(), viewport, &input);
+    let geometry = layout.at_path(&[1]).unwrap().table.as_ref().unwrap();
+    assert!(initial.at_path(&[1, 0, 0, 11]).is_none());
+    let before = renderer.snapshot(&initial, 620, 320, 1.0, &input).unwrap();
+    assert!(input.accessibility_scroll_to(
+        &layout,
+        &[1],
+        Orientation::Horizontal,
+        geometry.horizontal.max_offset,
+    ));
+    let (scrolled, layout) = renderer.prepare_scene(&ui, ui.render_shared(), viewport, &input);
+    let end = scrolled.at_path(&[1, 0, 0, 11]).unwrap();
+    assert_eq!(end.text("text"), Some("1 / 12"));
+    let after = renderer.snapshot(&scrolled, 620, 320, 1.0, &input).unwrap();
+    let fixed = layout.at_path(&[1, 0, 0, 0]).unwrap().bounds;
+    let moving = layout.at_path(&[1, 0, 0, 11]).unwrap().bounds;
+    let changes = |rect: xrack_layout::Rect| {
+        (rect.y as u32..(rect.y + rect.height) as u32).any(|y| {
+            (rect.x as u32..(rect.x + rect.width) as u32)
+                .any(|x| before.pixel(x, y) != after.pixel(x, y))
+        })
+    };
+    assert!(!changes(fixed));
+    assert!(changes(moving));
+}
+
+#[test]
+fn scrolling_a_nested_table_preserves_its_frozen_column_and_the_next_table() {
+    use list_ui::NestedDataDemo;
+    use xrack_layout::Rect;
+    use xrack_runtime::Orientation;
+
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))
+    .unwrap();
+    let ui = NestedDataDemo::new();
+    let viewport = Size::new(720.0, 364.0);
+    let mut input = Interaction::default();
+    let a = [1, 0, 0, 1];
+    let b = [1, 1, 0, 1];
+    let (initial, layout) = renderer.prepare_scene(&ui, ui.render_shared(), viewport, &input);
+    let before = renderer.snapshot(&initial, 720, 364, 1.0, &input).unwrap();
+    let original = layout.at_path(&a).unwrap().table.as_ref().unwrap();
+    assert!(input.accessibility_scroll_to(&layout, &a, Orientation::Horizontal, 75.0));
+    let (scrolled, after_layout) =
+        renderer.prepare_scene(&ui, ui.render_shared(), viewport, &input);
+    let after = renderer.snapshot(&scrolled, 720, 364, 1.0, &input).unwrap();
+    let next = after_layout.at_path(&a).unwrap().table.as_ref().unwrap();
+    assert_eq!(next.columns[0], original.columns[0]);
+    assert!((original.columns[1].x - next.columns[1].x - 75.0).abs() < 0.01);
+    let other = after_layout.at_path(&b).unwrap();
+    assert_eq!(
+        other.scroll_on(Orientation::Horizontal).unwrap().offset,
+        0.0
+    );
+    let changes = |bounds: Rect| {
+        (bounds.y as u32..(bounds.y + bounds.height) as u32).any(|y| {
+            (bounds.x as u32..(bounds.x + bounds.width) as u32)
+                .any(|x| before.pixel(x, y) != after.pixel(x, y))
+        })
+    };
+    assert!(changes(after_layout.at_path(&a).unwrap().bounds));
+    assert!(!changes(other.bounds));
+}
+
+#[test]
+fn nested_virtual_list_scroll_repaints_only_its_own_viewport() {
+    use list_ui::NestedListsDemo;
+    use xrack_runtime::Orientation;
+
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))
+    .unwrap();
+    let ui = NestedListsDemo::new();
+    let viewport = Size::new(580.0, 330.0);
+    let mut input = Interaction::default();
+    let a = [1, 0, 0, 1];
+    let b = [1, 1, 0, 1];
+    let (initial, layout) = renderer.prepare_scene(&ui, ui.render_shared(), viewport, &input);
+    let before = renderer.snapshot(&initial, 580, 330, 1.0, &input).unwrap();
+    assert!(input.accessibility_scroll_to(&layout, &a, Orientation::Vertical, 48.0));
+    let (scrolled, layout) = renderer.prepare_scene(&ui, ui.render_shared(), viewport, &input);
+    let after = renderer.snapshot(&scrolled, 580, 330, 1.0, &input).unwrap();
+    assert_eq!(scrolled.at_path(&a).unwrap().list.unwrap().first_row, 2);
+    assert_eq!(scrolled.at_path(&b).unwrap().list.unwrap().first_row, 0);
+    let changed = |path: &[usize]| {
+        let bounds = layout.at_path(path).unwrap().bounds;
+        (bounds.y as u32..(bounds.y + bounds.height) as u32).any(|y| {
+            (bounds.x as u32..(bounds.x + bounds.width) as u32)
+                .any(|x| before.pixel(x, y) != after.pixel(x, y))
+        })
+    };
+    assert!(changed(&a));
+    assert!(!changed(&b));
 }
 
 #[test]
@@ -1904,6 +2878,41 @@ fn editor_context_menu_is_drawn_over_the_form_and_clears_on_escape() {
 }
 
 #[test]
+fn exclusive_action_group_repaints_both_toolbar_choices_after_a_shortcut() {
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))
+    .unwrap();
+    let mut ui = UiDriver::new(
+        ActionGroupDemo::new(),
+        xrack_renderer_femtovg::TextSystem::system().unwrap(),
+        Size::new(620.0, 300.0),
+    );
+    let before = renderer
+        .snapshot(ui.scene(), 620, 300, 1.0, ui.input())
+        .unwrap();
+    assert!(ui.menu_shortcut("Primary+2".parse().unwrap()));
+    let after = renderer
+        .snapshot(ui.scene(), 620, 300, 1.0, ui.input())
+        .unwrap();
+    for slot in 0..2 {
+        let button = before.layout.at_path(&[0, 2, slot]).unwrap().bounds;
+        let (x, y) = ((button.x + 8.0) as u32, (button.y + 8.0) as u32);
+        assert_ne!(before.pixel(x, y), after.pixel(x, y));
+    }
+    ui.click("modes-menu");
+    let panel = ui.menus();
+    assert_eq!(panel[0].rows[0].checked, Some(false));
+    assert_eq!(panel[0].rows[1].checked, Some(true));
+    if let Ok(path) = std::env::var("TEST_UNDECLARED_OUTPUTS_DIR") {
+        after
+            .save_png(std::path::Path::new(&path).join("action-group.png"))
+            .unwrap();
+    }
+}
+
+#[test]
 fn cascaded_menu_panels_render_and_stay_inside_the_viewport() {
     let mut renderer = pollster::block_on(Renderer::new(
         wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
@@ -1990,6 +2999,125 @@ fn cascaded_menu_panels_render_and_stay_inside_the_viewport() {
 }
 
 #[test]
+fn custom_split_handles_paint_their_own_templates_and_state() {
+    use split_ui::CustomSplitDemo;
+    use xrack_runtime::Color;
+
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))
+    .unwrap();
+    let mut ui = CustomSplitDemo::new();
+    let mut input = Interaction::default();
+    let viewport = Size::new(640.0, 240.0);
+    let (scene, layout) = renderer.prepare_scene(&ui, ui.render_shared(), viewport, &input);
+    let handles = [3, 4].map(|slot| layout.at_path(&[0, slot]).unwrap().bounds);
+    let first = handles[0];
+    let hit = Point {
+        x: first.x - 6.0,
+        y: first.y + 12.0,
+    };
+    assert!(!first.contains(hit));
+    input.pointer_move(&scene, &layout, hit);
+    input.pointer_press_in_scene(&scene, &layout);
+    input.split_press(&scene, &layout);
+    ui.set_grip_color(Color(0xe8ed9cff));
+    let active = renderer
+        .snapshot(&ui.render_shared(), 640, 240, 1.0, &input)
+        .unwrap();
+    for (bounds, expected) in handles
+        .into_iter()
+        .zip([[0xff, 0xbf, 0x69, 255], [0x48, 0x5e, 0x7e, 255]])
+    {
+        let x = bounds.x as u32 + 6;
+        let y = bounds.y as u32;
+        assert_eq!(active.pixel(x, y + 12), Some(expected));
+        assert_eq!(active.pixel(x, y + 34), Some([0xe8, 0xed, 0x9c, 255]));
+    }
+    assert_eq!(
+        active.pixel(hit.x as u32, hit.y as u32),
+        Some([0x26, 0x37, 0x4e, 255])
+    );
+}
+
+#[test]
+fn fill_split_keeps_the_side_divider_in_place_after_window_resize() {
+    use split_ui::FillSplitDemo;
+
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))
+    .unwrap();
+    let mut ui = FillSplitDemo::new();
+    let mut input = Interaction::default();
+    let viewport = Size::new(680.0, 320.0);
+    let (scene, layout) = renderer.prepare_scene(&ui, ui.render_shared(), viewport, &input);
+    let work = [0, 2];
+    let handle = layout
+        .at_path(&work)
+        .unwrap()
+        .split
+        .as_ref()
+        .unwrap()
+        .handles[0]
+        .bounds;
+    let point = Point {
+        x: handle.x - 4.0,
+        y: handle.y + 56.0,
+    };
+    assert!(!handle.contains(point));
+    input.pointer_move(&scene, &layout, point);
+    input.pointer_press();
+    input.split_press(&scene, &layout);
+    let active = renderer
+        .snapshot(&ui.render_shared(), 680, 320, 1.0, &input)
+        .unwrap();
+    assert_eq!(
+        active.pixel(handle.x as u32 + 4, point.y as u32),
+        Some([0xff, 0xbf, 0x69, 255])
+    );
+    assert_eq!(
+        active.pixel(point.x as u32, point.y as u32),
+        Some([0x26, 0x37, 0x4e, 255])
+    );
+    input.pointer_move(
+        &scene,
+        &layout,
+        Point {
+            x: point.x + 32.0,
+            ..point
+        },
+    );
+    let resize = input.split_drag(&scene, &layout).unwrap();
+    assert!(ui.resize_split_sizes_at(&scene, &resize.path, resize.sizes.as_deref().unwrap()));
+    assert!(input.finish_split_resize());
+
+    let scene = ui.render_shared();
+    let normal = renderer.snapshot(&scene, 680, 320, 1.0, &input).unwrap();
+    let wide = renderer.snapshot(&scene, 880, 320, 1.0, &input).unwrap();
+    for snapshot in [&normal, &wide] {
+        let work = snapshot.layout.at_path(&work).unwrap();
+        let after = work.split.as_ref().unwrap().handles[0].bounds;
+        assert_eq!(after.x, handle.x + 32.0);
+        assert_eq!(work.children[2].bounds.width, 160.0);
+        assert_eq!(
+            snapshot.pixel(point.x as u32 + 16, point.y as u32),
+            Some([0x26, 0x37, 0x4e, 255])
+        );
+        assert_eq!(
+            snapshot.pixel(handle.x as u32 + 54, point.y as u32),
+            Some([0x30, 0x46, 0x63, 255])
+        );
+        assert_eq!(
+            snapshot.pixel(after.x as u32 + 4, point.y as u32),
+            Some([0x81, 0xa6, 0xe1, 255])
+        );
+    }
+}
+
+#[test]
 fn split_view_renders_the_dragged_divider_and_nested_panels() {
     let mut renderer = pollster::block_on(Renderer::new(
         wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
@@ -2050,8 +3178,37 @@ fn split_view_renders_the_dragged_divider_and_nested_panels() {
         ),
         Some([0x82, 0xa3, 0xe4, 255])
     );
+    let saved = ui.save_split_state("work").unwrap();
+    let mut restored = SplitDemo::new();
+    restored.set_saved_layout(saved.clone());
+    assert!(restored.restore_split_state("work", &saved));
+    let restored_frame = renderer
+        .snapshot(
+            &restored.render_shared(),
+            760,
+            420,
+            1.0,
+            &Interaction::default(),
+        )
+        .unwrap();
+    assert_eq!(
+        restored_frame
+            .layout
+            .at_path(&work)
+            .unwrap()
+            .split
+            .as_ref()
+            .unwrap()
+            .handles[0]
+            .bounds,
+        handle,
+    );
+    assert_eq!(
+        restored_frame.pixel(point.x as u32 + 20, point.y as u32),
+        frame.pixel(point.x as u32 + 20, point.y as u32),
+    );
     if let Ok(path) = std::env::var("TEST_UNDECLARED_OUTPUTS_DIR") {
-        frame
+        restored_frame
             .save_png(std::path::Path::new(&path).join("split-workspace.png"))
             .unwrap();
     }
@@ -2102,6 +3259,98 @@ fn tooltip_overlay_renders_custom_content_inside_the_window() {
     assert!(input.dismiss_tooltip());
     let after = renderer.snapshot(&scene, 510, 260, 1.0, &input).unwrap();
     assert_eq!(after.rgba, before.rgba);
+}
+
+#[test]
+fn programmatic_tree_expansion_paints_the_requested_deep_node() {
+    use xrack_runtime::{ScrollRequests, TreeCommand};
+
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))
+    .unwrap();
+    let mut ui = TreeCommandsDemo::new();
+    let mut input = Interaction::default();
+    let viewport = Size::new(610.0, 440.0);
+    let path = [0, 2];
+    let (scene, _) = renderer.prepare_scene(&ui, ui.render_shared(), viewport, &input);
+    let before = renderer.snapshot(&scene, 610, 440, 1.0, &input).unwrap();
+    assert_eq!(scene.at_path(&path).unwrap().children.len(), 2);
+    let scroll = ScrollRequests::default();
+    {
+        let _context = scroll.enter();
+        ui.invoke_reveal(103);
+    }
+    let (scene, layout) = renderer.prepare_scene(&ui, ui.render_shared(), viewport, &input);
+    input.apply_scroll_requests(&scene, &layout, scroll.drain());
+    let (scene, _) = renderer.prepare_scene(&ui, ui.render_shared(), viewport, &input);
+    let frame = renderer.snapshot(&scene, 610, 440, 1.0, &input).unwrap();
+    assert_eq!(scene.at_path(&path).unwrap().children.len(), 7);
+    assert_eq!(ui.get_current(), 103);
+    let tree = frame.layout.at_path(&path).unwrap();
+    let left = tree.children[0].children[0].bounds.x;
+    let target = tree.children[3].children[0].bounds.x;
+    assert!((target - left - 48.0).abs() < 0.1);
+    assert_ne!(before.rgba, frame.rgba);
+    if let Ok(path) = std::env::var("TEST_UNDECLARED_OUTPUTS_DIR") {
+        frame
+            .save_png(std::path::Path::new(&path).join("tree-commands.png"))
+            .unwrap();
+    }
+    assert!(ui.command_tree("directory", TreeCommand::CollapseRecursively(-1)));
+    let (scene, _) = renderer.prepare_scene(&ui, ui.render_shared(), viewport, &input);
+    let collapsed = renderer.snapshot(&scene, 610, 440, 1.0, &input).unwrap();
+    assert_eq!(scene.at_path(&path).unwrap().children.len(), 2);
+    assert_eq!(ui.get_current(), 1);
+    assert_ne!(frame.rgba, collapsed.rgba);
+}
+
+#[test]
+fn rooted_tree_views_paint_shared_rows_with_relative_indentation() {
+    use xrack_runtime::TreeCommand;
+
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))
+    .unwrap();
+    let mut ui = TreeBranchesDemo::new();
+    ui.invoke_initialize();
+    assert!(ui.command_tree("branch", TreeCommand::ExpandTo(103)));
+    ui.set_folder(10);
+    let input = Interaction::default();
+    let viewport = Size::new(760.0, 430.0);
+    let (scene, _) = renderer.prepare_scene(&ui, ui.render_shared(), viewport, &input);
+    let frame = renderer.snapshot(&scene, 760, 430, 1.0, &input).unwrap();
+    let overview = [0, 2, 0, 1];
+    let branch = [0, 2, 1, 1];
+    let global = scene.at_path(&overview).unwrap();
+    let scoped = scene.at_path(&branch).unwrap();
+    assert_eq!(scoped.children.len(), 3);
+    assert_eq!(scoped.children[1].row_key, global.children[3].row_key);
+    let area = frame.layout.at_path(&branch).unwrap();
+    let first = area.children[0].children[0].bounds.x;
+    let child = area.children[1].children[0].bounds.x;
+    assert!((child - first - 16.0).abs() < 0.1);
+    assert_eq!(scoped.tree.as_ref().unwrap().rows()[1].depth, 1);
+    ui.set_query("WINDOW".into());
+    let (scene, _) = renderer.prepare_scene(&ui, ui.render_shared(), viewport, &input);
+    assert_eq!(
+        scene.at_path(&overview).unwrap().children.len(),
+        global.children.len()
+    );
+    assert_eq!(scene.at_path(&branch).unwrap().children.len(), 2);
+    let filtered = renderer.snapshot(&scene, 760, 430, 1.0, &input).unwrap();
+    assert_ne!(filtered.rgba, frame.rgba);
+    if let Ok(path) = std::env::var("TEST_UNDECLARED_OUTPUTS_DIR") {
+        frame
+            .save_png(std::path::Path::new(&path).join("tree-branches.png"))
+            .unwrap();
+        filtered
+            .save_png(std::path::Path::new(&path).join("tree-filter.png"))
+            .unwrap();
+    }
 }
 
 #[test]
@@ -2669,6 +3918,134 @@ fn frozen_table_pane_clips_scrolled_and_transformed_cell_pixels() {
 }
 
 #[test]
+fn table_row_numbers_paint_a_fixed_gutter_and_selection_state() {
+    let mut ui = TableDemo::new();
+    ui.set_row_header_size(xrack_runtime::Length(64.0));
+    ui.set_records(vec!["A".into(), "B".into()]);
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))
+    .unwrap();
+    let path = [0, 2];
+    let viewport = Size::new(560.0, 370.0);
+    let mut input = Interaction::default();
+    let base = ui.render_shared();
+    assert!(ui.control_at(
+        &base,
+        &path,
+        ControlAction::ResizeColumn {
+            column: 0,
+            width: 440
+        }
+    ));
+    let (scene, layout) = renderer.prepare_scene(&ui, ui.render_shared(), viewport, &input);
+    let table = layout.at_path(&path).unwrap().table.as_ref().unwrap();
+    let gutter = table.row_header;
+    let row = &scene.at_path(&path).unwrap().children[0];
+    assert_eq!(row.text("row-header-text"), Some("1"));
+    let before = renderer.snapshot(&scene, 560, 370, 1.0, &input).unwrap();
+    assert!(input.accessibility_scroll_to(
+        &layout,
+        &path,
+        xrack_runtime::Orientation::Horizontal,
+        140.0
+    ));
+    let (scene, _) = renderer.prepare_scene(&ui, ui.render_shared(), viewport, &input);
+    let scrolled = renderer.snapshot(&scene, 560, 370, 1.0, &input).unwrap();
+    for y in (gutter.y + 2.0) as u32..(gutter.y + 30.0) as u32 {
+        for x in (gutter.x + 1.0) as u32..(gutter.x + gutter.width - 1.0) as u32 {
+            assert_eq!(scrolled.pixel(x, y), before.pixel(x, y));
+        }
+    }
+    assert!(ui.control_at(
+        &scene,
+        &path,
+        ControlAction::TableSelection(xrack_runtime::TableSelectionAction::Row {
+            index: 0,
+            operation: xrack_runtime::RowSelection::Replace
+        },)
+    ));
+    let (scene, _) = renderer.prepare_scene(&ui, ui.render_shared(), viewport, &input);
+    let selected = renderer.snapshot(&scene, 560, 370, 1.0, &input).unwrap();
+    let x = (gutter.x + 42.0) as u32;
+    let y = (gutter.y + 16.0) as u32;
+    assert_ne!(selected.pixel(x, y), scrolled.pixel(x, y));
+    if let Ok(path) = std::env::var("TEST_UNDECLARED_OUTPUTS_DIR") {
+        selected
+            .save_png(std::path::Path::new(&path).join("table-row-headers.png"))
+            .unwrap();
+    }
+}
+
+#[test]
+fn row_reorder_insertion_line_spans_the_gutter_and_frozen_panes() {
+    use std::time::{Duration, Instant};
+    use xrack_layout::ScrollGestureKind;
+    let mut ui = StandardTableDemo::new();
+    ui.set_row_header_size(xrack_runtime::Length(84.0));
+    ui.set_move_rows(true);
+    ui.set_pinned(1);
+    ui.set_inventory(
+        (0..4)
+            .map(|units| InventoryRow {
+                units,
+                name: format!("Device {units}"),
+                ..InventoryRow::default()
+            })
+            .collect(),
+    );
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))
+    .unwrap();
+    let path = [0, 1];
+    let mut input = Interaction::default();
+    let (scene, layout) =
+        renderer.prepare_scene(&ui, ui.render_shared(), Size::new(540.0, 380.0), &input);
+    let item = layout.at_path(&path).unwrap();
+    let table = item.table.as_ref().unwrap();
+    let seam = table.frozen_boundary().unwrap();
+    let start = Point {
+        x: table.row_header.x + 20.0,
+        y: item.children[0].bounds.y + 16.0,
+    };
+    let end = Point {
+        y: item.children[2].bounds.y + 22.0,
+        ..start
+    };
+    let baseline = renderer.snapshot(&scene, 540, 380, 1.0, &input).unwrap();
+    let now = Instant::now();
+    let hold = now + Duration::from_millis(500);
+    assert!(input.begin_scroll_gesture(&scene, &layout, start, now, ScrollGestureKind::Touch));
+    assert!(input.advance_table_touch_hold(&scene, &layout, hold));
+    let held = renderer.snapshot(&scene, 540, 380, 1.0, &input).unwrap();
+    let source = ((start.x + 35.0) as u32, start.y as u32);
+    assert_ne!(
+        baseline.pixel(source.0, source.1),
+        held.pixel(source.0, source.1)
+    );
+    assert!(input.move_scroll_gesture(&scene, &layout, end, hold));
+    let marker = input
+        .table_row_move_marker(&path, scene.at_path(&path).unwrap(), item)
+        .unwrap();
+    let preview = renderer.snapshot(&scene, 540, 380, 1.0, &input).unwrap();
+    assert!(input.cancel_table_touch_drag());
+    let cancelled = renderer.snapshot(&scene, 540, 380, 1.0, &input).unwrap();
+    let y = (marker.y + 1.0) as u32;
+    for x in [start.x, seam - 12.0, seam + 12.0] {
+        assert_ne!(preview.pixel(x as u32, y), cancelled.pixel(x as u32, y));
+    }
+    assert_eq!(ui.get_moved_row_to(), -1);
+    if let Ok(path) = std::env::var("TEST_UNDECLARED_OUTPUTS_DIR") {
+        preview
+            .save_png(std::path::Path::new(&path).join("table-row-move.png"))
+            .unwrap();
+    }
+}
+
+#[test]
 fn moved_table_columns_repaint_their_cells_below_the_new_header_positions() {
     let mut ui = TableDemo::new();
     ui.set_records(vec!["A".into(), "B".into()]);
@@ -2744,18 +4121,18 @@ fn standard_table_paints_projected_cells_and_ignores_offscreen_value_edits() {
     let input = Interaction::default();
     let viewport = Size::new(620.0, 380.0);
     let prepared = Property::default();
-    let prepare = |renderer: &mut Renderer| {
-        prepared.get(|| Rc::new(renderer.prepare_scene(&ui, ui.render_shared(), viewport, &input)))
+    let prepare = |ui: &StandardTableDemo, renderer: &mut Renderer| {
+        prepared.get(|| Rc::new(renderer.prepare_scene(ui, ui.render_shared(), viewport, &input)))
     };
-    let first = prepare(&mut renderer);
+    let first = prepare(&ui, &mut renderer);
     let model = ui.model_inventory();
     for (index, label) in [(49_999, "Offscreen"), (0, "Visible change")] {
         let mut row = model.row(index).unwrap();
         row.name = label.to_owned();
         assert!(model.set_row(index, row));
-        assert_eq!(Rc::ptr_eq(&first, &prepare(&mut renderer)), index != 0);
+        assert_eq!(Rc::ptr_eq(&first, &prepare(&ui, &mut renderer)), index != 0);
     }
-    let after = prepare(&mut renderer);
+    let after = prepare(&ui, &mut renderer);
     let path = [0, 1, 0, 0, 0];
     assert_eq!(
         after.0.at_path(&path).unwrap().text("text"),
@@ -2768,6 +4145,182 @@ fn standard_table_paints_projected_cells_and_ignores_offscreen_value_edits() {
         (cell.x as u32..(cell.x + cell.width) as u32)
             .any(|x| before_pixels.pixel(x, y) != after_pixels.pixel(x, y))
     }));
+
+    ui.set_filter_query(" OffSCREEN ".into());
+    let filtered = prepare(&ui, &mut renderer);
+    let table = filtered.0.find("inventory-table").unwrap();
+    assert_eq!(table.list.unwrap().row_count, 1);
+    assert_eq!(table.children.len(), 1);
+    assert_eq!(table.children[0].row_key, model.row_key(49_999));
+    assert_eq!(
+        filtered.0.at_path(&path).unwrap().text("text"),
+        Some("Offscreen")
+    );
+    let filtered_pixels = renderer
+        .snapshot(&filtered.0, 620, 380, 1.0, &input)
+        .unwrap();
+    assert!((cell.y as u32..(cell.y + cell.height) as u32).any(|y| {
+        (cell.x as u32..(cell.x + cell.width) as u32)
+            .any(|x| after_pixels.pixel(x, y) != filtered_pixels.pixel(x, y))
+    }));
+}
+
+#[test]
+fn standard_table_shows_the_invalid_typed_draft_until_it_is_corrected() {
+    use xrack_runtime::{Component, FocusRequests, ScrollRequests};
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))
+    .unwrap();
+    let mut ui = StandardTableDemo::new();
+    ui.set_edit_columns(true);
+    ui.set_inventory(vec![InventoryRow {
+        name: "交换机".into(),
+        units: 12,
+        available: true,
+        ..InventoryRow::default()
+    }]);
+    let focus = FocusRequests::default();
+    let scroll = ScrollRequests::default();
+    let _focus = focus.enter();
+    let _scroll = scroll.enter();
+    let mut input = Interaction::default();
+    let viewport = Size::new(620.0, 380.0);
+    ui.invoke_edit_inventory_cell(0, 1);
+    let (mut scene, mut layout) = renderer.prepare_scene(&ui, ui.render_shared(), viewport, &input);
+    if input.apply_scroll_requests(&scene, &layout, scroll.drain()) {
+        (scene, layout) = renderer.prepare_scene(&ui, ui.render_shared(), viewport, &input);
+    }
+    input.apply_focus_requests(&scene, &layout, focus.drain());
+    let path = input.focused.as_ref().unwrap().path.clone();
+    assert!(input.table_cell_editing(&path));
+    assert!(input.edit_text(
+        &mut ui,
+        &scene,
+        EditAction::Insert("12x"),
+        EditSource::Atomic,
+        std::time::Instant::now()
+    ));
+    assert!(!input.commit_table_edit(&mut ui, &scene));
+    assert_eq!(ui.model_inventory().row(0).unwrap().units, 12);
+    assert!(input.table_cell_editing(&path));
+    let frame = renderer.snapshot(&scene, 620, 380, 1.0, &input).unwrap();
+    assert!(
+        frame
+            .rgba
+            .as_chunks::<4>()
+            .0
+            .contains(&[0xa6, 0x38, 0x43, 0xff])
+    );
+    if let Ok(path) = std::env::var("TEST_UNDECLARED_OUTPUTS_DIR") {
+        frame
+            .save_png(std::path::Path::new(&path).join("standard-table-invalid-edit.png"))
+            .unwrap();
+    }
+    assert!(input.edit_text(
+        &mut ui,
+        &scene,
+        EditAction::ReplaceAll("24"),
+        EditSource::Atomic,
+        std::time::Instant::now()
+    ));
+    assert!(input.commit_table_edit(&mut ui, &scene));
+    assert_eq!(ui.model_inventory().row(0).unwrap().units, 24);
+}
+
+#[test]
+fn shared_table_model_paints_independent_sorted_views() {
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))
+    .unwrap();
+    let mut ui = TableSortViewsDemo::new();
+    ui.invoke_initialize();
+    let input = Interaction::default();
+    let viewport = Size::new(680.0, 370.0);
+    let (scene, _) = renderer.prepare_scene(&ui, ui.render_shared(), viewport, &input);
+    let frame = renderer.snapshot(&scene, 680, 370, 1.0, &input).unwrap();
+    let quantity = scene.find("quantity-table").unwrap();
+    let name = scene.find("name-table").unwrap();
+    assert_eq!(quantity.children[0].row_key, name.children[1].row_key);
+    assert_eq!(
+        quantity.children[0].children[0].children[0].text("text"),
+        Some("Beta")
+    );
+    assert_eq!(
+        name.children[0].children[0].children[0].text("text"),
+        Some("Alpha")
+    );
+    if let Ok(path) = std::env::var("TEST_UNDECLARED_OUTPUTS_DIR") {
+        frame
+            .save_png(std::path::Path::new(&path).join("table-sorted-views.png"))
+            .unwrap();
+    }
+}
+
+#[test]
+fn programmatic_sort_marks_the_same_header_after_column_reordering() {
+    use xrack_runtime::Time;
+
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))
+    .unwrap();
+    let mut ui = StandardTableDemo::new();
+    ui.set_inventory(
+        [10, 4, 8]
+            .map(|units| InventoryRow {
+                name: format!("Device {units}"),
+                units,
+                available: true,
+                refreshed: Time::default(),
+            })
+            .to_vec(),
+    );
+    ui.set_sort_tools(true);
+    ui.invoke_move_visible_column(1, 0);
+    let model = ui.model_inventory();
+    ui.on_sort_requested(move |column, descending| {
+        assert_eq!(column, 1);
+        assert!(!descending);
+        model.sort_by(|a, b| a.units.cmp(&b.units));
+    });
+    let input = Interaction::default();
+    let viewport = Size::new(620.0, 380.0);
+    let path = [0, 1];
+    let (scene, _) = renderer.prepare_scene(&ui, ui.render_shared(), viewport, &input);
+    let before = renderer.snapshot(&scene, 620, 380, 1.0, &input).unwrap();
+    ui.invoke_sort_rows(1, false);
+    let (scene, _) = renderer.prepare_scene(&ui, ui.render_shared(), viewport, &input);
+    let frame = renderer.snapshot(&scene, 620, 380, 1.0, &input).unwrap();
+    let header = frame
+        .layout
+        .at_path(&path)
+        .unwrap()
+        .table
+        .as_ref()
+        .unwrap()
+        .columns[1];
+    assert!(
+        (header.y as u32..(header.y + header.height) as u32).any(|y| {
+            (header.x as u32..(header.x + header.width) as u32)
+                .any(|x| before.pixel(x, y) != frame.pixel(x, y))
+        })
+    );
+    let table = scene.at_path(&path).unwrap();
+    assert_eq!(table.table_column_order.visual_index(4, 1), Some(0));
+    assert_eq!(
+        table.children[0].children[0].children[1].text("text"),
+        Some("4")
+    );
+    if let Ok(path) = std::env::var("TEST_UNDECLARED_OUTPUTS_DIR") {
+        frame
+            .save_png(std::path::Path::new(&path).join("table-sort-state.png"))
+            .unwrap();
+    }
 }
 
 #[test]
@@ -2985,29 +4538,25 @@ fn table_cell_draft_draws_before_the_model_changes() {
 
 #[test]
 fn record_table_renders_field_updates_and_draft_independently() {
+    use xrack_runtime::FocusRequests;
+
     let mut renderer = pollster::block_on(Renderer::new(
         wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
         None,
     ))
     .unwrap();
     let mut ui = RecordTableDemo::new();
+    ui.set_editing_tools(true);
     let model = ui.model_records();
     let viewport = Size::new(650.0, 330.0);
     let mut input = Interaction::default();
     let (scene, layout) = renderer.prepare_scene(&ui, ui.render_shared(), viewport, &input);
     let owner = [0, 1, 0, 0, 1];
-    let cell = layout.at_path(&owner).unwrap().bounds;
-    input.pointer_move(
-        &scene,
-        &layout,
-        Point {
-            x: cell.x + 16.0,
-            y: cell.y + 14.0,
-        },
-    );
-    input.pointer_press();
-    input.pointer_release_target().unwrap();
-    assert!(input.begin_table_edit(&scene, &layout));
+    let requests = FocusRequests::default();
+    let _focus = requests.enter();
+    ui.invoke_start_edit(0, 1);
+    input.apply_focus_requests(&scene, &layout, requests.drain());
+    assert!(input.table_cell_editing(&owner));
     let before = renderer.snapshot(&scene, 650, 330, 1.0, &input).unwrap();
     assert!(input.edit_text(
         &mut ui,
@@ -3195,7 +4744,8 @@ fn table_grid_selection_paints_only_the_selected_cells_and_headers() {
 
 #[test]
 fn table_drag_selection_previews_only_the_clipped_table_body() {
-    use std::time::Instant;
+    use std::time::{Duration, Instant};
+    use xrack_layout::ScrollGestureKind;
 
     let mut renderer = pollster::block_on(Renderer::new(
         wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
@@ -3222,30 +4772,81 @@ fn table_drag_selection_previews_only_the_clipped_table_body() {
     };
     let header = (x as u32, (table.header.y + 5.0) as u32);
     let outside = (x as u32, (item.children[2].bounds.y + 12.0) as u32);
-    input.pointer_move(&scene, &layout, start);
-    input.pointer_press_in_scene(&scene, &layout);
-    assert!(input.arm_table_drag_selection(&scene, &layout, false));
-    input.pointer_move(&scene, &layout, end);
-    assert!(input.move_table_drag_selection(&layout, Instant::now()));
-    let preview = renderer.snapshot(&scene, 560, 370, 1.0, &input).unwrap();
-    assert!(input.cancel_table_drag_selection());
-    let cancelled = renderer.snapshot(&scene, 560, 370, 1.0, &input).unwrap();
-    assert_ne!(
-        preview.pixel(x as u32, start.y as u32),
-        cancelled.pixel(x as u32, start.y as u32)
-    );
-    assert_eq!(
-        preview.pixel(header.0, header.1),
-        cancelled.pixel(header.0, header.1)
-    );
-    assert_eq!(
-        preview.pixel(outside.0, outside.1),
-        cancelled.pixel(outside.0, outside.1)
-    );
-    if let Ok(path) = std::env::var("TEST_UNDECLARED_OUTPUTS_DIR") {
-        preview
-            .save_png(std::path::Path::new(&path).join("table-drag-selection.png"))
-            .unwrap();
+    for device in ["mouse", "touch"] {
+        let now = Instant::now();
+        if device == "touch" {
+            assert!(input.begin_scroll_gesture(
+                &scene,
+                &layout,
+                start,
+                now,
+                ScrollGestureKind::Touch
+            ));
+            let hold = now + Duration::from_millis(500);
+            assert!(input.advance_table_touch_hold(&scene, &layout, hold));
+            assert!(input.move_scroll_gesture(&scene, &layout, end, hold));
+        } else {
+            input.pointer_move(&scene, &layout, start);
+            input.pointer_press_in_scene(&scene, &layout);
+            assert!(input.arm_table_drag_selection(&scene, &layout, false));
+            input.pointer_move(&scene, &layout, end);
+            assert!(input.move_table_drag_selection(&layout, now));
+        }
+        let preview = renderer.snapshot(&scene, 560, 370, 1.0, &input).unwrap();
+        assert!(input.cancel_table_drag_selection());
+        let cancelled = renderer.snapshot(&scene, 560, 370, 1.0, &input).unwrap();
+        assert_ne!(
+            preview.pixel(x as u32, start.y as u32),
+            cancelled.pixel(x as u32, start.y as u32),
+            "{device}"
+        );
+        assert_eq!(
+            preview.pixel(header.0, header.1),
+            cancelled.pixel(header.0, header.1),
+            "{device}"
+        );
+        assert_eq!(
+            preview.pixel(outside.0, outside.1),
+            cancelled.pixel(outside.0, outside.1),
+            "{device}"
+        );
+        if let Ok(path) = std::env::var("TEST_UNDECLARED_OUTPUTS_DIR") {
+            preview
+                .save_png(
+                    std::path::Path::new(&path).join(format!("table-drag-selection-{device}.png")),
+                )
+                .unwrap();
+        }
+    }
+
+    assert!(ui.control_at(
+        &scene,
+        &path,
+        xrack_runtime::ControlAction::TableSelection(
+            xrack_runtime::TableSelectionAction::DragRange {
+                anchor: (0, 0),
+                end: (1, 0),
+                additive: false,
+            }
+        ),
+    ));
+    let (scene, layout) = renderer.prepare_scene(&ui, ui.render_shared(), viewport, &input);
+    let with_handles = renderer.snapshot(&scene, 560, 370, 1.0, &input).unwrap();
+    let without_handles = renderer
+        .snapshot(&scene, 560, 370, 1.0, &Interaction::default())
+        .unwrap();
+    let handles = input
+        .table_selection_handles(
+            &path,
+            scene.at_path(&path).unwrap(),
+            layout.at_path(&path).unwrap(),
+        )
+        .collect::<Vec<_>>();
+    assert_eq!(handles.len(), 2);
+    for rect in handles {
+        let x = (rect.x + rect.width * 0.5) as u32;
+        let y = (rect.y + rect.height * 0.5) as u32;
+        assert_ne!(with_handles.pixel(x, y), without_handles.pixel(x, y));
     }
 }
 
@@ -4443,6 +6044,43 @@ fn stack_slide_rebases_on_the_presented_frame_and_preserves_keyboard_navigation(
 }
 
 #[test]
+fn a_vetoed_stack_navigation_paints_the_confirmation_over_the_same_page() {
+    use xrack_runtime::StackNavigation;
+
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))
+    .unwrap();
+    let mut ui = StackGuardDemo::new();
+    assert!(ui.navigate_stack("navigation", StackNavigation::Push("editor")));
+    ui.set_draft("新的界面设计".into());
+    let original = ui.render_shared();
+    let input = Interaction::default();
+    let before = renderer.snapshot(&original, 560, 360, 1.0, &input).unwrap();
+    assert!(before.layout.dialog_paths().is_empty());
+    let current = ui.stack_snapshot("navigation").unwrap();
+    assert!(!ui.navigate_stack("navigation", StackNavigation::Pop));
+    let scene = ui.render_shared();
+    let blocked = renderer.snapshot(&scene, 560, 360, 1.0, &input).unwrap();
+    assert_eq!(blocked.layout.dialog_paths(), &[vec![4]]);
+    assert!(std::sync::Arc::ptr_eq(
+        &current,
+        &ui.stack_snapshot("navigation").unwrap()
+    ));
+    assert_eq!(
+        scene.find("note-field").unwrap().text("text"),
+        Some("新的界面设计")
+    );
+    assert_ne!(before.pixel(30, 280), blocked.pixel(30, 280));
+    if let Ok(path) = std::env::var("TEST_UNDECLARED_OUTPUTS_DIR") {
+        blocked
+            .save_png(std::path::Path::new(&path).join("stack-guard.png"))
+            .unwrap();
+    }
+}
+
+#[test]
 fn navigation_stack_renders_only_the_top_and_rejects_a_stale_back_action() {
     use std::{cell::RefCell, rc::Rc};
     use xrack_runtime::StackNavigation;
@@ -4666,6 +6304,50 @@ fn numeric_drafts_and_choice_overlays_reach_generated_bindings() {
 }
 
 #[test]
+fn wheel_adjustment_moves_the_numeric_thumb_in_the_rendered_frame() {
+    use controls_ui::WheelControlsDemo;
+    use xrack_layout::WheelAdjustment;
+    use xrack_runtime::{Length, WheelEvent};
+
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))
+    .unwrap();
+    let mut ui = WheelControlsDemo::new();
+    let mut input = Interaction::default();
+    let size = Size::new(460.0, 310.0);
+    let (scene, layout) = renderer.prepare_scene(&ui, ui.render_shared(), size, &input);
+    let bounds = layout.at_path(&[1, 0, 1]).unwrap().bounds;
+    let geometry = SliderGeometry::new(bounds, Orientation::Horizontal);
+    let old = geometry.position(0.8);
+    let next = geometry.position(1.0);
+    input.pointer_move(&scene, &layout, old);
+    let before = renderer.snapshot(&scene, 460, 310, 1.0, &input).unwrap();
+    let Some(WheelAdjustment::Range(change)) = input.wheel_adjustment(
+        &scene,
+        &layout,
+        WheelEvent {
+            delta_y: Length(-28.0),
+            is_line: true,
+            lines_y: -1.0,
+            ..Default::default()
+        },
+        std::time::Instant::now(),
+    ) else {
+        panic!("wheel must reach the slider");
+    };
+    assert!(ui.adjust_range_at(&scene, &change.path, change.action));
+    let (scene, _) = renderer.prepare_scene(&ui, ui.render_shared(), size, &input);
+    let after = renderer.snapshot(&scene, 460, 310, 1.0, &input).unwrap();
+    let old = (old.x as u32, old.y as u32);
+    let next = (next.x as u32, next.y as u32);
+    assert_eq!(before.pixel(old.0, old.1), after.pixel(next.0, next.1));
+    assert_ne!(before.pixel(next.0, next.1), after.pixel(next.0, next.1));
+    assert_ne!(before.pixel(old.0, old.1), after.pixel(old.0, old.1));
+}
+
+#[test]
 fn range_controls_share_pointer_keyboard_and_rendering() {
     let mut renderer = pollster::block_on(Renderer::new(
         wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
@@ -4774,6 +6456,45 @@ fn range_controls_share_pointer_keyboard_and_rendering() {
             .save_png(std::path::Path::new(&path).join("controls-demo.png"))
             .unwrap();
     }
+}
+
+#[test]
+fn deferred_slider_paints_the_snapped_preview_before_the_model_changes() {
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))
+    .unwrap();
+    let mut ui = SnapSlidersDemo::new();
+    let scene = ui.render_shared();
+    let mut input = Interaction::default();
+    let viewport = Size::new(500.0, 290.0);
+    let layout = renderer.layout_with_input(&scene, viewport, &input);
+    let path = [0, 3];
+    let geometry = SliderGeometry::new(
+        layout.at_path(&path).unwrap().bounds,
+        Orientation::Horizontal,
+    );
+    let before = renderer.snapshot(&scene, 500, 290, 1.0, &input).unwrap();
+    input.pointer_move(&scene, &layout, geometry.position(0.46));
+    input.pointer_press_in_scene(&scene, &layout);
+    assert!(input.slider_press(&scene, &layout).is_none());
+    let preview = renderer.snapshot(&scene, 500, 290, 1.0, &input).unwrap();
+    let snapped = geometry.position(0.5);
+    assert_ne!(
+        before.pixel(snapped.x as u32, snapped.y as u32),
+        preview.pixel(snapped.x as u32, snapped.y as u32),
+    );
+    assert_eq!(ui.get_level(), 20.0);
+    assert!(std::rc::Rc::ptr_eq(&scene, &ui.render_shared()));
+    if let Ok(path) = std::env::var("TEST_UNDECLARED_OUTPUTS_DIR") {
+        preview
+            .save_png(std::path::Path::new(&path).join("slider-snap-preview.png"))
+            .unwrap();
+    }
+    let release = input.slider_release(&scene, &layout).unwrap();
+    assert!(ui.adjust_range_at(&scene, &release.path, release.action));
+    assert_eq!(ui.get_level(), 50.0);
 }
 
 #[test]
@@ -6470,4 +8191,136 @@ fn transformed_controls_keep_layout_geometry_and_share_exact_hit_coordinates() {
     input.reconcile(&collapsed, &snapshot.layout);
     input.pointer_move(&collapsed, &snapshot.layout, mapped);
     assert!(input.hovered.is_none());
+}
+
+#[test]
+fn programmatic_selection_and_cursor_use_independent_gpu_markers() {
+    use xrack_runtime::{RowSelection, TableSelectionAction, Time};
+
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))
+    .unwrap();
+    let mut ui = StandardTableDemo::new();
+    ui.set_inventory(
+        (0..4)
+            .map(|units| InventoryRow {
+                name: format!("Device {units}"),
+                units,
+                available: true,
+                refreshed: Time::default(),
+            })
+            .collect(),
+    );
+    ui.set_target(xrack_runtime::SelectionTarget::Cells);
+    ui.set_selection_tools(true);
+    assert!(ui.select_table(
+        "inventory-table",
+        TableSelectionAction::DragRange {
+            anchor: (0, 0),
+            end: (1, 1),
+            additive: false,
+        }
+    ));
+    assert!(ui.select_table(
+        "inventory-table",
+        TableSelectionAction::Cell {
+            row: 2,
+            column: 2,
+            operation: RowSelection::Move,
+        }
+    ));
+    let input = Interaction::default();
+    let viewport = Size::new(620.0, 380.0);
+    let (scene, _) = renderer.prepare_scene(&ui, ui.render_shared(), viewport, &input);
+    let table = scene.find("inventory-table").unwrap();
+    assert_eq!(table.table_selection.as_ref().unwrap().len(), 4);
+    assert!(table.children[0].children[0].children[0].boolean("table-selected", false));
+    assert!(!table.children[2].children[0].children[2].boolean("table-selected", false));
+    assert!(table.children[2].children[0].children[2].boolean("table-current", false));
+    let frame = renderer.snapshot(&scene, 620, 380, 1.0, &input).unwrap();
+    if let Ok(path) = std::env::var("TEST_UNDECLARED_OUTPUTS_DIR") {
+        frame
+            .save_png(std::path::Path::new(&path).join("table-selection-api.png"))
+            .unwrap();
+    }
+}
+
+#[test]
+fn table_cell_positioning_draws_the_last_virtual_row_beside_a_frozen_column() {
+    use xrack_layout::ViewportObservers;
+    use xrack_runtime::{
+        Component, Length, ScrollAlignment, ScrollRequests, SelectionTarget, Time,
+    };
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))
+    .unwrap();
+    let mut ui = StandardTableDemo::new();
+    ui.set_inventory(
+        (0..50_000)
+            .map(|index| InventoryRow {
+                name: format!("Device {index:05}"),
+                units: index,
+                available: true,
+                refreshed: Time {
+                    hour: 9,
+                    ..Time::default()
+                },
+            })
+            .collect(),
+    );
+    ui.set_position_tools(true);
+    ui.set_target_row(49_999);
+    ui.set_window_width(Length(500.0));
+    ui.set_pinned(1);
+    ui.set_row_header_size(Length(56.0));
+    ui.set_target(SelectionTarget::Cells);
+    let viewport = Size::new(500.0, 380.0);
+    let mut input = Interaction::default();
+    let requests = ScrollRequests::default();
+    let _scroll = requests.enter();
+    let (before, before_layout) = renderer.prepare_scene(&ui, ui.render_shared(), viewport, &input);
+    let before_frame = renderer.snapshot(&before, 500, 380, 1.0, &input).unwrap();
+    // A request made before the next frame is resolved using that frame's geometry.
+    ui.invoke_position_cell(49_999, 3, ScrollAlignment::End, ScrollAlignment::End);
+    assert!(input.apply_scroll_requests(&before, &before_layout, requests.drain()));
+    let (scene, layout) = renderer.prepare_scene(&ui, ui.render_shared(), viewport, &input);
+    ViewportObservers::default().sync(&scene, &layout);
+    // Publish the measured offsets before rebuilding labels that bind to them.
+    let (scene, layout) = renderer.prepare_scene(&ui, ui.render_shared(), viewport, &input);
+    let table = scene.at_path(&[0, 1]).unwrap();
+    let metrics = table.list.unwrap();
+    assert!(metrics.first_row > 49_980 && table.children.len() < 12);
+    assert_eq!(metrics.first_row + table.children.len(), 50_000);
+    let geometry = layout.at_path(&[0, 1]).unwrap().table.as_ref().unwrap();
+    assert_eq!(geometry.columns[0].x, geometry.body.x);
+    let scrolling = geometry.scrollable_body();
+    assert!(geometry.columns[3].x >= scrolling.x);
+    assert!(
+        (geometry.columns[3].x + geometry.columns[3].width - scrolling.x - scrolling.width).abs()
+            < 0.01
+    );
+    assert_eq!(ui.get_current(), -1);
+    assert_eq!(ui.get_selected_items(), 0);
+    assert!(ui.get_table_y().0 < -1_599_000.0);
+    let frame = renderer.snapshot(&scene, 500, 380, 1.0, &input).unwrap();
+    let changed = (geometry.body.y as u32..(geometry.body.y + geometry.body.height) as u32)
+        .flat_map(|y| {
+            (geometry.body.x as u32..(geometry.body.x + geometry.body.width) as u32)
+                .map(move |x| (x, y))
+        })
+        .filter(|&(x, y)| frame.pixel(x, y) != before_frame.pixel(x, y))
+        .count();
+    assert!(
+        changed > 100,
+        "the last virtual rows must reach the rendered image"
+    );
+    if let Ok(path) = std::env::var("TEST_UNDECLARED_OUTPUTS_DIR") {
+        frame
+            .save_png(std::path::Path::new(&path).join("table-position-cell.png"))
+            .unwrap();
+    }
 }

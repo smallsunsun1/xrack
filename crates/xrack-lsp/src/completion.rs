@@ -9,9 +9,10 @@ use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 use xrack_ir::semantic::{
     builtin_event, builtin_property, content_viewport, control_alias_type, focus_property,
-    geometry_owner, geometry_property, is_builtin, layout_item_property, scale_rotate_property,
-    state_property, swipe_property, viewport_kind, viewport_offset_property,
-    window_status_property,
+    geometry_owner, geometry_property, hover_property, is_builtin, layout_item_property,
+    scale_rotate_property, state_property, swipe_property, table_history_property,
+    table_selection_property, table_sort_property, touch_area_property, viewport_kind,
+    viewport_offset_property, window_status_property,
 };
 use xrack_parser::ast::Type;
 
@@ -302,11 +303,18 @@ impl<'a> Index<'a> {
     }
 
     fn member_type(&self, scope: usize, name: &str) -> Option<Type> {
-        self.members(scope, false)
+        let declared = self
+            .members(scope, false)
             .into_iter()
-            .find(|member| member.name == name)?
-            .ty
-            .clone()
+            .find(|member| member.name == name)
+            .and_then(|member| member.ty.clone());
+        declared.or_else(|| {
+            let kind = match self.scopes[scope].role {
+                Role::Element { kind, .. } | Role::Component { base: kind, .. } => kind,
+                _ => return None,
+            };
+            builtin_property(kind, name)
+        })
     }
 
     fn members(&self, scope: usize, public: bool) -> Vec<&Member> {
@@ -407,6 +415,14 @@ fn locals(head: &[&Token<'_>], role: Role<'_>) -> Vec<Member> {
                 "capture-key-pressed" | "capture-key-released" | "key-pressed" | "key-released"
             )
         });
+    let wheel_handler = matches!(role, Role::Handler)
+        && head
+            .first()
+            .is_some_and(|token| matches!(token.text, "wheel" | "scroll-event"));
+    let pointer_handler = matches!(role, Role::Handler)
+        && head
+            .first()
+            .is_some_and(|token| token.text == "pointer-event");
     names
         .iter()
         .filter(|t| name(t.text))
@@ -416,7 +432,10 @@ fn locals(head: &[&Token<'_>], role: Role<'_>) -> Vec<Member> {
             ty: if repeat && i == 1 {
                 Some(Type::Int)
             } else {
-                key_handler.then_some(Type::KeyEvent)
+                wheel_handler
+                    .then_some(Type::WheelEvent)
+                    .or_else(|| pointer_handler.then_some(Type::PointerEvent))
+                    .or_else(|| key_handler.then_some(Type::KeyEvent))
             },
             visibility: "private",
             kind: VARIABLE,
@@ -683,20 +702,37 @@ fn suggest<'a>(index: &Index<'a>, scope: usize, head: &[&Token<'a>], items: &mut
         }
         _ => "",
     };
-    if matches!(kind, "RadioButton" | "CheckBox" | "Switch")
+    if matches!(kind, "RadioButton" | "CheckBox" | "Switch" | "Action")
         && first == "group"
         && head.iter().any(|token| token.text == ":")
     {
+        let group_kind = if kind == "Action" {
+            "ActionGroup"
+        } else {
+            "ButtonGroup"
+        };
         if let Some(component) = index.component(scope) {
             for (i, candidate) in index.scopes.iter().enumerate() {
-                if let Role::Element {
-                    kind: "ButtonGroup",
-                    id: Some(id),
-                } = candidate.role
+                if let Role::Element { kind, id: Some(id) } = candidate.role
+                    && kind == group_kind
                     && index.component(i) == Some(component)
                 {
-                    items.add(id, VARIABLE, "ButtonGroup");
+                    items.add(id, VARIABLE, group_kind);
                 }
+            }
+        }
+        return;
+    }
+    if kind == "SplitView" && first == "fill-pane" && last == ":" {
+        for candidate in &index.scopes {
+            if candidate.parent == scope
+                && let Role::Element { id: Some(id), kind } = candidate.role
+                && !matches!(
+                    kind,
+                    "Shortcut" | "Tooltip" | "Dialog" | "Drawer" | "PopupWindow" | "Menu"
+                )
+            {
+                items.add(id, VARIABLE, "direct pane");
             }
         }
         return;
@@ -707,6 +743,27 @@ fn suggest<'a>(index: &Index<'a>, scope: usize, head: &[&Token<'a>], items: &mut
             .iter()
             .any(|t| matches!(t.text, ":" | "<=>" | "=" | "+=" | "-="));
     if expression {
+        let template = index.ancestors(scope).find_map(|ancestor| {
+            if let Role::Element {
+                kind: kind @ ("DayCell" | "SplitHandle"),
+                ..
+            } = index.scopes[ancestor].role
+            {
+                Some(kind)
+            } else {
+                None
+            }
+        });
+        if let Some(template) = template {
+            let inputs = if template == "DayCell" {
+                xrack_ir::semantic::day_cell_inputs().to_vec()
+            } else {
+                xrack_ir::semantic::split_handle_inputs().to_vec()
+            };
+            for (name, ty) in inputs {
+                items.add(name, VARIABLE, &ty.name());
+            }
+        }
         if let Some(ty) = expected_type(index, scope, head, kind) {
             for &variant in ty.enum_variants() {
                 items.add(variant, ENUM_MEMBER, &ty.name());
@@ -742,12 +799,17 @@ fn suggest<'a>(index: &Index<'a>, scope: usize, head: &[&Token<'a>], items: &mut
             if matches!(property, "content-x" | "content-y")
                 && (animation || !viewport_offset_property(kind, property))
                 || focus_property(kind, property)
+                || hover_property(kind, property).is_some()
+                || touch_area_property(kind, property).is_some()
                 || kind == "ButtonGroup" && property == "check-state"
-                || kind == "Window" && window_status_property(property)
+                || xrack_ir::semantic::is_window(kind) && window_status_property(property)
                 || geometry_property(property).is_some()
+                || table_sort_property(kind, property).is_some()
+                || table_selection_property(kind, property).is_some()
+                || table_history_property(kind, property).is_some()
                 || (kind == "StackView"
                     && matches!(property, "current-page" | "depth" | "can-go-back"))
-                || (kind == "StackPage" && property == "visible")
+                || (kind == "StackPage" && matches!(property, "visible" | "active" | "stack-index"))
             {
                 continue;
             }
@@ -799,11 +861,27 @@ fn suggest<'a>(index: &Index<'a>, scope: usize, head: &[&Token<'a>], items: &mut
                     "(string) → { accepted, value }",
                 );
             }
-            if matches!(kind, "Button" | "ToolButton" | "MenuItem") {
+            if matches!(kind, "Button" | "ToolButton" | "RoundButton" | "MenuItem") {
                 items.add("action", PROPERTY, "Action id");
+            }
+            if kind == "Action" {
+                if !matches!(
+                    index.scopes[index.scopes[scope].parent].role,
+                    Role::Element {
+                        kind: "ActionGroup",
+                        ..
+                    }
+                ) {
+                    items.add("group", PROPERTY, "ActionGroup id");
+                }
+                items.add("value", PROPERTY, "unique string in the ActionGroup");
             }
             if matches!(kind, "ScrollBar" | "ScrollIndicator") {
                 items.add("target", PROPERTY, "Viewport id");
+            }
+            if kind == "SplitView" {
+                items.add("fill-pane", PROPERTY, "direct pane id");
+                items.add("SplitHandle", CLASS, "split handle template");
             }
             for member in index.members(scope, false) {
                 if instance
@@ -916,18 +994,22 @@ fn qualified<'a>(index: &Index<'a>, scope: usize, head: &[&Token<'a>], items: &m
         items.words("width height", FIELD, "read-only int");
         return;
     }
-    if let Some(mut ty @ (Type::KeyEvent | Type::KeyModifiers)) =
-        index.ancestors(scope).find_map(|scope| {
-            index
-                .members(scope, false)
-                .into_iter()
-                .find(|member| member.name == first)?
-                .ty
-                .clone()
-        })
-    {
+    if let Some(
+        mut ty @ (Type::KeyEvent
+        | Type::KeyModifiers
+        | Type::WheelEvent
+        | Type::PointerEvent
+        | Type::TouchPoint),
+    ) = index.ancestors(scope).find_map(|scope| {
+        index
+            .members(scope, false)
+            .into_iter()
+            .find(|member| member.name == first)?
+            .ty
+            .clone()
+    }) {
         for field in receiver.iter().rev() {
-            let Some(next) = ty.key_field(field) else {
+            let Some(next) = ty.input_field(field) else {
                 return;
             };
             ty = next;
@@ -942,8 +1024,23 @@ fn qualified<'a>(index: &Index<'a>, scope: usize, head: &[&Token<'a>], items: &m
             "alt",
             "meta",
             "primary",
+            "x",
+            "y",
+            "delta-x",
+            "delta-y",
+            "lines-x",
+            "lines-y",
+            "is-line",
+            "kind",
+            "button",
+            "inside",
+            "is-touch",
+            "touch-finger-id",
+            "id",
+            "start-x",
+            "start-y",
         ] {
-            if let Some(field_type) = ty.key_field(field) {
+            if let Some(field_type) = ty.input_field(field) {
                 items.add(field, FIELD, &field_type.name());
             }
         }
@@ -1006,7 +1103,7 @@ fn qualified<'a>(index: &Index<'a>, scope: usize, head: &[&Token<'a>], items: &m
                 items.add(property, PROPERTY, "read-only bool");
             }
         }
-        if kind == "Window" {
+        if xrack_ir::semantic::is_window(kind) {
             items.words(
                 "window-active minimized minimized-known maximized full-screen",
                 PROPERTY,
@@ -1027,6 +1124,18 @@ fn qualified<'a>(index: &Index<'a>, scope: usize, head: &[&Token<'a>], items: &m
                 items.add("set-check-state", FUNCTION, "(CheckState)");
             }
         }
+        if kind == "ActionGroup" {
+            items.add(
+                "current-value",
+                PROPERTY,
+                "read-only string · exclusive groups",
+            );
+        }
+        for property in ["pending", "selected-file", "selected-files"] {
+            if let Some(ty) = xrack_ir::semantic::native_dialog_property(kind, property) {
+                items.add(property, PROPERTY, &format!("read-only {}", ty.name()));
+            }
+        }
         if geometry_owner(kind)
             && (is_builtin(kind)
                 || index.declared_component(kind).is_some()
@@ -1037,6 +1146,13 @@ fn qualified<'a>(index: &Index<'a>, scope: usize, head: &[&Token<'a>], items: &m
                 PROPERTY, "read-only length",
             );
             items.add("layout-ready", PROPERTY, "read-only bool");
+            if matches!(kind, "Pane" | "ControlFrame" | "ApplicationWindow") {
+                items.words(
+                    "available-width available-height",
+                    PROPERTY,
+                    "read-only length",
+                );
+            }
         }
     }
     if receiver.is_empty()
@@ -1058,6 +1174,26 @@ fn qualified<'a>(index: &Index<'a>, scope: usize, head: &[&Token<'a>], items: &m
                 items.add(metric, PROPERTY, &format!("read-only {}", ty.name()));
             }
         }
+        for metric in ["hovered", "hover-x", "hover-y"] {
+            if let Some(ty) = hover_property(kind, metric) {
+                items.add(metric, PROPERTY, &format!("read-only {}", ty.name()));
+            }
+        }
+        for metric in [
+            "pressed",
+            "contains-press",
+            "has-hover",
+            "active-touch-count",
+            "touch-points",
+            "mouse-x",
+            "mouse-y",
+            "pressed-x",
+            "pressed-y",
+        ] {
+            if let Some(ty) = touch_area_property(kind, metric) {
+                items.add(metric, PROPERTY, &format!("read-only {}", ty.name()));
+            }
+        }
         for metric in [
             "swiping",
             "pressed-x",
@@ -1072,8 +1208,56 @@ fn qualified<'a>(index: &Index<'a>, scope: usize, head: &[&Token<'a>], items: &m
         if kind == "SwipeGestureHandler" && matches!(role, Role::Handler) {
             items.add("cancel", FUNCTION, "()");
         }
+        if matches!(kind, "TableView" | "StandardTableView") {
+            items.add("current-column", PROPERTY, "read-only int");
+            items.add("selection-count", PROPERTY, "read-only int");
+            items.add("has-selection", PROPERTY, "read-only bool");
+            items.add("current-sort-column", PROPERTY, "read-only int");
+            items.add("current-sort-descending", PROPERTY, "read-only bool");
+            items.words("can-undo can-redo", PROPERTY, "read-only bool");
+            if matches!(role, Role::Handler) {
+                items.words(
+                    "select-cell set-current-cell toggle-cell",
+                    FUNCTION,
+                    "(int, int)",
+                );
+                items.words("select-row select-column", FUNCTION, "(int)");
+                items.add("select-range", FUNCTION, "(int, int, int, int)");
+                items.words("select-all clear-selection", FUNCTION, "()");
+                items.add("sort-by", FUNCTION, "(int, bool)");
+                items.add("clear-sort", FUNCTION, "()");
+                items.add("edit-cell", FUNCTION, "(row: int, column: int)");
+                items.add("cancel-edit", FUNCTION, "()");
+                items.words("undo redo", FUNCTION, "()");
+            }
+        }
+        if kind == "SplitView" {
+            items.add("resizing", PROPERTY, "read-only bool");
+            items.add("save-state", FUNCTION, "() -> string");
+            if matches!(role, Role::Handler) {
+                items.add("restore-state", FUNCTION, "(string)");
+            }
+        }
+        if kind == "TreeView" {
+            items.add("is-expanded", FUNCTION, "(int) -> bool");
+            items.add("depth", FUNCTION, "(int) -> int");
+            items.add("row-for-key", FUNCTION, "(int) -> int");
+            if matches!(role, Role::Handler) {
+                items.words(
+                    "expand collapse toggle-expanded expand-to",
+                    FUNCTION,
+                    "(int)",
+                );
+                items.add("expand-recursively", FUNCTION, "(key = -1, depth = -1)");
+                items.add("collapse-recursively", FUNCTION, "(key = -1)");
+            }
+        }
         if viewport_kind(kind) {
             items.words("visible-width visible-height", PROPERTY, "read-only length");
+            if !content_viewport(kind) {
+                items.add("view-index-for-source", FUNCTION, "(source: int) -> int");
+                items.add("source-index-for-view", FUNCTION, "(index: int) -> int");
+            }
             if kind == "Flickable" {
                 items.words(
                     "dragging flicking moving rebounding",
@@ -1097,14 +1281,29 @@ fn qualified<'a>(index: &Index<'a>, scope: usize, head: &[&Token<'a>], items: &m
             if matches!(role, Role::Handler) {
                 items.add("scroll-to", FUNCTION, "(length, length)");
                 if !content_viewport(kind) {
+                    items.add("select-source-index", FUNCTION, "(source: int)");
                     items.add("position-view-at-index", FUNCTION, "(int, ScrollAlignment)");
+                    items.add(
+                        "position-view-at-source-index",
+                        FUNCTION,
+                        "(source: int, alignment: ScrollAlignment)",
+                    );
                 }
                 if kind == "Flickable" {
                     items.add("cancel-flick", FUNCTION, "()");
                     items.add("return-to-bounds", FUNCTION, "()");
                 }
                 if matches!(kind, "TableView" | "StandardTableView") {
+                    items.add("select-source-cell", FUNCTION, "(source: int, column: int)");
+                    items.words(
+                        "position-view-at-row position-view-at-column",
+                        FUNCTION,
+                        "(int, ScrollAlignment)",
+                    );
+                    items.add("position-view-at-cell", FUNCTION, "(row: int, column: int, horizontal: ScrollAlignment, vertical: ScrollAlignment)");
+                    items.add("position-view-at-source-cell", FUNCTION, "(source: int, column: int, horizontal: ScrollAlignment, vertical: ScrollAlignment)");
                     items.add("move-column", FUNCTION, "(int, int)");
+                    items.add("move-row", FUNCTION, "(int, int)");
                     items.add("set-row-height", FUNCTION, "(int, length)");
                 }
             }
@@ -1149,6 +1348,19 @@ fn qualified<'a>(index: &Index<'a>, scope: usize, head: &[&Token<'a>], items: &m
             );
         }
     }
+    if receiver.is_empty()
+        && let Some(owner) = owner
+        && matches!(
+            index.scopes[owner].role,
+            Role::Element {
+                kind: "StackPage",
+                ..
+            }
+        )
+    {
+        items.add("active", PROPERTY, "read-only bool");
+        items.add("stack-index", PROPERTY, "read-only int");
+    }
     let mut members = if let Some(owner) = owner {
         index.members(owner, false)
     } else {
@@ -1187,6 +1399,73 @@ fn qualified<'a>(index: &Index<'a>, scope: usize, head: &[&Token<'a>], items: &m
 #[cfg(test)]
 mod tests {
     use super::complete;
+
+    #[test]
+    fn table_command_completions_respect_the_receiver_and_effect_context() {
+        for kind in [
+            "TableView",
+            "StandardTableView",
+            "ListView",
+            "GridView",
+            "StandardListView",
+            "TreeView",
+            "ScrollView",
+            "Flickable",
+        ] {
+            for effect in [true, false] {
+                let suffix = if effect {
+                    "button := Button { clicked => { view."
+                } else {
+                    "out property <length> x: view."
+                };
+                let source =
+                    format!("component App inherits Window {{ view := {kind} {{}} {suffix}");
+                let entries = complete(&source, 0, source.len(), None);
+                for name in [
+                    "position-view-at-row",
+                    "position-view-at-column",
+                    "position-view-at-cell",
+                    "position-view-at-source-cell",
+                    "select-source-cell",
+                ] {
+                    assert_eq!(
+                        entries.iter().any(|item| item["label"] == name),
+                        effect && matches!(kind, "TableView" | "StandardTableView"),
+                        "{source}: {name}"
+                    );
+                }
+                let virtual_view = !matches!(kind, "ScrollView" | "Flickable");
+                for name in ["position-view-at-source-index", "select-source-index"] {
+                    assert_eq!(
+                        entries.iter().any(|item| item["label"] == name),
+                        effect && virtual_view,
+                        "{source}: {name}"
+                    );
+                }
+                for name in ["view-index-for-source", "source-index-for-view"] {
+                    assert_eq!(
+                        entries.iter().any(|item| item["label"] == name),
+                        virtual_view,
+                        "{source}: {name}"
+                    );
+                }
+                for name in ["edit-cell", "cancel-edit", "undo", "redo"] {
+                    assert_eq!(
+                        entries.iter().any(|item| item["label"] == name),
+                        effect && matches!(kind, "TableView" | "StandardTableView"),
+                        "{source}: {name}"
+                    );
+                }
+                for name in ["can-undo", "can-redo"] {
+                    assert_eq!(
+                        entries.iter().any(|item| item["label"] == name),
+                        matches!(kind, "TableView" | "StandardTableView"),
+                        "{source}: {name}"
+                    );
+                }
+            }
+        }
+    }
 
     #[test]
     fn flickable_completes_motion_metrics_and_scoped_cancellation() {
@@ -1284,6 +1563,233 @@ mod tests {
         assert!(labels.iter().any(|label| label == "primary"));
         assert!(labels.iter().any(|label| label == "shift"));
         assert!(!labels.iter().any(|label| label == "text"));
+    }
+
+    #[test]
+    fn split_fill_completion_lists_only_direct_panes() {
+        let source = "component App inherits Window { SplitView { fill-pane: ; sidebar := Rectangle { nested := Text {} } editor := Rectangle {} } }";
+        let cursor = source.find(": ;").unwrap() + 2;
+        let entries = complete(source, 0, cursor, None);
+        for pane in ["sidebar", "editor"] {
+            assert!(entries.iter().any(|item| item["label"] == pane), "{pane}");
+        }
+        assert!(!entries.iter().any(|item| item["label"] == "nested"));
+    }
+
+    #[test]
+    fn split_resize_properties_complete_in_their_supported_contexts() {
+        let member = "component App inherits Window { SplitView { ";
+        let entries = complete(member, 0, member.len(), None);
+        assert!(
+            entries
+                .iter()
+                .any(|item| item["label"] == "handle-hit-size")
+        );
+        assert!(!entries.iter().any(|item| item["label"] == "resizing"));
+
+        let expression =
+            "component App inherits Window { view := SplitView {} property <bool> active: view.";
+        let entries = complete(expression, 0, expression.len(), None);
+        assert!(entries.iter().any(|item| item["label"] == "resizing"));
+    }
+
+    #[test]
+    fn split_handle_template_inputs_complete_only_inside_the_template() {
+        let source = "component App inherits Window { SplitView { ";
+        let entries = complete(source, 0, source.len(), None);
+        assert!(entries.iter().any(|item| item["label"] == "SplitHandle"));
+
+        let source =
+            "component App inherits Window { SplitView { SplitHandle { Rectangle { visible: ";
+        let entries = complete(source, 0, source.len(), None);
+        for label in [
+            "handle-pressed",
+            "handle-hovered",
+            "handle-index",
+            "handle-orientation",
+        ] {
+            assert!(entries.iter().any(|item| item["label"] == label), "{label}");
+        }
+        let source = "component App inherits Window { SplitView { Rectangle { visible: ";
+        let entries = complete(source, 0, source.len(), None);
+        assert!(!entries.iter().any(|item| item["label"] == "handle-pressed"));
+    }
+
+    #[test]
+    fn application_window_completes_window_and_content_properties() {
+        let source = "component App inherits ApplicationWindow { ";
+        let entries = complete(source, 0, source.len(), None);
+        for label in [
+            "padding-left",
+            "color-scheme",
+            "close-requested",
+            "MenuBar",
+            "PageHeader",
+            "PageFooter",
+        ] {
+            assert!(entries.iter().any(|item| item["label"] == label), "{label}");
+        }
+        let source = "component App inherits ApplicationWindow { out property <length> size: root.";
+        let entries = complete(source, 0, source.len(), None);
+        for label in ["available-width", "available-height", "window-active"] {
+            assert!(entries.iter().any(|item| item["label"] == label), "{label}");
+        }
+    }
+
+    #[test]
+    fn round_button_and_tool_separator_complete_their_controls() {
+        let source = "component App inherits Window { RoundButton { ";
+        let entries = complete(source, 0, source.len(), None);
+        for label in ["radius", "action", "clicked", "icon-only"] {
+            assert!(entries.iter().any(|item| item["label"] == label), "{label}");
+        }
+        let source = "component App inherits Window { ToolSeparator { ";
+        let entries = complete(source, 0, source.len(), None);
+        for label in ["orientation", "stroke-width", "padding"] {
+            assert!(entries.iter().any(|item| item["label"] == label), "{label}");
+        }
+        assert!(!entries.iter().any(|item| item["label"] == "clicked"));
+    }
+
+    #[test]
+    fn pane_completes_content_bindings_and_read_only_available_size() {
+        let source = "component App inherits Window { panel := Pane { ";
+        let entries = complete(source, 0, source.len(), None);
+        for name in ["content-width", "padding-left", "background", "clip"] {
+            assert!(entries.iter().any(|item| item["label"] == name), "{name}");
+        }
+        assert!(
+            !entries
+                .iter()
+                .any(|item| item["label"] == "available-width")
+        );
+        let source = "component App inherits Window { panel := ControlFrame {} out property <length> size: panel.";
+        let entries = complete(source, 0, source.len(), None);
+        assert!(
+            entries
+                .iter()
+                .any(|item| item["label"] == "available-width")
+        );
+    }
+
+    #[test]
+    fn wheel_enabled_completes_on_numeric_controls() {
+        for (kind, expected) in [("Slider", true), ("SpinBox", true), ("Button", false)] {
+            let source = format!("component App inherits Window {{ {kind} {{ ");
+            let entries = complete(&source, 0, source.len(), None);
+            assert_eq!(
+                entries.iter().any(|item| item["label"] == "wheel-enabled"),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn wheel_handler_completes_delta_and_modifier_fields() {
+        let source =
+            "component App inherits Window { area := WheelHandler { wheel(event) => { event.";
+        let entries = complete(source, 0, source.len(), None);
+        for name in ["x", "delta-y", "lines-x", "is-line", "modifiers"] {
+            assert!(entries.iter().any(|item| item["label"] == name), "{name}");
+        }
+        let source = format!("{source}modifiers.");
+        let entries = complete(&source, 0, source.len(), None);
+        assert!(entries.iter().any(|item| item["label"] == "control"));
+    }
+
+    #[test]
+    fn touch_points_infer_the_repeater_item_type() {
+        let source = "component App inherits Window { area := TouchArea { for point in area.touch-points : Rectangle { x: point.";
+        let entries = complete(source, 0, source.len(), None);
+        for field in ["id", "x", "y", "start-x", "start-y", "inside"] {
+            assert!(entries.iter().any(|item| item["label"] == field), "{field}");
+        }
+    }
+
+    #[test]
+    fn touch_area_completes_scroll_event_and_its_payload() {
+        let source = "component App inherits Window { area := TouchArea { ";
+        let entries = complete(source, 0, source.len(), None);
+        assert!(entries.iter().any(|item| item["label"] == "scroll-event"));
+        let source = format!("{source}scroll-event(event) => {{ event.");
+        let entries = complete(&source, 0, source.len(), None);
+        for name in ["x", "delta-y", "lines-x", "is-line", "modifiers"] {
+            assert!(entries.iter().any(|item| item["label"] == name), "{name}");
+        }
+    }
+
+    #[test]
+    fn touch_area_completes_state_reads_and_double_click() {
+        let source =
+            "component App inherits Window { area := TouchArea {} out property <bool> down: area.";
+        let entries = complete(source, 0, source.len(), None);
+        for name in [
+            "pressed",
+            "contains-press",
+            "has-hover",
+            "active-touch-count",
+            "mouse-x",
+            "pressed-y",
+        ] {
+            assert!(entries.iter().any(|item| item["label"] == name), "{name}");
+        }
+        let source = "component App inherits Window { TouchArea { ";
+        let entries = complete(source, 0, source.len(), None);
+        for name in [
+            "double-clicked",
+            "moved",
+            "press-and-hold",
+            "press-and-hold-interval",
+            "accepted-buttons",
+            "multi-touch",
+        ] {
+            assert!(entries.iter().any(|item| item["label"] == name), "{name}");
+        }
+        assert!(!entries.iter().any(|item| item["label"] == "pressed"));
+    }
+
+    #[test]
+    fn touch_area_completes_pointer_event_fields() {
+        let source = "component App inherits Window { TouchArea { pointer-event(event) => { event.";
+        let entries = complete(source, 0, source.len(), None);
+        for name in [
+            "kind",
+            "button",
+            "x",
+            "y",
+            "inside",
+            "is-touch",
+            "touch-finger-id",
+            "modifiers",
+        ] {
+            assert!(entries.iter().any(|item| item["label"] == name), "{name}");
+        }
+        let source = format!("{source}modifiers.");
+        let entries = complete(&source, 0, source.len(), None);
+        assert!(entries.iter().any(|item| item["label"] == "shift"));
+    }
+
+    #[test]
+    fn hover_handler_completes_read_only_state_and_blocking() {
+        let source = "component App inherits Window { area := HoverHandler {} out property <bool> inside: area.";
+        let entries = complete(source, 0, source.len(), None);
+        for name in ["hovered", "hover-x", "hover-y"] {
+            assert!(entries.iter().any(|item| item["label"] == name), "{name}");
+        }
+        let source = "component App inherits Window { area := HoverHandler { ";
+        let entries = complete(source, 0, source.len(), None);
+        assert!(entries.iter().any(|item| item["label"] == "blocking"));
+        assert!(entries.iter().any(|item| item["label"] == "cursor-shape"));
+        assert!(!entries.iter().any(|item| item["label"] == "hovered"));
+    }
+
+    #[test]
+    fn cursor_shape_completes_typed_values() {
+        let source = "component App inherits Window { HoverHandler { cursor-shape: CursorShape.";
+        let entries = complete(source, 0, source.len(), None);
+        for name in ["auto", "crosshair", "zoom-in"] {
+            assert!(entries.iter().any(|item| item["label"] == name), "{name}");
+        }
     }
 
     #[test]

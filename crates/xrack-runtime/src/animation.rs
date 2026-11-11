@@ -170,11 +170,12 @@ impl SceneTransition {
             if !tracks.is_empty() {
                 new.insert(path.clone(), tracks);
             }
-            for (index, (previous, next)) in
-                previous.children.iter().zip(&next.children).enumerate()
-            {
+            for (index, child) in next.materialized_children() {
+                let Some(previous) = previous.child_at(index) else {
+                    continue;
+                };
                 path.push(index);
-                collect(previous, next, path, old, new, now);
+                collect(previous, child, path, old, new, now);
                 path.pop();
             }
         }
@@ -215,7 +216,7 @@ impl SceneTransition {
             }
             let mut node = Some(&mut frame);
             for &index in path {
-                node = node.and_then(|node| node.children.get_mut(index));
+                node = node.and_then(|node| node.child_at_mut(index));
             }
             let Some(node) = node else {
                 continue;

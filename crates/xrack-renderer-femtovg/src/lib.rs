@@ -30,9 +30,10 @@ use xrack_layout::{
     dialog_title_height,
 };
 use xrack_runtime::{
-    Brush, Color as UiColor, ColorScheme, Component, GradientStop, Node, StandardButtonKind, Value,
-    button_text, combo_editable, group_index, is_button, is_multiline_text_input, is_spin_box,
-    is_text_input, is_toggle, is_window_overlay, spin_editable, spin_text, text_input_value,
+    Brush, Color as UiColor, ColorScheme, Component, GradientStop, Node, Orientation,
+    StandardButtonKind, Value, button_text, combo_editable, group_index, is_button,
+    is_multiline_text_input, is_spin_box, is_text_input, is_toggle, is_window_overlay,
+    spin_editable, spin_text, text_input_value,
 };
 
 #[derive(Clone, Copy)]
@@ -610,7 +611,7 @@ impl Renderer {
         } else {
             self.paint_surface(node, layout, path, frame, in_layout)?;
         }
-        if matches!(node.kind, "Menu" | "SplitHandle") {
+        if node.kind == "Menu" {
             return Ok(());
         }
         if let Some(clip) = layout.child_clip_shape() {
@@ -623,6 +624,36 @@ impl Renderer {
             result?;
         } else {
             self.paint_children(node, layout, path, frame)?;
+        }
+        if layout
+            .table
+            .as_ref()
+            .is_some_and(|table| table.row_header.width > 0.0)
+        {
+            let hovered = frame
+                .input
+                .hovered
+                .as_ref()
+                .and_then(|target| target.path.strip_prefix(path.as_slice()))
+                .and_then(|rest| match rest {
+                    [slot] => Some(*slot),
+                    _ => None,
+                });
+            let resize = frame.input.table_resize_row(path);
+            let moving = frame.input.table_row_move_source(path, node);
+            controls::table_row_headers(
+                &mut self.canvas,
+                &self.text,
+                frame.theme,
+                node,
+                layout,
+                |slot, key| {
+                    (
+                        hovered == Some(slot) || moving.is_some() && moving == key,
+                        resize.is_some() && resize == key,
+                    )
+                },
+            )?;
         }
         if layout.allows_overflow() {
             self.paint_group(content, 1.0, |renderer| {
@@ -651,16 +682,58 @@ impl Renderer {
             ..
         } = frame;
         let bounds = layout.bounds;
+        if node.kind == "ToolSeparator" {
+            let padding = node.length("padding").unwrap_or(6.0).max(0.0);
+            let stroke = node.length("stroke-width").unwrap_or(1.0).max(0.0);
+            let line = match node.orientation() {
+                Orientation::Horizontal => {
+                    let padding = padding.min(bounds.width * 0.5);
+                    let stroke = stroke.min(bounds.height);
+                    Rect::new(
+                        bounds.x + padding,
+                        bounds.y + (bounds.height - stroke) * 0.5,
+                        bounds.width - 2.0 * padding,
+                        stroke,
+                    )
+                }
+                Orientation::Vertical => {
+                    let padding = padding.min(bounds.height * 0.5);
+                    let stroke = stroke.min(bounds.width);
+                    Rect::new(
+                        bounds.x + (bounds.width - stroke) * 0.5,
+                        bounds.y + padding,
+                        stroke,
+                        bounds.height - 2.0 * padding,
+                    )
+                }
+            };
+            if line.width > 0.0 && line.height > 0.0 {
+                let foreground = node.color("color").unwrap_or_else(|| {
+                    if layout.enabled {
+                        theme.role(Role::Border)
+                    } else {
+                        theme.disabled_text
+                    }
+                });
+                let mut path = Path::new();
+                path.rect(line.x, line.y, line.width, line.height);
+                self.canvas
+                    .fill_path(&path, &Paint::color(color(foreground)));
+            }
+            return Ok(());
+        }
         let group_header = (node.kind == "GroupBox").then(|| layout.group_header(node));
         if node.kind == "SplitHandle" {
-            controls::split_handle(
-                &mut self.canvas,
-                node,
-                bounds,
-                theme,
-                layout.enabled,
-                input.is_hovered(path) || input.is_focused(path),
-            );
+            if node.children.is_empty() {
+                controls::split_handle(
+                    &mut self.canvas,
+                    node,
+                    bounds,
+                    theme,
+                    layout.enabled,
+                    input.is_hovered(path) || input.is_focused(path),
+                );
+            }
             return Ok(());
         }
         if node.kind == "Menu" {
@@ -675,6 +748,7 @@ impl Renderer {
             );
         }
         let is_button = is_button(node.kind);
+        let item_delegate = node.is_item_delegate();
         let is_cell = matches!(node.kind, "TableCell" | "TreeCell");
         let editable_combo = combo_editable(node);
         let is_input =
@@ -693,10 +767,13 @@ impl Renderer {
                     | "Dialog"
                     | "PopupWindow"
                     | "GroupBox"
+                    | "Pane"
+                    | "ControlFrame"
                     | "Drawer"
                     | "MenuBar"
                     | "ToolBar"
                     | "Calendar"
+                    | "MonthGrid"
                     | "Tumbler"
             );
         let checked = is_button
@@ -704,7 +781,18 @@ impl Renderer {
             && node.boolean("checked", false);
         let field = is_input || is_spin_box(node.kind) || node.kind == "ComboBox";
         let mut button_text_color = theme.text;
-        let background = if !is_button {
+        let background = if item_delegate {
+            brush_paint(node, "background", bounds, 0.0).or_else(|| {
+                let role = if node.boolean("highlighted", false) || checked {
+                    Some(Role::RowSelection)
+                } else if layout.enabled && (input.is_hovered(path) || input.is_pressed(path)) {
+                    Some(Role::RowHover)
+                } else {
+                    None
+                };
+                role.map(|role| Paint::color(color(theme.role(role))))
+            })
+        } else if !is_button {
             brush_paint(node, "background", bounds, 0.0).or_else(|| {
                 let surface = if field && theme.is_light() {
                     Role::InsetSurface
@@ -830,11 +918,16 @@ impl Renderer {
         }
         let border = node
             .length("border-width")
-            .unwrap_or(if group_header.is_some() || field && theme.is_light() {
-                1.0
-            } else {
-                0.0
-            })
+            .unwrap_or(
+                if node.kind == "ControlFrame"
+                    || group_header.is_some()
+                    || field && theme.is_light()
+                {
+                    1.0
+                } else {
+                    0.0
+                },
+            )
             .max(0.0)
             .min(bounds.width.min(bounds.height));
         if border > 0.0 {
@@ -849,12 +942,22 @@ impl Renderer {
             || is_cell
             || matches!(
                 node.kind,
-                "Slider" | "RadioButton" | "SwipeView" | "PageIndicator" | "FocusScope"
+                "Slider"
+                    | "ColorPlane"
+                    | "RadioButton"
+                    | "SwipeView"
+                    | "PageIndicator"
+                    | "FocusScope"
             ))
             && input.is_focused(path)
             && layout.enabled
         {
-            let mut paint = Paint::color(color(theme.focus));
+            let outline = if is_cell && input.table_cell_edit_invalid(node, path) {
+                theme.role(Role::Danger)
+            } else {
+                theme.focus
+            };
+            let mut paint = Paint::color(color(outline));
             paint.set_line_width(2.0);
             let mut path = Path::new();
             let focus = group_header.unwrap_or(bounds);
@@ -884,6 +987,8 @@ impl Renderer {
             )?;
         } else if node.kind == "Path" {
             vector::draw_path(&mut self.canvas, node, bounds)?;
+        } else if node.kind == "ColorPlane" {
+            controls::color_plane(&mut self.canvas, node, bounds);
         } else if node.kind == "ColorPreview" {
             controls::color_preview(
                 &mut self.canvas,
@@ -937,7 +1042,10 @@ impl Renderer {
                 wheel,
                 layout.enabled,
             )?;
-        } else if node.kind == "Calendar" {
+        } else if matches!(
+            node.kind,
+            "Calendar" | "MonthGrid" | "DayOfWeekRow" | "WeekNumberColumn"
+        ) {
             controls::calendar(
                 &mut self.canvas,
                 &self.text,
@@ -957,6 +1065,11 @@ impl Renderer {
                     .pressed
                     .as_ref()
                     .is_some_and(|target| target.path == *path),
+                if layout.enabled && !node.boolean("live", true) {
+                    input.slider_preview(path)
+                } else {
+                    None
+                },
             );
         } else if node.kind == "Dial" {
             range::dial(
@@ -968,9 +1081,16 @@ impl Renderer {
                 input.is_focused(path) || input.is_pressed(path),
             );
         } else if node.kind == "RangeSlider" {
+            let mut preview = None;
             let active = [0, 1].map(|index| {
                 path.push(index);
                 let active = input.is_focused(path) || input.is_pressed(path);
+                if layout.enabled
+                    && !node.boolean("live", true)
+                    && let Some(fraction) = input.slider_preview(path)
+                {
+                    preview = Some((index, fraction));
+                }
                 path.pop();
                 active
             });
@@ -981,6 +1101,7 @@ impl Renderer {
                 bounds,
                 layout.enabled,
                 active,
+                preview,
             );
         } else if node.kind == "PageIndicator" {
             if let Some(geometry) = xrack_layout::PageIndicatorGeometry::new(node, bounds) {
@@ -1187,7 +1308,8 @@ impl Renderer {
                 .map_or(0.0, ButtonContent::gap);
             let icon_width = icon.map_or(0.0, |(_, size)| size + gap);
             let label_width = (area.width - icon_width).max(0.0);
-            let paint = self.text.paint_node(node, color(text_color), is_button);
+            let centered = is_button && !item_delegate;
+            let paint = self.text.paint_node(node, color(text_color), centered);
             let lines = self.text.lines(text, &paint, label_width);
             let line_height = self.text.font_size(node) * 1.4;
             let y = if is_button {
@@ -1202,13 +1324,17 @@ impl Renderer {
                     .map(|range| self.text.advance_painted(&text[range.clone()], &paint))
                     .fold(0.0_f32, f32::max)
                     .min(label_width);
-                let left = area.x + (area.width - icon_width - label).max(0.0) * 0.5;
+                let left = if centered {
+                    area.x + (area.width - icon_width - label).max(0.0) * 0.5
+                } else {
+                    area.x
+                };
                 let rect = Rect::new(left, area.y + (area.height - size) * 0.5, size, size);
                 self.images
                     .draw_icon(&mut self.canvas, image, rect, scale, layout.enabled)?;
                 label_left = left + icon_width;
-                label_left + label * 0.5
-            } else if is_button {
+                label_left + if centered { label * 0.5 } else { 0.0 }
+            } else if centered {
                 area.x + area.width * 0.5
             } else {
                 area.x
@@ -1364,8 +1490,10 @@ impl Renderer {
             );
         }
         let drag_target = node.kind == "DropArea" && input.is_drop_target(node, path);
-        if (node.kind == "SwipeDelegate" && input.is_focused(path) || drag_target) && layout.enabled
-        {
+        let focus_outline = (node.kind == "SwipeDelegate"
+            || node.kind == "SplitHandle" && !node.children.is_empty())
+            && input.is_focused(path);
+        if (focus_outline || drag_target) && layout.enabled {
             let mut outline = Path::new();
             append_rect(&mut outline, bounds.inset(2.0), [0.0; 4]);
             let mut paint = Paint::color(color(theme.focus));
@@ -1379,12 +1507,13 @@ impl Renderer {
                 .fill_path(&path, &Paint::color(color(theme.role(Role::Grip))));
         }
         if node.kind == "ListRow" {
+            let item_delegate = node.children.first().is_some_and(Node::is_item_delegate);
             controls::list_row(
                 &mut self.canvas,
                 theme,
                 bounds,
-                node.boolean("selected", false),
-                input.is_hovered(path) && layout.enabled,
+                !item_delegate && node.boolean("selected", false),
+                !item_delegate && input.is_hovered(path) && layout.enabled,
                 node.boolean("current", false)
                     && path
                         .split_last()
@@ -1447,6 +1576,12 @@ impl Renderer {
                     .fill_path(&path, &Paint::color(color(theme.role(Role::Divider))));
             }
         }
+        if let Some(rect) = input.table_row_move_marker(path, node, layout) {
+            let mut marker = Path::new();
+            marker.rect(rect.x, rect.y, rect.width, rect.height);
+            self.canvas
+                .fill_path(&marker, &Paint::color(color(theme.focus)));
+        }
         for rect in input.table_drag_preview(path, node, layout) {
             let mut region = Path::new();
             append_rect(&mut region, rect, [0.0; 4]);
@@ -1457,6 +1592,19 @@ impl Renderer {
             append_rect(&mut outline, rect.inset(0.5), [0.0; 4]);
             self.canvas
                 .stroke_path(&outline, &Paint::color(color(theme.focus)));
+        }
+        for rect in input.table_selection_handles(path, node, layout) {
+            let x = rect.x + rect.width * 0.5;
+            let y = rect.y + rect.height * 0.5;
+            let radius = 6.0_f32.min(rect.width * 0.5);
+            let mut border = Path::new();
+            border.circle(x, y, radius);
+            self.canvas
+                .fill_path(&border, &Paint::color(color(theme.role(Role::Surface))));
+            let mut center = Path::new();
+            center.circle(x, y, radius * 0.75);
+            self.canvas
+                .fill_path(&center, &Paint::color(color(theme.focus)));
         }
         for bar in layout.scroll_bars(node) {
             range::scroll_bar(

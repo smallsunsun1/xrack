@@ -12,11 +12,13 @@ pub enum GeometryMetric {
     WindowY,
     WindowWidth,
     WindowHeight,
+    AvailableWidth,
+    AvailableHeight,
 }
 
 #[derive(Default)]
 struct Geometry {
-    values: [Property<Length>; 8],
+    values: [Property<Length>; 10],
     ready: Property<bool>,
 }
 
@@ -52,7 +54,22 @@ impl GeometryHandle {
     }
 
     pub fn publish(&self, layout: [f32; 4], window: [f32; 4], ready: bool) {
-        for (property, value) in self.0.values.iter().zip(layout.into_iter().chain(window)) {
+        self.publish_with_content(layout, window, [0.0; 2], ready);
+    }
+
+    pub fn publish_with_content(
+        &self,
+        layout: [f32; 4],
+        window: [f32; 4],
+        available: [f32; 2],
+        ready: bool,
+    ) {
+        for (property, value) in self
+            .0
+            .values
+            .iter()
+            .zip(layout.into_iter().chain(window).chain(available))
+        {
             let value = if value.is_finite() {
                 f64::from(value)
             } else {

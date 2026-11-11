@@ -185,6 +185,7 @@ pub enum Type {
     TextVerticalAlignment,
     TextOverflow,
     InputType,
+    CursorShape,
     ColorScheme,
     FileDialogMode,
     MessageLevel,
@@ -195,6 +196,13 @@ pub enum Type {
     SwipeSide,
     DragAction,
     KeyEvent,
+    WheelEvent,
+    PointerEvent,
+    PointerEventKind,
+    PointerButton,
+    PointerButtons,
+    TouchPoint,
+    TouchPoints,
     KeyModifiers,
     EventResult,
     FocusReason,
@@ -203,17 +211,31 @@ pub enum Type {
     SelectionTarget,
     Date,
     Time,
+    Font,
     /// Internal type for a color and its normalized position in a gradient.
     #[doc(hidden)]
     GradientStop,
 }
 
 impl Type {
-    pub fn key_field(&self, field: &str) -> Option<Self> {
+    pub fn input_field(&self, field: &str) -> Option<Self> {
         match (self, field) {
             (Self::KeyEvent, "key" | "text") => Some(Self::String),
             (Self::KeyEvent, "repeat") => Some(Self::Bool),
-            (Self::KeyEvent, "modifiers") => Some(Self::KeyModifiers),
+            (Self::KeyEvent | Self::WheelEvent | Self::PointerEvent, "modifiers") => {
+                Some(Self::KeyModifiers)
+            }
+            (Self::PointerEvent, "x" | "y") => Some(Self::Length),
+            (Self::PointerEvent, "inside" | "is-touch") => Some(Self::Bool),
+            (Self::PointerEvent, "kind") => Some(Self::PointerEventKind),
+            (Self::PointerEvent, "button") => Some(Self::PointerButton),
+            (Self::PointerEvent, "touch-finger-id") => Some(Self::Int),
+            (Self::TouchPoint, "id") => Some(Self::Int),
+            (Self::TouchPoint, "x" | "y" | "start-x" | "start-y") => Some(Self::Length),
+            (Self::TouchPoint, "inside") => Some(Self::Bool),
+            (Self::WheelEvent, "x" | "y" | "delta-x" | "delta-y") => Some(Self::Length),
+            (Self::WheelEvent, "lines-x" | "lines-y") => Some(Self::Float),
+            (Self::WheelEvent, "is-line") => Some(Self::Bool),
             (Self::KeyModifiers, "control" | "shift" | "alt" | "meta" | "primary") => {
                 Some(Self::Bool)
             }
@@ -267,6 +289,7 @@ impl Type {
             Self::TextVerticalAlignment => "textverticalalignment",
             Self::TextOverflow => "textoverflow",
             Self::InputType => "inputtype",
+            Self::CursorShape => "cursorshape",
             Self::ColorScheme => "colorscheme",
             Self::FileDialogMode => "filedialogmode",
             Self::MessageLevel => "messagelevel",
@@ -277,6 +300,13 @@ impl Type {
             Self::SwipeSide => "swipeside",
             Self::DragAction => "dragaction",
             Self::KeyEvent => "keyevent",
+            Self::WheelEvent => "wheelevent",
+            Self::PointerEvent => "pointerevent",
+            Self::PointerEventKind => "pointereventkind",
+            Self::PointerButton => "pointerbutton",
+            Self::PointerButtons => "pointerbuttons",
+            Self::TouchPoint => "touchpoint",
+            Self::TouchPoints => "touchpoints",
             Self::KeyModifiers => "keymodifiers",
             Self::EventResult => "eventresult",
             Self::FocusReason => "focusreason",
@@ -285,6 +315,7 @@ impl Type {
             Self::SelectionTarget => "selectiontarget",
             Self::Date => "date",
             Self::Time => "time",
+            Self::Font => "font",
             Self::GradientStop => "gradientstop",
         })
     }
@@ -325,6 +356,7 @@ impl Type {
             "textverticalalignment" | "TextVerticalAlignment" => Self::TextVerticalAlignment,
             "textoverflow" | "TextOverflow" => Self::TextOverflow,
             "inputtype" | "InputType" => Self::InputType,
+            "cursorshape" | "CursorShape" => Self::CursorShape,
             "colorscheme" | "ColorScheme" => Self::ColorScheme,
             "filedialogmode" | "FileDialogMode" => Self::FileDialogMode,
             "messagelevel" | "MessageLevel" => Self::MessageLevel,
@@ -335,6 +367,13 @@ impl Type {
             "swipeside" | "SwipeSide" => Self::SwipeSide,
             "dragaction" | "DragAction" => Self::DragAction,
             "keyevent" | "KeyEvent" => Self::KeyEvent,
+            "wheelevent" | "WheelEvent" => Self::WheelEvent,
+            "pointerevent" | "PointerEvent" => Self::PointerEvent,
+            "pointereventkind" | "PointerEventKind" => Self::PointerEventKind,
+            "pointerbutton" | "PointerButton" => Self::PointerButton,
+            "pointerbuttons" | "PointerButtons" => Self::PointerButtons,
+            "touchpoint" | "TouchPoint" => Self::TouchPoint,
+            "touchpoints" | "TouchPoints" | "[TouchPoint]" => Self::TouchPoints,
             "keymodifiers" | "KeyModifiers" => Self::KeyModifiers,
             "eventresult" | "EventResult" => Self::EventResult,
             "focusreason" | "FocusReason" => Self::FocusReason,
@@ -343,6 +382,7 @@ impl Type {
             "selectiontarget" | "SelectionTarget" => Self::SelectionTarget,
             "date" | "Date" => Self::Date,
             "time" | "Time" => Self::Time,
+            "font" | "Font" => Self::Font,
             "gradientstop" => Self::GradientStop,
             _ => {
                 if let Some(name) = s
@@ -362,12 +402,15 @@ impl Type {
         match self {
             Self::StringList => Some(Self::String),
             Self::RecordList(name) => Some(Self::Record(name.clone())),
+            Self::TouchPoints => Some(Self::TouchPoint),
             _ => None,
         }
     }
 
     pub fn enum_variants(&self) -> &'static [&'static str] {
         match self {
+            Self::PointerEventKind => &["down", "move", "up", "cancel"],
+            Self::PointerButton => &["primary", "secondary", "middle"],
             Self::ImageFit => &["fill", "contain", "cover", "preserve"],
             Self::ImageTileMode => &["stretch", "repeat", "round"],
             Self::ImageHorizontalAlignment => &["left", "center", "right"],
@@ -403,8 +446,31 @@ impl Type {
             Self::TextVerticalAlignment => &["top", "center", "bottom"],
             Self::TextOverflow => &["clip", "elide"],
             Self::InputType => &["text", "password", "number", "decimal", "search"],
+            Self::CursorShape => &[
+                "auto",
+                "default",
+                "pointer",
+                "text",
+                "crosshair",
+                "move",
+                "grab",
+                "grabbing",
+                "not-allowed",
+                "wait",
+                "help",
+                "resize-horizontal",
+                "resize-vertical",
+                "zoom-in",
+                "zoom-out",
+            ],
             Self::ColorScheme => &["system", "light", "dark"],
-            Self::FileDialogMode => &["open-file", "open-files", "save-file", "select-folder"],
+            Self::FileDialogMode => &[
+                "open-file",
+                "open-files",
+                "save-file",
+                "select-folder",
+                "select-folders",
+            ],
             Self::MessageLevel => &["info", "warning", "error"],
             Self::MessageButtons => &["ok", "ok-cancel", "yes-no", "yes-no-cancel"],
             Self::CheckState => &["unchecked", "partially-checked", "checked"],
@@ -479,6 +545,7 @@ impl Serialize for Type {
             Self::TextVerticalAlignment => serializer.serialize_str("TextVerticalAlignment"),
             Self::TextOverflow => serializer.serialize_str("TextOverflow"),
             Self::InputType => serializer.serialize_str("InputType"),
+            Self::CursorShape => serializer.serialize_str("CursorShape"),
             Self::ColorScheme => serializer.serialize_str("ColorScheme"),
             Self::FileDialogMode => serializer.serialize_str("FileDialogMode"),
             Self::MessageLevel => serializer.serialize_str("MessageLevel"),
@@ -489,6 +556,13 @@ impl Serialize for Type {
             Self::SwipeSide => serializer.serialize_str("SwipeSide"),
             Self::DragAction => serializer.serialize_str("DragAction"),
             Self::KeyEvent => serializer.serialize_str("KeyEvent"),
+            Self::WheelEvent => serializer.serialize_str("WheelEvent"),
+            Self::PointerEvent => serializer.serialize_str("PointerEvent"),
+            Self::PointerEventKind => serializer.serialize_str("PointerEventKind"),
+            Self::PointerButton => serializer.serialize_str("PointerButton"),
+            Self::PointerButtons => serializer.serialize_str("PointerButtons"),
+            Self::TouchPoint => serializer.serialize_str("TouchPoint"),
+            Self::TouchPoints => serializer.serialize_str("TouchPoints"),
             Self::KeyModifiers => serializer.serialize_str("KeyModifiers"),
             Self::EventResult => serializer.serialize_str("EventResult"),
             Self::FocusReason => serializer.serialize_str("FocusReason"),
@@ -497,6 +571,7 @@ impl Serialize for Type {
             Self::SelectionTarget => serializer.serialize_str("SelectionTarget"),
             Self::Date => serializer.serialize_str("Date"),
             Self::Time => serializer.serialize_str("Time"),
+            Self::Font => serializer.serialize_str("Font"),
             _ => serializer.serialize_str(&self.name()),
         }
     }

@@ -1,9 +1,9 @@
 use bundled_ui::BundledFontsDemo;
 use layout_ui::{
     AnimationsDemo, ClippingDemo, ComponentStatesDemo, CompositingDemo, FlexDemo, FlickableDemo,
-    FlowDemo, FocusScopesDemo, FontsDemo, FramelessDemo, GeometryDemo, LabelsDemo, LayoutDemo,
-    RectangleShadowDemo, ScaleRotateDemo, ScopedKeysDemo, StatesDemo, StyledTextDemo,
-    SwipeGestureDemo, TransformDemo,
+    FlowDemo, FocusScopesDemo, FontsDemo, FramelessDemo, GeometryDemo, HoverDemo, LabelsDemo,
+    LayoutDemo, PointerDemo, PointerPassThroughDemo, RectangleShadowDemo, ScaleRotateDemo,
+    ScopedKeysDemo, StatesDemo, StyledTextDemo, SwipeGestureDemo, TransformDemo, WheelDemo,
 };
 
 fn main() -> std::process::ExitCode {
@@ -13,6 +13,10 @@ fn main() -> std::process::ExitCode {
         Some("--flickable") => xrack_platform_winit::run(FlickableDemo::new()),
         Some("--scale-rotate") => xrack_platform_winit::run(ScaleRotateDemo::new()),
         Some("--swipe-gesture") => xrack_platform_winit::run(SwipeGestureDemo::new()),
+        Some("--wheel") => xrack_platform_winit::run(WheelDemo::new()),
+        Some("--hover") => xrack_platform_winit::run(HoverDemo::new()),
+        Some("--pointer") => xrack_platform_winit::run(PointerDemo::new()),
+        Some("--pointer-pass-through") => xrack_platform_winit::run(PointerPassThroughDemo::new()),
         Some("--clipping") => xrack_platform_winit::run(ClippingDemo::new()),
         Some("--shadows") => xrack_platform_winit::run(RectangleShadowDemo::new()),
         Some("--compositing") => xrack_platform_winit::run(CompositingDemo::new()),

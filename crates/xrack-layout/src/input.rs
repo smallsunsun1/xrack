@@ -1,12 +1,14 @@
 use crate::{
-    CalendarGeometry, ChoiceKey, ChoiceMenu, ComboCompletion, ComboGeometry, DialGeometry,
-    EditAction, EditSource, LayoutNode, MenuEntry, MenuKey, MenuPanel, MenuShortcut,
+    CalendarGeometry, ChoiceKey, ChoiceMenu, ColorPlaneGeometry, ComboCompletion, ComboGeometry,
+    DialGeometry, EditAction, EditSource, LayoutNode, MenuEntry, MenuKey, MenuPanel, MenuShortcut,
     PageIndicatorGeometry, Point, Rect, ScrollBarGeometry, ScrollGestureEnd, ScrollGestureKind,
     SearchGeometry, ShortcutOutcome, SliderGeometry, SpinGeometry, SplitGeometry, SplitHandle,
-    StackTransitions, TextEdit, TextPosition, TreeRowGeometry, TumblerScroll, WindowResizeEdge,
+    SplitHandleRange, StackTransitions, TextEdit, TextPosition, TreeRowGeometry, TumblerScroll,
+    WindowResizeEdge,
     choice::{ChoicePopup, ChoiceTypeahead, MAX_ROWS as CHOICE_PAGE, next_choice},
     delay_button::{DelayHold, DelaySource},
     history::{EditHistories, EditorKey, Group, Record, TextHistory},
+    hover_observers::HoverEntry,
     list_anchor::{ListAnchor, capture_list_anchors},
     menu::{MenuPopup, TextMenu},
     modal,
@@ -26,13 +28,14 @@ use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, Instant};
 use xrack_runtime::{
-    ButtonGroupMembership, CalendarAction, CalendarState, Component, ControlAction, Date,
-    DialInputMode, DialogRole, DrawerEdge, ListMetrics, Node, Orientation, RangeAction, RowKey,
-    RowSelection, ScrollBarRange, ScrollSnapMode, SelectionTarget, SliderInterval, SliderRange,
-    SpinAction, SpinDecimal, StandardButtonKind, SwipeSide, TableSelectionAction, TextCommand,
-    TreeAction, TreeSelectionAction, Tumbler, Value, ViewportHandle, ViewportMotion,
-    combo_editable, combo_index, decimal_separator, delay_millis, dialog_button_action,
-    editable_table_cell, group_index, group_item, is_multiline_text_input, is_spin_box,
+    ButtonGroupMembership, CalendarAction, Component, ControlAction, Date, DialInputMode,
+    DialogRole, DrawerEdge, Length, ListMetrics, Node, Orientation, RangeAction, RowKey,
+    RowSelection, ScrollAction, ScrollAlignment, ScrollBarRange, ScrollRequest, ScrollSnapMode,
+    SelectionTarget, SliderInterval, SliderRange, SpinAction, SpinDecimal, StandardButtonKind,
+    SwipeSide, TableEditPosition, TableSelectionAction, TextCommand, TreeAction,
+    TreeSelectionAction, Tumbler, Value, ViewportHandle, ViewportMotion, combo_editable,
+    combo_index, decimal_separator, delay_millis, dialog_button_action, editable_table_cell,
+    group_index, group_item, is_calendar_control, is_multiline_text_input, is_spin_box,
     is_text_input, is_toggle, is_window_overlay, page_indicator_count, page_indicator_index,
     radio_value, resizable_table_column, search_suggestion, spin_editable, spin_text,
     spin_text_is_valid, text_input_value,
@@ -118,6 +121,23 @@ pub struct RangeInput {
     pub action: RangeAction,
 }
 
+pub enum WheelAdjustment {
+    Pending,
+    Range(RangeInput),
+    Spin(ControlInput),
+}
+
+#[derive(Clone, Debug)]
+struct WheelSteps {
+    path: Vec<usize>,
+    row: Option<RowKey>,
+    handle: Option<usize>,
+    horizontal: bool,
+    is_line: bool,
+    remainder: f64,
+    time: Instant,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum ScrollBarUpdate {
     Unchanged,
@@ -146,6 +166,7 @@ fn is_modal_path(layout: &LayoutNode, path: &[usize]) -> bool {
 pub struct SplitResize {
     pub path: Vec<usize>,
     pub weights: Vec<(usize, f32)>,
+    pub sizes: Option<Vec<(usize, f32)>>,
 }
 
 impl ControlInput {
@@ -218,11 +239,24 @@ struct TableColumnMove {
 }
 
 #[derive(Clone, Debug)]
+struct TableRowMove {
+    table: Target,
+    from: usize,
+    row: xrack_runtime::RowKey,
+    stamp: (u64, u64),
+    start: Point,
+    claimed: bool,
+    touch: bool,
+    scroll_wake: Option<Instant>,
+}
+
+#[derive(Clone, Debug)]
 struct SplitDrag {
     target: Target,
     orientation: Orientation,
     after_pane: usize,
     grab_offset: f32,
+    state: Option<xrack_runtime::SplitResizeHandle>,
 }
 
 #[derive(Clone, Debug)]
@@ -237,6 +271,34 @@ struct TableEdit {
     original: String,
     draft: String,
     history: TextHistory,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TableEditCommit {
+    Kept,
+    Unchanged,
+    Changed,
+    Rejected,
+}
+
+pub struct TableEditTarget {
+    table: Vec<usize>,
+    viewport: ViewportHandle,
+    position: TableEditPosition,
+}
+
+impl TableEditTarget {
+    pub fn scroll_request(&self) -> ScrollRequest {
+        ScrollRequest {
+            target: self.viewport.clone(),
+            action: ScrollAction::ToCell {
+                row: self.position.row as i64,
+                column: self.position.column as i64,
+                horizontal: ScrollAlignment::Contain,
+                vertical: ScrollAlignment::Contain,
+            },
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -378,6 +440,19 @@ struct ScrollGesture {
     swipe_delegate: Option<SwipeDrag>,
     swipe: Option<SwipeRoute>,
     delay_touch: bool,
+    table_hold: Option<TableTouchHold>,
+}
+
+#[derive(Clone, Debug)]
+struct TableTouchHold {
+    drag: TableTouchDrag,
+    deadline: Instant,
+}
+
+#[derive(Clone, Debug)]
+enum TableTouchDrag {
+    Select(crate::table_drag_selection::TableDragSelection),
+    Move(TableRowMove),
 }
 
 #[derive(Clone, Debug)]
@@ -534,6 +609,7 @@ pub struct Interaction {
     scroll_gesture: Option<ScrollGesture>,
     swipe_events: Vec<SwipeDelivery>,
     tumbler_wheel: Option<TumblerWheel>,
+    wheel_steps: Option<WheelSteps>,
     scroll_fling: Option<ScrollFling>,
     viewport_motion: MotionState,
     overscroll: Overscroll,
@@ -545,7 +621,9 @@ pub struct Interaction {
     range_keys: BTreeMap<SliderKey, Target>,
     slider_offset: f64,
     slider_anchor: Option<f64>,
+    slider_fraction: Option<f64>,
     dial_pointer: Option<Point>,
+    touch_range: bool,
     spin_pressed: Option<SpinAction>,
     spin_draft: Option<SpinDraft>,
     choice: Option<ChoicePopup>,
@@ -577,8 +655,10 @@ pub struct Interaction {
     table_resize: Option<TableResize>,
     table_row_resize: Option<TableRowResize>,
     table_column_move: Option<TableColumnMove>,
+    table_row_move: Option<TableRowMove>,
     table_drag_selection: Option<crate::table_drag_selection::TableDragSelection>,
     split_drag: Option<SplitDrag>,
+    split_hover: Option<(xrack_runtime::SplitResizeHandle, usize)>,
     table_edit: Option<TableEdit>,
     last_table_click: Option<(Target, Instant)>,
     pub editor: Option<TextEdit>,
@@ -586,6 +666,7 @@ pub struct Interaction {
     scroll_offsets: BTreeMap<Vec<usize>, f32>,
     horizontal_scroll_offsets: BTreeMap<Vec<usize>, f32>,
     scroll_selections: BTreeMap<Vec<usize>, (Option<usize>, usize)>,
+    tree_scroll_roots: BTreeMap<Vec<usize>, (i64, Option<RowKey>)>,
     pub(crate) scroll_anchors: BTreeMap<Vec<usize>, ListAnchor>,
     pub(crate) user_scroll_changes: Vec<UserScrollChange>,
     text_offsets: BTreeMap<Vec<usize>, (Option<RowKey>, Point)>,
@@ -610,6 +691,13 @@ enum Hit {
     TableRowGrip(Target, usize),
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum HitPurpose<'a> {
+    Button(xrack_runtime::PointerButton),
+    Hover,
+    Gesture(&'a str),
+}
+
 pub(crate) fn focusable(node: &Node) -> bool {
     let kind = node.kind;
     if kind == "GroupBox" {
@@ -626,12 +714,14 @@ pub(crate) fn focusable(node: &Node) -> bool {
         "Button"
             | "FocusScope"
             | "ToolButton"
+            | "RoundButton"
             | "DelayButton"
             | "DialogButton"
             | "Dialog"
             | "Drawer"
             | "PopupWindow"
             | "Slider"
+            | "ColorPlane"
             | "ScrollBar"
             | "Dial"
             | "RangeThumb"
@@ -639,6 +729,7 @@ pub(crate) fn focusable(node: &Node) -> bool {
             | "DoubleSpinBox"
             | "ComboBox"
             | "Calendar"
+            | "MonthGrid"
             | "RadioButton"
             | "Tab"
             | "TabButton"
@@ -680,21 +771,47 @@ fn table_cell_row<'a>(scene: &Node, path: &'a [usize]) -> Option<(&'a [usize], u
         .then_some((table, *slot))
 }
 
+fn table_cell_target(
+    scene: &Node,
+    layout: &LayoutNode,
+    table: &[usize],
+    row: usize,
+    column: usize,
+) -> Option<Target> {
+    let view = scene.interactive_at_path(table)?;
+    let list = view.list?;
+    if view.kind != "TableView" || row >= list.row_count {
+        return None;
+    }
+    let slot = row.checked_sub(list.first_row)?;
+    let mut path = table.to_vec();
+    path.extend([slot, 0, column]);
+    crate::focus_scope::target_at(scene, layout, &path)
+}
+
+fn list_item_delegate_row<'a>(scene: &Node, path: &'a [usize]) -> Option<(&'a [usize], usize)> {
+    let [view @ .., slot, 0] = path else {
+        return None;
+    };
+    (scene.at_path(path)?.is_item_delegate()
+        && matches!(scene.at_path(view)?.kind, "ListView" | "GridView"))
+    .then_some((view, *slot))
+}
+
 fn tree_cell_row<'a>(scene: &Node, path: &'a [usize]) -> Option<(&'a [usize], usize)> {
     let cell = scene.at_path(path)?;
     if cell.kind != "TreeCell" && !cell.boolean("table-editor", false) {
         return None;
     }
-    let mut node = scene;
-    for (depth, &index) in path.iter().enumerate() {
-        if node.kind == "TreeView" {
-            return (path.get(depth + 1) == Some(&0)
-                && node.children.get(index)?.kind == "ListRow")
-                .then_some((&path[..depth], index));
-        }
-        node = node.children.get(index)?;
-    }
-    None
+    (0..path.len()).rev().find_map(|depth| {
+        let parent = &path[..depth];
+        let tree = scene.at_path(parent)?;
+        let slot = path[depth];
+        (tree.kind == "TreeView"
+            && path.get(depth + 1) == Some(&0)
+            && tree.children.get(slot)?.kind == "ListRow")
+            .then_some((parent, slot))
+    })
 }
 
 pub(crate) fn scroll_selection(node: &Node) -> Option<usize> {
@@ -726,7 +843,7 @@ fn hit(
     window: Point,
     path: &mut Vec<usize>,
     transitioning_stacks: &BTreeSet<Vec<usize>>,
-    gesture_kind: Option<&str>,
+    purpose: HitPurpose<'_>,
 ) -> Hit {
     let Some(point) = layout.map_from_window(window) else {
         return Hit::None;
@@ -757,17 +874,39 @@ fn hit(
         return Hit::None;
     }
     if !layout.bounds.contains(point) {
-        return hit_children(
-            node,
-            layout,
-            window,
-            path,
-            transitioning_stacks,
-            gesture_kind,
-        );
+        return hit_children(node, layout, window, path, transitioning_stacks, purpose);
+    }
+    if node.kind == "RoundButton"
+        && !(crate::RoundedClip {
+            bounds: layout.bounds,
+            radii: crate::corner_radii(node, layout.bounds),
+        })
+        .contains(point)
+    {
+        return Hit::None;
     }
     if transitioning_stacks.contains(path) {
         return Hit::StackSlide;
+    }
+    if layout.enabled
+        && let Some(slot) = layout
+            .split
+            .as_ref()
+            .and_then(|split| split.expanded_hit(point))
+        && let Some(child) = layout.children.get(slot)
+        && let Some(handle) = node.children.get(slot)
+        && eligible(handle, child)
+        && child.contains_clip_point(window)
+    {
+        let mut target = path.clone();
+        target.push(slot);
+        return Hit::Target(Target {
+            text_link: None,
+            path: target,
+            id: handle.id,
+            focusable: true,
+            row_key: None,
+        });
     }
     if node.group_checkable() && layout.group_header(node).contains(point) {
         return if layout.enabled {
@@ -816,7 +955,7 @@ fn hit(
             Hit::Blocked(path.clone())
         };
     }
-    if node.kind == "Calendar" {
+    if is_calendar_control(node.kind) {
         let action = CalendarGeometry::new(node, layout.bounds).action_at(point);
         return if layout.enabled
             && let Some(action) = action
@@ -920,16 +1059,11 @@ fn hit(
             Hit::Blocked(path.clone())
         };
     }
-    let child = hit_children(
-        node,
-        layout,
-        window,
-        path,
-        transitioning_stacks,
-        gesture_kind,
-    );
-    if !matches!(child, Hit::None) {
-        return child;
+    if node.kind != "SplitHandle" {
+        let child = hit_children(node, layout, window, path, transitioning_stacks, purpose);
+        if !matches!(child, Hit::None) {
+            return child;
+        }
     }
     if let Some((index, _)) = layout
         .text_link_regions()
@@ -951,17 +1085,25 @@ fn hit(
             row_key: None,
         });
     }
-    if gesture_kind == Some(node.kind)
-        && (node.scale_rotate_handle.is_some()
+    if purpose == HitPurpose::Gesture(node.kind)
+        && (node.kind == "WheelHandler"
+            || node.hover_handle.is_some()
+            || node.scale_rotate_handle.is_some()
             || node.swipe_handle.is_some() && has_swipe_directions(node))
         && layout.enabled
         && node.boolean("enabled", true)
     {
         return Hit::Blocked(path.clone());
     }
+    if xrack_runtime::is_pane(node.kind) {
+        return Hit::Blocked(path.clone());
+    }
     if matches!(node.kind, "Tab" | "GroupBox")
         || is_window_overlay(node.kind)
         || !interactive(node)
+        || node.kind == "TouchArea"
+            && (!node.boolean("enabled", true)
+                || matches!(purpose, HitPurpose::Button(button) if !node.accepts_pointer_button(button)))
         || node.kind == "FocusScope" && !node.boolean("focus-on-click", true)
         || node.kind == "TreeCell" && !editable_table_cell(node)
     {
@@ -985,7 +1127,7 @@ fn hit_children(
     point: Point,
     path: &mut Vec<usize>,
     transitioning_stacks: &BTreeSet<Vec<usize>>,
-    gesture_kind: Option<&str>,
+    purpose: HitPurpose<'_>,
 ) -> Hit {
     for (i, child, child_layout) in layout.children_in_paint_order(node).rev() {
         if is_window_overlay(child.kind) {
@@ -998,7 +1140,7 @@ fn hit_children(
             point,
             path,
             transitioning_stacks,
-            gesture_kind,
+            purpose,
         );
         path.pop();
         if !matches!(found, Hit::None) {
@@ -1059,12 +1201,59 @@ fn split_target<'a, 'b>(
     Some((path, geometry, geometry.handle(slot)?))
 }
 
+fn pending_scroll_offset(
+    item: &LayoutNode,
+    offsets: &BTreeMap<Vec<usize>, f32>,
+    path: &[usize],
+    axis: Orientation,
+) -> Option<f32> {
+    if let Some(renderer) = &item.nested_list {
+        item.bound_offset(axis).or_else(|| renderer.offset(axis))
+    } else {
+        offsets.get(path).copied()
+    }
+}
+
+fn store_scroll_offset(
+    item: &LayoutNode,
+    offsets: &mut BTreeMap<Vec<usize>, f32>,
+    path: &[usize],
+    axis: Orientation,
+    offset: f32,
+) {
+    if let Some(renderer) = &item.nested_list {
+        renderer.set_offset(axis, offset);
+    } else {
+        offsets.insert(path.to_vec(), offset);
+    }
+}
+
 pub(crate) fn moved_row_target(
     target: &Target,
     scene: &Node,
     layout: &LayoutNode,
 ) -> Option<Target> {
     let key = target.row_key?;
+    if key.has_view_scope() {
+        fn find(node: &Node, target: &Target, path: &mut Vec<usize>) -> Option<Target> {
+            if node.kind == "ListRow" && node.routing_row_key() == target.row_key {
+                let suffix = target.path.get(path.len()..)?;
+                let mut moved = target.clone();
+                moved.path = path.iter().copied().chain(suffix.iter().copied()).collect();
+                return Some(moved);
+            }
+            if path.len() >= target.path.len() {
+                return None;
+            }
+            node.materialized_children().find_map(|(slot, child)| {
+                path.push(slot);
+                let found = find(child, target, path);
+                path.pop();
+                found
+            })
+        }
+        return find(scene, target, &mut Vec::new()).filter(|moved| valid(moved, scene, layout));
+    }
     for depth in (0..target.path.len()).rev() {
         let Some(node) = scene.at_path(&target.path[..depth]) else {
             continue;
@@ -1078,7 +1267,7 @@ pub(crate) fn moved_row_target(
         let slot = node
             .children
             .iter()
-            .position(|row| row.row_key == Some(key))?;
+            .position(|row| row.routing_row_key() == Some(key))?;
         let mut moved = target.clone();
         moved.path[depth] = slot;
         return valid(&moved, scene, layout).then_some(moved);
@@ -1122,13 +1311,13 @@ fn first_editable_tree_cell<'a>(
     layout: &LayoutNode,
     path: &mut Vec<usize>,
 ) -> Option<&'a Node> {
-    if !layout.enabled || !layout.visible {
+    if !layout.enabled || !layout.visible || node.list.is_some() {
         return None;
     }
     if editable_table_cell(node) && eligible(node, layout) {
         return Some(node);
     }
-    for (index, (child, item)) in node.children.iter().zip(&layout.children).enumerate() {
+    for (index, child, item) in layout.children_in_scene_order(node) {
         path.push(index);
         if let Some(cell) = first_editable_tree_cell(child, item, path) {
             return Some(cell);
@@ -1202,7 +1391,7 @@ fn attached_radio_tab_stop(scene: &Node, path: &[usize], targets: &[Target]) -> 
 
 pub(crate) fn focus_targets(scene: &Node, layout: &LayoutNode, scope: &[usize]) -> Vec<Target> {
     fn collect(node: &Node, layout: &LayoutNode, path: &mut Vec<usize>, out: &mut Vec<Target>) {
-        if !layout.visible || !layout.enabled {
+        if !layout.visible || !layout.enabled || node.kind == "CalendarCells" {
             return;
         }
         let clip = layout.clip_rect(layout.bounds);
@@ -1230,6 +1419,9 @@ pub(crate) fn focus_targets(scene: &Node, layout: &LayoutNode, scope: &[usize]) 
                 row_key: None,
             });
         }
+        if node.kind == "SplitHandle" {
+            return;
+        }
         if node.kind == "StyledText" {
             let indices: BTreeSet<_> = layout.text_link_regions().map(|(index, _)| index).collect();
             out.extend(
@@ -1239,7 +1431,7 @@ pub(crate) fn focus_targets(scene: &Node, layout: &LayoutNode, scope: &[usize]) 
             );
         }
         let mut visit = |index: usize| {
-            if let Some((child, item)) = node.children.get(index).zip(layout.children.get(index))
+            if let Some((child, item)) = node.child_at(index).zip(layout.child_at(index))
                 && !is_window_overlay(child.kind)
             {
                 path.push(index);
@@ -1250,12 +1442,6 @@ pub(crate) fn focus_targets(scene: &Node, layout: &LayoutNode, scope: &[usize]) 
         if node.kind == "TreeView" {
             if let Some(slot) = current_list_slot(node) {
                 visit(slot);
-            }
-        } else if layout.split.is_some() {
-            let count = node.split_pane_count();
-            for pane in 0..count {
-                visit(pane);
-                visit(count + pane);
             }
         } else if !node.boolean("__standard-table", false) {
             for index in crate::child_reading_order(node) {
@@ -1348,7 +1534,7 @@ fn slider_target<'a, 'b>(
     layout: &LayoutNode,
 ) -> Option<(&'a [usize], &'b Node)> {
     let leaf = scene.at_path(&target.path)?;
-    if matches!(leaf.kind, "Slider" | "RangeSlider" | "Dial") {
+    if matches!(leaf.kind, "Slider" | "RangeSlider" | "Dial" | "ColorPlane") {
         return valid(target, scene, layout).then_some((target.path.as_slice(), leaf));
     }
     if leaf.kind != "RangeThumb" || target.row_key != scene.row_key_at(&target.path) {
@@ -1400,6 +1586,162 @@ fn sibling_menu(
 }
 
 impl Interaction {
+    pub fn begin_pointer_sequence(
+        &self,
+        scene: &Node,
+        layout: &LayoutNode,
+        point: Point,
+        event: xrack_runtime::PointerEvent,
+        now: Instant,
+    ) -> Option<(crate::PointerSequence, crate::PointerDelivery)> {
+        if self.menu_open() || self.choice_open() {
+            return None;
+        }
+        let Hit::Target(target) =
+            self.hit_at_for(scene, layout, point, HitPurpose::Button(event.button))
+        else {
+            return None;
+        };
+        crate::PointerSequence::begin(target, self, scene, layout, point, event, now)
+    }
+
+    pub(crate) fn touch_area_hover<'a>(
+        &self,
+        scene: &'a Node,
+        layout: &LayoutNode,
+        point: Point,
+    ) -> Option<(&'a Node, (Length, Length))> {
+        if self.menu_open() || self.choice_open() {
+            return None;
+        }
+        let Hit::Target(target) = self.hit_at_for(scene, layout, point, HitPurpose::Hover) else {
+            return None;
+        };
+        let node = scene.interactive_at_path(&target.path)?;
+        if node.kind != "TouchArea" {
+            return None;
+        }
+        let (_, x, y) =
+            crate::pointer_events::local_position(layout.at_path(&target.path)?, point)?;
+        Some((node, (x, y)))
+    }
+
+    pub fn direct_pointer_claimed(&self) -> bool {
+        self.touch_table_drag_claimed()
+            || self.scroll_gesture.as_ref().is_some_and(|gesture| {
+                gesture.motion.dragging
+                    && (gesture.route.axes.iter().any(Option::is_some)
+                        || gesture.drawer.is_some()
+                        || !gesture.pages.is_empty()
+                        || gesture.tumbler.is_some()
+                        || gesture.swipe_delegate.is_some()
+                        || matches!(
+                            gesture.swipe,
+                            Some(SwipeRoute::Captured(_) | SwipeRoute::Cancelled)
+                        ))
+            })
+    }
+
+    pub fn owns_pointer_press(&self, target: &Target) -> bool {
+        self.pressed.as_ref() == Some(target)
+            || self.scroll_gesture.as_ref().is_some_and(
+                |gesture| matches!(&gesture.tap, Some(Hit::Target(tap)) if tap == target),
+            )
+    }
+
+    pub fn cancel_pointer_activation(&mut self, target: &Target) {
+        if self.pressed.as_ref() == Some(target) {
+            self.pressed = None;
+            self.press_origin = None;
+        }
+        if let Some(gesture) = &mut self.scroll_gesture
+            && matches!(&gesture.tap, Some(Hit::Target(tap)) if tap == target)
+        {
+            gesture.tap = None;
+        }
+    }
+
+    pub(crate) fn hover_entries(
+        &self,
+        scene: &Node,
+        layout: &LayoutNode,
+        point: Point,
+    ) -> Vec<HoverEntry> {
+        if self.menu_open() || self.choice_open() {
+            return Vec::new();
+        }
+        let Some((path, scope_depth)) = self.gesture_hit_path(scene, layout, point, "HoverHandler")
+        else {
+            return Vec::new();
+        };
+        let mut entries = Vec::new();
+        for depth in (scope_depth..=path.len()).rev() {
+            let path = &path[..depth];
+            let Some((node, item)) = scene.at_path(path).zip(layout.at_path(path)) else {
+                continue;
+            };
+            if !node.boolean("enabled", true) {
+                continue;
+            }
+            let Some((handle, position)) = node
+                .hover_handle
+                .as_ref()
+                .zip(local_handler_position(item, point))
+            else {
+                continue;
+            };
+            entries.push(HoverEntry {
+                path: path.to_vec(),
+                row_key: scene.row_key_at(path),
+                handle: handle.clone(),
+                position,
+                cursor_shape: node.cursor_shape(),
+            });
+            if node.boolean("blocking", false) {
+                break;
+            }
+        }
+        entries
+    }
+
+    pub fn wheel_route(
+        &self,
+        scene: &Node,
+        layout: &LayoutNode,
+        event: xrack_runtime::WheelEvent,
+    ) -> Option<WheelRoute> {
+        if self.menu_open()
+            || self.choice_open()
+            || !(event.delta_x.0.is_finite() && event.delta_y.0.is_finite())
+            || event.delta_x.0 == 0.0 && event.delta_y.0 == 0.0
+        {
+            return None;
+        }
+        let point = self.pointer?;
+        let (path, scope_depth) = self.gesture_hit_path(scene, layout, point, "WheelHandler")?;
+        let mut deliveries = Vec::new();
+        for depth in (scope_depth..=path.len()).rev() {
+            let path = &path[..depth];
+            let node = scene.at_path(path)?;
+            let item = layout.at_path(path)?;
+            if !node.handles_wheel() || !item.enabled || !node.boolean("enabled", true) {
+                continue;
+            }
+            let handles_axis = match node.properties.get("orientation") {
+                Some(Value::Orientation(Orientation::Horizontal)) => event.delta_x.0 != 0.0,
+                Some(Value::Orientation(Orientation::Vertical)) => event.delta_y.0 != 0.0,
+                _ => true,
+            };
+            if !handles_axis {
+                continue;
+            }
+            if let Some((x, y)) = local_handler_position(item, point) {
+                deliveries.push((path.to_vec(), xrack_runtime::WheelEvent { x, y, ..event }));
+            }
+        }
+        (!deliveries.is_empty()).then_some(WheelRoute { deliveries })
+    }
+
     pub fn update_tooltip(&mut self, scene: &Node, layout: &LayoutNode, now: Instant) -> bool {
         let scope = self.active_dialog(layout).unwrap_or_default();
         let key = match self.tooltip.source {
@@ -1523,6 +1865,8 @@ impl Interaction {
         if self.table_resize.is_some()
             || self.table_row_resize.is_some()
             || self.table_column_move.is_some()
+            || self.table_row_move.is_some()
+            || self.table_drag_selection_claimed()
         {
             self.drag = None;
             return;
@@ -1535,6 +1879,7 @@ impl Interaction {
                     || matches!(
                         node.kind,
                         "Slider"
+                            | "ColorPlane"
                             | "Dial"
                             | "RangeSlider"
                             | "SplitHandle"
@@ -1956,7 +2301,26 @@ impl Interaction {
     }
 
     fn target_at(&self, scene: &Node, layout: &LayoutNode, point: Point) -> Option<Target> {
-        match self.hit_at(scene, layout, point) {
+        self.target_at_for(
+            scene,
+            layout,
+            point,
+            HitPurpose::Button(xrack_runtime::PointerButton::Primary),
+        )
+    }
+
+    pub fn pointer_hover_target(&self, scene: &Node, layout: &LayoutNode) -> Option<Target> {
+        self.target_at_for(scene, layout, self.pointer?, HitPurpose::Hover)
+    }
+
+    fn target_at_for(
+        &self,
+        scene: &Node,
+        layout: &LayoutNode,
+        point: Point,
+        purpose: HitPurpose<'_>,
+    ) -> Option<Target> {
+        match self.hit_at_for(scene, layout, point, purpose) {
             Hit::Target(target) | Hit::ControlPart(target, _) | Hit::TableRowGrip(target, _) => {
                 Some(target)
             }
@@ -1965,6 +2329,21 @@ impl Interaction {
     }
 
     fn hit_at(&self, scene: &Node, layout: &LayoutNode, point: Point) -> Hit {
+        self.hit_at_for(
+            scene,
+            layout,
+            point,
+            HitPurpose::Button(xrack_runtime::PointerButton::Primary),
+        )
+    }
+
+    fn hit_at_for(
+        &self,
+        scene: &Node,
+        layout: &LayoutNode,
+        point: Point,
+        purpose: HitPurpose<'_>,
+    ) -> Hit {
         let scope = self.pointer_scope(layout, point);
         let Some((node, item)) = scene.at_path(scope).zip(layout.at_path(scope)) else {
             return Hit::None;
@@ -1975,7 +2354,7 @@ impl Interaction {
             point,
             &mut scope.to_vec(),
             &self.transitioning_stacks,
-            None,
+            purpose,
         );
         if matches!(result, Hit::None) && node.kind == "PopupWindow" && item.bounds.contains(point)
         {
@@ -2035,7 +2414,7 @@ impl Interaction {
             point,
             &mut scope.to_vec(),
             &self.transitioning_stacks,
-            Some(kind),
+            HitPurpose::Gesture(kind),
         ) {
             Hit::Target(target) | Hit::ControlPart(target, _) => target.path,
             Hit::Blocked(path) => path,
@@ -2161,6 +2540,7 @@ impl Interaction {
         self.dismiss_choice();
         self.set_focus(Some(target));
         self.cancel_shortcut_sequence();
+        self.set_split_hover(None);
         self.menu = Some(popup);
         true
     }
@@ -2169,8 +2549,14 @@ impl Interaction {
         let target = if keyboard {
             self.focused.clone()
         } else {
-            self.pointer
-                .and_then(|point| self.target_at(scene, layout, point))
+            self.pointer.and_then(|point| {
+                self.target_at_for(
+                    scene,
+                    layout,
+                    point,
+                    HitPurpose::Button(xrack_runtime::PointerButton::Secondary),
+                )
+            })
         };
         let Some(target) = target else {
             return false;
@@ -2251,6 +2637,7 @@ impl Interaction {
         self.dismiss_choice();
         self.cancel_press();
         self.cancel_shortcut_sequence();
+        self.set_split_hover(None);
         self.menu = Some(popup);
         true
     }
@@ -2342,7 +2729,14 @@ impl Interaction {
 
     pub fn pointer_context_menu_changes_focus(&self, scene: &Node, layout: &LayoutNode) -> bool {
         self.pointer
-            .and_then(|point| self.target_at(scene, layout, point))
+            .and_then(|point| {
+                self.target_at_for(
+                    scene,
+                    layout,
+                    point,
+                    HitPurpose::Button(xrack_runtime::PointerButton::Secondary),
+                )
+            })
             .is_some_and(|target| {
                 let scope = self.active_dialog(layout).unwrap_or_default();
                 self.focused.as_ref() != Some(&target)
@@ -2451,6 +2845,14 @@ impl Interaction {
 
     pub fn scroll_offsets(&self) -> &BTreeMap<Vec<usize>, f32> {
         &self.scroll_offsets
+    }
+
+    pub(crate) fn tree_root_changed(&self, path: &[usize], node: &Node) -> bool {
+        node.tree.as_ref().is_some_and(|tree| {
+            self.tree_scroll_roots
+                .get(path)
+                .is_some_and(|root| *root != tree.root_identity())
+        })
     }
 
     pub fn horizontal_scroll_offsets(&self) -> &BTreeMap<Vec<usize>, f32> {
@@ -2594,14 +2996,14 @@ impl Interaction {
         };
         let previous = item
             .bound_offset(orientation)
-            .or_else(|| offsets.get(path).copied())
+            .or_else(|| pending_scroll_offset(item, offsets, path, orientation))
             .unwrap_or(scroll.offset)
             .clamp(0.0, scroll.max_offset);
         let next = offset.clamp(0.0, f64::from(scroll.max_offset)) as f32;
         if next == previous {
             return had_overscroll;
         }
-        offsets.insert(path.to_vec(), next);
+        store_scroll_offset(item, offsets, path, orientation, next);
         item.write_bound_offset(orientation, next);
         true
     }
@@ -2968,9 +3370,13 @@ impl Interaction {
             if !layout.enabled || !layout.contains_subtree_point(point) {
                 return false;
             }
-            for index in layout.child_paint_order().rev() {
+            for (index, child) in layout
+                .child_paint_order()
+                .rev()
+                .filter_map(|index| layout.child_at(index).map(|child| (index, child)))
+            {
                 path.push(index);
-                if target(&layout.children[index], point, path, accepts) {
+                if target(child, point, path, accepts) {
                     return true;
                 }
                 path.pop();
@@ -3028,9 +3434,7 @@ impl Interaction {
             let Some(scroll) = item.scroll_on(orientation) else {
                 continue;
             };
-            let current = offsets
-                .get(path)
-                .copied()
+            let current = pending_scroll_offset(item, offsets, path, orientation)
                 .unwrap_or(scroll.offset)
                 .clamp(0.0, scroll.max_offset);
             let wanted = f64::from(current) + delta;
@@ -3049,7 +3453,7 @@ impl Interaction {
             }
             let next = bounded as f32;
             if next != current {
-                offsets.insert(path.to_vec(), next);
+                store_scroll_offset(item, offsets, path, orientation, next);
                 UserScrollChange::commit(
                     &mut self.user_scroll_changes,
                     item,
@@ -3094,10 +3498,12 @@ impl Interaction {
     ) -> bool {
         if self.press_origin != Some(point)
             || self.drag.is_some()
+            || self.split_resize_active()
             || self.scroll_bar_press.is_some()
             || self.table_resize.is_some()
             || self.table_row_resize.is_some()
             || self.table_column_move.is_some()
+            || self.table_row_move.is_some()
             || self.pressed_table_column.is_some()
             || self.menu_open()
             || self.choice_open()
@@ -3113,6 +3519,7 @@ impl Interaction {
                         node.kind,
                         "Button"
                             | "ToolButton"
+                            | "RoundButton"
                             | "TouchArea"
                             | "ListRow"
                             | "ListView"
@@ -3169,6 +3576,7 @@ impl Interaction {
             swipe_delegate: None,
             swipe: None,
             delay_touch: false,
+            table_hold: None,
         });
         true
     }
@@ -3196,10 +3604,24 @@ impl Interaction {
         if !point.x.is_finite() || !point.y.is_finite() {
             return false;
         }
+        if kind == ScrollGestureKind::Touch
+            && !interrupted
+            && self.start_table_selection_handle(scene, layout, point, true)
+        {
+            return true;
+        }
         let popup = (self.menu_open(), self.choice_open());
         let scope = self.pointer_scope(layout, point).to_vec();
         let hit = self.hit_at(scene, layout, point);
         if !popup.0 && !popup.1 && matches!(hit, Hit::StackSlide) {
+            return false;
+        }
+        if kind == ScrollGestureKind::MouseControl
+            && !popup.0
+            && !popup.1
+            && let Hit::Target(target) = &hit
+            && split_target(target, scene, layout).is_some()
+        {
             return false;
         }
         let tumbler = match &hit {
@@ -3297,6 +3719,23 @@ impl Interaction {
             }
             _ => None,
         };
+        let table_hold = match &hit {
+            Hit::Target(target)
+                if kind == ScrollGestureKind::Touch && !interrupted && popup == (false, false) =>
+            {
+                Self::table_row_move_at(scene, layout, target, point)
+                    .map(TableTouchDrag::Move)
+                    .or_else(|| {
+                        self.table_selection_at(scene, layout, target, point, false)
+                            .map(TableTouchDrag::Select)
+                    })
+                    .map(|drag| TableTouchHold {
+                        drag,
+                        deadline: now + Duration::from_millis(500),
+                    })
+            }
+            _ => None,
+        };
         let tap = (kind != ScrollGestureKind::MousePan && !interrupted).then_some(hit);
         let overscroll = if drawer.is_none()
             && pages.is_empty()
@@ -3332,6 +3771,7 @@ impl Interaction {
             swipe_delegate,
             swipe,
             delay_touch,
+            table_hold,
         });
         true
     }
@@ -3352,6 +3792,7 @@ impl Interaction {
                         || matches!(
                             node.kind,
                             "Slider"
+                                | "ColorPlane"
                                 | "RangeThumb"
                                 | "RangeSlider"
                                 | "Dial"
@@ -3453,13 +3894,9 @@ impl Interaction {
         }
         (page.target.path.len() + 1..=target.path.len()).any(|depth| {
             let path = &target.path[..depth];
-            layout
-                .at_path(path)
-                .and_then(|item| item.scroll_on(target.orientation))
-                .is_some_and(|scroll| {
-                    let offset = offsets
-                        .get(path)
-                        .copied()
+            layout.at_path(path).is_some_and(|item| {
+                item.scroll_on(target.orientation).is_some_and(|scroll| {
+                    let offset = pending_scroll_offset(item, offsets, path, target.orientation)
                         .unwrap_or(scroll.offset)
                         .clamp(0.0, scroll.max_offset);
                     if forward {
@@ -3468,6 +3905,7 @@ impl Interaction {
                         offset > 0.0
                     }
                 })
+            })
         })
     }
 
@@ -3613,6 +4051,29 @@ impl Interaction {
         point: Point,
         now: Instant,
     ) -> bool {
+        if !point.x.is_finite() || !point.y.is_finite() {
+            return false;
+        }
+        let claimed = self.advance_table_touch_hold(scene, layout, now);
+        let wake = self
+            .table_row_move
+            .as_mut()
+            .filter(|drag| drag.touch)
+            .map(|drag| &mut drag.scroll_wake)
+            .or_else(|| {
+                self.table_drag_selection
+                    .as_mut()
+                    .filter(|drag| drag.touch)
+                    .map(|drag| &mut drag.scroll_wake)
+            });
+        if let Some(wake) = wake {
+            if self.pointer == Some(point) {
+                return claimed;
+            }
+            self.pointer = Some(point);
+            wake.get_or_insert(now + SCROLL_FRAME_INTERVAL);
+            return true;
+        }
         let Some(mut gesture) = self.scroll_gesture.take() else {
             return false;
         };
@@ -3668,6 +4129,7 @@ impl Interaction {
         }
         let elastic_frame = self.overscroll.frame();
         let scrolled = gesture.motion.update(point, now).is_some_and(|delta| {
+            gesture.table_hold = None;
             if gesture.route.mouse_viewport && !was_dragging {
                 let overscroll = self.take_drag_overscroll(
                     layout,
@@ -3803,9 +4265,22 @@ impl Interaction {
     ) -> ScrollGestureEnd {
         if !point.x.is_finite() || !point.y.is_finite() {
             self.cancel_scroll_gesture();
+            self.cancel_table_touch_drag();
             return ScrollGestureEnd::default();
         }
         let scrolled = self.move_scroll_gesture(scene, layout, point, now);
+        if self.touch_table_drag_claimed() {
+            let control = if self.touch_table_selection_claimed() {
+                self.finish_table_drag_selection(scene, layout)
+            } else {
+                self.finish_table_row_move(scene, layout)
+            };
+            self.pointer_leave();
+            return ScrollGestureEnd {
+                control,
+                ..ScrollGestureEnd::default()
+            };
+        }
         let Some(gesture) = self.scroll_gesture.take() else {
             return ScrollGestureEnd {
                 scrolled,
@@ -4035,9 +4510,7 @@ impl Interaction {
         delta: f32,
         lines: bool,
     ) -> TumblerScroll {
-        let target = self
-            .pointer
-            .and_then(|point| self.target_at(scene, layout, point));
+        let target = self.pointer_hover_target(scene, layout);
         if let Some(target) = target
             && let Some(node) = scene
                 .at_path(&target.path)
@@ -4057,6 +4530,132 @@ impl Interaction {
         }
         self.tumbler_wheel = None;
         TumblerScroll::Unhandled
+    }
+
+    pub fn reset_wheel_adjustment(&mut self) {
+        self.wheel_steps = None;
+    }
+
+    pub fn wheel_adjustment(
+        &mut self,
+        scene: &Node,
+        layout: &LayoutNode,
+        event: xrack_runtime::WheelEvent,
+        now: Instant,
+    ) -> Option<WheelAdjustment> {
+        let previous = self.wheel_steps.take();
+        let modifiers = event.modifiers;
+        if modifiers.shift
+            || modifiers.control
+            || modifiers.alt
+            || modifiers.meta
+            || self.menu_open()
+            || self.choice_open()
+            || self.pressed.is_some()
+            || !event.delta_x.0.is_finite()
+            || !event.delta_y.0.is_finite()
+        {
+            return None;
+        }
+        let point = self.pointer?;
+        let target = self.pointer_hover_target(scene, layout)?;
+        let (path, node) = slider_target(&target, scene, layout).or_else(|| {
+            let node = scene.interactive_at_path(&target.path)?;
+            valid(&target, scene, layout).then_some((target.path.as_slice(), node))
+        })?;
+        if !node.boolean("wheel-enabled", false) {
+            return None;
+        }
+        let horizontal = event.delta_x.0.abs() > event.delta_y.0.abs();
+        let units = match (horizontal, event.is_line) {
+            (true, true) => event.lines_x,
+            (false, true) => -event.lines_y,
+            (true, false) => event.delta_x.0 / 28.0,
+            (false, false) => -event.delta_y.0 / 28.0,
+        };
+        if !units.is_finite() || units == 0.0 {
+            return None;
+        }
+        let interval = (node.kind == "RangeSlider").then(|| SliderInterval::from_node(node));
+        let handle = if let Some(interval) = interval {
+            if target.path.len() > path.len() {
+                Some(*target.path.last()?)
+            } else {
+                let item = layout.at_path(path)?;
+                let geometry = SliderGeometry::new(item.bounds, node.orientation());
+                Some(interval.nearest_handle(geometry.fraction_at(item.map_from_window(point)?)?))
+            }
+        } else {
+            None
+        };
+        let action_for = |steps| {
+            if is_spin_box(node.kind) {
+                if self
+                    .focused
+                    .as_ref()
+                    .is_some_and(|focus| focus.path == path)
+                    && self
+                        .editor
+                        .as_ref()
+                        .is_some_and(|editor| !editor.preedit.is_empty())
+                {
+                    return None;
+                }
+                let action = SpinAction::Step(steps);
+                if node.kind == "DoubleSpinBox" {
+                    xrack_runtime::decimal_spin_value_after(node, action)?;
+                } else {
+                    xrack_runtime::spin_value_after(node, action)?;
+                }
+                return Some(WheelAdjustment::Spin(ControlInput {
+                    path: path.to_vec(),
+                    action: ControlAction::Spin(action),
+                }));
+            }
+            let action = RangeAction::Step(steps);
+            let mut path = path.to_vec();
+            if let Some((interval, handle)) = interval.zip(handle) {
+                interval.apply(handle, action)?;
+                path.push(handle);
+            } else if matches!(node.kind, "Slider" | "Dial") {
+                SliderRange::from_node(node).apply(action)?;
+            } else {
+                return None;
+            }
+            Some(WheelAdjustment::Range(RangeInput { path, action }))
+        };
+        // At a boundary the viewport should receive even a sub-step delta.
+        action_for(units.signum() as i64)?;
+        let row = scene.row_key_at(path);
+        let mut total = units;
+        if let Some(previous) = previous
+            && previous.path == path
+            && previous.row == row
+            && previous.handle == handle
+            && previous.horizontal == horizontal
+            && previous.is_line == event.is_line
+            && previous.remainder.signum() == units.signum()
+            && now.saturating_duration_since(previous.time) <= Duration::from_millis(300)
+        {
+            total += previous.remainder;
+        }
+        let steps = total.trunc() as i64;
+        let adjustment = if steps == 0 {
+            WheelAdjustment::Pending
+        } else {
+            action_for(steps).unwrap_or(WheelAdjustment::Pending)
+        };
+        let remainder = total.fract();
+        self.wheel_steps = (remainder != 0.0).then(|| WheelSteps {
+            path: path.to_vec(),
+            row,
+            handle,
+            horizontal,
+            is_line: event.is_line,
+            remainder,
+            time: now,
+        });
+        Some(adjustment)
     }
 
     pub fn tumbler_key(
@@ -4352,6 +4951,15 @@ impl Interaction {
             .is_some_and(|edit| edit.target.path == path)
     }
 
+    pub fn table_cell_edit_invalid(&self, node: &Node, path: &[usize]) -> bool {
+        self.table_edit.as_ref().is_some_and(|edit| {
+            edit.target.path == path
+                && node
+                    .table_cell_editor
+                    .is_some_and(|editor| !editor.accepts(&edit.draft))
+        })
+    }
+
     pub fn is_text_editor(&self, node: &Node, target: &Target) -> bool {
         is_text_input(node.kind)
             || combo_editable(node)
@@ -4375,34 +4983,75 @@ impl Interaction {
         else {
             return false;
         };
-        if previous.is_some_and(|(prior, when)| {
+        let double_click = previous.is_some_and(|(prior, when)| {
             prior == *target && now.saturating_duration_since(when) <= Duration::from_millis(450)
-        }) {
-            self.begin_table_edit(scene, layout)
-        } else {
-            self.last_table_click = Some((target.clone(), now));
-            false
+        });
+        let table = table_cell_row(scene, &target.path)
+            .and_then(|(path, slot)| scene.at_path(path).map(|table| (table, slot)));
+        let double_enabled =
+            table.is_none_or(|(table, _)| table.boolean("edit-on-double-click", true));
+        let start = double_enabled && double_click
+            || table.is_some_and(|(table, slot)| {
+                table.boolean("edit-on-click", false)
+                    || table.boolean("edit-on-selected-click", false)
+                        && table
+                            .children
+                            .get(slot)
+                            .and_then(|row| row.row_key)
+                            .is_some_and(|key| {
+                                let column = target.path.last().copied().unwrap_or_default();
+                                table.table_selection.as_ref().map_or_else(
+                                    || current_list_slot(table) == Some(slot),
+                                    |selection| selection.contains_cell(key, column),
+                                )
+                            })
+            });
+        if start {
+            return self.begin_cell_edit(scene, layout, target.clone(), self.focus_reason);
         }
+        if double_enabled {
+            self.last_table_click = Some((target.clone(), now));
+        }
+        false
     }
 
     pub fn begin_table_edit(&mut self, scene: &Node, layout: &LayoutNode) -> bool {
-        if self.table_edit.is_some() {
-            return false;
-        }
-        let Some(focused) = &self.focused else {
+        self.begin_focused_cell_edit(scene, layout, "edit-on-key", true)
+    }
+
+    pub fn begin_table_typing(&mut self, scene: &Node, layout: &LayoutNode) -> bool {
+        self.begin_focused_cell_edit(scene, layout, "edit-on-typing", false)
+    }
+
+    fn begin_focused_cell_edit(
+        &mut self,
+        scene: &Node,
+        layout: &LayoutNode,
+        property: &str,
+        default: bool,
+    ) -> bool {
+        let Some(target) = self.focused_edit_target(scene, layout) else {
             return false;
         };
-        let Some(node) = scene.interactive_at_path(&focused.path) else {
-            return false;
-        };
+        let enabled = table_cell_row(scene, &target.path)
+            .and_then(|(path, _)| scene.at_path(path))
+            .map_or(default, |table| table.boolean(property, default));
+        enabled
+            && self.begin_cell_edit(
+                scene,
+                layout,
+                target,
+                xrack_runtime::FocusReason::KeyboardNavigation,
+            )
+    }
+
+    fn focused_edit_target(&self, scene: &Node, layout: &LayoutNode) -> Option<Target> {
+        let focused = self.focused.as_ref()?;
+        let node = scene.interactive_at_path(&focused.path)?;
         let mut target = focused.clone();
         if matches!(node.kind, "TableView" | "TreeView") {
-            let Some(slot) = current_list_slot(node) else {
-                return false;
-            };
-            let Some(row) = node.children.get(slot).and_then(|row| row.children.first()) else {
-                return false;
-            };
+            let slot = current_list_slot(node)?;
+            let row = node.children.get(slot)?.children.first()?;
             target.path.extend([slot, 0]);
             let cell = if node.kind == "TreeView" {
                 layout
@@ -4414,7 +5063,7 @@ impl Interaction {
                     .as_ref()
                     .and_then(|view| view.current_column());
                 target.path.push(0);
-                row.children.iter().enumerate().find_map(|(column, cell)| {
+                row.materialized_children().find_map(|(column, cell)| {
                     *target.path.last_mut().unwrap() = column;
                     (current_column.is_none_or(|current| current == column)
                         && editable_table_cell(cell)
@@ -4424,11 +5073,26 @@ impl Interaction {
                     .then_some(cell)
                 })
             };
-            let Some(cell) = cell else {
-                return false;
-            };
+            let cell = cell?;
             target.id = cell.id;
             target.row_key = scene.row_key_at(&target.path);
+        }
+        Some(target)
+    }
+
+    fn begin_cell_edit(
+        &mut self,
+        scene: &Node,
+        layout: &LayoutNode,
+        target: Target,
+        reason: xrack_runtime::FocusReason,
+    ) -> bool {
+        if self
+            .table_edit
+            .as_ref()
+            .is_some_and(|edit| edit.target == target)
+        {
+            return false;
         }
         let Some(cell) = scene.interactive_at_path(&target.path).filter(|cell| {
             target.row_key.is_some() && editable_table_cell(cell) && valid(&target, scene, layout)
@@ -4436,7 +5100,7 @@ impl Interaction {
             return false;
         };
         let original = cell.text("text").unwrap_or("").to_owned();
-        self.set_focus(Some(target.clone()));
+        self.set_focus_with_reason(Some(target.clone()), reason);
         let mut editor = TextEdit::at_end(&original);
         editor.apply(&original, EditAction::SelectAll);
         self.editor = Some(editor);
@@ -4459,21 +5123,141 @@ impl Interaction {
     }
 
     pub fn commit_table_edit(&mut self, component: &mut impl Component, scene: &Node) -> bool {
+        self.finish_table_edit(component, scene) == TableEditCommit::Changed
+    }
+
+    pub fn finish_table_edit(
+        &mut self,
+        component: &mut impl Component,
+        scene: &Node,
+    ) -> TableEditCommit {
+        let Some(edit) = self.table_edit.as_ref() else {
+            return TableEditCommit::Rejected;
+        };
         if self
             .editor
             .as_ref()
             .is_some_and(|editor| !editor.preedit.is_empty())
         {
-            return false;
+            return TableEditCommit::Kept;
         }
-        let Some(edit) = self.table_edit.take() else {
-            return false;
+        let current = scene.interactive_at_path(&edit.target.path).filter(|node| {
+            editable_table_cell(node)
+                && node.text("text").unwrap_or_default() == edit.original
+                && scene.row_key_at(&edit.target.path) == edit.target.row_key
+        });
+        let Some(cell) = current else {
+            self.cancel_table_edit();
+            return TableEditCommit::Rejected;
         };
+        let mut unchanged = edit.draft == edit.original;
+        if !unchanged
+            && let Some(editor) = cell.table_cell_editor
+            && editor != xrack_runtime::TableCellEditor::String
+        {
+            let Some(draft) = editor.parse(&edit.draft) else {
+                return TableEditCommit::Kept;
+            };
+            unchanged = editor.parse(&edit.original) == Some(draft);
+        }
+        let edit = self.table_edit.take().unwrap();
         self.editor = None;
         self.last_table_click = None;
-        edit.draft != edit.original
-            && scene.row_key_at(&edit.target.path) == edit.target.row_key
-            && component.commit_table_cell(scene, &edit.target.path, &edit.original, edit.draft)
+        if unchanged {
+            TableEditCommit::Unchanged
+        } else if component.commit_table_cell(scene, &edit.target.path, &edit.original, edit.draft)
+        {
+            TableEditCommit::Changed
+        } else {
+            TableEditCommit::Rejected
+        }
+    }
+
+    pub fn tab_edit_origin(&self, scene: &Node) -> Option<TableEditTarget> {
+        let edit = self.table_edit.as_ref()?;
+        let (table, slot) = table_cell_row(scene, &edit.target.path)?;
+        let view = scene.interactive_at_path(table)?;
+        if !view.boolean("edit-on-tab", false) || self.focused.as_ref() != Some(&edit.target) {
+            return None;
+        }
+        Some(TableEditTarget {
+            table: table.to_vec(),
+            viewport: view.viewport_handle.clone()?,
+            position: TableEditPosition {
+                row: view.list?.first_row.checked_add(slot)?,
+                column: *edit.target.path.last()?,
+                key: view.children.get(slot)?.row_key?,
+            },
+        })
+    }
+
+    pub fn next_table_edit_target(
+        &self,
+        component: &impl Component,
+        scene: &Node,
+        layout: &LayoutNode,
+        origin: &TableEditTarget,
+        backward: bool,
+    ) -> Option<TableEditTarget> {
+        let view = scene.interactive_at_path(&origin.table)?;
+        if view.viewport_handle.as_ref() != Some(&origin.viewport)
+            || !self.allows_popup(layout, &origin.table)
+        {
+            return None;
+        }
+        let geometry = layout.at_path(&origin.table)?.table.as_ref()?;
+        let columns: Vec<_> = geometry
+            .visual_columns()
+            .filter(|column| geometry.columns[*column].width > 0.0)
+            .collect();
+        let position = component.next_table_edit_cell(
+            scene,
+            &origin.table,
+            origin.position,
+            &columns,
+            backward,
+        )?;
+        Some(TableEditTarget {
+            table: origin.table.clone(),
+            viewport: origin.viewport.clone(),
+            position,
+        })
+    }
+
+    pub fn begin_table_edit_target(
+        &mut self,
+        scene: &Node,
+        layout: &LayoutNode,
+        target: &TableEditTarget,
+    ) -> bool {
+        let Some(view) = scene.interactive_at_path(&target.table) else {
+            return false;
+        };
+        if view.viewport_handle.as_ref() != Some(&target.viewport)
+            || !view.boolean("edit-on-tab", false)
+            || !self.allows_popup(layout, &target.table)
+        {
+            return false;
+        }
+        let position = target.position;
+        if view
+            .list
+            .and_then(|list| position.row.checked_sub(list.first_row))
+            .and_then(|slot| view.children.get(slot))
+            .and_then(|row| row.row_key)
+            != Some(position.key)
+        {
+            return false;
+        }
+        let cell = table_cell_target(scene, layout, &target.table, position.row, position.column);
+        cell.is_some_and(|cell| {
+            self.begin_cell_edit(
+                scene,
+                layout,
+                cell,
+                xrack_runtime::FocusReason::KeyboardNavigation,
+            )
+        })
     }
 
     pub fn sync_editor(&mut self, scene: &Node) {
@@ -4885,6 +5669,7 @@ impl Interaction {
         self.pressed = None;
         self.pressed_radio = None;
         self.hovered = None;
+        self.set_split_hover(None);
         self.hovered_radio = None;
         true
     }
@@ -5143,6 +5928,14 @@ impl Interaction {
             self.tooltip.source = TooltipSource::Pointer;
         }
         self.pointer = Some(point);
+        if self.wheel_steps.as_ref().is_some_and(|steps| {
+            self.pointer_hover_target(scene, layout)
+                .is_none_or(|target| {
+                    !target.path.starts_with(&steps.path) || target.row_key != steps.row
+                })
+        }) {
+            self.reset_wheel_adjustment();
+        }
         let hit = self.hit_at(scene, layout, point);
         let cancelled_delay = self.delay_hold.as_ref().is_some_and(|hold| {
             matches!(hold.source, DelaySource::Pointer)
@@ -5152,6 +5945,9 @@ impl Interaction {
             self.cancel_delay();
         }
         self.pointer_on_stack_slide = matches!(hit, Hit::StackSlide);
+        if self.menu.is_some() || self.choice.is_some() {
+            self.set_split_hover(None);
+        }
         if let Some(popup) = &mut self.menu {
             return popup.hover(scene, layout, point);
         }
@@ -5248,6 +6044,15 @@ impl Interaction {
         if radio != previous_radio {
             self.hovered_radio = radio.map(|(label, value)| (label.to_owned(), value.to_owned()));
         }
+        let split_hover = next.as_ref().and_then(|target| {
+            let (path, _, handle) = split_target(target, scene, layout)?;
+            if scene.at_path(&target.path)?.children.is_empty() {
+                return None;
+            }
+            let state = scene.at_path(path)?.split_resize_handle.clone()?;
+            Some((state, handle.slot))
+        });
+        self.set_split_hover(split_hover);
         self.hovered = next;
         self.hovered_scroll_bar = scroll_bar;
         self.hovered_control_part = control_part;
@@ -5262,6 +6067,7 @@ impl Interaction {
     }
     pub fn pointer_leave(&mut self) -> bool {
         let cancelled_table_selection = self.cancel_table_drag_selection();
+        let cancelled_row_move = self.cancel_table_row_move();
         self.cancel_window_move();
         let cancelled_delay = self
             .delay_hold
@@ -5271,7 +6077,9 @@ impl Interaction {
             self.cancel_delay();
         }
         self.pointer = None;
+        self.set_split_hover(None);
         self.tumbler_wheel = None;
+        self.reset_wheel_adjustment();
         self.pointer_on_stack_slide = false;
         let tooltip_was_visible = self.tooltip.pointer_left();
         self.hovered_radio = None;
@@ -5289,6 +6097,7 @@ impl Interaction {
             || tooltip_was_visible
             || cancelled_delay
             || cancelled_table_selection
+            || cancelled_row_move
     }
     pub fn pointer_press(&mut self) {
         self.press(None, None, false);
@@ -5311,7 +6120,7 @@ impl Interaction {
             });
         let preserve_focus = self.hovered.as_ref().is_some_and(|target| {
             scene.at_path(&target.path).is_some_and(|node| {
-                matches!(node.kind, "Button" | "ToolButton")
+                matches!(node.kind, "Button" | "ToolButton" | "RoundButton")
                     && !node.boolean("focus-on-click", true)
             })
         });
@@ -5340,11 +6149,21 @@ impl Interaction {
                 scroll_wake: None,
             })
         })();
+        if self.table_row_resize.is_none() && self.table_column_move.is_none() {
+            self.table_row_move =
+                self.pressed
+                    .as_ref()
+                    .zip(self.pointer)
+                    .and_then(|(pressed, point)| {
+                        Self::table_row_move_at(scene, layout, pressed, point)
+                    });
+        }
         self.remember_focus_scope(scene, layout);
     }
 
     fn press(&mut self, proxy: Option<Target>, layout: Option<&LayoutNode>, preserve_focus: bool) {
         self.cancel_shortcut_sequence();
+        self.reset_wheel_adjustment();
         self.cancel_delay();
         self.delay_pointer_claimed = false;
         if self.pointer_on_stack_slide {
@@ -5359,6 +6178,7 @@ impl Interaction {
         self.pressed_tree_indicator = self.hovered_tree_indicator;
         self.pressed_table_column = self.hovered_table_column;
         self.table_column_move = None;
+        self.table_row_move = None;
         self.table_drag_selection = None;
         self.pressed_body_column = self.hovered_body_column;
         self.pressed_control_part = self.hovered_control_part;
@@ -5395,6 +6215,7 @@ impl Interaction {
         })();
         self.slider_offset = 0.0;
         self.slider_anchor = None;
+        self.slider_fraction = None;
         self.dial_pointer = None;
         self.spin_pressed = None;
         let focus = self.hovered.clone().and_then(|mut target| {
@@ -5413,19 +6234,70 @@ impl Interaction {
     }
 
     pub fn split_press(&mut self, scene: &Node, layout: &LayoutNode) {
+        self.clear_split_drag();
         self.split_drag = (|| {
             let target = self.pressed.as_ref()?;
             let (path, geometry, handle) = split_target(target, scene, layout)?;
             let orientation = geometry.orientation;
             let point = layout.at_path(path)?.map_from_window(self.pointer?)?;
             let position = axis_point(orientation, point);
+            let state = scene.at_path(path)?.split_resize_handle.clone();
+            if let Some(state) = &state {
+                state.publish_pressed(Some((handle.slot, handle.after_pane())));
+            }
             Some(SplitDrag {
                 target: target.clone(),
                 orientation,
                 after_pane: handle.after_pane(),
                 grab_offset: position - handle.center(orientation),
+                state,
             })
         })();
+    }
+
+    pub fn split_resize_active(&self) -> bool {
+        self.split_drag.is_some()
+    }
+
+    fn set_split_hover(&mut self, next: Option<(xrack_runtime::SplitResizeHandle, usize)>) {
+        if next == self.split_hover {
+            return;
+        }
+        if let Some((state, _)) = self.split_hover.take()
+            && next.as_ref().is_none_or(|(next, _)| *next != state)
+        {
+            state.publish_hovered(None);
+        }
+        if let Some((state, slot)) = &next {
+            state.publish_hovered(Some(*slot));
+        }
+        self.split_hover = next;
+    }
+
+    pub fn touch_split_press(&mut self, scene: &Node, layout: &LayoutNode, point: Point) -> bool {
+        if self.menu.is_some() || self.choice.is_some() {
+            return false;
+        }
+        let Hit::Target(target) = self.hit_at(scene, layout, point) else {
+            return false;
+        };
+        if split_target(&target, scene, layout).is_none() {
+            return false;
+        }
+        self.pointer_move(scene, layout, point);
+        self.pointer_press_in_scene(scene, layout);
+        self.split_press(scene, layout);
+        self.split_resize_active()
+    }
+
+    fn clear_split_drag(&mut self) -> bool {
+        let Some(drag) = self.split_drag.take() else {
+            return false;
+        };
+        if let Some(state) = drag.state {
+            state.publish_pressed(None);
+        }
+        true
     }
 
     pub fn split_orientation(&self, scene: &Node) -> Option<Orientation> {
@@ -5444,18 +6316,18 @@ impl Interaction {
         }
         let point = layout.at_path(path)?.map_from_window(self.pointer?)?;
         let position = axis_point(drag.orientation, point) - drag.grab_offset;
-        let weights = geometry.resize(handle, position - handle.center(drag.orientation))?;
-        Some(SplitResize {
-            path: path.to_vec(),
-            weights,
-        })
+        geometry.resize(
+            path.to_vec(),
+            handle,
+            position - handle.center(drag.orientation),
+        )
     }
 
     pub fn finish_split_resize(&mut self) -> bool {
-        if self.split_drag.is_none() {
+        if !self.clear_split_drag() {
             return false;
         }
-        self.pointer_release_target();
+        self.cancel_press();
         true
     }
 
@@ -5468,17 +6340,58 @@ impl Interaction {
         let (path, geometry, handle) = split_target(self.focused.as_ref()?, scene, layout)?;
         let delta = match (geometry.orientation, key) {
             (Orientation::Horizontal, NavigationKey::Left)
-            | (Orientation::Vertical, NavigationKey::Up) => -8.0,
+            | (Orientation::Vertical, NavigationKey::Up) => -(SplitHandleRange::STEP as f32),
             (Orientation::Horizontal, NavigationKey::Right)
-            | (Orientation::Vertical, NavigationKey::Down) => 8.0,
+            | (Orientation::Vertical, NavigationKey::Down) => SplitHandleRange::STEP as f32,
             (_, NavigationKey::Home) => handle.minimum,
             (_, NavigationKey::End) => handle.maximum,
             _ => return None,
         };
-        Some(SplitResize {
-            path: path.to_vec(),
-            weights: geometry.resize(handle, delta)?,
-        })
+        geometry.resize(path.to_vec(), handle, delta)
+    }
+
+    /// Set the leading pane size using the same limits and layout mode as a drag.
+    pub fn split_set_value(
+        &self,
+        scene: &Node,
+        layout: &LayoutNode,
+        target: &Target,
+        value: f64,
+    ) -> Option<SplitResize> {
+        if !value.is_finite() {
+            return None;
+        }
+        let (path, geometry, handle) = split_target(target, scene, layout)?;
+        let range = geometry.handle_range(handle);
+        let delta = value.clamp(range.minimum, range.maximum) - range.value;
+        geometry.resize(path.to_vec(), handle, delta as f32)
+    }
+
+    pub fn touch_range_press(&mut self, scene: &Node, layout: &LayoutNode, point: Point) -> bool {
+        if self.menu.is_some() || self.choice.is_some() {
+            return false;
+        }
+        let Hit::Target(target) = self.hit_at(scene, layout, point) else {
+            return false;
+        };
+        if slider_target(&target, scene, layout).is_none() {
+            return false;
+        }
+        self.pointer_move(scene, layout, point);
+        self.pointer_press_in_scene(scene, layout);
+        self.touch_range = true;
+        true
+    }
+
+    pub fn touch_range_captured(&self) -> bool {
+        self.touch_range
+    }
+
+    pub fn finish_touch_range(&mut self) {
+        if std::mem::take(&mut self.touch_range) {
+            self.cancel_press();
+            self.pointer_leave();
+        }
     }
 
     pub fn slider_press(&mut self, scene: &Node, layout: &LayoutNode) -> Option<RangeInput> {
@@ -5487,6 +6400,12 @@ impl Interaction {
         let item = layout.at_path(path)?;
         let bounds = item.bounds;
         let point = item.map_from_window(self.pointer?)?;
+        if node.kind == "ColorPlane" {
+            return Some(RangeInput {
+                path: target.path.clone(),
+                action: ColorPlaneGeometry::new(bounds).action_at(point)?,
+            });
+        }
         if node.kind == "Dial" {
             self.dial_pointer = Some(point);
             let geometry = DialGeometry::new(bounds, node);
@@ -5505,12 +6424,9 @@ impl Interaction {
         let fraction = geometry.fraction_at(point)?;
         let mut path = path.to_vec();
         let current = if node.kind == "RangeSlider" {
-            let [lower, upper] = SliderInterval::from_node(node).fractions();
-            let handle = usize::from(if lower == upper {
-                fraction >= lower
-            } else {
-                (fraction - upper).abs() < (fraction - lower).abs()
-            });
+            let interval = SliderInterval::from_node(node);
+            let [lower, upper] = interval.fractions();
+            let handle = interval.nearest_handle(fraction);
             path.push(handle);
             self.focus_slider_thumb(scene, &path);
             let current = [lower, upper][handle];
@@ -5525,10 +6441,7 @@ impl Interaction {
             self.slider_offset = current - fraction;
             None
         } else {
-            Some(RangeInput {
-                path,
-                action: RangeAction::SetFraction(fraction),
-            })
+            self.slider_pointer_action(node, path, fraction)
         }
     }
 
@@ -5550,6 +6463,12 @@ impl Interaction {
         let item = layout.at_path(owner)?;
         let bounds = item.bounds;
         let point = item.map_from_window(self.pointer?)?;
+        if node.kind == "ColorPlane" {
+            return Some(RangeInput {
+                path: target.path.clone(),
+                action: ColorPlaneGeometry::new(bounds).action_at(point)?,
+            });
+        }
         if node.kind == "Dial" {
             let previous = self.dial_pointer.replace(point)?;
             let delta = DialGeometry::new(bounds, node).drag_delta(
@@ -5580,13 +6499,43 @@ impl Interaction {
             self.focus_slider_thumb(scene, &path);
             self.slider_anchor = None;
         }
-        Some(RangeInput {
+        self.slider_pointer_action(node, path, fraction + self.slider_offset)
+    }
+
+    fn slider_pointer_action(
+        &mut self,
+        node: &Node,
+        path: Vec<usize>,
+        fraction: f64,
+    ) -> Option<RangeInput> {
+        let live = node.boolean("live", true);
+        if !live || SliderRange::from_node(node).snap_mode() == ScrollSnapMode::OnRelease {
+            self.slider_fraction = Some(fraction);
+        }
+        live.then_some(RangeInput {
             path,
-            action: RangeAction::SetFraction(fraction + self.slider_offset),
+            action: RangeAction::SetFraction(fraction),
         })
     }
 
+    pub fn slider_preview(&self, path: &[usize]) -> Option<f64> {
+        self.slider_fraction.filter(|_| self.is_pressed(path))
+    }
+
+    pub fn has_slider_preview(&self) -> bool {
+        self.slider_fraction.is_some() && self.pressed.is_some()
+    }
+
+    pub fn cancel_slider_preview(&mut self) -> bool {
+        if !self.has_slider_preview() {
+            return false;
+        }
+        self.cancel_press();
+        true
+    }
+
     pub fn slider_release(&mut self, scene: &Node, layout: &LayoutNode) -> Option<RangeInput> {
+        let fraction = self.slider_fraction.take();
         slider_target(self.pressed.as_ref()?, scene, layout)?;
         self.slider_offset = 0.0;
         self.slider_anchor = None;
@@ -5594,7 +6543,7 @@ impl Interaction {
         let path = self.pressed.take()?.path;
         Some(RangeInput {
             path,
-            action: RangeAction::Release,
+            action: fraction.map_or(RangeAction::Release, RangeAction::CommitFraction),
         })
     }
 
@@ -5605,28 +6554,7 @@ impl Interaction {
         key: SliderKey,
         pressed: bool,
     ) -> Option<RangeInput> {
-        let target = if pressed {
-            let target = self.focused.as_ref()?;
-            if !valid(target, scene, layout) {
-                return None;
-            }
-            let (_, node) = slider_target(target, scene, layout)?;
-            let matches_axis = match key {
-                SliderKey::Left | SliderKey::Right => {
-                    node.kind == "Dial" || node.orientation() == Orientation::Horizontal
-                }
-                SliderKey::Up | SliderKey::Down => {
-                    node.kind == "Dial" || node.orientation() == Orientation::Vertical
-                }
-                SliderKey::Home | SliderKey::End => true,
-                SliderKey::PageUp | SliderKey::PageDown => false,
-            };
-            if !matches_axis {
-                return None;
-            }
-            self.range_keys.entry(key).or_insert_with(|| target.clone());
-            target.clone()
-        } else {
+        if !pressed {
             let target = self.range_keys.remove(&key)?;
             if self.focused.as_ref() != Some(&target) {
                 return None;
@@ -5636,16 +6564,43 @@ impl Interaction {
                 path: target.path,
                 action: RangeAction::Release,
             });
+        }
+        let target = self.focused.as_ref()?;
+        if !valid(target, scene, layout) {
+            return None;
+        }
+        let (_, node) = slider_target(target, scene, layout)?;
+        let action = if node.kind == "ColorPlane" {
+            let saturation = node.number("saturation").unwrap_or_default();
+            let brightness = node.number("brightness").unwrap_or_default();
+            let step = 0.01;
+            let (x, y) = match key {
+                SliderKey::Left => (saturation - step, brightness),
+                SliderKey::Right => (saturation + step, brightness),
+                SliderKey::Up => (saturation, brightness + step),
+                SliderKey::Down => (saturation, brightness - step),
+                _ => return None,
+            };
+            RangeAction::SetPoint {
+                x: x.clamp(0.0, 1.0),
+                y: y.clamp(0.0, 1.0),
+            }
+        } else {
+            let horizontal = node.kind == "Dial" || node.orientation() == Orientation::Horizontal;
+            let vertical = node.kind == "Dial" || node.orientation() == Orientation::Vertical;
+            match key {
+                SliderKey::Left if horizontal => RangeAction::Decrease,
+                SliderKey::Right if horizontal => RangeAction::Increase,
+                SliderKey::Down if vertical => RangeAction::Decrease,
+                SliderKey::Up if vertical => RangeAction::Increase,
+                SliderKey::Home => RangeAction::Minimum,
+                SliderKey::End => RangeAction::Maximum,
+                _ => return None,
+            }
         };
-        let action = match key {
-            SliderKey::Left | SliderKey::Down => RangeAction::Decrease,
-            SliderKey::Right | SliderKey::Up => RangeAction::Increase,
-            SliderKey::Home => RangeAction::Minimum,
-            SliderKey::End => RangeAction::Maximum,
-            SliderKey::PageUp | SliderKey::PageDown => return None,
-        };
+        self.range_keys.entry(key).or_insert_with(|| target.clone());
         Some(RangeInput {
-            path: target.path,
+            path: target.path.clone(),
             action,
         })
     }
@@ -5702,15 +6657,21 @@ impl Interaction {
         let (&slot, path) = target.path.split_last()?;
         let node = scene.at_path(path)?;
         let index = node.list?.first_row.checked_add(slot)?;
-        let item = node.tree.as_ref()?.rows().get(index)?;
-        (item.has_children && target.row_key == Some(item.row)).then_some(ControlInput {
-            path: path.to_vec(),
-            action: ControlAction::Tree(TreeAction::SetExpanded {
-                key: item.key,
-                row: item.row,
-                expanded: !item.expanded,
-            }),
-        })
+        let tree = node.tree.as_ref()?;
+        if tree.is_filtering() {
+            return None;
+        }
+        let item = tree.rows().get(index)?;
+        (item.has_children && node.children.get(slot)?.row_key == Some(item.row)).then_some(
+            ControlInput {
+                path: path.to_vec(),
+                action: ControlAction::Tree(TreeAction::SetExpanded {
+                    key: item.key,
+                    row: item.row,
+                    expanded: !item.expanded,
+                }),
+            },
+        )
     }
 
     fn focused_tree<'a>(&'a self, scene: &Node, layout: &LayoutNode) -> Option<&'a [usize]> {
@@ -5730,6 +6691,9 @@ impl Interaction {
         let path = self.focused_tree(scene, layout)?;
         let node = scene.at_path(path)?;
         let tree = node.tree.as_ref()?;
+        if tree.is_filtering() {
+            return None;
+        }
         let index = tree.visible_index(node.int("current-key")?)?;
         let item = tree.rows().get(index)?;
         item.has_children.then_some(ControlInput {
@@ -5756,7 +6720,10 @@ impl Interaction {
         let tree = node.tree.as_ref()?;
         let index = tree.visible_index(node.int("current-key")?)?;
         let item = tree.rows().get(index)?;
-        if item.has_children && (key == NavigationKey::Right) != item.expanded {
+        if !tree.is_filtering()
+            && item.has_children
+            && (key == NavigationKey::Right) != item.expanded
+        {
             return self.tree_toggle(scene, layout);
         }
         let next = if key == NavigationKey::Left {
@@ -5808,6 +6775,18 @@ impl Interaction {
             return Some(input);
         };
         if let Some(selection) = &node.table_selection {
+            if self.pointer.is_some_and(|point| {
+                layout.at_path(&input.path).is_some_and(|item| {
+                    item.table
+                        .as_ref()
+                        .zip(item.map_from_window(point))
+                        .is_some_and(|(table, point)| table.row_header.contains(point))
+                })
+            }) && let Some(action) =
+                self.table_row_header_selection(scene, layout, target, operation)
+            {
+                return Some(action);
+            }
             let column = if table_cell_row(scene, &target.path).is_some() {
                 target.path.last().copied()
             } else {
@@ -5833,6 +6812,222 @@ impl Interaction {
             input.action = action;
         }
         Some(input)
+    }
+
+    pub fn list_item_delegate_selection(
+        &self,
+        scene: &Node,
+        layout: &LayoutNode,
+        target: &Target,
+    ) -> Option<ControlInput> {
+        if !valid(target, scene, layout) {
+            return None;
+        }
+        target.row_key?;
+        let (path, slot) = list_item_delegate_row(scene, &target.path)?;
+        let view = scene.interactive_at_path(path)?;
+        let row = view.list?.first_row.checked_add(slot)?;
+        (view.int("current-index") != Some(row as i64)).then_some(ControlInput {
+            path: path.to_vec(),
+            action: ControlAction::Select(row),
+        })
+    }
+
+    pub fn current_item_delegate(
+        &self,
+        scene: &Node,
+        layout: &LayoutNode,
+        view: &Target,
+    ) -> Option<Target> {
+        let node = scene.at_path(&view.path)?;
+        if !matches!(node.kind, "ListView" | "GridView") {
+            return None;
+        }
+        let slot = current_list_slot(node)?;
+        self.item_delegate_at_slot(scene, layout, &view.path, slot)
+    }
+
+    pub fn resolve_item_delegate(
+        &self,
+        scene: &Node,
+        layout: &LayoutNode,
+        view: &[usize],
+        row: RowKey,
+    ) -> Option<Target> {
+        let node = scene.at_path(view)?;
+        let slot = node
+            .children
+            .iter()
+            .position(|candidate| candidate.routing_row_key() == Some(row))?;
+        self.item_delegate_at_slot(scene, layout, view, slot)
+    }
+
+    fn item_delegate_at_slot(
+        &self,
+        scene: &Node,
+        layout: &LayoutNode,
+        view: &[usize],
+        slot: usize,
+    ) -> Option<Target> {
+        let mut path = view.to_vec();
+        path.extend([slot, 0]);
+        list_item_delegate_row(scene, &path)?;
+        self.accessibility_target(scene, layout, &path)
+    }
+
+    pub fn table_row_header_selection(
+        &self,
+        scene: &Node,
+        layout: &LayoutNode,
+        target: &Target,
+        operation: RowSelection,
+    ) -> Option<ControlInput> {
+        let (path, slot) = Self::visible_table_row_header(scene, layout, target)?;
+        let table = scene.at_path(path)?;
+        let index = table.list?.first_row.checked_add(slot)?;
+        let action =
+            table
+                .table_selection
+                .as_ref()
+                .map_or(ControlAction::Select(index), |selection| {
+                    ControlAction::TableSelection(selection.row_header_action(index, operation))
+                });
+        Some(ControlInput {
+            path: path.to_vec(),
+            action,
+        })
+    }
+
+    fn visible_table_row_header<'a>(
+        scene: &Node,
+        layout: &LayoutNode,
+        target: &'a Target,
+    ) -> Option<(&'a [usize], usize)> {
+        if scene.at_path(&target.path)?.kind != "ListRow" || !valid(target, scene, layout) {
+            return None;
+        }
+        let (path, slot) = table_hit_row(scene, &target.path)?;
+        let item = layout.at_path(path)?;
+        let table = item.table.as_ref()?;
+        let row = table
+            .row_header_cell(item.children.get(slot)?.bounds)
+            .intersect(table.row_header);
+        let visible = item.clip_rect(row);
+        (visible.width > 0.0 && visible.height > 0.0).then_some((path, slot))
+    }
+
+    fn table_row_move_at(
+        scene: &Node,
+        layout: &LayoutNode,
+        target: &Target,
+        start: Point,
+    ) -> Option<TableRowMove> {
+        let (path, slot) = Self::visible_table_row_header(scene, layout, target)?;
+        let node = scene.at_path(path)?;
+        let item = layout.at_path(path)?;
+        if !node.boolean("movable-rows", false)
+            || !item
+                .table
+                .as_ref()?
+                .row_header
+                .contains(item.map_from_window(start)?)
+        {
+            return None;
+        }
+        Some(TableRowMove {
+            table: Target {
+                path: path.to_vec(),
+                id: node.id,
+                focusable: true,
+                row_key: scene.row_key_at(path),
+                text_link: None,
+            },
+            from: node.list?.first_row.checked_add(slot)?,
+            row: node.children.get(slot)?.row_key?,
+            stamp: node.standard_list_stamp?,
+            start,
+            claimed: false,
+            touch: false,
+            scroll_wake: None,
+        })
+    }
+
+    /// A row header's accessible action can move its record without a pointer.
+    pub fn table_row_header_move(
+        &self,
+        scene: &Node,
+        layout: &LayoutNode,
+        target: &Target,
+        direction: NavigationKey,
+    ) -> Option<ControlInput> {
+        let (path, slot) = Self::visible_table_row_header(scene, layout, target)?;
+        let node = scene.interactive_at_path(path)?;
+        let from = node.list?.first_row.checked_add(slot)?;
+        let row = node.children.get(slot)?.row_key?;
+        self.adjacent_table_row_move(layout, node, path, from, row, direction)
+    }
+
+    pub fn table_row_move_key(
+        &self,
+        scene: &Node,
+        layout: &LayoutNode,
+        direction: NavigationKey,
+    ) -> Option<ControlInput> {
+        let focused = self.focused.as_ref()?;
+        let focus_node = scene.at_path(&focused.path)?;
+        if !valid(focused, scene, layout)
+            || self.is_text_editor(focus_node, focused)
+            || spin_editable(focus_node)
+            || self.table_edit.is_some()
+        {
+            return None;
+        }
+        let path =
+            table_cell_row(scene, &focused.path).map_or(focused.path.as_slice(), |(path, _)| path);
+        let node = scene.interactive_at_path(path)?;
+        let list = node.list?;
+        let from = usize::try_from(node.int("current-row")?).ok()?;
+        let row = from
+            .checked_sub(list.first_row)
+            .and_then(|slot| node.children.get(slot)?.row_key)
+            .or_else(|| node.row_locator.as_ref()?.key_at(from))?;
+        self.adjacent_table_row_move(layout, node, path, from, row, direction)
+    }
+
+    fn adjacent_table_row_move(
+        &self,
+        layout: &LayoutNode,
+        node: &Node,
+        path: &[usize],
+        from: usize,
+        row: RowKey,
+        direction: NavigationKey,
+    ) -> Option<ControlInput> {
+        if node.kind != "TableView"
+            || !node.boolean("movable-rows", false)
+            || self.menu_open()
+            || self.choice_open()
+            || self
+                .active_dialog(layout)
+                .is_some_and(|scope| !path.starts_with(scope))
+        {
+            return None;
+        }
+        let to = match direction {
+            NavigationKey::Up => from.checked_sub(1)?,
+            NavigationKey::Down => from.checked_add(1)?,
+            _ => return None,
+        };
+        let count = node.list?.row_count;
+        (from < count && to < count).then_some(ControlInput {
+            path: path.to_vec(),
+            action: ControlAction::MoveRow {
+                from,
+                to,
+                row,
+                stamp: node.standard_list_stamp?,
+            },
+        })
     }
 
     /// A cell's component can receive its click after the table updates selection.
@@ -5877,7 +7072,7 @@ impl Interaction {
                     action: ControlAction::TableSelection(action),
                 });
             }
-            node = node.children.get(index)?;
+            node = node.child_at(index)?;
         }
         None
     }
@@ -5945,17 +7140,23 @@ impl Interaction {
             TableSelectionKey::Clear if !selection.is_empty() => TableSelectionAction::Clear,
             TableSelectionKey::Toggle => {
                 let operation = RowSelection::Toggle;
+                let header = node.table_header.as_ref()?;
+                let visible =
+                    |&column: &usize| header.columns.get(column).is_some_and(Node::is_visible);
                 let column = cell_row
                     .and_then(|_| target.path.last().copied())
                     .or(selection.current_column())
+                    .filter(visible)
                     .or_else(|| {
                         node.table_column_order
-                            .iter(node.table_header.as_ref()?.columns.len())
-                            .next()
-                    })
-                    .unwrap_or(0);
+                            .iter(header.columns.len())
+                            .find(visible)
+                    });
                 if selection.target() == SelectionTarget::Columns {
-                    TableSelectionAction::Column { column, operation }
+                    TableSelectionAction::Column {
+                        column: column?,
+                        operation,
+                    }
                 } else {
                     let row = if let Some((_, slot)) = cell_row {
                         list.first_row.checked_add(slot)?
@@ -5968,7 +7169,7 @@ impl Interaction {
                     if selection.target() == SelectionTarget::Cells {
                         TableSelectionAction::Cell {
                             row,
-                            column,
+                            column: column?,
                             operation,
                         }
                     } else {
@@ -6019,14 +7220,11 @@ impl Interaction {
     ) -> Option<(Vec<usize>, Vec<usize>)> {
         let path = self.focused_clipboard_table(scene, layout)?;
         let geometry = layout.at_path(path)?.table.as_ref()?;
-        let columns = geometry
-            .visual_columns()
-            .filter(|&column| geometry.columns[column].width > 0.0)
-            .collect();
+        let columns = geometry.visible_columns().collect();
         Some((path.to_vec(), columns))
     }
 
-    pub fn table_paste_history_target<'a>(
+    pub fn table_edit_history_target<'a>(
         &'a self,
         scene: &Node,
         layout: &LayoutNode,
@@ -6034,8 +7232,17 @@ impl Interaction {
         let path = self.focused_clipboard_table(scene, layout)?;
         scene
             .at_path(path)?
-            .boolean("pasteable", false)
+            .table_edit_history_enabled()
             .then_some(path)
+    }
+
+    #[doc(hidden)]
+    pub fn table_paste_history_target<'a>(
+        &'a self,
+        scene: &Node,
+        layout: &LayoutNode,
+    ) -> Option<&'a [usize]> {
+        self.table_edit_history_target(scene, layout)
     }
 
     pub fn table_copy_target(
@@ -6118,24 +7325,27 @@ impl Interaction {
             .or_else(|| cell.and_then(|_| focused.path.last().copied()))
             .filter(|&column| column < table.columns.len());
         let current_visual = current.and_then(|column| table.visual_index(column));
-        let visible = |&column: &usize| table.columns[column].width > 0.0;
+        let visible = |&column: &usize| table.is_column_visible(column);
+        let visible_current = current.filter(visible);
         let next = match key {
             NavigationKey::Left => table
                 .visual_columns()
                 .take(current_visual.unwrap_or(table.columns.len()))
                 .rev()
                 .find(visible)
-                .or(current),
+                .or(visible_current)
+                .or_else(|| table.visible_columns().next()),
             NavigationKey::Right => table
                 .visual_columns()
                 .skip(current_visual.map_or(0, |column| column + 1))
                 .find(visible)
-                .or(current),
+                .or(visible_current)
+                .or_else(|| table.visible_columns().next_back()),
             NavigationKey::Home if view.target() == SelectionTarget::Columns => {
-                table.visual_columns().find(visible)
+                table.visible_columns().next()
             }
             NavigationKey::End if view.target() == SelectionTarget::Columns => {
-                table.visual_columns().rev().find(visible)
+                table.visible_columns().next_back()
             }
             _ => None,
         };
@@ -6172,7 +7382,7 @@ impl Interaction {
                     }),
                 });
             }
-            let column = current.or_else(|| table.visual_columns().find(visible))?;
+            let column = visible_current.or_else(|| table.visible_columns().next())?;
             TableSelectionAction::Cell {
                 row,
                 column,
@@ -6187,7 +7397,13 @@ impl Interaction {
         let scroll = table.horizontal;
         let offset = table.reveal_column(column);
         if offset != scroll.offset {
-            self.horizontal_scroll_offsets.insert(path.clone(), offset);
+            store_scroll_offset(
+                item,
+                &mut self.horizontal_scroll_offsets,
+                &path,
+                Orientation::Horizontal,
+                offset,
+            );
             UserScrollChange::commit(
                 &mut self.user_scroll_changes,
                 item,
@@ -6201,7 +7417,7 @@ impl Interaction {
             path: path.clone(),
             id: node.id,
             focusable: true,
-            row_key: None,
+            row_key: scene.row_key_at(&path),
         }));
         Some(ControlInput {
             path,
@@ -6219,7 +7435,13 @@ impl Interaction {
             .revealing(cells.top(row) as f32, cells.height(row), viewport.height)
             .offset;
         if offset != scroll.offset {
-            self.scroll_offsets.insert(path.to_vec(), offset);
+            store_scroll_offset(
+                item,
+                &mut self.scroll_offsets,
+                path,
+                Orientation::Vertical,
+                offset,
+            );
             UserScrollChange::commit(
                 &mut self.user_scroll_changes,
                 item,
@@ -6239,6 +7461,7 @@ impl Interaction {
         let target = self.focused.as_ref()?;
         let cell_view = table_cell_row(scene, &target.path)
             .or_else(|| tree_cell_row(scene, &target.path))
+            .or_else(|| list_item_delegate_row(scene, &target.path))
             .map(|(view, _)| view);
         let focused_cell = cell_view.is_some();
         let path = cell_view.unwrap_or(&target.path);
@@ -6302,7 +7525,7 @@ impl Interaction {
                 path: action.path.clone(),
                 id: node.id,
                 focusable: true,
-                row_key: None,
+                row_key: scene.row_key_at(&action.path),
             }));
         }
         Some(action)
@@ -6627,32 +7850,47 @@ impl Interaction {
     ) -> Option<ControlInput> {
         let target = self.focused.as_ref()?;
         let node = scene.at_path(&target.path)?;
-        if node.kind != "Calendar" || !valid(target, scene, layout) {
+        if !is_calendar_control(node.kind) || !valid(target, scene, layout) {
             return None;
         }
-        let calendar = CalendarState::from_node(node);
+        let item = layout.at_path(&target.path)?;
+        let geometry = CalendarGeometry::new(node, item.bounds);
+        let calendar = geometry.state;
         let day = |delta| {
-            calendar
-                .cursor()
-                .add_days(delta)
-                .unwrap_or(if delta < 0 { Date::MIN } else { Date::MAX })
-                .clamp(calendar.minimum, calendar.maximum)
+            Some(
+                geometry
+                    .cursor()?
+                    .add_days(delta)
+                    .unwrap_or(if delta < 0 { Date::MIN } else { Date::MAX })
+                    .clamp(calendar.minimum, calendar.maximum),
+            )
+        };
+        let month = |offset| {
+            if geometry.has_header() {
+                calendar.adjacent_month(offset)
+            } else {
+                calendar.month.add_months(offset)
+            }
+            .unwrap_or(calendar.month)
         };
         let action = match key {
-            NavigationKey::Left => CalendarAction::Select(day(-1)),
-            NavigationKey::Right => CalendarAction::Select(day(1)),
-            NavigationKey::Up => CalendarAction::Select(day(-7)),
-            NavigationKey::Down => CalendarAction::Select(day(7)),
-            NavigationKey::Home => CalendarAction::Select(calendar.month.max(calendar.minimum)),
-            NavigationKey::End => {
-                CalendarAction::Select(calendar.month.last_of_month().min(calendar.maximum))
+            NavigationKey::Left => CalendarAction::Select(day(-1)?),
+            NavigationKey::Right => CalendarAction::Select(day(1)?),
+            NavigationKey::Up => CalendarAction::Select(day(-7)?),
+            NavigationKey::Down => CalendarAction::Select(day(7)?),
+            NavigationKey::Home | NavigationKey::End => {
+                let date = if key == NavigationKey::Home {
+                    calendar.month.max(calendar.minimum)
+                } else {
+                    calendar.month.last_of_month().min(calendar.maximum)
+                };
+                if date.first_of_month() != calendar.month {
+                    return None;
+                }
+                CalendarAction::Select(date)
             }
-            NavigationKey::PageUp => {
-                CalendarAction::Browse(calendar.adjacent_month(-1).unwrap_or(calendar.month))
-            }
-            NavigationKey::PageDown => {
-                CalendarAction::Browse(calendar.adjacent_month(1).unwrap_or(calendar.month))
-            }
+            NavigationKey::PageUp => CalendarAction::Browse(month(-1)),
+            NavigationKey::PageDown => CalendarAction::Browse(month(1)),
         };
         Some(ControlInput {
             path: target.path.clone(),
@@ -6701,16 +7939,22 @@ impl Interaction {
         target: &Target,
     ) -> Option<ControlInput> {
         let node = scene.at_path(&target.path)?;
-        (node.kind == "Calendar" && valid(target, scene, layout)).then(|| ControlInput {
+        if !is_calendar_control(node.kind) || !valid(target, scene, layout) {
+            return None;
+        }
+        let geometry = CalendarGeometry::new(node, layout.at_path(&target.path)?.bounds);
+        Some(ControlInput {
             path: target.path.clone(),
-            action: ControlAction::Calendar(CalendarAction::Select(
-                CalendarState::from_node(node).cursor(),
-            )),
+            action: ControlAction::Calendar(geometry.day_action(geometry.cursor()?)),
         })
     }
 
     pub fn pointer_release_target(&mut self) -> Option<Target> {
+        let split_resized = self.clear_split_drag();
         self.table_column_move = None;
+        if self.cancel_table_row_move() {
+            return None;
+        }
         if self.cancel_table_drag_selection() {
             return None;
         }
@@ -6732,7 +7976,6 @@ impl Interaction {
         let pressed_control_part = self.pressed_control_part.take();
         let pressed_standard_button = self.pressed_standard_button.take();
         let resized = self.table_resize.take().is_some() | self.table_row_resize.take().is_some();
-        let split_resized = self.split_drag.take().is_some();
         let pressed = self.pressed.take()?;
         (!claimed
             && !resized
@@ -6793,24 +8036,211 @@ impl Interaction {
             {
                 return None;
             }
-            let target = self.pressed.as_ref()?;
-            let cell = scene.at_path(&target.path)?;
-            if self.is_text_editor(cell, target) {
-                return None;
-            }
-            let (path, slot) = table_hit_row(scene, &target.path)?;
-            let table = scene.at_path(path)?;
-            crate::table_drag_selection::TableDragSelection::new(
-                path.to_vec(),
-                table,
-                layout.at_path(path)?,
-                table.list?.first_row + slot,
+            self.table_selection_at(
+                scene,
+                layout,
+                self.pressed.as_ref()?,
                 self.pointer?,
                 additive,
-                scene.row_key_at(path),
             )
         })();
         self.table_drag_selection.is_some()
+    }
+
+    fn table_selection_at(
+        &self,
+        scene: &Node,
+        layout: &LayoutNode,
+        target: &Target,
+        point: Point,
+        additive: bool,
+    ) -> Option<crate::table_drag_selection::TableDragSelection> {
+        if self.is_text_editor(scene.at_path(&target.path)?, target) {
+            return None;
+        }
+        let (path, slot) = table_hit_row(scene, &target.path)?;
+        let table = scene.at_path(path)?;
+        let item = layout.at_path(path)?;
+        let column = item
+            .table
+            .as_ref()?
+            .body_column_at(item.map_from_window(point)?)?;
+        crate::table_drag_selection::TableDragSelection::new(
+            path.to_vec(),
+            table,
+            (table.list?.first_row + slot, column),
+            point,
+            additive,
+            scene.row_key_at(path),
+        )
+    }
+
+    /// Claim an undragged touch when the table's hold deadline expires.
+    pub fn advance_table_touch_hold(
+        &mut self,
+        scene: &Node,
+        layout: &LayoutNode,
+        now: Instant,
+    ) -> bool {
+        let Some(gesture) = &mut self.scroll_gesture else {
+            return false;
+        };
+        let Some(hold) = gesture.table_hold.take_if(|hold| now >= hold.deadline) else {
+            return false;
+        };
+        gesture.tap = None;
+        if self.drag.is_some() || self.menu_open() || self.choice_open() {
+            return false;
+        }
+        match hold.drag {
+            TableTouchDrag::Select(mut drag) => {
+                drag.claimed = true;
+                drag.touch = true;
+                if self
+                    .table_drag_route(scene, layout, &drag, drag.start)
+                    .is_none()
+                {
+                    return false;
+                }
+                self.cancel_scroll_gesture();
+                self.capture_table_selection(drag);
+            }
+            TableTouchDrag::Move(mut drag) => {
+                let Hit::Target(target) = self.hit_at(scene, layout, drag.start) else {
+                    return false;
+                };
+                if Self::table_row_move_at(scene, layout, &target, drag.start).is_none_or(
+                    |current| {
+                        current.table != drag.table
+                            || current.row != drag.row
+                            || current.stamp != drag.stamp
+                    },
+                ) {
+                    return false;
+                }
+                drag.claimed = true;
+                drag.touch = true;
+                self.cancel_scroll_gesture();
+                self.pointer = Some(drag.start);
+                self.claim_table_selection(drag.table.clone());
+                self.table_row_move = Some(drag);
+            }
+        }
+        true
+    }
+
+    pub fn table_touch_hold_deadline(&self) -> Option<Instant> {
+        Some(self.scroll_gesture.as_ref()?.table_hold.as_ref()?.deadline)
+    }
+
+    fn capture_table_selection(&mut self, drag: crate::table_drag_selection::TableDragSelection) {
+        self.pointer = Some(drag.start);
+        let focus = drag.focus_target();
+        self.table_drag_selection = Some(drag);
+        self.claim_table_selection(focus);
+    }
+
+    fn table_selection_handle_geometry(
+        &self,
+        path: &[usize],
+        node: &Node,
+        item: &LayoutNode,
+    ) -> Option<[Option<crate::table_drag_selection::TableSelectionHandle>; 2]> {
+        if !self.is_focused(path)
+            || self.menu_open()
+            || self.choice_open()
+            || self.table_edit.is_some()
+            || self.table_drag_selection_claimed()
+        {
+            return None;
+        }
+        crate::table_drag_selection::selection_handles(node, item)
+    }
+
+    /// The hit bounds of the visible handles, in the table's layout coordinates.
+    pub fn table_selection_handles(
+        &self,
+        path: &[usize],
+        node: &Node,
+        item: &LayoutNode,
+    ) -> impl Iterator<Item = Rect> {
+        self.table_selection_handle_geometry(path, node, item)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .map(|handle| handle.bounds)
+    }
+
+    pub fn press_table_selection_handle(&mut self, scene: &Node, layout: &LayoutNode) -> bool {
+        self.pointer
+            .is_some_and(|point| self.start_table_selection_handle(scene, layout, point, false))
+    }
+
+    fn start_table_selection_handle(
+        &mut self,
+        scene: &Node,
+        layout: &LayoutNode,
+        point: Point,
+        touch: bool,
+    ) -> bool {
+        let drag = (|| {
+            let focus = self.focused.as_ref()?;
+            let node = scene.interactive_at_path(&focus.path)?;
+            let item = layout.at_path(&focus.path)?;
+            let local = item.map_from_window(point)?;
+            let handle = self
+                .table_selection_handle_geometry(&focus.path, node, item)?
+                .into_iter()
+                .flatten()
+                .find(|handle| handle.bounds.contains(local))?;
+            match self.hit_at(scene, layout, point) {
+                Hit::Target(target)
+                | Hit::ControlPart(target, _)
+                | Hit::TableRowGrip(target, _)
+                    if target.path.starts_with(&focus.path) => {}
+                _ => return None,
+            }
+            let mut drag = crate::table_drag_selection::TableDragSelection::new(
+                focus.path.clone(),
+                node,
+                handle.opposite,
+                point,
+                false,
+                focus.row_key,
+            )?;
+            drag.adjust_range(node.table_selection.as_ref()?.drag_range()?);
+            drag.touch = touch;
+            self.table_drag_route(scene, layout, &drag, point)?;
+            Some(drag)
+        })();
+        let Some(drag) = drag else { return false };
+        self.cancel_press();
+        if touch {
+            self.pointer_leave();
+        }
+        self.capture_table_selection(drag);
+        true
+    }
+
+    pub fn touch_table_selection_claimed(&self) -> bool {
+        self.table_drag_selection
+            .as_ref()
+            .is_some_and(|drag| drag.claimed && drag.touch)
+    }
+
+    pub fn touch_table_drag_claimed(&self) -> bool {
+        self.touch_table_selection_claimed()
+            || self.table_row_move.as_ref().is_some_and(|drag| drag.touch)
+    }
+
+    pub fn cancel_table_touch_drag(&mut self) -> bool {
+        if self.touch_table_selection_claimed() {
+            self.cancel_table_drag_selection()
+        } else if self.touch_table_drag_claimed() {
+            self.cancel_table_row_move()
+        } else {
+            false
+        }
     }
 
     pub fn table_drag_selection_armed(&self) -> bool {
@@ -6832,13 +8262,20 @@ impl Interaction {
         {
             drag.claimed = true;
             drag.scroll_wake = Some(now + SCROLL_FRAME_INTERVAL);
-            self.last_table_click = None;
-            self.pressed = None;
             let focus = drag.focus_target();
-            self.set_focus_with_reason(Some(focus), xrack_runtime::FocusReason::PointerClick);
+            self.claim_table_selection(focus);
             return true;
         }
+        if drag.claimed && self.pointer.is_some_and(|point| point != drag.start) {
+            drag.scroll_wake.get_or_insert(now + SCROLL_FRAME_INTERVAL);
+        }
         drag.claimed
+    }
+
+    fn claim_table_selection(&mut self, focus: Target) {
+        self.last_table_click = None;
+        self.pressed = None;
+        self.set_focus_with_reason(Some(focus), xrack_runtime::FocusReason::PointerClick);
     }
 
     pub fn table_drag_selection_claimed(&self) -> bool {
@@ -6848,11 +8285,10 @@ impl Interaction {
     }
 
     pub fn cancel_table_drag_selection(&mut self) -> bool {
-        if self
-            .table_drag_selection
-            .take()
-            .is_some_and(|drag| drag.claimed)
-        {
+        if let Some(drag) = self.table_drag_selection.take().filter(|drag| drag.claimed) {
+            if drag.touch {
+                self.pointer = None;
+            }
             self.cancel_press();
             true
         } else {
@@ -6979,6 +8415,200 @@ impl Interaction {
         drag.claimed
     }
 
+    pub fn table_row_move_drag(&mut self, layout: &LayoutNode, now: Instant) -> bool {
+        let Some(drag) = &mut self.table_row_move else {
+            return false;
+        };
+        if !drag.claimed
+            && let Some(point) = self.pointer
+            && let Some(item) = layout.at_path(&drag.table.path)
+            && let Some(delta) = item.map_delta_from_window(Point {
+                x: point.x - drag.start.x,
+                y: point.y - drag.start.y,
+            })
+            && delta.y.abs() >= DRAG_THRESHOLD
+            && delta.y.abs() >= delta.x.abs()
+        {
+            drag.claimed = true;
+            drag.scroll_wake = Some(now + SCROLL_FRAME_INTERVAL);
+        }
+        drag.claimed
+    }
+
+    pub fn table_row_move_claimed(&self) -> bool {
+        self.table_row_move
+            .as_ref()
+            .is_some_and(|drag| drag.claimed)
+    }
+
+    pub fn cancel_table_row_move(&mut self) -> bool {
+        if let Some(drag) = self.table_row_move.take().filter(|drag| drag.claimed) {
+            if drag.touch {
+                self.pointer = None;
+            }
+            self.cancel_press();
+            true
+        } else {
+            false
+        }
+    }
+
+    fn row_move_position(
+        drag: &TableRowMove,
+        node: &Node,
+        layout: &LayoutNode,
+        point: Point,
+    ) -> Option<(Rect, Point)> {
+        if !drag.claimed
+            || node.id != drag.table.id
+            || node.standard_list_stamp != Some(drag.stamp)
+            || !node.boolean("movable-rows", false)
+            || !layout.visible
+            || !layout.enabled
+            || !layout.contains_clip_point(point)
+        {
+            return None;
+        }
+        let table = layout.table.as_ref()?;
+        let local = layout.map_from_window(point)?;
+        let visible = table.rows_area().intersect(layout.clip);
+        (table.row_header.width > 0.0 && visible.contains(local)).then_some((visible, local))
+    }
+
+    fn row_drop(
+        drag: &TableRowMove,
+        node: &Node,
+        layout: &LayoutNode,
+        point: Point,
+    ) -> Option<(usize, Rect)> {
+        let (visible, point) = Self::row_move_position(drag, node, layout, point)?;
+        let list = node.list?;
+        let rows = node
+            .children
+            .iter()
+            .zip(&layout.children)
+            .enumerate()
+            .filter(|(_, (row, item))| {
+                row.kind == "ListRow" && item.visible && item.bounds.intersect(visible).height > 0.0
+            });
+        let mut edge = None;
+        for (slot, (_, item)) in rows {
+            let row = item.bounds;
+            let index = list.first_row + slot;
+            if point.y < row.y + row.height * 0.5 {
+                edge = Some((index, row.y));
+                break;
+            }
+            edge = Some((index + 1, row.y + row.height));
+        }
+        let (insertion, y) = edge?;
+        let to = insertion.saturating_sub(usize::from(insertion > drag.from));
+        (to != drag.from && to < list.row_count).then(|| {
+            let y = y.clamp(
+                visible.y + 1.0_f32.min(visible.height * 0.5),
+                visible.y + visible.height - 1.0_f32.min(visible.height * 0.5),
+            );
+            (
+                to,
+                Rect::new(visible.x, y - 1.0, visible.width, 2.0).intersect(visible),
+            )
+        })
+    }
+
+    pub fn table_row_move_marker(
+        &self,
+        path: &[usize],
+        node: &Node,
+        layout: &LayoutNode,
+    ) -> Option<Rect> {
+        let drag = self
+            .table_row_move
+            .as_ref()
+            .filter(|drag| drag.table.path == path)?;
+        Self::row_drop(drag, node, layout, self.pointer?).map(|(_, marker)| marker)
+    }
+
+    pub fn table_row_move_source(&self, path: &[usize], node: &Node) -> Option<RowKey> {
+        let drag = self.table_row_move.as_ref()?;
+        (drag.claimed
+            && drag.table.path == path
+            && node.boolean("movable-rows", false)
+            && node.standard_list_stamp == Some(drag.stamp))
+        .then_some(drag.row)
+    }
+
+    fn table_row_move_scroll_delta(&self, scene: &Node, layout: &LayoutNode) -> Option<f32> {
+        let drag = self.table_row_move.as_ref()?;
+        let point = self.pointer?;
+        let path = &drag.table.path;
+        if !path.starts_with(self.pointer_scope(layout, point))
+            || scene.row_key_at(path) != drag.table.row_key
+        {
+            return None;
+        }
+        let item = layout.at_path(path)?;
+        let (visible, point) = Self::row_move_position(drag, scene.at_path(path)?, item, point)?;
+        let delta = crate::table_drag_selection::edge_delta(point.y, visible.y, visible.height);
+        let scroll = item.scroll?;
+        ((scroll.offset + delta).clamp(0.0, scroll.max_offset) != scroll.offset).then_some(delta)
+    }
+
+    pub fn table_row_move_deadline(&self, scene: &Node, layout: &LayoutNode) -> Option<Instant> {
+        self.table_row_move_scroll_delta(scene, layout)?;
+        self.table_row_move.as_ref()?.scroll_wake
+    }
+
+    pub fn advance_table_row_move(
+        &mut self,
+        scene: &Node,
+        layout: &LayoutNode,
+        now: Instant,
+    ) -> bool {
+        let Some(delta) = self.table_row_move_scroll_delta(scene, layout) else {
+            return false;
+        };
+        let Some(drag) = self
+            .table_row_move
+            .as_mut()
+            .filter(|drag| drag.scroll_wake.is_some_and(|wake| now >= wake))
+        else {
+            return false;
+        };
+        drag.scroll_wake = Some(now + SCROLL_FRAME_INTERVAL);
+        let path = drag.table.path.clone();
+        let Some(scroll) = layout.at_path(&path).and_then(|item| item.scroll) else {
+            return false;
+        };
+        self.scroll_to_user_offset(layout, &path, Orientation::Vertical, scroll.offset + delta)
+    }
+
+    pub fn finish_table_row_move(
+        &mut self,
+        scene: &Node,
+        layout: &LayoutNode,
+    ) -> Option<ControlInput> {
+        let drag = self.table_row_move.take()?;
+        let point = self.pointer;
+        self.cancel_press();
+        let point = point?;
+        let path = &drag.table.path;
+        if !valid(&drag.table, scene, layout)
+            || !path.starts_with(self.pointer_scope(layout, point))
+        {
+            return None;
+        }
+        let (to, _) = Self::row_drop(&drag, scene.at_path(path)?, layout.at_path(path)?, point)?;
+        Some(ControlInput {
+            path: drag.table.path,
+            action: ControlAction::MoveRow {
+                from: drag.from,
+                to,
+                row: drag.row,
+                stamp: drag.stamp,
+            },
+        })
+    }
+
     pub fn table_column_move_claimed(&self) -> bool {
         self.table_column_move
             .as_ref()
@@ -7013,6 +8643,9 @@ impl Interaction {
             return None;
         }
         let table = layout.table.as_ref()?;
+        if !table.is_column_visible(drag.column) {
+            return None;
+        }
         let local = layout.map_from_window(point)?;
         table.header.contains(local).then_some((table, local))
     }
@@ -7135,6 +8768,9 @@ impl Interaction {
         let column = resizable_table_column(node, drag.column)?;
         let item = layout.at_path(&drag.target.path)?;
         let table = item.table.as_ref()?;
+        if !table.is_column_visible(drag.column) {
+            return None;
+        }
         let bounds = table.columns[drag.column];
         let (min, max) = crate::table::column_limits(column, table.header.width);
         let point = item.map_from_window(self.pointer?)?;
@@ -7256,12 +8892,34 @@ impl Interaction {
             self.scroll_bar_press.as_mut().unwrap().grab = None;
         }
         if self.split_drag.as_ref().is_some_and(|drag| {
-            !split_target(&drag.target, scene, layout).is_some_and(|(_, geometry, handle)| {
-                geometry.orientation == drag.orientation && handle.after_pane() == drag.after_pane
+            !split_target(&drag.target, scene, layout).is_some_and(|(path, geometry, handle)| {
+                geometry.orientation == drag.orientation
+                    && handle.after_pane() == drag.after_pane
+                    && scene
+                        .at_path(path)
+                        .and_then(|node| node.split_resize_handle.as_ref())
+                        == drag.state.as_ref()
             })
         }) {
-            self.split_drag = None;
+            self.clear_split_drag();
             self.pressed = None;
+        }
+        let unavailable = |target: &Target, column| {
+            layout
+                .at_path(&target.path)
+                .and_then(|item| item.table.as_ref())
+                .is_none_or(|table| !table.is_column_visible(column))
+        };
+        if self
+            .table_resize
+            .as_ref()
+            .is_some_and(|drag| unavailable(&drag.target, drag.column))
+            || self
+                .table_column_move
+                .as_ref()
+                .is_some_and(|drag| unavailable(&drag.target, drag.column))
+        {
+            self.cancel_press();
         }
         self.scroll_offsets.retain(|path, value| {
             if let Some(scroll) = layout.at_path(path).and_then(|node| node.scroll) {
@@ -7283,9 +8941,22 @@ impl Interaction {
                 false
             }
         });
+        self.tree_scroll_roots = self
+            .scroll_offsets
+            .keys()
+            .filter_map(|path| {
+                Some((
+                    path.clone(),
+                    scene.at_path(path)?.tree.as_ref()?.root_identity(),
+                ))
+            })
+            .collect();
         self.scroll_anchors = capture_list_anchors(scene, layout);
         for (path, anchor) in &self.scroll_anchors {
-            if anchor.offset > 0.0 && !self.scroll_offsets.contains_key(path) {
+            if anchor.scope.is_none()
+                && anchor.offset > 0.0
+                && !self.scroll_offsets.contains_key(path)
+            {
                 self.scroll_offsets.insert(path.clone(), anchor.offset);
             }
         }
@@ -7440,6 +9111,8 @@ impl Interaction {
             // Keyboard highlight should survive a layout pass with a stationary cursor.
             if !self.choice_open() && !self.menu_open() {
                 self.pointer_move(scene, layout, point);
+            } else {
+                self.set_split_hover(None);
             }
         }
     }
@@ -7832,6 +9505,25 @@ impl Interaction {
                 self.sync_editor(scene);
                 return Some(command);
             }
+            xrack_runtime::FocusAction::EditTableCell { row, column } => {
+                let row = usize::try_from(row).ok()?;
+                let column = usize::try_from(column).ok()?;
+                let cell = table_cell_target(scene, layout, &target.path, row, column)?;
+                self.begin_cell_edit(
+                    scene,
+                    layout,
+                    cell,
+                    xrack_runtime::FocusReason::Programmatic,
+                );
+            }
+            xrack_runtime::FocusAction::CancelTableEdit => {
+                if self.table_edit.as_ref().is_some_and(|edit| {
+                    table_cell_row(scene, &edit.target.path)
+                        .is_some_and(|(table, _)| table == target.path)
+                }) {
+                    self.cancel_table_edit();
+                }
+            }
         }
         None
     }
@@ -7932,6 +9624,9 @@ impl Interaction {
             .then_some(target)
     }
     pub fn cancel_press(&mut self) {
+        if self.touch_table_drag_claimed() {
+            self.pointer = None;
+        }
         self.cancel_window_move();
         self.cancel_scroll_gesture();
         self.cancel_delay();
@@ -7951,10 +9646,12 @@ impl Interaction {
         self.table_resize = None;
         self.table_row_resize = None;
         self.table_column_move = None;
+        self.table_row_move = None;
         self.table_drag_selection = None;
-        self.split_drag = None;
+        self.clear_split_drag();
         self.slider_offset = 0.0;
         self.slider_anchor = None;
+        self.slider_fraction = None;
         self.dial_pointer = None;
         self.spin_pressed = None;
         self.key_pressed = None;
@@ -7975,5 +9672,39 @@ impl Interaction {
                 .key_pressed
                 .as_ref()
                 .is_some_and(|(_, t)| t.path == path)
+    }
+}
+
+/// The inner-to-outer delivery path of one wheel event.
+pub struct WheelRoute {
+    deliveries: Vec<(Vec<usize>, xrack_runtime::WheelEvent)>,
+}
+
+fn local_handler_position(
+    item: &LayoutNode,
+    point: Point,
+) -> Option<(xrack_runtime::Length, xrack_runtime::Length)> {
+    let local = item.map_from_window(point)?;
+    (item.enabled && item.bounds.contains(local) && item.contains_clip_point(point)).then(|| {
+        (
+            xrack_runtime::Length(f64::from(local.x - item.bounds.x)),
+            xrack_runtime::Length(f64::from(local.y - item.bounds.y)),
+        )
+    })
+}
+
+impl WheelRoute {
+    pub fn dispatch(
+        self,
+        component: &mut impl Component,
+        scene: &Node,
+    ) -> xrack_runtime::EventResult {
+        for (path, event) in self.deliveries {
+            if component.wheel_event_at(scene, &path, &event) == xrack_runtime::EventResult::Accept
+            {
+                return xrack_runtime::EventResult::Accept;
+            }
+        }
+        xrack_runtime::EventResult::Reject
     }
 }

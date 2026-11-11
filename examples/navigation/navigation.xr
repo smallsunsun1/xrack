@@ -231,6 +231,119 @@ export component StackDemo inherits Window {
     }
 }
 
+export component StackGuardDemo inherits Window {
+    title: "XRack · 页面离开守卫";
+    width: 560px; height: 360px;
+    background: #101725;
+
+    in-out property <string> saved: "界面设计";
+    in-out property <string> draft: root.saved;
+    out property <bool> editor-active: editor.active;
+    out property <int> editor-index: editor.stack-index;
+    out property <string> last-destination: "";
+    out property <bool> last-removing: false;
+    out property <string> lifecycle: "";
+    out property <int> changes: 0;
+    private property <bool> confirm-open: false;
+    callback can-leave-preview <=> preview.leave-requested;
+
+    Text { x: 20px; y: 18px; text: "项目笔记"; font-size: 26px; }
+    Text { x: 20px; y: 57px; text: "草稿随页面保留，丢弃前需要确认"; color: #acc0db; }
+
+    navigation := StackView {
+        x: 20px; y: 91px; width: 520px; height: 215px;
+        initial-page: "home";
+        transition-duration: 180;
+        changed(page, depth) => {
+            root.changes += 1;
+            root.lifecycle += " changed " + page + " " + depth;
+        }
+        home := StackPage {
+            activated => { root.lifecycle += " home activated"; }
+            deactivated => { root.lifecycle += " home deactivated"; }
+            Rectangle {
+                background: #263750; border-radius: 10px;
+                Text { x: 18px; y: 20px; text: root.saved; font-size: 22px; }
+                edit-note := Button {
+                    x: 18px; y: 71px; width: 126px; height: 40px;
+                    text: "编辑笔记";
+                    clicked => { navigation.push("editor"); }
+                }
+            }
+        }
+        editor := StackPage {
+            leave-requested(destination, removing) => {
+                root.last-destination = destination;
+                root.last-removing = removing;
+                root.confirm-open = removing && root.draft != root.saved;
+                !root.confirm-open
+            }
+            activated => { root.lifecycle += " editor activated"; }
+            deactivated => { root.lifecycle += " editor deactivated"; }
+            removed => { root.lifecycle += " editor removed"; root.draft = root.saved; }
+            Rectangle {
+                background: #253f51; border-radius: 10px;
+                Text { x: 18px; y: 18px; text: root.draft == root.saved ? "已保存" : "有未保存的改动"; }
+                note-field := LineEdit {
+                    x: 18px; y: 52px; width: 484px; height: 42px;
+                    text <=> root.draft;
+                }
+                note-save := Button {
+                    x: 18px; y: 122px; width: 98px; height: 40px;
+                    text: "保存";
+                    clicked => { root.saved = root.draft; }
+                }
+                note-preview := Button {
+                    x: 128px; y: 122px; width: 98px; height: 40px;
+                    text: "预览";
+                    clicked => { navigation.push("preview"); }
+                }
+                note-back := Button {
+                    x: 238px; y: 122px; width: 98px; height: 40px;
+                    text: "返回";
+                    clicked => { navigation.pop(); }
+                }
+            }
+        }
+        preview := StackPage {
+            activated => { root.lifecycle += " preview activated"; }
+            deactivated => { root.lifecycle += " preview deactivated"; }
+            removed => { root.lifecycle += " preview removed"; }
+            Rectangle {
+                background: #3d355b; border-radius: 10px;
+                Text { x: 18px; y: 20px; text: root.draft; font-size: 22px; }
+                preview-edit := Button {
+                    x: 18px; y: 71px; width: 126px; height: 40px;
+                    text: "继续编辑";
+                    clicked => { navigation.pop(); }
+                }
+                preview-home := Button {
+                    x: 156px; y: 71px; width: 126px; height: 40px;
+                    text: "回到首页";
+                    clicked => { navigation.reset("home"); }
+                }
+            }
+        }
+    }
+    route-status := Text {
+        x: 20px; y: 319px;
+        text: "当前页 " + navigation.current-page + " · 编辑页索引 " + editor.stack-index;
+        color: #acc0db;
+    }
+
+    confirm-leave := Dialog {
+        title: "未保存的改动";
+        open <=> root.confirm-open;
+        width: 374px;
+        accepted => { root.draft = root.saved; navigation.reset("home"); }
+        Text { text: "返回首页会丢弃这次编辑。"; }
+        DialogButtonBox {
+            keep-editing := DialogButton { text: "保留草稿"; role: reject; width: 100px; }
+            discard-note := DialogButton { text: "丢弃草稿"; role: accept; width: 100px; }
+        }
+    }
+}
+
 export component TabBarDemo inherits Window {
     in-out property <int> page: 0;
     in-out property <int> filter: 0;
@@ -273,6 +386,85 @@ export component TabBarDemo inherits Window {
         for label in root.filters : TabButton { text: label; }
     }
 }
+export component ApplicationWindowDemo inherits ApplicationWindow {
+    title: "XRack · 应用窗口";
+    width: 500px; height: 340px;
+    background: #182331;
+    color-scheme: dark;
+    padding: 12px; padding-left: 20px;
+    spacing: 6px;
+
+    in property <bool> show-menu: true;
+    in property <bool> show-header: true;
+    in property <bool> show-footer: true;
+    in property <bool> allow-close: true;
+    in-out property <bool> dialog-open: false;
+    out property <length> body-width: root.available-width;
+    out property <length> body-height: root.available-height;
+    out property <int> menu-actions: 0;
+    out property <int> body-actions: 0;
+    out property <int> footer-actions: 0;
+    out property <int> close-attempts: 0;
+
+    close-requested() => { root.close-attempts += 1; root.allow-close }
+
+    PageFooter {
+        visible: root.show-footer;
+        height: 38px;
+        padding-left: 20px;
+        background: #29394c;
+        foot-action := Button {
+            width: 140px; height: 30px;
+            text: "状态 · " + root.footer-actions;
+            clicked() => { root.footer-actions += 1; }
+        }
+    }
+    body := ScrollView {
+        width: 100%; height: 100%;
+        content-height: 380px;
+        Rectangle {
+            width: 100%; height: 380px;
+            background: #1d2b3a;
+            body-action := Button {
+                x: 16px; y: 16px; width: 140px; height: 36px;
+                text: "正文 · " + root.body-actions;
+                clicked() => { root.body-actions += 1; }
+            }
+            Text {
+                x: 16px; y: 70px; width: 290px; height: 28px;
+                text: "内容区 " + (root.body-width / 1px) + " × " + (root.body-height / 1px);
+            }
+            Text { x: 16px; y: 320px; text: "滚动区底部"; }
+        }
+    }
+    menu := MenuBar {
+        visible: root.show-menu;
+        height: 32px;
+        background: #27354d;
+        file := Menu {
+            title: "文件";
+            MenuItem { text: "刷新"; activated() => { root.menu-actions += 1; } }
+        }
+    }
+    PageHeader {
+        visible: root.show-header;
+        height: 48px;
+        background: #304765;
+        ToolBar {
+            height: 48px;
+            padding: 6px; background: #304765;
+            head-action := ToolButton { text: "帮助"; clicked() => { root.dialog-open = true; } }
+        }
+    }
+    help := Dialog {
+        open <=> root.dialog-open;
+        title: "应用窗口";
+        width: 240px; height: 120px;
+        Text { text: "页眉与页脚固定在窗口边缘。"; }
+        DialogButton { text: "关闭"; role: reject; }
+    }
+}
+
 export component PageDemo inherits Window {
     width: 360px; height: 240px;
     title: "页面布局";

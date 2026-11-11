@@ -1,4 +1,4 @@
-use crate::Node;
+use crate::{Node, Value};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum DialInputMode {
@@ -20,11 +20,73 @@ pub enum ScrollSnapMode {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum RangeAction {
     SetFraction(f64),
+    CommitFraction(f64),
+    SetValue(f64),
+    SetPoint { x: f64, y: f64 },
     Decrease,
     Increase,
+    Step(i64),
     Minimum,
     Maximum,
     Release,
+}
+
+impl RangeAction {
+    pub fn is_release(self) -> bool {
+        matches!(self, Self::Release | Self::CommitFraction(_))
+    }
+}
+
+/// Step by a wheel batch without iterating once per detent.
+pub(crate) fn step_float(
+    value: f64,
+    limits: (f64, f64),
+    step: f64,
+    steps: i64,
+    wrap: bool,
+    normalize: impl Fn(f64) -> f64,
+) -> f64 {
+    let (min, max) = limits;
+    if step == 0.0 || steps == 0 || min == max {
+        return value;
+    }
+    let forward = steps > 0;
+    let amount = steps.unsigned_abs() as f64;
+    let signed_step = if forward { step } else { -step };
+    let advance = |from, count| normalize(signed_step.mul_add(count, from));
+    let limit = if forward { max } else { min };
+    let fits = |candidate| {
+        if forward {
+            candidate <= limit
+        } else {
+            candidate >= limit
+        }
+    };
+    let next = advance(value, amount);
+    if !wrap || fits(next) {
+        return next.clamp(min, max);
+    }
+    let steps_in_range = |from: f64| {
+        let distance = limit - from;
+        let estimate = if distance.is_finite() {
+            distance / signed_step
+        } else {
+            (limit * 0.5 - from * 0.5) / (signed_step * 0.5)
+        }
+        .floor()
+        .min(amount);
+        if estimate < amount && fits(advance(from, estimate + 1.0)) {
+            estimate + 1.0
+        } else if estimate > 0.0 && !fits(advance(from, estimate)) {
+            estimate - 1.0
+        } else {
+            estimate
+        }
+    };
+    let start = if forward { min } else { max };
+    let remaining = (amount - steps_in_range(value) - 1.0).max(0.0);
+    let cycle = steps_in_range(start) + 1.0;
+    advance(start, remaining % cycle).clamp(min, max)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -34,6 +96,7 @@ pub struct SliderRange {
     value: f64,
     step: f64,
     wrap: bool,
+    snap: ScrollSnapMode,
 }
 
 impl SliderRange {
@@ -46,6 +109,46 @@ impl SliderRange {
             value: node.number("value").unwrap_or(0.0).clamp(min, max),
             step: node.number("step").unwrap_or(1.0).max(0.0),
             wrap: node.kind == "Dial" && node.boolean("wrap", false),
+            snap: match node.properties.get("snap-mode") {
+                Some(Value::ScrollSnapMode(mode)) => *mode,
+                _ => ScrollSnapMode::None,
+            },
+        }
+    }
+
+    pub fn with_value(mut self, value: f64) -> Self {
+        if value.is_finite() {
+            self.value = value.clamp(self.min, self.max);
+        }
+        self
+    }
+
+    pub fn snap_mode(self) -> ScrollSnapMode {
+        self.snap
+    }
+
+    pub fn preview_fraction(self, fraction: f64) -> f64 {
+        self.with_value(
+            self.apply(RangeAction::SetFraction(fraction))
+                .unwrap_or(self.value),
+        )
+        .fraction()
+    }
+
+    fn snap_value(self, value: f64) -> f64 {
+        let value = value.clamp(self.min, self.max);
+        if self.step == 0.0 || value == self.min || value == self.max {
+            return value;
+        }
+        let steps = ((value - self.min) / self.step).round();
+        if !steps.is_finite() {
+            return value;
+        }
+        let snapped = steps.mul_add(self.step, self.min).clamp(self.min, self.max);
+        if self.max - value < (snapped - value).abs() {
+            self.max
+        } else {
+            snapped
         }
     }
 
@@ -68,15 +171,39 @@ impl SliderRange {
 
     pub fn apply(self, action: RangeAction) -> Option<f64> {
         let next = match action {
-            RangeAction::SetFraction(fraction) if fraction.is_finite() => {
+            RangeAction::SetFraction(fraction) | RangeAction::CommitFraction(fraction)
+                if fraction.is_finite() =>
+            {
                 let t = fraction.clamp(0.0, 1.0);
-                self.min * (1.0 - t) + self.max * t
+                let value = self.min * (1.0 - t) + self.max * t;
+                if self.snap == ScrollSnapMode::Always
+                    || self.snap == ScrollSnapMode::OnRelease && action.is_release()
+                {
+                    self.snap_value(value)
+                } else {
+                    value
+                }
+            }
+            RangeAction::SetValue(value) if value.is_finite() => {
+                if self.snap == ScrollSnapMode::None {
+                    value
+                } else {
+                    self.snap_value(value)
+                }
             }
             RangeAction::Decrease => self.value - self.step,
             RangeAction::Increase => self.value + self.step,
+            RangeAction::Step(steps) => step_float(
+                self.value,
+                (self.min, self.max),
+                self.step,
+                steps,
+                self.wrap,
+                |value| value,
+            ),
             RangeAction::Minimum => self.min,
             RangeAction::Maximum => self.max,
-            RangeAction::SetFraction(_) | RangeAction::Release => return None,
+            _ => return None,
         };
         let next = match action {
             RangeAction::Increase if self.wrap && next > self.max => self.min,
@@ -206,6 +333,22 @@ impl SliderInterval {
             .map(|value| SliderRange { value, ..self.axis }.fraction())
     }
 
+    pub fn nearest_handle(self, fraction: f64) -> usize {
+        let [lower, upper] = self.fractions();
+        usize::from(if lower == upper {
+            fraction >= lower
+        } else {
+            (fraction - upper).abs() < (fraction - lower).abs()
+        })
+    }
+
+    pub fn preview_fractions(self, handle: usize, fraction: f64) -> [f64; 2] {
+        let values = self
+            .apply(handle, RangeAction::SetFraction(fraction))
+            .unwrap_or(self.values);
+        Self { values, ..self }.fractions()
+    }
+
     pub fn apply(self, handle: usize, action: RangeAction) -> Option<[f64; 2]> {
         let value = *self.values.get(handle)?;
         let mut values = self.values;
@@ -216,5 +359,49 @@ impl SliderInterval {
             next.max(values[0])
         };
         (values != self.values).then_some(values)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn batched_steps_keep_remaining_detents_after_wrap() {
+        let mut dial = Node::new("Dial", None);
+        dial.properties.insert("minimum", (-2.0_f64).into());
+        dial.properties.insert("maximum", 3.0_f64.into());
+        dial.properties.insert("value", 2.0_f64.into());
+        dial.properties.insert("wrap", true.into());
+        let range = SliderRange::from_node(&dial);
+        assert_eq!(range.apply(RangeAction::Step(3)), Some(-1.0));
+        assert_eq!(range.apply(RangeAction::Step(-6)), None);
+        assert_eq!(
+            step_float(
+                -f64::MAX,
+                (-f64::MAX, f64::MAX),
+                f64::MAX,
+                10,
+                true,
+                |value| value
+            ),
+            0.0,
+        );
+    }
+
+    #[test]
+    fn slider_snap_uses_the_minimum_and_keeps_a_partial_final_step_reachable() {
+        let mut node = Node::new("Slider", None);
+        node.properties.insert("minimum", 3.0_f64.into());
+        node.properties.insert("maximum", 17.0_f64.into());
+        node.properties.insert("step", 5.0_f64.into());
+        node.properties
+            .insert("snap-mode", ScrollSnapMode::OnRelease.into());
+        let range = SliderRange::from_node(&node);
+        assert_eq!(range.apply(RangeAction::SetFraction(0.5)), Some(10.0));
+        assert_eq!(range.apply(RangeAction::CommitFraction(0.5)), Some(8.0));
+        assert_eq!(range.apply(RangeAction::CommitFraction(0.96)), Some(17.0));
+        assert_eq!(range.apply(RangeAction::SetValue(15.0)), Some(13.0));
+        assert_eq!(range.apply(RangeAction::SetValue(f64::INFINITY)), None);
     }
 }

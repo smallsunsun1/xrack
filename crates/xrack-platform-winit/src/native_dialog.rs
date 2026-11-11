@@ -50,7 +50,10 @@ async fn present_file(
     if !options.file_name.is_empty() {
         dialog = dialog.set_file_name(&options.file_name);
     }
-    if options.mode != FileDialogMode::SelectFolder {
+    if !matches!(
+        options.mode,
+        FileDialogMode::SelectFolder | FileDialogMode::SelectFolders
+    ) {
         let filters = options
             .name_filters
             .iter()
@@ -76,6 +79,7 @@ async fn present_file(
         FileDialogMode::OpenFiles => dialog.pick_files().await,
         FileDialogMode::SaveFile => dialog.save_file().await.map(|file| vec![file]),
         FileDialogMode::SelectFolder => dialog.pick_folder().await.map(|file| vec![file]),
+        FileDialogMode::SelectFolders => dialog.pick_folders().await,
     };
     let Some(files) = selected.filter(|files| !files.is_empty()) else {
         return NativeDialogResult::Canceled;

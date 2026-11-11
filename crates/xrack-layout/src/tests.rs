@@ -24,6 +24,124 @@ fn button(id: &'static str) -> Node {
 }
 
 #[test]
+fn wide_table_stores_only_the_materialized_scene_and_layout_cells() {
+    use std::rc::Rc;
+    use xrack_runtime::{
+        ListRowRenderer, TableColumnWindow, TableHeader, TableRowOrder, VecModel,
+        project_standard_table_rows,
+    };
+
+    const COLUMNS: usize = 4096;
+    let records = Rc::new(VecModel::from((0..50_000).collect::<Vec<usize>>()));
+    let rows = TableRowOrder::default().rows(records);
+    let mut table = node("TableView", "wide");
+    table.properties.insert("frozen-columns", 1_i64.into());
+    length(&mut table, "row-height", 24.0);
+    table.list = Some(ListMetrics {
+        row_count: 50_000,
+        first_row: 0,
+    });
+    let mut column = Node::new("TableColumn", None);
+    length(&mut column, "width", 80.0);
+    table.table_header = Some(Box::new(TableHeader {
+        columns: vec![column; COLUMNS],
+        sort: None,
+        column_widths: Vec::new(),
+    }));
+    table.list_row_renderer = Some(ListRowRenderer::with_columns(
+        move |range, columns: &TableColumnWindow| {
+            project_standard_table_rows(
+                &rows,
+                range,
+                columns,
+                COLUMNS,
+                |_| None,
+                |row, column| format!("{row}:{column}"),
+                |_| None,
+            )
+        },
+    ));
+
+    struct View(Node);
+    impl Component for View {
+        fn render(&self) -> Node {
+            self.0.clone()
+        }
+        fn dispatch(&mut self, _: &str, _: &str) -> bool {
+            false
+        }
+    }
+
+    let view = View(table);
+    let viewport = Size::new(330.0, 200.0);
+    let mut input = Interaction::default();
+    let (scene, layout) =
+        prepare_scene_with_input(&view, view.render_shared(), viewport, &mut Text, &input);
+    assert_eq!(scene.children[0].children[0].children.len(), 5);
+    assert_eq!(layout.children[0].children[0].children.len(), 5);
+    let max = layout.table.as_ref().unwrap().horizontal.max_offset;
+    assert!(input.accessibility_scroll_to(&layout, &[], Orientation::Horizontal, max));
+    let (scene, layout) =
+        prepare_scene_with_input(&view, view.render_shared(), viewport, &mut Text, &input);
+    let row = scene.at_path(&[0, 0]).unwrap();
+    let placed = layout.at_path(&[0, 0]).unwrap();
+    assert_eq!(row.children.len(), 5);
+    assert_eq!(placed.children.len(), 5);
+    assert_eq!(
+        row.table_column_window.logical_len(row.children.len()),
+        COLUMNS
+    );
+    assert_eq!(
+        row.child_at(COLUMNS - 1).unwrap().text("text"),
+        Some("0:4095")
+    );
+    assert!(row.child_at(1).is_none());
+    assert!(placed.child_at(1).is_none());
+    assert!(placed.child_at(COLUMNS - 1).is_some());
+}
+
+#[test]
+fn vertical_split_hit_chooses_the_nearest_handle_inside_ancestor_clips() {
+    let mut root = node("Window", "root");
+    let mut clip = node("Rectangle", "clip");
+    length(&mut clip, "width", 100.0);
+    length(&mut clip, "height", 96.0);
+    boolean(&mut clip, "clip", true);
+    let mut split = node("SplitView", "split");
+    split
+        .properties
+        .insert("orientation", xrack_runtime::Orientation::Vertical.into());
+    length(&mut split, "width", 100.0);
+    length(&mut split, "height", 120.0);
+    length(&mut split, "handle-hit-size", 64.0);
+    for id in ["top", "middle", "bottom"] {
+        let mut pane = node("Rectangle", id);
+        length(&mut pane, "preferred-height", 34.0);
+        split.children.push(pane);
+    }
+    split.add_split_handles();
+    clip.children.push(split);
+    root.children.push(clip);
+
+    let frame = layout(&root, Size::new(160.0, 140.0), &mut Text);
+    let first = [0, 0, 3];
+    let second = [0, 0, 4];
+    let top = frame.at_path(&first).unwrap().bounds;
+    let bottom = frame.at_path(&second).unwrap().bounds;
+    let mid = (top.y + bottom.y + top.height) * 0.5;
+    let mut input = Interaction::default();
+    for (y, path) in [(mid - 2.0, first), (mid + 2.0, second)] {
+        let point = Point { x: 50.0, y };
+        assert!(!top.contains(point) && !bottom.contains(point));
+        input.pointer_move(&root, &frame, point);
+        assert!(input.is_hovered(&path));
+    }
+    let outside = Point { x: 50.0, y: 100.0 };
+    assert!((outside.y - bottom.y - bottom.height * 0.5).abs() < 32.0);
+    assert!(!input.touch_split_press(&root, &frame, outside));
+}
+
+#[test]
 fn fractional_interior_flick_keeps_inertia_without_elastic_residue() {
     use std::time::{Duration, Instant};
     use xrack_runtime::{FlickBoundsBehavior, Orientation, ViewportHandle};
@@ -381,6 +499,247 @@ fn frozen_columns_follow_visual_order_and_leave_room_for_the_scrollable_pane() {
     let fitted = layout(&table, Size::new(420.0, 180.0), &mut Text);
     assert!(fitted.table.as_ref().unwrap().is_frozen(0));
     assert_eq!(fitted.table.as_ref().unwrap().scrollable_body().width, 0.0);
+}
+
+#[test]
+fn table_positioning_uses_the_scrollable_pane_and_latest_queued_offset() {
+    use xrack_runtime::{
+        ListMetrics, Orientation, ScrollAction, ScrollAlignment, ScrollRequest, TableHeader,
+        ViewportHandle,
+    };
+    let mut table = node("TableView", "table");
+    let handle = ViewportHandle::with_scroll_notifications();
+    table.viewport_handle = Some(handle.clone());
+    table.list = Some(ListMetrics {
+        row_count: 50_000,
+        first_row: 0,
+    });
+    table.properties.insert("frozen-columns", 1_i64.into());
+    length(&mut table, "row-header-width", 40.0);
+    length(&mut table, "row-height", 20.0);
+    table.table_header = Some(Box::new(TableHeader {
+        columns: [140.0, 100.0, 180.0, 110.0]
+            .into_iter()
+            .map(|width| {
+                let mut column = node("TableColumn", "column");
+                length(&mut column, "width", width);
+                column
+            })
+            .collect(),
+        sort: None,
+        column_widths: Vec::new(),
+    }));
+    let viewport = Size::new(300.0, 180.0);
+    let frame = layout(&table, viewport, &mut Text);
+    let mut input = Interaction::default();
+    let request = |column, alignment| ScrollRequest {
+        target: handle.clone(),
+        action: ScrollAction::ToColumn { column, alignment },
+    };
+    // The 140px frozen column and 40px row header leave a 120px scrolling pane.
+    for (alignment, expected) in [
+        (ScrollAlignment::Beginning, 100.0),
+        (ScrollAlignment::Center, 130.0),
+        (ScrollAlignment::End, 160.0),
+    ] {
+        input.apply_scroll_requests(&table, &frame, [request(2, alignment)]);
+        assert_eq!(
+            input.horizontal_scroll_offsets().get(&[][..]),
+            Some(&expected)
+        );
+    }
+    assert!(input.apply_scroll_requests(
+        &table,
+        &frame,
+        [
+            request(3, ScrollAlignment::End), // 270px, capped to the content boundary
+            request(2, ScrollAlignment::Visible), // remains partly visible at 270px
+        ]
+    ));
+    assert_eq!(input.horizontal_scroll_offsets().get(&[][..]), Some(&270.0));
+    assert!(input.apply_scroll_requests(&table, &frame, [request(2, ScrollAlignment::Contain)]));
+    assert_eq!(input.horizontal_scroll_offsets().get(&[][..]), Some(&100.0));
+    assert!(!input.apply_scroll_requests(
+        &table,
+        &frame,
+        [
+            request(0, ScrollAlignment::Beginning),
+            request(99, ScrollAlignment::End)
+        ]
+    ));
+
+    let cell = |row, column| ScrollRequest {
+        target: handle.clone(),
+        action: ScrollAction::ToCell {
+            row,
+            column,
+            horizontal: ScrollAlignment::End,
+            vertical: ScrollAlignment::Beginning,
+        },
+    };
+    assert!(!input.apply_scroll_requests(
+        &table,
+        &frame,
+        [cell(-1, 3), cell(49_000, 9), cell(50_000, 2)]
+    ));
+    assert!(input.scroll_offsets().is_empty());
+    assert_eq!(input.horizontal_scroll_offsets().get(&[][..]), Some(&100.0));
+    assert!(input.apply_scroll_requests(&table, &frame, [cell(49_000, 0)]));
+    assert_eq!(input.horizontal_scroll_offsets().get(&[][..]), Some(&100.0));
+    assert_eq!(input.scroll_offsets().get(&[][..]), Some(&980_000.0));
+    assert!(input.take_scroll_events(&table, &frame).is_empty());
+    let scrolled = layout_with_input(&table, viewport, &mut Text, &input);
+    ViewportObservers::default().sync(&table, &scrolled);
+    assert_eq!(handle.content_x(), Length(-100.0));
+    assert_eq!(handle.content_y(), Length(-980_000.0));
+    assert_eq!(
+        scrolled.scroll_on(Orientation::Horizontal).unwrap().offset,
+        100.0
+    );
+}
+
+#[test]
+fn table_header_drop_targets_only_shown_columns_in_full_permutation_order() {
+    use xrack_runtime::TableHeader;
+
+    let mut table = node("TableView", "table");
+    let columns = [true, false, true, false]
+        .into_iter()
+        .map(|shown| {
+            let mut column = Node::new("TableColumn", None);
+            length(&mut column, "width", 100.0);
+            boolean(&mut column, "visible", shown);
+            column
+        })
+        .collect();
+    table.table_header = Some(Box::new(TableHeader {
+        columns,
+        sort: None,
+        column_widths: Vec::new(),
+    }));
+    let bounds = Rect::new(0.0, 0.0, 250.0, 120.0);
+    let geometry = TableGeometry::new(&table, bounds).unwrap();
+    assert_eq!(geometry.column_at(Point { x: 100.0, y: 8.0 }), Some(2));
+    assert_eq!(
+        geometry.column_drop(0, Point { x: 180.0, y: 8.0 }),
+        Some((2, 200.0))
+    );
+    assert_eq!(geometry.visible_columns().collect::<Vec<_>>(), [0, 2]);
+    for column in &mut table.table_header.as_mut().unwrap().columns {
+        boolean(column, "visible", false);
+    }
+    let geometry = TableGeometry::new(&table, bounds).unwrap();
+    assert_eq!(geometry.visible_column_count(), 0);
+    assert_eq!(geometry.scrollable_body().width, 0.0);
+    assert!(geometry.column_drop(0, Point { x: 80.0, y: 8.0 }).is_none());
+}
+
+#[test]
+fn table_cell_positioning_updates_bound_offsets_and_ignores_hidden_targets() {
+    use std::{cell::Cell, rc::Rc};
+    use xrack_runtime::{
+        ListMetrics, Orientation, ScrollAction, ScrollAlignment, ScrollRequest, TableHeader,
+        ViewportHandle,
+    };
+    let handle = ViewportHandle::default();
+    let offsets = Rc::new([Cell::new(Length(-5.0)), Cell::new(Length(-10.0))]);
+    for (index, axis) in [Orientation::Horizontal, Orientation::Vertical]
+        .into_iter()
+        .enumerate()
+    {
+        let read = offsets.clone();
+        let write = offsets.clone();
+        handle.bind_offset(
+            axis,
+            move || read[index].get(),
+            move |value| write[index].set(value),
+        );
+    }
+    let mut table = node("TableView", "table");
+    table.viewport_handle = Some(handle.clone());
+    table.list = Some(ListMetrics {
+        row_count: 200,
+        first_row: 0,
+    });
+    length(&mut table, "row-height", 30.0);
+    table.table_header = Some(Box::new(TableHeader {
+        columns: (0..3)
+            .map(|_| {
+                let mut column = node("TableColumn", "column");
+                length(&mut column, "width", 100.0);
+                column
+            })
+            .collect(),
+        sort: None,
+        column_widths: Vec::new(),
+    }));
+    let viewport = Size::new(150.0, 120.0);
+    let frame = layout(&table, viewport, &mut Text);
+    let mut input = Interaction::default();
+    let action = ScrollAction::ToCell {
+        row: 99,
+        column: 2,
+        horizontal: ScrollAlignment::Center,
+        vertical: ScrollAlignment::Center,
+    };
+    assert!(input.apply_scroll_requests(
+        &table,
+        &frame,
+        [ScrollRequest {
+            target: handle.clone(),
+            action
+        }]
+    ));
+    // Horizontal centering is clamped to the final content edge.
+    assert_eq!(offsets[0].get(), Length(-150.0));
+    assert_eq!(offsets[1].get(), Length(-2942.0));
+    let frame = layout_with_input(&table, viewport, &mut Text, &input);
+    assert!(!input.apply_scroll_requests(
+        &table,
+        &frame,
+        [ScrollRequest {
+            target: ViewportHandle::default(),
+            action
+        }]
+    ));
+    boolean(
+        &mut table.table_header.as_mut().unwrap().columns[1],
+        "visible",
+        false,
+    );
+    let frame = layout_with_input(&table, viewport, &mut Text, &input);
+    assert!(!input.apply_scroll_requests(
+        &table,
+        &frame,
+        [ScrollRequest {
+            target: handle.clone(),
+            action: ScrollAction::ToCell {
+                row: 0,
+                column: 1,
+                horizontal: ScrollAlignment::Beginning,
+                vertical: ScrollAlignment::Beginning,
+            }
+        }]
+    ));
+    assert_eq!(offsets[0].get(), Length(-150.0));
+    assert_eq!(offsets[1].get(), Length(-2942.0));
+    boolean(&mut table, "visible", false);
+    let frame = layout_with_input(&table, viewport, &mut Text, &input);
+    assert!(!input.apply_scroll_requests(
+        &table,
+        &frame,
+        [ScrollRequest {
+            target: handle,
+            action: ScrollAction::ToCell {
+                row: 0,
+                column: 0,
+                horizontal: ScrollAlignment::Beginning,
+                vertical: ScrollAlignment::Beginning,
+            }
+        }]
+    ));
+    assert_eq!(offsets[0].get(), Length(-150.0));
+    assert_eq!(offsets[1].get(), Length(-2942.0));
 }
 
 #[test]

@@ -160,6 +160,151 @@ export component ControlsDemo inherits Window {
     }
 }
 
+export component CalendarAgendaDemo inherits Window {
+    title: "XRack · 团队日程";
+    width: 576px;
+    height: 478px;
+    background: #162034;
+    in-out property <Date> month: Date { year: 2026, month: 11, day: 1 };
+    in-out property <Date> selected: Date { year: 2026, month: 11, day: 11 };
+    in-out property <Date> review-date: Date { year: 2026, month: 11, day: 12 };
+    in-out property <string> review-label: "评审";
+    private property <Date> release-date: Date { year: 2026, month: 11, day: 19 };
+    out property <int> activations: 0;
+    callback browse(int);
+
+    previous := Button {
+        x: 20px; y: 18px; width: 40px; height: 36px;
+        text: "‹"; accessible-name: "上个月";
+        clicked => { root.browse(-1); }
+    }
+    Label {
+        x: 72px; y: 18px; width: 432px; height: 36px;
+        text: root.month.year + " 年 " + root.month.month + " 月";
+        font-size: 22px; horizontal-alignment: center; vertical-alignment: center;
+    }
+    next := Button {
+        x: 516px; y: 18px; width: 40px; height: 36px;
+        text: "›"; accessible-name: "下个月";
+        clicked => { root.browse(1); }
+    }
+    Label {
+        x: 20px; y: 72px; width: 44px; height: 32px;
+        text: "周"; horizontal-alignment: center; vertical-alignment: center;
+    }
+    DayOfWeekRow {
+        x: 66px; y: 72px; width: 490px; height: 32px;
+        weekday-labels: ["一", "二", "三", "四", "五", "六", "日"];
+    }
+    WeekNumberColumn {
+        x: 20px; y: 104px; width: 44px; height: 312px;
+        display-month: root.month;
+    }
+    agenda := MonthGrid {
+        x: 66px; y: 104px; width: 490px; height: 312px;
+        date <=> root.selected;
+        display-month <=> root.month;
+        today: Date { year: 2026, month: 11, day: 11 };
+        activated(day) => { root.activations += 1; }
+        DayCell {
+            background: cell-selected ? #3b56ad : #25334b;
+            border-color: cell-today ? #a8bbff : #1b293d;
+            border-width: 1px;
+            border-radius: 6px;
+            accessible-description: cell-date == root.review-date ? root.review-label
+                : cell-date == root.release-date ? "发布" : "";
+            Text {
+                x: 8px; y: 5px;
+                text: "" + cell-date.day;
+                color: cell-in-month && cell-enabled ? #edf3ff : #9caac0;
+            }
+            Rectangle {
+                x: 7px; y: 27px; width: 56px; height: 18px;
+                visible: cell-date == root.review-date || cell-date == root.release-date;
+                background: cell-date == root.release-date ? #3b665f : #5d4b76;
+                border-radius: 4px;
+                Label {
+                    width: 100%; height: 100%;
+                    text: cell-date == root.release-date ? "发布"
+                        : cell-date == root.review-date ? root.review-label : "";
+                    font-size: 11px; horizontal-alignment: center; vertical-alignment: center;
+                }
+            }
+        }
+    }
+    Label {
+        x: 66px; y: 431px; width: 490px; height: 30px;
+        text: "选中 · " + root.selected; vertical-alignment: center;
+    }
+}
+
+export component MonthGridDemo inherits Window {
+    title: "XRack · 月份网格";
+    width: 444px;
+    height: 372px;
+    background: #162034;
+
+    in-out property <Date> selected: Date { year: 2021, month: 1, day: 11 };
+    in-out property <Date> month: Date { year: 2021, month: 1, day: 1 };
+    in-out property <Date> latest: Date { year: 2021, month: 2, day: 12 };
+    in-out property <bool> sunday: true;
+    private property <int> first-weekday: root.sunday ? 7 : 1;
+    out property <int> changes: 0;
+    out property <int> browses: 0;
+    out property <int> activations: 0;
+    callback browse(int);
+
+    previous := Button {
+        x: 20px; y: 18px; width: 40px; height: 34px;
+        text: "‹"; accessible-name: "上个月";
+        clicked => { root.browse(-1); }
+    }
+    Label {
+        x: 72px; y: 18px; width: 300px; height: 34px;
+        text: root.month.year + " 年 " + root.month.month + " 月";
+        font-size: 20px; horizontal-alignment: center; vertical-alignment: center;
+    }
+    next := Button {
+        x: 384px; y: 18px; width: 40px; height: 34px;
+        text: "›"; accessible-name: "下个月";
+        clicked => { root.browse(1); }
+    }
+    Label {
+        x: 20px; y: 64px; width: 44px; height: 28px;
+        text: "周"; horizontal-alignment: center; vertical-alignment: center;
+    }
+    weekdays := DayOfWeekRow {
+        x: 64px; y: 64px; width: 360px; height: 28px;
+        week-start: root.first-weekday;
+        weekday-labels: ["一", "二", "三", "四", "五", "六", "日"];
+    }
+    weeks := WeekNumberColumn {
+        x: 20px; y: 92px; width: 44px; height: 216px;
+        display-month: root.month;
+        week-start: root.first-weekday;
+    }
+    grid := MonthGrid {
+        x: 64px; y: 92px; width: 360px; height: 216px;
+        date <=> root.selected;
+        display-month <=> root.month;
+        today: Date { year: 2021, month: 1, day: 8 };
+        minimum-date: Date { year: 2020, month: 12, day: 28 };
+        maximum-date: root.latest;
+        week-start: root.first-weekday;
+        changed(day) => { root.changes += 1; }
+        month-changed(month) => { root.browses += 1; }
+        activated(day) => { root.activations += 1; }
+    }
+    Switch {
+        x: 20px; y: 326px; width: 172px; height: 30px;
+        text: "周日开始"; checked <=> root.sunday;
+    }
+    Label {
+        x: 211px; y: 326px; width: 213px; height: 30px;
+        text: "选中 · " + root.selected; vertical-alignment: center;
+    }
+}
+
 export component CalendarDemo inherits Window {
     title: "XRack · 日期选择";
     width: 440px;
@@ -628,12 +773,13 @@ export component TimeDemo inherits Window {
 export component ColorDemo inherits Window {
     title: "XRack · 颜色选择";
     width: 478px;
-    height: 384px;
+    height: root.plane-visible ? 540px : 384px;
     background: #162034;
 
     in-out property <color> selected: #4080C080;
     in-out property <bool> picker-open: false;
     in-out property <bool> alpha-visible: true;
+    in-out property <bool> plane-visible: false;
     out property <color> accepted-color: #00000000;
     out property <int> accepts: 0;
     out property <int> cancels: 0;
@@ -661,9 +807,47 @@ export component ColorDemo inherits Window {
         open <=> root.picker-open;
         color <=> root.selected;
         show-alpha: root.alpha-visible;
-        accept-text: "应用颜色";
+        show-color-plane: root.plane-visible;
+        accept-text: "应用";
         cancel-text: "取消";
         accepted(value) => { root.accepts += 1; root.accepted-color = value; }
+        canceled => { root.cancels += 1; }
+    }
+}
+
+export component FontPickerDemo inherits Window {
+    title: "XRack · 字体选择";
+    width: 510px;
+    height: 430px;
+
+    in-out property <Font> selected: Font {
+        family: "sans-serif", size: 22px, weight: 400, italic: false
+    };
+    in-out property <bool> picker-open: false;
+    out property <Font> accepted-font;
+    out property <int> accepts: 0;
+    out property <int> cancels: 0;
+
+    Text {
+        x: 24px; y: 30px; width: 462px;
+        text: "字体预览 · Aa Bb Cc 0123";
+        font: root.selected;
+    }
+    Text { x: 24px; y: 100px; text: root.selected.family; }
+    open-font := Button {
+        x: 24px; y: 150px; width: 154px; height: 44px;
+        text: "选择字体…";
+        clicked => { root.picker-open = true; }
+    }
+    popup-font := FontPickerPopup {
+        width: 430px;
+        title: "选择字体";
+        preview-text: "字体预览 · Aa Bb Cc 0123";
+        open <=> root.picker-open;
+        font <=> root.selected;
+        accept-text: "应用";
+        cancel-text: "取消";
+        accepted(value) => { root.accepted-font = value; root.accepts += 1; }
         canceled => { root.cancels += 1; }
     }
 }
@@ -767,6 +951,165 @@ export component TimerDemo inherits Window {
             pause-countdown := Button { text: "暂停"; clicked() => { countdown.stop(); } }
             resume-countdown := Button { text: "继续"; clicked() => { countdown.start(); } }
             start-pulse := Button { text: "单次触发"; clicked() => { pulse.restart(); } }
+        }
+    }
+}
+
+export component PaneFrameDemo inherits Window {
+    title: "XRack · 内容容器";
+    width: 460px; height: 270px;
+    color-scheme: dark;
+    background: #182331;
+    in property <length> left-padding: 20px;
+    in property <length> content-size: 390px;
+    in-out property <bool> content-enabled: true;
+    out property <length> pane-inner-width: surface.available-width;
+    out property <length> frame-inner-width: group.available-width;
+    out property <length> frame-inner-height: group.available-height;
+    out property <int> inner-clicks: 0;
+    out property <int> lower-clicks: 0;
+
+    toggle := CheckBox {
+        x: 20px; y: 12px; width: 160px; height: 28px;
+        text: "启用内容区";
+        checked <=> root.content-enabled;
+    }
+    underlying := Button {
+        x: 20px; y: 50px; width: 430px; height: 164px;
+        text: "底层";
+        clicked() => { root.lower-clicks += 1; }
+    }
+    surface := Pane {
+        x: 20px; y: 50px;
+        padding: 12px; padding-left: root.left-padding; padding-right: 10px;
+        content-width: root.content-size; content-height: 140px;
+        enabled: root.content-enabled;
+        accessible-name: "设置面板";
+        group := ControlFrame {
+            x: 8px; y: 12px;
+            padding: 8px;
+            clip: true;
+            background: #303d52;
+            accessible-name: "操作组";
+            action := Button {
+                x: 4px; y: 6px; width: 122px; height: 38px;
+                text: "执行 · " + root.inner-clicks;
+                clicked() => { root.inner-clicks += 1; }
+            }
+        }
+        Text {
+            x: 176px; y: 25px; width: 200px; height: 24px;
+            text: "ControlFrame 内容区 " + (root.frame-inner-width / 1px) + " × " + (root.frame-inner-height / 1px);
+        }
+        Text { x: 8px; y: 104px; width: 200px; height: 24px; text: "Pane 内容宽度 " + (root.pane-inner-width / 1px); }
+    }
+}
+
+export component WheelControlsDemo inherits Window {
+    title: "XRack · 滚轮调值";
+    width: 460px; height: 310px;
+    background: #182331;
+    in-out property <bool> wheel-enabled: true;
+    in-out property <bool> spin-read-only: false;
+    in-out property <float> slider-value: 4.0;
+    in-out property <float> interval-start: 2.0;
+    in-out property <float> interval-end: 8.0;
+    in-out property <float> dial-value: 4.0;
+    in-out property <int> spin-value: 10;
+    in-out property <float> decimal-value: 0.2;
+    out property <int> changes: 0;
+    out property <int> releases: 0;
+    out property <int> edits: 0;
+
+    toggle := CheckBox {
+        x: 20px; y: 14px; width: 200px; height: 28px;
+        text: "滚轮可调整数值"; checked <=> root.wheel-enabled;
+    }
+    viewport := ScrollView {
+        x: 18px; y: 56px; width: 424px; height: 226px;
+        content-height: 400px;
+        Rectangle {
+            width: 424px; height: 400px;
+            background: #222e3e; border-radius: 9px;
+            Text { x: 16px; y: 16px; text: "滑块 " + root.slider-value; }
+            slider := Slider {
+                x: 120px; y: 10px; width: 260px; height: 32px;
+                minimum: 0; maximum: 5; step: 1;
+                value <=> root.slider-value;
+                wheel-enabled: root.wheel-enabled;
+                changed(value) => { root.changes += 1; }
+                released(value) => { root.releases += 1; }
+            }
+            Text { x: 16px; y: 60px; text: "区间 " + root.interval-start + " – " + root.interval-end; }
+            interval := RangeSlider {
+                x: 120px; y: 54px; width: 260px; height: 32px;
+                minimum: 0; maximum: 10; step: 1;
+                lower-value <=> root.interval-start; upper-value <=> root.interval-end;
+                wheel-enabled: root.wheel-enabled;
+            }
+            dial := Dial {
+                x: 18px; y: 102px; width: 60px; height: 60px;
+                minimum: 0; maximum: 5; step: 1; wrap: true;
+                value <=> root.dial-value;
+                wheel-enabled: root.wheel-enabled;
+            }
+            spin := SpinBox {
+                x: 120px; y: 115px; width: 118px; height: 32px;
+                minimum: 0; maximum: 20; step-size: 2;
+                value <=> root.spin-value;
+                read-only: root.spin-read-only;
+                wheel-enabled: root.wheel-enabled;
+                edited(value) => { root.edits += 1; }
+            }
+            decimal := DoubleSpinBox {
+                x: 260px; y: 115px; width: 120px; height: 32px;
+                minimum: 0.0; maximum: 0.3; step-size: 0.1; wrap: true;
+                value <=> root.decimal-value;
+                wheel-enabled: root.wheel-enabled;
+                edited(value) => { root.edits += 1; }
+            }
+            Text { x: 16px; y: 187px; text: "滑块到达边界后，滚轮继续滚动页面。"; }
+            Text { x: 16px; y: 316px; text: "滚动内容的底部"; }
+        }
+    }
+}
+
+export component SnapSlidersDemo inherits Window {
+    title: "XRack · 滑条吸附";
+    width: 500px; height: 290px;
+    background: #162034;
+    in-out property <bool> live-update: false;
+    in-out property <float> level: 20;
+    in-out property <float> lower: 20;
+    in-out property <float> upper: 80;
+    out property <int> level-changes: 0;
+    out property <int> level-releases: 0;
+    out property <float> released-level: 20;
+    out property <int> band-changes: 0;
+    out property <float> released-lower: 20;
+
+    VerticalLayout {
+        padding: 20px; spacing: 10px;
+        Text { text: "步进吸附与预览"; font-size: 23px; }
+        CheckBox { text: "拖动时实时更新"; checked <=> root.live-update; }
+        Text { text: "拖动时吸附 · 已提交 " + root.level; }
+        level-slider := Slider {
+            value <=> root.level;
+            minimum: 0; maximum: 100; step: 10;
+            live: root.live-update;
+            snap-mode: ScrollSnapMode.always;
+            changed(value) => { root.level-changes += 1; }
+            released(value) => { root.level-releases += 1; root.released-level = value; }
+        }
+        Text { text: "松手时吸附 · 已提交 " + root.lower + "–" + root.upper; }
+        band-slider := RangeSlider {
+            lower-value <=> root.lower;
+            upper-value <=> root.upper;
+            minimum: 0; maximum: 100; step: 10;
+            live: root.live-update;
+            snap-mode: ScrollSnapMode.on-release;
+            changed(lower, upper) => { root.band-changes += 1; }
+            released(lower, upper) => { root.released-lower = lower; }
         }
     }
 }

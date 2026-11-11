@@ -114,6 +114,54 @@ fn complete_in(marker: &str, workspace: Option<&completion::Workspace<'_>>) -> V
     completion::complete(&format!("{before}{after}"), line, column, workspace)
 }
 
+#[test]
+fn tree_completions_expose_queries_and_effectful_expansion_commands() {
+    let properties = complete_at("component Demo inherits Window { TreeView { | } }");
+    assert!(properties.iter().any(|item| item["label"] == "root-key"));
+    let items = complete_at(
+        "component Demo inherits Window { tree := TreeView {} Button { clicked => { tree.| } } }",
+    );
+    for method in [
+        "expand",
+        "collapse",
+        "toggle-expanded",
+        "expand-recursively",
+        "collapse-recursively",
+        "expand-to",
+        "is-expanded",
+        "depth",
+        "row-for-key",
+    ] {
+        assert!(
+            items.iter().any(|item| item["label"] == method),
+            "missing {method}"
+        );
+    }
+}
+
+#[test]
+fn stack_page_completions_offer_lifecycle_and_read_only_state() {
+    let state = complete_at(concat!(
+        "component Demo inherits Window { nav := StackView { home := StackPage {} } ",
+        "Text { text: home.| } }",
+    ));
+    for property in ["active", "stack-index"] {
+        assert!(
+            state.iter().any(|item| item["label"] == property),
+            "{state:?}"
+        );
+    }
+    let members = complete_at(
+        "component Demo inherits Window { nav := StackView { home := StackPage { | } } }",
+    );
+    for event in ["leave-requested", "activated", "deactivated", "removed"] {
+        assert!(members.iter().any(|item| item["label"] == event));
+    }
+    for property in ["active", "stack-index"] {
+        assert!(!members.iter().any(|item| item["label"] == property));
+    }
+}
+
 fn fixture_uri(name: &str) -> String {
     let drive = if cfg!(windows) { "C:/" } else { "" };
     format!("file:///{drive}xrack-completion-fixture/{name}")
@@ -384,4 +432,32 @@ fn completion_offers_contextual_properties_types_and_events() {
     assert!(complete_at("component Demo inherits Window { Text { row-he| ").is_empty());
     assert!(complete_at("component Demo inherits Window { Text { text: \"root.| ").is_empty());
     assert!(complete_at("component Demo inherits Window { // root.|").is_empty());
+}
+
+#[test]
+fn table_completions_include_read_only_selection_state_and_commands() {
+    let items = complete_at(
+        "component Demo inherits Window { table := TableView {} Button { clicked => { table.| } } }",
+    );
+    for name in [
+        "current-column",
+        "selection-count",
+        "has-selection",
+        "select-cell",
+        "set-current-cell",
+        "select-range",
+        "select-all",
+        "clear-selection",
+    ] {
+        assert!(
+            items.iter().any(|item| item["label"] == name),
+            "missing {name}"
+        );
+    }
+    let bindings = complete_at("component Demo inherits Window { TableView { | } }");
+    assert!(
+        !bindings
+            .iter()
+            .any(|item| item["label"] == "current-column")
+    );
 }

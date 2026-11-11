@@ -24,6 +24,7 @@ impl Default for ActionKey {
 pub enum SpinAction {
     Increase,
     Decrease,
+    Step(i64),
     Minimum,
     Maximum,
     Commit(i64),
@@ -82,6 +83,12 @@ pub enum ControlAction {
         from: usize,
         to: usize,
     },
+    MoveRow {
+        from: usize,
+        to: usize,
+        row: crate::RowKey,
+        stamp: (u64, u64),
+    },
 }
 
 pub fn is_modal_overlay(kind: &str) -> bool {
@@ -90,6 +97,11 @@ pub fn is_modal_overlay(kind: &str) -> bool {
 
 pub fn is_window_overlay(kind: &str) -> bool {
     is_modal_overlay(kind) || kind == "PopupWindow"
+}
+
+#[doc(hidden)]
+pub fn is_pane(kind: &str) -> bool {
+    matches!(kind, "Pane" | "ControlFrame")
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -110,11 +122,20 @@ pub struct TableSort {
 
 /// Visual positions map to the declaration indices used by cells and model actions.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct TableColumnOrder(Option<Arc<[usize]>>);
+pub struct TableColumnOrder(Option<Arc<ColumnPermutation>>);
+
+#[derive(Debug, PartialEq, Eq)]
+struct ColumnPermutation {
+    columns: Vec<usize>,
+    positions: Vec<usize>,
+}
 
 impl TableColumnOrder {
     pub fn as_slice(&self, count: usize) -> Option<&[usize]> {
-        self.0.as_deref().filter(|order| order.len() == count)
+        self.0
+            .as_deref()
+            .filter(|order| order.columns.len() == count)
+            .map(|order| order.columns.as_slice())
     }
 
     pub fn iter(&self, count: usize) -> impl DoubleEndedIterator<Item = usize> + ExactSizeIterator {
@@ -123,8 +144,12 @@ impl TableColumnOrder {
     }
 
     pub fn visual_index(&self, count: usize, column: usize) -> Option<usize> {
-        if let Some(order) = self.as_slice(count) {
-            order.iter().position(|&logical| logical == column)
+        if let Some(order) = self
+            .0
+            .as_deref()
+            .filter(|order| order.columns.len() == count)
+        {
+            order.positions.get(column).copied()
         } else {
             (column < count).then_some(column)
         }
@@ -139,7 +164,19 @@ impl TableColumnOrder {
         let column = order.remove(from);
         order.insert(to, column);
         let reordered = order.iter().copied().ne(0..count);
-        Some((column, Self(reordered.then(|| order.into()))))
+        Some((
+            column,
+            Self(reordered.then(|| {
+                let mut positions = vec![0; count];
+                for (visual, &logical) in order.iter().enumerate() {
+                    positions[logical] = visual;
+                }
+                Arc::new(ColumnPermutation {
+                    columns: order,
+                    positions,
+                })
+            })),
+        ))
     }
 }
 
@@ -282,7 +319,7 @@ pub fn dialog_button_action(node: &Node) -> Option<ControlAction> {
 pub fn is_button(kind: &str) -> bool {
     matches!(
         kind,
-        "Button" | "ToolButton" | "DialogButton" | "DelayButton"
+        "Button" | "ToolButton" | "RoundButton" | "DialogButton" | "DelayButton"
     )
 }
 
@@ -353,6 +390,22 @@ impl SpinRange {
             }
             SpinAction::Increase => self.value.saturating_add(self.step),
             SpinAction::Decrease => self.value.saturating_sub(self.step),
+            SpinAction::Step(steps) => {
+                let next = i128::from(self.value) + i128::from(self.step) * i128::from(steps);
+                let min = i128::from(self.min);
+                let max = i128::from(self.max);
+                let step = i128::from(self.step);
+                let value = i128::from(self.value);
+                if self.wrap && next > max {
+                    let remaining = i128::from(steps) - (max - value) / step - 1;
+                    (min + remaining % ((max - min) / step + 1) * step) as i64
+                } else if self.wrap && next < min {
+                    let remaining = -i128::from(steps) - (value - min) / step - 1;
+                    (max - remaining % ((max - min) / step + 1) * step) as i64
+                } else {
+                    next.clamp(min, max) as i64
+                }
+            }
             SpinAction::Minimum => self.min,
             SpinAction::Maximum => self.max,
             SpinAction::Commit(value) => value,

@@ -1,8 +1,8 @@
 use crate::{
-    ControlAction, Node,
+    ControlAction, Node, Property,
     picker::{PickerSession, append_picker_dialog},
 };
-use std::fmt;
+use std::{cell::RefCell, collections::BTreeMap, fmt};
 
 /// A Gregorian civil date. Validation is independent of time zones and clocks.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -112,12 +112,30 @@ impl Date {
         None
     }
 
-    fn add_months(self, months: i64) -> Option<Self> {
+    /// Return the first day of the month at the given offset.
+    pub fn add_months(self, months: i64) -> Option<Self> {
         if !self.valid() {
             return None;
         }
         let index = ((self.year - 1) * 12 + self.month - 1).checked_add(months)?;
         Self::new(index.div_euclid(12) + 1, index.rem_euclid(12) + 1, 1)
+    }
+
+    /// ISO 8601 week-based year and week number.
+    pub fn iso_week(self) -> Option<(i64, i64)> {
+        if !self.valid() {
+            return None;
+        }
+        let ordinal = self.ordinal();
+        let thursday = ordinal + 3 - ordinal.rem_euclid(7);
+        let year = if thursday < Self::days_before_year(self.year) {
+            self.year - 1
+        } else if thursday >= Self::days_before_year(self.year + 1) {
+            self.year + 1
+        } else {
+            self.year
+        };
+        Some((year, (thursday - Self::days_before_year(year)) / 7 + 1))
     }
 }
 
@@ -125,6 +143,11 @@ impl Date {
 pub enum CalendarAction {
     Select(Date),
     Browse(Date),
+    Activate(Date),
+}
+
+pub fn is_calendar_control(kind: &str) -> bool {
+    matches!(kind, "Calendar" | "MonthGrid")
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -168,11 +191,29 @@ impl DateBounds {
 
 impl CalendarState {
     pub fn from_node(node: &Node) -> Self {
-        Self::with_bounds(
-            node.date("date").unwrap_or_default(),
-            node.date("display-month"),
-            DateBounds::from_node(node),
-        )
+        let date = node.date("date").unwrap_or_default();
+        let month = node.date("display-month");
+        let bounds = DateBounds::from_node(node);
+        if matches!(node.kind, "MonthGrid" | "WeekNumberColumn") {
+            Self::for_month_grid(date, month.unwrap_or(date), bounds)
+        } else {
+            Self::with_bounds(date, month, bounds)
+        }
+    }
+
+    #[doc(hidden)]
+    pub fn for_month_grid(date: Date, month: Date, bounds: DateBounds) -> Self {
+        let month = if month.valid() {
+            month
+        } else {
+            Date::default()
+        };
+        Self {
+            minimum: bounds.minimum,
+            maximum: bounds.maximum,
+            selected: bounds.constrain(date),
+            month: month.first_of_month(),
+        }
     }
 
     fn with_bounds(date: Date, month: Option<Date>, bounds: DateBounds) -> Self {
@@ -218,8 +259,83 @@ impl CalendarState {
         if !self.month.valid() {
             return [None; 42];
         }
-        let offset = (self.month.ordinal() - (week_start.clamp(1, 7) - 1)).rem_euclid(7);
+        let offset = self.grid_offset(week_start);
         std::array::from_fn(|index| self.month.add_days(index as i64 - offset))
+    }
+
+    pub fn shows(self, date: Date, week_start: i64) -> bool {
+        date.valid()
+            && self.month.valid()
+            && (0..42)
+                .contains(&(date.ordinal() - self.month.ordinal() + self.grid_offset(week_start)))
+    }
+
+    fn grid_offset(self, week_start: i64) -> i64 {
+        (self.month.ordinal() - (week_start.clamp(1, 7) - 1)).rem_euclid(7)
+    }
+}
+
+/// Inputs to a visual template for one date in a MonthGrid.
+#[doc(hidden)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CalendarCell {
+    pub date: Date,
+    pub index: i64,
+    pub weekday: i64,
+    pub week: i64,
+    pub week_year: i64,
+    pub selected: bool,
+    pub today: bool,
+    pub in_month: bool,
+    pub enabled: bool,
+}
+
+#[derive(Default)]
+struct CachedCalendarCell {
+    input: Property<CalendarCell>,
+    scene: Property<Node>,
+}
+
+/// Cache the visual bindings of each displayed date independently.
+#[doc(hidden)]
+#[derive(Default)]
+pub struct CalendarCells(RefCell<BTreeMap<Date, CachedCalendarCell>>);
+
+impl CalendarCells {
+    pub fn render(&self, grid: &Node, render_cell: impl Fn(CalendarCell) -> Node) -> Node {
+        let state = CalendarState::from_node(grid);
+        let start = grid.int("week-start").unwrap_or(1).clamp(1, 7);
+        let today = grid.date("today");
+        let dates = state.cells(start);
+        let mut cache = self.0.borrow_mut();
+        cache.retain(|date, _| dates.contains(&Some(*date)));
+        let mut cells = Node::new("CalendarCells", None);
+        cells.children = dates
+            .into_iter()
+            .enumerate()
+            .map(|(index, date)| {
+                let Some(date) = date else {
+                    return Node::hidden();
+                };
+                let (week_year, week) =
+                    date.iso_week().expect("calendar cells contain valid dates");
+                let input = CalendarCell {
+                    date,
+                    index: index as i64,
+                    weekday: (start - 1 + index as i64) % 7 + 1,
+                    week,
+                    week_year,
+                    selected: date == state.selected,
+                    today: Some(date) == today,
+                    in_month: date.first_of_month() == state.month,
+                    enabled: state.allows(date),
+                };
+                let cached = cache.entry(date).or_default();
+                cached.input.set_if_changed(input);
+                cached.scene.get(|| render_cell(cached.input.get(|| input)))
+            })
+            .collect();
+        cells
     }
 }
 
@@ -246,6 +362,7 @@ impl DatePopupState {
         for key in [
             "week-start",
             "weekday-labels",
+            "font",
             "font-size",
             "font-family",
             "font-weight",
@@ -314,6 +431,48 @@ mod tests {
         assert_eq!(Date::MIN.add_days(-1), None);
         assert_eq!(Date::MAX.add_days(1), None);
         assert_eq!(Date::MIN.add_days(i64::MAX), None);
+    }
+
+    #[test]
+    fn calendar_template_only_renders_cells_whose_inputs_changed() {
+        use std::cell::Cell;
+        let date = |day| Date::new(2026, 11, day).unwrap();
+        let evaluations = Cell::new(0);
+        let note = Property::default();
+        let cells = CalendarCells::default();
+        let mut grid = Node::new("MonthGrid", None);
+        grid.properties.insert("display-month", date(1).into());
+        grid.properties.insert("date", date(11).into());
+        let render = |grid: &Node| {
+            cells.render(grid, |day| {
+                evaluations.set(evaluations.get() + 1);
+                let mut cell = Node::new("Rectangle", None);
+                if day.date == date(12) {
+                    cell.properties
+                        .insert("accessible-description", note.get(String::new).into());
+                }
+                cell
+            })
+        };
+        assert_eq!(render(&grid).children.len(), 42);
+        assert_eq!(evaluations.get(), 42);
+        grid.properties.insert("date", date(12).into());
+        render(&grid);
+        assert_eq!(evaluations.get(), 44);
+        note.set_if_changed("Review".to_owned());
+        render(&grid);
+        assert_eq!(evaluations.get(), 45);
+    }
+
+    #[test]
+    fn iso_weeks_use_the_thursday_at_new_year() {
+        let week = |year, month, day| Date::new(year, month, day).unwrap().iso_week().unwrap();
+        assert_eq!(week(2018, 12, 31), (2019, 1));
+        assert_eq!(week(2021, 1, 1), (2020, 53));
+        assert_eq!(week(2021, 1, 3), (2020, 53));
+        assert_eq!(week(2021, 1, 4), (2021, 1));
+        assert_eq!(Date::MIN.iso_week(), Some((1, 1)));
+        assert_eq!(Date::MAX.iso_week(), Some((9999, 52)));
     }
 
     #[test]

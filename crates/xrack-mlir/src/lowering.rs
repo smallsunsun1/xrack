@@ -278,11 +278,57 @@ impl Builder {
                         self.strings(&[("owner", &command.owner), ("method", &command.method)]);
                     self.emit("text_command", command.span, &operands, &[], &attrs)?;
                 }
+                ir::Statement::TableSelectionCommand(command) => {
+                    let operands = self.operands(&command.args)?;
+                    let attrs = self.strings(&[
+                        ("owner", &command.selection_owner),
+                        ("method", &command.method),
+                    ]);
+                    self.emit(
+                        "table_selection_command",
+                        command.span,
+                        &operands,
+                        &[],
+                        &attrs,
+                    )?;
+                }
+                ir::Statement::TableSortCommand(command) => {
+                    let operands = self.operands(&command.args)?;
+                    let attrs = self
+                        .strings(&[("owner", &command.sort_owner), ("method", &command.method)]);
+                    self.emit("table_sort_command", command.span, &operands, &[], &attrs)?;
+                }
+                ir::Statement::TableHistoryCommand {
+                    history_owner,
+                    redo,
+                    span,
+                } => {
+                    let method = if *redo { "redo" } else { "undo" };
+                    let attrs = self.strings(&[("owner", history_owner), ("method", method)]);
+                    self.emit("table_history_command", *span, &[], &[], &attrs)?;
+                }
+                ir::Statement::RestoreSplit(command) => {
+                    let state = self.expr(&command.state)?;
+                    let attrs = self.strings(&[("owner", &command.split_owner)]);
+                    self.emit("split_restore", command.span, &[state], &[], &attrs)?;
+                }
+                ir::Statement::TreeCommand(command) => {
+                    let operands = self.operands(&command.args)?;
+                    let attrs = self
+                        .strings(&[("owner", &command.tree_owner), ("method", &command.method)]);
+                    self.emit("tree_command", command.span, &operands, &[], &attrs)?;
+                }
                 ir::Statement::ScrollCommand(command) => {
                     let operands = self.operands(&command.args)?;
                     let attrs =
                         self.strings(&[("owner", &command.viewport), ("method", &command.method)]);
                     self.emit("scroll_command", command.span, &operands, &[], &attrs)?;
+                }
+                ir::Statement::SourceSelection(command) => {
+                    let operands = self.operands(&command.args)?;
+                    let attrs = self
+                        .strings(&[("owner", &command.source_view), ("method", &command.method)]);
+                    self.emit("source_selection", command.span, &operands, &[], &attrs)?;
                 }
                 ir::Statement::CancelFlick {
                     flick_viewport,
@@ -312,6 +358,11 @@ impl Builder {
                     let operands = self.operands(&command.positions)?;
                     let attrs = self.strings(&[("owner", &command.table_owner)]);
                     self.emit("move_column", command.span, &operands, &[], &attrs)?;
+                }
+                ir::Statement::MoveRow(command) => {
+                    let operands = self.operands(&command.positions)?;
+                    let attrs = self.strings(&[("owner", &command.table_owner)]);
+                    self.emit("move_row", command.span, &operands, &[], &attrs)?;
                 }
                 ir::Statement::SetRowHeight(command) => {
                     let operands = self.operands(&command.arguments)?;
@@ -360,6 +411,7 @@ impl Builder {
                 }
                 LoweredMember::BeginElement {
                     kind,
+                    delegate,
                     id,
                     key,
                     instance,
@@ -374,6 +426,9 @@ impl Builder {
                         "instance"
                     } else {
                         attrs.extend(self.strings(&[("kind", kind)]));
+                        if let Some(delegate) = delegate {
+                            attrs.extend(self.strings(&[("delegate", delegate)]));
+                        }
                         "element"
                     };
                     self.open(op, span, &attrs)?;
@@ -412,9 +467,28 @@ impl Builder {
                         &self.strings(&[("owner", &owner)]),
                     )?;
                 }
+                LoweredMember::ActionGroupRef { membership, span } => {
+                    self.emit(
+                        "action_group_ref",
+                        span,
+                        &[],
+                        &[],
+                        &self
+                            .strings(&[("group", &membership.group), ("value", &membership.value)]),
+                    )?;
+                }
                 LoweredMember::ScrollTarget { target, span } => {
                     self.emit(
                         "scroll_target",
+                        span,
+                        &[],
+                        &[],
+                        &self.strings(&[("target", &target)]),
+                    )?;
+                }
+                LoweredMember::SplitFill { target, span } => {
+                    self.emit(
+                        "split_fill",
                         span,
                         &[],
                         &[],

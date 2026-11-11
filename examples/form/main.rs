@@ -31,10 +31,13 @@ fn main() -> std::process::ExitCode {
         Some("--bidi") => xrack_platform_winit::run(BidiEditorDemo::new()),
         Some("--message") => xrack_platform_winit::run(MessageDialogDemo::new()),
         Some("--close-guard") => run_close_guard(),
-        Some("--files") => {
+        Some(mode @ ("--files" | "--folders")) => {
             let mut demo = FileDialogDemo::new();
             if let Some(directory) = std::env::args().nth(2) {
                 demo.set_start_directory(directory);
+            }
+            if mode == "--folders" {
+                demo.invoke_choose_folders();
             }
             xrack_platform_winit::run(demo)
         }

@@ -86,6 +86,157 @@ export component MenuDemo inherits Window {
     }
 }
 
+export component RoundToolbarDemo inherits Window {
+    title: "XRack · 圆形按钮";
+    width: 480px; height: 280px;
+    background: #182331;
+    color-scheme: dark;
+    in-out property <bool> grid-enabled: true;
+    in-out property <bool> show-grid: false;
+    in property <length> corner-radius: 5px;
+    out property <int> activations: 0;
+    out property <int> underlying-clicks: 0;
+    out property <int> plain-clicks: 0;
+
+    grid := Action {
+        text: "网格";
+        icon: @image-url("assets/grid.svg");
+        shortcut: "Primary+G";
+        enabled: root.grid-enabled;
+        checkable: true;
+        checked <=> root.show-grid;
+        activated() => { root.activations += 1; }
+    }
+
+    underlying := Button {
+        x: 24px; y: 56px; width: 64px; height: 64px;
+        border-radius: 0px; background: #384960;
+        accessible-name: "底层按钮";
+        clicked() => { root.underlying-clicks += 1; }
+    }
+    circle := RoundButton {
+        x: 24px; y: 56px; width: 64px; height: 64px;
+        action: grid; icon-only: true; icon-size: 20px;
+        background: #4969df;
+        accessible-name: "切换网格";
+    }
+    custom := RoundButton {
+        x: 24px; y: 143px; width: 64px; height: 42px;
+        text: "执行"; radius: root.corner-radius;
+        clicked() => { root.plain-clicks += 1; }
+    }
+    horizontal := ToolBar {
+        x: 115px; y: 56px; width: 340px; height: 58px;
+        padding: 8px; spacing: 8px; alignment: start;
+        command := RoundButton { action: grid; width: 96px; }
+        vertical-line := ToolSeparator { stroke-width: 2px; color: #e4b678; }
+        tools := ToolButton { text: "清除"; clicked() => { root.show-grid = false; } }
+    }
+    vertical := ToolBar {
+        x: 115px; y: 131px; width: 60px; height: 124px;
+        orientation: vertical;
+        padding: 6px; spacing: 4px; alignment: start;
+        reset := ToolButton { text: "重置"; height: 32px; clicked() => { root.show-grid = false; } }
+        horizontal-line := ToolSeparator { orientation: horizontal; stroke-width: 2px; color: #9cdbbd; }
+        toggle := ToolButton { text: "切换"; height: 32px; clicked() => { root.grid-enabled = !root.grid-enabled; } }
+    }
+    Text {
+        x: 195px; y: 150px; color: #acc0db;
+        text: "网格 " + (root.show-grid ? "开" : "关") + " · 命令 " + root.activations;
+    }
+    Text {
+        x: 195px; y: 180px; color: #acc0db;
+        text: "底层点击 " + root.underlying-clicks;
+    }
+}
+
+export component ActionGroupDemo inherits Window {
+    title: "XRack · 命令组";
+    width: 620px;
+    height: 300px;
+    background: #182331;
+
+    in-out property <string> mode: "detail";
+    in-out property <bool> modes-enabled: true;
+    in-out property <bool> compact-enabled: true;
+    in-out property <bool> show-grid: false;
+    in-out property <bool> show-guides: false;
+    out property <string> last-command;
+    out property <string> mode-at-action;
+    out property <int> mode-activations: 0;
+    out property <int> overlay-activations: 0;
+
+    view-modes := ActionGroup {
+        enabled: root.modes-enabled;
+        current-value <=> root.mode;
+        activated(value) => {
+            root.last-command = value;
+            root.mode-activations += 1;
+        }
+        detail-command := Action {
+            text: "详细";
+            value: "detail";
+            shortcut: "Primary+1";
+            activated => { root.mode-at-action = view-modes.current-value; }
+        }
+        refresh-command := Action {
+            text: "刷新";
+            checkable: false;
+        }
+    }
+    compact-command := Action {
+        group: view-modes;
+        text: "紧凑";
+        value: "compact";
+        shortcut: "Primary+2";
+        enabled: root.compact-enabled;
+        activated => { root.mode-at-action = view-modes.current-value; }
+    }
+    overlays := ActionGroup {
+        exclusive: false;
+        activated(value) => {
+            root.last-command = value;
+            root.overlay-activations += 1;
+        }
+        grid := Action { text: "网格"; checkable: true; checked <=> root.show-grid; }
+        guides := Action { text: "参考线"; checkable: true; checked <=> root.show-guides; }
+    }
+
+    VerticalLayout {
+        padding: 16px;
+        spacing: 12px;
+        alignment: start;
+        MenuBar {
+            modes-menu := Menu {
+                title: "显示模式";
+                detail-item := MenuItem { action: detail-command; }
+                compact-item := MenuItem { action: compact-command; }
+                MenuSeparator { }
+                MenuItem { action: refresh-command; }
+            }
+        }
+        Text { text: "同一组命令 · 菜单、工具栏、Primary+1 和 Primary+2"; }
+        ToolBar {
+            spacing: 8px;
+            detail-button := ToolButton { action: detail-command; width: 84px; }
+            compact-button := ToolButton {
+                action: compact-command;
+                width: 84px;
+                enabled: true;
+                states [ show-disabled-command when !root.modes-enabled: { enabled: true; } ]
+            }
+            refresh-button := ToolButton { action: refresh-command; width: 84px; }
+        }
+        ToolBar {
+            spacing: 8px;
+            grid-button := ToolButton { action: grid; width: 84px; }
+            guides-button := ToolButton { action: guides; width: 84px; }
+        }
+        Text { text: "当前模式 · " + view-modes.current-value; }
+        Text { text: "最近命令 · " + root.last-command; }
+    }
+}
+
 export component ShortcutDemo inherits Window {
     title: "XRack · 快捷键";
     width: 532px; height: 344px;

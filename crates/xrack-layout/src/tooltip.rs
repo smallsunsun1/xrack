@@ -28,7 +28,10 @@ pub(crate) struct TooltipKey {
 
 impl TooltipKey {
     fn new(scene: &Node, path: &[usize], source: Source) -> Option<Self> {
-        let slot = scene.at_path(path)?.children.iter().position(has_content)?;
+        let (slot, _) = scene
+            .at_path(path)?
+            .materialized_children()
+            .find(|(_, node)| has_content(node))?;
         Some(Self {
             owner: path.to_vec(),
             slot,
@@ -43,8 +46,7 @@ impl TooltipKey {
         }
         scene
             .at_path(&self.owner)?
-            .children
-            .get(self.slot)
+            .child_at(self.slot)
             .filter(|node| has_content(node))
     }
 }
@@ -292,12 +294,18 @@ pub fn layout_tooltip(
     if let Some(value) = node.text("text") {
         let mut label = Node::new("Text", None);
         label.properties.insert("text", value.to_owned().into());
-        for name in ["font-size", "font-family", "font-weight", "font-italic"] {
+        for name in [
+            "font",
+            "font-size",
+            "font-family",
+            "font-weight",
+            "font-italic",
+        ] {
             if let Some(value) = node.properties.get(name) {
                 label.properties.insert(name, value.clone());
             }
         }
-        if label.length("font-size").is_none() && text.default_font_size().is_none() {
+        if label.font_size().is_none() && text.default_font_size().is_none() {
             label.properties.insert("font-size", Length(14.0).into());
         }
         if let Some(color) = node.color("color") {

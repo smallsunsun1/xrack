@@ -1,8 +1,41 @@
 use crate::{
-    Point, Rect, Size, TextMeasurer,
+    LayoutNode, Point, Rect, Size, SplitResize, TextMeasurer,
     linear::{self, Axis},
 };
 use xrack_runtime::{Node, Orientation};
+
+const RESIZE_EPSILON: f32 = 0.01;
+
+/// The leading pane's size and reachable range in logical pixels.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SplitHandleRange {
+    pub orientation: Orientation,
+    pub leading_pane: usize,
+    pub trailing_pane: usize,
+    pub value: f64,
+    pub minimum: f64,
+    pub maximum: f64,
+}
+
+impl SplitHandleRange {
+    pub const STEP: f64 = 8.0;
+
+    pub fn can_increase(self) -> bool {
+        self.maximum - self.value > f64::from(RESIZE_EPSILON)
+    }
+
+    pub fn can_decrease(self) -> bool {
+        self.value - self.minimum > f64::from(RESIZE_EPSILON)
+    }
+}
+
+impl LayoutNode {
+    pub fn split_handle_range(&self, path: &[usize]) -> Option<SplitHandleRange> {
+        let (&slot, parent) = path.split_last()?;
+        let split = self.at_path(parent)?.split.as_deref()?;
+        Some(split.handle_range(split.handle(slot)?))
+    }
+}
 
 #[derive(Clone, Debug, PartialEq)]
 struct Pane {
@@ -22,7 +55,7 @@ pub struct SplitHandle {
 
 impl SplitHandle {
     pub(crate) fn adjustable(&self) -> bool {
-        self.maximum - self.minimum > 0.01
+        self.maximum - self.minimum > RESIZE_EPSILON
     }
 }
 
@@ -30,8 +63,11 @@ impl SplitHandle {
 pub struct SplitGeometry {
     pub orientation: Orientation,
     pub handles: Vec<SplitHandle>,
+    hit_radius: Option<f32>,
     panes: Vec<Pane>,
     weight: f64,
+    sized: bool,
+    sides_constrained: bool,
 }
 
 pub(crate) fn axis_point(orientation: Orientation, point: Point) -> f32 {
@@ -61,6 +97,10 @@ impl SplitGeometry {
             .unwrap_or(8.0)
             .clamp(1.0, 48.0)
             .min(total / gaps.max(1.0));
+        let hit_size = node
+            .length("handle-hit-size")
+            .unwrap_or(gap)
+            .clamp(gap, total);
         let available = (total - gaps * gap).max(0.0);
         let mut constraints: Vec<_> = visible
             .iter()
@@ -74,45 +114,81 @@ impl SplitGeometry {
                 info.preferred = info.min;
             }
         }
-        let baseline = linear::fit_axis(constraints.iter().copied(), available);
-        let baseline_total: f64 = baseline.iter().map(|length| f64::from(*length)).sum();
-        let weights: Vec<_> = visible
-            .iter()
-            .zip(&baseline)
-            .map(|((slot, _), length)| {
-                node.split_weights
-                    .as_deref()
-                    .and_then(|saved| saved.get(*slot))
-                    .copied()
-                    .flatten()
-                    .map_or_else(
-                        || {
-                            if baseline_total > 0.0 {
-                                f64::from(*length) / baseline_total
-                            } else {
-                                0.0
-                            }
-                        },
-                        f64::from,
-                    )
-            })
-            .collect();
-        let weight: f64 = weights.iter().sum();
-        let lengths = if node.split_weights.is_some() && weight > 0.0 {
-            linear::fit_axis(
-                constraints
-                    .iter()
-                    .copied()
-                    .zip(weights)
-                    .map(|(mut info, weight_share)| {
-                        info.preferred =
-                            info.clamp((weight_share * baseline_total / weight) as f32);
-                        info
-                    }),
-                available,
-            )
+        let (lengths, weight, sides_constrained) = if let Some(target) = node.split_fill_pane
+            && !visible.is_empty()
+        {
+            let fill = visible
+                .iter()
+                .position(|(_, pane)| pane.id == Some(target))
+                .unwrap_or(visible.len() - 1);
+            let fill_info = constraints[fill];
+            let fixed: Vec<_> = visible
+                .iter()
+                .zip(&constraints)
+                .enumerate()
+                .filter(|(index, _)| *index != fill)
+                .map(|(_, ((slot, _), info))| {
+                    let mut info = *info;
+                    if let Some(saved) = node
+                        .split_sizes
+                        .as_ref()
+                        .and_then(|sizes| sizes.get(*slot))
+                        .copied()
+                        .flatten()
+                    {
+                        info.preferred = info.clamp(saved);
+                    }
+                    info
+                })
+                .collect();
+            let preferred: f64 = fixed.iter().map(|info| f64::from(info.preferred)).sum();
+            let fill_length = fill_info.clamp((f64::from(available) - preferred) as f32);
+            let side_space = (available - fill_length).max(0.0);
+            let constrained = (preferred - f64::from(side_space)).abs() > 0.01;
+            let mut lengths = linear::fit_axis(fixed, side_space);
+            lengths.insert(fill, fill_length);
+            (lengths, 1.0, constrained)
         } else {
-            baseline
+            let baseline = linear::fit_axis(constraints.iter().copied(), available);
+            let baseline_total: f64 = baseline.iter().map(|length| f64::from(*length)).sum();
+            let weights: Vec<_> = visible
+                .iter()
+                .zip(&baseline)
+                .map(|((slot, _), length)| {
+                    node.split_weights
+                        .as_deref()
+                        .and_then(|saved| saved.get(*slot))
+                        .copied()
+                        .flatten()
+                        .map_or_else(
+                            || {
+                                if baseline_total > 0.0 {
+                                    f64::from(*length) / baseline_total
+                                } else {
+                                    0.0
+                                }
+                            },
+                            f64::from,
+                        )
+                })
+                .collect();
+            let weight: f64 = weights.iter().sum();
+            let lengths = if node.split_weights.is_some() && weight > 0.0 {
+                linear::fit_axis(
+                    constraints
+                        .iter()
+                        .copied()
+                        .zip(weights)
+                        .map(|(mut info, share)| {
+                            info.preferred = info.clamp((share * baseline_total / weight) as f32);
+                            info
+                        }),
+                    available,
+                )
+            } else {
+                baseline
+            };
+            (lengths, weight, false)
         };
         let panes: Vec<_> = visible
             .iter()
@@ -151,8 +227,11 @@ impl SplitGeometry {
             Self {
                 orientation,
                 handles,
+                hit_radius: (hit_size > gap).then_some(hit_size * 0.5),
                 panes,
                 weight,
+                sized: node.split_fill_pane.is_some(),
+                sides_constrained,
             },
             rects,
         )
@@ -162,30 +241,67 @@ impl SplitGeometry {
         self.handles.iter().find(|handle| handle.slot == slot)
     }
 
-    pub(crate) fn resize(&self, handle: &SplitHandle, delta: f32) -> Option<Vec<(usize, f32)>> {
+    pub(crate) fn handle_range(&self, handle: &SplitHandle) -> SplitHandleRange {
+        let before = &self.panes[handle.before];
+        let value = f64::from(before.length);
+        SplitHandleRange {
+            orientation: self.orientation,
+            leading_pane: before.slot,
+            trailing_pane: handle.after,
+            value,
+            minimum: value + f64::from(handle.minimum),
+            maximum: value + f64::from(handle.maximum),
+        }
+    }
+
+    pub(crate) fn expanded_hit(&self, point: Point) -> Option<usize> {
+        let radius = self.hit_radius?;
+        let position = axis_point(self.orientation, point);
+        let distance = |handle: &SplitHandle| (position - handle.center(self.orientation)).abs();
+        self.handles
+            .iter()
+            .filter(|handle| handle.adjustable() && distance(handle) <= radius)
+            .min_by(|a, b| distance(a).total_cmp(&distance(b)))
+            .map(|handle| handle.slot)
+    }
+
+    pub(crate) fn resize(
+        &self,
+        path: Vec<usize>,
+        handle: &SplitHandle,
+        delta: f32,
+    ) -> Option<SplitResize> {
         let delta = delta.clamp(handle.minimum, handle.maximum);
         let total: f64 = self.panes.iter().map(|pane| f64::from(pane.length)).sum();
-        if !delta.is_finite() || delta.abs() <= 0.01 || total <= 0.0 {
+        if !delta.is_finite() || delta.abs() <= RESIZE_EPSILON || total <= 0.0 {
             return None;
         }
         let mass = if self.weight > 0.0 { self.weight } else { 1.0 };
-        Some(
-            self.panes
-                .iter()
-                .enumerate()
-                .map(|(index, pane)| {
-                    let length = match index {
-                        i if i == handle.before => pane.length + delta,
-                        i if i == handle.before + 1 => pane.length - delta,
-                        _ => pane.length,
-                    };
-                    (
-                        pane.slot,
-                        (f64::from(length.max(0.0)) * mass / total) as f32,
-                    )
-                })
+        let lengths = || {
+            self.panes.iter().enumerate().map(|(index, pane)| {
+                let length = match index {
+                    i if i == handle.before => pane.length + delta,
+                    i if i == handle.before + 1 => pane.length - delta,
+                    _ => pane.length,
+                };
+                (pane.slot, length.max(0.0))
+            })
+        };
+        Some(SplitResize {
+            path,
+            weights: lengths()
+                .map(|(slot, length)| (slot, (f64::from(length) * mass / total) as f32))
                 .collect(),
-        )
+            sizes: self.sized.then(|| {
+                if self.sides_constrained {
+                    // Preserve the visible result of the drag even when the old
+                    // preferred widths could not fit the window.
+                    lengths().collect()
+                } else {
+                    lengths().skip(handle.before).take(2).collect()
+                }
+            }),
+        })
     }
 }
 

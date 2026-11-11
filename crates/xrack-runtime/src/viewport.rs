@@ -27,6 +27,32 @@ pub enum ScrollAction {
         index: i64,
         alignment: ScrollAlignment,
     },
+    /// A source record captured before the view is laid out.
+    ToRowKey {
+        key: crate::RowKey,
+        source_index: usize,
+        alignment: ScrollAlignment,
+    },
+    /// A declaration-order column. Frozen columns keep their horizontal position.
+    ToColumn {
+        column: i64,
+        alignment: ScrollAlignment,
+    },
+    /// A displayed row and a declaration-order column, resolved after layout.
+    ToCell {
+        row: i64,
+        column: i64,
+        horizontal: ScrollAlignment,
+        vertical: ScrollAlignment,
+    },
+    /// A captured source record and a declaration-order table column.
+    ToCellAtRowKey {
+        key: crate::RowKey,
+        source_index: usize,
+        column: i64,
+        horizontal: ScrollAlignment,
+        vertical: ScrollAlignment,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

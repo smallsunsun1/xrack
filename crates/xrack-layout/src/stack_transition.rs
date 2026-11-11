@@ -157,11 +157,12 @@ impl StackTransitions {
                 self.slides.insert(path.clone(), slide);
             }
         }
-        let before = old.children.iter().zip(&old_layout.children);
-        let after = new.children.iter().zip(&new_layout.children);
-        for (index, (before, after)) in before.zip(after).enumerate() {
+        for (index, child, layout) in new_layout.children_in_scene_order(new) {
+            let Some(before) = old.child_at(index).zip(old_layout.child_at(index)) else {
+                continue;
+            };
             path.push(index);
-            self.collect(before, after, now, path, prior);
+            self.collect(before, (child, layout), now, path, prior);
             path.pop();
         }
     }

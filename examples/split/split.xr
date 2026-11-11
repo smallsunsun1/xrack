@@ -25,6 +25,7 @@ export component SplitDemo inherits Window {
 
     in-out property <bool> show-preview: true;
     in-out property <bool> split-enabled: true;
+    in-out property <string> saved-layout: "";
     property <int> outer-edits: 0;
     out property <int> edits: root.outer-edits + detail.edits;
 
@@ -32,22 +33,34 @@ export component SplitDemo inherits Window {
         padding: 14px;
         spacing: 8px;
         Text { text: "分栏工作区 · 拖动分隔线或用方向键调整"; font-size: 20px; }
-        preview-toggle := Button {
-            text: root.show-preview ? "隐藏预览" : "显示预览";
-            clicked() => { root.show-preview = !root.show-preview; }
+        HorizontalLayout {
+            spacing: 8px;
+            preview-toggle := Button {
+                text: root.show-preview ? "隐藏预览" : "显示预览";
+                clicked() => { root.show-preview = !root.show-preview; }
+            }
+            save-layout := Button {
+                text: "保存布局";
+                clicked => { root.saved-layout = work.save-state(); }
+            }
+            restore-layout := Button {
+                text: "恢复布局";
+                enabled: root.saved-layout != "";
+                clicked => { work.restore-state(root.saved-layout); }
+            }
         }
         work := SplitView {
             enabled: root.split-enabled;
             handle-size: 10px;
             resized() => { root.outer-edits += 1; }
-            Rectangle {
+            navigation := Rectangle {
                 background: #223249;
                 min-width: 120px;
                 preferred-width: 170px;
                 max-width: 320px;
                 Text { x: 12px; y: 12px; text: "导航"; }
             }
-            if root.show-preview : Rectangle {
+            if root.show-preview : preview-pane := Rectangle {
                 background: #304663;
                 min-width: 140px;
                 preferred-width: 240px;
@@ -56,6 +69,97 @@ export component SplitDemo inherits Window {
             detail := DetailSplit {
                 min-width: 150px;
                 preferred-width: 290px;
+            }
+        }
+    }
+}
+
+export component CustomSplitDemo inherits Window {
+    title: "XRack · 自定义分隔条";
+    width: 640px; height: 240px;
+    in property <bool> show-center: true;
+    in property <color> grip-color: #ffffff;
+    out property <bool> dragging: work.resizing;
+
+    work := SplitView {
+        handle-size: 12px;
+        handle-hit-size: 32px;
+        SplitHandle {
+            background: handle-pressed ? #ffbf69 :
+                handle-hovered ? #58c9c7 :
+                handle-index == 0 ? #694b8e : #485e7e;
+            Rectangle {
+                x: 3px; y: 30px;
+                width: 6px; height: 8px;
+                background: handle-orientation == Orientation.horizontal ? root.grip-color : #9db2d0;
+            }
+        }
+        left := Rectangle {
+            min-width: 80px; preferred-width: 150px;
+            background: #26374e;
+            Text { x: 12px; y: 10px; text: "导航"; }
+        }
+        center := Rectangle {
+            visible: root.show-center;
+            min-width: 80px; preferred-width: 220px;
+            background: #304663;
+            Text { x: 12px; y: 10px; text: "编辑区"; }
+        }
+        right := Rectangle {
+            min-width: 80px; preferred-width: 150px;
+            background: #24324a;
+            Text { x: 12px; y: 10px; text: "检查器"; }
+        }
+    }
+}
+
+export component FillSplitDemo inherits Window {
+    title: "XRack · 固定侧栏";
+    width: 680px; height: 320px;
+    background: #182331;
+    in-out property <bool> show-editor: true;
+    in-out property <string> saved-layout: "";
+    in property <length> handle-target: 24px;
+    out property <bool> dragging: work.resizing;
+    out property <int> edits: 0;
+
+    VerticalLayout {
+        padding: 14px;
+        spacing: 8px;
+        Text { text: "缩放窗口时由编辑区填充剩余空间"; font-size: 18px; }
+        HorizontalLayout {
+            spacing: 8px;
+            save := Button { text: "保存布局"; clicked() => { root.saved-layout = work.save-state(); } }
+            restore := Button {
+                text: "恢复布局";
+                enabled: root.saved-layout != "";
+                clicked() => { work.restore-state(root.saved-layout); }
+            }
+            toggle := CheckBox { text: "显示编辑区"; checked <=> root.show-editor; }
+        }
+        work := SplitView {
+            fill-pane: editor;
+            handle-size: 8px;
+            handle-hit-size: root.handle-target;
+            handle-color: self.resizing ? #ffbf69 : #81a6e1;
+            resized() => { root.edits += 1; }
+            sidebar := Rectangle {
+                min-width: 80px; preferred-width: 120px; max-width: 240px;
+                background: #26374e;
+                accessible-name: "导航";
+                Text { x: 12px; y: 12px; text: "导航"; }
+            }
+            editor := Rectangle {
+                visible: root.show-editor;
+                min-width: 130px; preferred-width: 260px;
+                background: #304663;
+                accessible-name: "编辑区";
+                Text { x: 12px; y: 12px; text: "编辑区"; }
+            }
+            inspector := Rectangle {
+                min-width: 100px; preferred-width: 160px;
+                background: #24324a;
+                Text { x: 12px; y: 12px; text: "检查器"; }
             }
         }
     }

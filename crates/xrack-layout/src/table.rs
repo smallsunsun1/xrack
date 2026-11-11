@@ -3,18 +3,21 @@ use crate::{
     linear::{AxisInfo, fit_axis},
 };
 use std::sync::Arc;
-use xrack_runtime::{Node, TableColumnOrder, resizable_table_column};
+use xrack_runtime::{Node, TableColumnOrder, TableColumnWindow, resizable_table_column};
 
 /// Shared by the row layout, header painting, and header hit testing.
 #[derive(Clone, Debug, PartialEq)]
 pub struct TableGeometry {
     pub header: Rect,
     pub body: Rect,
+    pub row_header: Rect,
     pub columns: Vec<Rect>,
     pub horizontal: ScrollLayout,
     order: TableColumnOrder,
+    hidden_positions: Vec<usize>,
     frozen: Vec<bool>,
     frozen_count: usize,
+    frozen_end: usize,
     frozen_width: f32,
 }
 
@@ -71,15 +74,25 @@ impl TableGeometry {
         requested: f32,
     ) -> Option<Self> {
         let header = node.table_header.as_ref()?;
-        let body = list_viewport(node, bounds);
-        let header_bounds = Rect::new(bounds.x, bounds.y, bounds.width, body.y - bounds.y);
+        let rows = list_viewport(node, bounds);
+        let gutter = node
+            .relative_length("row-header-width", bounds.width)
+            .filter(|width| width.is_finite())
+            .unwrap_or_default()
+            .clamp(0.0, (bounds.width - MIN_SCROLLABLE_WIDTH).max(0.0));
+        let body = Rect::new(rows.x + gutter, rows.y, rows.width - gutter, rows.height);
+        let row_header = Rect::new(rows.x, rows.y, gutter, rows.height);
+        let header_bounds = Rect::new(body.x, bounds.y, body.width, body.y - bounds.y);
         let tracks = header.columns.iter().map(|column| {
-            let (min, max) = column_limits(column, bounds.width);
-            if let Some(width) = column.relative_length("width", bounds.width) {
+            if !column.is_visible() {
+                return AxisInfo::fixed(0.0);
+            }
+            let (min, max) = column_limits(column, body.width);
+            if let Some(width) = column.relative_length("width", body.width) {
                 return AxisInfo::fixed(width.clamp(min, max));
             }
             let preferred = column
-                .relative_length("preferred-width", bounds.width)
+                .relative_length("preferred-width", body.width)
                 .unwrap_or(min)
                 .clamp(min, max);
             let stretch = column.float("horizontal-stretch").unwrap_or(1.0).max(0.0);
@@ -90,23 +103,24 @@ impl TableGeometry {
                 stretch,
             }
         });
-        let mut widths = fit_axis(tracks, bounds.width);
+        let mut widths = fit_axis(tracks, body.width);
         for (index, (width, override_width)) in
             widths.iter_mut().zip(&header.column_widths).enumerate()
         {
-            if let Some(override_width) = override_width {
-                let (min, max) = column_limits(&header.columns[index], bounds.width);
+            if let Some(override_width) = override_width
+                && header.columns[index].is_visible()
+            {
+                let (min, max) = column_limits(&header.columns[index], body.width);
                 *width = (*override_width as f32).clamp(min, max);
             }
         }
         let total_width = widths.iter().sum::<f32>();
-        let horizontal = ScrollLayout::new(requested, total_width - bounds.width);
+        let horizontal = ScrollLayout::new(requested, total_width - body.width);
         let order = node.table_column_order.clone();
-        let requested_frozen = usize::try_from(node.int("frozen-columns").unwrap_or(0))
-            .unwrap_or(0)
-            .min(widths.len());
-        let visible = bounds.intersect(clip);
-        let visible_right = (visible.x + visible.width - bounds.x).clamp(0.0, bounds.width);
+        let requested_frozen =
+            usize::try_from(node.int("frozen-columns").unwrap_or(0)).unwrap_or(0);
+        let visible = body.intersect(clip);
+        let visible_right = (visible.x + visible.width - body.x).clamp(0.0, body.width);
         let limit = if total_width > visible_right {
             (visible_right - MIN_SCROLLABLE_WIDTH).max(0.0)
         } else {
@@ -114,8 +128,14 @@ impl TableGeometry {
         };
         let mut frozen_width = 0.0;
         let mut frozen_count = 0;
+        let mut frozen_end = 0;
         let mut frozen = Vec::new();
-        for column in order.iter(widths.len()).take(requested_frozen) {
+        for (visual, column) in order
+            .iter(widths.len())
+            .enumerate()
+            .filter(|&(_, column)| widths[column] > 0.0)
+            .take(requested_frozen)
+        {
             let end = frozen_width + widths[column];
             if end > limit {
                 break;
@@ -126,27 +146,57 @@ impl TableGeometry {
             frozen[column] = true;
             frozen_width = end;
             frozen_count += 1;
+            frozen_end = visual + 1;
         }
-        let mut x = bounds.x;
+        let mut x = body.x;
         let mut columns = vec![Rect::default(); widths.len()];
+        let mut hidden_positions = Vec::new();
         for (visual, index) in order.iter(widths.len()).enumerate() {
-            if visual == frozen_count {
+            if visual == frozen_end {
                 x -= horizontal.offset;
             }
             let width = widths[index];
+            if width == 0.0 {
+                hidden_positions.push(visual);
+            }
             columns[index] = Rect::new(x, bounds.y, width, header_bounds.height);
             x += width;
         }
         Some(Self {
             header: header_bounds,
             body,
+            row_header,
             columns,
             horizontal,
             order,
+            hidden_positions,
             frozen,
             frozen_count,
+            frozen_end,
             frozen_width,
         })
+    }
+
+    pub(crate) fn rows_area(&self) -> Rect {
+        Rect::new(
+            self.row_header.x,
+            self.body.y,
+            self.row_header.width + self.body.width,
+            self.body.height,
+        )
+    }
+
+    pub(crate) fn column_window(&self, clip: Rect) -> TableColumnWindow {
+        let clip = self.body.intersect(clip);
+        TableColumnWindow::new(self.columns.iter().enumerate().map(|(index, column)| {
+            let cell = Rect::new(column.x, self.body.y, column.width, self.body.height);
+            let visible = cell.intersect(self.column_clip(index, clip));
+            visible.width > 0.0 && visible.height > 0.0
+        }))
+    }
+
+    pub fn row_header_cell(&self, row: Rect) -> Rect {
+        Rect::new(self.row_header.x, row.y, self.row_header.width, row.height)
     }
 
     pub fn visual_columns(&self) -> impl DoubleEndedIterator<Item = usize> + ExactSizeIterator {
@@ -157,12 +207,40 @@ impl TableGeometry {
         self.order.visual_index(self.columns.len(), column)
     }
 
+    pub fn is_column_visible(&self, column: usize) -> bool {
+        self.columns
+            .get(column)
+            .is_some_and(|bounds| bounds.width > 0.0)
+    }
+
+    pub fn visible_columns(&self) -> impl DoubleEndedIterator<Item = usize> {
+        self.visual_columns()
+            .filter(|&column| self.is_column_visible(column))
+    }
+
+    pub fn visible_column_count(&self) -> usize {
+        self.columns.len() - self.hidden_positions.len()
+    }
+
+    pub fn visible_column_index(&self, column: usize) -> Option<usize> {
+        if !self.is_column_visible(column) {
+            return None;
+        }
+        let visual = self.visual_index(column)?;
+        Some(
+            visual
+                - self
+                    .hidden_positions
+                    .partition_point(|&hidden| hidden < visual),
+        )
+    }
+
     pub fn is_frozen(&self, column: usize) -> bool {
         self.frozen.get(column).copied().unwrap_or(false)
     }
 
     fn scrollable_band(&self, band: Rect) -> Rect {
-        let width = if self.frozen_count == self.columns.len() {
+        let width = if self.frozen_count == self.visible_column_count() {
             0.0
         } else {
             (band.width - self.frozen_width).max(0.0)
@@ -208,7 +286,7 @@ impl TableGeometry {
     }
 
     pub fn frozen_boundary(&self) -> Option<f32> {
-        (self.frozen_width > 0.0 && self.frozen_count < self.columns.len())
+        (self.frozen_width > 0.0 && self.frozen_count < self.visible_column_count())
             .then_some(self.header.x + self.frozen_width)
     }
 
@@ -232,7 +310,7 @@ impl TableGeometry {
         let (start, end, pane) = if frozen {
             (
                 0,
-                self.frozen_count,
+                self.frozen_end,
                 Rect::new(
                     self.header.x,
                     self.header.y,
@@ -242,44 +320,45 @@ impl TableGeometry {
             )
         } else {
             (
-                self.frozen_count,
+                self.frozen_end,
                 self.columns.len(),
                 self.scrollable_header(),
             )
         };
-        let slot = self
+        let mut insertion = None;
+        for (visual, column) in self
             .visual_columns()
             .enumerate()
             .skip(start)
             .take(end - start)
-            .find_map(|(visual, column)| {
-                let bounds = self.columns[column];
-                let visible = if self.frozen_width == 0.0 {
-                    bounds
-                } else {
-                    bounds.intersect(pane)
-                };
-                (bounds.x >= pane.x + pane.width
-                    || visible.width > 0.0 && point.x < visible.x + visible.width * 0.5)
-                    .then_some(visual)
-            })
-            .unwrap_or(end);
+        {
+            if !self.is_column_visible(column) {
+                continue;
+            }
+            let bounds = self.columns[column];
+            let visible = if self.frozen_width == 0.0 {
+                bounds
+            } else {
+                bounds.intersect(pane)
+            };
+            if bounds.x >= pane.x + pane.width
+                || visible.width > 0.0 && point.x < visible.x + visible.width * 0.5
+            {
+                insertion = Some((visual, bounds.x));
+                break;
+            }
+            insertion = Some((visual + 1, bounds.x + bounds.width));
+        }
+        let (slot, marker) = insertion?;
         let to = slot - usize::from(slot > from);
         if from == to {
             return None;
         }
-        let marker = if slot < end {
-            let column = self.visual_columns().nth(slot)?;
-            self.columns[column].x
-        } else {
-            let bounds = self.columns[self.visual_columns().nth(end.checked_sub(1)?)?];
-            bounds.x + bounds.width
-        };
         Some((to, marker.clamp(pane.x, pane.x + pane.width)))
     }
 
     pub(crate) fn column_at(&self, point: Point) -> Option<usize> {
-        self.visual_columns().find(|&column| {
+        self.visible_columns().find(|&column| {
             self.columns[column]
                 .intersect(self.column_clip(column, self.header))
                 .contains(point)
@@ -327,7 +406,7 @@ impl TableGeometry {
         layout: &LayoutNode,
         point: Point,
     ) -> Option<usize> {
-        let visible = self.body.intersect(layout.clip);
+        let visible = self.rows_area().intersect(layout.clip);
         if !visible.contains(point) || !node.boolean("resizable-rows", false) {
             return None;
         }

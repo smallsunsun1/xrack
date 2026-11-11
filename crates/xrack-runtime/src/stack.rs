@@ -44,12 +44,46 @@ impl StackSnapshot {
         self.routes.last().copied()
     }
 
+    pub fn index_of(&self, route: &str) -> Option<usize> {
+        self.routes.iter().position(|page| *page == route)
+    }
+
     pub fn depth(&self) -> usize {
         self.routes.len()
     }
 
     pub fn revision(&self) -> u64 {
         self.revision
+    }
+}
+
+/// The route changes associated with a single successful navigation command.
+#[doc(hidden)]
+pub struct StackChange<'a> {
+    pub before: &'a StackSnapshot,
+    pub after: &'a StackSnapshot,
+}
+
+impl StackChange<'_> {
+    pub fn deactivated(&self) -> Option<&'static str> {
+        self.before
+            .current()
+            .filter(|page| Some(*page) != self.after.current())
+    }
+
+    pub fn activated(&self) -> Option<&'static str> {
+        self.after
+            .current()
+            .filter(|page| Some(*page) != self.before.current())
+    }
+
+    pub fn removed(&self) -> impl Iterator<Item = &'static str> + '_ {
+        self.before
+            .routes
+            .iter()
+            .copied()
+            .rev()
+            .filter(|route| self.after.index_of(route).is_none())
     }
 }
 
@@ -92,6 +126,27 @@ impl StackState {
         expected: Option<u64>,
         action: StackNavigation<'_>,
         changed: impl FnOnce(&StackSnapshot),
+    ) -> bool {
+        self.navigate_guarded(
+            pages,
+            initial,
+            expected,
+            action,
+            |_, _, _| true,
+            |change| {
+                changed(change.after);
+            },
+        )
+    }
+
+    pub fn navigate_guarded(
+        &self,
+        pages: &[&'static str],
+        initial: impl FnOnce() -> String,
+        expected: Option<u64>,
+        action: StackNavigation<'_>,
+        mut can_leave: impl FnMut(&str, &str, bool) -> bool,
+        changed: impl FnOnce(StackChange<'_>),
     ) -> bool {
         if self.notifying.replace(true) {
             return false;
@@ -150,8 +205,29 @@ impl StackState {
             return false;
         }
         let next = Arc::new(StackSnapshot::new(routes));
+        let change = StackChange {
+            before: &current,
+            after: &next,
+        };
+        let outgoing = change.deactivated();
+        let leaving = outgoing
+            .into_iter()
+            .chain(change.removed().filter(|route| Some(*route) != outgoing));
+        let destination = next.current().unwrap_or("");
+        for route in leaving {
+            if !can_leave(route, destination, next.index_of(route).is_none()) {
+                return false;
+            }
+        }
+        // An effectful guard can change an input to the still-implicit initial route.
+        if !self
+            .snapshot
+            .matches_current(|latest| Arc::ptr_eq(latest, &current))
+        {
+            return false;
+        }
         self.snapshot.set(next.clone());
-        changed(&next);
+        changed(change);
         true
     }
 }
@@ -210,6 +286,81 @@ mod tests {
             ["home", "preview"]
         );
         assert_eq!(calls.get(), 2);
+    }
+
+    #[test]
+    fn guarded_navigation_keeps_its_revision_when_a_hidden_route_vetoes() {
+        let stack = StackState::default();
+        let pages = ["home", "editor", "preview", "other"];
+        let initial = || "home".to_owned();
+        let open = ["home", "editor", "preview"].map(str::to_owned);
+        assert!(stack.navigate(
+            &pages,
+            initial,
+            None,
+            StackNavigation::ResetTo(&open),
+            |_| {}
+        ));
+        let before = stack.snapshot(&pages, initial);
+        let mut guards = Vec::new();
+        assert!(!stack.navigate_guarded(
+            &pages,
+            initial,
+            Some(before.revision()),
+            StackNavigation::Reset("home"),
+            |route, destination, removing| {
+                assert_eq!(destination, "home");
+                assert!(removing);
+                guards.push(route.to_owned());
+                route != "editor"
+            },
+            |_| panic!("a veto must not emit a change"),
+        ));
+        assert_eq!(guards, ["preview", "editor"]);
+        assert!(Arc::ptr_eq(&before, &stack.snapshot(&pages, initial)));
+
+        let keep_top = ["home", "other", "preview"].map(str::to_owned);
+        assert!(stack.navigate_guarded(
+            &pages,
+            initial,
+            Some(before.revision()),
+            StackNavigation::ResetTo(&keep_top),
+            |route, destination, removing| {
+                assert_eq!((route, destination, removing), ("editor", "preview", true));
+                true
+            },
+            |change| {
+                assert_eq!(change.deactivated(), None);
+                assert_eq!(change.activated(), None);
+                assert_eq!(change.removed().collect::<Vec<_>>(), ["editor"]);
+                assert_eq!(
+                    stack.snapshot(&pages, initial).routes(),
+                    ["home", "other", "preview"]
+                );
+            },
+        ));
+    }
+
+    #[test]
+    fn a_guard_cannot_commit_against_an_initial_route_it_invalidated() {
+        let stack = StackState::default();
+        let seed = Property::default();
+        let pages = ["home", "editor", "preview"];
+        let initial = || seed.get(|| "home".to_owned());
+        assert!(!stack.navigate_guarded(
+            &pages,
+            initial,
+            None,
+            StackNavigation::Push("preview"),
+            |route, _, _| {
+                assert_eq!(route, "home");
+                seed.set("editor".to_owned());
+                assert_eq!(stack.snapshot(&pages, initial).current(), Some("editor"));
+                true
+            },
+            |_| panic!("the route checked before the guard is stale"),
+        ));
+        assert_eq!(stack.snapshot(&pages, initial).routes(), ["editor"]);
     }
 
     #[test]

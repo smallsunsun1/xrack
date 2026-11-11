@@ -1,4 +1,4 @@
-use crate::{Property, StandardButtonKind};
+use crate::{Property, StandardButtonKind, VecModel};
 use std::{
     cell::Cell,
     collections::VecDeque,
@@ -14,6 +14,7 @@ pub enum FileDialogMode {
     OpenFiles,
     SaveFile,
     SelectFolder,
+    SelectFolders,
 }
 
 #[derive(Debug, Default)]
@@ -80,8 +81,12 @@ struct Request {
 pub struct NativeDialogSlot(Property<Option<Request>>);
 
 impl NativeDialogSlot {
+    pub fn pending(&self) -> bool {
+        self.0.get(|| None).is_some()
+    }
+
     pub fn open(&self, options: impl FnOnce() -> NativeDialogOptions) {
-        if self.0.get(|| None).is_some() {
+        if self.pending() {
             return;
         }
         static NEXT: AtomicU64 = AtomicU64::new(1);
@@ -110,6 +115,25 @@ impl NativeDialogSlot {
         }
         self.0.set(None);
         true
+    }
+}
+
+/// The last accepted result, independent of mutable lists handed to callbacks.
+#[doc(hidden)]
+#[derive(Default)]
+pub struct FileDialogSelection(Property<Rc<[String]>>);
+
+impl FileDialogSelection {
+    pub fn commit(&self, paths: &[String]) {
+        self.0.set_if_changed(Rc::from(paths));
+    }
+
+    pub fn selected_file(&self) -> String {
+        self.0.get(Rc::default).first().cloned().unwrap_or_default()
+    }
+
+    pub fn selected_files(&self) -> VecModel<String> {
+        VecModel::from(self.0.get(Rc::default).to_vec())
     }
 }
 
@@ -249,5 +273,25 @@ impl NativeDialogQueue {
             result
         });
         true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::FileDialogSelection;
+
+    #[test]
+    fn accepted_paths_are_independent_of_the_returned_model() {
+        let selection = FileDialogSelection::default();
+        assert!(selection.selected_file().is_empty());
+        assert!(selection.selected_files().is_empty());
+        selection.commit(&["/workspace/src".into(), "/workspace/tests".into()]);
+        let model = selection.selected_files();
+        assert!(model.set_row(0, "/modified".into()));
+        assert_eq!(selection.selected_file(), "/workspace/src");
+        assert_eq!(
+            selection.selected_files().snapshot(),
+            ["/workspace/src", "/workspace/tests"]
+        );
     }
 }

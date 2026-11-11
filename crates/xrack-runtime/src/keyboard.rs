@@ -22,6 +22,19 @@ pub struct KeyEvent {
     pub repeat: bool,
 }
 
+/// A wheel movement in logical pixels, with position relative to its handler.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct WheelEvent {
+    pub x: crate::Length,
+    pub y: crate::Length,
+    pub delta_x: crate::Length,
+    pub delta_y: crate::Length,
+    pub lines_x: f64,
+    pub lines_y: f64,
+    pub is_line: bool,
+    pub modifiers: KeyModifiers,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum KeyPhase {
     CapturePressed,

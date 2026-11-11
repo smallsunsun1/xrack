@@ -1,13 +1,51 @@
 use controls_ui::{
-    CalendarDemo, CheckGroupDemo, CheckStateDemo, ColorDemo, ControlsDemo, DecimalSpinDemo,
-    DelayDemo, GroupBoxDemo, IndicatorsDemo, ThemeDemo, TimeDemo, TimerDemo, TumblerDemo,
+    CalendarAgendaDemo, CalendarDemo, CheckGroupDemo, CheckStateDemo, ColorDemo, ControlsDemo,
+    DecimalSpinDemo, DelayDemo, FontPickerDemo, GroupBoxDemo, IndicatorsDemo, MonthGridDemo,
+    PaneFrameDemo, SnapSlidersDemo, ThemeDemo, TimeDemo, TimerDemo, TumblerDemo, WheelControlsDemo,
 };
 
 fn main() -> std::process::ExitCode {
     let result = match std::env::args().nth(1).as_deref() {
+        Some("--slider-snap") => xrack_platform_winit::run(SnapSlidersDemo::new()),
+        Some("--wheel") => xrack_platform_winit::run(WheelControlsDemo::new()),
+        Some("--panes") => xrack_platform_winit::run(PaneFrameDemo::new()),
         Some("--calendar") => xrack_platform_winit::run(CalendarDemo::new()),
+        Some("--calendar-agenda") => {
+            let mut ui = CalendarAgendaDemo::new();
+            let weak = ui.as_weak();
+            ui.on_browse(move |offset| {
+                if let Some(mut ui) = weak.upgrade()
+                    && let Some(month) = ui.get_month().add_months(offset)
+                {
+                    ui.set_month(month);
+                }
+            });
+            xrack_platform_winit::run(ui)
+        }
+        Some("--month-grid") => {
+            let mut ui = MonthGridDemo::new();
+            let weak = ui.as_weak();
+            ui.on_browse(move |offset| {
+                if let Some(mut ui) = weak.upgrade()
+                    && let Some(month) = ui.get_month().add_months(offset)
+                {
+                    ui.set_month(month);
+                }
+            });
+            xrack_platform_winit::run(ui)
+        }
         Some("--time") => xrack_platform_winit::run(TimeDemo::new()),
-        Some("--color") => xrack_platform_winit::run(ColorDemo::new()),
+        Some("--color") => {
+            let mut ui = ColorDemo::new();
+            ui.set_plane_visible(true);
+            ui.set_picker_open(true);
+            xrack_platform_winit::run(ui)
+        }
+        Some("--font-picker") => {
+            let mut ui = FontPickerDemo::new();
+            ui.set_picker_open(true);
+            xrack_platform_winit::run(ui)
+        }
         Some("--theme") => xrack_platform_winit::run(ThemeDemo::new()),
         Some("--timer") => xrack_platform_winit::run(TimerDemo::new()),
         Some("--decimal-spin") => xrack_platform_winit::run(DecimalSpinDemo::new()),

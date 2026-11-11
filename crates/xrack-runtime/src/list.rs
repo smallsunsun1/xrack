@@ -1,9 +1,11 @@
-use crate::{Node, VecModel};
+use crate::{Date, Node, Orientation, Property, TableRows, Time, Value, VecModel};
 use std::{
+    cell::Cell,
     collections::HashMap,
     fmt,
     ops::Range,
     rc::{Rc, Weak},
+    sync::atomic::{AtomicU64, Ordering},
 };
 
 pub(crate) const MAX_ROWS: usize = 1_000_000;
@@ -12,6 +14,176 @@ pub(crate) const MAX_ROWS: usize = 1_000_000;
 pub struct RowKey {
     pub(crate) model: u64,
     pub(crate) row: u64,
+    pub(crate) scope: u64,
+}
+
+impl RowKey {
+    pub(crate) fn in_view(self, scope: u64) -> Self {
+        Self { scope, ..self }
+    }
+
+    #[doc(hidden)]
+    pub fn has_view_scope(self) -> bool {
+        self.scope != 0
+    }
+}
+
+type RenderRows = dyn Fn(Range<usize>, &TableColumnWindow) -> Vec<Node>;
+
+struct RowRenderer {
+    scope: u64,
+    rows: Box<RenderRows>,
+    offsets: [Property<Option<f32>>; 2],
+    selection: Cell<Option<(Option<usize>, usize)>>,
+    tree_root: Cell<Option<(i64, Option<RowKey>)>>,
+}
+
+/// Materializes a single view in its component instance, including views in delegates.
+#[doc(hidden)]
+#[derive(Clone)]
+pub struct ListRowRenderer(Rc<RowRenderer>);
+
+impl ListRowRenderer {
+    pub fn new(rows: impl Fn(Range<usize>) -> Vec<Node> + 'static) -> Self {
+        Self::with_columns(move |range, _| rows(range))
+    }
+
+    pub fn with_columns(
+        rows: impl Fn(Range<usize>, &TableColumnWindow) -> Vec<Node> + 'static,
+    ) -> Self {
+        static NEXT_VIEW: AtomicU64 = AtomicU64::new(1);
+        let scope = NEXT_VIEW
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
+            .expect("virtual view identities exhausted");
+        Self(Rc::new(RowRenderer {
+            scope,
+            rows: Box::new(rows),
+            offsets: Default::default(),
+            selection: Cell::default(),
+            tree_root: Cell::default(),
+        }))
+    }
+
+    pub fn render(&self, rows: Range<usize>) -> Vec<Node> {
+        self.render_in_columns(rows, &TableColumnWindow::default())
+    }
+
+    pub fn render_in_columns(&self, rows: Range<usize>, columns: &TableColumnWindow) -> Vec<Node> {
+        (self.0.rows)(rows, columns)
+    }
+
+    pub fn scope(&self) -> u64 {
+        self.0.scope
+    }
+
+    pub fn offset(&self, axis: Orientation) -> Option<f32> {
+        self.0.offsets[usize::from(axis == Orientation::Vertical)].get(|| None)
+    }
+
+    pub fn set_offset(&self, axis: Orientation, offset: f32) {
+        self.0.offsets[usize::from(axis == Orientation::Vertical)].set_if_changed(Some(offset));
+    }
+
+    pub fn selection_changed(&self, selected: Option<usize>, columns: usize) -> bool {
+        self.0
+            .selection
+            .get()
+            .is_some_and(|previous| previous != (selected, columns))
+    }
+
+    pub fn remember_selection(&self, selected: Option<usize>, columns: usize) {
+        self.0.selection.set(Some((selected, columns)));
+    }
+
+    pub fn tree_root_changed(&self, root: (i64, Option<RowKey>)) -> bool {
+        self.0
+            .tree_root
+            .get()
+            .is_some_and(|previous| previous != root)
+    }
+
+    pub fn remember_tree_root(&self, root: (i64, Option<RowKey>)) {
+        self.0.tree_root.set(Some(root));
+    }
+}
+
+/// Visible columns in declaration order. The default requests every column.
+#[doc(hidden)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct TableColumnWindow(Option<Rc<VisibleColumns>>);
+
+#[derive(Debug, PartialEq, Eq)]
+struct VisibleColumns {
+    indices: Box<[usize]>,
+    count: usize,
+}
+
+impl TableColumnWindow {
+    pub fn new(visible: impl IntoIterator<Item = bool>) -> Self {
+        let mut indices = Vec::new();
+        let mut count = 0;
+        for (index, visible) in visible.into_iter().enumerate() {
+            if visible {
+                indices.push(index);
+            }
+            count = index + 1;
+        }
+        Self((indices.len() != count).then(|| {
+            Rc::new(VisibleColumns {
+                indices: indices.into_boxed_slice(),
+                count,
+            })
+        }))
+    }
+
+    pub fn includes(&self, column: usize) -> bool {
+        self.dense_index(column).is_some()
+    }
+
+    pub fn dense_index(&self, column: usize) -> Option<usize> {
+        self.0.as_ref().map_or(Some(column), |visible| {
+            visible.indices.binary_search(&column).ok()
+        })
+    }
+
+    pub fn logical_index(&self, index: usize) -> usize {
+        self.0
+            .as_ref()
+            .map_or(index, |visible| visible.indices[index])
+    }
+
+    pub fn logical_len(&self, materialized: usize) -> usize {
+        self.0
+            .as_ref()
+            .map_or(materialized, |visible| visible.count)
+    }
+
+    pub fn columns(&self, count: usize) -> impl Iterator<Item = usize> + '_ {
+        self.0
+            .iter()
+            .flat_map(move |visible| {
+                visible
+                    .indices
+                    .iter()
+                    .copied()
+                    .take_while(move |&index| index < count)
+            })
+            .chain(0..if self.0.is_none() { count } else { 0 })
+    }
+}
+
+impl PartialEq for ListRowRenderer {
+    fn eq(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl fmt::Debug for ListRowRenderer {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ListRowRenderer")
+            .finish_non_exhaustive()
+    }
 }
 
 pub struct RowLifetime(pub(crate) Option<Weak<()>>);
@@ -68,9 +240,19 @@ pub struct ListRowLocator(Rc<dyn RowPositions>);
 
 trait RowPositions {
     fn first_position(&self, candidates: &[(RowKey, usize)]) -> Option<(usize, usize)>;
+    fn key_at(&self, index: usize) -> Option<RowKey>;
+    fn position_of_source_key(&self, key: RowKey, source_index: usize) -> Option<usize>;
 }
 
 impl<M: ListModel> RowPositions for M {
+    fn position_of_source_key(&self, key: RowKey, source_index: usize) -> Option<usize> {
+        self.index_of_source_key(key, source_index)
+    }
+
+    fn key_at(&self, index: usize) -> Option<RowKey> {
+        (index < self.row_count()).then(|| self.row_key(index))
+    }
+
     fn first_position(&self, candidates: &[(RowKey, usize)]) -> Option<(usize, usize)> {
         let &(first, hint) = candidates.first()?;
         let count = self.row_count();
@@ -117,6 +299,14 @@ impl ListRowLocator {
     pub fn first_position(&self, candidates: &[(RowKey, usize)]) -> Option<(usize, usize)> {
         self.0.first_position(candidates)
     }
+
+    pub fn key_at(&self, index: usize) -> Option<RowKey> {
+        self.0.key_at(index)
+    }
+
+    pub(crate) fn position_of_source_key(&self, key: RowKey, source_index: usize) -> Option<usize> {
+        self.0.position_of_source_key(key, source_index)
+    }
 }
 
 impl PartialEq for ListRowLocator {
@@ -137,9 +327,30 @@ impl fmt::Debug for ListRowLocator {
 pub fn standard_list_rows<T: Clone + PartialEq>(
     model: &VecModel<T>,
     range: Range<usize>,
+    label: impl FnMut(T) -> String,
+) -> Vec<Node> {
+    standard_list_rows_at(model, range, label)
+}
+
+#[doc(hidden)]
+pub fn standard_list_rows_in_view<T: Clone + PartialEq>(
+    rows: &TableRows<VecModel<T>>,
+    range: Range<usize>,
+    label: impl FnMut(T) -> String,
+) -> Vec<Node> {
+    standard_list_rows_at(
+        rows.source(),
+        range.filter_map(|row| rows.positions().source_index(row)),
+        label,
+    )
+}
+
+fn standard_list_rows_at<T: Clone + PartialEq>(
+    model: &VecModel<T>,
+    indices: impl Iterator<Item = usize>,
     mut label: impl FnMut(T) -> String,
 ) -> Vec<Node> {
-    range
+    indices
         .filter_map(|index| {
             let value = model.row(index)?;
             let key = model.row_key(index)?;
@@ -157,20 +368,165 @@ pub fn standard_table_rows<T, const COLUMNS: usize>(
     range: Range<usize>,
     project: impl Fn(&T) -> [String; COLUMNS],
 ) -> Vec<Node> {
+    standard_table_rows_with_header(model, range, |item| (None, project(item)))
+}
+
+#[doc(hidden)]
+pub fn standard_table_rows_with_header<T, const COLUMNS: usize>(
+    model: &VecModel<T>,
+    range: Range<usize>,
+    project: impl Fn(&T) -> (Option<String>, [String; COLUMNS]),
+) -> Vec<Node> {
+    standard_table_rows_at(model, range, [None; COLUMNS], project)
+}
+
+#[doc(hidden)]
+pub fn standard_table_rows_in_order<T, const COLUMNS: usize>(
+    rows: &TableRows<VecModel<T>>,
+    range: Range<usize>,
+    project: impl Fn(&T) -> (Option<String>, [String; COLUMNS]),
+) -> Vec<Node> {
+    standard_table_rows_with_editors_in_order(rows, range, [None; COLUMNS], project)
+}
+
+#[doc(hidden)]
+pub fn standard_table_rows_with_editors_in_order<T, const COLUMNS: usize>(
+    rows: &TableRows<VecModel<T>>,
+    range: Range<usize>,
+    editors: [Option<TableCellEditor>; COLUMNS],
+    project: impl Fn(&T) -> (Option<String>, [String; COLUMNS]),
+) -> Vec<Node> {
+    standard_table_rows_at(
+        rows.source(),
+        range.filter_map(|index| rows.positions().source_index(index)),
+        editors,
+        project,
+    )
+}
+
+/// Build only the visible cells and retain their declaration-order addresses.
+#[doc(hidden)]
+pub fn project_standard_table_rows<T>(
+    rows: &TableRows<VecModel<T>>,
+    range: Range<usize>,
+    columns: &TableColumnWindow,
+    column_count: usize,
+    header: impl Fn(&T) -> Option<String>,
+    cell: impl Fn(&T, usize) -> String,
+    editor: impl Fn(usize) -> Option<TableCellEditor>,
+) -> Vec<Node> {
+    let model = rows.source();
+    let visible: Vec<_> = columns
+        .columns(column_count)
+        .map(|column| (column, editor(column)))
+        .collect();
     range
         .filter_map(|index| {
+            let index = rows.positions().source_index(index)?;
             let key = model.row_key(index)?;
-            let cells = model.project_row(index, &project)?;
-            let mut row = Node::new("TableRow", None);
-            row.row_key = Some(key);
-            row.children.extend(cells.map(|text| {
-                let mut cell = Node::new("TableCell", None);
-                cell.properties.insert("text", text.into());
-                cell
-            }));
+            model.project_row(index, |item| {
+                let mut row = projected_table_row(key, header(item));
+                row.table_column_window = columns.clone();
+                row.children.extend(
+                    visible
+                        .iter()
+                        .map(|&(column, editor)| projected_table_cell(cell(item, column), editor)),
+                );
+                row
+            })
+        })
+        .collect()
+}
+
+/// The model field type used to validate a projected cell's text draft.
+#[doc(hidden)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TableCellEditor {
+    String,
+    Int,
+    Float,
+    Bool,
+    Date,
+    Time,
+}
+
+impl TableCellEditor {
+    pub fn parse(self, text: &str) -> Option<Value> {
+        let trimmed = text.trim();
+        match self {
+            Self::String => Some(Value::String(text.into())),
+            Self::Int => trimmed.parse().ok().map(Value::Int),
+            Self::Float => trimmed
+                .parse::<f64>()
+                .ok()
+                .filter(|number| number.is_finite())
+                .map(Value::Float),
+            Self::Bool => crate::table_paste_bool(text).map(Value::Bool),
+            Self::Date => {
+                let [year, month, day] = parse_cell_parts(trimmed, '-')?;
+                Date::new(year, month, day).map(Value::Date)
+            }
+            Self::Time => {
+                let [hour, minute, second] = parse_cell_parts(trimmed, ':')?;
+                Time::new(hour, minute, second).map(Value::Time)
+            }
+        }
+    }
+
+    pub fn accepts(self, text: &str) -> bool {
+        self == Self::String || self.parse(text).is_some()
+    }
+}
+
+fn parse_cell_parts(text: &str, separator: char) -> Option<[i64; 3]> {
+    let mut parts = text.split(separator);
+    let values = [
+        parts.next()?.parse().ok()?,
+        parts.next()?.parse().ok()?,
+        parts.next()?.parse().ok()?,
+    ];
+    parts.next().is_none().then_some(values)
+}
+
+fn standard_table_rows_at<T, const COLUMNS: usize>(
+    model: &VecModel<T>,
+    indices: impl Iterator<Item = usize>,
+    editors: [Option<TableCellEditor>; COLUMNS],
+    project: impl Fn(&T) -> (Option<String>, [String; COLUMNS]),
+) -> Vec<Node> {
+    indices
+        .filter_map(|index| {
+            let key = model.row_key(index)?;
+            let (header, cells) = model.project_row(index, &project)?;
+            let mut row = projected_table_row(key, header);
+            row.children.extend(
+                cells
+                    .into_iter()
+                    .zip(editors)
+                    .map(|(text, editor)| projected_table_cell(text, editor)),
+            );
             Some(row)
         })
         .collect()
+}
+
+fn projected_table_row(key: RowKey, header: Option<String>) -> Node {
+    let mut row = Node::new("TableRow", None);
+    row.row_key = Some(key);
+    if let Some(header) = header {
+        row.properties.insert("row-header-text", header.into());
+    }
+    row
+}
+
+fn projected_table_cell(text: String, editor: Option<TableCellEditor>) -> Node {
+    let mut cell = Node::new("TableCell", None);
+    cell.properties.insert("text", text.into());
+    if editor.is_some() {
+        cell.properties.insert("editable", true.into());
+        cell.table_cell_editor = editor;
+    }
+    cell
 }
 
 pub trait ListModel {
@@ -192,8 +548,24 @@ pub trait ListModel {
     fn index_of_key(&self, key: RowKey) -> Option<usize> {
         (0..self.row_count()).find(|&index| self.row_key(index) == key)
     }
+    #[doc(hidden)]
+    fn index_of_source_key(&self, key: RowKey, source_index: usize) -> Option<usize> {
+        if source_index < self.row_count() && self.row_key(source_index) == key {
+            Some(source_index)
+        } else {
+            self.index_of_key(key)
+        }
+    }
     fn row_lifetime(&self, key: RowKey) -> RowLifetime;
     fn structure_stamp(&self) -> (u64, u64);
+    #[doc(hidden)]
+    fn source_structure_stamp(&self) -> (u64, u64) {
+        self.structure_stamp()
+    }
+    #[doc(hidden)]
+    fn visit_source_row_keys(&self, visit: impl FnMut(RowKey)) {
+        self.visit_row_keys(0..self.row_count(), visit);
+    }
 }
 
 impl ListModel for i64 {
@@ -211,6 +583,7 @@ impl ListModel for i64 {
         RowKey {
             model: 0,
             row: row as u64,
+            scope: 0,
         }
     }
     fn row_lifetime(&self, _: RowKey) -> RowLifetime {
@@ -254,5 +627,83 @@ impl<T: Clone + PartialEq> ListModel for VecModel<T> {
     }
     fn structure_stamp(&self) -> (u64, u64) {
         self.structure_stamp()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn standard_table_projects_values_and_editor_flags_only_for_requested_columns() {
+        use std::cell::RefCell;
+
+        let model = Rc::new(VecModel::from(vec!["A".to_owned(), "B".to_owned()]));
+        let rows = crate::TableRowOrder::default().rows(model.clone());
+        let values = RefCell::new(Vec::new());
+        let flags = RefCell::new(Vec::new());
+        let view = project_standard_table_rows(
+            &rows,
+            0..2,
+            &TableColumnWindow::new(vec![true, false, true, false]),
+            4,
+            |item| Some(item.clone()),
+            |item, column| {
+                values.borrow_mut().push((item.clone(), column));
+                format!("{item}:{column}")
+            },
+            |column| {
+                flags.borrow_mut().push(column);
+                Some(TableCellEditor::String)
+            },
+        );
+        assert_eq!(*flags.borrow(), [0, 2]);
+        assert_eq!(
+            values
+                .borrow()
+                .iter()
+                .map(|(_, column)| *column)
+                .collect::<Vec<_>>(),
+            [0, 2, 0, 2]
+        );
+        assert_eq!(view[1].row_key, model.row_key(1));
+        assert_eq!(view[1].text("row-header-text"), Some("B"));
+        assert_eq!(view[1].child_at(2).unwrap().text("text"), Some("B:2"));
+        assert_eq!(
+            view[1].child_at(2).unwrap().table_cell_editor,
+            Some(TableCellEditor::String)
+        );
+        assert!(view[1].child_at(1).is_none());
+        assert_eq!(view[1].children.len(), 2);
+    }
+
+    #[test]
+    fn projected_cell_values_validate_scalar_ranges_and_preserve_strings() {
+        use TableCellEditor::*;
+        assert_eq!(
+            String.parse("  device  "),
+            Some(Value::String("  device  ".into()))
+        );
+        assert_eq!(Int.parse(" -42 "), Some(Value::Int(-42)));
+        assert!(!Int.accepts("9223372036854775808"));
+        assert_eq!(Float.parse("1.25e2"), Some(Value::Float(125.0)));
+        for text in ["NaN", "inf", "1e500"] {
+            assert!(!Float.accepts(text));
+        }
+        assert_eq!(Bool.parse("true"), Some(Value::Bool(true)));
+        assert_eq!(Bool.parse("0"), Some(Value::Bool(false)));
+        assert!(!Bool.accepts("2"));
+        assert_eq!(
+            Date.parse("2000-02-29"),
+            crate::Date::new(2000, 2, 29).map(Value::Date)
+        );
+        assert!(!Date.accepts("1900-02-29"));
+        assert!(!Date.accepts("2000-02-29-01"));
+        assert_eq!(
+            Time.parse("23:59:59"),
+            crate::Time::new(23, 59, 59).map(Value::Time)
+        );
+        assert!(!Time.accepts("24:00:00"));
+        assert!(!Time.accepts("12:34"));
     }
 }

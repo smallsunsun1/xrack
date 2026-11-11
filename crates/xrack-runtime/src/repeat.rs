@@ -1,4 +1,4 @@
-use crate::{ListModel, Node, Property};
+use crate::{ChangeSignal, ListModel, Node, Property, TableColumnWindow};
 use std::{
     cell::RefCell,
     collections::{BTreeMap, BTreeSet},
@@ -43,6 +43,8 @@ impl<Item: Clone + PartialEq, State> Row<Item, State> {
 pub struct Repeater<Model: ListModel, State> {
     rows: RefCell<BTreeMap<usize, Row<Model::Item, State>>>,
     model: Property<Rc<Model>>,
+    columns: RefCell<TableColumnWindow>,
+    columns_changed: ChangeSignal,
 }
 
 impl<Model: ListModel, State> Default for Repeater<Model, State> {
@@ -50,11 +52,22 @@ impl<Model: ListModel, State> Default for Repeater<Model, State> {
         Self {
             rows: RefCell::default(),
             model: Property::default(),
+            columns: RefCell::default(),
+            columns_changed: ChangeSignal::default(),
         }
     }
 }
 
 impl<Model: ListModel, State: Default> Repeater<Model, State> {
+    #[doc(hidden)]
+    pub fn column_window(&self, columns: &TableColumnWindow) -> &ChangeSignal {
+        if &*self.columns.borrow() != columns {
+            self.columns.replace(columns.clone());
+            self.columns_changed.notify();
+        }
+        &self.columns_changed
+    }
+
     pub fn resolve_model(&self, model: impl FnOnce() -> Model) -> Rc<Model> {
         self.model.get(|| Rc::new(model()))
     }
@@ -75,11 +88,29 @@ impl<Model: ListModel, State: Default> Repeater<Model, State> {
         model: impl Fn() -> Model,
         render_row: impl Fn(usize, &dyn Fn() -> Model::Item, &State) -> Node,
     ) -> Node {
+        self.render_container("VerticalLayout", model, render_row)
+    }
+
+    #[doc(hidden)]
+    pub fn render_positioned(
+        &self,
+        model: impl Fn() -> Model,
+        render_row: impl Fn(usize, &dyn Fn() -> Model::Item, &State) -> Node,
+    ) -> Node {
+        self.render_container("Rectangle", model, render_row)
+    }
+
+    fn render_container(
+        &self,
+        kind: &'static str,
+        model: impl Fn() -> Model,
+        render_row: impl Fn(usize, &dyn Fn() -> Model::Item, &State) -> Node,
+    ) -> Node {
         let children = self.render_range(model, 0..4096, render_row);
         if children.is_empty() {
             return Node::hidden();
         }
-        let mut node = Node::new("VerticalLayout", None);
+        let mut node = Node::new(kind, None);
         node.children = children;
         node
     }

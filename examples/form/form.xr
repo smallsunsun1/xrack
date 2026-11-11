@@ -11,11 +11,16 @@ export component FileDialogDemo inherits Window {
 
     in-out property <string> start-directory: "";
     in-out property <FileDialogMode> mode: FileDialogMode.open-file;
-    out property <[string]> paths: [];
+    out property <[string]> paths: picker.selected-files;
+    out property <string> first-path: picker.selected-file;
+    out property <bool> pending: picker.pending;
+    out property <string> callback-path: "";
     out property <string> status: "请选择一个操作";
 
     callback choose(next: FileDialogMode);
     choose(next) => { root.mode = next; picker.open(); }
+    callback choose-folders;
+    choose-folders => { root.choose(FileDialogMode.select-folders); }
 
     picker := FileDialog {
         mode: root.mode;
@@ -23,7 +28,10 @@ export component FileDialogDemo inherits Window {
         directory: root.start-directory;
         file-name: root.mode == FileDialogMode.save-file ? "notes.txt" : "";
         name-filters: ["Text files (*.txt *.md)"];
-        accepted(selection) => { root.paths = selection; root.status = "已选择"; }
+        accepted(selection) => {
+            root.callback-path = picker.selected-file;
+            root.status = picker.pending ? "仍在等待" : "已选择";
+        }
         canceled => { root.status = "已取消"; }
         failed(message) => { root.status = message; }
     }
@@ -33,12 +41,13 @@ export component FileDialogDemo inherits Window {
         Text { text: "系统文件对话框"; font-size: 22px; }
         HorizontalLayout {
             spacing: 8px;
-            open-one := Button { text: "打开文件"; clicked => { root.choose(FileDialogMode.open-file); } }
-            open-many := Button { text: "打开多个"; clicked => { root.choose(FileDialogMode.open-files); } }
-            save-as := Button { text: "另存为"; clicked => { root.choose(FileDialogMode.save-file); } }
-            select-folder := Button { text: "选择目录"; clicked => { root.choose(FileDialogMode.select-folder); } }
+            open-one := Button { enabled: !picker.pending; text: "打开文件"; clicked => { root.choose(FileDialogMode.open-file); } }
+            open-many := Button { enabled: !picker.pending; text: "打开多个"; clicked => { root.choose(FileDialogMode.open-files); } }
+            save-as := Button { enabled: !picker.pending; text: "另存为"; clicked => { root.choose(FileDialogMode.save-file); } }
+            select-folder := Button { enabled: !picker.pending; text: "选择目录"; clicked => { root.choose(FileDialogMode.select-folder); } }
+            select-folders := Button { enabled: !picker.pending; text: "多个目录"; clicked => { root.choose-folders(); } }
         }
-        status := Text { text: root.status; }
+        status := Text { text: picker.pending ? "等待系统面板…" : root.status; }
         ScrollView {
             height: 112px;
             VerticalLayout {

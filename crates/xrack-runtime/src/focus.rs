@@ -28,6 +28,8 @@ pub enum FocusAction {
     Focus,
     Clear,
     Text(TextCommand),
+    EditTableCell { row: i64, column: i64 },
+    CancelTableEdit,
 }
 
 /// A programmatic edit using the same selection, validation and history as keyboard input.

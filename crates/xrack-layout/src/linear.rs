@@ -1,7 +1,7 @@
 use crate::{ButtonContent, Rect, Size, TextMeasurer, dimension, flow, participates_in_flow};
 use xrack_runtime::{
     ControlAction, CrossAxisAlignment, DialogCommand, DialogRole, LayoutAlignment, Node,
-    Orientation, Value, dialog_button_action, is_modal_overlay, is_multiline_text_input,
+    Orientation, Value, dialog_button_action, is_modal_overlay, is_multiline_text_input, is_pane,
     is_text_input, is_toggle,
 };
 
@@ -158,6 +158,7 @@ pub(crate) fn intrinsic_item(kind: &str) -> bool {
             | "StyledText"
             | "Button"
             | "ToolButton"
+            | "RoundButton"
             | "DelayButton"
             | "DialogButton"
             | "Menu"
@@ -195,6 +196,7 @@ impl Padding {
             "ToolBar" => 6.0,
             "GroupBox" => dimension(node, "content-padding").unwrap_or(12.0),
             "PopupWindow" => 12.0,
+            "Pane" | "ControlFrame" => 12.0,
             kind if is_modal_overlay(kind) => 16.0,
             _ => 0.0,
         });
@@ -249,7 +251,9 @@ pub(crate) fn measure(node: &Node, available: Size, text: &mut impl TextMeasurer
 }
 
 fn reflows_at_width(node: &Node) -> bool {
-    flow::uses_flow(node) || crate::label::reflows_at_width(node)
+    flow::uses_flow(node)
+        || crate::label::reflows_at_width(node)
+        || is_pane(node.kind) && node.children.iter().any(reflows_at_width)
 }
 
 pub(crate) fn measurement_width(node: &Node, reference: Size) -> f32 {
@@ -389,6 +393,45 @@ pub(crate) fn measure_with_width(
         crate::flow::measure(node, available, text)
     } else if node.kind == "GridLayout" {
         crate::grid::measure(node, available, text)
+    } else if node.kind == "ToolSeparator" {
+        let padding = dimension(node, "padding").unwrap_or(6.0);
+        let thickness = dimension(node, "stroke-width").unwrap_or(1.0);
+        let long = AxisInfo::flexible(28.0_f32.max(2.0 * padding + 1.0));
+        let short = AxisInfo::fixed(12.0_f32.max(thickness));
+        match node.orientation() {
+            Orientation::Horizontal => Metrics { x: long, y: short },
+            Orientation::Vertical => Metrics { x: short, y: long },
+        }
+    } else if is_pane(node.kind) {
+        let padding = Padding::read(node);
+        let mut inner = padding.inner_size(available);
+        let content_width = dimension(node, "content-width");
+        let content_height = dimension(node, "content-height");
+        if assigned_width.is_none()
+            && relative_width("width").is_none()
+            && let Some(width) = content_width
+        {
+            inner.width = inner.width.min(width);
+        }
+        let mut natural = Size::default();
+        for child in node
+            .children
+            .iter()
+            .filter(|child| participates_in_flow(child))
+        {
+            let metrics = measure(child, inner, text);
+            natural.width = natural
+                .width
+                .max(child.length("x").unwrap_or(0.0) + metrics.x.preferred);
+            natural.height = natural
+                .height
+                .max(child.length("y").unwrap_or(0.0) + metrics.y.preferred);
+        }
+        let padding = padding.size();
+        Metrics {
+            x: AxisInfo::flexible(content_width.unwrap_or(natural.width) + padding.width),
+            y: AxisInfo::flexible(content_height.unwrap_or(natural.height) + padding.height),
+        }
     } else {
         let natural = match node.kind {
             "SwipeDelegate" => node
@@ -426,6 +469,9 @@ pub(crate) fn measure_with_width(
                 Size::new(width, (text.font_size(node) * 1.4 + 10.0).max(34.0))
             }
             "Calendar" => Size::new(294.0, 300.0),
+            "MonthGrid" => Size::new(294.0, 216.0),
+            "DayOfWeekRow" => Size::new(294.0, 32.0),
+            "WeekNumberColumn" => Size::new(44.0, 216.0),
             "Tumbler" => Size::new(112.0, 148.0),
             "TabWidget" | "SwipeView" | "StackView" => Size::new(240.0, 136.0),
             "Page" => crate::page::preferred_size(node, available, text),
@@ -453,7 +499,7 @@ pub(crate) fn measure_with_width(
                 );
                 Size::new(label.width + decoration, label.height.max(26.0))
             }
-            "Button" | "ToolButton" | "DialogButton" | "DelayButton" => {
+            "Button" | "ToolButton" | "RoundButton" | "DialogButton" | "DelayButton" => {
                 let button = ButtonContent::new(node);
                 let icon = button.icon.map_or(0.0, |(_, size)| size);
                 let chrome = 2.0 * button.padding;
@@ -467,10 +513,10 @@ pub(crate) fn measure_with_width(
                         (available.width - chrome - decoration).max(0.0),
                     )
                 };
-                let min = if node.kind == "ToolButton" {
-                    Size::new(34.0, 34.0)
-                } else {
-                    Size::new(64.0, 40.0)
+                let min = match node.kind {
+                    "ToolButton" => Size::new(34.0, 34.0),
+                    "RoundButton" => Size::new(40.0, 40.0),
+                    _ => Size::new(64.0, 40.0),
                 };
                 Size::new(
                     (label.width + decoration + chrome).max(min.width),
@@ -504,6 +550,7 @@ pub(crate) fn measure_with_width(
                     | "StyledText"
                     | "Button"
                     | "ToolButton"
+                    | "RoundButton"
                     | "DialogButton"
                     | "DelayButton"
                     | "Menu"

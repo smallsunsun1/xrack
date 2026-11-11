@@ -61,6 +61,12 @@ fn main() -> std::process::ExitCode {
 
 fn run_records() -> Result<(), String> {
     let mut ui = RecordTableDemo::new();
+    if std::env::args().any(|arg| arg == "--edit-triggers") {
+        ui.set_editing_tools(true);
+        ui.set_target(xrack_runtime::SelectionTarget::Cells);
+        ui.set_selected_click_edit(true);
+        ui.set_typing_edit(true);
+    }
     if std::env::args().any(|arg| arg == "--cells") {
         ui.set_target(xrack_runtime::SelectionTarget::Cells);
     }

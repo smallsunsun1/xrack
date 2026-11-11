@@ -107,7 +107,7 @@ impl Selected {
         match self {
             Self::Rows(rows) => {
                 let mut live = BTreeSet::new();
-                model.visit_row_keys(0..model.row_count(), |key| {
+                model.visit_source_row_keys(|key| {
                     if rows.contains(&key) {
                         live.insert(key);
                     }
@@ -117,7 +117,10 @@ impl Selected {
                 }
             }
             Self::Cells(cells) => {
-                let live = row_keys(model, 0..model.row_count());
+                let mut live = BTreeSet::new();
+                model.visit_source_row_keys(|key| {
+                    live.insert(key);
+                });
                 // A rectangular range can share a single row set across many columns.
                 let mut pruned = HashMap::<_, RowKeys>::new();
                 let cells = Arc::make_mut(cells);
@@ -162,6 +165,13 @@ pub struct TableSelectionSnapshot {
     multiple: bool,
     current_column: Option<usize>,
     selected: Selected,
+    drag_range: Option<CommittedRange>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct CommittedRange {
+    endpoints: [(usize, usize); 2],
+    order: crate::TableColumnOrder,
 }
 
 impl TableSelectionSnapshot {
@@ -186,6 +196,12 @@ impl TableSelectionSnapshot {
     #[doc(hidden)]
     pub fn structure_stamp(&self) -> (u64, u64) {
         self.stamp
+    }
+
+    /// Endpoints of the last replacement drag, in row and logical column indices.
+    pub fn drag_range(&self) -> Option<[(usize, usize); 2]> {
+        let range = self.drag_range.as_ref()?;
+        (range.order == self.order).then_some(range.endpoints)
     }
 
     /// Number of selected rows, cells, or columns, depending on the target.
@@ -233,6 +249,36 @@ impl TableSelectionSnapshot {
             }
     }
 
+    pub fn row_header_selected(&self, row: RowKey) -> bool {
+        match &self.selected {
+            Selected::Rows(rows) => rows.contains(&row),
+            Selected::Cells(cells) => whole_row_selected(cells, self.column_count, row),
+            Selected::Columns(_) => false,
+        }
+    }
+
+    pub fn row_header_action(&self, index: usize, operation: RowSelection) -> TableSelectionAction {
+        match self.target {
+            SelectionTarget::Cells if !self.multiple => {
+                let column = self
+                    .current_column
+                    .filter(|column| *column < self.column_count)
+                    .or_else(|| self.order.iter(self.column_count).next())
+                    .unwrap_or_default();
+                TableSelectionAction::Cell {
+                    row: index,
+                    column,
+                    operation,
+                }
+            }
+            SelectionTarget::Columns => TableSelectionAction::Row {
+                index,
+                operation: RowSelection::Move,
+            },
+            _ => TableSelectionAction::Row { index, operation },
+        }
+    }
+
     /// Resolve selected rows in the model's current order with one model pass.
     pub fn indices(&self, model: &impl ListModel) -> Vec<usize> {
         let keys = self.keys();
@@ -252,6 +298,21 @@ impl TableSelectionSnapshot {
 }
 
 /// Serialize the selected model rows in the supplied visual column order.
+#[doc(hidden)]
+pub fn copy_table_text_in_order<M: ListModel>(
+    rows: &crate::TableRows<M>,
+    table: &Node,
+    columns: &[usize],
+    mut cell: impl FnMut(usize, usize, &M::Item) -> Option<String>,
+) -> Option<String> {
+    if table.standard_list_stamp != Some(rows.positions().stamp()) {
+        return None;
+    }
+    copy_table_text(rows, table, columns, |row, column, item| {
+        cell(rows.positions().source_index(row)?, column, item)
+    })
+}
+
 #[doc(hidden)]
 pub fn copy_table_text<M: ListModel>(
     model: &M,
@@ -419,12 +480,14 @@ pub struct TableSelectionChange {
 #[derive(Default)]
 struct Selection {
     stamp: Option<(u64, u64)>,
+    source_stamp: Option<(u64, u64)>,
     target: SelectionTarget,
     multiple: bool,
     selected: Option<Selected>,
     row_anchor: Option<(usize, RowKey)>,
     column_anchor: Option<usize>,
     current_column: Option<usize>,
+    drag_range: Option<CommittedRange>,
 }
 
 impl Selection {
@@ -435,11 +498,13 @@ impl Selection {
         target: SelectionTarget,
         multiple: bool,
     ) {
+        let source = model.source_structure_stamp();
         if self.target != target || self.multiple != multiple {
             *self = Self {
                 target,
                 multiple,
                 stamp: Some(stamp),
+                source_stamp: Some(source),
                 ..Self::default()
             };
             return;
@@ -447,11 +512,13 @@ impl Selection {
         if self.stamp == Some(stamp) {
             return;
         }
+        self.drag_range = None;
+        let source_changed = self.source_stamp.replace(source) != Some(source);
         if let Some(previous) = self.stamp.replace(stamp) {
             if previous.0 != stamp.0 && target != SelectionTarget::Columns {
                 self.selected = Some(Selected::empty(target));
                 self.row_anchor = None;
-            } else if let Some(selected) = &mut self.selected {
+            } else if source_changed && let Some(selected) = &mut self.selected {
                 selected.retain_live(model);
             }
         }
@@ -546,6 +613,27 @@ fn select_cells(
     }
 }
 
+fn whole_row_selected(cells: &ColumnCells, column_count: usize, row: RowKey) -> bool {
+    column_count > 0
+        && cells.len() == column_count
+        && cells.values().all(|keys| keys.contains(&row))
+}
+
+fn remove_row_from_cells(cells: &mut Arc<ColumnCells>, row: RowKey) {
+    let mut trimmed = HashMap::new();
+    Arc::make_mut(cells).retain(|_, keys| {
+        *keys = trimmed
+            .entry(Arc::as_ptr(keys))
+            .or_insert_with(|| {
+                let mut remaining = (**keys).clone();
+                remaining.remove(&row);
+                Arc::new(remaining)
+            })
+            .clone();
+        !keys.is_empty()
+    });
+}
+
 fn toggle<T: Ord>(set: &mut BTreeSet<T>, key: T) {
     if !set.remove(&key) {
         set.insert(key);
@@ -561,6 +649,11 @@ pub struct TableSelection {
 }
 
 impl TableSelection {
+    pub fn has_explicit_selection(&self) -> bool {
+        self.changed.track();
+        self.state.borrow().selected.is_some()
+    }
+
     pub fn snapshot(
         &self,
         model: &impl ListModel,
@@ -581,6 +674,7 @@ impl TableSelection {
             multiple,
             current_column: state.current_column,
             selected: state.selected(model, current),
+            drag_range: state.drag_range.clone(),
         }
     }
 
@@ -602,6 +696,7 @@ impl TableSelection {
         let previous = state.selected(model, current);
         let mut next = previous.clone();
         let mut cursor = None;
+        let mut drag_range = None;
         let old_column = state.current_column;
         let operation_for = |operation| {
             if view.multiple || operation == RowSelection::Move {
@@ -632,6 +727,43 @@ impl TableSelection {
                             } else {
                                 Arc::make_mut(rows).extend(keys);
                             }
+                        }
+                        RowSelection::Move => {}
+                    }
+                } else if let Selected::Cells(cells) = &mut next
+                    && view.multiple
+                    && column_count > 0
+                {
+                    match operation {
+                        RowSelection::Replace | RowSelection::Toggle => {
+                            let key = model.row_key(index);
+                            state.row_anchor = Some((index, key));
+                            state.column_anchor = state
+                                .current_column
+                                .or_else(|| view.order.iter(column_count).next());
+                            state.current_column = state.column_anchor;
+                            if operation == RowSelection::Toggle
+                                && whole_row_selected(cells, column_count, key)
+                            {
+                                remove_row_from_cells(cells, key);
+                            } else {
+                                select_cells(
+                                    cells,
+                                    0..column_count,
+                                    Arc::new(BTreeSet::from([key])),
+                                    operation == RowSelection::Toggle,
+                                );
+                            }
+                        }
+                        RowSelection::Extend | RowSelection::AddRange => {
+                            let rows =
+                                Arc::new(row_keys(model, state.row_range(model, current, index)));
+                            select_cells(
+                                cells,
+                                0..column_count,
+                                rows,
+                                operation == RowSelection::AddRange,
+                            );
                         }
                         RowSelection::Move => {}
                     }
@@ -713,6 +845,10 @@ impl TableSelection {
                 && first_column < column_count
                 && column < column_count =>
             {
+                drag_range = (!additive).then(|| CommittedRange {
+                    endpoints: [(first_row, first_column), (row, column)],
+                    order: view.order.clone(),
+                });
                 match &mut next {
                     Selected::Rows(rows) => {
                         let range = row_keys(model, span(first_row, row));
@@ -753,6 +889,9 @@ impl TableSelection {
                     SelectionTarget::Cells => count.saturating_mul(column_count),
                 };
                 if previous.len() == total {
+                    if state.drag_range.take().is_some() {
+                        self.changed.notify();
+                    }
                     return Some(TableSelectionChange {
                         current: None,
                         column_changed: false,
@@ -787,8 +926,10 @@ impl TableSelection {
         }
         let selected_count = (next != previous).then_some(next.len());
         let column_changed = state.current_column != old_column;
+        let range_changed = state.drag_range != drag_range;
+        state.drag_range = drag_range;
         state.selected = Some(next);
-        if selected_count.is_some() || column_changed {
+        if selected_count.is_some() || column_changed || range_changed {
             self.changed.notify();
         }
         Some(TableSelectionChange {
@@ -826,13 +967,18 @@ mod tests {
         let (_, order) = crate::TableColumnOrder::default().moved(3, 2, 0).unwrap();
         let columns = selection
             .snapshot(&model, Some(1), SelectionTarget::Columns, 3, true)
-            .with_column_order(order);
+            .with_column_order(order.clone());
         let change = selection.apply(&model, &columns, Some(1), action).unwrap();
         assert_eq!(change.current, None);
         assert_eq!(change.selected_count, Some(2));
         let view = selection.snapshot(&model, Some(1), SelectionTarget::Columns, 3, true);
         assert_eq!(view.columns().iter().copied().collect::<Vec<_>>(), [0, 2]);
         assert_eq!(view.current_column(), Some(0));
+        assert_eq!(view.drag_range(), None);
+        assert_eq!(
+            view.with_column_order(order).drag_range(),
+            Some([(4, 2), (1, 0)])
+        );
         let single = selection.snapshot(&model, Some(1), SelectionTarget::Columns, 3, false);
         assert!(selection.apply(&model, &single, Some(1), action).is_none());
     }

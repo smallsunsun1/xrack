@@ -25,11 +25,16 @@ impl EditorKey {
         let row = target.row_key.and_then(|key| {
             (1..=path.len()).rev().find_map(|depth| {
                 let node = scene.at_path(&path[..depth])?;
-                (node.kind == "ListRow" && node.row_key == Some(key)).then_some((depth - 1, key))
+                (node.kind == "ListRow" && node.routing_row_key() == Some(key))
+                    .then_some((depth - 1, key))
             })
         });
-        if let Some((slot, _)) = row {
-            path[slot] = 0;
+        if let Some((slot, key)) = row {
+            if key.has_view_scope() {
+                path.drain(..=slot);
+            } else {
+                path[slot] = 0;
+            }
         }
         Self { path, row }
     }

@@ -1,4 +1,6 @@
-use crate::{RowKey, TablePasteInput, VecModel, table_clipboard::stage_table_text};
+use crate::{
+    Property, RowKey, TablePasteInput, TableRows, VecModel, table_clipboard::stage_table_text,
+};
 use std::{
     cell::RefCell,
     collections::{BTreeMap, VecDeque},
@@ -10,7 +12,7 @@ const MAX_HISTORY_BATCHES: usize = 64;
 
 type FieldChange<T> = Box<dyn Fn(&mut T, bool) -> bool>;
 
-/// A typed patch for just the fields changed by a paste.
+/// A typed patch for the fields changed by one table edit.
 #[doc(hidden)]
 pub struct TableRowPatch<T> {
     fields: Vec<FieldChange<T>>,
@@ -68,6 +70,47 @@ struct Batch<T> {
     bytes: usize,
 }
 
+impl<T> Batch<T> {
+    fn new() -> Self {
+        Self {
+            rows: Vec::new(),
+            bytes: size_of::<Self>(),
+        }
+    }
+
+    fn capture(
+        &mut self,
+        key: RowKey,
+        index: usize,
+        before: &T,
+        after: &T,
+        capture: impl Fn(&T, &T, &mut TableRowPatch<T>),
+    ) -> bool {
+        let mut patch = TableRowPatch {
+            fields: Vec::new(),
+            bytes: 0,
+            limit: MAX_HISTORY_BYTES - self.bytes,
+        };
+        capture(before, after, &mut patch);
+        if patch.bytes > patch.limit {
+            return false;
+        }
+        if !patch.fields.is_empty() {
+            let bytes = self.bytes + patch.bytes + 2 * size_of::<HistoryRow<T>>();
+            if bytes > MAX_HISTORY_BYTES {
+                return false;
+            }
+            self.bytes = bytes;
+            self.rows.push(HistoryRow {
+                key,
+                hint: index,
+                patch,
+            });
+        }
+        true
+    }
+}
+
 struct History<T> {
     model: Option<u64>,
     batches: VecDeque<Batch<T>>,
@@ -87,6 +130,15 @@ impl<T> Default for History<T> {
 }
 
 impl<T> History<T> {
+    fn next(&self, redo: bool) -> Option<usize> {
+        let index = if redo {
+            Some(self.cursor)
+        } else {
+            self.cursor.checked_sub(1)
+        };
+        index.filter(|&index| index < self.batches.len())
+    }
+
     fn bind(&mut self, model: u64) {
         if self.model != Some(model) {
             *self = Self {
@@ -117,17 +169,59 @@ impl<T> History<T> {
     }
 }
 
-/// Paste history belongs to one table instance and follows stable model row keys.
+/// Edit history belongs to one table instance and follows stable model row keys.
 #[doc(hidden)]
-pub struct TablePasteHistory<T>(RefCell<History<T>>);
+pub struct TableEditHistory<T> {
+    history: RefCell<History<T>>,
+    availability: [Property<Option<u64>>; 2],
+}
 
-impl<T> Default for TablePasteHistory<T> {
+#[doc(hidden)]
+pub type TablePasteHistory<T> = TableEditHistory<T>;
+
+impl<T> Default for TableEditHistory<T> {
     fn default() -> Self {
-        Self(RefCell::default())
+        Self {
+            history: RefCell::default(),
+            availability: Default::default(),
+        }
     }
 }
 
-impl<T: Clone + PartialEq> TablePasteHistory<T> {
+impl<T: Clone + PartialEq> TableEditHistory<T> {
+    pub fn clear(&self) {
+        *self.history.borrow_mut() = History::default();
+        for available in &self.availability {
+            available.set_if_changed(None);
+        }
+    }
+
+    /// An entry exists for this model. Replay checks its field values before writing.
+    pub fn can_replay(&self, model: &VecModel<T>, redo: bool) -> bool {
+        self.availability[usize::from(redo)].get(|| None) == Some(model.edit_stamp().0)
+    }
+
+    pub fn commit_cell(
+        &self,
+        model: &VecModel<T>,
+        index: usize,
+        key: RowKey,
+        update: impl FnOnce(&T) -> Option<T>,
+        capture: impl Fn(&T, &T, &mut TableRowPatch<T>),
+    ) -> bool {
+        let mut batch = Batch::new();
+        let mut recorded = false;
+        let changed = model.update_row_if_key(index, key, |current| {
+            let next = update(current)?;
+            recorded = batch.capture(key, index, current, &next, capture);
+            (!recorded || !batch.rows.is_empty()).then_some(next)
+        });
+        if changed {
+            self.record_commit(key.model, recorded.then_some(batch));
+        }
+        changed
+    }
+
     pub fn paste(
         &self,
         model: &VecModel<T>,
@@ -135,69 +229,91 @@ impl<T: Clone + PartialEq> TablePasteHistory<T> {
         assign: impl FnMut(usize, usize, &T, &mut T, &str) -> Option<()>,
         capture: impl Fn(&T, &T, &mut TableRowPatch<T>),
     ) -> Option<bool> {
-        let mut batch = Some(Batch {
-            rows: Vec::new(),
-            bytes: size_of::<Batch<T>>(),
-        });
-        let staged = stage_table_text(model, input, assign, |index, before, after| {
-            let Some(current) = &mut batch else {
-                return;
-            };
-            let mut patch = TableRowPatch {
-                fields: Vec::new(),
-                bytes: 0,
-                limit: MAX_HISTORY_BYTES - current.bytes,
-            };
-            capture(before, after, &mut patch);
-            if patch.bytes > patch.limit {
-                batch = None;
-            } else if !patch.fields.is_empty() {
-                current.bytes += patch.bytes + 2 * size_of::<HistoryRow<T>>();
-                if current.bytes > MAX_HISTORY_BYTES {
+        self.paste_mapped(model, input, Some, assign, capture)
+    }
+
+    pub fn paste_in_order(
+        &self,
+        model: &TableRows<VecModel<T>>,
+        input: TablePasteInput<'_>,
+        assign: impl FnMut(usize, usize, &T, &mut T, &str) -> Option<()>,
+        capture: impl Fn(&T, &T, &mut TableRowPatch<T>),
+    ) -> Option<bool> {
+        self.paste_mapped(
+            model.source(),
+            input,
+            |row| model.positions().source_index(row),
+            assign,
+            capture,
+        )
+    }
+
+    fn paste_mapped(
+        &self,
+        model: &VecModel<T>,
+        input: TablePasteInput<'_>,
+        source_index: impl Fn(usize) -> Option<usize>,
+        assign: impl FnMut(usize, usize, &T, &mut T, &str) -> Option<()>,
+        capture: impl Fn(&T, &T, &mut TableRowPatch<T>),
+    ) -> Option<bool> {
+        let mut batch = Some(Batch::new());
+        let staged = stage_table_text(
+            model,
+            input,
+            source_index,
+            assign,
+            |index, before, after| {
+                if let Some(current) = &mut batch
+                    && !model
+                        .row_key(index)
+                        .is_some_and(|key| current.capture(key, index, before, after, &capture))
+                {
                     batch = None;
-                } else if let Some(key) = model.row_key(index) {
-                    current.rows.push(HistoryRow {
-                        key,
-                        hint: index,
-                        patch,
-                    });
                 }
-            }
-        })?;
+            },
+        )?;
         if batch.as_ref().is_some_and(|batch| batch.rows.is_empty()) {
             return Some(false);
         }
-        let changed = model.replace_range_if_current(input.stamp, input.row, staged);
+        let changed = model.replace_rows_if_current(input.stamp, staged);
         if changed {
-            let mut history = self.0.borrow_mut();
-            history.bind(input.stamp.0);
-            if let Some(batch) = batch.filter(|batch| !batch.rows.is_empty()) {
-                history.push(batch);
-            } else {
-                // An unrecordable commit is a boundary for older edits.
-                *history = History {
-                    model: Some(input.stamp.0),
-                    ..History::default()
-                };
-            }
+            self.record_commit(input.stamp.0, batch);
         }
         Some(changed)
     }
 
+    fn record_commit(&self, model: u64, batch: Option<Batch<T>>) {
+        let mut history = self.history.borrow_mut();
+        history.bind(model);
+        if let Some(batch) = batch {
+            history.push(batch);
+        } else {
+            // An unrecordable commit is a boundary for older edits.
+            *history = History {
+                model: Some(model),
+                ..History::default()
+            };
+        }
+        self.publish(&history);
+    }
+
+    fn publish(&self, history: &History<T>) {
+        for (available, redo) in self.availability.iter().zip([false, true]) {
+            available.set_if_changed(history.model.filter(|_| history.next(redo).is_some()));
+        }
+    }
+
     pub fn replay(&self, model: &VecModel<T>, redo: bool) -> bool {
         let stamp = model.edit_stamp();
-        let mut history = self.0.borrow_mut();
+        let mut history = self.history.borrow_mut();
         history.bind(stamp.0);
-        let index = if redo {
-            Some(history.cursor)
-        } else {
-            history.cursor.checked_sub(1)
-        };
-        let Some(index) = index.filter(|&index| index < history.batches.len()) else {
+        let Some(index) = history.next(redo) else {
+            self.publish(&history);
             return false;
         };
         let Some(staged) = stage_replay(model, &history.batches[index], redo) else {
             history.remove(index);
+            self.publish(&history);
             return false;
         };
         if !model.replace_rows_if_current(stamp, staged) {
@@ -208,6 +324,7 @@ impl<T: Clone + PartialEq> TablePasteHistory<T> {
         } else {
             history.cursor -= 1;
         }
+        self.publish(&history);
         true
     }
 }
@@ -289,13 +406,25 @@ mod tests {
     fn no_op_preserves_redo_and_a_new_commit_branches_history() {
         let history = TablePasteHistory::default();
         let model = VecModel::from(vec![String::from("original")]);
+        let key = model.row_key(0).unwrap();
+        let edit = |text: &str| {
+            history.commit_cell(
+                &model,
+                0,
+                key,
+                |_| Some(text.into()),
+                |before, after, patch| {
+                    patch.record(before, after, |row| row, PartialEq::eq, String::len)
+                },
+            )
+        };
         assert!(paste(&history, &model, "first", String::len));
         assert!(history.replay(&model, false));
-        assert!(!paste(&history, &model, "original", String::len));
+        assert!(!edit("original"));
         assert!(history.replay(&model, true));
         assert_eq!(model.row(0).as_deref(), Some("first"));
         assert!(history.replay(&model, false));
-        assert!(paste(&history, &model, "branch", String::len));
+        assert!(edit("branch"));
         assert!(!history.replay(&model, true));
         assert!(history.replay(&model, false));
         assert_eq!(model.row(0).as_deref(), Some("original"));
@@ -321,5 +450,33 @@ mod tests {
         assert_eq!(model.row(0).as_deref(), Some("too large to retain"));
         assert!(!history.replay(&model, false));
         assert!(!history.replay(&model, true));
+    }
+
+    #[test]
+    fn history_bindings_only_invalidate_when_their_direction_changes() {
+        let history = TableEditHistory::default();
+        let model = VecModel::from(vec![String::from("original")]);
+        let undo = Property::default();
+        let redo = Property::default();
+        assert!(!undo.get(|| history.can_replay(&model, false)));
+        assert!(!redo.get(|| history.can_replay(&model, true)));
+        assert!(paste(&history, &model, "first", String::len));
+        assert!(undo.is_dirty());
+        assert!(!redo.is_dirty());
+        assert!(undo.get(|| history.can_replay(&model, false)));
+        assert!(paste(&history, &model, "second", String::len));
+        assert!(!undo.is_dirty());
+        assert!(history.replay(&model, false));
+        assert!(!undo.is_dirty());
+        assert!(redo.is_dirty());
+        assert!(redo.get(|| history.can_replay(&model, true)));
+        assert!(history.replay(&model, false));
+        assert!(!redo.is_dirty());
+        assert!(!undo.get(|| history.can_replay(&model, false)));
+        assert!(model.set_row(0, "conflict".into()));
+        assert!(!history.replay(&model, true));
+        assert!(redo.get(|| history.can_replay(&model, true)));
+        assert!(!history.replay(&model, true));
+        assert!(!redo.get(|| history.can_replay(&model, true)));
     }
 }

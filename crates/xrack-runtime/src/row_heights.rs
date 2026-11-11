@@ -1,6 +1,6 @@
 use crate::{
-    ChangeSignal, Length, ListMetrics, ListModel, Property, RowKey, TreeSnapshot, VecModel,
-    list::MAX_ROWS,
+    ChangeSignal, Length, ListMetrics, ListModel, Property, RowKey, TableRowPositions,
+    TreeSnapshot, VecModel, list::MAX_ROWS,
 };
 use std::{
     cell::RefCell,
@@ -84,6 +84,7 @@ struct ProjectionInput {
     stamp: (u64, u64),
     base: f32,
     tree: Option<Arc<TreeSnapshot>>,
+    table_stamp: Option<(u64, u64)>,
 }
 
 type FieldUpdates = Rc<RefCell<BTreeMap<usize, Option<f32>>>>;
@@ -122,7 +123,7 @@ impl RowHeightProjection {
         base: f32,
         project: fn(&T) -> Length,
     ) -> Option<Arc<RowHeights>> {
-        self.project(model, base, None, project)
+        self.project(model, base, None, None, project)
     }
 
     pub fn tree_snapshot<T: 'static>(
@@ -132,7 +133,17 @@ impl RowHeightProjection {
         tree: &Arc<TreeSnapshot>,
         project: fn(&T) -> Length,
     ) -> Option<Arc<RowHeights>> {
-        self.project(model, base, Some(tree), project)
+        self.project(model, base, Some(tree), None, project)
+    }
+
+    pub fn table_snapshot<T: 'static>(
+        &self,
+        model: &VecModel<T>,
+        base: f32,
+        positions: &TableRowPositions,
+        project: fn(&T) -> Length,
+    ) -> Option<Arc<RowHeights>> {
+        self.project(model, base, None, Some(positions), project)
     }
 
     fn project<T: 'static>(
@@ -140,18 +151,24 @@ impl RowHeightProjection {
         model: &VecModel<T>,
         base: f32,
         tree: Option<&Arc<TreeSnapshot>>,
+        table: Option<&TableRowPositions>,
         field: fn(&T) -> Length,
     ) -> Option<Arc<RowHeights>> {
         let stamp = model.structure_stamp();
+        let table_stamp = table.map(TableRowPositions::stamp);
         {
             let mut input = self.input.borrow_mut();
             if input.as_ref().is_none_or(|input| {
-                input.stamp != stamp || input.base != base || !same_arc(input.tree.as_ref(), tree)
+                input.stamp != stamp
+                    || input.base != base
+                    || !same_arc(input.tree.as_ref(), tree)
+                    || input.table_stamp != table_stamp
             }) {
                 *input = Some(ProjectionInput {
                     stamp,
                     base,
                     tree: tree.cloned(),
+                    table_stamp,
                 });
                 self.input_changed.notify();
             }
@@ -222,7 +239,14 @@ impl RowHeightProjection {
                 fields
                     .values
                     .iter()
-                    .filter_map(|(&index, &height)| (height != base).then_some((index, height)))
+                    .filter_map(|(&index, &height)| {
+                        let index = if let Some(table) = table {
+                            table.visual_index(index)?
+                        } else {
+                            index
+                        };
+                        (height != base).then_some((index, height))
+                    })
                     .collect()
             };
             (!sizes.is_empty()).then(|| Arc::new(RowHeights::new(base, sizes, None)))
@@ -241,6 +265,7 @@ fn same_arc<T>(left: Option<&Arc<T>>, right: Option<&Arc<T>>) -> bool {
 #[derive(Default)]
 struct Overrides {
     stamp: Option<(u64, u64)>,
+    source_stamp: Option<(u64, u64)>,
     rows: BTreeMap<RowKey, (usize, f32)>,
     geometry: Option<Arc<RowHeights>>,
 }
@@ -252,6 +277,8 @@ impl Overrides {
             return;
         }
         self.stamp = Some(stamp);
+        let source = model.source_structure_stamp();
+        let source_changed = self.source_stamp.replace(source) != Some(source);
         self.geometry = None;
         self.rows.retain(|key, _| key.model == stamp.0);
         let count = model.row_count();
@@ -272,8 +299,20 @@ impl Overrides {
             }
             index += 1;
         });
+        if source_changed && !displaced.is_empty() {
+            let mut live = BTreeSet::new();
+            model.visit_source_row_keys(|key| {
+                if displaced.contains(&key) {
+                    live.insert(key);
+                }
+            });
+            for key in displaced.difference(&live) {
+                self.rows.remove(key);
+            }
+            displaced = live;
+        }
         for key in displaced {
-            self.rows.remove(&key);
+            self.rows.get_mut(&key).expect("tracked row").0 = usize::MAX;
         }
     }
 }
@@ -344,7 +383,11 @@ impl RowHeightOverrides {
         }) {
             state.geometry = Some(Arc::new(RowHeights::new(
                 base,
-                state.rows.values().copied(),
+                state
+                    .rows
+                    .values()
+                    .copied()
+                    .filter(|(index, _)| *index != usize::MAX),
                 projected,
             )));
         }
@@ -404,6 +447,32 @@ mod tests {
             .snapshot_over(&model, 32.0, Some(geometry()))
             .unwrap();
         assert_eq!(restored.height(8_000), 120.0);
+    }
+
+    #[test]
+    fn projected_heights_follow_view_order_and_incremental_field_edits() {
+        let model = Rc::new(VecModel::from(vec![
+            Length(64.0),
+            Length(32.0),
+            Length(48.0),
+        ]));
+        let order = crate::TableRowOrder::default();
+        let projection = RowHeightProjection::default();
+        let geometry = || {
+            projection
+                .table_snapshot(&model, 32.0, &order.positions(&*model), |height| *height)
+                .unwrap()
+        };
+        assert_eq!(geometry().height(0), 64.0);
+        assert_eq!(order.move_row(&*model, 0, 2), Some(0));
+        let moved = geometry();
+        assert_eq!(moved.height(2), 64.0);
+        assert_eq!(moved.top(2), 80.0);
+        assert!(model.set_row(0, Length(96.0)));
+        assert_eq!(geometry().height(2), 96.0);
+        assert_eq!(geometry().top(2), 80.0);
+        model.push(Length(32.0));
+        assert_eq!(geometry().height(0), 96.0);
     }
 
     #[test]

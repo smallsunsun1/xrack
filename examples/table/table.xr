@@ -11,6 +11,7 @@ export component TableDemo inherits Window {
     in property <SelectionTarget> target: rows;
     in property <int> pinned: 0;
     in property <bool> resize-rows: false;
+    in property <length> row-header-size: 0px;
     in property <bool> show-sequence: true;
     callback sort-requested(column: int, descending: bool);
 
@@ -27,6 +28,7 @@ export component TableDemo inherits Window {
         records-table := TableView {
             row-height: 32px;
             header-height: 36px;
+            row-header-width: root.row-header-size;
             resizable-columns: true;
             resizable-rows: root.resize-rows;
             movable-columns: true;
@@ -69,6 +71,153 @@ export struct InventoryRow {
     units: int,
     available: bool,
     refreshed: Time,
+}
+
+export struct RowVisibilityFlags {
+    shown: bool,
+}
+
+export struct RowVisibilityRecord {
+    name: string,
+    rank: int,
+    flags: RowVisibilityFlags,
+}
+
+export component RowVisibilityDemo inherits Window {
+    title: "XRack · 按记录隐藏行";
+    width: 720px; height: 320px;
+    background: #182331;
+    in-out property <[RowVisibilityRecord]> records: [
+        RowVisibilityRecord { name: "交换机", rank: 3, flags: RowVisibilityFlags { shown: true } },
+        RowVisibilityRecord { name: "工作站", rank: 2, flags: RowVisibilityFlags { shown: true } },
+        RowVisibilityRecord { name: "测试设备", rank: 1, flags: RowVisibilityFlags { shown: false } },
+        RowVisibilityRecord { name: "路由器", rank: 4, flags: RowVisibilityFlags { shown: true } },
+    ];
+    in-out property <string> query: "";
+    in property <int> inspected-source: 24;
+    in property <int> inspected-view: 0;
+    out property <int> custom-visible: custom.view-index-for-source(root.inspected-source);
+    out property <int> standard-visible: standard.view-index-for-source(root.inspected-source);
+    out property <int> standard-source: standard.source-index-for-view(root.inspected-view);
+    callback select-source(int, int);
+    select-source(source, column) => {
+        custom.select-source-index(source);
+        standard.select-source-cell(source, column);
+    }
+    callback toggle-first();
+    callback resize-row(int, length);
+    resize-row(row, height) => { custom.set-row-height(row, height); }
+    callback locate-source-row(int);
+    locate-source-row(source) => {
+        custom.position-view-at-source-index(source, beginning);
+        standard.position-view-at-source-index(source, beginning);
+    }
+    callback locate-source-cell(int, int);
+    locate-source-cell(source, column) => {
+        standard.position-view-at-source-cell(source, column, contain, beginning);
+    }
+
+    HorizontalLayout {
+        x: 12px; y: 8px; width: 696px; height: 32px;
+        spacing: 8px;
+        toggle := Button { text: "切换首条记录"; clicked => { root.toggle-first(); } }
+        sort := Button { text: "右表按优先级排序"; clicked => { standard.sort-by(1, false); } }
+        locate := Button {
+            text: "定位源索引 24";
+            clicked => {
+                root.select-source(24, 1);
+                root.locate-source-row(24);
+                root.locate-source-cell(24, 1);
+            }
+        }
+        SearchField { placeholder-text: "搜索右表"; text <=> root.query; }
+    }
+    custom := TableView {
+        x: 12px; y: 50px; width: 340px; height: 254px;
+        row-height: 24px;
+        row-visible-field: "flags.shown";
+        preserve-scroll-anchor: true;
+        movable-rows: true;
+        row-header-width: 32px;
+        TableColumn { title: "原顺序"; width: 188px; }
+        TableColumn { title: "优先级"; width: 96px; }
+        for record in root.records : TableRow {
+            TableCell { text <=> record.name; }
+            Text { text: "" + record.rank; }
+        }
+    }
+    standard := StandardTableView {
+        x: 368px; y: 50px; width: 340px; height: 254px;
+        row-height: 24px;
+        row-visible-field: "flags.shown";
+        filter-field: "name";
+        filter-text: root.query;
+        auto-sort: true;
+        copyable: true;
+        selection-target: SelectionTarget.cells;
+        model: root.records;
+        TableColumn { title: "可排序和筛选"; field: "name"; width: 220px; }
+        TableColumn { title: "优先级"; field: "rank"; width: 200px; }
+    }
+}
+
+export component WideTableDemo inherits Window {
+    title: "XRack · 宽表格";
+    width: 620px; height: 320px;
+    background: #182331;
+    in property <int> rows: 50000;
+    in-out property <bool> show-number: true;
+    in-out property <bool> show-february: true;
+    pure callback cell-text(row: int, column: int) -> string;
+    cell-text(row, column) => { "" + (row + 1) + " / " + (column + 1) }
+    callback locate(row: int, column: int);
+    locate(row, column) => { sheet.position-view-at-cell(row, column, contain, contain); }
+
+    HorizontalLayout {
+        x: 12px; y: 8px; width: 590px; height: 32px;
+        spacing: 8px;
+        first := Button { text: "回到首列"; clicked => { sheet.position-view-at-column(1, beginning); } }
+        last := Button { text: "末列"; clicked => { sheet.position-view-at-column(11, ScrollAlignment.end); } }
+        end := Button { text: "末行末列"; clicked => { root.locate(root.rows - 1, 11); } }
+        CheckBox { text: "编号列"; checked <=> root.show-number; }
+        CheckBox { text: "二月列"; checked <=> root.show-february; }
+    }
+    sheet := TableView {
+        x: 12px; y: 50px; width: 596px; height: 254px;
+        row-height: 24px;
+        header-height: 32px;
+        frozen-columns: 1;
+        movable-columns: true;
+        resizable-columns: true;
+        selection-target: SelectionTarget.cells;
+        copyable: true;
+        TableColumn { title: "编号"; width: 104px; visible: root.show-number; }
+        TableColumn { title: "一月"; width: 124px; }
+        TableColumn { title: "二月"; width: 124px; visible: root.show-february; }
+        TableColumn { title: "三月"; width: 124px; }
+        TableColumn { title: "四月"; width: 124px; }
+        TableColumn { title: "五月"; width: 124px; }
+        TableColumn { title: "六月"; width: 124px; }
+        TableColumn { title: "七月"; width: 124px; }
+        TableColumn { title: "八月"; width: 124px; }
+        TableColumn { title: "九月"; width: 124px; }
+        TableColumn { title: "十月"; width: 124px; }
+        TableColumn { title: "十一月"; width: 124px; }
+        for row in root.rows : TableRow {
+            TableCell { text: root.cell-text(row, 0); }
+            TableCell { text: root.cell-text(row, 1); }
+            TableCell { text: root.cell-text(row, 2); }
+            TableCell { text: root.cell-text(row, 3); }
+            TableCell { text: root.cell-text(row, 4); }
+            TableCell { text: root.cell-text(row, 5); }
+            TableCell { text: root.cell-text(row, 6); }
+            TableCell { text: root.cell-text(row, 7); }
+            TableCell { text: root.cell-text(row, 8); }
+            TableCell { text: root.cell-text(row, 9); }
+            TableCell { text: root.cell-text(row, 10); }
+            TableCell { text: root.cell-text(row, 11); }
+        }
+    }
 }
 
 export struct LogRow {
@@ -135,16 +284,60 @@ export component StandardTableDemo inherits Window {
     in property <length> window-width: 620px;
     in property <int> pinned: 0;
     in property <bool> resize-rows: false;
+    in property <bool> move-rows: false;
+    in property <bool> sort-tools: false;
+    in property <bool> selection-tools: false;
+    in property <bool> position-tools: false;
+    in property <bool> edit-columns: false;
+    in property <bool> filter-tools: false;
+    in-out property <string> filter-query: "";
+    in property <bool> paste-cells: false;
+    in property <bool> lock-refresh-time: false;
+    in property <bool> auto-sort-fields: false;
+    in property <bool> multiple: true;
+    out property <int> selected-items: inventory-table.selection-count;
+    out property <bool> has-selection: inventory-table.has-selection;
+    out property <int> current-column: inventory-table.current-column;
+    out property <int> cell-changes: 0;
+    out property <length> table-x: inventory-table.content-x;
+    out property <length> table-y: inventory-table.content-y;
+    in property <bool> quantity-sortable: true;
+    in property <bool> show-quantity: true;
+    out property <int> sort-column: inventory-table.current-sort-column;
+    out property <bool> sort-descending: inventory-table.current-sort-descending;
+    in property <length> row-header-size: 0px;
     out property <int> selections: 0;
     out property <int> moved-column: -1;
     out property <int> moved-position: -1;
+    out property <int> moved-model-row: -1;
+    out property <int> moved-row-from: -1;
+    out property <int> moved-row-to: -1;
     callback sort-requested(column: int, descending: bool);
+    callback sort-rows(int, bool);
+    sort-rows(column, descending) => { inventory-table.sort-by(column, descending); }
+    callback clear-sort-indicator();
+    clear-sort-indicator => { inventory-table.clear-sort(); }
     callback move-visible-column(int, int);
     move-visible-column(from, to) => { inventory-table.move-column(from, to); }
+    callback move-visible-row(int, int);
+    move-visible-row(from, to) => { inventory-table.move-row(from, to); }
     callback set-height(int, length);
     set-height(row, height) => { inventory-table.set-row-height(row, height); }
     callback center-row(int);
     center-row(row) => { inventory-table.position-view-at-index(row, center); }
+    callback position-cell(int, int, ScrollAlignment, ScrollAlignment);
+    position-cell(row, column, horizontal, vertical) => {
+        inventory-table.position-view-at-cell(row, column, horizontal, vertical);
+    }
+    callback position-column(int, ScrollAlignment);
+    position-column(column, alignment) => { inventory-table.position-view-at-column(column, alignment); }
+    callback position-row(int, ScrollAlignment);
+    position-row(row, alignment) => { inventory-table.position-view-at-row(row, alignment); }
+    callback edit-inventory-cell(int, int);
+    edit-inventory-cell(row, column) => {
+        inventory-table.position-view-at-cell(row, column, contain, contain);
+        inventory-table.edit-cell(row, column);
+    }
 
     VerticalLayout {
         padding: 16px; spacing: 8px;
@@ -152,27 +345,43 @@ export component StandardTableDemo inherits Window {
         inventory-table := StandardTableView {
             accessible-name: "库存表";
             row-height: 32px;
+            row-header-width: root.row-header-size;
+            row-header-field: "name";
             resizable-columns: true;
             resizable-rows: root.resize-rows;
             movable-columns: true;
+            movable-rows: root.move-rows;
             copyable: true;
+            pasteable: root.paste-cells;
+            undoable: root.edit-columns;
             frozen-columns: root.pinned;
-            multi-select: true;
+            multi-select: root.multiple;
             drag-select: true;
             selection-target: root.target;
             model: root.inventory;
+            auto-sort: root.auto-sort-fields;
+            filter-field: "name";
+            filter-text: root.filter-query;
+            edit-on-typing: root.edit-columns;
+            edit-on-tab: root.edit-columns;
             current-row <=> root.current;
             current-row-changed(index) => { root.selections += 1; }
+            current-cell-changed(row, column) => { root.cell-changes += 1; }
             sort-ascending(column) => { root.sort-requested(column, false); }
             sort-descending(column) => { root.sort-requested(column, true); }
             column-moved(column, position) => {
                 root.moved-column = column;
                 root.moved-position = position;
             }
-            TableColumn { title: "设备"; field: "name"; min-width: 160px; }
-            TableColumn { title: "数量"; field: "units"; min-width: 100px; }
-            TableColumn { title: "可用"; field: "available"; min-width: 100px; }
-            TableColumn { title: "刷新时间"; field: "refreshed"; min-width: 160px; }
+            row-moved(model-row, from, to) => {
+                root.moved-model-row = model-row;
+                root.moved-row-from = from;
+                root.moved-row-to = to;
+            }
+            TableColumn { title: "设备"; field: "name"; min-width: 160px; editable: root.edit-columns; }
+            TableColumn { title: "数量"; field: "units"; min-width: 100px; visible: root.show-quantity; sortable: root.quantity-sortable; editable: root.edit-columns; }
+            TableColumn { title: "可用"; field: "available"; min-width: 100px; editable: root.edit-columns; }
+            TableColumn { title: "刷新时间"; field: "refreshed"; min-width: 160px; editable: root.edit-columns && !root.lock-refresh-time; }
         }
         HorizontalLayout {
             spacing: 12px;
@@ -180,6 +389,136 @@ export component StandardTableDemo inherits Window {
             jump := Button { text: "跳到目标行"; clicked() => { root.current = root.target-row; } }
             move-first := Button { text: "首列移到末尾"; clicked() => { root.move-visible-column(0, 3); } }
             Text { text: "当前索引 " + root.current + " · 用户选择 " + root.selections + " 次"; color: #b8caff; }
+        }
+        if root.filter-tools : filter-inventory := SearchField {
+            placeholder-text: "按设备名称筛选";
+            text <=> root.filter-query;
+        }
+        if root.edit-columns : HorizontalLayout {
+            spacing: 8px;
+            edit-target := Button {
+                text: "编辑目标行数量";
+                focus-on-click: false;
+                clicked => { root.edit-inventory-cell(root.target-row, 1); }
+            }
+            cancel-editor := Button {
+                text: "取消编辑";
+                focus-on-click: false;
+                clicked => { inventory-table.cancel-edit(); }
+            }
+            undo-edit := Button {
+                text: "撤销";
+                enabled: inventory-table.can-undo;
+                clicked => { inventory-table.undo(); }
+            }
+            redo-edit := Button {
+                text: "重做";
+                enabled: inventory-table.can-redo;
+                clicked => { inventory-table.redo(); }
+            }
+        }
+        if root.sort-tools : HorizontalLayout {
+            spacing: 8px;
+            cross-axis-alignment: center;
+            sort-quantity := Button { text: "数量升序"; clicked => { inventory-table.sort-by(1, false); } }
+            clear-sort := Button { text: "清除排序标记"; clicked => { inventory-table.clear-sort(); } }
+            Text {
+                text: root.sort-column < 0 ? "未标记排序" : "声明列 " + (root.sort-column + 1) + (root.sort-descending ? " · 降序" : " · 升序");
+                color: #b8caff;
+            }
+        }
+        if root.selection-tools : HorizontalLayout {
+            spacing: 8px; cross-axis-alignment: center;
+            select-block := Button {
+                text: "选择 2×2 区域";
+                clicked => { inventory-table.select-range(0, 0, 1, 1); }
+            }
+            move-cursor := Button {
+                text: "移动到第 3 行第 3 列";
+                clicked => { inventory-table.set-current-cell(2, 2); }
+            }
+            clear-selection := Button {
+                text: "清空选区";
+                clicked => { inventory-table.clear-selection(); }
+            }
+        }
+        if root.selection-tools : Text {
+            text: "光标 " + root.current + "，" + root.current-column + " · 已选 " + root.selected-items + " 项";
+            color: #acc0db;
+        }
+        if root.position-tools : HorizontalLayout {
+            spacing: 8px;
+            reveal-last := Button {
+                text: "末行末列";
+                clicked => { root.position-cell(root.target-row, 3, end, end); }
+            }
+            reveal-first := Button {
+                text: "首行首列";
+                clicked => { root.position-cell(0, 0, beginning, beginning); }
+            }
+            center-quantity := Button {
+                text: "数量列居中";
+                clicked => { root.position-column(1, center); }
+            }
+        }
+        if root.position-tools : Text {
+            text: "偏移 " + (root.table-x / 1px) + "，" + (root.table-y / 1px) + " · 定位保留光标和选区";
+            color: #acc0db;
+        }
+    }
+}
+
+
+export component TableSortViewsDemo inherits Window {
+    title: "XRack · 独立排序视图";
+    width: 680px; height: 370px;
+    background: #182331;
+    in-out property <[InventoryRow]> inventory: [
+        InventoryRow { name: "Zulu", units: 30, available: true, refreshed: Time { hour: 9 } },
+        InventoryRow { name: "Alpha", units: 20, available: true, refreshed: Time { hour: 9 } },
+        InventoryRow { name: "Beta", units: 10, available: true, refreshed: Time { hour: 9 } },
+        InventoryRow { name: "Gamma", units: 20, available: true, refreshed: Time { hour: 9 } },
+    ];
+    in-out property <int> left-current: -1;
+    callback initialize();
+    initialize => { quantity-table.sort-by(1, false); name-table.sort-by(0, false); }
+    callback reduce-zulu();
+
+    VerticalLayout {
+        padding: 16px; spacing: 10px;
+        Text { text: "共享库存"; font-size: 23px; }
+        HorizontalLayout {
+            spacing: 14px;
+            VerticalLayout {
+                horizontal-stretch: 1;
+                spacing: 6px;
+                Text { text: "数量排序视图"; color: #acc0db; }
+                quantity-table := StandardTableView {
+                    model: root.inventory;
+                    auto-sort: true;
+                    current-row <=> root.left-current;
+                    movable-rows: true;
+                    multi-select: true;
+                    TableColumn { title: "设备"; field: "name"; min-width: 120px; }
+                    TableColumn { title: "数量"; field: "units"; min-width: 80px; }
+                }
+            }
+            VerticalLayout {
+                horizontal-stretch: 1;
+                spacing: 6px;
+                Text { text: "名称排序视图"; color: #acc0db; }
+                name-table := StandardTableView {
+                    model: root.inventory;
+                    auto-sort: true;
+                    TableColumn { title: "设备"; field: "name"; min-width: 120px; }
+                    TableColumn { title: "数量"; field: "units"; min-width: 80px; }
+                }
+            }
+        }
+        HorizontalLayout {
+            spacing: 10px;
+            reduce := Button { text: "减少 Zulu 的数量"; clicked => { root.reduce-zulu(); } }
+            clear-quantity-sort := Button { text: "左侧恢复源顺序"; clicked => { quantity-table.clear-sort(); } }
         }
     }
 }

@@ -34,7 +34,7 @@ pub(crate) fn handle_target(
         if node.focus_handle.as_ref() == Some(handle) {
             return true;
         }
-        for (index, (child, item)) in node.children.iter().zip(&item.children).enumerate() {
+        for (index, child, item) in item.children_in_scene_order(node) {
             path.push(index);
             if find(child, item, handle, path) {
                 return true;

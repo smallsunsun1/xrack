@@ -120,6 +120,14 @@ impl DecimalSpinRange {
         let next = match action {
             SpinAction::Increase => rounded(self.value + self.step, self.decimals),
             SpinAction::Decrease => rounded(self.value - self.step, self.decimals),
+            SpinAction::Step(steps) => crate::range::step_float(
+                self.value,
+                self.limits(),
+                self.step,
+                steps,
+                self.wrap,
+                |value| rounded(value, self.decimals),
+            ),
             SpinAction::Minimum => self.minimum,
             SpinAction::Maximum => self.maximum,
             SpinAction::CommitDecimal(value) => rounded(value.0, self.decimals),

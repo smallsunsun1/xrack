@@ -1,5 +1,5 @@
 use crate::{DialogRole, Node, Property};
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 
 const SESSION: &str = "__picker-session";
 
@@ -9,20 +9,20 @@ thread_local! {
 
 /// One visible modal session. Old snapshots cannot edit or finish a later session.
 pub(crate) struct PickerSession<T> {
-    initial: Cell<Option<(i64, T)>>,
+    initial: RefCell<Option<(i64, T)>>,
     draft: Property<Option<T>>,
 }
 
 impl<T> Default for PickerSession<T> {
     fn default() -> Self {
         Self {
-            initial: Cell::new(None),
+            initial: RefCell::new(None),
             draft: Property::default(),
         }
     }
 }
 
-impl<T: Copy> PickerSession<T> {
+impl<T: Clone> PickerSession<T> {
     pub(crate) fn close(&self) {
         self.initial.take();
         self.draft.reset();
@@ -33,14 +33,15 @@ impl<T: Copy> PickerSession<T> {
             self.close();
             return None;
         }
-        let (revision, initial) = self.initial.get().unwrap_or_else(|| {
+        let session = self.initial.borrow().clone();
+        let (revision, initial) = session.unwrap_or_else(|| {
             let revision = NEXT_SESSION.with(|next| {
                 let current = next.get();
                 next.set(current.checked_add(1).expect("picker sessions exhausted"));
                 current
             });
             let session = (revision, initial());
-            self.initial.set(Some(session));
+            self.initial.replace(Some(session.clone()));
             session
         });
         dialog.properties.insert(SESSION, revision.into());
@@ -48,14 +49,16 @@ impl<T: Copy> PickerSession<T> {
     }
 
     pub(crate) fn stamp(&self, child: &mut Node) {
-        if let Some((revision, _)) = self.initial.get() {
-            child.properties.insert(SESSION, revision.into());
+        if let Some((revision, _)) = self.initial.borrow().as_ref() {
+            child.properties.insert(SESSION, (*revision).into());
         }
     }
 
     pub(crate) fn current(&self, scene: &Node) -> Option<T> {
-        let (revision, initial) = self.initial.get()?;
-        (scene.int(SESSION) == Some(revision)).then(|| self.draft.get(|| None).unwrap_or(initial))
+        let initial = self.initial.borrow();
+        let (revision, value) = initial.as_ref()?;
+        (scene.int(SESSION) == Some(*revision))
+            .then(|| self.draft.get(|| None).unwrap_or_else(|| value.clone()))
     }
 
     pub(crate) fn set(&self, draft: T) {

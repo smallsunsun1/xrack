@@ -41,18 +41,69 @@ void XrackDialect::initialize() {
 }
 
 static bool isExpression(Operation &op) {
-  return isa<LiteralOp, ReadOp, ControlReadOp, GeometryReadOp, StackReadOp, ImagePlaybackReadOp, WindowReadOp, CheckGroupReadOp, FocusReadOp, ViewportReadOp, FlickMotionReadOp, ScrollControlReadOp, ScaleRotateReadOp, SwipeReadOp, ParamOp, UnaryOp, CastOp,
+  return isa<LiteralOp, ReadOp, ControlReadOp, GeometryReadOp, StackReadOp, TreeQueryOp, ViewIndexOp, TableSortReadOp, TableSelectionReadOp, TableHistoryReadOp, SplitStateReadOp, SplitResizingOp, ImagePlaybackReadOp, WindowReadOp, CheckGroupReadOp, ActionGroupReadOp, NativeDialogReadOp, FocusReadOp, ViewportReadOp, FlickMotionReadOp, ScrollControlReadOp, ScaleRotateReadOp, SwipeReadOp, HoverReadOp, TouchAreaReadOp, ParamOp, UnaryOp, CastOp,
              StringifyOp, BinaryOp, SelectOp, SolidBrushOp, GradientStopOp,
-             LinearGradientOp, RadialGradientOp, ImageUrlOp, ImageDimensionOp, NineSliceOp, MarkdownOp, ArrayOp, CallOp,
+             LinearGradientOp, RadialGradientOp, ImageUrlOp, ImageDimensionOp, NineSliceOp, MarkdownOp, ArrayOp, PointerButtonsOp, CallOp,
              ToRatioOp, MakeRecordOp, DefaultRecordOp, RecordArrayOp,
-             GetFieldOp, KeyFieldOp, MakeDateOp, DateFieldOp, MakeTimeOp, TimeFieldOp>(op);
+             GetFieldOp, KeyFieldOp, WheelFieldOp, PointerFieldOp, TouchPointFieldOp, MakeDateOp, DateFieldOp, MakeTimeOp, TimeFieldOp, MakeFontOp, FontFieldOp>(op);
 }
 
 static bool geometryProperty(llvm::StringRef name) {
   return llvm::StringSwitch<bool>(name)
       .Cases({"layout-x", "layout-y", "layout-width", "layout-height", "layout-ready",
-              "window-bounds-x", "window-bounds-y", "window-bounds-width", "window-bounds-height"}, true)
+              "window-bounds-x", "window-bounds-y", "window-bounds-width", "window-bounds-height",
+              "available-width", "available-height"}, true)
       .Default(false);
+}
+
+static bool isPane(llvm::StringRef kind) {
+  return kind == "Pane" || kind == "ControlFrame";
+}
+
+static bool isWindow(llvm::StringRef kind) {
+  return kind == "Window" || kind == "ApplicationWindow";
+}
+
+static bool validApplicationWindowBinding(llvm::StringRef kind, llvm::StringRef name, Type type) {
+  return kind != "ApplicationWindow" ||
+      !llvm::StringSwitch<bool>(name)
+          .Cases({"padding", "padding-left", "padding-right", "padding-top", "padding-bottom", "spacing"}, true)
+          .Default(false) ||
+      isa<LengthType>(type);
+}
+
+static bool isPushButton(llvm::StringRef kind) {
+  return kind == "Button" || kind == "ToolButton" || kind == "RoundButton";
+}
+
+static bool validButtonGeometryBinding(llvm::StringRef kind, llvm::StringRef name, Type type) {
+  if (name == "radius")
+    return kind == "RoundButton" && isa<LengthType>(type);
+  if (kind != "ToolSeparator")
+    return true;
+  if (name == "orientation")
+    return isa<OrientationType>(type);
+  if (name == "stroke-width" || name == "padding")
+    return isa<LengthType>(type);
+  if (name == "color")
+    return isa<ColorType>(type);
+  return true;
+}
+
+static bool validPaneBinding(llvm::StringRef kind, llvm::StringRef name, Type type) {
+  if (!isPane(kind))
+    return true;
+  if (name == "background" || name == "border-color")
+    return isa<BrushType, ColorType>(type);
+  if (name == "enabled")
+    return isa<BoolType>(type);
+  return !llvm::StringSwitch<bool>(name)
+              .Cases({"content-width", "content-height", "padding", "padding-left", "padding-right",
+                      "padding-top", "padding-bottom", "border-width", "border-radius",
+                      "border-top-left-radius", "border-top-right-radius",
+                      "border-bottom-left-radius", "border-bottom-right-radius"}, true)
+              .Default(false) ||
+         isa<LengthType>(type);
 }
 
 static bool windowStatusProperty(llvm::StringRef name) {
@@ -118,6 +169,69 @@ LogicalResult KeyFieldOp::verify() {
   return valid ? success() : emitOpError("incorrect key event field or type");
 }
 
+LogicalResult HoverReadOp::verify() {
+  auto property = getValue();
+  auto type = getResult().getType();
+  if ((property == "hovered" && isa<BoolType>(type)) ||
+      ((property == "hover-x" || property == "hover-y") && isa<LengthType>(type)))
+    return success();
+  return emitOpError("incorrect hover metric or type");
+}
+
+static Type touchAreaType(MLIRContext *context, StringRef property) {
+  if (property == "touch-points")
+    return TouchPointsType::get(context);
+  if (property == "active-touch-count")
+    return IntType::get(context);
+  if (property == "pressed" || property == "contains-press" || property == "has-hover")
+    return BoolType::get(context);
+  if (property == "mouse-x" || property == "mouse-y" || property == "pressed-x" ||
+      property == "pressed-y")
+    return LengthType::get(context);
+  return {};
+}
+
+LogicalResult TouchAreaReadOp::verify() {
+  if (touchAreaType(getContext(), getValue()) == getResult().getType())
+    return success();
+  return emitOpError("incorrect TouchArea state property or type");
+}
+
+LogicalResult WheelFieldOp::verify() {
+  auto field = getValue();
+  auto type = getResult().getType();
+  if (((field == "x" || field == "y" || field == "delta-x" || field == "delta-y") &&
+       isa<LengthType>(type)) ||
+      ((field == "lines-x" || field == "lines-y") && isa<FloatType>(type)) ||
+      (field == "is-line" && isa<BoolType>(type)) ||
+      (field == "modifiers" && isa<KeyModifiersType>(type)))
+    return success();
+  return emitOpError("incorrect wheel event field or type");
+}
+
+LogicalResult PointerFieldOp::verify() {
+  auto field = getValue();
+  auto type = getResult().getType();
+  if (((field == "x" || field == "y") && isa<LengthType>(type)) ||
+      ((field == "inside" || field == "is-touch") && isa<BoolType>(type)) ||
+      (field == "kind" && isa<PointerEventKindType>(type)) ||
+      (field == "button" && isa<PointerButtonType>(type)) ||
+      (field == "touch-finger-id" && isa<IntType>(type)) ||
+      (field == "modifiers" && isa<KeyModifiersType>(type)))
+    return success();
+  return emitOpError("incorrect pointer event field or type");
+}
+
+LogicalResult TouchPointFieldOp::verify() {
+  auto field = getValue();
+  auto type = getResult().getType();
+  if (((field == "x" || field == "y" || field == "start-x" || field == "start-y") &&
+       isa<LengthType>(type)) || (field == "id" && isa<IntType>(type)) ||
+      (field == "inside" && isa<BoolType>(type)))
+    return success();
+  return emitOpError("incorrect touch point field or type");
+}
+
 LogicalResult DateFieldOp::verify() {
   auto field = getValue();
   return field == "year" || field == "month" || field == "day"
@@ -130,6 +244,17 @@ LogicalResult TimeFieldOp::verify() {
   return field == "hour" || field == "minute" || field == "second"
              ? success()
              : emitOpError("requires hour, minute, or second");
+}
+
+LogicalResult FontFieldOp::verify() {
+  auto result = getResult().getType();
+  bool valid = llvm::StringSwitch<bool>(getValue())
+      .Case("family", isa<StringType>(result))
+      .Case("size", isa<LengthType>(result))
+      .Case("weight", isa<IntType>(result))
+      .Case("italic", isa<BoolType>(result))
+      .Default(false);
+  return valid ? success() : emitOpError("incorrect font field or type");
 }
 
 static bool usesListTemplate(llvm::StringRef kind) {
@@ -199,7 +324,7 @@ static bool isTimePicker(llvm::StringRef kind) {
 
 static bool isPickerPopup(llvm::StringRef kind) {
   return kind == "TimePickerPopup" || kind == "DatePickerPopup" ||
-         kind == "ColorPickerPopup";
+         kind == "ColorPickerPopup" || kind == "FontPickerPopup";
 }
 
 static bool isWindowOverlay(llvm::StringRef kind) {
@@ -241,6 +366,21 @@ static LogicalResult verifyStackRoute(Operation *op, ElementOp view,
         return success();
       }
   return op->emitOpError("unknown StackPage route ") << literal.getValue();
+}
+
+static llvm::StringRef visualTemplateKind(Operation *op) {
+  for (auto element = op->getParentOfType<ElementOp>(); element;
+       element = element->getParentOfType<ElementOp>())
+    if (element.getKind() == "DayCell" || element.getKind() == "SplitHandle")
+      return element.getKind();
+  return {};
+}
+
+static bool isVirtualItemDelegate(ElementOp element) {
+  auto view = dyn_cast<ElementOp>(element->getParentOp());
+  return element.getDelegate() && view &&
+         (view.getKind() == "ListView" || view.getKind() == "GridView") &&
+         !element.getBody().front().getOps<RepeatOp>().empty();
 }
 
 static bool isTypedRowEditor(llvm::StringRef kind) {
@@ -342,8 +482,8 @@ static bool validTransformBinding(llvm::StringRef kind, llvm::StringRef name,
     return true;
   if (llvm::StringSwitch<bool>(kind)
           .Cases({"Action", "Timer", "FileDialog", "MessageDialog", "Shortcut",
-                  "Window", "Dialog", "Drawer", "PopupWindow", "SecondaryWindow",
-                  "TimePickerPopup", "DatePickerPopup", "ColorPickerPopup",
+                  "Window", "ApplicationWindow", "Dialog", "Drawer", "PopupWindow", "SecondaryWindow",
+                  "TimePickerPopup", "DatePickerPopup", "ColorPickerPopup", "FontPickerPopup",
                   "Menu", "MenuItem", "MenuSeparator", "Tooltip", "Tab", "TabButton",
                   "TableColumn"}, true)
           .Default(false))
@@ -387,14 +527,18 @@ static bool validImageBinding(llvm::StringRef kind, llvm::StringRef name, Type t
       (name != "vertical-alignment" || isa<ImageVerticalAlignmentType>(type));
 }
 
-static bool nonExclusiveButtonGroup(ElementOp element) {
-  if (!element || element.getKind() != "ButtonGroup")
+static bool nonExclusiveGroup(ElementOp element) {
+  if (!element)
     return false;
   for (auto bind : element.getBody().front().getOps<BindOp>())
     if (bind.getName() == "exclusive")
       if (auto literal = bind.getInput().getDefiningOp<LiteralOp>())
         return isa<BoolType>(literal.getResult().getType()) && literal.getValue() == "false";
   return false;
+}
+
+static bool nonExclusiveButtonGroup(ElementOp element) {
+  return element && element.getKind() == "ButtonGroup" && nonExclusiveGroup(element);
 }
 
 LogicalResult ElementOp::verify() {
@@ -405,6 +549,97 @@ LogicalResult ElementOp::verify() {
   auto parent = dyn_cast<ElementOp>((*this)->getParentOp());
   auto parentKind = parent ? parent.getKind() : llvm::StringRef{};
   auto &body = getBody().front();
+  if (kind == "MonthGrid" &&
+      llvm::count_if(body.getOps<ElementOp>(), [](ElementOp child) {
+        return child.getKind() == "DayCell";
+      }) > 1)
+    return emitOpError("MonthGrid accepts only one DayCell");
+  if (kind == "SplitView" &&
+      llvm::count_if(body.getOps<ElementOp>(), [](ElementOp child) {
+        return child.getKind() == "SplitHandle";
+      }) > 1)
+    return emitOpError("SplitView accepts only one SplitHandle");
+  bool templateRoot = kind == "DayCell" || kind == "SplitHandle";
+  auto visualTemplate = templateRoot ? kind : visualTemplateKind(*this);
+  if (!visualTemplate.empty()) {
+    if ((kind == "DayCell" && parentKind != "MonthGrid") ||
+        (kind == "SplitHandle" && parentKind != "SplitView"))
+      return emitOpError() << kind << " requires a "
+                           << (kind == "DayCell" ? "MonthGrid" : "SplitView")
+                           << " parent";
+    if (!getId().empty())
+      return emitOpError() << visualTemplate << " templates are anonymous";
+    for (auto &child : body) {
+      if (auto element = dyn_cast<ElementOp>(child)) {
+        if (llvm::StringSwitch<bool>(element.getKind())
+            .Cases({"Rectangle", "Text", "Label", "Image", "Path", "StyledText",
+                    "GridLayout", "Row", "FlowLayout", "FlexboxLayout",
+                    "VerticalBox", "HorizontalBox", "VerticalLayout", "HorizontalLayout"}, true)
+            .Default(false))
+          continue;
+      }
+      if (!isa<BindOp, ShowIfOp, EndOp>(child) && !isExpression(child))
+        return child.emitOpError() << visualTemplate << " accepts visual elements and read-only bindings";
+      if (templateRoot && isa<ShowIfOp>(child))
+        return child.emitOpError() << kind << " cannot be conditional";
+      if (templateRoot)
+        if (auto bind = dyn_cast<BindOp>(child)) {
+          auto type = bind.getInput().getType();
+          auto name = bind.getName();
+          if (!((name == "background" || name == "border-color") && isa<BrushType, ColorType>(type)) &&
+              !((name == "border-width" || name == "border-radius") && isa<LengthType>(type)) &&
+              !(name == "opacity" && isa<FloatType>(type)) &&
+              !(name == "visible" && isa<BoolType>(type)) &&
+              !(kind == "DayCell" && name == "accessible-description" && isa<StringType>(type)))
+            return child.emitOpError() << "invalid " << kind << " binding";
+        }
+    }
+  }
+  if (auto delegate = getDelegate()) {
+    auto base = llvm::StringSwitch<llvm::StringRef>(*delegate)
+        .Case("ItemDelegate", "Button").Case("CheckDelegate", "CheckBox")
+        .Case("RadioDelegate", "RadioButton").Case("SwitchDelegate", "Switch").Default({});
+    if (base.empty() || base != kind)
+      return emitOpError("invalid item delegate kind");
+  }
+  const bool virtualDelegate = isVirtualItemDelegate(*this);
+  if (virtualDelegate && (!getId().empty() || !body.getOps<ElementOp>().empty() ||
+      !body.getOps<InstanceOp>().empty() || !body.getOps<PropertyOp>().empty() ||
+      !body.getOps<CallbackOp>().empty()))
+    return emitOpError("virtual item delegates require an anonymous leaf template");
+  if (virtualDelegate && (kind == "CheckBox" || kind == "Switch") &&
+      !llvm::hasSingleElement(body.getOps<RowLinkOp>()))
+    return emitOpError("virtual toggle delegates require one writable row field");
+  if (kind == "ActionGroup") {
+    if (!parent || !isa<ComponentOp>(parent->getParentOp()) || getId().empty())
+      return emitOpError("ActionGroup requires a named declaration at the component root");
+    llvm::StringSet<> bindings;
+    bool handled = false;
+    for (auto &child : body) {
+      if (isa<BindOp, ControlLinkOp>(child)) {
+        auto name = child.getAttrOfType<StringAttr>("name").getValue();
+        auto input = child.getOperand(0);
+        if (!bindings.insert(name).second)
+          return child.emitOpError("duplicate ActionGroup binding");
+        if (name == "current-value" && isa<StringType>(input.getType()) &&
+            !nonExclusiveGroup(*this))
+          continue;
+        if (isa<BindOp>(child) && isa<BoolType>(input.getType()) &&
+            (name == "enabled" || (name == "exclusive" && input.getDefiningOp<LiteralOp>())))
+          continue;
+        return child.emitOpError("invalid ActionGroup property or type");
+      }
+      if (auto action = dyn_cast<ElementOp>(child); action && action.getKind() == "Action")
+        continue;
+      if (auto handler = dyn_cast<HandlerOp>(child); handler && handler.getName() == "activated" && !handled) {
+        handled = true;
+        continue;
+      }
+      if (!isa<EndOp>(child) && !isExpression(child))
+        return child.emitOpError("ActionGroup only accepts bindings, Actions and activated(value)");
+    }
+    return success();
+  }
   if (kind == "ButtonGroup") {
     if (!parent || !isa<ComponentOp>(parent->getParentOp()) || getId().empty())
       return emitOpError("ButtonGroup requires a named declaration at the component root");
@@ -439,7 +674,7 @@ LogicalResult ElementOp::verify() {
         return emitOpError("AnimatedImage in a repetition requires a component delegate");
   }
   if (kind == "SecondaryWindow") {
-    if (parentKind != "Window" || !isa<ComponentOp>(parent->getParentOp()) || getId().empty())
+    if (!isWindow(parentKind) || !isa<ComponentOp>(parent->getParentOp()) || getId().empty())
       return emitOpError("SecondaryWindow requires a named declaration at the root Window");
     if (!llvm::hasSingleElement(body.getOps<InstanceOp>()))
       return emitOpError("SecondaryWindow requires one Window component instance");
@@ -517,9 +752,15 @@ LogicalResult ElementOp::verify() {
     return success();
   }
   if (kind == "Action") {
-    if (!parent || !isa<ComponentOp>(parent->getParentOp()) || getId().empty())
+    const bool inlineAction = parentKind == "ActionGroup";
+    if (!parent || (!inlineAction && !isa<ComponentOp>(parent->getParentOp())) || getId().empty())
       return emitOpError(
-          "Action requires a named declaration at the component root");
+          "Action requires a named declaration at the component root or in an ActionGroup");
+    auto groupRefs = body.getOps<ActionGroupRefOp>();
+    if ((!groupRefs.empty() && !llvm::hasSingleElement(groupRefs)) ||
+        (inlineAction && (groupRefs.empty() ||
+         (*groupRefs.begin()).getGroup() != parent.getKey().value_or(parent.getId()))))
+      return emitOpError("Action requires a single ActionGroup membership");
     llvm::StringSet<> properties;
     bool handled = false;
     for (Operation &child : body) {
@@ -541,7 +782,7 @@ LogicalResult ElementOp::verify() {
         if (handled)
           return child.emitOpError("duplicate Action handler");
         handled = true;
-      } else if (!isa<EndOp>(child) && !isExpression(child)) {
+      } else if (!isa<ActionGroupRefOp, EndOp>(child) && !isExpression(child)) {
         return child.emitOpError(
             "Action only accepts property bindings and activated()");
       }
@@ -551,10 +792,10 @@ LogicalResult ElementOp::verify() {
   auto refs = body.getOps<ActionRefOp>();
   const bool linkedAction = !refs.empty();
   if (linkedAction &&
-      ((kind != "Button" && kind != "ToolButton" && kind != "MenuItem" && kind != "Shortcut") ||
+      ((!isPushButton(kind) && kind != "MenuItem" && kind != "Shortcut") ||
        !llvm::hasSingleElement(refs)))
     return emitOpError(
-        "requires one Action reference on a Button, ToolButton, MenuItem or Shortcut");
+        "requires one Action reference on a push button, MenuItem or Shortcut");
   if (linkedAction)
     for (auto ancestor = *this; ancestor;
          ancestor = ancestor->getParentOfType<ElementOp>())
@@ -590,9 +831,11 @@ LogicalResult ElementOp::verify() {
     return emitOpError("PopupWindow requires a visual owner");
   if (kind == "SystemTrayIcon" && !root)
     return emitOpError("SystemTrayIcon requires a top-level component");
+  if (kind == "ApplicationWindow" && !root)
+    return emitOpError("ApplicationWindow requires a component root");
   const bool pageSlot = kind == "PageHeader" || kind == "PageFooter";
-  if (pageSlot && (root || parentKind != "Page"))
-    return emitOpError() << kind << " requires a direct Page parent";
+  if (pageSlot && (root || (parentKind != "Page" && parentKind != "ApplicationWindow")))
+    return emitOpError() << kind << " requires a direct Page parent or ApplicationWindow parent";
   if (isSwipeSlot(kind) && parentKind != "SwipeDelegate")
     return emitOpError("swipe slots require a direct SwipeDelegate parent");
   if (forbiddenInTooltip(kind))
@@ -649,7 +892,7 @@ LogicalResult ElementOp::verify() {
   const bool attachedRadio = !groupRefs.empty();
   if (attachedRadio && (kind != "RadioButton" || parentKind == "RadioGroup" || !llvm::hasSingleElement(groupRefs)))
     return emitOpError("requires a single ButtonGroup on a RadioButton outside RadioGroup");
-  if ((kind == "RadioButton" && !attachedRadio && parentKind != "RadioGroup") ||
+  if ((kind == "RadioButton" && !attachedRadio && !virtualDelegate && parentKind != "RadioGroup") ||
       (kind == "Tab" && (!parent || parent.getKind() != "TabWidget")) ||
       (kind == "TabButton" && (!parent || parent.getKind() != "TabBar")) ||
       (kind == "SwipePage" && (!parent || parent.getKind() != "SwipeView")) ||
@@ -705,7 +948,7 @@ LogicalResult ElementOp::verify() {
       }
     }
     if (auto animation = dyn_cast<AnimateOp>(child)) {
-      if (root && kind == "Window")
+      if (root && isWindow(kind))
         return child.emitOpError("animate a visual child instead of the Window");
       if (animation.getName().empty() || !animations.insert(animation.getName()).second)
         return child.emitOpError("animation requires a nonempty, unique property name");
@@ -719,7 +962,7 @@ LogicalResult ElementOp::verify() {
           return child.emitOpError("CheckBox accepts checked or check-state/tristate");
       }
     if (auto element = dyn_cast<ElementOp>(child);
-        element && (element.getKind() == "Action" || element.getKind() == "ButtonGroup" || element.getKind() == "Timer" ||
+        element && (element.getKind() == "Action" || element.getKind() == "ActionGroup" || element.getKind() == "ButtonGroup" || element.getKind() == "Timer" ||
                     isNativeDialog(element.getKind())))
       continue;
     if (linkedAction && isa<HandlerOp, ControlLinkOp>(child))
@@ -747,9 +990,13 @@ LogicalResult ElementOp::verify() {
         return child.emitOpError("DialogButtonBox requires direct button children without repetition");
       if (kind == "TimePicker" || isPickerPopup(kind))
         return child.emitOpError() << kind << " uses built-in picker children";
-      if ((childType == "PageHeader" || childType == "PageFooter") &&
-          !pageSlots.insert(childType).second)
-        return child.emitOpError() << "Page accepts only one " << childType;
+      if (childType == "PageHeader" || childType == "PageFooter" ||
+          (kind == "ApplicationWindow" && childType == "MenuBar")) {
+        if (!pageSlots.insert(childType).second)
+          return child.emitOpError() << kind << " accepts only one " << childType;
+        if (!element.getBody().front().getOps<RepeatOp>().empty())
+          return child.emitOpError("window and page bands cannot repeat");
+      }
       if (childType == "Tooltip")
         ++tooltips;
       if (tree) {
@@ -799,10 +1046,13 @@ LogicalResult ElementOp::verify() {
         return child.emitOpError("invalid menu child");
       if (childType == "Menu")
         ++contextMenus;
+      if (kind == "ToolSeparator")
+        return child.emitOpError("ToolSeparator cannot contain child elements");
       if ((interval || kind == "Dial" || kind == "PageIndicator" ||
-           kind == "Calendar" || kind == "Tumbler" || kind == "Spinner" ||
+           kind == "Calendar" || kind == "MonthGrid" || kind == "DayOfWeekRow" ||
+           kind == "WeekNumberColumn" || kind == "Tumbler" || kind == "Spinner" ||
            kind == "BusyIndicator") &&
-          childType != "Tooltip")
+          childType != "Tooltip" && !(kind == "MonthGrid" && childType == "DayCell"))
         return child.emitOpError() << kind << " only accepts Tooltip children";
     }
     if (interval) {
@@ -844,7 +1094,7 @@ LogicalResult ElementOp::verify() {
         viewportTarget = read;
       }
     }
-    if (kind == "Calendar")
+    if (kind == "Calendar" || kind == "MonthGrid")
       if (auto link = dyn_cast<ControlLinkOp>(child))
         if (auto read = link.getInput().getDefiningOp<ReadOp>()) {
           if (calendarTarget && calendarTarget.getValue() == read.getValue() &&
@@ -862,6 +1112,10 @@ LogicalResult ElementOp::verify() {
     if (auto bind = dyn_cast<BindOp>(child)) {
       auto name = bind.getName();
       auto type = bind.getInput().getType();
+      if (name == "highlighted" && (!getDelegate() || !isa<BoolType>(type)))
+        return child.emitOpError("highlighted requires a boolean on an item delegate");
+      if (virtualDelegate && kind == "RadioButton" && name == "checked")
+        return child.emitOpError("virtual RadioDelegate checked state follows current-index");
       bool singleLine = kind == "TextInput" || kind == "LineEdit";
       if (kind == "RadioButton" && (name == "group" || (name == "value" && !isa<StringType>(type))))
         return child.emitOpError("requires a ButtonGroup reference or a string option value");
@@ -876,14 +1130,14 @@ LogicalResult ElementOp::verify() {
       if ((name == "has-focus" && focusTargetKind(kind)) ||
           (name == "focus-within" && kind == "FocusScope"))
         return child.emitOpError("focus state is read-only");
-      if (kind == "Window" && windowStatusProperty(name))
+      if (isWindow(kind) && windowStatusProperty(name))
         return child.emitOpError("native window state is read-only");
       if (kind == "FocusScope" &&
           (name == "enabled" || name == "focus-on-click" ||
            name == "focus-on-tab-navigation" || name == "restore-focus") &&
           !isa<BoolType>(type))
         return child.emitOpError("FocusScope policy requires a boolean");
-      if (name == "focus-on-click" && (kind == "Button" || kind == "ToolButton") &&
+      if (name == "focus-on-click" && isPushButton(kind) &&
           !isa<BoolType>(type))
         return child.emitOpError("button focus-on-click requires a boolean");
       if (kind == "FocusScope" && name == "initial-focus")
@@ -897,29 +1151,30 @@ LogicalResult ElementOp::verify() {
             ((name == "keys" || name == "file-extensions") && !isa<StringListType>(type)) ||
             (name == "drop-action" && !isa<DragActionType>(type)))))
         return child.emitOpError("incorrect drag-and-drop property type");
-      if ((name == "color-scheme" && (kind != "Window" || !isa<ColorSchemeType>(type))) ||
-          (name == "accent-color" && (kind != "Window" || !isa<ColorType>(type))))
+      if ((name == "color-scheme" && (!isWindow(kind) || !isa<ColorSchemeType>(type))) ||
+          (name == "accent-color" && (!isWindow(kind) || !isa<ColorType>(type))))
         return child.emitOpError("incorrect window palette property or type");
-      if ((name == "no-frame" && (kind != "Window" || !isa<BoolType>(type))) ||
-          (kind == "Window" && name == "resizable" && !isa<BoolType>(type)) ||
-          (name == "resize-border-width" && (kind != "Window" || !isa<LengthType>(type))) ||
+      if ((name == "no-frame" && (!isWindow(kind) || !isa<BoolType>(type))) ||
+          (isWindow(kind) && name == "resizable" && !isa<BoolType>(type)) ||
+          (name == "resize-border-width" && (!isWindow(kind) || !isa<LengthType>(type))) ||
           (kind == "WindowMoveArea" && name == "enabled" && !isa<BoolType>(type)))
         return child.emitOpError("incorrect window chrome property or type");
-      if (name == "default-font-family" || name == "default-font-size" ||
+      if (name == "default-font" || name == "default-font-family" || name == "default-font-size" ||
           name == "default-font-weight" || name == "default-font-italic") {
-        if (kind != "Window" ||
+        if (!isWindow(kind) ||
+            (name == "default-font" && !isa<FontType>(type)) ||
             (name == "default-font-family" && !isa<StringType>(type)) ||
             (name == "default-font-size" && !isa<LengthType>(type)) ||
             (name == "default-font-weight" && !isa<IntType>(type)) ||
             (name == "default-font-italic" && !isa<BoolType>(type)))
           return child.emitOpError("incorrect window font property or type");
       }
-      if (name == "font-family" || name == "font-italic" ||
+      if ((name == "font" && kind != "FontPickerPopup") || name == "font-family" || name == "font-italic" ||
           name == "font-weight" || name == "font-size") {
         const bool hasFont = singleLine ||
             llvm::StringSwitch<bool>(kind)
                 .Cases({"Text", "Label", "StyledText", "TextArea", "TextEdit", "SearchField",
-                        "Button", "StandardButton", "ToolButton", "DelayButton",
+                        "Button", "StandardButton", "ToolButton", "RoundButton", "DelayButton",
                         "DialogButton", "CheckBox", "Switch", "RadioButton",
                         "RadioGroup", "GroupBox", "Dialog", "Drawer", "TableCell",
                         "TreeCell", "Tooltip", "SpinBox", "DoubleSpinBox",
@@ -927,7 +1182,8 @@ LogicalResult ElementOp::verify() {
                         "DatePickerPopup", "Tumbler"},
                        true)
                 .Default(false);
-        if (!hasFont || (name == "font-family" && !isa<StringType>(type)) ||
+        if (!hasFont || (name == "font" && !isa<FontType>(type)) ||
+            (name == "font-family" && !isa<StringType>(type)) ||
             (name == "font-weight" && !isa<IntType>(type)) ||
             (name == "font-size" && !isa<LengthType>(type)) ||
             (name == "font-italic" && !isa<BoolType>(type)))
@@ -985,8 +1241,17 @@ LogicalResult ElementOp::verify() {
       if (!validTransformBinding(kind, name, bind.getInput().getType()))
         return child.emitOpError("incorrect visual transform property or type");
       if (name == "clip" &&
-          ((kind != "Rectangle" && kind != "Flickable") || !isa<BoolType>(bind.getInput().getType())))
-        return child.emitOpError("clip requires a boolean on Rectangle or Flickable");
+          ((kind != "Rectangle" && kind != "Flickable" && !isPane(kind)) || !isa<BoolType>(bind.getInput().getType())))
+        return child.emitOpError("clip requires a boolean on Rectangle, Flickable, Pane or ControlFrame");
+      if (!validPaneBinding(kind, name, bind.getInput().getType()))
+        return child.emitOpError("incorrect Pane or ControlFrame property type");
+      if (!validApplicationWindowBinding(kind, name, bind.getInput().getType()))
+        return child.emitOpError("ApplicationWindow padding and spacing require lengths");
+      if (kind == "MenuBar" && name == "background" &&
+          !isa<BrushType, ColorType>(bind.getInput().getType()))
+        return child.emitOpError("MenuBar background requires a brush");
+      if (!validButtonGeometryBinding(kind, name, bind.getInput().getType()))
+        return child.emitOpError("incorrect RoundButton or ToolSeparator property type");
       if (!validBoxShadowBinding(kind, name, bind.getInput().getType()))
         return child.emitOpError("incorrect Rectangle shadow property type");
       if (!validCompositionBinding(kind, name, bind.getInput().getType()))
@@ -1032,10 +1297,10 @@ LogicalResult ElementOp::verify() {
           return child.emitOpError()
                  << "incorrect " << kind << " property type";
       }
-      if ((kind == "Button" || kind == "ToolButton" || kind == "DelayButton" || kind == "MenuItem") &&
+      if ((isPushButton(kind) || kind == "DelayButton" || kind == "MenuItem") &&
           name == "icon" && !isa<ImageType>(bind.getInput().getType()))
         return child.emitOpError("icon requires an image");
-      if (kind == "Button" || kind == "ToolButton" || kind == "DelayButton") {
+      if (isPushButton(kind) || kind == "DelayButton") {
         auto type = bind.getInput().getType();
         if ((name == "icon-only" && !isa<BoolType>(type)) ||
             (name == "icon-size" && !isa<LengthType>(type)))
@@ -1118,6 +1383,8 @@ LogicalResult ElementOp::verify() {
         return child.emitOpError("menu shortcut requires a string");
       if (kind == "StackPage" && name == "visible")
         return child.emitOpError("StackView manages StackPage visibility");
+      if (kind == "StackPage" && (name == "active" || name == "stack-index"))
+        return child.emitOpError("StackPage state is read-only");
       if (isViewport(kind) && isViewportProperty(name)) {
         if (!isViewportOffset(kind, name))
           return child.emitOpError("viewport geometry is read-only");
@@ -1138,18 +1405,61 @@ LogicalResult ElementOp::verify() {
       if (name == "movable-columns" &&
           (!table || !isa<BoolType>(bind.getInput().getType())))
         return child.emitOpError("movable-columns requires a boolean on a table");
+      if (name == "movable-rows" &&
+          (!table || !isa<BoolType>(bind.getInput().getType())))
+        return child.emitOpError("movable-rows requires a boolean on a table");
       if (name == "frozen-columns" &&
           (!table || !isa<IntType>(bind.getInput().getType())))
         return child.emitOpError("frozen-columns requires an integer on a table");
+      if (name == "row-header-width" &&
+          (!table || !isa<LengthType>(bind.getInput().getType())))
+        return child.emitOpError("row-header-width requires a length on a table");
+      if (name == "row-header-text" &&
+          (kind != "TableRow" || !isa<StringType>(bind.getInput().getType())))
+        return child.emitOpError("row-header-text requires a string on a TableRow");
+      if (name == "row-header-field" &&
+          (!standardTable || !isa<StringType>(bind.getInput().getType())))
+        return child.emitOpError("row-header-field requires a string on a StandardTableView");
       if (name == "resizable-rows" &&
           (!table || !isa<BoolType>(bind.getInput().getType())))
         return child.emitOpError("resizable-rows requires a boolean on a table");
       if (name == "copyable" &&
           (!table || !isa<BoolType>(bind.getInput().getType())))
         return child.emitOpError("copyable requires a boolean on a table");
-      if (name == "pasteable" &&
-          (kind != "TableView" || !isa<BoolType>(bind.getInput().getType())))
-        return child.emitOpError("pasteable requires a boolean on a TableView");
+      if (kind == "WheelHandler" &&
+          ((name == "enabled" && !isa<BoolType>(bind.getInput().getType())) ||
+           (name == "orientation" && !isa<OrientationType>(bind.getInput().getType()))))
+        return child.emitOpError("incorrect WheelHandler property type");
+      if (kind == "HoverHandler") {
+        if (name == "hovered" || name == "hover-x" || name == "hover-y")
+          return child.emitOpError("hover state is read-only");
+        if ((name == "blocking" || name == "enabled") && !isa<BoolType>(bind.getInput().getType()))
+          return child.emitOpError("incorrect HoverHandler property type");
+      }
+      if (kind == "TouchArea" && touchAreaType(getContext(), name))
+        return child.emitOpError("TouchArea state is read-only");
+      if (name == "press-and-hold-interval" &&
+          (kind != "TouchArea" || !isa<IntType>(bind.getInput().getType())))
+        return child.emitOpError("press-and-hold-interval requires an integer on TouchArea");
+      if (name == "accepted-buttons" &&
+          (kind != "TouchArea" || !isa<PointerButtonsType>(bind.getInput().getType())))
+        return child.emitOpError("accepted-buttons requires PointerButtons on TouchArea");
+      if (name == "wheel-enabled" &&
+          (!llvm::StringSwitch<bool>(kind)
+                .Cases({"Slider", "RangeSlider", "Dial", "SpinBox", "DoubleSpinBox"}, true)
+                .Default(false) ||
+           !isa<BoolType>(bind.getInput().getType())))
+        return child.emitOpError("wheel-enabled requires a boolean on a numeric control");
+      if (name == "multi-touch" &&
+          (kind != "TouchArea" || !isa<BoolType>(bind.getInput().getType())))
+        return child.emitOpError("multi-touch requires a boolean on TouchArea");
+      if (name == "cursor-shape" &&
+          ((kind != "HoverHandler" && kind != "TouchArea") ||
+           !isa<CursorShapeType>(bind.getInput().getType())))
+        return child.emitOpError("cursor-shape requires a CursorShape on HoverHandler or TouchArea");
+      if ((name == "pasteable" || name == "undoable") &&
+          (!table || !isa<BoolType>(bind.getInput().getType())))
+        return child.emitOpError() << name << " requires a boolean on a table view";
       if (geometryProperty(name))
         return child.emitOpError("layout geometry is read-only");
       if (name == "clipboard-text") {
@@ -1161,6 +1471,16 @@ LogicalResult ElementOp::verify() {
           ((!table && kind != "ListView" && kind != "StandardListView" && kind != "TreeView") ||
            !isa<StringType>(bind.getInput().getType())))
         return child.emitOpError("row-height-field requires a string on a list, tree, or table");
+      if (name == "row-visible-field" &&
+          (!isVirtualView(kind) || !isa<StringType>(bind.getInput().getType())))
+        return child.emitOpError("row-visible-field requires a string on a virtual view");
+      if ((name == "filter-field" || name == "filter-text") &&
+          ((kind != "TreeView" && !standardTable) || !isa<StringType>(bind.getInput().getType())))
+        return child.emitOpError("filters require string properties on a TreeView or StandardTableView");
+      if ((kind == "Slider" || kind == "RangeSlider") &&
+          ((name == "live" && !isa<BoolType>(bind.getInput().getType())) ||
+           (name == "snap-mode" && !isa<ScrollSnapModeType>(bind.getInput().getType()))))
+        return child.emitOpError("invalid slider interaction property type");
       if (kind == "StackView" && name == "initial-page") {
         if (!isa<StringType>(bind.getInput().getType()))
           return child.emitOpError("initial-page requires a string route");
@@ -1195,10 +1515,11 @@ LogicalResult ElementOp::verify() {
               name == "enabled") && !isa<BoolType>(type)))
           return child.emitOpError("incorrect DoubleSpinBox property type");
       }
-      if (kind == "Calendar" || kind == "DatePickerPopup") {
+      if (kind == "Calendar" || kind == "MonthGrid" || kind == "DayOfWeekRow" ||
+          kind == "WeekNumberColumn" || kind == "DatePickerPopup") {
         auto type = bind.getInput().getType();
         if (((name == "date" || name == "display-month" ||
-              name == "minimum-date" || name == "maximum-date") &&
+              name == "minimum-date" || name == "maximum-date" || name == "today") &&
              !isa<DateType>(type)) ||
             (name == "week-start" && !isa<IntType>(type)) ||
             (name == "enabled" && !isa<BoolType>(type)) ||
@@ -1206,6 +1527,12 @@ LogicalResult ElementOp::verify() {
           return child.emitOpError("incorrect Calendar property type");
         if (kind == "DatePickerPopup" && name == "display-month")
           return child.emitOpError("DatePickerPopup manages its display month");
+        if ((name == "today" && kind != "MonthGrid") ||
+            (name == "weekday-labels" && (kind == "MonthGrid" || kind == "WeekNumberColumn")) ||
+            (name == "display-month" && kind == "DayOfWeekRow") ||
+            ((name == "date" || name == "minimum-date" || name == "maximum-date") &&
+             (kind == "DayOfWeekRow" || kind == "WeekNumberColumn")))
+          return child.emitOpError("property is unavailable on this calendar control");
       }
       if (isTimePicker(kind)) {
         auto type = bind.getInput().getType();
@@ -1217,8 +1544,15 @@ LogicalResult ElementOp::verify() {
       if (kind == "ColorPickerPopup") {
         auto type = bind.getInput().getType();
         if ((name == "color" && !isa<ColorType>(type)) ||
-            ((name == "show-alpha" || name == "enabled") && !isa<BoolType>(type)))
+            ((name == "show-alpha" || name == "show-color-plane" || name == "enabled") && !isa<BoolType>(type)))
           return child.emitOpError("incorrect color picker property type");
+      }
+      if (kind == "FontPickerPopup") {
+        auto type = bind.getInput().getType();
+        if ((name == "font" && !isa<FontType>(type)) ||
+            (name == "preview-text" && !isa<StringType>(type)) ||
+            (name == "enabled" && !isa<BoolType>(type)))
+          return child.emitOpError("incorrect font picker property type");
       }
       if ((kind == "TimePicker" || isPickerPopup(kind)) &&
           (name == "accept-text" || name == "cancel-text" || name == "title") &&
@@ -1243,7 +1577,7 @@ LogicalResult ElementOp::verify() {
               "requires a ScrollBarPolicy on a scrollable axis");
       }
       if ((name == "content-width" || name == "content-height") &&
-          (!isContentViewport(kind) ||
+          !isPane(kind) && (!isContentViewport(kind) ||
            !isa<LengthType, PercentType>(bind.getInput().getType())))
         return child.emitOpError("requires a scrollable content length");
       if (name == "flick-direction" && (kind != "Flickable" || !isa<FlickDirectionType>(bind.getInput().getType())))
@@ -1303,8 +1637,11 @@ LogicalResult ElementOp::verify() {
       if (kind == "SplitView") {
         auto name = bind.getName();
         auto type = bind.getInput().getType();
+        if (name == "resizing")
+          return child.emitOpError("SplitView resizing is read-only");
         if ((name == "orientation" && !isa<OrientationType>(type)) ||
-            (name == "handle-size" && !isa<LengthType>(type)) ||
+            ((name == "handle-size" || name == "handle-hit-size") &&
+             !isa<LengthType>(type)) ||
             (name == "handle-color" && !isa<ColorType>(type)) ||
             (name == "enabled" && !isa<BoolType>(type)))
           return child.emitOpError("incorrect SplitView property type");
@@ -1313,6 +1650,20 @@ LogicalResult ElementOp::verify() {
           !isa<SelectionTargetType>(bind.getInput().getType()))
         return child.emitOpError(
             "selection-target requires a SelectionTarget value");
+      if (name == "auto-sort" && (!standardTable || !isa<BoolType>(bind.getInput().getType())))
+        return child.emitOpError("auto-sort requires a bool on StandardTableView");
+      if (llvm::StringSwitch<bool>(name)
+              .Cases({"edit-on-click", "edit-on-selected-click", "edit-on-double-click",
+                      "edit-on-key", "edit-on-tab", "edit-on-typing"}, true)
+              .Default(false) &&
+          (!table || !isa<BoolType>(bind.getInput().getType())))
+        return child.emitOpError("edit triggers require a bool on a table view");
+      if (kind == "TableColumn" && name == "editable" &&
+          (parentKind != "StandardTableView" || !isa<BoolType>(bind.getInput().getType())))
+        return child.emitOpError("TableColumn.editable requires a bool on a StandardTableView column");
+      if (kind == "TableColumn" && name == "visible" &&
+          !isa<BoolType>(bind.getInput().getType()))
+        return child.emitOpError("TableColumn.visible requires a bool");
       if (standardTable && name == "model") {
         if (!isa<RecordListType>(bind.getInput().getType()))
           return child.emitOpError("StandardTableView model requires a record list");
@@ -1334,6 +1685,11 @@ LogicalResult ElementOp::verify() {
           return child.emitOpError("cell text requires a string value");
         ++cellTextBindings;
       }
+      if (table && (name == "can-undo" || name == "can-redo"))
+        return child.emitOpError("table history state is read-only");
+      if (table && (name == "current-sort-column" || name == "current-sort-descending" ||
+                    name == "current-column" || name == "selection-count" || name == "has-selection"))
+        return child.emitOpError("table sorting state is read-only");
       if (name == "drag-select" && (!table || !isa<BoolType>(bind.getInput().getType())))
         return child.emitOpError("drag-select requires a bool value on a table");
       if (((table && (bind.getName() == "resizable-columns" ||
@@ -1346,6 +1702,8 @@ LogicalResult ElementOp::verify() {
       if (tree && bind.getName() == "multi-select" &&
           !isa<BoolType>(bind.getInput().getType()))
         return child.emitOpError("TreeView multi-select requires a bool value");
+      if (kind == "TreeView" && name == "root-key" && !isa<IntType>(bind.getInput().getType()))
+        return child.emitOpError("TreeView root-key requires an integer");
       if (kind == "DialogButton" && bind.getName() == "role" &&
           !isa<DialogRoleType>(bind.getInput().getType()))
         return child.emitOpError("role requires a DialogRole value");
@@ -1433,6 +1791,8 @@ LogicalResult ElementOp::verify() {
       return child.emitOpError() << kind << " cannot contain child elements";
     if (isa<PropertyOp, CallbackOp>(child) && (root || getKey().value_or(getId()).empty()))
       return child.emitOpError("requires a keyed non-root element");
+    if (kind == "HoverHandler" && isa<RepeatOp>(child))
+      return child.emitOpError("repeated hover handlers require a component delegate");
     if (kind == "ScaleRotateGestureHandler" || kind == "SwipeGestureHandler") {
       if (isa<RepeatOp>(child))
         return child.emitOpError("repeated gesture handlers require a component delegate");
@@ -1464,7 +1824,7 @@ LogicalResult ElementOp::verify() {
           ((attachedScroll || kind == "ScrollIndicator") && isa<HandlerOp, ControlLinkOp>(child)))
         return child.emitOpError("is invalid on a scroll control");
     }
-    if (!isa<BindOp, ActionRefOp, RadioGroupRefOp, CheckGroupRefOp, ScrollTargetOp, AnimateOp, ShowIfOp, RepeatOp, ControlLinkOp,
+    if (!isa<BindOp, ActionRefOp, RadioGroupRefOp, CheckGroupRefOp, ScrollTargetOp, SplitFillOp, AnimateOp, ShowIfOp, RepeatOp, ControlLinkOp,
              RowLinkOp, HandlerOp, CallbackOp, ElementOp, InstanceOp, PropertyOp, StateSelectOp,
              StateSetOp, StateTimingOp, FocusTargetOp, EndOp>(child) &&
         !isExpression(child))
@@ -1729,6 +2089,8 @@ LogicalResult StateSetOp::verify() {
   if (isa<InstanceOp>((*this)->getParentOp()))
     return verifyInstanceLayout(*this, getName(), getInput().getType());
   auto element = cast<ElementOp>((*this)->getParentOp());
+  if (geometryProperty(getName()))
+    return emitOpError("layout geometry is read-only");
   if (isViewport(element.getKind()) && isViewportProperty(getName()))
     return emitOpError("viewport geometry is read-only");
   if (isViewport(element.getKind()) && getName() == "enabled" &&
@@ -1737,8 +2099,14 @@ LogicalResult StateSetOp::verify() {
   if (!validTransformBinding(element.getKind(), getName(), getInput().getType()))
     return emitOpError("incorrect visual transform property or type");
   if (getName() == "clip" &&
-      ((element.getKind() != "Rectangle" && element.getKind() != "Flickable") || !isa<BoolType>(getInput().getType())))
-    return emitOpError("clip requires a boolean on Rectangle or Flickable");
+      ((element.getKind() != "Rectangle" && element.getKind() != "Flickable" && !isPane(element.getKind())) || !isa<BoolType>(getInput().getType())))
+    return emitOpError("clip requires a boolean on Rectangle, Flickable, Pane or ControlFrame");
+  if (!validPaneBinding(element.getKind(), getName(), getInput().getType()))
+    return emitOpError("incorrect Pane or ControlFrame property type");
+  if (!validApplicationWindowBinding(element.getKind(), getName(), getInput().getType()))
+    return emitOpError("ApplicationWindow padding and spacing require lengths");
+  if (!validButtonGeometryBinding(element.getKind(), getName(), getInput().getType()))
+    return emitOpError("incorrect RoundButton or ToolSeparator property type");
   if (!validBoxShadowBinding(element.getKind(), getName(), getInput().getType()))
     return emitOpError("incorrect Rectangle shadow property type");
   if (!validCompositionBinding(element.getKind(), getName(), getInput().getType()))
@@ -1768,7 +2136,7 @@ LogicalResult StateTimingOp::verify() {
   auto *parent = (*this)->getParentOp();
   auto &body = parent->getRegion(0).front();
   auto element = dyn_cast<ElementOp>(parent);
-  if ((element && element.getKind() == "Window") ||
+  if ((element && isWindow(element.getKind())) ||
       llvm::any_of(body.getOps<AnimateOp>(), [&](AnimateOp op) { return op.getName() == getName(); }))
     return emitOpError("requires a visual property without a standalone animation");
   const bool base = element
@@ -1826,24 +2194,26 @@ LogicalResult ControlLinkOp::verify() {
        getName() == "current-index" && isa<IntType>(type)) ||
       (valueChoice && getName() == "current-value" &&
        (kind == "ComboBox" ? !comboValueTypeName(type).empty() : isa<StringType>(type))) ||
+      (kind == "ActionGroup" && getName() == "current-value" && isa<StringType>(type)) ||
       (kind == "TreeView" && getName() == "current-key" &&
        isa<IntType>(type)) ||
       (isTableView(kind) && getName() == "current-row" && isa<IntType>(type));
   const bool comboText =
       kind == "ComboBox" && getName() == "edit-text" && isa<StringType>(type);
   const bool calendar =
-      (((kind == "Calendar" || kind == "DatePickerPopup") && getName() == "date") ||
-       (kind == "Calendar" && getName() == "display-month")) &&
+      (((kind == "Calendar" || kind == "MonthGrid" || kind == "DatePickerPopup") && getName() == "date") ||
+       ((kind == "Calendar" || kind == "MonthGrid") && getName() == "display-month")) &&
       isa<DateType>(type);
   const bool time = isTimePicker(kind) && getName() == "time" && isa<TimeType>(type);
   const bool color = kind == "ColorPickerPopup" && getName() == "color" && isa<ColorType>(type);
+  const bool font = kind == "FontPickerPopup" && getName() == "font" && isa<FontType>(type);
   const bool swipeSide = kind == "SwipeDelegate" && getName() == "open-side" && isa<SwipeSideType>(type);
   const bool running = kind == "Timer" && getName() == "running" && isa<BoolType>(type);
   const bool visible = kind == "SecondaryWindow" && getName() == "visible" && isa<BoolType>(type);
   const bool viewport = isViewportOffset(kind, getName()) && isa<LengthType>(type) &&
                         isStaticViewport(element);
   if ((!text && !checked && !checkState && !range && !spin && !choice && !opened &&
-       !comboText && !calendar && !time && !color && !swipeSide && !running && !visible && !viewport) ||
+       !comboText && !calendar && !time && !color && !font && !swipeSide && !running && !visible && !viewport) ||
       !getInput().getDefiningOp<ReadOp>())
     return emitOpError(
         "requires a writable property reference for the control");
@@ -1916,6 +2286,29 @@ LogicalResult FocusTargetOp::verify() {
   return success();
 }
 
+LogicalResult SplitFillOp::verify() {
+  auto parent = cast<ElementOp>((*this)->getParentOp());
+  auto &body = parent.getBody().front();
+  if (parent.getKind() != "SplitView" || getTarget().empty() ||
+      !llvm::hasSingleElement(body.getOps<SplitFillOp>()))
+    return emitOpError("requires one fill-pane reference on a SplitView");
+  for (auto child : body.getOps<ElementOp>()) {
+    if (child.getId() != getTarget())
+      continue;
+    auto kind = child.getKind();
+    if (kind == "Menu" || kind == "Tooltip" || kind == "Dialog" ||
+        kind == "Drawer" || kind == "PopupWindow" || kind == "Shortcut" ||
+        isNativeDialog(kind))
+      break;
+    return success();
+  }
+  if (llvm::any_of(body.getOps<InstanceOp>(), [&](InstanceOp child) {
+        return child.getId() == getTarget();
+      }))
+    return success();
+  return emitOpError("fill-pane requires a named direct pane of this SplitView");
+}
+
 LogicalResult FocusCommandOp::verify() {
   if (getAction() != "focus" && getAction() != "clear")
     return emitOpError("requires a focus or clear action");
@@ -1951,33 +2344,158 @@ LogicalResult TextCommandOp::verify() {
       callback && callback.getPure().value_or("false") == "true")
     return emitOpError("text commands are not allowed in pure callbacks");
   auto method = getMethod();
-  if (method == "set-selection-offsets" && getOffsets().size() == 2)
+  if ((method == "set-selection-offsets" || method == "edit-cell") &&
+      getOffsets().size() == 2)
     return success();
   if (getOffsets().empty() &&
       llvm::StringSwitch<bool>(method)
-          .Cases({"select-all", "clear-selection", "undo", "redo", "cut", "copy", "paste"}, true)
+          .Cases({"select-all", "clear-selection", "undo", "redo", "cut", "copy", "paste",
+                  "cancel-edit"}, true)
           .Default(false))
     return success();
-  return emitOpError("requires set-selection-offsets(int, int) or a known command with no operands");
+  return emitOpError("requires set-selection-offsets(int, int), edit-cell(int, int), or a known command with no operands");
 }
 
 LogicalResult ScrollCommandOp::verify() {
   if (auto callback = dyn_cast<CallbackOp>((*this)->getParentOp());
       callback && callback.getPure().value_or("false") == "true")
     return emitOpError("scroll commands are not allowed in pure callbacks");
-  auto position = getPosition().getType();
-  auto second = getAlignmentOrY().getType();
-  if ((getMethod() == "scroll-to" && isa<LengthType>(position) && isa<LengthType>(second)) ||
-      (getMethod() == "position-view-at-index" && isa<IntType>(position) &&
-       isa<ScrollAlignmentType>(second)))
+  auto args = getArgs();
+  auto method = getMethod();
+  if (args.size() == 2) {
+    auto first = args[0].getType();
+    auto second = args[1].getType();
+    if ((method == "scroll-to" && isa<LengthType>(first) && isa<LengthType>(second)) ||
+        ((method == "position-view-at-index" || method == "position-view-at-source-index" || method == "position-view-at-row" ||
+          method == "position-view-at-column") && isa<IntType>(first) &&
+         isa<ScrollAlignmentType>(second)))
+      return success();
+  }
+  if ((method == "position-view-at-cell" || method == "position-view-at-source-cell") &&
+      args.size() == 4 &&
+      isa<IntType>(args[0].getType()) && isa<IntType>(args[1].getType()) &&
+      isa<ScrollAlignmentType>(args[2].getType()) && isa<ScrollAlignmentType>(args[3].getType()))
     return success();
-  return emitOpError("requires scroll-to(length, length) or position-view-at-index(int, ScrollAlignment)");
+  return emitOpError("requires scroll-to(length, length), position-view-at-index(int, ScrollAlignment), "
+                     "position-view-at-source-index(int, ScrollAlignment), "
+                     "position-view-at-row(int, ScrollAlignment), position-view-at-column(int, ScrollAlignment), "
+                     "position-view-at-cell(int, int, ScrollAlignment, ScrollAlignment), "
+                     "or position-view-at-source-cell(int, int, ScrollAlignment, ScrollAlignment)");
+}
+
+LogicalResult TableSelectionCommandOp::verify() {
+  if (auto callback = dyn_cast<CallbackOp>((*this)->getParentOp());
+      callback && callback.getPure().value_or("false") == "true")
+    return emitOpError("table selection commands are not allowed in a pure callback");
+  auto arity = llvm::StringSwitch<int>(getMethod())
+      .Cases({"select-all", "clear-selection"}, 0)
+      .Cases({"select-row", "select-column"}, 1)
+      .Cases({"select-cell", "set-current-cell", "toggle-cell"}, 2)
+      .Case("select-range", 4).Default(-1);
+  if (arity < 0 || getArgs().size() != static_cast<size_t>(arity))
+    return emitOpError("invalid table selection command or arguments");
+  return success();
+}
+
+LogicalResult SourceSelectionOp::verify() {
+  if (auto callback = dyn_cast<CallbackOp>((*this)->getParentOp());
+      callback && callback.getPure().value_or("false") == "true")
+    return emitOpError("source selection is not allowed in pure callbacks");
+  auto method = getMethod();
+  if ((method == "select-source-index" && getArgs().size() == 1) ||
+      (method == "select-source-cell" && getArgs().size() == 2))
+    return success();
+  return emitOpError("requires select-source-index(int) or select-source-cell(int, int)");
+}
+
+LogicalResult TableSelectionReadOp::verify() {
+  auto type = getResult().getType();
+  if (((getValue() == "current-column" || getValue() == "selection-count") && isa<IntType>(type)) ||
+      (getValue() == "has-selection" && isa<BoolType>(type)))
+    return success();
+  return emitOpError("requires a typed table selection property");
+}
+
+LogicalResult TableSortCommandOp::verify() {
+  if (auto callback = dyn_cast<CallbackOp>((*this)->getParentOp());
+      callback && callback.getPure().value_or("false") == "true")
+    return emitOpError("table sorting is not allowed in a pure callback");
+  auto args = getArgs();
+  if ((getMethod() == "clear-sort" && args.empty()) ||
+      (getMethod() == "sort-by" && args.size() == 2 &&
+       isa<IntType>(args[0].getType()) && isa<BoolType>(args[1].getType())))
+    return success();
+  return emitOpError("invalid table sort command or arguments");
+}
+
+LogicalResult TableSortReadOp::verify() {
+  auto type = getResult().getType();
+  if ((getValue() == "current-sort-column" && isa<IntType>(type)) ||
+      (getValue() == "current-sort-descending" && isa<BoolType>(type)))
+    return success();
+  return emitOpError("requires a typed table sort property");
+}
+
+LogicalResult TableHistoryCommandOp::verify() {
+  if (auto callback = dyn_cast<CallbackOp>((*this)->getParentOp());
+      callback && callback.getPure().value_or("false") == "true")
+    return emitOpError("table history commands are not allowed in a pure callback");
+  if (getMethod() != "undo" && getMethod() != "redo")
+    return emitOpError("requires undo or redo");
+  return success();
+}
+
+LogicalResult TableHistoryReadOp::verify() {
+  if (getValue() != "can-undo" && getValue() != "can-redo")
+    return emitOpError("requires can-undo or can-redo");
+  return success();
+}
+
+LogicalResult SplitRestoreOp::verify() {
+  if (auto callback = dyn_cast<CallbackOp>((*this)->getParentOp());
+      callback && callback.getPure().value_or("false") == "true")
+    return emitOpError("restoring split state is not allowed in a pure callback");
+  return success();
+}
+
+LogicalResult TreeCommandOp::verify() {
+  if (auto callback = dyn_cast<CallbackOp>((*this)->getParentOp());
+      callback && callback.getPure().value_or("false") == "true")
+    return emitOpError("tree commands are not allowed in pure callbacks");
+  auto arity = llvm::StringSwitch<int>(getMethod())
+      .Cases({"expand", "collapse", "toggle-expanded", "collapse-recursively", "expand-to"}, 1)
+      .Case("expand-recursively", 2).Default(-1);
+  if (arity < 0 || getArgs().size() != static_cast<size_t>(arity))
+    return emitOpError("invalid tree command or arguments");
+  return success();
+}
+
+LogicalResult TreeQueryOp::verify() {
+  auto type = getResult().getType();
+  auto name = getValue();
+  if ((name == "is-expanded" && isa<BoolType>(type)) ||
+      ((name == "depth" || name == "row-for-key") && isa<IntType>(type)))
+    return success();
+  return emitOpError("requires a typed tree query");
+}
+
+LogicalResult ViewIndexOp::verify() {
+  if (getValue() == "view-index-for-source" || getValue() == "source-index-for-view")
+    return success();
+  return emitOpError("requires view-index-for-source or source-index-for-view");
 }
 
 LogicalResult MoveColumnOp::verify() {
   if (auto callback = dyn_cast<CallbackOp>((*this)->getParentOp());
       callback && callback.getPure().value_or("false") == "true")
     return emitOpError("moving a column is not allowed in a pure callback");
+  return success();
+}
+
+LogicalResult MoveRowOp::verify() {
+  if (auto callback = dyn_cast<CallbackOp>((*this)->getParentOp());
+      callback && callback.getPure().value_or("false") == "true")
+    return emitOpError("moving a row is not allowed in a pure callback");
   return success();
 }
 
@@ -1993,7 +2511,7 @@ static bool hasRootWindow(Operation *op) {
   if (!component)
     return false;
   auto roots = component.getBody().front().getOps<ElementOp>();
-  return llvm::hasSingleElement(roots) && (*roots.begin()).getKind() == "Window";
+  return llvm::hasSingleElement(roots) && isWindow((*roots.begin()).getKind());
 }
 
 LogicalResult WindowReadOp::verify() {
@@ -2061,6 +2579,14 @@ LogicalResult ViewportReadOp::verify() {
 LogicalResult StackReadOp::verify() {
   auto name = getValue();
   auto type = getResult().getType();
+  if (auto route = getRoute()) {
+    if (!route.getDefiningOp<LiteralOp>())
+      return emitOpError("requires a literal StackPage route");
+    if ((name == "active" && isa<BoolType>(type)) ||
+        (name == "stack-index" && isa<IntType>(type)))
+      return success();
+    return emitOpError("requires a typed StackPage state property");
+  }
   if ((name == "current-page" && isa<StringType>(type)) ||
       (name == "depth" && isa<IntType>(type)) ||
       (name == "can-go-back" && isa<BoolType>(type)))
@@ -2072,7 +2598,10 @@ static ReadOp editableRowModel(RowLinkOp link) {
   auto cell = cast<ElementOp>(link->getParentOp());
   auto row = dyn_cast<ElementOp>(cell->getParentOp());
   const bool table = row && row.getKind() == "TableRow";
-  if (!table) {
+  const bool itemDelegate = isVirtualItemDelegate(cell);
+  if (itemDelegate) {
+    row = cell;
+  } else if (!table) {
     row = enclosingTreeRow(cell);
     if (!row || !hasStaticEditorPath(cell, row))
       return {};
@@ -2115,7 +2644,9 @@ LogicalResult RowLinkOp::verify() {
   auto cell = cast<ElementOp>((*this)->getParentOp());
   if (!editableRowModel(*this))
     return emitOpError(
-        enclosingTreeRow(cell)
+        isVirtualItemDelegate(cell)
+            ? "requires a matching field of a writable list model"
+        : enclosingTreeRow(cell)
             ? "requires a matching field of a writable tree model"
             : "requires the repeated string item or a matching "
               "field of a table model property");
@@ -2124,6 +2655,8 @@ LogicalResult RowLinkOp::verify() {
   for (Operation &op : cell.getBody().front()) {
     if (&op == getOperation() || isa<AnimateOp, ShowIfOp, EndOp>(op) ||
         isExpression(op))
+      continue;
+    if (isVirtualItemDelegate(cell) && isa<RepeatOp, HandlerOp, StateSelectOp, StateSetOp, StateTimingOp>(op))
       continue;
     if (auto binding = dyn_cast<BindOp>(op);
         binding && binding.getName() != getName())
@@ -2181,6 +2714,11 @@ static LogicalResult verifyCallback(Operation *op, Region &body,
     if (kind == "SystemTrayIcon") {
       if (handler.getName() != "clicked" || !args->empty() || !results.empty())
         return handler.emitOpError("SystemTrayIcon requires clicked() with no parameters");
+    } else if (kind == "HoverHandler") {
+      auto name = handler.getName();
+      if ((name != "entered" && name != "moved" && name != "exited") ||
+          !args->empty() || !results.empty())
+        return handler.emitOpError("requires a zero-argument hover event");
     } else if (kind == "SwipeGestureHandler") {
       auto name = handler.getName();
       if ((name != "moved" && name != "swiped" && name != "cancelled") ||
@@ -2191,13 +2729,22 @@ static LogicalResult verifyCallback(Operation *op, Region &body,
       if ((name != "started" && name != "updated" && name != "ended" && name != "cancelled") ||
           !args->empty() || !results.empty())
         return handler.emitOpError("requires a zero-argument scale/rotate gesture event");
-    } else if (handler.getName() == "column-moved") {
+    } else if (handler.getName() == "current-cell-changed") {
       if (!isTableView(kind) || args->size() != 2 || !results.empty() ||
           !llvm::all_of(*args, [](const llvm::json::Value &value) {
             auto *arg = value.getAsObject();
             return arg && arg->getString("ty") == "int" && arg->getString("name");
           }))
-        return handler.emitOpError("requires column-moved(int, int) on a table");
+        return handler.emitOpError("requires current-cell-changed(int, int) on a table");
+    } else if (handler.getName() == "column-moved" || handler.getName() == "row-moved") {
+      if (!isTableView(kind) || args->size() != (handler.getName() == "row-moved" ? 3 : 2) || !results.empty() ||
+          !llvm::all_of(*args, [](const llvm::json::Value &value) {
+            auto *arg = value.getAsObject();
+            return arg && arg->getString("ty") == "int" && arg->getString("name");
+          }))
+        return handler.emitOpError(handler.getName() == "row-moved"
+            ? "requires row-moved(int, int, int) on a table"
+            : "requires column-moved(int, int) on a table");
     } else if (handler.getName() == "scrolled") {
       if (!isViewport(kind) || kind == "Flickable" || !args->empty() || !results.empty())
         return handler.emitOpError("requires scrolled() on a scrollable element");
@@ -2205,11 +2752,19 @@ static LogicalResult verifyCallback(Operation *op, Region &body,
       if (kind != "Flickable" || !args->empty() || !results.empty())
         return handler.emitOpError("requires flicked() on Flickable");
     } else if (handler.getName() == "close-requested") {
-      if (kind != "Window" || !isa<ComponentOp>(element->getParentOp()))
+      if (!isWindow(kind) || !isa<ComponentOp>(element->getParentOp()))
         return handler.emitOpError("close-requested requires the component's root Window");
       if (!args->empty() || !llvm::hasSingleElement(results) ||
           !isa<BoolType>((*results.begin()).getInput().getType()))
         return handler.emitOpError("close-requested requires no parameters and a bool result");
+    } else if (handler.getName() == "leave-requested") {
+      auto *destination = args->size() == 2 ? args->front().getAsObject() : nullptr;
+      auto *removing = args->size() == 2 ? args->back().getAsObject() : nullptr;
+      if (kind != "StackPage" || !destination || !removing ||
+          destination->getString("ty") != "string" || !destination->getString("name") ||
+          removing->getString("ty") != "bool" || !removing->getString("name") ||
+          !llvm::hasSingleElement(results) || !isa<BoolType>((*results.begin()).getInput().getType()))
+        return handler.emitOpError("StackPage requires leave-requested(string, bool) -> bool");
     } else if (llvm::StringSwitch<bool>(handler.getName())
                    .Cases({"capture-key-pressed", "capture-key-released", "key-pressed", "key-released"}, true)
                    .Default(false)) {
@@ -2218,8 +2773,28 @@ static LogicalResult verifyCallback(Operation *op, Region &body,
           !arg->getString("name") || !llvm::hasSingleElement(results) ||
           !isa<EventResultType>((*results.begin()).getInput().getType()))
         return handler.emitOpError("FocusScope key handlers require (KeyEvent) -> EventResult");
+    } else if (handler.getName() == "pointer-event") {
+      auto *arg = args->size() == 1 ? args->front().getAsObject() : nullptr;
+      if (kind != "TouchArea" || !arg || arg->getString("ty") != "PointerEvent" ||
+          !arg->getString("name") || !results.empty())
+        return handler.emitOpError("TouchArea requires pointer-event(PointerEvent)");
+    } else if (handler.getName() == "double-clicked" || handler.getName() == "moved" ||
+               handler.getName() == "press-and-hold") {
+      if (kind != "TouchArea" || !args->empty() || !results.empty())
+        return handler.emitOpError("requires a zero-argument TouchArea event");
+    } else if (handler.getName() == "wheel" || handler.getName() == "scroll-event") {
+      const bool wheel = handler.getName() == "wheel";
+      auto *arg = args->size() == 1 ? args->front().getAsObject() : nullptr;
+      if (kind != (wheel ? "WheelHandler" : "TouchArea") || !arg || arg->getString("ty") != "WheelEvent" ||
+          !arg->getString("name") || !llvm::hasSingleElement(results) ||
+          !isa<EventResultType>((*results.begin()).getInput().getType()))
+        return handler.emitOpError(wheel
+            ? "WheelHandler requires wheel(WheelEvent) -> EventResult"
+            : "TouchArea requires scroll-event(WheelEvent) -> EventResult");
     } else if (!results.empty()) {
-      return handler.emitOpError("only close-requested may return a value outside FocusScope key handlers");
+      return handler.emitOpError(isWindow(kind)
+          ? "only close-requested may return a value on Window"
+          : "this event cannot return a value");
     }
     if (llvm::StringSwitch<bool>(handler.getName())
             .Cases({"focus-gained", "focus-lost", "focus-changed-event", "focus-within-changed"}, true)
@@ -2262,6 +2837,12 @@ static LogicalResult verifyCallback(Operation *op, Region &body,
     if ((kind == "MenuItem" || kind == "Action" || kind == "DelayButton") &&
         (!args->empty() || handler.getName() != "activated"))
       return handler.emitOpError("requires activated() without parameters");
+    if (kind == "ActionGroup") {
+      auto *arg = args->size() == 1 ? args->front().getAsObject() : nullptr;
+      if (handler.getName() != "activated" || !arg || !arg->getString("name") ||
+          arg->getString("ty") != "string" || !results.empty())
+        return handler.emitOpError("requires activated(string) on an ActionGroup");
+    }
     if (kind == "Shortcut" && (!args->empty() ||
         (handler.getName() != "activated" && handler.getName() != "activated-ambiguously")))
       return handler.emitOpError("Shortcut requires an activation handler without parameters");
@@ -2309,6 +2890,11 @@ static LogicalResult verifyCallback(Operation *op, Region &body,
           args->size() != 2 || !llvm::all_of(*args, valid))
         return handler.emitOpError("RangeSlider requires two float parameters");
     }
+    if (kind == "StackPage" && handler.getName() != "leave-requested" &&
+        (!llvm::StringSwitch<bool>(handler.getName())
+              .Cases({"activated", "deactivated", "removed"}, true).Default(false) ||
+         !args->empty()))
+      return handler.emitOpError("invalid StackPage lifecycle event or signature");
     if (kind == "StackView") {
       auto *page = args->size() == 2 ? args->front().getAsObject() : nullptr;
       auto *depth = args->size() == 2 ? args->back().getAsObject() : nullptr;
@@ -2348,20 +2934,25 @@ static LogicalResult verifyCallback(Operation *op, Region &body,
     if (kind == "TimePicker" || isPickerPopup(kind)) {
       auto name = handler.getName();
       auto *arg = args->size() == 1 ? args->front().getAsObject() : nullptr;
-      auto type = kind == "DatePickerPopup" ? "Date" : kind == "ColorPickerPopup" ? "color" : "Time";
+      auto type = llvm::StringSwitch<llvm::StringRef>(kind)
+          .Case("DatePickerPopup", "Date")
+          .Case("ColorPickerPopup", "color")
+          .Case("FontPickerPopup", "Font")
+          .Default("Time");
       if (!(isPickerPopup(kind) && name == "canceled" && args->empty()) &&
           !((kind == "TimePicker" ? name == "changed" : name == "accepted") &&
             arg && arg->getString("ty") == type && arg->getString("name")))
         return handler.emitOpError("invalid picker event or signature");
     }
     const bool scalarRange = kind == "Slider" || kind == "Dial" || kind == "ScrollBar";
-    const bool calendar = kind == "Calendar";
+    const bool calendar = kind == "Calendar" || kind == "MonthGrid";
     const bool search = kind == "SearchField";
     const bool spin = kind == "SpinBox" || kind == "DoubleSpinBox";
     const bool indexView = kind == "TabWidget" || kind == "TabBar" || kind == "SwipeView" ||
                            kind == "PageIndicator" || usesListTemplate(kind) ||
                            kind == "StandardListView" || kind == "Tumbler";
-    if (handler.getName() != "scrolled" && handler.getName() != "column-moved" && (scalarRange || spin ||
+    if (handler.getName() != "scrolled" && handler.getName() != "column-moved" &&
+        handler.getName() != "row-moved" && handler.getName() != "current-cell-changed" && (scalarRange || spin ||
         (kind == "ComboBox" && handler.getName() != "value-selected") || table ||
         kind == "RadioGroup" || kind == "ButtonGroup" || indexView || multiline || tree || calendar || search)) {
       auto *arg = args->size() == 1 ? args->front().getAsObject() : nullptr;
@@ -2371,7 +2962,8 @@ static LogicalResult verifyCallback(Operation *op, Region &body,
                       ? "int"
                       : "string";
       const bool known =
-          calendar ? name == "changed" || name == "month-changed"
+          calendar ? name == "changed" || name == "month-changed" ||
+                     (kind == "MonthGrid" && name == "activated")
           : search ? name == "accepted" || name == "edited" || name == "selected" || name == "search-triggered"
           : scalarRange ? name == "changed" || (kind != "ScrollBar" && name == "released")
           : (spin || multiline) ? name == "edited"
@@ -2395,7 +2987,7 @@ static LogicalResult verifyCallback(Operation *op, Region &body,
       return child.emitOpError("must be immediately before xr.end");
     if (!isa<AssignOp, InvokeOp, NavigateOp, TimerCommandOp, PopupCommandOp,
              FileDialogOpenOp, NativeDialogOpenOp, WindowCloseOp, WindowCommandOp, CheckGroupCommandOp,
-             SecondaryWindowCommandOp, FocusCommandOp, SwipeCancelOp, TextCommandOp, ScrollCommandOp, CancelFlickOp, ReturnToBoundsOp, MoveColumnOp,
+             SecondaryWindowCommandOp, FocusCommandOp, SwipeCancelOp, TextCommandOp, ScrollCommandOp, SourceSelectionOp, TreeCommandOp, TableSortCommandOp, TableSelectionCommandOp, TableHistoryCommandOp, SplitRestoreOp, CancelFlickOp, ReturnToBoundsOp, MoveColumnOp, MoveRowOp,
              SetRowHeightOp, ReturnOp, EndOp>(child) &&
         !isExpression(child))
       return child.emitOpError("is not valid in a callback or event handler");
@@ -2490,6 +3082,12 @@ LogicalResult LiteralOp::verify() {
     valid = spelling == "top" || spelling == "center" || spelling == "bottom";
   } else if (isa<TextOverflowType>(type)) {
     valid = spelling == "clip" || spelling == "elide";
+  } else if (isa<CursorShapeType>(type)) {
+    valid = llvm::StringSwitch<bool>(spelling)
+                .Cases({"auto", "default", "pointer", "text", "crosshair", "move",
+                        "grab", "grabbing", "not-allowed", "wait", "help",
+                        "resize-horizontal", "resize-vertical", "zoom-in", "zoom-out"}, true)
+                .Default(false);
   } else if (isa<InputModeType>(type)) {
     valid = spelling == "text" || spelling == "password" || spelling == "number" ||
             spelling == "decimal" || spelling == "search";
@@ -2497,7 +3095,7 @@ LogicalResult LiteralOp::verify() {
     valid = spelling == "system" || spelling == "light" || spelling == "dark";
   } else if (isa<FileDialogModeType>(type)) {
     valid = spelling == "open-file" || spelling == "open-files" ||
-            spelling == "save-file" || spelling == "select-folder";
+            spelling == "save-file" || spelling == "select-folder" || spelling == "select-folders";
   } else if (isa<MessageLevelType>(type)) {
     valid = spelling == "info" || spelling == "warning" || spelling == "error";
   } else if (isa<MessageButtonsType>(type)) {
@@ -2508,7 +3106,11 @@ LogicalResult LiteralOp::verify() {
             spelling == "checked";
   } else if (isa<DialogRoleType>(type)) {
     valid = spelling == "accept" || spelling == "reject";
-  } else if (isa<KeyEventType, KeyModifiersType>(type)) {
+  } else if (isa<PointerEventKindType>(type)) {
+    valid = spelling == "down" || spelling == "move" || spelling == "up" || spelling == "cancel";
+  } else if (isa<PointerButtonType>(type)) {
+    valid = spelling == "primary" || spelling == "secondary" || spelling == "middle";
+  } else if (isa<KeyEventType, KeyModifiersType, WheelEventType, PointerEventType, TouchPointType, TouchPointsType>(type)) {
     valid = spelling.empty();
   } else if (isa<FocusReasonType>(type)) {
     valid = llvm::StringSwitch<bool>(spelling)
@@ -2897,8 +3499,8 @@ static LogicalResult verifyCallbackAliasCycles(ComponentOp component, const Owne
 static bool focusTargetKind(llvm::StringRef kind) {
   return llvm::StringSwitch<bool>(kind)
       .Cases({"FocusScope", "TextInput", "LineEdit", "TextEdit", "TextArea", "SearchField",
-              "Button", "ToolButton", "DelayButton", "DialogButton", "StandardButton",
-              "Slider", "Dial", "SpinBox", "DoubleSpinBox", "ComboBox", "Calendar", "ScrollBar",
+              "Button", "ToolButton", "RoundButton", "DelayButton", "DialogButton", "StandardButton",
+              "Slider", "Dial", "SpinBox", "DoubleSpinBox", "ComboBox", "Calendar", "MonthGrid", "ScrollBar",
               "CheckBox", "Switch", "RadioButton", "Tab", "TabButton", "SwipeView",
               "SwipeDelegate", "StackView", "ListView", "GridView", "StandardListView",
               "TreeView", "TableView", "StandardTableView", "GroupBox", "PageIndicator",
@@ -2976,6 +3578,7 @@ static LogicalResult verifyReferences(ComponentOp component,
     return success();
   };
   llvm::StringMap<llvm::SmallVector<llvm::StringRef>> checkGroupLinks;
+  llvm::StringMap<llvm::StringSet<>> actionGroupValues;
   auto references = component.walk([&](Operation *op) -> WalkResult {
     if (failed(verifyDirectGeometryFlow(op, owners)))
       return WalkResult::interrupt();
@@ -2991,6 +3594,23 @@ static LogicalResult verifyReferences(ComponentOp component,
         if (succeeded(result) && !staticPropertyOwner(owners.lookup(owner)))
           result = op->emitOpError("property aliases require statically addressed endpoints");
       }
+    } else if (auto param = dyn_cast<ParamOp>(op);
+               param && visualTemplateKind(op) == "SplitHandle") {
+      auto name = param.getValue();
+      auto type = param.getResult().getType();
+      if (!(name == "handle-index" && isa<IntType>(type)) &&
+          !(name == "handle-orientation" && isa<OrientationType>(type)) &&
+          !((name == "handle-hovered" || name == "handle-pressed") && isa<BoolType>(type)))
+        result = op->emitOpError("invalid SplitHandle parameter or type");
+    } else if (auto param = dyn_cast<ParamOp>(op); param && visualTemplateKind(op) == "DayCell") {
+      auto name = param.getValue();
+      auto type = param.getResult().getType();
+      if (!(name == "cell-date" && isa<DateType>(type)) &&
+          !(isa<IntType>(type) && llvm::StringSwitch<bool>(name)
+              .Cases({"cell-index", "cell-weekday", "cell-week", "cell-week-year"}, true).Default(false)) &&
+          !(isa<BoolType>(type) && llvm::StringSwitch<bool>(name)
+              .Cases({"cell-selected", "cell-today", "cell-in-month", "cell-enabled"}, true).Default(false)))
+        result = op->emitOpError("invalid DayCell parameter or type");
     } else if (auto control = dyn_cast<ControlReadOp>(op)) {
       if (!validControlAlias(elementOwner(control.getOwner()), control.getValue(), control.getResult().getType()))
         result = op->emitOpError("requires a supported writable control property of matching type");
@@ -3003,8 +3623,11 @@ static LogicalResult verifyReferences(ComponentOp component,
           op, owners, components, read.getOwner().value_or("root"),
           read.getValue(), read.getResult().getType(), false);
     } else if (auto read = dyn_cast<StackReadOp>(op)) {
-      if (!stackOwner(read.getOwner()))
+      auto view = stackOwner(read.getOwner());
+      if (!view)
         result = op->emitOpError("requires a StackView owner");
+      else if (auto route = read.getRoute())
+        result = verifyStackRoute(op, view, route);
     } else if (auto read = dyn_cast<ImagePlaybackReadOp>(op)) {
       auto target = elementOwner(read.getOwner());
       if (!target || target.getKind() != "AnimatedImage")
@@ -3018,10 +3641,13 @@ static LogicalResult verifyReferences(ComponentOp component,
           element = *roots.begin();
       }
       if (!element || !staticPropertyOwner(owner) ||
-          element.getKind() == "Action" || element.getKind() == "ButtonGroup" || element.getKind() == "Timer" ||
+          element.getKind() == "Action" || element.getKind() == "ActionGroup" || element.getKind() == "ButtonGroup" || element.getKind() == "Timer" ||
           element.getKind() == "SecondaryWindow" || element.getKind() == "SystemTrayIcon" || element.getKind() == "TableColumn" ||
           isNativeDialog(element.getKind()))
         result = op->emitOpError("layout geometry requires a statically addressed visual target");
+      else if ((read.getValue() == "available-width" || read.getValue() == "available-height") &&
+               !isPane(element.getKind()) && element.getKind() != "ApplicationWindow")
+        result = op->emitOpError("available size requires a Pane or ControlFrame or ApplicationWindow");
     } else if (auto read = dyn_cast<ViewportReadOp>(op)) {
       result = verifyViewport(op, read.getOwner(), false);
     } else if (auto read = dyn_cast<FlickMotionReadOp>(op)) {
@@ -3056,13 +3682,55 @@ static LogicalResult verifyReferences(ComponentOp component,
       if (!target || target.getKind() != "SwipeGestureHandler" || !isStaticViewport(target) ||
           swipeType(op->getContext(), read.getValue()) != read.getResult().getType())
         result = op->emitOpError("requires a typed metric on a statically addressed swipe handler");
+    } else if (auto read = dyn_cast<HoverReadOp>(op)) {
+      auto target = elementOwner(read.getOwner());
+      if (!target || target.getKind() != "HoverHandler" || !isStaticViewport(target))
+        result = op->emitOpError("requires a statically addressed HoverHandler");
+    } else if (auto read = dyn_cast<TouchAreaReadOp>(op)) {
+      auto target = elementOwner(read.getOwner());
+      if (!target || target.getKind() != "TouchArea" || !isStaticViewport(target))
+        result = op->emitOpError("requires a statically addressed TouchArea");
     } else if (auto command = dyn_cast<SwipeCancelOp>(op)) {
       auto target = elementOwner(command.getOwner());
       if (!target || target.getKind() != "SwipeGestureHandler" || !isStaticViewport(target))
         result = op->emitOpError("requires a statically addressed swipe handler");
+    } else if (auto lookup = dyn_cast<ViewIndexOp>(op)) {
+      result = verifyViewport(op, lookup.getOwner(), true);
+    } else if (auto selection = dyn_cast<SourceSelectionOp>(op)) {
+      if (selection.getMethod() == "select-source-cell") {
+        auto target = elementOwner(selection.getOwner());
+        if (!target || !isTableView(target.getKind()) || !isStaticViewport(target))
+          result = op->emitOpError("requires a statically addressed table");
+      } else {
+        result = verifyViewport(op, selection.getOwner(), true);
+      }
     } else if (auto command = dyn_cast<ScrollCommandOp>(op)) {
-      result = verifyViewport(op, command.getOwner(), command.getMethod() == "position-view-at-index");
-    } else if (isa<MoveColumnOp, SetRowHeightOp>(op)) {
+      auto method = command.getMethod();
+      if (method == "position-view-at-row" || method == "position-view-at-column" ||
+          method == "position-view-at-cell" || method == "position-view-at-source-cell") {
+        auto target = elementOwner(command.getOwner());
+        if (!target || !isTableView(target.getKind()) || !isStaticViewport(target))
+          result = op->emitOpError("requires a statically addressed table");
+      } else {
+        result = verifyViewport(op, command.getOwner(),
+                                method == "position-view-at-index" || method == "position-view-at-source-index");
+      }
+    } else if (isa<TableSortCommandOp, TableSortReadOp, TableSelectionCommandOp, TableSelectionReadOp,
+                   TableHistoryCommandOp, TableHistoryReadOp>(op)) {
+      auto target = elementOwner(op->getAttrOfType<StringAttr>("owner").getValue());
+      if (!target || !isTableView(target.getKind()) || !isStaticViewport(target))
+        result = op->emitOpError("requires a statically addressed table");
+    } else if (isa<SplitRestoreOp, SplitStateReadOp, SplitResizingOp>(op)) {
+      auto target = elementOwner(op->getAttrOfType<StringAttr>("owner").getValue());
+      if (!target || target.getKind() != "SplitView" || !isStaticViewport(target))
+        result = op->emitOpError("requires a statically addressed SplitView");
+      else if (auto read = dyn_cast<SplitResizingOp>(op); read && read.getValue() != "resizing")
+        result = op->emitOpError("requires the resizing property");
+    } else if (isa<TreeCommandOp, TreeQueryOp>(op)) {
+      auto target = elementOwner(op->getAttrOfType<StringAttr>("owner").getValue());
+      if (!target || target.getKind() != "TreeView" || !isStaticViewport(target))
+        result = op->emitOpError("requires a statically addressed TreeView");
+    } else if (isa<MoveColumnOp, MoveRowOp, SetRowHeightOp>(op)) {
       auto target = elementOwner(op->getAttrOfType<StringAttr>("owner").getValue());
       if (!target || !isTableView(target.getKind()) || !isStaticViewport(target))
         result = op->emitOpError("requires a statically addressed table");
@@ -3092,12 +3760,18 @@ static LogicalResult verifyReferences(ComponentOp component,
       }
     } else if (auto command = dyn_cast<TextCommandOp>(op)) {
       auto target = elementOwner(command.getOwner());
-      if (!target ||
-          !llvm::StringSwitch<bool>(target.getKind())
+      auto method = command.getMethod();
+      bool tableEdit = method == "edit-cell" || method == "cancel-edit";
+      if (tableEdit) {
+        if (!target || !isTableView(target.getKind()) || !isStaticViewport(target))
+          result = op->emitOpError("requires a statically addressed table view");
+      } else if (!target ||
+                 !llvm::StringSwitch<bool>(target.getKind())
                .Cases({"TextInput", "LineEdit", "TextEdit", "TextArea", "SearchField", "ComboBox"}, true)
                .Default(false) ||
-          !isStaticViewport(target))
+                 !isStaticViewport(target)) {
         result = op->emitOpError("requires a statically addressed editor");
+      }
     } else if (auto focus = dyn_cast<FocusCommandOp>(op)) {
       auto target = elementOwner(focus.getTarget());
       if (!target || !focusTargetKind(target.getKind())) {
@@ -3150,6 +3824,32 @@ static LogicalResult verifyReferences(ComponentOp component,
     } else if (auto command = dyn_cast<CheckGroupCommandOp>(op)) {
       if (!nonExclusiveButtonGroup(dyn_cast_or_null<ElementOp>(owners.lookup(command.getOwner()))))
         result = op->emitOpError("set-check-state requires a non-exclusive ButtonGroup in the same component");
+    } else if (auto member = dyn_cast<ActionGroupRefOp>(op)) {
+      auto group = elementOwner(member.getGroup());
+      auto action = cast<ElementOp>(op->getParentOp());
+      if (!group || group.getKind() != "ActionGroup" || action.getKind() != "Action" || member.getValue().empty())
+        result = op->emitOpError("requires an Action, a local ActionGroup and a nonempty value");
+      else if (!actionGroupValues[member.getGroup()].insert(member.getValue()).second)
+        result = op->emitOpError("duplicate ActionGroup value ") << member.getValue();
+      else if (!nonExclusiveGroup(group))
+        for (auto &child : action.getBody().front())
+          if (isa<BindOp, ControlLinkOp>(child) &&
+              child.getAttrOfType<StringAttr>("name").getValue() == "checked")
+            result = child.emitOpError("exclusive Action checked state belongs to its ActionGroup");
+    } else if (auto read = dyn_cast<NativeDialogReadOp>(op)) {
+      auto dialog = elementOwner(read.getOwner());
+      auto name = read.getValue();
+      auto type = read.getResult().getType();
+      if (!dialog || !isNativeDialog(dialog.getKind()) ||
+          !((name == "pending" && isa<BoolType>(type)) ||
+            (dialog.getKind() == "FileDialog" &&
+             ((name == "selected-file" && isa<StringType>(type)) ||
+              (name == "selected-files" && isa<StringListType>(type))))))
+        result = op->emitOpError("requires a typed native dialog result property");
+    } else if (auto read = dyn_cast<ActionGroupReadOp>(op)) {
+      auto group = elementOwner(read.getOwner());
+      if (!group || group.getKind() != "ActionGroup" || nonExclusiveGroup(group) || read.getValue() != "current-value")
+        result = op->emitOpError("current-value requires an exclusive ActionGroup in the same component");
     } else if (auto action = dyn_cast<ActionRefOp>(op)) {
       auto target =
           dyn_cast_or_null<ElementOp>(owners.lookup(action.getOwner()));
@@ -3253,7 +3953,21 @@ static LogicalResult verifyReferences(ComponentOp component,
           op, owners, components, read.getOwner().value_or("root"),
           read.getValue(), read.getResult().getType(), true);
     } else if (auto bind = dyn_cast<BindOp>(op)) {
-      if (auto instance = dyn_cast<InstanceOp>(op->getParentOp());
+      auto table = dyn_cast<ElementOp>(op->getParentOp());
+      if (table && table.getKind() == "StandardTableView" && bind.getName() == "model" &&
+          llvm::any_of(table.getBody().front().getOps<ElementOp>(), [](ElementOp column) {
+            return column.getKind() == "TableColumn" &&
+                   llvm::any_of(column.getBody().front().getOps<BindOp>(), [](BindOp binding) {
+                     return binding.getName() == "editable";
+                   });
+          })) {
+        auto read = bind.getInput().getDefiningOp<ReadOp>();
+        if (!read)
+          result = op->emitOpError("editable columns require a writable model property");
+        else
+          result = verifyReference(op, owners, components, read.getOwner().value_or("root"),
+                                   read.getValue(), read.getResult().getType(), true);
+      } else if (auto instance = dyn_cast<InstanceOp>(op->getParentOp());
           instance && !(bind.getName() == "clipboard-text" &&
               cast<ElementOp>(instance->getParentOp()).getKind() == "TableRow"))
         result =
@@ -3323,7 +4037,7 @@ static LogicalResult verifyInstanceTree(ComponentOp component,
       return WalkResult::interrupt();
     }
     if (cast<ElementOp>(instance->getParentOp()).getKind() == "SecondaryWindow") {
-      if (!llvm::hasSingleElement(roots) || (*roots.begin()).getKind() != "Window") {
+      if (!llvm::hasSingleElement(roots) || !isWindow((*roots.begin()).getKind())) {
         instance.emitOpError("SecondaryWindow requires a component rooted in Window");
         return WalkResult::interrupt();
       }
@@ -3340,21 +4054,13 @@ static LogicalResult verifyInstanceTree(ComponentOp component,
       }
       break;
     }
-    if (instanceRepeat(instance)) {
+    if (instanceRepeat(instance) && enclosingRepeatedElement(instance)) {
       llvm::DenseSet<Operation *> visited;
-      if (containsElement(child, components, visited, isVirtualView)) {
-        instance.emitOpError(
-            "virtual view delegates cannot contain another ListView or other virtual view");
+      if (containsElement(child, components, visited, [](llvm::StringRef kind) {
+            return isWindow(kind) || kind == "SecondaryWindow";
+          })) {
+        instance.emitOpError("row component delegates cannot contain a window");
         return WalkResult::interrupt();
-      }
-      if (enclosingRepeatedElement(instance)) {
-        visited.clear();
-        if (containsElement(child, components, visited, [](llvm::StringRef kind) {
-              return kind == "Window" || kind == "SecondaryWindow";
-            })) {
-          instance.emitOpError("row component delegates cannot contain a window");
-          return WalkResult::interrupt();
-        }
       }
     }
     return failed(verifyInstanceTree(child, components, active, done))
@@ -3387,8 +4093,8 @@ static bool recordScalarType(llvm::StringRef type) {
               "image", "ImageFit", "ImageTileMode", "ImageHorizontalAlignment", "ImageVerticalAlignment", "ImageRendering",
               "LayoutAlignment", "CrossAxisAlignment",
               "Orientation", "FlickDirection", "FlickBoundsBehavior", "FlickBoundsMovement", "FlexboxLayoutDirection", "FlexboxLayoutWrap", "DialInputMode", "ScrollBarPolicy", "ScrollSnapMode", "ScrollAlignment", "TextWrap",
-              "TextHorizontalAlignment", "TextVerticalAlignment", "TextOverflow", "InputType", "ColorScheme", "FileDialogMode", "MessageLevel", "MessageButtons",
-              "DialogRole", "StandardButtonKind", "SwipeSide", "DragAction", "KeyEvent", "KeyModifiers", "EventResult", "FocusReason", "DrawerEdge", "PopupPlacement", "SelectionTarget", "Date", "Time", "CheckState"},
+              "TextHorizontalAlignment", "TextVerticalAlignment", "TextOverflow", "InputType", "CursorShape", "ColorScheme", "FileDialogMode", "MessageLevel", "MessageButtons",
+              "DialogRole", "StandardButtonKind", "SwipeSide", "DragAction", "KeyEvent", "KeyModifiers", "WheelEvent", "PointerEvent", "PointerEventKind", "PointerButton", "PointerButtons", "TouchPoint", "EventResult", "FocusReason", "DrawerEdge", "PopupPlacement", "SelectionTarget", "Date", "Time", "Font", "CheckState"},
              true)
       .Default(false);
 }
@@ -3487,16 +4193,7 @@ static LogicalResult verifyStandardTable(ElementOp table, const Records &records
     return (*model).emitOpError("requires a record list");
   if (!records.contains(record.getName()))
     return (*model).emitOpError("unknown record type ") << record.getName();
-  for (auto column : body.getOps<ElementOp>()) {
-    if (column.getKind() != "TableColumn")
-      continue;
-    auto columnBindings = column.getBody().front().getOps<BindOp>();
-    auto role = llvm::find_if(columnBindings, [](BindOp bind) {
-      return bind.getName() == "field";
-    });
-    if (role == columnBindings.end())
-      return column.emitOpError("missing record field");
-    auto field = *role;
+  auto verifyField = [&](BindOp field) -> LogicalResult {
     auto literal = field.getInput().getDefiningOp<LiteralOp>();
     if (!literal)
       return field.emitOpError("field requires a constant string");
@@ -3515,6 +4212,22 @@ static LogicalResult verifyStandardTable(ElementOp table, const Records &records
              .Cases({"string", "int", "float", "bool", "Date", "Time"}, true)
              .Default(false))
       return field.emitOpError("field requires a string, int, float, bool, Date or Time field");
+    return success();
+  };
+  for (auto bind : bindings)
+    if (bind.getName() == "row-header-field" && failed(verifyField(bind)))
+      return failure();
+  for (auto column : body.getOps<ElementOp>()) {
+    if (column.getKind() != "TableColumn")
+      continue;
+    auto columnBindings = column.getBody().front().getOps<BindOp>();
+    auto role = llvm::find_if(columnBindings, [](BindOp bind) {
+      return bind.getName() == "field";
+    });
+    if (role == columnBindings.end())
+      return column.emitOpError("missing record field");
+    if (failed(verifyField(*role)))
+      return failure();
   }
   return success();
 }
@@ -3593,20 +4306,26 @@ static LogicalResult verifyComboModel(ElementOp combo, const Records &records) {
   return success();
 }
 
-static LogicalResult verifyRowHeightField(ElementOp element, const Records &records) {
+static LogicalResult verifyViewRecordField(ElementOp element, const Records &records,
+                                           llvm::StringRef property, llvm::StringRef expected) {
   auto &body = element.getBody().front();
   BindOp role;
   Value model;
+  bool hasFilterText = false;
   for (auto bind : body.getOps<BindOp>()) {
-    if (bind.getName() == "row-height-field") {
+    hasFilterText |= bind.getName() == "filter-text";
+    if (bind.getName() == property) {
       if (role)
-        return bind.emitOpError("duplicate row-height-field");
+        return bind.emitOpError("duplicate ") << property;
       role = bind;
     } else if (bind.getName() == "model")
       model = bind.getInput();
   }
-  if (!role)
+  if (!role) {
+    if (property == "filter-field" && hasFilterText)
+      return element.emitOpError() << element.getKind() << " filter-text requires filter-field";
     return success();
+  }
   if (element.getKind() != "StandardListView" && element.getKind() != "StandardTableView") {
     model = Value{};
     for (auto &child : body)
@@ -3616,20 +4335,20 @@ static LogicalResult verifyRowHeightField(ElementOp element, const Records &reco
   }
   auto record = model ? dyn_cast<RecordListType>(model.getType()) : RecordListType();
   if (!record)
-    return role.emitOpError("row-height-field requires a record model");
+    return role.emitOpError() << property << " requires a record model";
   auto literal = role.getInput().getDefiningOp<LiteralOp>();
   if (!literal)
-    return role.emitOpError("row-height-field requires a constant string");
+    return role.emitOpError() << property << " requires a constant string";
   auto parsed = llvm::json::parse(literal.getValue());
   if (!parsed) {
     llvm::consumeError(parsed.takeError());
-    return role.emitOpError("row-height-field requires a constant string");
+    return role.emitOpError() << property << " requires a constant string";
   }
   auto name = parsed->getAsString();
   if (!name)
-    return role.emitOpError("row-height-field requires a constant string");
-  if (recordFieldType(records, record.getName(), *name) != "length")
-    return role.emitOpError("row-height-field requires a length field named ") << *name;
+    return role.emitOpError() << property << " requires a constant string";
+  if (recordFieldType(records, record.getName(), *name) != expected)
+    return role.emitOpError() << property << " requires a " << expected << " field named " << *name;
   return success();
 }
 
@@ -3649,7 +4368,11 @@ static LogicalResult verifyRecords(ModuleOp module, const Records &records) {
       }
     }
     if (auto element = dyn_cast<ElementOp>(op);
-        element && failed(verifyRowHeightField(element, records)))
+        element && (failed(verifyViewRecordField(element, records, "row-height-field", "length")) ||
+                    (isVirtualView(element.getKind()) &&
+                     failed(verifyViewRecordField(element, records, "row-visible-field", "bool"))) ||
+                    ((element.getKind() == "TreeView" || element.getKind() == "StandardTableView") &&
+                     failed(verifyViewRecordField(element, records, "filter-field", "string")))))
       return WalkResult::interrupt();
     if (auto element = dyn_cast<ElementOp>(op);
         element && element.getKind() == "StandardTableView" &&

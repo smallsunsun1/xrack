@@ -1,6 +1,6 @@
 use crate::{Affine, Point, Rect, transform::TransformSpace};
 use std::sync::Arc;
-use xrack_runtime::{Node, is_button, is_text_input};
+use xrack_runtime::{Node, is_button, is_pane, is_text_input};
 
 /// A child clip in window coordinates, with corners clockwise from the top left.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -11,7 +11,14 @@ pub struct RoundedClip {
 
 impl RoundedClip {
     pub(crate) fn content_box(node: &Node, bounds: Rect) -> Self {
-        let border = node.length("border-width").unwrap_or_default().max(0.0);
+        let border = node
+            .length("border-width")
+            .unwrap_or(if node.kind == "ControlFrame" {
+                1.0
+            } else {
+                0.0
+            })
+            .max(0.0);
         let inner = bounds.inset(border);
         let radii = corner_radii(node, bounds).map(|radius| (radius - border).max(0.0));
         Self {
@@ -20,7 +27,7 @@ impl RoundedClip {
         }
     }
 
-    fn contains(self, point: Point) -> bool {
+    pub(crate) fn contains(self, point: Point) -> bool {
         if !self.bounds.contains(point) {
             return false;
         }
@@ -110,10 +117,16 @@ impl ClipChain {
 }
 
 pub fn corner_radii(node: &Node, bounds: Rect) -> [f32; 4] {
-    let radius = node
-        .length("border-radius")
+    let radius = (node.kind == "RoundButton")
+        .then(|| node.length("radius"))
+        .flatten()
+        .or_else(|| node.length("border-radius"))
         .unwrap_or(if node.kind == "Dialog" {
             12.0
+        } else if is_pane(node.kind) {
+            8.0
+        } else if node.kind == "RoundButton" {
+            bounds.width.min(bounds.height) * 0.5
         } else if is_button(node.kind) || is_text_input(node.kind) {
             7.0
         } else {

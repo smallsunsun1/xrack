@@ -56,6 +56,128 @@ fn optimized_scroll_targets_keep_viewport_identity_and_reject_foreign_ids() {
 }
 
 #[test]
+fn table_sort_reads_remain_live_across_a_sort_command() {
+    let optimized = raw(
+        r#"
+        component App inherits Window {
+            in property <[string]> records;
+            out property <int> before;
+            out property <int> after;
+            callback sort();
+            sort => {
+                root.before = table.current-sort-column;
+                table.sort-by(0, false);
+                root.after = table.current-sort-column;
+            }
+            table := TableView {
+                TableColumn { title: "Name"; }
+                for row in root.records : TableRow { Text { text: row; } }
+            }
+        }
+        "#,
+        "table-sort-order.xr",
+    )
+    .optimize()
+    .unwrap();
+    let component = optimized.operations().next().unwrap();
+    let callback = member(component, "xr.callback", "sort");
+    let operations: Vec<_> = callback
+        .children()
+        .filter(|op| matches!(op.name(), "xr.table_sort_read" | "xr.table_sort_command"))
+        .map(|op| op.name())
+        .collect();
+    assert_eq!(
+        operations,
+        [
+            "xr.table_sort_read",
+            "xr.table_sort_command",
+            "xr.table_sort_read"
+        ]
+    );
+}
+
+#[test]
+fn split_state_reads_stay_on_both_sides_of_a_restore() {
+    let optimized = raw(
+        r#"
+        component App inherits Window {
+            out property <string> before;
+            out property <string> after;
+            in property <string> saved;
+            callback restore();
+            restore => {
+                root.before = work.save-state();
+                work.restore-state(root.saved);
+                root.after = work.save-state();
+            }
+            work := SplitView { left := Rectangle {} right := Rectangle {} }
+        }
+        "#,
+        "split-state-order.xr",
+    )
+    .optimize()
+    .unwrap();
+    let component = optimized.operations().next().unwrap();
+    let callback = member(component, "xr.callback", "restore");
+    let operations: Vec<_> = callback
+        .children()
+        .filter(|op| matches!(op.name(), "xr.split_state_read" | "xr.split_restore"))
+        .map(|op| op.name())
+        .collect();
+    assert_eq!(
+        operations,
+        [
+            "xr.split_state_read",
+            "xr.split_restore",
+            "xr.split_state_read"
+        ]
+    );
+}
+
+#[test]
+fn tree_queries_keep_their_order_across_an_expansion_command() {
+    let optimized = raw(
+        r#"
+        struct Entry { id: int, parent: int }
+        component App inherits Window {
+            property <[Entry]> records;
+            out property <int> before: -1;
+            out property <int> after: -1;
+            callback reveal();
+            reveal => {
+                root.before = directory.row-for-key(2);
+                directory.expand-to(2);
+                root.after = directory.row-for-key(2);
+            }
+            directory := TreeView {
+                for row in root.records : TreeRow {
+                    key: row.id; parent-key: row.parent; Text { text: "row"; }
+                }
+            }
+        }
+        "#,
+        "tree-query-order.xr",
+    )
+    .optimize()
+    .unwrap();
+    let component = optimized
+        .operations()
+        .find(|op| op.name() == "xr.component")
+        .unwrap();
+    let callback = member(component, "xr.callback", "reveal");
+    let operations: Vec<_> = callback
+        .children()
+        .filter(|op| matches!(op.name(), "xr.tree_query" | "xr.tree_command"))
+        .map(|op| op.name())
+        .collect();
+    assert_eq!(
+        operations,
+        ["xr.tree_query", "xr.tree_command", "xr.tree_query"]
+    );
+    assert!(codegen::generate(&optimized).is_ok());
+}
+
+#[test]
 fn scroll_range_reads_remain_live_across_writes() {
     let optimized = raw(
         r#"component Demo inherits Window {
@@ -125,6 +247,52 @@ fn cse_preserves_scroll_command_order_and_live_viewport_reads() {
         .map(|op| definition(op, 0).attribute("value").unwrap())
         .collect();
     assert_eq!(offsets, ["8", "8", "16"]);
+}
+
+#[test]
+fn table_positioning_effects_keep_order_and_independent_axis_arguments() {
+    let optimized = raw(
+        r#"component Demo inherits Window {
+        table := TableView {
+            TableColumn { title: "Name"; }
+            for row in 10000 : TableRow { Text { text: "" + row; } }
+        }
+        callback jump();
+        jump() => {
+            table.position-view-at-cell(9000, 0, end, center);
+            table.position-view-at-cell(9000, 0, end, center);
+            table.position-view-at-column(0, visible);
+            table.position-view-at-row(0, beginning);
+        }
+    }"#,
+        "table-position.xr",
+    )
+    .optimize()
+    .unwrap();
+    let component = optimized.operations().next().unwrap();
+    let jump = member(component, "xr.callback", "jump");
+    let commands: Vec<_> = jump
+        .children()
+        .filter(|op| op.name() == "xr.scroll_command")
+        .collect();
+    assert_eq!(
+        commands
+            .iter()
+            .map(|op| op.attribute("method").unwrap())
+            .collect::<Vec<_>>(),
+        [
+            "position-view-at-cell",
+            "position-view-at-cell",
+            "position-view-at-column",
+            "position-view-at-row"
+        ]
+    );
+    assert_eq!(commands[0].operand_count(), 4);
+    assert_eq!(definition(commands[0], 2).attribute("value"), Some("end"));
+    assert_eq!(
+        definition(commands[0], 3).attribute("value"),
+        Some("center")
+    );
 }
 
 #[test]
@@ -825,5 +993,90 @@ fn operation_views_keep_block_order_and_distinguish_reads_across_writes() {
             .span()
             .line,
         4
+    );
+}
+
+#[test]
+fn table_selection_reads_stay_live_across_a_selection_command() {
+    let optimized = raw(
+        r#"component App inherits Window {
+            in property <[string]> records;
+            out property <int> before;
+            out property <int> after;
+            callback select();
+            select => {
+                root.before = table.selection-count;
+                table.select-cell(0, 0);
+                root.after = table.selection-count;
+            }
+            table := TableView {
+                selection-target: cells;
+                TableColumn { title: "Name"; }
+                for row in root.records : TableRow { Text { text: row; } }
+            }
+        }"#,
+        "table-selection-order.xr",
+    )
+    .optimize()
+    .unwrap();
+    let component = optimized.operations().next().unwrap();
+    let callback = member(component, "xr.callback", "select");
+    let operations: Vec<_> = callback
+        .children()
+        .filter(|op| {
+            matches!(
+                op.name(),
+                "xr.table_selection_read" | "xr.table_selection_command"
+            )
+        })
+        .map(|op| op.name())
+        .collect();
+    assert_eq!(
+        operations,
+        [
+            "xr.table_selection_read",
+            "xr.table_selection_command",
+            "xr.table_selection_read"
+        ]
+    );
+}
+
+#[test]
+fn table_history_reads_observe_replay_in_the_same_callback() {
+    let optimized = raw(
+        r#"component App inherits Window {
+            in-out property <[string]> records: ["One"];
+            out property <bool> before;
+            out property <bool> after;
+            callback revert();
+            revert => {
+                root.before = table.can-undo;
+                table.undo();
+                root.after = table.can-undo;
+            }
+            table := TableView {
+                undoable: true;
+                TableColumn { title: "Name"; }
+                for row in root.records : TableRow { TableCell { text <=> row; } }
+            }
+        }"#,
+        "table-history-order.xr",
+    )
+    .optimize()
+    .unwrap();
+    let component = optimized.operations().next().unwrap();
+    let callback = member(component, "xr.callback", "revert");
+    let operations: Vec<_> = callback
+        .children()
+        .map(|op| op.name())
+        .filter(|name| matches!(*name, "xr.table_history_read" | "xr.table_history_command"))
+        .collect();
+    assert_eq!(
+        operations,
+        [
+            "xr.table_history_read",
+            "xr.table_history_command",
+            "xr.table_history_read"
+        ]
     );
 }
