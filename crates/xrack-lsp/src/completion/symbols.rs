@@ -514,7 +514,7 @@ impl<'a, 'w> Symbols<'a, 'w> {
 
     fn field(&self, parent: &Symbol, name: &str) -> Option<Symbol> {
         let ty = parent.ty.as_ref()?;
-        if let Some(ty) = ty.key_field(name).or_else(|| {
+        if let Some(ty) = ty.input_field(name).or_else(|| {
             (matches!(ty, Type::Image) && matches!(name, "width" | "height")).then_some(Type::Int)
         }) {
             let mut symbol = Symbol::builtin(Kind::Property, Some(ty));
