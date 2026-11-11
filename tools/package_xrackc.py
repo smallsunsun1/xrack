@@ -52,6 +52,11 @@ def cargo_licenses(host):
         if package["license_file"]:
             files.add(directory / package["license_file"])
         name = f'{package["name"]}-{package["version"]}'
+        # Some crates omit the license from their crates.io archive. Use the
+        # original license from the exact source revision in .cargo_vcs_info.json.
+        bundled_license = ROOT / "tools" / "licenses" / name / "LICENSE-MIT"
+        if not files and bundled_license.is_file():
+            files.add(bundled_license)
         if not files and name == "gif-dispose-6.0.0" and package["license"] == "MIT OR Apache-2.0":
             # This crate declares both licenses but ships neither text.
             # Include the declaration and the Apache-2.0 terms.
