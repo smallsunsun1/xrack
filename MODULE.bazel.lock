@@ -501,7 +501,7 @@
     "@@rules_rust+//crate_universe:extensions.bzl%crate": {
       "general": {
         "bzlTransitiveDigest": "4N2zVDaghzpNLDO1gdhD27G6IXevrFMNwvrnrJDoluA=",
-        "usagesDigest": "PBiOJQpVN5bs9kCCrIlyzbHJ4ey7WT4CGqeOjqspFcQ=",
+        "usagesDigest": "8cfstt/O3O9oH/FmiCydNkbjE8JuKCguez7dW+Rz9hM=",
         "recordedInputs": [
           "ENV:CARGO_BAZEL_DEBUG \\0",
           "ENV:CARGO_BAZEL_GENERATOR_SHA256 \\0",
@@ -526,15 +526,15 @@
           "REPO_MAPPING:rules_rust+,bazel_tools bazel_tools",
           "REPO_MAPPING:rules_rust+,rules_cc rules_cc+",
           "REPO_MAPPING:rules_rust+,rules_rust rules_rust+",
-          "FILE:@@//Cargo.lock ccce83b1c5f0b76da7d90429c1f7d50aae66beb9d12741d5c5c708b88ca1ac8f",
-          "FILE:@@//Cargo.toml d733ecc032415284baee58b443ce2f4f3ec9074abfa2e5104b02c244aa339c4c",
+          "FILE:@@//Cargo.lock 46e18d5af8ad98a3896125a3fd9138c84571ad6cdbb19340d78c0ec6a5c2fad3",
+          "FILE:@@//Cargo.toml 50fb5a1109681566d1a21068aae5971b479b689d31812004062a299c28423445",
           "FILE:@@//crates/xrack/Cargo.toml 89e03540b8c4b4247a0161900523e8b08ecce45e19d58ee99c66d488e1dc4ef3",
           "FILE:@@//crates/xrack-assets/Cargo.toml 821c3df83ae69ed5678bc9f8ef67b2a6c225fd352fb85a8d30dc96e9337f7f7b",
           "FILE:@@//crates/xrack-runtime/Cargo.toml 0e7e5a775ae620e6f15c516b721fc59ab69a85f5367aa4919772e085384e2be9",
           "FILE:@@//crates/xrack-layout/Cargo.toml 60c07736b15ebc84d2e71647dcd21c14a31655aa5d941345f60263715a8b550c",
           "FILE:@@//crates/xrack-platform-winit/Cargo.toml c115808276189e26acfb21159064d8c2ba4b331c79b7e9673566b3c0abcd058b",
           "FILE:@@//crates/xrack-renderer-femtovg/Cargo.toml 316cb1bc89d85a9f74b00184a90cc04b917aa6bf084a0306c3c50aabeaf9a9cb",
-          "FILE:@@//crates/xrack-build/Cargo.toml 7f57715f412238a19e1375d09cb9936575d23e73b7de024a137fee93fb65c04f",
+          "FILE:@@//crates/xrack-build/Cargo.toml 6ff125b4a22fed85303584559720a57737c63d086ce5bedb4c8e8f8f610a19ba",
           "FILE:@@//compiler-bundles/aarch64-unknown-linux-gnu/Cargo.toml 61fdd89bbb2a7db35ef7102af3bd9a38dd18170a95c68ceff908a8df5d63dd65",
           "FILE:@@//compiler-bundles/x86_64-unknown-linux-gnu/Cargo.toml e8bbba1ef32eb67001e81df05ea4c49877f55d6a467146e867b1fc5298cfd60f",
           "FILE:@@//compiler-bundles/aarch64-apple-darwin/Cargo.toml 7a98afa1fec1d6261d1e259d69aa81a083608fae9100d8be7c2bb5cbaa520540",
