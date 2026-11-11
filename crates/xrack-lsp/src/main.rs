@@ -54,6 +54,10 @@ fn serve(input: &mut impl io::BufRead, output: &mut impl io::Write) -> io::Resul
                             "positionEncoding": "utf-16",
                             "textDocumentSync": { "openClose": true, "change": 1 },
                             "documentSymbolProvider": true,
+                            "definitionProvider": true,
+                            "hoverProvider": true,
+                            "documentHighlightProvider": true,
+                            "semanticTokensProvider": { "legend": completion::legend(), "full": true },
                             "completionProvider": { "triggerCharacters": [".", "@", "<", ":"] },
                         },
                         "serverInfo": { "name": "xrack-lsp" },
@@ -70,6 +74,27 @@ fn serve(input: &mut impl io::BufRead, output: &mut impl io::Write) -> io::Resul
                     )),
                     None => Err((-32602, "missing textDocument URI")),
                 },
+                "textDocument/definition"
+                | "textDocument/hover"
+                | "textDocument/documentHighlight"
+                | "textDocument/semanticTokens/full" => {
+                    let position = params["position"]["line"]
+                        .as_u64()
+                        .zip(params["position"]["character"].as_u64())
+                        .map(|(line, column)| (line as usize, column as usize));
+                    match uri {
+                        Some(uri) => Ok(documents.get(uri).map_or(Value::Null, |doc| {
+                            let workspace = completion::Workspace::new(
+                                uri,
+                                documents
+                                    .iter()
+                                    .map(|(uri, doc)| (uri.as_str(), doc.text.as_str())),
+                            );
+                            completion::query(method, uri, &doc.text, position, workspace.as_ref())
+                        })),
+                        None => Err((-32602, "missing textDocument URI")),
+                    }
+                }
                 "textDocument/completion" => {
                     let position = &params["position"];
                     match (

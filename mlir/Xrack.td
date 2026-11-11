@@ -106,6 +106,9 @@ def XR_RecordDeclOp : XR_Op<"record_decl", [HasParent<"::mlir::ModuleOp">]> {
 def XR_FontOp : XR_Op<"font", [HasParent<"::mlir::ModuleOp">]> {
   let arguments = (ins StrAttr:$path);
 }
+def XR_TranslationCatalogOp : XR_Op<"translation_catalog", [HasParent<"::mlir::ModuleOp">]> {
+  let arguments = (ins StrAttr:$path);
+}
 def XR_ElementOp : XR_ScopeOp<"element"> {
   let arguments = (ins StrAttr:$kind, StrAttr:$id, OptionalAttr<StrAttr>:$key,
                        OptionalAttr<StrAttr>:$delegate);
@@ -334,6 +337,10 @@ def XR_NineSliceOp : XR_ExpressionOp<"nine_slice", (ins XR_Image:$input,
   let hasVerifier = 1;
 }
 def XR_MarkdownOp : XR_ExpressionOp<"markdown", (ins), XR_StyledText, [Pure]>;
+def XR_TranslateOp : XR_ExpressionOp<"translate",
+    (ins Variadic<AnyTypeOf<[XR_String, XR_Int, XR_Float]>>:$args, StrArrayAttr:$arg_names), XR_String> {
+  let hasVerifier = 1;
+}
 def XR_ArrayOp : XR_ExpressionOp<"array", (ins Variadic<XR_String>:$items), XR_StringList, [Pure]>;
 def XR_PointerButtonsOp : XR_ExpressionOp<"pointer_buttons", (ins Variadic<XR_PointerButton>:$items), XR_PointerButtons, [Pure]>;
 def XR_RecordArrayOp : XR_ExpressionOp<"record_array", (ins Variadic<XR_Record>:$items), XR_RecordList, [Pure]>;

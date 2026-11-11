@@ -286,6 +286,24 @@ impl<'m> OperationRef<'m> {
             .ok_or_else(|| format!("{} missing or invalid `{name}`", self.name()))
     }
 
+    pub fn string_array_attribute(self, name: &str) -> Option<Vec<&'m str>> {
+        // The array and its strings are immutable and owned by the module context.
+        let attr = unsafe { ffi::mlirOperationGetAttributeByName(self.raw, string_ref(name)) };
+        if attr.ptr.is_null() || !unsafe { ffi::mlirAttributeIsAArray(attr) } {
+            return None;
+        }
+        (0..unsafe { ffi::mlirArrayAttrGetNumElements(attr) })
+            .map(|index| {
+                let element = unsafe { ffi::mlirArrayAttrGetElement(attr, index) };
+                if !unsafe { ffi::mlirAttributeIsAString(element) } {
+                    return None;
+                }
+                let value = unsafe { ffi::mlirStringAttrGetValue(element) };
+                std::str::from_utf8(unsafe { bytes(value) }).ok()
+            })
+            .collect()
+    }
+
     pub fn integer_attribute(self, name: &str) -> Option<i64> {
         // Only read the value of a valid, context-owned integer attribute.
         let attr = unsafe { ffi::mlirOperationGetAttributeByName(self.raw, string_ref(name)) };
@@ -299,6 +317,18 @@ impl<'m> OperationRef<'m> {
             return None;
         }
         Some(unsafe { ffi::mlirIntegerAttrGetValueInt(attr) })
+    }
+
+    pub fn i64_array_attribute(self, name: &str) -> Option<Vec<i64>> {
+        let attr = unsafe { ffi::mlirOperationGetAttributeByName(self.raw, string_ref(name)) };
+        if attr.ptr.is_null() || !unsafe { ffi::mlirAttributeIsADenseI64Array(attr) } {
+            return None;
+        }
+        Some(
+            (0..unsafe { ffi::mlirDenseArrayGetNumElements(attr) })
+                .map(|index| unsafe { ffi::mlirDenseI64ArrayGetElement(attr, index) })
+                .collect(),
+        )
     }
 
     pub fn f64_array_attribute<const N: usize>(self, name: &str) -> Option<[f64; N]> {

@@ -14,7 +14,7 @@ use winit::{
     window::{Window, WindowId},
 };
 use xrack_renderer_femtovg::{RenderDevice, Renderer};
-use xrack_runtime::{Component, SecondaryWindowRegistration};
+use xrack_runtime::{Component, LocaleContext, LocaleId, SecondaryWindowRegistration};
 
 type WindowKey = u64;
 
@@ -194,9 +194,11 @@ enum Command {
     Close(WindowKey),
     OpenTray(WindowKey, TrayHost),
     CloseTray(WindowKey),
+    SetLocale(LocaleId),
 }
 
 struct Commands {
+    locale: LocaleContext,
     next: Cell<WindowKey>,
     closed: Cell<bool>,
     checking_close: Cell<Option<WindowKey>>,
@@ -249,6 +251,17 @@ impl Commands {
 pub struct Desktop(Weak<Commands>);
 
 impl Desktop {
+    /// Select the UI language for windows and tray icons on this desktop.
+    pub fn set_locale(&self, locale: &str) -> Result<(), String> {
+        let locale = locale
+            .parse::<LocaleId>()
+            .map_err(|error| format!("invalid UI locale `{locale}`: {error}"))?;
+        self.0
+            .upgrade()
+            .ok_or("the XRack desktop is closed")?
+            .enqueue(Command::SetLocale(locale))
+    }
+
     pub fn open<C: Component + 'static>(&self, component: C) -> Result<DesktopWindow, String> {
         self.open_with_messages(component, |_, _: UiSender<()>| |_: &mut C, _: ()| {})
     }
@@ -266,6 +279,7 @@ impl Desktop {
             return Err(system_tray::unsupported());
         }
         let commands = self.0.upgrade().ok_or("the XRack desktop is closed")?;
+        component.set_locale_context(commands.locale.clone());
         let key = commands.key();
         let events = TrayEvents {
             key,
@@ -293,6 +307,7 @@ impl Desktop {
         R: FnMut(&mut C, M) + 'static,
     {
         let commands = self.0.upgrade().ok_or("the XRack desktop is closed")?;
+        component.set_locale_context(commands.locale.clone());
         let key = commands.key();
         commands.enqueue(Command::Open(
             key,
@@ -390,6 +405,7 @@ impl<'a> DesktopRuntime<'a> {
     fn new(proxy: EventLoopProxy<DesktopEvent>) -> Self {
         Self {
             commands: Rc::new(Commands {
+                locale: LocaleContext::default(),
                 next: Cell::new(0),
                 closed: Cell::new(false),
                 checking_close: Cell::new(None),
@@ -482,6 +498,7 @@ impl<'a> DesktopRuntime<'a> {
                 Command::CloseTray(key) => {
                     self.trays.remove(&key);
                 }
+                Command::SetLocale(locale) => self.commands.locale.set_language(locale),
             }
         }
         self.consume_close_requests();

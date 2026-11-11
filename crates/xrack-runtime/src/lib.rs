@@ -21,6 +21,7 @@ mod hover;
 mod image_animation;
 mod keyboard;
 mod list;
+mod localization;
 mod model;
 mod native_dialog;
 mod picker;
@@ -102,6 +103,9 @@ pub use list::{
     standard_table_rows, standard_table_rows_in_order, standard_table_rows_with_editors_in_order,
     standard_table_rows_with_header,
 };
+pub use localization::LocaleContext;
+#[doc(hidden)]
+pub use localization::{LocaleBinding, LocaleId, TranslationCatalog, TranslationValue};
 pub use model::VecModel;
 pub use native_dialog::{
     FileDialogMode, FileDialogOptions, FileDialogSelection, MessageButtons, MessageDialogOptions,
@@ -198,6 +202,10 @@ impl<C: 'static> WeakComponent<C> {
 /// The backend-independent interface implemented by generated UI components.
 pub trait Component {
     fn render(&self) -> Node;
+
+    /// Supply the language shared by the desktop hosting this component.
+    #[doc(hidden)]
+    fn set_locale_context(&self, _context: LocaleContext) {}
 
     /// Return the current scene. Reactive components may reuse a clean snapshot.
     fn render_shared(&self) -> Rc<Node> {
@@ -374,6 +382,9 @@ pub trait Component {
 impl<T: Component + ?Sized> Component for Box<T> {
     fn render(&self) -> Node {
         (**self).render()
+    }
+    fn set_locale_context(&self, context: LocaleContext) {
+        (**self).set_locale_context(context);
     }
     fn focus_event_at(&mut self, scene: &Node, path: &[usize], event: FocusEvent) -> bool {
         (**self).focus_event_at(scene, path, event)
@@ -1138,7 +1149,8 @@ pub struct NodeData {
     pub row_key: Option<RowKey>,
     #[doc(hidden)]
     pub row_scope: u64,
-    paint_only_background: bool,
+    paint_only: u8,
+    static_paint_order: Option<&'static [usize]>,
     precompiled_path: Option<&'static StaticVectorPath>,
     static_grid: Option<&'static [GridCellSlot]>,
 }
@@ -1156,12 +1168,10 @@ impl std::ops::Deref for Node {
 
 impl std::ops::DerefMut for Node {
     fn deref_mut(&mut self) -> &mut Self::Target {
-        let data = match &mut self.0 {
-            NodeStorage::Inline(data) => data,
-            NodeStorage::Shared(data) => Arc::make_mut(data),
-        };
+        let data = self.data_mut();
         // Public edits can change grid tracks, visibility or child order.
         data.static_grid = None;
+        data.static_paint_order = None;
         data
     }
 }
@@ -1177,7 +1187,7 @@ impl NodeData {
         macro_rules! compare {
             ($($field:ident),+ $(,)?) => {{
                 // An exhaustive pattern makes new scene fields opt in to comparison.
-                let Self { properties: _, children: _, paint_only_background: _, $($field: _,)+ } = self;
+                let Self { properties: _, children: _, paint_only: _, $($field: _,)+ } = self;
                 $(self.$field == other.$field)&&+
             }};
         }
@@ -1228,6 +1238,7 @@ impl NodeData {
             row_scope,
             precompiled_path,
             static_grid,
+            static_paint_order,
         )
     }
 }
@@ -1350,7 +1361,8 @@ impl Node {
             split_resize_handle: None,
             row_key: None,
             row_scope: 0,
-            paint_only_background: false,
+            paint_only: 0,
+            static_paint_order: None,
             precompiled_path: None,
             static_grid: None,
         }))
@@ -1383,10 +1395,18 @@ impl Node {
         self.precompiled_path
             .filter(|path| path.commands == commands)
     }
+    /// Mark a generated Rectangle's background as independent of layout and input.
+
+    fn data_mut(&mut self) -> &mut NodeData {
+        match &mut self.0 {
+            NodeStorage::Inline(data) => data,
+            NodeStorage::Shared(data) => Arc::make_mut(data),
+        }
+    }
 
     #[doc(hidden)]
     pub fn set_static_grid(&mut self, cells: &'static [GridCellSlot]) {
-        self.static_grid = Some(cells);
+        self.data_mut().static_grid = Some(cells);
     }
 
     #[doc(hidden)]
@@ -1394,12 +1414,33 @@ impl Node {
         self.static_grid
     }
 
-    /// Mark a generated Rectangle's background as independent of layout and input.
+    #[doc(hidden)]
+    pub fn set_static_paint_order(&mut self, order: &'static [usize]) {
+        self.data_mut().static_paint_order = Some(order);
+    }
+
+    #[doc(hidden)]
+    pub fn static_paint_order(&self) -> Option<&'static [usize]> {
+        self.static_paint_order
+    }
+
+    fn paint_only_bit(&self, property: &str) -> u8 {
+        match (self.kind, property) {
+            ("Rectangle", "background") => 1,
+            ("Text", "color") => 2,
+            _ => 0,
+        }
+    }
+
+    #[doc(hidden)]
+    pub fn mark_paint_only(&mut self, property: &str) {
+        let bit = self.paint_only_bit(property);
+        self.data_mut().paint_only |= bit;
+    }
+
     #[doc(hidden)]
     pub fn mark_paint_only_background(&mut self) {
-        if self.kind == "Rectangle" {
-            self.paint_only_background = true;
-        }
+        self.mark_paint_only("background");
     }
 
     /// Compare frame inputs, allowing paint-only values to differ.
@@ -1408,15 +1449,12 @@ impl Node {
         if self.shares_storage_with(other) {
             return true;
         }
-        let ignore_background = self.kind == "Rectangle"
-            && other.kind == "Rectangle"
-            && self.paint_only_background
-            && other.paint_only_background;
+        let paint_only = self.paint_only & other.paint_only;
         let ignore_frame = self.kind == "AnimatedImage" && other.kind == "AnimatedImage";
         let ignore_colorize =
             matches!(self.kind, "Image" | "AnimatedImage") && self.kind == other.kind;
         let relevant = |(name, _): &(&&str, &Value)| match **name {
-            "background" => !ignore_background,
+            name if paint_only & self.paint_only_bit(name) != 0 => false,
             "opacity" => false,
             "drop-shadow-blur"
             | "drop-shadow-color"

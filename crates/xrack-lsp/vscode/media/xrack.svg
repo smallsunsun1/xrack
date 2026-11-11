@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256">
+  <defs>
+    <linearGradient id="tile" x1="0" y1="0" x2="1" y2="1" gradientUnits="objectBoundingBox">
+      <stop stop-color="#292458"/>
+      <stop offset="1" stop-color="#12152E"/>
+    </linearGradient>
+    <linearGradient id="stroke" x1="62" y1="194" x2="194" y2="62" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#75D8FF"/>
+      <stop offset="1" stop-color="#A3F9CB"/>
+    </linearGradient>
+    <linearGradient id="fold" x1="62" y1="62" x2="194" y2="194" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#E0C5FF"/>
+      <stop offset="1" stop-color="#8979F5"/>
+    </linearGradient>
+  </defs>
+  <rect x="8" y="8" width="240" height="240" rx="54" fill="url(#tile)"/>
+  <rect x="9.5" y="9.5" width="237" height="237" rx="52.5" fill="none" stroke="#B7A9FF" stroke-opacity=".28" stroke-width="3"/>
+  <path d="M52 88V62a10 10 0 0 1 10-10h26m80 0h26a10 10 0 0 1 10 10v26m0 80v26a10 10 0 0 1-10 10h-26m-80 0H62a10 10 0 0 1-10-10v-26"
+        fill="none" stroke="#A89CF4" stroke-opacity=".43" stroke-width="3" stroke-linecap="round"/>
+  <path d="m83 82 90 92" fill="none" stroke="url(#fold)" stroke-width="26" stroke-linecap="round"/>
+  <path d="m83 174 90-92" fill="none" stroke="#1C1C40" stroke-width="36" stroke-linecap="round"/>
+  <path d="m83 174 90-92" fill="none" stroke="url(#stroke)" stroke-width="26" stroke-linecap="round"/>
+</svg>

@@ -63,11 +63,12 @@ cc_library(
 cc_library(
     name = "xrack_passes",
     srcs = [
+        "xrack_analysis.cc",
         "xrack_passes.cc",
         "xrack_scene_plan.cc",
         "xrack_visual_cache.cc",
     ],
-    hdrs = ["xrack_passes.h"],
+    hdrs = ["xrack_analysis.h", "xrack_passes.h"],
     linkstatic = True,
     deps = [
         ":xrack_dialect",

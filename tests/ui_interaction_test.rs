@@ -626,6 +626,55 @@ fn generated_tray_menu_reuses_action_bindings_and_callback_routes() {
 }
 
 #[test]
+fn changing_locale_refreshes_the_tray_and_nested_window_bindings_without_resetting_state() {
+    use tray_ui::{TrayDemo, TrayWindow};
+    use xrack_runtime::LocaleContext;
+
+    let locale = LocaleContext::default();
+    let tray = TrayDemo::new_with_locale(locale.clone());
+    let mut window = TrayWindow::new();
+    let label = |window: &TrayWindow| {
+        window
+            .render()
+            .find("counter")
+            .unwrap()
+            .text("text")
+            .unwrap()
+            .to_owned()
+    };
+    // Resolve the scene before mounting, so the child must move its existing
+    // language subscription to the context supplied by the desktop.
+    window.set_count(1);
+    assert!(label(&window).ends_with(" click"));
+    window.set_locale_context(locale.clone());
+    window.set_count(3);
+    assert!(label(&window).ends_with(" clicks"));
+    assert_eq!(
+        tray.render_shared().text("tooltip"),
+        Some("XRack is running")
+    );
+
+    locale.set_locale("zh-CN").unwrap();
+    let scene = window.render_shared();
+    assert_eq!(scene.text("title"), Some("XRack · 系统托盘"));
+    assert_eq!(
+        scene.find("hint").unwrap().text("text"),
+        Some("The tray icon stays open when this window closes.")
+    );
+    assert!(label(&window).contains('3') && label(&window).ends_with("次"));
+    assert_eq!(window.get_count(), 3);
+    let tray = tray.render_shared();
+    assert_eq!(tray.text("tooltip"), Some("XRack 正在运行"));
+    assert_eq!(
+        tray.children[0].children[1].text("text"),
+        Some("打开 XRack 窗口")
+    );
+
+    locale.set_locale("en-US").unwrap();
+    assert!(label(&window).ends_with(" clicks"));
+}
+
+#[test]
 fn generated_flickable_cancel_flick_stops_its_pending_inertia() {
     use layout_ui::FlickableDemo;
     use xrack_runtime::ScrollRequests;

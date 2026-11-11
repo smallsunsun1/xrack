@@ -5,7 +5,17 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
+    inputs:
+      package-vsix:
+        description: Build and smoke-test the five VSIX packages
+        type: boolean
+        default: false
   workflow_call:
+    inputs:
+      package-vsix:
+        description: Build and smoke-test a native VS Code extension package for each compiler host
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -126,6 +136,7 @@ jobs:
         run: >-
           bazel test --announce_rc --lockfile_mode=update
           //tests:compiler_test //tests:mlir_pass_test //tests:expressions_test
+          //tests:mlir_filecheck_test
           //crates/xrack-lsp:xrack_lsp_test
       - name: Run Clippy through Bazel
         if: runner.os == 'macOS'
@@ -143,6 +154,31 @@ jobs:
           path: |
             .tools/dist/xrackc-*.tar.gz
             .tools/dist/xrackc-*.sha256
+          include-hidden-files: true
+          if-no-files-found: error
+          compression-level: 0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        if: inputs.package-vsix
+        with:
+          node-version: '22'
+          package-manager-cache: false
+      - name: Test the VS Code preview queue
+        if: inputs.package-vsix
+        run: node --test crates/xrack-lsp/vscode/preview-queue.test.js
+      - name: Package and smoke-test the native VSIX
+        if: inputs.package-vsix
+        run: >-
+          python tools/package_vscode.py package
+          --host ${{ matrix.target }}
+          --archives .tools/dist
+          --output .tools/vsix
+      - name: Upload the native VSIX
+        if: inputs.package-vsix
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: vscode-vsix-${{ matrix.target }}
+          overwrite: true
+          path: .tools/vsix/*.vsix
           include-hidden-files: true
           if-no-files-found: error
           compression-level: 0

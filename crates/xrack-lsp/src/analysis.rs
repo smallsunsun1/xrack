@@ -81,9 +81,16 @@ impl<'a> Source<'a> {
                 .map_or(text.len(), |(i, _)| i)
     }
 
-    fn position(&self, offset: usize) -> Value {
+    pub(crate) fn coordinates(&self, offset: usize) -> (usize, usize) {
         let line = self.lines.partition_point(|&start| start <= offset) - 1;
-        let character = self.text[self.lines[line]..offset].encode_utf16().count();
+        (
+            line,
+            self.text[self.lines[line]..offset].encode_utf16().count(),
+        )
+    }
+
+    fn position(&self, offset: usize) -> Value {
+        let (line, character) = self.coordinates(offset);
         json!({ "line": line, "character": character })
     }
 
@@ -98,7 +105,7 @@ impl<'a> Source<'a> {
             }
             column += ch.len_utf16();
         }
-        (column <= character).then_some(start + line.len())
+        (column == character).then_some(start + line.len())
     }
 
     pub(crate) fn range(&self, start: usize, end: usize) -> Value {

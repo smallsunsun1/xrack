@@ -73,6 +73,22 @@ impl Builder {
         })
     }
 
+    fn string_array(
+        &self,
+        name: &str,
+        values: impl IntoIterator<Item = impl AsRef<str>>,
+    ) -> ffi::MlirNamedAttribute {
+        let strings: Vec<_> = values
+            .into_iter()
+            .map(|value| unsafe {
+                ffi::mlirStringAttrGet(self.context, string_ref(value.as_ref()))
+            })
+            .collect();
+        self.attr(name, unsafe {
+            ffi::mlirArrayAttrGet(self.context, strings.len() as isize, strings.as_ptr())
+        })
+    }
+
     fn animation(
         &self,
         op: &str,
@@ -159,7 +175,18 @@ impl Builder {
     fn expr(&self, expr: &ir::Expr) -> BuildResult<ffi::MlirValue> {
         let operands = self.operands(&expr.args)?;
         let ty = self.result_type(&expr.ty, expr.span)?;
-        let mut attrs = self.strings(&[("value", &expr.value)]);
+        let mut attrs = if expr.op == "translate" {
+            let (id, names): (&str, Vec<&str>) =
+                serde_json::from_str(&expr.value).map_err(|error| Diagnostic {
+                    span: expr.span,
+                    message: format!("invalid translation expression: {error}"),
+                })?;
+            let mut attrs = self.strings(&[("value", id)]);
+            attrs.push(self.string_array("arg_names", names));
+            attrs
+        } else {
+            self.strings(&[("value", &expr.value)])
+        };
         if let Some(owner) = &expr.owner {
             attrs.extend(self.strings(&[("owner", owner)]));
         }
@@ -516,18 +543,10 @@ impl Builder {
                         .iter()
                         .map(|(_, condition)| self.expr(condition))
                         .collect::<BuildResult<Vec<_>>>()?;
-                    let names: Vec<_> = selection
-                        .cases
-                        .iter()
-                        .map(|(name, _)| unsafe {
-                            ffi::mlirStringAttrGet(self.context, string_ref(name))
-                        })
-                        .collect();
-                    let names = unsafe {
-                        ffi::mlirArrayAttrGet(self.context, names.len() as isize, names.as_ptr())
-                    };
                     let mut attrs = self.strings(&[("owner", &selection.owner)]);
-                    attrs.push(self.attr("names", names));
+                    attrs.push(
+                        self.string_array("names", selection.cases.iter().map(|(name, _)| name)),
+                    );
                     let result = self.result_type(&Type::Int, selection.span)?;
                     let selector =
                         self.emit("state_select", selection.span, &inputs, &[result], &attrs)?;
@@ -612,6 +631,18 @@ pub fn lower_module(doc: &Document, filename: &str) -> Result<Module, Vec<Diagno
             .map_err(|error| vec![error])?;
     }
     builder.filename = filename.into();
+    for catalog in &doc.translations {
+        let path: String = serde_json::from_str(&catalog.path).map_err(|error| {
+            vec![Diagnostic {
+                span: catalog.span,
+                message: format!("invalid translation catalog path: {error}"),
+            }]
+        })?;
+        let attrs = builder.strings(&[("path", &path)]);
+        builder
+            .emit("translation_catalog", catalog.span, &[], &[], &attrs)
+            .map_err(|error| vec![error])?;
+    }
     for record in &doc.records {
         let fields = record
             .fields

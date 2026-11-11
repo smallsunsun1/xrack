@@ -18,10 +18,26 @@ pub(crate) fn parse_document_with_inputs(
     filename: &str,
     declared_sources: Option<&[PathBuf]>,
 ) -> Result<(ast::Document, BTreeSet<PathBuf>), CompilerError> {
+    parse_document_with_overrides(source, filename, declared_sources, &BTreeMap::new())
+}
+
+pub(crate) fn parse_document_with_overrides(
+    source: &str,
+    filename: &str,
+    declared_sources: Option<&[PathBuf]>,
+    buffers: &BTreeMap<PathBuf, String>,
+) -> Result<(ast::Document, BTreeSet<PathBuf>), CompilerError> {
     let entry = parse(source).map_err(|diagnostics| CompilerError::Diagnostics {
         filename: filename.into(),
         diagnostics,
     })?;
+    if let Some(extra) = entry.translations.get(1) {
+        return Err(CompilerError::at(
+            Path::new(filename),
+            extra.span,
+            "only one translation catalog can be declared",
+        ));
+    }
     if entry.imports.is_empty() {
         return Ok((entry, BTreeSet::new()));
     }
@@ -50,6 +66,7 @@ pub(crate) fn parse_document_with_inputs(
         })
         .transpose()?;
     let mut loader = Loader {
+        buffers,
         base,
         declared,
         active: BTreeSet::new(),
@@ -63,11 +80,13 @@ pub(crate) fn parse_document_with_inputs(
     if let Ok(canonical) = file.canonicalize() {
         loader.active.insert(canonical);
     }
+    let translations = entry.translations.clone();
     loader.resolve(entry, file, true)?;
     Ok((
         ast::Document {
             imports: Vec::new(),
             fonts: loader.fonts,
+            translations,
             records: loader.records,
             components: loader.components,
         },
@@ -75,7 +94,8 @@ pub(crate) fn parse_document_with_inputs(
     ))
 }
 
-struct Loader {
+struct Loader<'a> {
+    buffers: &'a BTreeMap<PathBuf, String>,
     base: PathBuf,
     declared: Option<BTreeSet<PathBuf>>,
     active: BTreeSet<PathBuf>,
@@ -87,13 +107,20 @@ struct Loader {
     fonts: Vec<ast::FontImport>,
 }
 
-impl Loader {
+impl Loader<'_> {
     fn resolve(
         &mut self,
         doc: ast::Document,
         file: &Path,
         entry: bool,
     ) -> Result<BTreeMap<String, String>, CompilerError> {
+        if !entry && let Some(declaration) = doc.translations.first() {
+            return Err(CompilerError::at(
+                file,
+                declaration.span,
+                "declare the translation catalog in the entry file",
+            ));
+        }
         let mut names = BTreeMap::new();
         let mut exports = BTreeMap::new();
         let mut local_names = BTreeSet::new();
@@ -166,10 +193,16 @@ impl Loader {
             }
             if !self.exports.contains_key(&canonical) {
                 self.active.insert(canonical.clone());
-                let source = fs::read_to_string(&canonical)
-                    .map_err(|error| diagnostic(format!("could not read {path:?}: {error}")))?;
+                let disk;
+                let source = if let Some(source) = self.buffers.get(&canonical) {
+                    source
+                } else {
+                    disk = fs::read_to_string(&canonical)
+                        .map_err(|error| diagnostic(format!("could not read {path:?}: {error}")))?;
+                    &disk
+                };
                 let dependency =
-                    parse(&source).map_err(|diagnostics| CompilerError::Diagnostics {
+                    parse(source).map_err(|diagnostics| CompilerError::Diagnostics {
                         filename: input.to_string_lossy().into_owned(),
                         diagnostics,
                     })?;
@@ -401,6 +434,11 @@ fn rewrite_expr(expr: &mut ast::Expr, prefix: &Path, names: &BTreeMap<String, St
             }
             for field in fields {
                 rewrite_expr(&mut field.value, prefix, names);
+            }
+        }
+        Translation { arguments, .. } => {
+            for argument in arguments {
+                rewrite_expr(&mut argument.value, prefix, names);
             }
         }
         Call(call) => {

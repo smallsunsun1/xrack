@@ -1,38 +1,59 @@
+translations "i18n/catalog.toml";
+
 export component TrayDemo inherits SystemTrayIcon {
     title: "XRack";
-    tooltip: root.paused ? "XRack is paused" : "XRack is running";
+    tooltip: root.paused ? @tr("tray-tooltip-paused") : @tr("tray-tooltip-running");
     icon: @image-url("assets/status.svg");
     icon-template: true;
     in-out property <bool> paused: false;
     callback open-window();
     callback remove-tray();
+    callback change-language(string);
     clicked() => { root.open-window(); }
 
     pause := Action {
-        text: "Paused";
+        text: @tr("tray-paused");
         checkable: true;
         checked <=> root.paused;
     }
 
     Menu {
         MenuItem { action: pause; }
-        MenuItem { text: "Open XRack window"; activated() => { root.open-window(); } }
+        MenuItem { text: @tr("tray-open"); activated() => { root.open-window(); } }
         Menu {
-            title: "Status";
-            MenuItem { text: root.paused ? "Paused" : "Running"; enabled: false; }
+            title: @tr("tray-status");
+            MenuItem { text: root.paused ? @tr("tray-paused") : @tr("tray-running"); enabled: false; }
         }
         MenuSeparator {}
-        MenuItem { text: "Remove tray icon"; activated() => { root.remove-tray(); } }
+        MenuItem { text: @tr("tray-remove"); activated() => { root.remove-tray(); } }
+        Menu {
+            title: @tr("tray-language");
+            MenuItem { text: "English"; activated() => { root.change-language("en-US"); } }
+            MenuItem { text: "简体中文"; activated() => { root.change-language("zh-CN"); } }
+        }
     }
 }
 
 export component TrayWindow inherits Window {
-    title: "XRack · System tray";
-    width: 400px;
-    height: 156px;
+    in-out property <int> count: 0;
+    title: @tr("window-title");
+    width: 480px;
+    height: 170px;
     background: #192438;
-    Text {
-        x: 20px; y: 26px; color: #e5edff;
-        text: "The tray icon stays open when this window closes.";
+    VerticalLayout {
+        padding: 16px;
+        spacing: 10px;
+        hint := Text { text: @tr("window-hint"); color: #e5edff; }
+        counter := TrayCounter { count: root.count; }
+        add := Button {
+            text: @tr("window-add");
+            clicked() => { root.count += 1; }
+        }
     }
+}
+
+component TrayCounter inherits Text {
+    in property <int> count;
+    text: @tr("window-count", count: root.count);
+    color: #e5edff;
 }

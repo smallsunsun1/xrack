@@ -6,9 +6,15 @@
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/StringSwitch.h"
+#include <algorithm>
+#include <cmath>
+#include <numeric>
+#include <optional>
 
 namespace xrack::dialect {
 #define GEN_PASS_DEF_XRPLANUPDATEEFFECTS
+#define GEN_PASS_DEF_XRPLANSTATICZORDER
+#define GEN_PASS_DEF_XRPLANREPEATROWS
 #define GEN_PASS_DEF_XRCACHESTATICSUBTREES
 #define GEN_PASS_DEF_XRPRECOMPILESTATICPATHS
 #define GEN_PASS_DEF_XRPLANSTATICGRID
@@ -23,22 +29,6 @@ void clearMarker(Operation *op, StringAttr name) {
     op->removeDiscardableAttr(name);
 }
 
-struct PlanUpdateEffects : impl::XrPlanUpdateEffectsBase<PlanUpdateEffects> {
-  void runOnOperation() override {
-    auto name = StringAttr::get(&getContext(), "xr.update_effect");
-    auto paint = StringAttr::get(&getContext(), "paint");
-    getOperation()->walk([&](BindOp binding) {
-      clearMarker(binding, name);
-      // Rectangle background is consumed by drawing, independently of layout,
-      // hit testing and accessibility. Other bindings keep the general path.
-      auto element = dyn_cast_or_null<ElementOp>(binding->getParentOp());
-      if (element && element.getKind() == "Rectangle" &&
-          binding.getName() == "background")
-        binding->setDiscardableAttr(name, paint);
-    });
-  }
-};
-
 bool passiveElement(llvm::StringRef kind) {
   return llvm::StringSwitch<bool>(kind)
       .Cases({"Rectangle", "Text", "StyledText", "Image", "Path", "HorizontalBox",
@@ -47,6 +37,155 @@ bool passiveElement(llvm::StringRef kind) {
              true)
       .Default(false);
 }
+
+/// Shared analysis of scene properties and row structure. The planning passes
+/// only attach discardable hints, so each can preserve these facts.
+struct SceneAnalysis {
+  llvm::DenseSet<Operation *> paintOnly;
+  llvm::DenseMap<Operation *, llvm::SmallVector<int64_t>> zOrders;
+  llvm::DenseMap<Operation *, bool> repeatRows;
+
+  explicit SceneAnalysis(Operation *module) {
+    module->walk([&](BindOp binding) {
+      auto element = dyn_cast_or_null<ElementOp>(binding->getParentOp());
+      if (!element)
+        return;
+      auto kind = element.getKind();
+      auto name = binding.getName();
+      if ((kind == "Rectangle" && name == "background") ||
+          (kind == "Text" && name == "color"))
+        paintOnly.insert(binding);
+    });
+    module->walk([&](ElementOp element) {
+      if (auto order = staticZOrder(element); !order.empty())
+        zOrders.try_emplace(element, std::move(order));
+      auto kind = element.getKind();
+      if (kind != "ListView" && kind != "GridView" && kind != "TableView" &&
+          kind != "TreeView")
+        return;
+      for (auto &child : element.getBody().front())
+        if (isa<ElementOp, InstanceOp>(child))
+          if (auto index = cacheableRow(&child))
+            repeatRows.try_emplace(&child, *index);
+    });
+  }
+
+private:
+  static llvm::SmallVector<int64_t> staticZOrder(ElementOp parent) {
+    if (!passiveElement(parent.getKind()) && parent.getKind() != "Window")
+      return {};
+    llvm::SmallVector<double> z;
+    for (auto &op : parent.getBody().front()) {
+      if (isa<InstanceOp>(op))
+        return {};
+      auto child = dyn_cast<ElementOp>(op);
+      if (!child)
+        continue;
+      if (!passiveElement(child.getKind()) && child.getKind() != "Button")
+        return {};
+      double value = 0;
+      for (auto &member : child.getBody().front()) {
+        if (isa<RepeatOp, ShowIfOp>(member))
+          return {};
+        if (auto binding = dyn_cast<BindOp>(member);
+            binding && binding.getName() == "z") {
+          auto literal = binding.getInput().getDefiningOp<LiteralOp>();
+          if (!literal || literal.getValue().getAsDouble(value) ||
+              !std::isfinite(value))
+            return {};
+        }
+        if (isa<StateSetOp, AnimateOp>(member) &&
+            member.getAttrOfType<StringAttr>("name").getValue() == "z")
+          return {};
+      }
+      z.push_back(value);
+    }
+    if (std::is_sorted(z.begin(), z.end()))
+      return {};
+    llvm::SmallVector<int64_t> order(z.size());
+    std::iota(order.begin(), order.end(), 0);
+    std::stable_sort(order.begin(), order.end(),
+                     [&](int64_t a, int64_t b) { return z[a] < z[b]; });
+    return order;
+  }
+
+  static std::optional<bool> cacheableRow(Operation *row) {
+    auto repeats = row->getRegion(0).front().getOps<RepeatOp>();
+    if (repeats.empty())
+      return std::nullopt;
+    auto repeat = *repeats.begin();
+    bool hasInstance = false;
+    bool usesIndex = false;
+    auto result = row->walk([&](Operation *op) -> WalkResult {
+      if (isa<InstanceOp>(op))
+        hasInstance = true;
+      if (auto element = dyn_cast<ElementOp>(op);
+          element && !passiveElement(element.getKind()) &&
+          !llvm::StringSwitch<bool>(element.getKind())
+               .Cases({"TableRow", "TableCell", "TreeRow", "TreeCell"}, true)
+               .Default(false))
+        return WalkResult::interrupt();
+      if (isa<CallOp, AnimateOp, ShowIfOp, StateSelectOp>(op) ||
+          (isa<RepeatOp>(op) && op != repeat.getOperation()))
+        return WalkResult::interrupt();
+      if (auto param = dyn_cast<ParamOp>(op);
+          param && !repeat.getIndex().empty() &&
+          param.getValue() == repeat.getIndex())
+        usesIndex = true;
+      return WalkResult::advance();
+    });
+    if (!hasInstance || result.wasInterrupted())
+      return std::nullopt;
+    return usesIndex;
+  }
+};
+
+struct PlanUpdateEffects : impl::XrPlanUpdateEffectsBase<PlanUpdateEffects> {
+  void runOnOperation() override {
+    const auto &analysis = getAnalysis<SceneAnalysis>();
+    auto name = StringAttr::get(&getContext(), "xr.update_effect");
+    auto paint = StringAttr::get(&getContext(), "paint");
+    getOperation()->walk([&](BindOp binding) {
+      clearMarker(binding, name);
+      if (analysis.paintOnly.contains(binding))
+        binding->setDiscardableAttr(name, paint);
+    });
+    markAnalysesPreserved<SceneAnalysis>();
+  }
+};
+
+struct PlanStaticZOrder : impl::XrPlanStaticZOrderBase<PlanStaticZOrder> {
+  void runOnOperation() override {
+    const auto &analysis = getAnalysis<SceneAnalysis>();
+    auto name = StringAttr::get(&getContext(), "xr.static_z_order");
+    getOperation()->walk([&](ElementOp element) {
+      clearMarker(element, name);
+      if (auto order = analysis.zOrders.find(element);
+          order != analysis.zOrders.end())
+        element->setDiscardableAttr(
+            name, DenseI64ArrayAttr::get(&getContext(), order->second));
+    });
+    markAnalysesPreserved<SceneAnalysis>();
+  }
+};
+
+struct PlanRepeatRows : impl::XrPlanRepeatRowsBase<PlanRepeatRows> {
+  void runOnOperation() override {
+    const auto &analysis = getAnalysis<SceneAnalysis>();
+    auto name = StringAttr::get(&getContext(), "xr.row_scene_cache");
+    getOperation()->walk([&](Operation *row) {
+      if (!isa<ElementOp, InstanceOp>(row))
+        return;
+      clearMarker(row, name);
+      if (auto index = analysis.repeatRows.find(row);
+          index != analysis.repeatRows.end())
+        row->setDiscardableAttr(
+            name, StringAttr::get(&getContext(),
+                                  index->second ? "indexed" : "keyed"));
+    });
+    markAnalysesPreserved<SceneAnalysis>();
+  }
+};
 
 struct PrecompileStaticPaths
     : impl::XrPrecompileStaticPathsBase<PrecompileStaticPaths> {
@@ -191,6 +330,8 @@ void addScenePlanPasses(OpPassManager &passes) {
   passes.addPass(std::make_unique<PlanStaticGrid>());
   passes.addPass(std::make_unique<CacheStaticGradients>());
   passes.addPass(std::make_unique<PlanUpdateEffects>());
+  passes.addPass(std::make_unique<PlanStaticZOrder>());
+  passes.addPass(std::make_unique<PlanRepeatRows>());
   passes.addPass(std::make_unique<CacheStaticSubtrees>());
 }
 } // namespace xrack::dialect

@@ -43,9 +43,21 @@ void XrackDialect::initialize() {
 static bool isExpression(Operation &op) {
   return isa<LiteralOp, ReadOp, ControlReadOp, GeometryReadOp, StackReadOp, TreeQueryOp, ViewIndexOp, TableSortReadOp, TableSelectionReadOp, TableHistoryReadOp, SplitStateReadOp, SplitResizingOp, ImagePlaybackReadOp, WindowReadOp, CheckGroupReadOp, ActionGroupReadOp, NativeDialogReadOp, FocusReadOp, ViewportReadOp, FlickMotionReadOp, ScrollControlReadOp, ScaleRotateReadOp, SwipeReadOp, HoverReadOp, TouchAreaReadOp, ParamOp, UnaryOp, CastOp,
              StringifyOp, BinaryOp, SelectOp, SolidBrushOp, GradientStopOp,
-             LinearGradientOp, RadialGradientOp, ImageUrlOp, ImageDimensionOp, NineSliceOp, MarkdownOp, ArrayOp, PointerButtonsOp, CallOp,
+             LinearGradientOp, RadialGradientOp, ImageUrlOp, ImageDimensionOp, NineSliceOp, MarkdownOp, TranslateOp, ArrayOp, PointerButtonsOp, CallOp,
              ToRatioOp, MakeRecordOp, DefaultRecordOp, RecordArrayOp,
              GetFieldOp, KeyFieldOp, WheelFieldOp, PointerFieldOp, TouchPointFieldOp, MakeDateOp, DateFieldOp, MakeTimeOp, TimeFieldOp, MakeFontOp, FontFieldOp>(op);
+}
+
+LogicalResult TranslateOp::verify() {
+  if (getValue().empty() || getArgNames().size() != getArgs().size())
+    return emitOpError("requires a message ID and a name for each operand");
+  llvm::StringSet<> names;
+  for (auto attr : getArgNames()) {
+    auto name = cast<StringAttr>(attr).getValue();
+    if (name.empty() || !names.insert(name).second)
+      return emitOpError("translation argument names must be nonempty and unique");
+  }
+  return success();
 }
 
 static bool geometryProperty(llvm::StringRef name) {
@@ -4502,9 +4514,16 @@ static LogicalResult verifyRecords(ModuleOp module, const Records &records) {
 LogicalResult verifyModule(ModuleOp module) {
   Components components;
   Records records;
+  bool hasTranslationCatalog = false;
   for (Operation &op : module.getBody()->getOperations()) {
     if (isa<FontOp>(op))
       continue;
+    if (isa<TranslationCatalogOp>(op)) {
+      if (hasTranslationCatalog)
+        return op.emitOpError("only one translation catalog can be declared");
+      hasTranslationCatalog = true;
+      continue;
+    }
     if (auto record = dyn_cast<RecordDeclOp>(op)) {
       if (failed(indexRecord(record, records)))
         return failure();
@@ -4513,7 +4532,7 @@ LogicalResult verifyModule(ModuleOp module) {
     auto component = dyn_cast<ComponentOp>(op);
     if (!component)
       return op.emitOpError(
-          "expected xr.component, xr.record_decl or xr.font at module scope");
+          "expected xr.component, xr.record_decl, xr.font or xr.translation_catalog at module scope");
     if (!components.try_emplace(component.getSymName(), component).second)
       return op.emitOpError("duplicate component ") << component.getSymName();
   }

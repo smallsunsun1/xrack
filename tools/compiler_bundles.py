@@ -32,7 +32,7 @@ def stage_workspace(destination):
         shutil.copytree(ROOT / name, destination / name)
 
 
-def install_bundle(workspace, archives, version, host, source_commit):
+def verified_archive(archives, version, host):
     stem = f"xrackc-{version}-{host}"
     archive = archives / f"{stem}.tar.gz"
     checksum = archive.with_suffix(".gz.sha256").read_text().split()
@@ -40,17 +40,33 @@ def install_bundle(workspace, archives, version, host, source_commit):
         digest = hashlib.file_digest(bundle, "sha256").hexdigest()
     if checksum != [digest, archive.name]:
         raise ValueError(f"{archive}: invalid release checksum")
+    return archive, digest
 
+
+def archive_members(bundle, archive):
+    stem = archive.name.removesuffix(".tar.gz")
+    for entry in bundle:
+        path = PurePosixPath(entry.name)
+        if (
+            path.parts[:1] != (stem,)
+            or len(path.parts) < 2
+            or ".." in path.parts
+            or "\\" in entry.name
+            or ":" in entry.name
+            or not entry.isfile()
+        ):
+            raise ValueError(f"{archive}: invalid member {entry.name}")
+        yield path.relative_to(stem), entry
+
+
+def install_bundle(workspace, archives, version, host, source_commit):
+    archive, digest = verified_archive(archives, version, host)
     package = workspace / "compiler-bundles" / host
     executable = "xrackc.exe" if "windows" in host else "xrackc"
     compiler_digest = hashlib.sha256()
     found = False
     with tarfile.open(archive, "r:gz") as bundle:
-        for entry in bundle:
-            path = PurePosixPath(entry.name)
-            if path.parts[:1] != (stem,) or ".." in path.parts or not entry.isfile():
-                raise ValueError(f"{archive}: invalid member {entry.name}")
-            relative = path.relative_to(stem)
+        for relative, entry in archive_members(bundle, archive):
             if relative == PurePosixPath(executable):
                 if found or entry.size == 0:
                     raise ValueError(f"{archive}: invalid compiler entry")
@@ -61,8 +77,6 @@ def install_bundle(workspace, archives, version, host, source_commit):
                             compressed.write(chunk)
                 found = True
             elif relative.parts[:1] == ("licenses",) or relative.name in ("LICENSE-APACHE", "LICENSE-MIT"):
-                if "\\" in str(relative) or ":" in str(relative):
-                    raise ValueError(f"{archive}: invalid license path {relative}")
                 destination = package.joinpath(*relative.parts)
                 destination.parent.mkdir(parents=True, exist_ok=True)
                 with bundle.extractfile(entry) as source, destination.open("wb") as output:

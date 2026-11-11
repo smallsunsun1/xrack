@@ -107,6 +107,17 @@ fn document(ctx: &DocumentContextAll<'_>) -> Document {
                 filename: None,
             })
             .collect(),
+        translations: ctx
+            .translationsDecl_all()
+            .iter()
+            .map(|declaration| TranslationImport {
+                path: declaration
+                    .STRING()
+                    .expect("translation catalog path")
+                    .get_text(),
+                span: span(&**declaration),
+            })
+            .collect(),
         records: ctx
             .recordDecl_all()
             .iter()
@@ -479,6 +490,18 @@ fn primary_expr(ctx: &PrimaryContextAll<'_>) -> Expr {
         }
     } else if let Some(markdown) = ctx.markdown() {
         ExprKind::Markdown(markdown.STRING().expect("Markdown string").get_text())
+    } else if let Some(translation) = ctx.translation() {
+        ExprKind::Translation {
+            id: translation.STRING().expect("translation ID").get_text(),
+            arguments: translation
+                .recordValue_all()
+                .iter()
+                .map(|argument| RecordValue {
+                    name: argument.identifier().expect("argument name").get_text(),
+                    value: expression(&argument.expression().expect("argument value")),
+                })
+                .collect(),
+        }
     } else if let Some(array) = ctx.arrayLiteral() {
         ExprKind::Array(
             array

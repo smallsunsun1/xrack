@@ -16,7 +16,7 @@ use femtovg::{
 };
 use std::{
     fs::File,
-    io::BufWriter,
+    io::{BufWriter, Write},
     path::Path as FilePath,
     rc::Rc,
     time::{Duration, Instant},
@@ -1653,6 +1653,7 @@ impl Renderer {
             scene,
             width,
             height,
+            None,
             PaintFrame {
                 input,
                 scale,
@@ -1677,6 +1678,7 @@ impl Renderer {
             scene,
             width,
             height,
+            None,
             PaintFrame {
                 input,
                 scale,
@@ -1687,11 +1689,37 @@ impl Renderer {
         )
     }
 
+    /// Capture the same prepared scene and layout used for input hit testing.
+    pub fn snapshot_prepared(
+        &mut self,
+        scene: &Node,
+        layout: LayoutNode,
+        width: u32,
+        height: u32,
+        scale: f32,
+        input: &Interaction,
+    ) -> Result<Snapshot, String> {
+        self.snapshot_frame(
+            scene,
+            width,
+            height,
+            Some(layout),
+            PaintFrame {
+                input,
+                scale,
+                theme: self.palette(scene),
+                transitions: None,
+                indicator_phase: Some(indicator_phase(self.clock.elapsed())),
+            },
+        )
+    }
+
     fn snapshot_frame(
         &mut self,
         scene: &Node,
         width: u32,
         height: u32,
+        layout: Option<LayoutNode>,
         frame: PaintFrame<'_>,
     ) -> Result<Snapshot, String> {
         let scale = frame.scale;
@@ -1715,11 +1743,13 @@ impl Renderer {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
             view_formats: &[],
         });
-        let layout = self.layout_with_input(
-            scene,
-            Size::new(width as f32 / scale, height as f32 / scale),
-            frame.input,
-        );
+        let layout = layout.unwrap_or_else(|| {
+            self.layout_with_input(
+                scene,
+                Size::new(width as f32 / scale, height as f32 / scale),
+                frame.input,
+            )
+        });
         self.paint_frame(scene, &layout, &texture, frame)?;
         let stride = (width * 4).div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT)
             * wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
@@ -1827,11 +1857,13 @@ pub struct Snapshot {
 }
 impl Snapshot {
     pub fn save_png(&self, path: impl AsRef<FilePath>) -> Result<(), String> {
-        let mut encoder = png::Encoder::new(
-            BufWriter::new(File::create(path).map_err(|e| e.to_string())?),
-            self.width,
-            self.height,
-        );
+        self.write_png(BufWriter::new(
+            File::create(path).map_err(|e| e.to_string())?,
+        ))
+    }
+
+    pub fn write_png(&self, writer: impl Write) -> Result<(), String> {
+        let mut encoder = png::Encoder::new(writer, self.width, self.height);
         encoder.set_color(png::ColorType::Rgba);
         encoder.set_depth(png::BitDepth::Eight);
         encoder

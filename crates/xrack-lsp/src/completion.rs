@@ -1,4 +1,5 @@
 mod imports;
+mod symbols;
 
 use crate::{
     analysis::Source,
@@ -6,7 +7,11 @@ use crate::{
     editor_tokens::{self, Token, name},
 };
 use serde_json::{Value, json};
-use std::collections::{BTreeMap, BTreeSet};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    ops::Range,
+    path::PathBuf,
+};
 use xrack_ir::semantic::{
     builtin_event, builtin_property, content_viewport, control_alias_type, focus_property,
     geometry_owner, geometry_property, hover_property, is_builtin, layout_item_property,
@@ -17,6 +22,7 @@ use xrack_ir::semantic::{
 use xrack_parser::ast::Type;
 
 pub(crate) use imports::Workspace;
+pub(crate) use symbols::{legend, query};
 
 const CLASS: u32 = 7;
 const FIELD: u32 = 5;
@@ -59,11 +65,16 @@ struct Member {
     ty: Option<Type>,
     visibility: &'static str,
     kind: u32,
+    range: Range<usize>,
+    file: Option<PathBuf>,
+    type_file: Option<PathBuf>,
+    parameters: Vec<Type>,
 }
 
 struct Scope<'a> {
     role: Role<'a>,
     parent: usize,
+    header: Range<usize>,
     body: usize,
     close: usize,
     statement: usize,
@@ -83,6 +94,7 @@ impl<'a> Index<'a> {
         let mut scopes = vec![Scope {
             role: Role::File,
             parent: 0,
+            header: 0..0,
             body: 0,
             close: end,
             statement: 0,
@@ -99,6 +111,7 @@ impl<'a> Index<'a> {
                     scopes.push(Scope {
                         role: Role::States,
                         parent: current,
+                        header: i..i,
                         body: token.range.end,
                         close: end,
                         statement: i + 1,
@@ -135,9 +148,11 @@ impl<'a> Index<'a> {
                         _ => role(head, current == 0),
                     };
                     let members = locals(head, role);
+                    let header = scopes[current].statement..i;
                     scopes.push(Scope {
                         role,
                         parent: current,
+                        header,
                         body: token.range.end,
                         close: end,
                         statement: i + 1,
@@ -184,6 +199,10 @@ impl<'a> Index<'a> {
                             ty: Some(ty),
                             visibility,
                             kind: PROPERTY,
+                            range: member.range.clone(),
+                            file: None,
+                            type_file: None,
+                            parameters: vec![],
                         });
                     }
                 }
@@ -199,6 +218,10 @@ impl<'a> Index<'a> {
                             ty: None,
                             visibility: "out",
                             kind: FUNCTION,
+                            range: member.range.clone(),
+                            file: None,
+                            type_file: None,
+                            parameters: callback_parameters(&tokens[i + 2..]),
                         });
                     }
                 }
@@ -212,6 +235,10 @@ impl<'a> Index<'a> {
                             ty: Some(ty),
                             visibility: "in-out",
                             kind: FIELD,
+                            range: token.range.clone(),
+                            file: None,
+                            type_file: None,
+                            parameters: vec![],
                         });
                     }
                 }
@@ -226,9 +253,9 @@ impl<'a> Index<'a> {
     }
 
     fn scope_at(&self, cursor: usize) -> usize {
-        self.scopes
-            .iter()
-            .rposition(|s| s.body <= cursor && cursor <= s.close)
+        let previous = self.scopes.partition_point(|scope| scope.body <= cursor) - 1;
+        self.ancestors(previous)
+            .find(|&scope| cursor <= self.scopes[scope].close)
             .unwrap_or(0)
     }
 
@@ -283,38 +310,67 @@ impl<'a> Index<'a> {
                         "self" => self.element(parent),
                         id => self.named_element(parent, id),
                     };
-                    owner.and_then(|owner| self.member_type(owner, field))
+                    owner.and_then(|owner| self.typed_member(owner, field))
                 }
                 [name] => self
                     .ancestors(parent)
-                    .find_map(|i| self.member_type(i, name)),
+                    .find_map(|i| self.typed_member(i, name)),
                 _ => None,
             };
-            let item_type = ty.and_then(|ty| match ty {
-                Type::Int => Some(Type::Int),
-                ty => ty.list_item(),
-            });
-            if let Some(item_type) = item_type
-                && let Some(item) = self.scopes[i].members.first_mut()
-            {
-                item.ty = Some(item_type);
+            if let Some((ty, file)) = ty {
+                let item_type = match ty {
+                    Type::Int => Some(Type::Int),
+                    ty => ty.list_item(),
+                };
+                if let Some(item_type) = item_type
+                    && let Some(item) = self.scopes[i].members.first_mut()
+                {
+                    item.ty = Some(item_type);
+                    item.type_file = file;
+                }
             }
         }
     }
 
-    fn member_type(&self, scope: usize, name: &str) -> Option<Type> {
-        let declared = self
+    fn typed_member(&self, scope: usize, name: &str) -> Option<(Type, Option<PathBuf>)> {
+        let member = self
             .members(scope, false)
             .into_iter()
-            .find(|member| member.name == name)
-            .and_then(|member| member.ty.clone());
-        declared.or_else(|| {
-            let kind = match self.scopes[scope].role {
-                Role::Element { kind, .. } | Role::Component { base: kind, .. } => kind,
-                _ => return None,
+            .find(|member| member.name == name);
+        if let Some(member) =
+            member.and_then(|member| Some((member.ty.clone()?, member.type_file.clone())))
+        {
+            return Some(member);
+        }
+        let kind = match self.scopes[scope].role {
+            Role::Element { kind, .. } | Role::Component { base: kind, .. } => kind,
+            _ => return None,
+        };
+        builtin_property(kind, name).map(|ty| (ty, None))
+    }
+
+    fn infer_handler_parameters(&mut self, code: &[&Token<'_>]) {
+        for i in 1..self.scopes.len() {
+            let scope = &self.scopes[i];
+            if !matches!(scope.role, Role::Handler) {
+                continue;
+            }
+            let Some(name) = code.get(scope.header.start).map(|token| token.text) else {
+                continue;
             };
-            builtin_property(kind, name)
-        })
+            let signature = self.ancestors(scope.parent).find_map(|owner| {
+                self.members(owner, false)
+                    .into_iter()
+                    .find(|member| member.kind == FUNCTION && member.name == name)
+                    .map(|member| (member.parameters.clone(), member.file.clone()))
+            });
+            if let Some((types, file)) = signature {
+                for (parameter, ty) in self.scopes[i].members.iter_mut().zip(types) {
+                    parameter.ty = Some(ty);
+                    parameter.type_file = file.clone();
+                }
+            }
+        }
     }
 
     fn members(&self, scope: usize, public: bool) -> Vec<&Member> {
@@ -439,6 +495,10 @@ fn locals(head: &[&Token<'_>], role: Role<'_>) -> Vec<Member> {
             },
             visibility: "private",
             kind: VARIABLE,
+            range: t.range.clone(),
+            file: None,
+            type_file: None,
+            parameters: vec![],
         })
         .collect()
 }
@@ -458,6 +518,29 @@ fn repeat_model<'a>(head: &[&Token<'a>]) -> Vec<&'a str> {
                 .map(|token| token.text)
                 .collect()
         })
+}
+
+fn callback_parameters(tokens: &[&Token<'_>]) -> Vec<Type> {
+    let [open, tail @ ..] = tokens else {
+        return vec![];
+    };
+    if open.text != "(" {
+        return vec![];
+    }
+    let end = tail
+        .iter()
+        .position(|token| matches!(token.text, ")" | ";" | "{" | "}"))
+        .unwrap_or(tail.len());
+    tail[..end]
+        .split(|token| token.text == ",")
+        .filter_map(|parameter| {
+            let ty = match parameter {
+                [_, colon, ty @ ..] if colon.text == ":" => ty,
+                _ => parameter,
+            };
+            read_type(ty)
+        })
+        .collect()
 }
 
 fn read_type(tokens: &[&Token<'_>]) -> Option<Type> {
@@ -599,6 +682,7 @@ pub(crate) fn complete(
         index.imported_members = workspace.imported_members(&tokens);
     }
     index.infer_repeat_items();
+    index.infer_handler_parameters(&code);
     let head = &prior[prior
         .iter()
         .rposition(|t| matches!(t.text, "{" | "}" | ";"))

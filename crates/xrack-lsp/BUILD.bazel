@@ -7,6 +7,7 @@ rust_binary(
         "src/catalog.rs",
         "src/completion.rs",
         "src/completion/imports.rs",
+        "src/completion/symbols.rs",
         "src/editor_tokens.rs",
         "src/main.rs",
         "src/protocol.rs",

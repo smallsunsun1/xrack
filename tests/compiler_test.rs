@@ -2739,6 +2739,72 @@ fn window_and_control_fonts_keep_typed_bindings_through_mlir() {
 }
 
 #[test]
+fn translation_catalogs_validate_imported_calls_and_track_build_inputs() {
+    use std::{fs, path::PathBuf};
+    use xrack_compiler::compile_with_inputs;
+
+    let directory = std::env::var_os("TEST_TMPDIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir)
+        .join(format!("xrack-translations-{}", std::process::id()));
+    let catalog = directory.join("i18n/catalog.toml");
+    let english = directory.join("i18n/en.ftl");
+    let chinese = directory.join("i18n/zh.ftl");
+    let child = directory.join("child.xr");
+    fs::create_dir_all(catalog.parent().unwrap()).unwrap();
+    fs::write(
+        &catalog,
+        "default = \"en-US\"\n[locales]\nen-US = \"en.ftl\"\nzh-CN = \"zh.ftl\"\n",
+    )
+    .unwrap();
+    fs::write(&english, "title = Example\ncount = { $count } items\n").unwrap();
+    fs::write(&chinese, "count = 共 { $count } 条\n").unwrap();
+    fs::write(
+        &child,
+        r#"export component Child inherits Text { text: @tr("count", count: 3); }"#,
+    )
+    .unwrap();
+    let entry = directory.join("app.xr");
+    let filename = entry.to_str().unwrap();
+    let source = r#"translations "i18n/catalog.toml";
+        import { Child } from "child.xr";
+        export component App inherits Window { title: @tr("title"); Child {} }"#;
+    let assets = [catalog.clone(), english.clone(), chinese.clone()];
+    let (rust, inputs) = compile_with_inputs(source, filename, None, Some(&assets)).unwrap();
+    assert!(rust.to_string().contains("共 { $count } 条"));
+    for path in [&catalog, &english, &chinese, &child] {
+        assert!(inputs.contains(&path.canonicalize().unwrap()), "{path:?}");
+    }
+    let error = compile_with_inputs(source, filename, None, Some(&assets[..2]))
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains("zh.ftl") && error.contains("not declared"),
+        "{error}"
+    );
+
+    fs::write(&chinese, "count = { other }\nother = { $missing }\n").unwrap();
+    let error = compile_with_inputs(source, filename, None, Some(&assets))
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains("child.xr") && error.contains("requires argument 'missing'"),
+        "{error}"
+    );
+
+    fs::write(&chinese, "count = 共 { $count } 条\n").unwrap();
+    let unreachable = source.replace("Child {}", "if false : Text { text: @tr(\"missing\"); }");
+    let error = compile_with_inputs(&unreachable, filename, None, Some(&assets))
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains("default language") && error.contains("'missing'"),
+        "{error}"
+    );
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
 fn font_imports_are_verified_in_the_declaring_module_and_embedded_once() {
     use std::{fs, path::PathBuf};
     use xrack_compiler::{check_resources, compile_with_inputs, generate_rust, parse_document};
@@ -3782,7 +3848,7 @@ fn grid_view_checks_geometry_and_repeated_template_in_source_and_mlir() {
     "#;
     let output = compile(source, "grid.xr").unwrap();
     assert!(output.mlir.contains("kind = \"GridView\""));
-    assert!(output.rust.to_string().contains("render_range"));
+    assert!(output.rust.to_string().contains("render_cached_rows"));
     let malformed = source.replace("100px", "true");
     assert!(
         compile(&malformed, "grid.xr")
@@ -6232,7 +6298,7 @@ fn component_instances_resolve_and_verify_typed_property_references() {
         component Child inherits Rectangle {
             in property <int> input;
             out property <int> result: local.value + input;
-            local := Text { property <int> value: 2; text: "" + self.value; }
+            local := Text { property <int> value: root.input + 2; text: "" + self.value; }
         }
     "#;
     let compilation = compile(source, "instances.xr").unwrap();
@@ -7545,4 +7611,41 @@ fn standard_table_filters_check_nested_string_fields_in_source_and_mlir() {
             .unwrap_err()
             .contains("filter-field requires a string field")
     );
+}
+
+#[test]
+fn editor_preview_compiles_open_buffers_and_reports_import_dependencies() {
+    let dir = std::env::var_os("TEST_TMPDIR")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir)
+        .join(format!("xrack-editor-preview-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let entry = dir.join("editor.xr");
+    let imported = dir.join("widget.xr");
+    std::fs::write(&entry, "unparseable saved entry").unwrap();
+    std::fs::write(&imported, "unparseable saved import").unwrap();
+    let preview = xrack_compiler::compile_preview(
+        r#"import { Card as Tile } from "widget.xr";
+        component Internal inherits Rectangle {}
+        export component App inherits Window { Tile {} }"#,
+        entry.to_str().unwrap(),
+        [(
+            imported.clone(),
+            "export component Card inherits Rectangle { width: 37px; }".into(),
+        )]
+        .into(),
+    )
+    .unwrap();
+    assert_eq!(preview.components, ["App", "Internal"]);
+    assert_eq!(
+        preview.inputs,
+        [entry.clone(), imported.canonicalize().unwrap()].into()
+    );
+    let rust = preview.rust.to_string();
+    assert!(rust.contains("__xrack_preview_component") && rust.contains("37"));
+    assert_eq!(
+        std::fs::read_to_string(imported).unwrap(),
+        "unparseable saved import"
+    );
+    std::fs::remove_dir_all(dir).unwrap();
 }

@@ -397,6 +397,27 @@ fn paint_only_updates_replace_the_scene_without_resolving_layout() {
 }
 
 #[test]
+fn text_color_marker_preserves_layout_inputs_but_not_text_edits() {
+    use xrack_runtime::Color;
+
+    let mut original = Node::new("Text", None);
+    original
+        .properties
+        .insert("text", "before".to_owned().into());
+    original
+        .properties
+        .insert("color", Color(0x112233ff).into());
+    original.mark_paint_only("color");
+
+    let mut updated = original.clone();
+    updated.properties.insert("color", Color(0x445566ff).into());
+    assert!(original.same_frame_inputs(&updated));
+
+    updated.properties.insert("text", "after".to_owned().into());
+    assert!(!original.same_frame_inputs(&updated));
+}
+
+#[test]
 fn tumbler_frame_tracks_visible_labels_only() {
     use xrack_layout::{TextMeasurer, layout_with_input};
     use xrack_runtime::{TumblerItems, VecModel};

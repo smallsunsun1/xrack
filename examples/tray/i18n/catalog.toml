@@ -1,0 +1,5 @@
+default = "en-US"
+
+[locales]
+en-US = "en-US.ftl"
+zh-CN = "zh-CN.ftl"

@@ -30,6 +30,8 @@ pub struct Document {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub fonts: Vec<FontImport>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub translations: Vec<TranslationImport>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub records: Vec<RecordDef>,
     pub components: Vec<Component>,
 }
@@ -62,6 +64,12 @@ pub struct FontImport {
     pub span: Span,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub filename: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct TranslationImport {
+    pub path: String,
+    pub span: Span,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -693,6 +701,10 @@ pub enum ExprKind {
         edges: Vec<String>,
     },
     Markdown(String),
+    Translation {
+        id: String,
+        arguments: Vec<RecordValue>,
+    },
     Array(Vec<Expr>),
     Record {
         name: String,

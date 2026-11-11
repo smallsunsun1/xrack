@@ -3,7 +3,7 @@ use crate::{
 };
 use std::{
     cell::{Cell, RefCell},
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     ops::Range,
     rc::Rc,
 };
@@ -118,6 +118,7 @@ pub struct ComponentRepeater<Model: ListModel, State, Ui> {
     model: Property<Rc<Model>>,
     stamp: Cell<Option<(u64, u64)>>,
     rows: RefCell<DelegateRows<Model::Item, State, Ui>>,
+    scenes: RefCell<BTreeMap<RowKey, Rc<Property<Node>>>>,
 }
 
 impl<Model: ListModel, State, Ui> Default for ComponentRepeater<Model, State, Ui> {
@@ -126,6 +127,7 @@ impl<Model: ListModel, State, Ui> Default for ComponentRepeater<Model, State, Ui
             model: Property::default(),
             stamp: Cell::default(),
             rows: RefCell::default(),
+            scenes: RefCell::default(),
         }
     }
 }
@@ -157,6 +159,7 @@ impl<Model: ListModel, State: Default, Ui> ComponentRepeater<Model, State, Ui> {
         self.render_rows(
             model,
             |count| range.start..range.end.min(count),
+            None,
             create,
             render,
         )
@@ -172,6 +175,27 @@ impl<Model: ListModel, State: Default, Ui> ComponentRepeater<Model, State, Ui> {
         self.render_rows(
             model,
             |count| indices.into_iter().filter(move |&index| index < count),
+            None,
+            create,
+            render,
+        )
+    }
+
+    /// Reuse the rendered scenes for rows that remain in the requested set.
+    /// Delegate state itself still follows the model's row lifetime.
+    #[doc(hidden)]
+    pub fn render_cached_rows(
+        &self,
+        model: impl FnOnce() -> Model,
+        indices: impl IntoIterator<Item = usize>,
+        reads_index: bool,
+        create: impl Fn(RowContext<Model::Item>) -> Ui,
+        render: impl Fn(&Ui, usize, &dyn Fn() -> Model::Item, &State) -> Node,
+    ) -> Vec<Node> {
+        self.render_rows(
+            model,
+            |count| indices.into_iter().filter(move |&index| index < count),
+            Some(reads_index),
             create,
             render,
         )
@@ -181,6 +205,7 @@ impl<Model: ListModel, State: Default, Ui> ComponentRepeater<Model, State, Ui> {
         &self,
         model: impl FnOnce() -> Model,
         indices: impl FnOnce(usize) -> I,
+        cache_reads_index: Option<bool>,
         create: impl Fn(RowContext<Model::Item>) -> Ui,
         render: impl Fn(&Ui, usize, &dyn Fn() -> Model::Item, &State) -> Node,
     ) -> Vec<Node> {
@@ -188,11 +213,14 @@ impl<Model: ListModel, State: Default, Ui> ComponentRepeater<Model, State, Ui> {
         let count = model.row_count();
         let stamp = model.structure_stamp();
         if self.stamp.replace(Some(stamp)) != Some(stamp) {
-            self.rows
+            let mut rows = self.rows.borrow_mut();
+            rows.retain(|key, row| row.lifetime.is_live(*key, stamp.0, count));
+            self.scenes
                 .borrow_mut()
-                .retain(|key, row| row.lifetime.is_live(*key, stamp.0, count));
+                .retain(|key, _| rows.contains_key(key));
         }
-        indices(count)
+        let mut visible = BTreeSet::new();
+        let nodes = indices(count)
             .map(|index| {
                 let key = model.row_key(index);
                 let row = self
@@ -216,11 +244,29 @@ impl<Model: ListModel, State: Default, Ui> ComponentRepeater<Model, State, Ui> {
                     })
                     .clone();
                 row.sync(index, || model.item(index));
-                let mut node = render(&row.ui, index, &|| row.input.item(), &row.state);
-                node.row_key = Some(key);
-                node
+                let draw = || {
+                    let mut node = render(&row.ui, index, &|| row.input.item(), &row.state);
+                    node.row_key = Some(key);
+                    node
+                };
+                if let Some(reads_index) = cache_reads_index {
+                    visible.insert(key);
+                    let scene = self.scenes.borrow_mut().entry(key).or_default().clone();
+                    scene.get(|| {
+                        if reads_index {
+                            row.input.index();
+                        }
+                        draw().into_shared()
+                    })
+                } else {
+                    draw()
+                }
             })
-            .collect()
+            .collect();
+        self.scenes
+            .borrow_mut()
+            .retain(|key, _| visible.contains(key));
+        nodes
     }
 
     /// Resolve a hit against the current model, so an old viewport cannot edit
@@ -245,6 +291,54 @@ impl<Model: ListModel, State: Default, Ui> ComponentRepeater<Model, State, Ui> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cached_rows_reuse_only_visible_unchanged_scenes() {
+        let model = VecModel::from(vec!["b".to_owned(), "a".to_owned(), "c".to_owned()]);
+        let repeater = ComponentRepeater::<VecModel<String>, (), ()>::default();
+        let source = Property::default();
+        source.set(model.clone());
+        let draws = Cell::new(0);
+        let render = |range| {
+            repeater.render_cached_rows(
+                || source.get(|| unreachable!()),
+                range,
+                true,
+                |_| (),
+                |_, index, item, _| {
+                    draws.set(draws.get() + 1);
+                    let mut node = Node::new("Text", None);
+                    node.properties
+                        .insert("text", format!("{index}:{}", item()).into());
+                    node
+                },
+            )
+        };
+
+        let original = render(0..2);
+        let overlapping = render(1..3);
+        assert_eq!(draws.get(), 3);
+        assert!(original[1].shares_storage_with(&overlapping[0]));
+
+        assert!(model.set_row(1, "aa".into()));
+        let changed = render(1..3);
+        assert_eq!(draws.get(), 4);
+        assert!(changed[1].shares_storage_with(&overlapping[1]));
+        assert_eq!(changed[0].text("text"), Some("1:aa"));
+
+        assert!(model.sort_by(String::cmp));
+        let reordered = render(0..2);
+        assert_eq!(reordered[0].row_key, changed[0].row_key);
+        assert_eq!(reordered[0].text("text"), Some("0:aa"));
+        assert_eq!(reordered[1].text("text"), Some("1:b"));
+        assert_eq!(draws.get(), 6);
+
+        source.set(VecModel::from(vec!["replacement".to_owned()]));
+        let replaced = render(0..1);
+        assert_ne!(replaced[0].row_key, reordered[0].row_key);
+        assert_eq!(replaced[0].text("text"), Some("0:replacement"));
+        assert_eq!(draws.get(), 7);
+    }
 
     #[test]
     fn captured_context_follows_its_row_and_rejects_a_replacement_model() {

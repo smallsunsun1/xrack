@@ -1,6 +1,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const vscode = require('vscode');
+const { registerPreview } = require('./preview');
 const { LanguageClient, TransportKind } = require('vscode-languageclient/node');
 
 let client;
@@ -33,6 +34,7 @@ function serverCommand(context) {
 }
 
 async function activate(context) {
+    registerPreview(context);
     const command = serverCommand(context);
     client = new LanguageClient(
         'xrack',

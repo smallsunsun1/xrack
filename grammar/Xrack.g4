@@ -1,8 +1,9 @@
 grammar Xrack;
 
-document: (importDecl | fontImport)* (recordDecl | component)+ EOF;
+document: (importDecl | fontImport | translationsDecl)* (recordDecl | component)+ EOF;
 importDecl: 'import' '{' importName (',' importName)* ','? '}' 'from' STRING ';';
 fontImport: 'import' STRING ';';
+translationsDecl: 'translations' STRING ';';
 importName: identifier ('as' identifier)?;
 recordDecl: 'export'? 'struct' identifier '{' recordField (',' recordField)* ','? '}';
 recordField: identifier ':' typeName;
@@ -38,7 +39,7 @@ comparison: additive (('<' | '<=' | '>' | '>=') additive)*;
 additive: multiplicative (('+' | '-') multiplicative)*;
 multiplicative: unary (('*' | '/' | '%') unary)*;
 unary: ('!' | '-' | '+') unary | primary;
-primary: NUMBER (UNIT | '%')? | STRING | COLOR | 'true' | 'false' | gradient | imageUrl | markdown | arrayLiteral | recordLiteral | call | reference | '(' expression ')';
+primary: NUMBER (UNIT | '%')? | STRING | COLOR | 'true' | 'false' | gradient | imageUrl | markdown | translation | arrayLiteral | recordLiteral | call | reference | '(' expression ')';
 call: reference '(' (expression (',' expression)* ','?)? ')';
 arrayLiteral: '[' (expression (',' expression)* ','?)? ']';
 recordLiteral: identifier '{' (recordValue (',' recordValue)* ','?)? '}';
@@ -47,6 +48,7 @@ imageUrl: '@image-url' '(' STRING (',' imageSlice)? ')';
 imageSlice: IDENT '(' imageEdge+ ')';
 imageEdge: NUMBER;
 markdown: '@markdown' '(' STRING ')';
+translation: '@tr' '(' STRING (',' recordValue)* ','? ')';
 gradient: ('@linear-gradient' '(' gradientAngle | '@radial-gradient' '(' 'circle')
           ',' gradientStop (',' gradientStop)* ')';
 gradientAngle: ('+' | '-')? NUMBER 'deg';
@@ -54,7 +56,7 @@ gradientStop: expression (NUMBER '%')?;
 reference: ('root' | 'self' | identifier) ('.' identifier)*;
 // Type words are contextual: `color: ...` is an ordinary element binding.
 identifier: IDENT | 'int' | 'float' | 'bool' | 'string' | 'length' | 'color' | 'brush' | 'image'
-          | 'ImageFit' | 'LayoutAlignment' | 'CrossAxisAlignment' | 'Orientation' | 'DialInputMode' | 'ScrollBarPolicy' | 'TextWrap' | 'DialogRole' | 'DrawerEdge' | 'SelectionTarget' | 'circle' | 'deg' | 'duration' | 'ms' | 'as' | 'from' | 'pure' | 'struct' | 'states' | 'when';
+          | 'ImageFit' | 'LayoutAlignment' | 'CrossAxisAlignment' | 'Orientation' | 'DialInputMode' | 'ScrollBarPolicy' | 'TextWrap' | 'DialogRole' | 'DrawerEdge' | 'SelectionTarget' | 'circle' | 'deg' | 'duration' | 'ms' | 'as' | 'from' | 'pure' | 'struct' | 'states' | 'when' | 'translations';
 
 UNIT: 'px';
 COLOR: '#' [0-9a-fA-F]+;

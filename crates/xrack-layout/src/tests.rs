@@ -2251,14 +2251,23 @@ fn overlapping_scroll_views_route_wheel_input_in_paint_order() {
         window.children.push(view);
     }
     window.children[0].properties.insert("z", 1.0_f64.into());
+    window.set_static_paint_order(&[1, 0]);
     let point = Point { x: 20.0, y: 20.0 };
     let viewport = Size::new(160.0, 120.0);
     let frame = layout(&window, viewport, &mut Text);
+    assert!(matches!(
+        frame.paint_order,
+        Some(std::borrow::Cow::Borrowed(&[1, 0]))
+    ));
     let mut input = Interaction::default();
     input.pointer_move(&window, &frame, point);
     assert!(input.scroll_wheel(&frame, Point { x: 0.0, y: 32.0 }, false));
     assert_eq!(input.scroll_offsets().get(&[0][..]), Some(&32.0));
     assert!(!input.scroll_offsets().contains_key(&[1][..]));
+    window.children[0].properties.insert("z", 0.0_f64.into());
+    assert!(window.static_paint_order().is_none());
+    let frame = layout(&window, viewport, &mut Text);
+    assert_eq!(frame.child_paint_order().collect::<Vec<_>>(), [0, 1]);
 }
 
 #[test]

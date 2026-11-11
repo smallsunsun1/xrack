@@ -4,7 +4,12 @@ load("//bazel:xrack.bzl", "xr_ui_library")
 xr_ui_library(
     name = "tray_ui",
     src = "tray.xr",
-    assets = ["assets/status.svg"],
+    assets = [
+        "assets/status.svg",
+        "i18n/catalog.toml",
+        "i18n/en-US.ftl",
+        "i18n/zh-CN.ftl",
+    ],
     visibility = ["//tests:__pkg__"],
 )
 

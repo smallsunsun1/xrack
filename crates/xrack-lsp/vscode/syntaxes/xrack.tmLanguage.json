@@ -105,6 +105,84 @@
     "declarations": {
       "patterns": [
         {
+          "name": "meta.record.xrack",
+          "begin": "(?<![A-Za-z_0-9-])(struct)\\s+([A-Za-z_][A-Za-z_0-9]*(?:-[A-Za-z_0-9]+)*)\\s*(\\{)",
+          "end": "\\}",
+          "beginCaptures": {
+            "1": {
+              "name": "storage.type.xrack"
+            },
+            "2": {
+              "name": "entity.name.type.xrack"
+            },
+            "3": {
+              "name": "punctuation.section.block.begin.xrack"
+            }
+          },
+          "endCaptures": {
+            "0": {
+              "name": "punctuation.section.block.end.xrack"
+            }
+          },
+          "patterns": [
+            {
+              "include": "#comments"
+            },
+            {
+              "match": "(?<![A-Za-z_0-9-])([A-Za-z_][A-Za-z_0-9]*(?:-[A-Za-z_0-9]+)*)\\s*(:)\\s*(\\[\\s*)?([A-Za-z_][A-Za-z_0-9]*(?:-[A-Za-z_0-9]+)*)(\\s*\\])?",
+              "captures": {
+                "1": {
+                  "name": "variable.other.property.declaration.xrack"
+                },
+                "2": {
+                  "name": "punctuation.separator.key-value.xrack"
+                },
+                "3": {
+                  "name": "punctuation.section.brackets.begin.xrack"
+                },
+                "4": {
+                  "name": "entity.name.type.xrack"
+                },
+                "5": {
+                  "name": "punctuation.section.brackets.end.xrack"
+                }
+              }
+            },
+            {
+              "include": "#operators"
+            }
+          ]
+        },
+        {
+          "name": "meta.callback.xrack",
+          "begin": "(?<![A-Za-z_0-9-])(callback)\\s+([A-Za-z_][A-Za-z_0-9]*(?:-[A-Za-z_0-9]+)*)(?=\\s*\\()",
+          "end": "(?=;|[{}])",
+          "beginCaptures": {
+            "1": {
+              "name": "storage.type.xrack"
+            },
+            "2": {
+              "name": "entity.name.function.callback.xrack"
+            }
+          },
+          "patterns": [
+            {
+              "include": "#comments"
+            },
+            {
+              "match": "(?<![A-Za-z_0-9-])[A-Za-z_][A-Za-z_0-9]*(?:-[A-Za-z_0-9]+)*(?=\\s*:)",
+              "name": "variable.parameter.xrack"
+            },
+            {
+              "match": "(?<![A-Za-z_0-9-])[A-Za-z_][A-Za-z_0-9]*(?:-[A-Za-z_0-9]+)*",
+              "name": "entity.name.type.xrack"
+            },
+            {
+              "include": "#operators"
+            }
+          ]
+        },
+        {
           "match": "(?<![A-Za-z_0-9-])(component|struct)\\s+([A-Za-z_][A-Za-z_0-9]*(?:-[A-Za-z_0-9]+)*)(?![A-Za-z_0-9-])",
           "captures": {
             "1": {
@@ -287,14 +365,14 @@
         },
         {
           "name": "support.function.xrack",
-          "match": "@(?:image-url|linear-gradient|radial-gradient)(?![A-Za-z_0-9-])"
+          "match": "@(?:image-url|markdown|tr|linear-gradient|radial-gradient)(?![A-Za-z_0-9-])"
         },
         {
           "name": "variable.other.property.xrack",
           "match": "(?<=\\.)[A-Za-z_][A-Za-z_0-9]*(?:-[A-Za-z_0-9]+)*"
         },
         {
-          "match": "(?<![A-Za-z_0-9-])(int|float|bool|string|length|percent|color|brush|image|ImageFit|ImageTileMode|ImageHorizontalAlignment|ImageVerticalAlignment|ImageRendering|LayoutAlignment|CrossAxisAlignment|Orientation|DialInputMode|ScrollBarPolicy|ScrollSnapMode|TextWrap|DialogRole|DrawerEdge|SelectionTarget)(\\.)(?:(space-between|space-around|space-evenly|always-off|stop-at-bounds|drag-over-bounds|overshoot-bounds|drag-and-overshoot-bounds|follow-bounds-behavior|both|always|on-release|none|horizontal|always-on|as-needed|char-wrap|word-wrap|circular|pixelated|smooth|repeat|round|preserve|vertical|columns|contain|no-wrap|stretch|accept|bottom|center|reject|cells|cover|right|start|auto|fill|left|rows|end|top))?(?![A-Za-z_0-9-])",
+          "match": "(?<![A-Za-z_0-9-])(ImageFit|ImageTileMode|ImageHorizontalAlignment|ImageVerticalAlignment|ImageRendering|LayoutAlignment|CrossAxisAlignment|Orientation|FlickDirection|FlickBoundsBehavior|FlickBoundsMovement|FlexboxLayoutDirection|FlexboxLayoutWrap|DialInputMode|ScrollBarPolicy|ScrollSnapMode|ScrollAlignment|TextWrap|TextHorizontalAlignment|TextVerticalAlignment|TextOverflow|InputType|CheckState|ColorScheme|DialogRole|DragAction|DrawerEdge|EventResult|FocusReason|FileDialogMode|MessageButtons|MessageLevel|PopupPlacement|SelectionTarget|StandardButtonKind|SwipeSide)(\\.)(?:([A-Za-z_][A-Za-z_0-9]*(?:-[A-Za-z_0-9]+)*))?",
           "captures": {
             "1": {
               "name": "support.type.xrack"
@@ -317,7 +395,7 @@
       "patterns": [
         {
           "name": "keyword.control.xrack",
-          "match": "(?<![A-Za-z_0-9-])(?:export|import|from|as|inherits|if|for|in-out|in|out|private|pure|animate)(?![A-Za-z_0-9-])"
+          "match": "(?<![A-Za-z_0-9-])(?:export|import|translations|from|as|inherits|if|for|in-out|in|out|private|pure|animate|states|when)(?![A-Za-z_0-9-])"
         },
         {
           "name": "storage.type.xrack",
@@ -333,7 +411,7 @@
       "patterns": [
         {
           "name": "support.type.xrack",
-          "match": "(?<![A-Za-z_0-9-])(?:int|float|bool|string|length|percent|color|brush|image|ImageFit|ImageTileMode|ImageHorizontalAlignment|ImageVerticalAlignment|ImageRendering|LayoutAlignment|CrossAxisAlignment|Orientation|DialInputMode|ScrollBarPolicy|ScrollSnapMode|TextWrap|DialogRole|DrawerEdge|SelectionTarget)(?![A-Za-z_0-9-])"
+          "match": "(?<![A-Za-z_0-9-])(?:int|float|bool|string|styled-text|length|percent|color|brush|image|ImageFit|ImageTileMode|ImageHorizontalAlignment|ImageVerticalAlignment|ImageRendering|LayoutAlignment|CrossAxisAlignment|Orientation|FlickDirection|FlickBoundsBehavior|FlickBoundsMovement|FlexboxLayoutDirection|FlexboxLayoutWrap|DialInputMode|ScrollBarPolicy|ScrollSnapMode|ScrollAlignment|TextWrap|TextHorizontalAlignment|TextVerticalAlignment|TextOverflow|InputType|CheckState|ColorScheme|Date|DialogRole|DragAction|DrawerEdge|EventResult|FocusReason|KeyEvent|KeyModifiers|FileDialogMode|MessageButtons|MessageLevel|PopupPlacement|SelectionTarget|StandardButtonKind|SwipeSide|Time)(?![A-Za-z_0-9-])"
         },
         {
           "name": "entity.name.type.xrack",

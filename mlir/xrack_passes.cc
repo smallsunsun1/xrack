@@ -6,6 +6,7 @@
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "mlir/Transforms/Passes.h"
+#include "mlir/xrack_analysis.h"
 #include "mlir/xrack_dialect.h"
 #include "llvm/ADT/APFloat.h"
 #include "llvm/ADT/APInt.h"
@@ -24,6 +25,8 @@ void addScenePlanPasses(mlir::OpPassManager &passes);
 #define GEN_PASS_DEF_XRSIMPLIFYEXPRESSIONS
 #define GEN_PASS_DEF_XRSIMPLIFYVISUALS
 #define GEN_PASS_DEF_XRPRUNEEXPRESSIONS
+#define GEN_PASS_DEF_XRPRUNECONSTANTSTATES
+#define GEN_PASS_DEF_XRREMOVEUNUSEDPROPERTIES
 #define GEN_PASS_DEF_XRSPECIALIZEHIDDENVISUALS
 #include "mlir/XrackPasses.h.inc"
 
@@ -315,11 +318,35 @@ LogicalResult rewriteExpressions(ModuleOp module, RewritePatternSet patterns) {
 
 struct FoldConstants : impl::XrFoldConstantsBase<FoldConstants> {
   void runOnOperation() override {
-    RewritePatternSet patterns(&getContext());
-    patterns.add<FoldUnary, FoldBinary, FoldCast, FoldToRatio, FoldStringify>(
-        &getContext());
-    if (failed(rewriteExpressions(getOperation(), std::move(patterns))))
-      signalPassFailure();
+    const auto &properties = getAnalysis<PropertyAnalysis>();
+    for (;;) {
+      RewritePatternSet patterns(&getContext());
+      patterns.add<FoldUnary, FoldBinary, FoldCast, FoldToRatio, FoldStringify>(
+          &getContext());
+      if (failed(rewriteExpressions(getOperation(), std::move(patterns)))) {
+        signalPassFailure();
+        return;
+      }
+
+      // The declaration and write facts are stable during these rewrites.
+      // Named reads are not SSA uses of their property initializer, so visit
+      // them again after folding to propagate through chains of properties.
+      llvm::SmallVector<std::pair<ReadOp, StringAttr>> constants;
+      getOperation()->walk([&](ReadOp read) {
+        auto property = properties.resolve(read);
+        if (properties.isImmutablePrivateScalar(property))
+          if (auto literal = property.getInitial().getDefiningOp<LiteralOp>())
+            constants.emplace_back(read, literal.getValueAttr());
+      });
+      if (constants.empty())
+        break;
+      IRRewriter rewriter(&getContext());
+      for (auto [read, spelling] : constants) {
+        rewriter.setInsertionPoint(read);
+        rewriter.replaceOpWithNewOp<LiteralOp>(read, read.getResult().getType(),
+                                               spelling);
+      }
+    }
   }
 };
 
@@ -440,6 +467,69 @@ struct SimplifyVisuals : impl::XrSimplifyVisualsBase<SimplifyVisuals> {
   }
 };
 
+struct PruneConstantStates
+    : impl::XrPruneConstantStatesBase<PruneConstantStates> {
+  void runOnOperation() override {
+    getOperation()->walk([&](StateSelectOp selector) {
+      llvm::SmallVector<Operation *> users;
+      for (auto &use : selector.getResult().getUses()) {
+        auto *user = use.getOwner();
+        // These ops put the selector first. Its numeric value can also be
+        // consumed by hand-written IR, where renumbering would change data.
+        if (use.getOperandNumber() != 0 ||
+            !isa<StateSetOp, InstanceStateOp, StateTimingOp>(user))
+          return;
+        users.push_back(user);
+      }
+      llvm::SmallVector<int64_t> indices;
+      llvm::SmallVector<Value> conditions;
+      llvm::SmallVector<Attribute> names;
+      bool unconditional = false;
+      for (auto [condition, name] :
+           llvm::zip_equal(selector.getConditions(), selector.getNames())) {
+        if (unconditional || isBoolLiteral(condition, false)) {
+          indices.push_back(-1);
+        } else {
+          indices.push_back(conditions.size());
+          conditions.push_back(condition);
+          names.push_back(name);
+          unconditional = isBoolLiteral(condition, true);
+        }
+      }
+      if (conditions.size() == indices.size())
+        return;
+      Builder builder(&getContext());
+      for (auto *user : users) {
+        auto index = user->getAttrOfType<IntegerAttr>("case_index").getInt();
+        if (indices[index] < 0)
+          user->erase();
+        else
+          user->setAttr("case_index",
+                        builder.getI64IntegerAttr(indices[index]));
+      }
+      if (conditions.empty()) {
+        selector.erase();
+      } else {
+        selector.getConditionsMutable().assign(conditions);
+        selector.setNamesAttr(builder.getArrayAttr(names));
+      }
+    });
+  }
+};
+
+struct RemoveUnusedProperties
+    : impl::XrRemoveUnusedPropertiesBase<RemoveUnusedProperties> {
+  void runOnOperation() override {
+    const auto &properties = getAnalysis<PropertyAnalysis>();
+    getOperation()->walk([&](PropertyOp property) {
+      if (properties.isImmutablePrivateScalar(property) &&
+          !properties.hasRead(property) &&
+          property.getInitial().getDefiningOp<LiteralOp>())
+        property.erase();
+    });
+  }
+};
+
 struct PruneExpressions : impl::XrPruneExpressionsBase<PruneExpressions> {
   void runOnOperation() override {
     // XR scopes have one block. Visit users before definitions, including uses
@@ -482,6 +572,9 @@ void buildPipeline(OpPassManager &passes) {
   passes.addPass(std::make_unique<SimplifyVisuals>());
   passes.addPass(createCanonicalizerPass());
   passes.addPass(createCSEPass());
+  passes.addPass(std::make_unique<PruneConstantStates>());
+  passes.addPass(std::make_unique<PruneExpressions>());
+  passes.addPass(std::make_unique<RemoveUnusedProperties>());
   passes.addPass(std::make_unique<PruneExpressions>());
   passes.addPass(std::make_unique<SpecializeHiddenVisuals>());
   addScenePlanPasses(passes);

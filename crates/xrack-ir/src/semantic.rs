@@ -7398,6 +7398,42 @@ fn expression(e: &ast::Expr, scope: &Scope<'_>, owner: &str) -> Result<ir::Expr>
             }
             ir::Expr::literal(ty.clone(), value.clone(), span)
         }
+        ExprKind::Translation { id, arguments } => {
+            let id = serde_json::from_str::<String>(id).map_err(|error| Diagnostic {
+                span,
+                message: format!("invalid translation ID: {error}"),
+            })?;
+            if !id.starts_with(|c: char| c.is_ascii_alphabetic())
+                || !id
+                    .bytes()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'-' | b'_'))
+            {
+                return fail(span, format!("invalid Fluent message ID `{id}`"));
+            }
+            let mut names = Vec::new();
+            let mut args = Vec::new();
+            for argument in arguments {
+                if names.contains(&argument.name.as_str()) {
+                    return fail(
+                        argument.value.span,
+                        format!("duplicate translation argument `{}`", argument.name),
+                    );
+                }
+                let value = expression(&argument.value, scope, owner)?;
+                if !matches!(value.ty, Type::String | Type::Int | Type::Float) {
+                    return fail(
+                        value.span,
+                        "translation arguments require string, int or float values",
+                    );
+                }
+                names.push(argument.name.as_str());
+                args.push(value);
+            }
+            ir::Expr {
+                value: serde_json::to_string(&(id, names)).unwrap(),
+                ..ir::Expr::operation("translate", Type::String, args, span)
+            }
+        }
         ExprKind::Markdown(markdown) => {
             let value = serde_json::from_str::<String>(markdown).map_err(|e| Diagnostic {
                 span,

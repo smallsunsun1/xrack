@@ -1,9 +1,17 @@
 {
   "name": "xrack",
   "displayName": "XRack",
-  "description": "Syntax highlighting, completions, diagnostics and component outline for .xr files",
-  "version": "0.3.0",
+  "description": "Navigation, semantic highlighting, diagnostics, completions and live XRack preview",
+  "version": "0.4.2",
   "publisher": "xrack",
+  "license": "MIT OR Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/smallsunsun1/xrack.git",
+    "directory": "crates/xrack-lsp/vscode"
+  },
+  "bugs": { "url": "https://github.com/smallsunsun1/xrack/issues" },
+  "icon": "media/xrack.png",
   "engines": { "vscode": "^1.82.0" },
   "categories": ["Programming Languages"],
   "activationEvents": ["onLanguage:xrack"],
@@ -15,7 +23,8 @@
         "id": "xrack",
         "aliases": ["XRack"],
         "extensions": [".xr"],
-        "configuration": "./language-configuration.json"
+        "configuration": "./language-configuration.json",
+        "icon": { "light": "./media/file-light.svg", "dark": "./media/file-dark.svg" }
       }
     ],
     "grammars": [
@@ -25,9 +34,45 @@
         "path": "./syntaxes/xrack.tmLanguage.json"
       }
     ],
+    "commands": [
+      {
+        "command": "xrack.openPreview",
+        "title": "XRack: Open Live Preview",
+        "icon": { "light": "./media/preview-light.svg", "dark": "./media/preview-dark.svg" }
+      }
+    ],
+    "menus": {
+      "editor/title": [
+        { "command": "xrack.openPreview", "when": "editorLangId == xrack && resourceScheme == file", "group": "navigation" }
+      ]
+    },
+    "configurationDefaults": {
+      "[xrack]": { "editor.semanticHighlighting.enabled": true }
+    },
+    "semanticTokenScopes": [
+      {
+        "language": "xrack",
+        "scopes": {
+          "class.defaultLibrary": ["support.type.xrack"],
+          "type.defaultLibrary": ["support.type.xrack"],
+          "struct": ["entity.name.type.xrack"],
+          "enum": ["entity.name.type.xrack"],
+          "enumMember": ["constant.other.enum.xrack"],
+          "property": ["variable.other.property.xrack"],
+          "parameter": ["variable.parameter.xrack"],
+          "function": ["entity.name.function.callback.xrack"],
+          "event": ["entity.name.function.handler.xrack"]
+        }
+      }
+    ],
     "configuration": {
       "title": "XRack",
       "properties": {
+        "xrack.preview.compilerPath": {
+          "type": "string",
+          "default": "",
+          "description": "Path to xrackc for live preview, absolute or relative to the workspace. The default uses the workspace Bazel build, the bundled compiler, or xrackc on PATH."
+        },
         "xrack.server.path": {
           "type": "string",
           "default": "",

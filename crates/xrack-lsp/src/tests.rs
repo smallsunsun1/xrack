@@ -55,6 +55,14 @@ fn edit_buffer_updates_diagnostics_and_outline_over_stdio() {
         messages[0]["result"]["capabilities"]["textDocumentSync"]["change"],
         1
     );
+    let capabilities = &messages[0]["result"]["capabilities"];
+    assert_eq!(capabilities["definitionProvider"], true);
+    assert_eq!(capabilities["hoverProvider"], true);
+    assert_eq!(capabilities["documentHighlightProvider"], true);
+    assert_eq!(
+        capabilities["semanticTokensProvider"]["legend"],
+        completion::legend()
+    );
     let problem = &messages[1]["params"]["diagnostics"][0];
     let column = "    Text { text: \"中🙂\" + ".encode_utf16().count();
     assert_eq!(problem["code"], "semantic");
@@ -460,4 +468,234 @@ fn table_completions_include_read_only_selection_state_and_commands() {
             .iter()
             .any(|item| item["label"] == "current-column")
     );
+}
+
+fn request_at(
+    method: &str,
+    uri: &str,
+    marker: &str,
+    workspace: Option<&completion::Workspace<'_>>,
+) -> Value {
+    let (before, after) = marker.split_once('|').unwrap();
+    let line = before.bytes().filter(|&byte| byte == b'\n').count();
+    let character = before.rsplit('\n').next().unwrap().encode_utf16().count();
+    completion::query(
+        method,
+        uri,
+        &format!("{before}{after}"),
+        Some((line, character)),
+        workspace,
+    )
+}
+
+fn location_at(uri: &str, marker: &str, name: &str) -> Value {
+    let (before, after) = marker.split_once('|').unwrap();
+    assert!(after.starts_with(name));
+    let text = format!("{before}{after}");
+    let range = analysis::Source::new(&text).range(before.len(), before.len() + name.len());
+    json!({ "uri": uri, "range": range })
+}
+
+#[test]
+fn definition_respects_scope_and_keeps_working_before_the_file_parses() {
+    const SOURCE: &str = concat!(
+        "component Demo inherits Window {\r\n",
+        "  property <int> count: 0;\r\n",
+        "  callback change(count: int);\r\n",
+        "  change(count) => { root.count += count; }\r\n",
+        "  for item[index] in root.count : row := Text { text: \"中🙂\" + index + item; }\r\n",
+        "  Text { text: row.text + root.count + ",
+    );
+    for (reference, declaration, name) in [
+        ("root.|count +", "<int> |count: 0", "count"),
+        ("+= co|unt;", "change(|count) =>", "count"),
+        ("+ |index +", "item[|index]", "index"),
+        ("+ it|em;", "for |item", "item"),
+        ("ro|w.text", ": |row :=", "row"),
+        ("  ch|ange(count) =>", "callback |change(", "change"),
+    ] {
+        let clean = reference.replace('|', "");
+        let target = SOURCE.replace(&declaration.replace('|', ""), declaration);
+        assert_eq!(
+            request_at(
+                "textDocument/definition",
+                URI,
+                &SOURCE.replacen(&clean, reference, 1),
+                None
+            ),
+            location_at(URI, &target, name),
+            "{reference}"
+        );
+    }
+    let hover = request_at(
+        "textDocument/hover",
+        URI,
+        &SOURCE.replace("+ index +", "+ in|dex +"),
+        None,
+    );
+    assert!(
+        hover["contents"]["value"]
+            .as_str()
+            .unwrap()
+            .contains("index: int")
+    );
+    let highlights = request_at(
+        "textDocument/documentHighlight",
+        URI,
+        &SOURCE.replace("+= count;", "+= co|unt;"),
+        None,
+    );
+    assert_eq!(highlights.as_array().unwrap().len(), 2);
+}
+
+#[test]
+fn definition_follows_import_aliases_inheritance_and_nested_record_fields() {
+    let uri = fixture_uri("entry.xr");
+    let card_uri = fixture_uri("Card%20%E4%B8%AD.xr");
+    let base_uri = fixture_uri("base.xr");
+    let card = concat!(
+        "import { Parent } from \"base.xr\";\n",
+        "export struct CardData { address: Address }\n",
+        "struct Address { city: string }\n",
+        "export component Card inherits Parent { in property <CardData> data; }",
+    );
+    let base = "export component Parent inherits Rectangle { in property <int> points; property <int> hidden; callback reset; }";
+    let workspace = completion::Workspace::new(
+        &uri,
+        [(card_uri.as_str(), card), (base_uri.as_str(), base)].into_iter(),
+    )
+    .unwrap();
+    let prefix = "import { Card as Tile, CardData as Data } from \"Card 中.xr\";\n";
+    for (line, target, name) in [
+        (
+            "component Demo inherits Ti|le {",
+            location_at(
+                &card_uri,
+                &card.replace("component Card", "component |Card"),
+                "Card",
+            ),
+            "Tile",
+        ),
+        (
+            "component Demo inherits Window { item := Tile {} Text { text: item.po|ints;",
+            location_at(&base_uri, &base.replace("> points", "> |points"), "points"),
+            "points",
+        ),
+        (
+            "component Demo inherits Window { property <[Da|ta]> items;",
+            location_at(
+                &card_uri,
+                &card.replace("struct CardData", "struct |CardData"),
+                "CardData",
+            ),
+            "Data",
+        ),
+        (
+            "component Demo inherits Window { item := Tile {} Text { text: item.data.address.ci|ty;",
+            location_at(&card_uri, &card.replace("{ city:", "{ |city:"), "city"),
+            "city",
+        ),
+        (
+            "component Demo inherits Window { item := Tile {} Button { clicked => { item.re|set();",
+            location_at(
+                &base_uri,
+                &base.replace("callback reset", "callback |reset"),
+                "reset",
+            ),
+            "reset",
+        ),
+    ] {
+        assert_eq!(
+            request_at(
+                "textDocument/definition",
+                &uri,
+                &format!("{prefix}{line}"),
+                Some(&workspace)
+            ),
+            target,
+            "{name}"
+        );
+    }
+    assert_eq!(
+        request_at(
+            "textDocument/definition",
+            &uri,
+            &format!(
+                "{prefix}component Demo inherits Window {{ item := Tile {{}} Text {{ text: item.hid|den;"
+            ),
+            Some(&workspace),
+        ),
+        Value::Null
+    );
+    assert_eq!(
+        request_at(
+            "textDocument/definition",
+            &uri,
+            &prefix.replace("as Tile", "as Ti|le"),
+            Some(&workspace)
+        ),
+        location_at(
+            &card_uri,
+            &card.replace("component Card", "component |Card"),
+            "Card"
+        ),
+    );
+}
+
+#[test]
+fn semantic_tokens_report_context_and_utf16_deltas() {
+    let text = concat!(
+        "struct address { city: string }\n",
+        "component Demo inherits Window {\r\n",
+        "  property <[address]> people;\n",
+        "  pure callback format(value: address) -> string;\n",
+        "  format(value) => { \"🙂\" + value.city }\n",
+        "  Text { wrap: TextWrap.word-wrap; text: \"people\"; } // Window\n",
+    );
+    let legend = completion::legend();
+    let response = completion::query("textDocument/semanticTokens/full", URI, text, None, None);
+    let data = response["data"].as_array().unwrap();
+    let mut previous = (0, 0);
+    let source = analysis::Source::new(text);
+    let tokens: Vec<_> = data
+        .chunks_exact(5)
+        .map(|token| {
+            let number = |i: usize| token[i].as_u64().unwrap() as usize;
+            previous.0 += number(0);
+            previous.1 = if number(0) == 0 {
+                previous.1 + number(1)
+            } else {
+                number(1)
+            };
+            let start = source.offset_at(previous.0, previous.1).unwrap();
+            let end = source
+                .offset_at(previous.0, previous.1 + number(2))
+                .unwrap();
+            (
+                &text[start..end],
+                legend["tokenTypes"][number(3)].as_str().unwrap(),
+                number(4),
+            )
+        })
+        .collect();
+    for expected in [
+        ("address", "struct", 1),
+        ("address", "struct", 0),
+        ("string", "type", 4),
+        ("Window", "class", 4),
+        ("people", "property", 1),
+        ("format", "function", 1),
+        ("value", "parameter", 1),
+        ("value", "parameter", 0),
+        ("city", "property", 0),
+        ("TextWrap", "enum", 4),
+        ("word-wrap", "enumMember", 4),
+    ] {
+        assert!(
+            tokens.contains(&expected),
+            "missing {expected:?}: {tokens:?}"
+        );
+    }
+    assert_eq!(tokens.iter().filter(|token| token.0 == "people").count(), 1);
+    assert_eq!(tokens.iter().filter(|token| token.0 == "Window").count(), 1);
 }

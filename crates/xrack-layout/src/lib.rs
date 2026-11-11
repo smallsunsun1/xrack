@@ -199,7 +199,7 @@ pub struct LayoutNode {
     pub styled_text: Option<Box<StyledTextLayout>>,
     font_size: f32,
     overlays: Option<Box<modal::OverlayIndex>>,
-    paint_order: Option<Box<[usize]>>,
+    paint_order: Option<std::borrow::Cow<'static, [usize]>>,
     overflow: bool,
     child_shape: Option<RoundedClip>,
     ancestor_shapes: Option<Arc<ClipChain>>,
@@ -436,14 +436,23 @@ impl LayoutNode {
     }
 }
 
-fn sibling_paint_order(children: &[Node]) -> Option<Box<[usize]>> {
+fn sibling_paint_order(node: &Node, count: usize) -> Option<std::borrow::Cow<'static, [usize]>> {
+    use std::borrow::Cow;
+
+    if let Some(order) = node
+        .static_paint_order()
+        .filter(|order| order.len() == count)
+    {
+        return Some(Cow::Borrowed(order));
+    }
+    let children = &node.children[..count];
     // Already ordered (including the default of all zeroes) needs no storage.
     if !children.windows(2).any(|pair| pair[0].z() > pair[1].z()) {
         return None;
     }
     let mut order: Vec<_> = (0..children.len()).collect();
     order.sort_by(|&left, &right| children[left].z().total_cmp(&children[right].z()));
-    Some(order.into_boxed_slice())
+    Some(Cow::Owned(order))
 }
 
 pub fn font_size(node: &Node) -> f32 {
@@ -1502,7 +1511,7 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
             },
             font_size,
             overlays: None,
-            paint_order: sibling_paint_order(&node.children[..children.len()]),
+            paint_order: sibling_paint_order(node, children.len()),
             overflow,
             child_shape,
             ancestor_shapes,

@@ -37,17 +37,7 @@ pub fn resolve(
     filename: &str,
     declared_assets: Option<&[PathBuf]>,
 ) -> Result<Resolved, String> {
-    let declared = declared_assets
-        .map(|paths| {
-            paths
-                .iter()
-                .map(|path| {
-                    path.canonicalize()
-                        .map_err(|error| format!("{}: {error}", path.display()))
-                })
-                .collect::<Result<BTreeSet<_>, _>>()
-        })
-        .transpose()?;
+    let declared = declared_paths(declared_assets)?;
     let base = Path::new(filename)
         .parent()
         .unwrap_or_else(|| Path::new("."));
@@ -185,7 +175,23 @@ fn load_image(
     Ok((path, image))
 }
 
-fn local_path(url: &str) -> Result<&Path, String> {
+pub(crate) fn declared_paths(
+    paths: Option<&[PathBuf]>,
+) -> Result<Option<BTreeSet<PathBuf>>, String> {
+    paths
+        .map(|paths| {
+            paths
+                .iter()
+                .map(|path| {
+                    path.canonicalize()
+                        .map_err(|error| format!("{}: {error}", path.display()))
+                })
+                .collect()
+        })
+        .transpose()
+}
+
+pub(crate) fn local_path(url: &str) -> Result<&Path, String> {
     let relative = Path::new(url);
     if url.is_empty() || relative.is_absolute() || url.contains(':') {
         return Err("expected a local path relative to the .xr file".into());
@@ -193,7 +199,7 @@ fn local_path(url: &str) -> Result<&Path, String> {
     Ok(relative)
 }
 
-fn asset_path(
+pub(crate) fn asset_path(
     base: &Path,
     relative: &Path,
     declared: Option<&BTreeSet<PathBuf>>,
@@ -212,7 +218,7 @@ fn asset_path(
     Ok(path)
 }
 
-fn read_asset(path: &Path, kind: &str) -> Result<Vec<u8>, String> {
+pub(crate) fn read_asset(path: &Path, kind: &str) -> Result<Vec<u8>, String> {
     let mut bytes = Vec::new();
     File::open(path)
         .map_err(|error| error.to_string())?

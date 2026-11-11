@@ -715,6 +715,25 @@ DSL 调用与 Rust 的 `invoke_*()` 共用同一处理逻辑。注册了 Rust `o
 
 实例处理器和 Rust `on_*()` 设置目标回调的实现。声明上已有的普通 DSL 回调语句仍先执行，返回值以当前注册实现为准。别名上声明的处理器可作为默认实现。纯回调的注册变化会让依赖该回调的绑定失效。运行 `bazel run //examples/stepper:stepper -- --linked`，在共享编辑器或任务行按 Enter 体验转发。
 
+## 界面翻译
+
+在入口 `.xr` 文件中用 `translations` 声明 Fluent 语言包清单，用 `@tr` 绑定整句文案。入口文件及其导入的组件共享该清单。参数可传字符串、整数和浮点数，Fluent 按当前语言处理占位符和复数。
+
+```text
+translations "i18n/catalog.toml";
+
+export component Counter inherits Window {
+    in-out property <int> count: 0;
+    Text { text: @tr("counter-count", count: root.count); }
+}
+```
+
+清单的 `default` 指定默认语言，`[locales]` 把语言标识映射到相对清单的 `.ftl` 路径。例如 `en-US = "en-US.ftl"` 和 `zh-CN = "zh-CN.ftl"`。中文语言包可以写 `counter-count = 计数：{ $count }`。编译器检查默认语言的词条和各译文引用的参数。其他语言缺少词条时，按条回退到默认语言。
+
+Bazel 的 `xr_ui_library` 用 `assets` 声明清单和全部语言文件。Cargo 使用 `xrackc --cargo` 时会跟踪这些输入，语言包随生成代码嵌入应用。桌面宿主用 `Desktop::set_locale("zh-CN")` 更新已打开的窗口和托盘。无窗口渲染也可以通过生成组件的 `new_with_locale(context)` 共享 `LocaleContext`，随后调用 `context.set_locale("zh-CN")`。
+
+运行 `bazel run //examples/tray:tray`，打开托盘菜单中的计数窗口，再用 **Language** 子菜单切换中英文。窗口标题、计数文案、托盘菜单和提示文字会更新，已有计数会保留。中文包有意省略窗口提示语，便于看到词条回退。
+
 ## 焦点作用域
 
 `FocusScope` 可包裹复合控件。用 `initial-focus: editor;` 指定首次进入时优先选择的后代。作用域默认记住最后聚焦的有效子控件，`restore-focus: false;` 可让每次进入都采用初始目标。Tab 和 Shift+Tab 可以离开作用域。`focus-on-tab-navigation` 和 `focus-on-click` 控制作用域本身是否接管这两种入口，子控件保留各自的输入行为。
@@ -807,10 +826,12 @@ xr_ui_library(
     → 语义分析 → TableGen builders → xr dialect（UI IR）
     → MLIR verify + XR schema checks
     → xr-fold-constants → xr-simplify-expressions → xr-simplify-visuals
-    → canonicalize → CSE → xr-prune-expressions
+    → canonicalize → CSE → xr-prune-constant-states → xr-prune-expressions
+    → xr-remove-unused-properties → xr-prune-expressions
     → xr-specialize-hidden-visuals → xr-precompile-static-paths → xr-plan-static-grid
     → xr-cache-static-gradients
-    → xr-plan-update-effects → xr-cache-static-subtrees
+    → xr-plan-update-effects → xr-plan-static-z-order → xr-plan-repeat-rows
+    → xr-cache-static-subtrees
     → xr-hoist-repeat-invariants → xr-hoist-repeat-subexpressions
     → xr-share-visual-bindings → verify
     → 按 operation 和 SSA use-def 生成 proc_macro2::TokenStream
@@ -831,13 +852,19 @@ xr_ui_library(
 
 `xr-hoist-repeat-invariants` 把完全独立于行参数的视觉绑定放到组件级惰性缓存，同一组件的多个重复项可以共用该缓存。空列表仍然不求值，读取 `item`、`index`、子元素状态或调用回调的表达式保留原有求值位置。`xr-specialize-hidden-visuals` 将恒假条件的渲染降为 `Node::hidden()`，省去生成不可达的渲染子树，并保留节点槽位和事件路径。
 
-`xr-hoist-repeat-subexpressions` 也能提升混合绑定中的公共前缀，例如 `("Caption " + root.caption) + item` 的左侧。生成的缓存仍在原来的分支使用点读取。`xr-plan-update-effects` 标记 `Rectangle.background` 只影响绘制。若帧输入只有已标记的背景变化，且上次布局直接使用原始场景，窗口宿主用新场景绘制并复用原有布局。`xr-cache-static-subtrees` 标记仅包含静态视觉元素的子树，生成代码按线程复用场景节点。静态节点克隆共享底层数据，修改副本时再复制受影响的节点。普通动态节点仍直接持有数据。
+`xr-hoist-repeat-subexpressions` 也能提升混合绑定中的公共前缀，例如 `("Caption " + root.caption) + item` 的左侧。生成的缓存仍在原来的分支使用点读取。`xr-plan-update-effects` 标记 `Rectangle.background` 和 `Text.color` 只影响绘制。若帧输入只有已标记的纯绘制属性变化，且上次布局直接使用原始场景，窗口宿主用新场景绘制并复用原有布局。`xr-cache-static-subtrees` 标记仅包含静态视觉元素的子树，生成代码按线程复用场景节点。静态节点克隆共享底层数据，修改副本时再复制受影响的节点。普通动态节点仍直接持有数据。
 
 `xr-precompile-static-paths` 标记常量 `Path.commands`，资源阶段复用已有解析器生成线段和源坐标边界，并嵌入 Rust。绘制阶段仍根据实际尺寸、`fit`、描边和填色变换路径。动态命令继续按运行时值解析。`xr-plan-static-grid` 对子项结构、可见性和跨度固定的 `GridLayout` 预计算单元格占位。布局仍测量文字、分配轨道大小并保留原场景索引。手写节点、动态网格及被编辑的网格快照继续使用同一套运行时占位算法。
 
 `xr-cache-static-gradients` 标记色标和角度都为常量的渐变。生成的 Rust 在首次使用时分配色标数组，同一绑定的各个组件实例共享这份只读数组，省去各实例的响应式缓存槽。依赖响应式属性的渐变仍随属性变化更新。
 
 Bazel 使用 `rules_rust_bindgen` 和同一份 LLVM 23 的 clang/libclang 生成 `c_bindings.rs`。`xrack_mlir_bindings` 将它作为 crate 根文件，供 `xrack-mlir` 和 Rust Analyzer 的项目图使用。Rust 持有原生模块，构建和优化都在这个模块上完成。C++ 接口负责注册方言、调用生成的 builder、配置 pass 和跨操作校验。
+
+MLIR 的 AnalysisManager 缓存属性引用与场景分析。私有标量属性的初值为常量且没有赋值或双向链接时，读取可继续折叠。无引用的常量私有属性会省去存储。状态裁剪保留首个可达的恒真分支，重映射覆盖和转场使用的索引。
+
+固定的兄弟节点可以带预计算的 `z` 顺序，布局使用该顺序并保留声明索引。合格的组件型虚拟行按 `RowKey` 缓存可见行场景，读取位置索引的模板在行移动时重新求值。
+
+用 `bazel test //tests:mlir_filecheck_test` 运行 LLVM FileCheck。用例放在 `tests/pass_cases/`，支持 `.mlir` 和 `.xr` 文件。用 `CHECK` 验证优化结果，可用 `RAW` 同时验证优化前的 IR。测试通过同一条优化流水线处理原生 IR 和从 DSL 降低的 IR。
 
 ## 测试
 

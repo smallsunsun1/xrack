@@ -67,6 +67,30 @@ rust_test(
     deps = ["//crates/xrack-compiler:xrack_compiler"],
 )
 
+filegroup(
+    name = "mlir_filecheck_cases",
+    srcs = glob(["pass_cases/*.mlir", "pass_cases/*.xr"]),
+)
+
+rust_test(
+    name = "mlir_filecheck_test",
+    size = "small",
+    srcs = ["mlir_filecheck_test.rs"],
+    data = [
+        ":mlir_filecheck_cases",
+        "@llvm-project//llvm:FileCheck",
+    ],
+    edition = "2024",
+    env = {
+        "XRACK_FILECHECK": "$(rlocationpath @llvm-project//llvm:FileCheck)",
+        "XRACK_FILECHECK_CASES": "$(rlocationpaths :mlir_filecheck_cases)",
+    },
+    deps = [
+        "//crates/xrack-compiler:xrack_compiler",
+        "@rules_rust//rust/runfiles",
+    ],
+)
+
 rust_test(
     name = "ui_interaction_test",
     size = "small",

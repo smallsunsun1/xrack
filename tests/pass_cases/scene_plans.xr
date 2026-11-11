@@ -1,0 +1,39 @@
+// RAW: "xr.state_select"{{.*}}names = ["dead", "dynamic", "fallback", "unreachable"]
+// CHECK: "xr.state_select"
+// CHECK-SAME: names = ["dynamic", "fallback"]
+// CHECK-DAG: "xr.state_set"{{.*}}case_index = 0
+// CHECK-DAG: "xr.state_set"{{.*}}case_index = 1
+// CHECK-DAG: "xr.state_timing"{{.*}}case_index = 1{{.*}}direction = "in"
+// CHECK-DAG: "xr.bind"{{.*}}name = "color"{{.*}}xr.update_effect = "paint"
+// CHECK-DAG: xr.static_z_order = array<i64: 1, 0>
+// CHECK-DAG: xr.row_scene_cache = "indexed"
+
+component Cell inherits Rectangle {
+    in property <string> caption;
+    Text { text: root.caption; }
+}
+
+export component Plans inherits Window {
+    in property <bool> compact: false;
+    in-out property <color> ink: #ebedf0;
+    in property <[string]> items: ["one", "two"];
+
+    states [
+        dead when false: { panel.width: 25px; }
+        dynamic when root.compact: { panel.width: 120px; }
+        fallback when true: {
+            panel.width: 220px;
+            in { animate panel.width { duration: 160ms; } }
+        }
+        unreachable when root.compact: { panel.width: 300px; }
+    ]
+
+    panel := Rectangle {
+        width: 200px;
+        Rectangle { z: 2; }
+        Text { z: 1; color: root.ink; text: "text"; }
+    }
+    ListView {
+        for item[index] in root.items : Cell { caption: item + index; }
+    }
+}

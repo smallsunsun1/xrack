@@ -2,7 +2,7 @@ use clap::{Parser, ValueEnum};
 use proc_macro2::{Group, Ident, Spacing, TokenStream, TokenTree};
 use std::{fs, io, path::PathBuf, process::ExitCode};
 use xrack_compiler::{
-    CompilerError, check_resources, compile_with_inputs, generate_rust, lower, mlir, parse,
+    CompilerError, check_document, compile_with_inputs, generate_document, lower, mlir, parse,
     parse_document, semantic,
 };
 
@@ -17,6 +17,8 @@ enum Emit {
     Ast,
     /// Print the resolved and typed frontend representation.
     Hir,
+    /// Read editor buffers as JSON on stdin and emit snapshot host source.
+    Preview,
 }
 
 #[derive(Debug, Parser)]
@@ -50,11 +52,11 @@ struct Args {
     #[arg(long, requires = "cargo")]
     cargo_facade: bool,
 
-    /// Resolve images and fonts only from the declared assets.
+    /// Resolve resources only from the declared assets.
     #[arg(long)]
     restrict_assets: bool,
 
-    /// Declare an image or font asset. May be supplied multiple times.
+    /// Declare a resource file. May be supplied multiple times.
     #[arg(long = "asset", value_name = "FILE")]
     assets: Vec<PathBuf>,
 
@@ -68,6 +70,30 @@ struct Args {
 }
 
 fn run(args: Args) -> Result<(), CompilerError> {
+    if matches!(args.emit, Emit::Preview) && !args.check {
+        let input: serde_json::Value = serde_json::from_reader(io::stdin().lock())?;
+        let text = input["text"].as_str().ok_or_else(|| CompilerError::Io {
+            path: args.input.clone().into(),
+            source: io::Error::new(io::ErrorKind::InvalidData, "preview requires a text buffer"),
+        })?;
+        let buffers = input
+            .get("buffers")
+            .cloned()
+            .map(serde_json::from_value)
+            .transpose()?
+            .unwrap_or_default();
+        let preview = xrack_compiler::compile_preview(text, &args.input, buffers)?;
+        return write_output(
+            args.output,
+            serde_json::to_string(&serde_json::json!({
+                "protocol": 2,
+                "rust": rust_source(preview.rust),
+                "components": preview.components,
+                "inputs": preview.inputs,
+                "version": env!("CARGO_PKG_VERSION"),
+            }))?,
+        );
+    }
     let source = fs::read_to_string(&args.input).map_err(|source| CompilerError::Io {
         path: (&args.input).into(),
         source,
@@ -110,13 +136,14 @@ fn run(args: Args) -> Result<(), CompilerError> {
         parse_document(&source, &args.input, sources)?
     };
     let text = match args.emit {
-        _ if args.check => return check_resources(&lower(&doc, &args.input)?, &args.input, assets),
+        _ if args.check => return check_document(&doc, &args.input, assets),
         Emit::Ast => serde_json::to_string_pretty(&doc)?,
         Emit::Hir => serde_json::to_string_pretty(&semantic::analyze(&doc).map_err(diagnostic)?)?,
         Emit::MlirRaw => mlir::lower(&doc, &args.input).map_err(diagnostic)?,
         Emit::Mlir => lower(&doc, &args.input)?.to_mlir(),
+        Emit::Preview => unreachable!("handled before reading the input file"),
         Emit::Rust => {
-            let tokens = generate_rust(&lower(&doc, &args.input)?, &args.input, assets)?;
+            let tokens = generate_document(&doc, &args.input, assets)?;
             rust_source(tokens)
         }
     };

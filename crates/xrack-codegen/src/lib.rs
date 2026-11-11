@@ -1300,6 +1300,7 @@ struct Generator<'a> {
     markdown: &'a BTreeMap<&'a str, Ident>,
     paths: &'a BTreeMap<&'a str, Ident>,
     with_fonts: bool,
+    with_translations: bool,
 }
 
 #[derive(Default)]
@@ -1689,6 +1690,19 @@ impl<'a> Generator<'a> {
         let arg = |i| self.expr_in(self.operand(op, i)?, context);
         Ok(match op.name() {
             "xr.literal" => literal(value, value_type(op)?)?,
+            "xr.translate" => {
+                if !self.with_translations {
+                    return Err("@tr requires a translation catalog".into());
+                }
+                let names = op
+                    .string_array_attribute("arg_names")
+                    .ok_or("invalid translation argument names")?;
+                let values = (0..names.len()).map(arg).collect::<Result<Vec<_>, _>>()?;
+                quote!(__XR_TRANSLATIONS.with(|catalog| catalog.translate(
+                    &#receiver.__state.__locale, #value,
+                    &[#((#names, ::xrack_runtime::TranslationValue::from(#values))),*],
+                )))
+            }
             "xr.array" | "xr.record_array" => {
                 let items = (0..op.operand_count())
                     .map(arg)
@@ -2879,17 +2893,27 @@ impl<'a> Generator<'a> {
                 TokenStream::new()
             } else {
                 let mut instances = TokenStream::new();
+                let locale = self
+                    .with_translations
+                    .then(|| quote!(__locale: __locale.clone(),));
+                let init_locale = self
+                    .with_translations
+                    .then(|| quote!(let __locale = self.__state.__locale.clone();));
+                let capture_locale = self
+                    .with_translations
+                    .then(|| quote!(let __locale = __locale.clone();));
                 for (_, delegate) in &repeat.delegates {
                     let component = delegate.attr("component")?;
                     let name = ident(component);
                     let inputs = format_ident!("__Inputs_{}", rust_name(component));
                     let table = table_history_configured(element).then_some(element);
                     let bindings = self.instance_inputs(*delegate, Some(model), table)?;
-                    let instance = quote!(#name::__new(#inputs { #bindings ..::core::default::Default::default() }));
+                    let instance = quote!(#name::__new(#inputs { #bindings #locale ..::core::default::Default::default() }));
                     if repeat.table {
                         instances.extend(quote!({
                             let __context = __context.clone();
                             let __parent = __parent.clone();
+                            #capture_locale
                             ::std::cell::LazyCell::new(
                                 ::std::boxed::Box::new(move || #instance) as ::std::boxed::Box<dyn FnOnce() -> #name>
                             )
@@ -2899,9 +2923,28 @@ impl<'a> Generator<'a> {
                     }
                 }
                 quote!(|__context| {
+                    #init_locale
                     let __parent = ::std::rc::Rc::downgrade(&self.__state);
                     (#instances)
                 },)
+            };
+            let cache = self
+                .use_visual_plan
+                .then(|| row.attribute("xr.row_scene_cache"))
+                .flatten()
+                .filter(|_| !repeat.delegates.is_empty());
+            let reads_index = cache == Some("indexed");
+            let render_indices = |indices: TokenStream| {
+                if cache.is_some() {
+                    quote!(repeater.render_cached_rows(|| #model_expr, #indices, #reads_index, #create #row_expr))
+                } else {
+                    quote!(repeater.render_indices(|| #model_expr, #indices, #create #row_expr))
+                }
+            };
+            let render_range = if cache.is_some() {
+                render_indices(quote!(__range))
+            } else {
+                quote!(repeater.render_range(|| #model_expr, __range, #create #row_expr))
             };
             if element.attr("kind") == Ok("TreeView") {
                 let tree = self.tree_snapshot(
@@ -2910,10 +2953,12 @@ impl<'a> Generator<'a> {
                     quote!(self.__state.__visuals.#field),
                     &model_expr,
                 )?;
+                let rows = render_indices(quote!(rows.iter().map(|row| row.model_index)));
                 return Ok(quote! {{
+                        let repeater = &self.__state.__visuals.#field;
                         let tree = #tree;
                         let rows = tree.rows().get(__range).unwrap_or_default();
-                        self.__state.__visuals.#field.render_indices(|| #model_expr, rows.iter().map(|row| row.model_index), #create #row_expr)
+                        #rows
                 }});
             }
             if element.attr("kind") == Ok("TableView") || has_list_visibility(element) {
@@ -2926,20 +2971,25 @@ impl<'a> Generator<'a> {
                 let track_columns = (repeat.table && repeat.delegates.is_empty()).then(
                     || quote!(let __xr_columns_changed = repeater.column_window(__xr_columns);),
                 );
+                let reordered = render_indices(quote!(
+                    __range.filter_map(|row| positions.source_index(row))
+                ));
+                let range = render_range;
                 return Ok(quote! {{
                         let repeater = &self.__state.__visuals.#field;
                         #track_columns
                         let rows = #rows;
                         let positions = rows.positions();
                         if positions.reordered() {
-                            repeater.render_indices(|| #model_expr, __range.filter_map(|row| positions.source_index(row)), #create #row_expr)
+                            #reordered
                         } else {
-                            repeater.render_range(|| #model_expr, __range, #create #row_expr)
+                            #range
                         }
                 }});
             }
             return Ok(quote! {
-                self.__state.__visuals.#field.render_range(|| #model_expr, __range, #create #row_expr)
+                let repeater = &self.__state.__visuals.#field;
+                #render_range
             });
         }
         Ok(quote!(::std::vec::Vec::new()))
@@ -4727,7 +4777,7 @@ impl<'a> Generator<'a> {
                 #name.properties.insert(#key, ::xrack_runtime::Value::from(#value));
             });
             if self.use_visual_plan && binding.attribute("xr.update_effect") == Some("paint") {
-                out.extend(quote!(#name.mark_paint_only_background();));
+                out.extend(quote!(#name.mark_paint_only(#key);));
             }
             if self.use_visual_plan && binding.attribute("xr.precompiled_path") == Some("true") {
                 let commands: String =
@@ -5138,6 +5188,12 @@ impl<'a> Generator<'a> {
         }
         if self.use_visual_plan && element.attribute("xr.static_grid") == Some("true") {
             out.extend(scene_plan::static_grid(element, &name)?);
+        }
+        if self.use_visual_plan
+            && let Some(order) = element.i64_array_attribute("xr.static_z_order")
+        {
+            let order = order.into_iter().map(|index| index as usize);
+            out.extend(quote!(#name.set_static_paint_order(&[#(#order),*]);));
         }
         Ok(name)
     }
@@ -7198,6 +7254,18 @@ impl<'a> Generator<'a> {
             });
         }
         let mut input_fields = TokenStream::new();
+        if self.with_translations {
+            fields.extend(quote!(__locale: ::xrack_runtime::LocaleBinding,));
+            defaults.extend(quote!(__locale: __inputs.__locale.clone(),));
+            input_fields.extend(quote!(__locale: ::xrack_runtime::LocaleBinding,));
+            methods.extend(quote! {
+                pub fn new_with_locale(context: ::xrack_runtime::LocaleContext) -> Self {
+                    let component = Self::new();
+                    ::xrack_runtime::Component::set_locale_context(&component, context);
+                    component
+                }
+            });
+        }
         let properties = children(component, "xr.property")
             .map(|p| ("root", p))
             .chain(self.element_properties.iter().copied());
@@ -8215,6 +8283,9 @@ impl<'a> Generator<'a> {
             });
         }
         let mut instance_routes = TokenStream::new();
+        let locale = self
+            .with_translations
+            .then(|| quote!(__locale: __inputs.__locale.clone(),));
         for (&key, &instance) in &self.instances {
             let field = instance_field(key);
             let component_name = instance.attr("component")?;
@@ -8225,6 +8296,7 @@ impl<'a> Generator<'a> {
             defaults.extend(quote! {
                 #field: #component::__new(#child_inputs {
                     #bindings
+                    #locale
                     ..::core::default::Default::default()
                 }),
             });
@@ -8547,6 +8619,13 @@ impl<'a> Generator<'a> {
         let mut delegate_events = TokenStream::new();
         let mut delegates = TokenStream::new();
         self.delegate_event_arms(root, &mut Vec::new(), &mut delegate_events, &mut delegates)?;
+        let set_locale_context = self.with_translations.then(|| {
+            quote! {
+                fn set_locale_context(&self, context: ::xrack_runtime::LocaleContext) {
+                    self.__state.__locale.set_context(context);
+                }
+            }
+        });
         Ok(quote! {
             #visual_declarations
 
@@ -8566,6 +8645,9 @@ impl<'a> Generator<'a> {
                 fn default() -> Self { Self::new() }
             }
 
+            // Expressions that can trap remain lazy even when a pass exposes
+            // their constant operands to rustc.
+            #[allow(arithmetic_overflow, unconditional_panic)]
             #[allow(dead_code, unused_mut, unused_variables, unused_parens, clippy::clone_on_copy)]
             impl #name {
                 pub fn new() -> Self {
@@ -8758,6 +8840,7 @@ impl<'a> Generator<'a> {
             }
 
             impl ::xrack_runtime::Component for #name {
+                #set_locale_context
                 #window_lifecycle
                 #secondary_windows
 
@@ -9023,6 +9106,24 @@ impl<'a> Generator<'a> {
     }
 }
 
+/// Instantiate a generated component by its source name for the editor preview host.
+pub fn preview_factory<'a>(names: impl Iterator<Item = &'a str>) -> TokenStream {
+    let arms = names.map(|name| {
+        let component = ident(name);
+        quote!(#name => ::core::option::Option::Some(::std::boxed::Box::new(#component::new())),)
+    });
+    quote! {
+        pub(crate) fn __xrack_preview_component(
+            name: &str,
+        ) -> ::core::option::Option<::std::boxed::Box<dyn ::xrack_runtime::Component>> {
+            match name {
+                #(#arms)*
+                _ => ::core::option::Option::None,
+            }
+        }
+    }
+}
+
 /// Generate Rust tokens directly from verified MLIR operations and their SSA uses.
 pub fn generate(module: &Module) -> Result<TokenStream, String> {
     generate_with_images(module, &BTreeMap::new())
@@ -9074,6 +9175,21 @@ pub fn generate_with_resource_plans(
     fonts: &[Vec<u8>],
     paths: &BTreeMap<String, EmbeddedPath>,
 ) -> Result<TokenStream, String> {
+    generate_with_translations(module, images, fonts, paths, None)
+}
+
+pub struct EmbeddedTranslations {
+    pub default: String,
+    pub locales: BTreeMap<String, String>,
+}
+
+pub fn generate_with_translations(
+    module: &Module,
+    images: &BTreeMap<String, EmbeddedImage>,
+    fonts: &[Vec<u8>],
+    paths: &BTreeMap<String, EmbeddedPath>,
+    translations: Option<&EmbeddedTranslations>,
+) -> Result<TokenStream, String> {
     check_nine_slices(module, images)?;
     let mut out = quote! {
         const _: () = assert!(
@@ -9081,6 +9197,19 @@ pub fn generate_with_resource_plans(
             "xrackc and xrack-runtime have incompatible code generation interfaces"
         );
     };
+    if let Some(translations) = translations {
+        let default = &translations.default;
+        let entries = translations
+            .locales
+            .iter()
+            .map(|(locale, text)| quote!((#locale, #text)));
+        out.extend(quote! {
+            ::std::thread_local! {
+                static __XR_TRANSLATIONS: ::xrack_runtime::TranslationCatalog =
+                    ::xrack_runtime::TranslationCatalog::new(#default, &[#(#entries),*]);
+            }
+        });
+    }
     if !fonts.is_empty() {
         let bytes = fonts.iter().map(|font| Literal::byte_string(font));
         out.extend(quote! {
@@ -9136,10 +9265,12 @@ pub fn generate_with_resource_plans(
         graph.index(op, true)?;
         callback_graphs.insert(op.attr("sym_name")?, graph);
     }
-    for op in module
-        .operations()
-        .filter(|op| !matches!(op.name(), "xr.record_decl" | "xr.font"))
-    {
+    for op in module.operations().filter(|op| {
+        !matches!(
+            op.name(),
+            "xr.record_decl" | "xr.font" | "xr.translation_catalog"
+        )
+    }) {
         let alias_graph = alias_graphs
             .get(op.attr("sym_name")?)
             .ok_or("missing component alias graph")?;
@@ -9189,6 +9320,7 @@ pub fn generate_with_resource_plans(
             markdown: &markdown,
             paths: &path_names,
             with_fonts: !fonts.is_empty(),
+            with_translations: translations.is_some(),
         };
         generator.index(op, None)?;
         let mut alias_defaults = BTreeSet::new();

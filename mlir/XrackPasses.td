@@ -1,7 +1,7 @@
 include "mlir/Pass/PassBase.td"
 
 def XrFoldConstants : Pass<"xr-fold-constants", "::mlir::ModuleOp"> {
-  let summary = "Fold XR scalar arithmetic, conversions and string expressions";
+  let summary = "Fold XR expressions and propagate immutable private scalar properties";
 }
 
 def XrSimplifyExpressions : Pass<"xr-simplify-expressions", "::mlir::ModuleOp"> {
@@ -10,6 +10,14 @@ def XrSimplifyExpressions : Pass<"xr-simplify-expressions", "::mlir::ModuleOp"> 
 
 def XrSimplifyVisuals : Pass<"xr-simplify-visuals", "::mlir::ModuleOp"> {
   let summary = "Remove redundant visual guards and animations while preserving node identity";
+}
+
+def XrPruneConstantStates : Pass<"xr-prune-constant-states", "::mlir::ModuleOp"> {
+  let summary = "Discard unreachable state cases and remap their users";
+}
+
+def XrRemoveUnusedProperties : Pass<"xr-remove-unused-properties", "::mlir::ModuleOp"> {
+  let summary = "Remove unreferenced constant private scalar storage";
 }
 
 def XrPruneExpressions : Pass<"xr-prune-expressions", "::mlir::ModuleOp"> {
@@ -34,6 +42,14 @@ def XrSpecializeHiddenVisuals : Pass<"xr-specialize-hidden-visuals", "::mlir::Mo
 
 def XrPlanUpdateEffects : Pass<"xr-plan-update-effects", "::mlir::ModuleOp"> {
   let summary = "Mark verified visual bindings that affect only painting";
+}
+
+def XrPlanStaticZOrder : Pass<"xr-plan-static-z-order", "::mlir::ModuleOp"> {
+  let summary = "Precompute the paint order of fixed sibling lists";
+}
+
+def XrPlanRepeatRows : Pass<"xr-plan-repeat-rows", "::mlir::ModuleOp"> {
+  let summary = "Mark component delegates eligible for per-row scene reuse";
 }
 
 def XrCacheStaticSubtrees : Pass<"xr-cache-static-subtrees", "::mlir::ModuleOp"> {

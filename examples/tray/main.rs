@@ -10,6 +10,12 @@ fn main() -> std::process::ExitCode {
                 eprintln!("{error}");
             }
         });
+        let language = desktop.clone();
+        ui.on_change_language(move |locale| {
+            if let Err(error) = language.set_locale(&locale) {
+                eprintln!("{error}");
+            }
+        });
         let weak = ui.as_weak();
         let tray = desktop.register_tray(ui)?;
         let mut ui = weak

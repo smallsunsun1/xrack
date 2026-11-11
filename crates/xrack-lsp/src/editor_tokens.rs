@@ -48,6 +48,14 @@ pub(crate) fn scan(mut text: &str) -> Vec<Token<'_>> {
             let (len, closed) = quoted(text);
             opaque = Some(closed);
             len
+        } else if c.is_ascii_digit() {
+            number(text)
+        } else if c == '#' {
+            1 + text
+                .bytes()
+                .skip(1)
+                .take_while(u8::is_ascii_hexdigit)
+                .count()
         } else if name(text) || c == '@' {
             text.bytes()
                 .skip(1)
@@ -87,4 +95,30 @@ fn quoted(text: &str) -> (usize, bool) {
         }
     }
     (text.len(), false)
+}
+
+fn number(text: &str) -> usize {
+    let digits = |text: &str| text.bytes().take_while(u8::is_ascii_digit).count();
+    let mut end = digits(text);
+    if let Some(fraction) = text[end..].strip_prefix('.') {
+        let count = digits(fraction);
+        if count != 0 {
+            end += 1 + count;
+        }
+    }
+    if let Some(exponent) = text[end..].strip_prefix(['e', 'E']) {
+        let sign = usize::from(exponent.starts_with(['+', '-']));
+        let count = digits(&exponent[sign..]);
+        if count != 0 {
+            end += 1 + sign + count;
+        }
+    }
+    if let Some(unit) = ["px", "ms", "deg", "%"].into_iter().find(|unit| {
+        text[end..]
+            .strip_prefix(unit)
+            .is_some_and(|rest| !rest.starts_with(|c: char| c.is_ascii_alphanumeric() || c == '_'))
+    }) {
+        end += unit.len();
+    }
+    end
 }
