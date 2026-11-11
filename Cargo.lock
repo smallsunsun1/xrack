@@ -3935,7 +3935,7 @@ checksum = "b9cc00251562a284751c9973bace760d86c0276c471b4be569fe6b068ee97a56"
 
 [[package]]
 name = "xrack"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "xrack-assets",
  "xrack-layout",
@@ -3946,7 +3946,7 @@ dependencies = [
 
 [[package]]
 name = "xrack-assets"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "png",
  "resvg",
@@ -3956,7 +3956,7 @@ dependencies = [
 
 [[package]]
 name = "xrack-build"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "flate2",
  "xrackc-bin-aarch64-apple-darwin",
@@ -3968,7 +3968,7 @@ dependencies = [
 
 [[package]]
 name = "xrack-codegen"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -3981,7 +3981,7 @@ dependencies = [
 
 [[package]]
 name = "xrack-compiler"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "clap",
  "fluent-syntax",
@@ -4006,7 +4006,7 @@ dependencies = [
 
 [[package]]
 name = "xrack-ir"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -4015,7 +4015,7 @@ dependencies = [
 
 [[package]]
 name = "xrack-layout"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "unicode-bidi",
  "unicode-segmentation",
@@ -4024,7 +4024,7 @@ dependencies = [
 
 [[package]]
 name = "xrack-lsp"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "serde_json",
  "xrack-ir",
@@ -4033,7 +4033,7 @@ dependencies = [
 
 [[package]]
 name = "xrack-mlir"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "serde_json",
  "xrack-ir",
@@ -4042,7 +4042,7 @@ dependencies = [
 
 [[package]]
 name = "xrack-parser"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "antlr4rust",
  "serde_json",
@@ -4051,7 +4051,7 @@ dependencies = [
 
 [[package]]
 name = "xrack-platform-winit"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "accesskit",
  "accesskit_winit",
@@ -4076,7 +4076,7 @@ dependencies = [
 
 [[package]]
 name = "xrack-renderer-femtovg"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "femtovg",
  "fontdb",
@@ -4092,7 +4092,7 @@ dependencies = [
 
 [[package]]
 name = "xrack-runtime"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "fluent-bundle",
  "fluent-langneg",
@@ -4104,30 +4104,30 @@ dependencies = [
 
 [[package]]
 name = "xrack-syntax"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "serde",
 ]
 
 [[package]]
 name = "xrackc-bin-aarch64-apple-darwin"
-version = "0.1.1"
+version = "0.2.0"
 
 [[package]]
 name = "xrackc-bin-aarch64-pc-windows-msvc"
-version = "0.1.1"
+version = "0.2.0"
 
 [[package]]
 name = "xrackc-bin-aarch64-unknown-linux-gnu"
-version = "0.1.1"
+version = "0.2.0"
 
 [[package]]
 name = "xrackc-bin-x86_64-pc-windows-msvc"
-version = "0.1.1"
+version = "0.2.0"
 
 [[package]]
 name = "xrackc-bin-x86_64-unknown-linux-gnu"
-version = "0.1.1"
+version = "0.2.0"
 
 [[package]]
 name = "zbus"

@@ -80,7 +80,7 @@ bazel build --config=lint //... //tests:gpu_test
 
 ## 在 Cargo 项目中使用 XRack
 
-以下接入方式对应下一版 `0.1.1`。`xrack` 提供组件、模型、桌面宿主及布局、渲染和资源模块，`xrack-build` 在 Cargo 的构建阶段编译 `.xr`。
+以下接入方式适用于 XRack `0.2.0`。`xrack` 提供组件、模型、桌面宿主及布局、渲染和资源模块，`xrack-build` 在 Cargo 的构建阶段编译 `.xr`。
 
 使用 Rust 1.99.1 或更新版本新建应用。
 
@@ -94,10 +94,10 @@ mkdir ui
 
 ```toml
 [dependencies]
-xrack = "=0.1.1"
+xrack = "=0.2.0"
 
 [build-dependencies]
-xrack-build = "=0.1.1"
+xrack-build = "=0.2.0"
 ```
 
 将界面保存为 `ui/app.xr`。
@@ -163,7 +163,7 @@ cargo package --locked -p xrack-runtime -p xrack-assets -p xrack-layout \
 
 Cargo 会验证打包后的源码，并在发布时按依赖顺序上传这些 crate。Cargo 版桌面宿主使用上游 AccessKit，Bazel 版带有 macOS 三态复选框无障碍值修补。
 
-手动运行 [Release XRack](.github/workflows/release-crates.yml) 并输入 workspace 版本号，可以预检运行时和门面包。正式发布时，给 `main` 上已合并的提交推送与 workspace 版本一致的 tag，例如 `v0.1.1`。发布流程跑各平台 CI，并从五份 Bazel 归档生成宿主编译器 crate。归档的 SHA-256、二进制和许可证会随编译器包验证。Cargo 先发布五个宿主编译器包，再发布运行时、`xrack` 和 `xrack-build`。同一 tag 的 GitHub Release 也提供独立的 `xrackc` 归档和校验文件。
+手动运行 [Release XRack](.github/workflows/release-crates.yml) 并输入 workspace 版本号，可以预检运行时和门面包。正式发布时，给 `main` 上已合并的提交推送与 workspace 版本一致的 tag，例如 `v0.2.0`。发布流程跑各平台 CI，并从五份 Bazel 归档生成宿主编译器 crate。归档的 SHA-256、二进制和许可证会随编译器包验证。Cargo 先发布五个宿主编译器包，再发布运行时、`xrack` 和 `xrack-build`。同一 tag 的 GitHub Release 也提供独立的 `xrackc` 归档和校验文件。
 
 在 GitHub 的 `crates-io` 环境配置 `CARGO_REGISTRY_TOKEN` secret，并允许发布 tag 使用该环境。首次发布使用允许发布新 crate 的 token。上传中断后，可从同一次 workflow 重试，脚本会校验已发布的版本及对应的源码提交。升版本时同步 workspace 版本、内部 crate 依赖、宿主包版本、Bazel 目标版本和 Cargo 消费示例。
 
