@@ -161,8 +161,17 @@ impl TimePopupState {
     }
 
     pub fn populate(&self, dialog: &mut Node, time: impl FnOnce() -> Time) {
-        let Some(draft) = self.0.begin(dialog, || time().normalized()) else {
-            return;
+        self.try_populate(dialog, || Ok::<_, std::convert::Infallible>(time()))
+            .unwrap_or_else(|error| match error {});
+    }
+
+    pub fn try_populate<E>(
+        &self,
+        dialog: &mut Node,
+        time: impl FnOnce() -> Result<Time, E>,
+    ) -> Result<(), E> {
+        let Some(draft) = self.0.try_begin(dialog, || time().map(Time::normalized))? else {
+            return Ok(());
         };
         let mut picker = Node::new("TimePicker", None);
         TimePickerOptions::from_node(dialog).populate(&mut picker, draft);
@@ -170,6 +179,7 @@ impl TimePopupState {
             self.0.stamp(wheel);
         }
         append_picker_dialog(dialog, picker);
+        Ok(())
     }
 
     pub fn edit(

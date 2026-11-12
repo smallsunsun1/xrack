@@ -1,0 +1,1 @@
+exports_files(["ui/counter.xr", "ui/label.xr"], visibility = ["//tests:__pkg__"])

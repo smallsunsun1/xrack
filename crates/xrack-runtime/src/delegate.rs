@@ -24,6 +24,18 @@ impl<Item> Clone for RowContext<Item> {
 }
 
 impl<Item: Clone> RowContext<Item> {
+    #[doc(hidden)]
+    pub fn with_sample(key: RowKey, index: usize, item: Item) -> Self {
+        let input = Self(Rc::new(Input {
+            key,
+            item: Property::default(),
+            index: Property::default(),
+        }));
+        input.0.index.set(index as i64);
+        input.0.item.set(item);
+        input
+    }
+
     pub fn item(&self) -> Item {
         self.0
             .item
@@ -38,7 +50,7 @@ impl<Item: Clone> RowContext<Item> {
 }
 
 impl<Item: Clone + PartialEq> RowContext<Item> {
-    fn current_index(&self, model: &VecModel<Item>) -> Option<usize> {
+    fn current_index<T>(&self, model: &VecModel<T>) -> Option<usize> {
         let hint = self.index() as usize;
         if model.row_key(hint) == Some(self.0.key) {
             Some(hint)
@@ -49,19 +61,28 @@ impl<Item: Clone + PartialEq> RowContext<Item> {
 
     /// Read a row by identity even if it has moved since the last layout.
     #[doc(hidden)]
-    pub fn read_from<R>(
-        &self,
-        model: &VecModel<Item>,
-        project: impl FnOnce(&Item) -> R,
-    ) -> Option<R> {
+    pub fn read_from<T, R>(&self, model: &VecModel<T>, project: impl FnOnce(&T) -> R) -> Option<R> {
         model.project_row(self.current_index(model)?, project)
     }
 
     #[doc(hidden)]
     pub fn update_in(&self, model: &VecModel<Item>, update: impl FnOnce(&Item) -> Item) {
-        self.write_in(model, |index, key| {
-            model.update_row_if_key(index, key, |row| Some(update(row)))
-        });
+        self.update_projected_in(model, |row| Some(update(row)), Clone::clone);
+    }
+
+    /// Update a typed row and synchronize the delegate's projected input.
+    #[doc(hidden)]
+    pub fn update_projected_in<T: PartialEq>(
+        &self,
+        model: &VecModel<T>,
+        update: impl FnOnce(&T) -> Option<T>,
+        project: impl FnOnce(&T) -> Item,
+    ) -> bool {
+        self.write_projected_in(
+            model,
+            |index, key| model.update_row_if_key(index, key, update),
+            project,
+        )
     }
 
     #[doc(hidden)]
@@ -73,26 +94,59 @@ impl<Item: Clone + PartialEq> RowContext<Item> {
         update: impl FnOnce(&Item) -> Item,
         capture: impl Fn(&Item, &Item, &mut TableRowPatch<Item>),
     ) {
-        self.write_in(model, |index, key| {
-            if enabled {
-                history.commit_cell(model, index, key, |row| Some(update(row)), capture)
-            } else {
-                let changed = model.update_row_if_key(index, key, |row| Some(update(row)));
-                if changed {
-                    history.clear();
-                }
-                changed
-            }
-        });
+        self.update_projected_in_with_history(
+            model,
+            history,
+            enabled,
+            |row| Some(update(row)),
+            capture,
+            Clone::clone,
+        );
     }
 
-    fn write_in(&self, model: &VecModel<Item>, write: impl FnOnce(usize, RowKey) -> bool) {
+    #[doc(hidden)]
+    pub fn update_projected_in_with_history<T: Clone + PartialEq>(
+        &self,
+        model: &VecModel<T>,
+        history: &TableEditHistory<T>,
+        enabled: bool,
+        update: impl FnOnce(&T) -> Option<T>,
+        capture: impl Fn(&T, &T, &mut TableRowPatch<T>),
+        project: impl FnOnce(&T) -> Item,
+    ) -> bool {
+        self.write_projected_in(
+            model,
+            |index, key| {
+                if enabled {
+                    history.commit_cell(model, index, key, update, capture)
+                } else {
+                    let changed = model.update_row_if_key(index, key, update);
+                    if changed {
+                        history.clear();
+                    }
+                    changed
+                }
+            },
+            project,
+        )
+    }
+
+    fn write_projected_in<T>(
+        &self,
+        model: &VecModel<T>,
+        write: impl FnOnce(usize, RowKey) -> bool,
+        project: impl FnOnce(&T) -> Item,
+    ) -> bool {
         let Some(index) = self.current_index(model) else {
-            return;
+            return false;
         };
-        if write(index, self.0.key) {
-            self.0.item.set_if_changed(model.item(index));
+        if !write(index, self.0.key) {
+            return false;
         }
+        if let Some(item) = model.project_row(index, project) {
+            self.0.item.set_if_changed(item);
+        }
+        true
     }
 }
 
@@ -209,6 +263,45 @@ impl<Model: ListModel, State: Default, Ui> ComponentRepeater<Model, State, Ui> {
         create: impl Fn(RowContext<Model::Item>) -> Ui,
         render: impl Fn(&Ui, usize, &dyn Fn() -> Model::Item, &State) -> Node,
     ) -> Vec<Node> {
+        self.try_render_rows(
+            model,
+            indices,
+            cache_reads_index,
+            create,
+            |ui, index, item, state| {
+                Ok::<_, std::convert::Infallible>(render(ui, index, item, state))
+            },
+        )
+        .unwrap_or_else(|error| match error {})
+    }
+
+    /// Render a row projection, caching only successful scenes when requested.
+    #[doc(hidden)]
+    pub fn try_render_indices<E>(
+        &self,
+        model: impl FnOnce() -> Model,
+        indices: impl IntoIterator<Item = usize>,
+        cache_reads_index: Option<bool>,
+        create: impl Fn(RowContext<Model::Item>) -> Ui,
+        render: impl Fn(&Ui, usize, &dyn Fn() -> Model::Item, &State) -> Result<Node, E>,
+    ) -> Result<Vec<Node>, E> {
+        self.try_render_rows(
+            model,
+            |count| indices.into_iter().filter(move |&index| index < count),
+            cache_reads_index,
+            create,
+            render,
+        )
+    }
+
+    fn try_render_rows<I: Iterator<Item = usize>, E>(
+        &self,
+        model: impl FnOnce() -> Model,
+        indices: impl FnOnce(usize) -> I,
+        cache_reads_index: Option<bool>,
+        create: impl Fn(RowContext<Model::Item>) -> Ui,
+        render: impl Fn(&Ui, usize, &dyn Fn() -> Model::Item, &State) -> Result<Node, E>,
+    ) -> Result<Vec<Node>, E> {
         let model = self.model.get(|| Rc::new(model()));
         let count = model.row_count();
         let stamp = model.structure_stamp();
@@ -245,18 +338,18 @@ impl<Model: ListModel, State: Default, Ui> ComponentRepeater<Model, State, Ui> {
                     .clone();
                 row.sync(index, || model.item(index));
                 let draw = || {
-                    let mut node = render(&row.ui, index, &|| row.input.item(), &row.state);
-                    node.row_key = Some(key);
-                    node
+                    let mut node = render(&row.ui, index, &|| row.input.item(), &row.state)?;
+                    node.set_row_key(Some(key));
+                    Ok(node)
                 };
                 if let Some(reads_index) = cache_reads_index {
                     visible.insert(key);
                     let scene = self.scenes.borrow_mut().entry(key).or_default().clone();
-                    scene.get(|| {
+                    scene.try_get(|| {
                         if reads_index {
                             row.input.index();
                         }
-                        draw().into_shared()
+                        draw().map(Node::into_shared)
                     })
                 } else {
                     draw()
@@ -291,6 +384,38 @@ impl<Model: ListModel, State: Default, Ui> ComponentRepeater<Model, State, Ui> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn failed_row_scenes_can_be_retried_without_recreating_delegate_state() {
+        let model = VecModel::from(vec!["item".to_owned()]);
+        let repeater = ComponentRepeater::<VecModel<String>, (), ()>::default();
+        let creates = Cell::new(0);
+        let draws = Cell::new(0);
+        let render = |fail| {
+            repeater.try_render_indices(
+                || model.clone(),
+                [0],
+                Some(false),
+                |_| creates.set(creates.get() + 1),
+                |_, _, item, _| {
+                    draws.set(draws.get() + 1);
+                    if fail {
+                        return Err("render error");
+                    }
+                    let mut node = Node::new("Text", None);
+                    node.properties.insert("text", item().into());
+                    Ok(node)
+                },
+            )
+        };
+
+        assert_eq!(render(true), Err("render error"));
+        let first = render(false).unwrap();
+        let reused = render(false).unwrap();
+        assert_eq!((creates.get(), draws.get()), (1, 2));
+        assert_eq!(first[0].text("text"), Some("item"));
+        assert!(first[0].shares_storage_with(&reused[0]));
+    }
 
     #[test]
     fn cached_rows_reuse_only_visible_unchanged_scenes() {

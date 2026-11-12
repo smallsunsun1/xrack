@@ -1,4 +1,7 @@
-use crate::{Node, Value, decimal_separator, spin_text_is_valid, text_input_value};
+use crate::{
+    Node, Value, combo_editable, decimal_separator, is_text_input, spin_text_is_valid,
+    text_input_value,
+};
 use unicode_segmentation::UnicodeSegmentation;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -39,6 +42,14 @@ impl Node {
                 // An external update can leave the value over its limit. Let edits repair it.
                 length <= limit || length < text_input_value(self).graphemes(true).count()
             })
+    }
+
+    #[doc(hidden)]
+    pub fn accepts_editor_update(&self, text: &str) -> bool {
+        (is_text_input(self.kind) || combo_editable(self))
+            && !self.boolean("read-only", false)
+            && text_input_value(self) != text
+            && self.allows_text_edit(text)
     }
 
     /// Check whether the current value can be submitted by an editor.

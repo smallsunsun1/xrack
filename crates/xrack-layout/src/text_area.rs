@@ -16,6 +16,23 @@ pub enum TextAreaMotion {
     PageDown,
 }
 
+impl TextAreaMotion {
+    pub fn from_navigation(key: crate::NavigationKey, shortcut: bool) -> Option<Self> {
+        use crate::NavigationKey;
+        Some(match key {
+            NavigationKey::Left if !shortcut => Self::Left,
+            NavigationKey::Right if !shortcut => Self::Right,
+            NavigationKey::Home if !shortcut => Self::Home,
+            NavigationKey::End if !shortcut => Self::End,
+            NavigationKey::Up => Self::Up,
+            NavigationKey::Down => Self::Down,
+            NavigationKey::PageUp => Self::PageUp,
+            NavigationKey::PageDown => Self::PageDown,
+            _ => return None,
+        })
+    }
+}
+
 /// The same visual lines drive hit testing, selection, and drawing.
 #[derive(Clone)]
 pub struct TextAreaLayout {

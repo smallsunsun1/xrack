@@ -136,6 +136,36 @@ impl FallbackFace {
     }
 }
 
+#[derive(Clone, PartialEq)]
+enum SceneFonts {
+    Embedded(&'static EmbeddedFonts),
+    Loaded(xrack_runtime::LoadedFonts),
+}
+
+impl SceneFonts {
+    fn from_scene(scene: &Node) -> Option<Self> {
+        scene
+            .fonts
+            .map(Self::Embedded)
+            .or_else(|| scene.loaded_fonts.clone().map(Self::Loaded))
+    }
+
+    fn load(&self, database: &mut Database) {
+        match self {
+            Self::Embedded(fonts) => {
+                for &source in fonts.sources() {
+                    database.load_font_source(fontdb::Source::Binary(Arc::new(source)));
+                }
+            }
+            Self::Loaded(fonts) => {
+                for source in fonts.sources() {
+                    database.load_font_source(fontdb::Source::Binary(source.clone()));
+                }
+            }
+        }
+    }
+}
+
 struct FontContext {
     identity: Rc<()>,
     families: Vec<String>,
@@ -146,7 +176,7 @@ struct FontContext {
 }
 
 impl FontContext {
-    fn with_bundle(&self, sources: &[FallbackFace], fonts: &EmbeddedFonts) -> Self {
+    fn with_bundle(&self, sources: &[FallbackFace], fonts: &SceneFonts) -> Self {
         // FemtoVG tries its registered faces after the paint's fallback list.
         // A separate context keeps fonts from a previous scene out of that search.
         let context = TextContext::default();
@@ -163,9 +193,7 @@ impl FontContext {
             .collect();
         let system = self.catalog.borrow().db.clone();
         let mut db = Database::new();
-        for &source in fonts.sources() {
-            db.load_font_source(fontdb::Source::Binary(Arc::new(source)));
-        }
+        fonts.load(&mut db);
         let families = font_family_names(&system, Some(&db));
         let catalog = RefCell::new(FontCatalog::new(system, loaded, fallback.first().copied()));
         let bundled = Some(RefCell::new(FontCatalog::new(db, HashMap::new(), None)));
@@ -211,8 +239,8 @@ fn font_family_names(system: &Database, bundled: Option<&Database>) -> Vec<Strin
 pub struct TextSystem {
     base: FontContext,
     fallback_sources: Vec<FallbackFace>,
-    bundled: Option<(&'static EmbeddedFonts, FontContext)>,
-    active_fonts: Option<&'static EmbeddedFonts>,
+    bundled: Option<(SceneFonts, FontContext)>,
+    active_fonts: Option<SceneFonts>,
     default_family: String,
     default_weight: u16,
     default_italic: bool,
@@ -355,13 +383,17 @@ impl TextSystem {
     }
 
     pub fn set_window(&mut self, scene: &Node) {
-        if scene.fonts != self.active_fonts {
-            if let Some(fonts) = scene.fonts
-                && self.bundled.as_ref().is_none_or(|(last, _)| *last != fonts)
+        let fonts = SceneFonts::from_scene(scene);
+        if fonts != self.active_fonts {
+            if let Some(fonts) = &fonts
+                && self.bundled.as_ref().is_none_or(|(last, _)| last != fonts)
             {
-                self.bundled = Some((fonts, self.base.with_bundle(&self.fallback_sources, fonts)));
+                self.bundled = Some((
+                    fonts.clone(),
+                    self.base.with_bundle(&self.fallback_sources, fonts),
+                ));
             }
-            self.active_fonts = scene.fonts;
+            self.active_fonts = fonts;
             self.edit_layout.get_mut().take();
             self.edit_line.get_mut().take();
         }
@@ -385,7 +417,7 @@ impl TextSystem {
     }
 
     fn font_context(&self) -> &FontContext {
-        match (&self.bundled, self.active_fonts) {
+        match (&self.bundled, &self.active_fonts) {
             (Some((_, context)), Some(_)) => context,
             _ => &self.base,
         }
@@ -397,6 +429,15 @@ impl TextSystem {
 
     pub(crate) fn context_key(&self) -> &Rc<()> {
         &self.font_context().identity
+    }
+
+    pub(crate) fn default_style(&self) -> (&str, u16, bool, Option<f32>) {
+        (
+            &self.default_family,
+            self.default_weight,
+            self.default_italic,
+            self.default_size,
+        )
     }
 
     fn face(&self, node: Option<&Node>, style: TextStyle) -> Option<StyledFace> {

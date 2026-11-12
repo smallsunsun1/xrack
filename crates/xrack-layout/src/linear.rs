@@ -273,6 +273,16 @@ pub(crate) fn measure_with_width(
     assigned_width: Option<f32>,
     text: &mut impl TextMeasurer,
 ) -> Metrics {
+    // Explicit sizes replace both intrinsic axes in with_properties. Leave
+    // shaping and image fitting to the painter for fixed-size leaves.
+    if matches!(node.kind, "Text" | "Label" | "Image" | "AnimatedImage")
+        && let (Some(width), Some(height)) = (node.length("width"), node.length("height"))
+    {
+        return Metrics {
+            x: AxisInfo::fixed(width.max(0.0)),
+            y: AxisInfo::fixed(height.max(0.0)),
+        };
+    }
     let relative_width = |name| {
         node.relative_length(name, reference.width)
             .map(|value| value.max(0.0))
@@ -501,7 +511,7 @@ pub(crate) fn measure_with_width(
             }
             "Button" | "ToolButton" | "RoundButton" | "DialogButton" | "DelayButton" => {
                 let button = ButtonContent::new(node);
-                let icon = button.icon.map_or(0.0, |(_, size)| size);
+                let icon = button.icon.as_ref().map_or(0.0, |(_, size)| *size);
                 let chrome = 2.0 * button.padding;
                 let decoration = icon + button.gap();
                 let label = if button.label.is_empty() {
@@ -524,7 +534,7 @@ pub(crate) fn measure_with_width(
                 )
             }
             "Image" | "AnimatedImage" => {
-                let source = node.image("source").unwrap_or_default().size();
+                let source = node.image_asset("source").unwrap_or_default().size();
                 let [width, height] = crate::ImageRegion::for_node(node, source).size();
                 if width == 0 || height == 0 {
                     Size::default()

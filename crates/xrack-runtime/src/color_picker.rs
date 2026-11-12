@@ -119,21 +119,38 @@ impl ColorPopupState {
 
     // Used by older xrackc output, which has no hex edit route.
     pub fn populate(&self, dialog: &mut Node, initial: impl FnOnce() -> Color) {
-        self.populate_inner(dialog, initial, false);
+        self.try_populate_inner(
+            dialog,
+            || Ok::<_, std::convert::Infallible>(initial()),
+            false,
+        )
+        .unwrap_or_else(|error| match error {});
     }
 
     pub fn populate_editor(&self, dialog: &mut Node, initial: impl FnOnce() -> Color) {
-        self.populate_inner(dialog, initial, true);
+        self.try_populate_editor(dialog, || Ok::<_, std::convert::Infallible>(initial()))
+            .unwrap_or_else(|error| match error {});
     }
 
-    fn populate_inner(
+    pub fn try_populate_editor<E>(
         &self,
         dialog: &mut Node,
-        initial: impl FnOnce() -> Color,
+        initial: impl FnOnce() -> Result<Color, E>,
+    ) -> Result<(), E> {
+        self.try_populate_inner(dialog, initial, true)
+    }
+
+    fn try_populate_inner<E>(
+        &self,
+        dialog: &mut Node,
+        initial: impl FnOnce() -> Result<Color, E>,
         editable_hex: bool,
-    ) {
-        let Some(draft) = self.0.begin(dialog, || ColorDraft::new(initial())) else {
-            return;
+    ) -> Result<(), E> {
+        let Some(draft) = self
+            .0
+            .try_begin(dialog, || initial().map(ColorDraft::new))?
+        else {
+            return Ok(());
         };
         dialog
             .properties
@@ -224,6 +241,7 @@ impl ColorPopupState {
                 .properties
                 .insert("enabled", false.into());
         }
+        Ok(())
     }
 
     fn color_plane(&self, hsv: Hsv) -> Node {

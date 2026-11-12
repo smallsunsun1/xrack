@@ -128,13 +128,117 @@ xr_ui_library(
     src = "expressions.xr",
 )
 
+xr_ui_library(
+    name = "constant_record_ui",
+    src = "pass_cases/constant_record.xr",
+)
+
 rust_test(
     name = "expressions_test",
     srcs = ["expressions_test.rs"],
     edition = "2024",
     deps = [
+        ":constant_record_ui",
         ":expressions_ui",
         "//crates/xrack-layout:xrack_layout",
         "//crates/xrack-runtime:xrack_runtime",
+    ],
+)
+
+xr_ui_library(
+    name = "cargo_counter_ui",
+    src = "//examples/cargo-consumer:ui/counter.xr",
+    sources = ["//examples/cargo-consumer:ui/label.xr"],
+)
+
+xr_ui_library(
+    name = "cargo_label_ui",
+    src = "//examples/cargo-consumer:ui/label.xr",
+)
+
+xr_ui_library(
+    name = "font_sample_ui",
+    src = "//examples/layout:fonts/sample.xr",
+    assets = ["//examples/layout:fonts/demo.ttc"],
+)
+
+xr_ui_library(
+    name = "widgets_ui",
+    src = "//examples/form:widgets.xr",
+)
+
+rust_test(
+    name = "interpreter_parity_test",
+    size = "small",
+    srcs = ["interpreter_examples.rs", "interpreter_parity_test.rs", "ui_driver.rs"],
+    data = [
+        "//examples/cargo-consumer:ui/label.xr",
+        "//examples/form:widgets.xr",
+        "//examples/layout:bundled_sources",
+        "//examples/media:media_sources",
+        "//examples/menu:assets/grid.svg",
+        "//examples/tray:tray_sources",
+    ],
+    compile_data = [
+        "expressions.xr",
+        "//examples/cargo-consumer:ui/counter.xr",
+        "//examples/cargo-consumer:ui/label.xr",
+        "//examples/async_demo:async.xr",
+        "//examples/controls:controls.xr",
+        "//examples/counter:counter.xr",
+        "//examples/delegates:delegates.xr",
+        "//examples/dialog:dialog.xr",
+        "//examples/form:form.xr",
+        "//examples/form:widgets.xr",
+        "//examples/layout:bundled_sources",
+        "//examples/layout:layout.xr",
+        "//examples/list:list.xr",
+        "//examples/media:media_sources",
+        "//examples/menu:menu.xr",
+        "//examples/navigation:navigation.xr",
+        "//examples/notes:notes.xr",
+        "//examples/painting:gallery.xr",
+        "//examples/selection:selection.xr",
+        "//examples/split:split.xr",
+        "//examples/stepper:stepper.xr",
+        "//examples/table:records.xr",
+        "//examples/table:table.xr",
+        "//examples/tooltip:tooltip.xr",
+        "//examples/tray:tray_sources",
+        "//examples/tree:tree.xr",
+    ],
+    edition = "2024",
+    deps = [
+        ":cargo_counter_ui",
+        ":cargo_label_ui",
+        ":expressions_ui",
+        ":font_sample_ui",
+        ":widgets_ui",
+        "//crates/xrack-compiler:xrack_compiler",
+        "//crates/xrack-interpreter:xrack_interpreter",
+        "//crates/xrack-layout:xrack_layout",
+        "//crates/xrack-runtime:xrack_runtime",
+        "//examples/async_demo:async_ui",
+        "//examples/controls:controls_ui",
+        "//examples/counter:counter_ui",
+        "//examples/delegates:delegates_ui",
+        "//examples/dialog:dialog_ui",
+        "//examples/form:form_ui",
+        "//examples/layout:bundled_ui",
+        "//examples/layout:layout_ui",
+        "//examples/list:list_ui",
+        "//examples/media:media_ui",
+        "//examples/menu:menu_ui",
+        "//examples/navigation:navigation_ui",
+        "//examples/notes:notes_ui",
+        "//examples/painting:painting_ui",
+        "//examples/selection:selection_ui",
+        "//examples/split:split_ui",
+        "//examples/stepper:stepper_ui",
+        "//examples/table:records_ui",
+        "//examples/table:table_ui",
+        "//examples/tooltip:tooltip_ui",
+        "//examples/tray:tray_ui",
+        "//examples/tree:tree_ui",
     ],
 )

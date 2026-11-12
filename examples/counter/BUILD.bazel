@@ -1,6 +1,8 @@
 load("//bazel:xrack.bzl", "xr_ui_library")
 load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_test")
 
+exports_files(["counter.xr"])
+
 xr_ui_library(
     name = "counter_ui",
     src = "counter.xr",

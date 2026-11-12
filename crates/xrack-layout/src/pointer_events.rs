@@ -5,6 +5,14 @@ use xrack_runtime::{
     PointerHandle,
 };
 
+pub fn pointer_click_follows(previous: (Point, Instant), current: (Point, Instant)) -> bool {
+    current
+        .1
+        .checked_duration_since(previous.1)
+        .is_some_and(|elapsed| elapsed <= Duration::from_millis(450))
+        && (current.0.x - previous.0.x).hypot(current.0.y - previous.0.y) <= 6.0
+}
+
 enum PressAndHold {
     Pending {
         origin: Point,
@@ -56,10 +64,9 @@ pub(crate) fn local_position(item: &LayoutNode, point: Point) -> Option<(Point, 
 }
 
 fn live_handler(scene: &Node, target: &Target, handle: &PointerHandle) -> bool {
-    scene.row_key_at(&target.path) == target.row_key
-        && scene
-            .at_path(&target.path)
-            .is_some_and(|node| node.pointer_handle.as_ref() == Some(handle))
+    target
+        .node_in(scene)
+        .is_some_and(|node| node.pointer_handle.as_ref() == Some(handle))
 }
 
 impl PointerSequence {

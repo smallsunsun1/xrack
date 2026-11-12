@@ -1,4 +1,5 @@
 use crate::Property;
+use std::cell::{Cell, RefCell};
 
 /// Native state reported by the host. Some window managers do not report minimization.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -49,6 +50,44 @@ impl WindowStatusBinding {
         ]) {
             property.set_if_changed(value);
         }
+    }
+}
+
+#[doc(hidden)]
+#[derive(Default)]
+pub struct WindowLifecycle {
+    status: WindowStatusBinding,
+    close: Cell<bool>,
+    commands: RefCell<Vec<WindowCommand>>,
+}
+
+impl WindowLifecycle {
+    pub fn get(&self, metric: WindowMetric) -> bool {
+        self.status.get(metric)
+    }
+
+    pub fn publish(&self, status: WindowStatus) {
+        self.status.publish(status);
+    }
+
+    pub fn request_close(&self) {
+        self.close.set(true);
+    }
+
+    pub fn take_close_request(&self) -> bool {
+        self.close.replace(false)
+    }
+
+    pub fn request(&self, command: WindowCommand) {
+        self.commands.borrow_mut().push(command);
+    }
+
+    pub fn take_commands(&self) -> Vec<WindowCommand> {
+        self.commands.take()
+    }
+
+    pub fn has_commands(&self) -> bool {
+        !self.commands.borrow().is_empty()
     }
 }
 

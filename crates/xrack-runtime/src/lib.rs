@@ -7,6 +7,7 @@ pub const CODEGEN_ABI_VERSION: u32 = 1;
 mod animation;
 mod button_group;
 mod calendar;
+mod callback;
 mod child_window;
 mod color_picker;
 mod combo;
@@ -19,6 +20,7 @@ mod font_picker;
 mod geometry;
 mod hover;
 mod image_animation;
+mod image_asset;
 mod keyboard;
 mod list;
 mod localization;
@@ -28,6 +30,8 @@ mod picker;
 mod pointer;
 mod property;
 mod range;
+mod record;
+pub use record::{RecordList, RecordRowValidator, RecordValue};
 mod repeat;
 mod row_heights;
 mod scale_rotate;
@@ -51,11 +55,14 @@ pub use animation::{Animation, Easing, SceneTransition, StateTiming};
 #[doc(hidden)]
 pub use button_group::{
     ButtonGroup, ButtonGroupMembership, ButtonGroupSelection, RadioMembership, bind_button_group,
-    bind_check_group, radio_value, summarize_checks,
+    bind_check_group, bind_dynamic_button_group, radio_value, summarize_checks,
+    try_summarize_checks,
 };
 pub use calendar::{CalendarAction, CalendarState, Date, is_calendar_control};
 #[doc(hidden)]
 pub use calendar::{CalendarCell, CalendarCells, DateBounds, DatePopupState};
+#[doc(hidden)]
+pub use callback::CallbackSlot;
 #[doc(hidden)]
 pub use child_window::{SecondaryWindowRegistration, SecondaryWindowSlot};
 #[doc(hidden)]
@@ -94,6 +101,7 @@ pub use hover::{CursorShape, HoverHandle};
 pub use image_animation::{ImageAnimation, ImageAnimationFrame};
 #[doc(hidden)]
 pub use image_animation::{ImagePlaybackQueue, ImagePlaybackRegistration, ImagePlaybackSlot};
+pub use image_asset::{ImageAsset, ImageIdentity, ImagePixels, LoadedAnimation, LoadedImage};
 pub use keyboard::{EventResult, KeyEvent, KeyModifiers, KeyPhase, WheelEvent};
 pub use list::{ListMetrics, RowKey};
 #[doc(hidden)]
@@ -126,13 +134,14 @@ pub use range::{
     SliderRange, indicator_state, progress_value,
 };
 #[doc(hidden)]
-pub use repeat::Repeater;
+pub use repeat::{Repeater, static_repeat_scene};
 #[doc(hidden)]
 pub use row_heights::{RowHeightOverrides, RowHeightProjection, RowHeights};
 pub use scale_rotate::{ScaleRotateHandle, ScaleRotateSample};
 #[doc(hidden)]
 pub use scene_plan::{
-    GridCellPosition, GridCellSlot, GridPlanner, GridTrackInput, StaticVectorPath, VectorSegment,
+    GridCellPosition, GridCellSlot, GridPlanner, GridTrackInput, LoadedVectorPath, ScenePlanSlice,
+    StaticVectorPath, VectorSegment,
 };
 #[doc(hidden)]
 pub use split::{
@@ -153,11 +162,14 @@ pub use table_clipboard::{
 pub use table_history::{TableEditHistory, TablePasteHistory, TableRowPatch};
 pub use table_rows::{
     TableEditPosition, TableRowOrder, TableRowPositions, TableRows, next_table_edit_cell,
+    try_next_table_edit_cell,
 };
 pub use table_selection::{
     RowSelection, SelectionTarget, TableSelection, TableSelectionAction, TableSelectionSnapshot,
 };
-pub use table_selection::{copy_table_text, copy_table_text_in_order};
+pub use table_selection::{
+    copy_table_text, copy_table_text_in_order, try_copy_table_text_in_order,
+};
 pub use text_input::InputType;
 pub use time_picker::Time;
 #[doc(hidden)]
@@ -176,7 +188,7 @@ pub use viewport::{
 };
 pub use window_status::{WindowCommand, WindowStatus};
 #[doc(hidden)]
-pub use window_status::{WindowMetric, WindowStatusBinding};
+pub use window_status::{WindowLifecycle, WindowMetric, WindowStatusBinding};
 
 /// A UI-thread handle that can be captured by callbacks without keeping a component alive.
 pub struct WeakComponent<C>(Rc<dyn Fn() -> Option<C>>);
@@ -374,7 +386,7 @@ pub trait Component {
     fn dispatch_at(&mut self, scene: &Node, path: &[usize], event: &str) -> bool {
         scene
             .at_path(path)
-            .and_then(|node| node.id)
+            .and_then(Node::element_id)
             .is_some_and(|id| self.dispatch(id, event))
     }
 }
@@ -688,6 +700,35 @@ impl std::fmt::Debug for EmbeddedFonts {
     }
 }
 
+/// Owned font data shared by the roots of an interpreted UI.
+#[derive(Clone)]
+pub struct LoadedFonts(Arc<Vec<Arc<Vec<u8>>>>);
+
+impl LoadedFonts {
+    pub fn new(fonts: Vec<Vec<u8>>) -> Self {
+        Self(Arc::new(fonts.into_iter().map(Arc::new).collect()))
+    }
+
+    pub fn sources(&self) -> &[Arc<Vec<u8>>] {
+        &self.0
+    }
+}
+
+impl std::fmt::Debug for LoadedFonts {
+    fn fmt(&self, output: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        output
+            .debug_struct("LoadedFonts")
+            .field("count", &self.0.len())
+            .finish()
+    }
+}
+
+impl PartialEq for LoadedFonts {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum ImageFit {
     Fill,
@@ -925,18 +966,31 @@ impl Default for Brush {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Value {
+    EventResult(EventResult),
+    FocusReason(FocusReason),
+    KeyEvent(KeyEvent),
+    WheelEvent(WheelEvent),
+    PointerEvent(PointerEvent),
+    TouchPoint(TouchPoint),
+    TouchPoints(TouchPoints),
+    KeyModifiers(KeyModifiers),
     Int(i64),
     Float(f64),
     Bool(bool),
     String(String),
     StyledText(StyledText),
     StringList(Vec<String>),
+    /// A live string list whose row identities are shared by its bindings.
+    StringModel(VecModel<String>),
+    Record(RecordValue),
+    RecordList(RecordList),
     ComboModel(ComboModel),
     Length(Length),
     Percent(Percent),
     Color(Color),
     Brush(Brush),
     Image(Image),
+    ImageAsset(ImageAsset),
     ImageFit(ImageFit),
     ImageTileMode(ImageTileMode),
     ImageHorizontalAlignment(ImageHorizontalAlignment),
@@ -978,6 +1032,20 @@ pub enum Value {
     Date(Date),
     Time(Time),
     Font(Font),
+}
+
+impl Value {
+    /// Compare a host image and an image asset using their shared image semantics.
+    #[doc(hidden)]
+    pub fn eq_with_image_assets(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Image(embedded), Self::ImageAsset(asset))
+            | (Self::ImageAsset(asset), Self::Image(embedded)) => {
+                ImageAsset::from(*embedded) == *asset
+            }
+            _ => self == other,
+        }
+    }
 }
 
 macro_rules! value_from {
@@ -1074,9 +1142,12 @@ pub struct NodeData {
     #[doc(hidden)]
     pub application_window: bool,
     pub id: Option<&'static str>,
+    owned_id: Option<Arc<str>>,
     pub properties: BTreeMap<&'static str, Value>,
     #[doc(hidden)]
     pub fonts: Option<&'static EmbeddedFonts>,
+    #[doc(hidden)]
+    pub loaded_fonts: Option<LoadedFonts>,
     pub tumbler_items: Option<TumblerItems>,
     pub children: Vec<Node>,
     #[doc(hidden)]
@@ -1143,6 +1214,8 @@ pub struct NodeData {
     #[doc(hidden)]
     pub split_fill_pane: Option<&'static str>,
     #[doc(hidden)]
+    pub split_fill_index: Option<usize>,
+    #[doc(hidden)]
     pub split_sizes: Option<Arc<[Option<f32>]>>,
     #[doc(hidden)]
     pub split_resize_handle: Option<SplitResizeHandle>,
@@ -1150,9 +1223,10 @@ pub struct NodeData {
     #[doc(hidden)]
     pub row_scope: u64,
     paint_only: u8,
-    static_paint_order: Option<&'static [usize]>,
+    static_paint_order: Option<ScenePlanSlice<usize>>,
     precompiled_path: Option<&'static StaticVectorPath>,
-    static_grid: Option<&'static [GridCellSlot]>,
+    loaded_path: Option<LoadedVectorPath>,
+    static_grid: Option<ScenePlanSlice<GridCellSlot>>,
 }
 
 impl std::ops::Deref for Node {
@@ -1196,7 +1270,9 @@ impl NodeData {
             table_column_window,
             application_window,
             id,
+            owned_id,
             fonts,
+            loaded_fonts,
             tumbler_items,
             timers,
             image_playback,
@@ -1232,11 +1308,13 @@ impl NodeData {
             tree_selection,
             split_weights,
             split_fill_pane,
+            split_fill_index,
             split_sizes,
             split_resize_handle,
             row_key,
             row_scope,
             precompiled_path,
+            loaded_path,
             static_grid,
             static_paint_order,
         )
@@ -1259,6 +1337,66 @@ pub fn is_multiline_text_input(kind: &str) -> bool {
 
 pub fn is_toggle(kind: &str) -> bool {
     matches!(kind, "CheckBox" | "Switch")
+}
+
+/// Whether a handler can be invoked through dispatch without an event payload.
+#[doc(hidden)]
+pub fn supports_untyped_dispatch(kind: &str, event: &str) -> bool {
+    if matches!(event, "scrolled" | "flicked") || (kind == "SwipeDelegate" && event == "clicked") {
+        return true;
+    }
+    !matches!(
+        event,
+        "check-state-changed" | "close-requested" | "pointer-event" | "scroll-event"
+    ) && !is_multiline_text_input(kind)
+        && !matches!(
+            kind,
+            "Slider"
+                | "WheelHandler"
+                | "Dial"
+                | "ScrollBar"
+                | "RangeSlider"
+                | "SpinBox"
+                | "DoubleSpinBox"
+                | "SearchField"
+                | "ComboBox"
+                | "RadioGroup"
+                | "ButtonGroup"
+                | "TabWidget"
+                | "TabBar"
+                | "SwipeView"
+                | "SwipeDelegate"
+                | "StackView"
+                | "StackPage"
+                | "PageIndicator"
+                | "Tumbler"
+                | "Calendar"
+                | "MonthGrid"
+                | "TimePicker"
+                | "TimePickerPopup"
+                | "DatePickerPopup"
+                | "ColorPickerPopup"
+                | "FontPickerPopup"
+                | "ListView"
+                | "GridView"
+                | "StandardListView"
+                | "TableView"
+                | "StandardTableView"
+                | "SplitView"
+                | "TreeView"
+                | "Dialog"
+                | "Drawer"
+                | "PopupWindow"
+                | "MenuItem"
+                | "Shortcut"
+                | "DelayButton"
+                | "FocusScope"
+                | "StyledText"
+                | "AnimatedImage"
+                | "DragArea"
+                | "DropArea"
+                | "GroupBox"
+        )
 }
 
 impl Node {
@@ -1318,8 +1456,10 @@ impl Node {
             kind,
             application_window: false,
             id,
+            owned_id: None,
             properties: BTreeMap::new(),
             fonts: None,
+            loaded_fonts: None,
             tumbler_items: None,
             children: Vec::new(),
             table_column_window: TableColumnWindow::default(),
@@ -1357,6 +1497,7 @@ impl Node {
             tree_selection: None,
             split_weights: None,
             split_fill_pane: None,
+            split_fill_index: None,
             split_sizes: None,
             split_resize_handle: None,
             row_key: None,
@@ -1364,6 +1505,7 @@ impl Node {
             paint_only: 0,
             static_paint_order: None,
             precompiled_path: None,
+            loaded_path: None,
             static_grid: None,
         }))
     }
@@ -1395,6 +1537,18 @@ impl Node {
         self.precompiled_path
             .filter(|path| path.commands == commands)
     }
+    #[doc(hidden)]
+    pub fn set_loaded_vector_path(&mut self, path: LoadedVectorPath) {
+        self.loaded_path = Some(path);
+    }
+
+    #[doc(hidden)]
+    pub fn vector_path_geometry(&self, commands: &str) -> Option<([f32; 4], &[VectorSegment])> {
+        self.precompiled_path(commands)
+            .map(|path| (path.bounds, path.segments))
+            .or_else(|| self.loaded_path.as_ref()?.geometry(commands))
+    }
+
     /// Mark a generated Rectangle's background as independent of layout and input.
 
     fn data_mut(&mut self) -> &mut NodeData {
@@ -1406,28 +1560,72 @@ impl Node {
 
     #[doc(hidden)]
     pub fn set_static_grid(&mut self, cells: &'static [GridCellSlot]) {
-        self.data_mut().static_grid = Some(cells);
+        self.data_mut().static_grid = Some(ScenePlanSlice::Static(cells));
     }
 
     #[doc(hidden)]
-    pub fn static_grid(&self) -> Option<&'static [GridCellSlot]> {
-        self.static_grid
+    pub fn set_shared_grid(&mut self, cells: Arc<[GridCellSlot]>) {
+        self.data_mut().static_grid = Some(ScenePlanSlice::Shared(cells));
+    }
+
+    #[doc(hidden)]
+    pub fn static_grid(&self) -> Option<&[GridCellSlot]> {
+        self.static_grid.as_deref()
     }
 
     #[doc(hidden)]
     pub fn set_static_paint_order(&mut self, order: &'static [usize]) {
-        self.data_mut().static_paint_order = Some(order);
+        self.data_mut().static_paint_order =
+            (!order.is_empty()).then_some(ScenePlanSlice::Static(order));
     }
 
     #[doc(hidden)]
-    pub fn static_paint_order(&self) -> Option<&'static [usize]> {
+    pub fn set_shared_paint_order(&mut self, order: Arc<[usize]>) {
+        self.data_mut().static_paint_order = Some(ScenePlanSlice::Shared(order));
+    }
+
+    #[doc(hidden)]
+    pub fn set_natural_paint_order(&mut self) {
+        self.data_mut().static_paint_order = Some(ScenePlanSlice::Static(&[]));
+    }
+
+    #[doc(hidden)]
+    pub fn has_natural_paint_order(&self) -> bool {
         self.static_paint_order
+            .as_deref()
+            .is_some_and(<[usize]>::is_empty)
+    }
+
+    #[doc(hidden)]
+    pub fn static_paint_order(&self) -> Option<&[usize]> {
+        self.paint_order_plan().map(std::ops::Deref::deref)
+    }
+
+    #[doc(hidden)]
+    pub fn paint_order_plan(&self) -> Option<&ScenePlanSlice<usize>> {
+        self.static_paint_order
+            .as_ref()
+            .filter(|order| !order.is_empty())
+    }
+
+    #[doc(hidden)]
+    pub fn set_loaded_fonts(&mut self, fonts: Option<LoadedFonts>) {
+        self.data_mut().loaded_fonts = fonts;
+    }
+
+    #[doc(hidden)]
+    pub fn set_row_key(&mut self, key: Option<RowKey>) {
+        if self.row_key != key {
+            self.data_mut().row_key = key;
+        }
     }
 
     fn paint_only_bit(&self, property: &str) -> u8 {
         match (self.kind, property) {
             ("Rectangle", "background") => 1,
             ("Text", "color") => 2,
+            ("Text" | "Label", "text") => 4,
+            ("Image", "source") => 8,
             _ => 0,
         }
     }
@@ -1453,7 +1651,12 @@ impl Node {
         let ignore_frame = self.kind == "AnimatedImage" && other.kind == "AnimatedImage";
         let ignore_colorize =
             matches!(self.kind, "Image" | "AnimatedImage") && self.kind == other.kind;
+        let fixed_visual_box =
+            |node: &Self| node.length("width").is_some() && node.length("height").is_some();
         let relevant = |(name, _): &(&&str, &Value)| match **name {
+            "text" | "source" if paint_only & self.paint_only_bit(name) != 0 => {
+                !fixed_visual_box(self) || !fixed_visual_box(other)
+            }
             name if paint_only & self.paint_only_bit(name) != 0 => false,
             "opacity" => false,
             "drop-shadow-blur"
@@ -1483,14 +1686,53 @@ impl Node {
                 .zip(&other.children)
                 .all(|(child, other)| child.same_frame_inputs(other))
     }
+
+    /// Compare a paint layer's content independently of its composited opacity.
+    #[doc(hidden)]
+    pub fn same_paint_except_opacity(&self, other: &Self) -> bool {
+        let without_opacity = |(name, _): &(&&str, &Value)| **name != "opacity";
+        self.shares_storage_with(other)
+            || self.same_structure_and_state(other)
+                && self
+                    .properties
+                    .iter()
+                    .filter(without_opacity)
+                    .eq(other.properties.iter().filter(without_opacity))
+                && self.children == other.children
+    }
     /// An empty slot keeps the generated event paths stable across conditional renders.
     pub fn hidden() -> Self {
         let mut node = Self::new("Empty", None);
         node.properties.insert("visible", Value::Bool(false));
         node
     }
+    /// The source ID of a named element, including elements loaded at runtime.
+    pub fn element_id(&self) -> Option<&str> {
+        self.id.or(self.owned_id.as_deref())
+    }
+
+    #[doc(hidden)]
+    pub fn shared_element_id(&self) -> Option<Arc<str>> {
+        self.owned_id.clone()
+    }
+
+    #[doc(hidden)]
+    pub fn element_id_owned(&self) -> Option<std::borrow::Cow<'static, str>> {
+        use std::borrow::Cow;
+        self.id
+            .map(Cow::Borrowed)
+            .or_else(|| self.owned_id.as_ref().map(|id| Cow::Owned(id.to_string())))
+    }
+
+    #[doc(hidden)]
+    pub fn set_owned_id(&mut self, id: Option<Arc<str>>) {
+        let data = self.data_mut();
+        data.id = None;
+        data.owned_id = id;
+    }
+
     pub fn find(&self, id: &str) -> Option<&Node> {
-        if self.id == Some(id) {
+        if self.element_id() == Some(id) {
             Some(self)
         } else {
             self.children.iter().find_map(|n| n.find(id))
@@ -1642,6 +1884,13 @@ impl Node {
         }
     }
 
+    #[doc(hidden)]
+    pub fn accepts_swipe_side(&self, current: SwipeSide, side: SwipeSide) -> bool {
+        self.swipe_side() == current
+            && current != side
+            && (side == SwipeSide::Closed || self.swipe_panel(side).is_some())
+    }
+
     pub fn swipe_panel(&self, side: SwipeSide) -> Option<&Node> {
         let kind = side.panel()?;
         self.children
@@ -1694,7 +1943,9 @@ impl Node {
 
     pub fn stack_page_index(&self) -> Option<usize> {
         let page = self.stack.as_ref()?.current()?;
-        self.children.iter().position(|node| node.id == Some(page))
+        self.children
+            .iter()
+            .position(|node| node.text("__stack-route").or_else(|| node.element_id()) == Some(page))
     }
 
     pub fn int(&self, name: &str) -> Option<i64> {
@@ -1707,6 +1958,14 @@ impl Node {
     pub fn image(&self, name: &str) -> Option<Image> {
         match self.properties.get(name) {
             Some(Value::Image(value)) => Some(*value),
+            _ => None,
+        }
+    }
+
+    pub fn image_asset(&self, name: &str) -> Option<ImageAsset> {
+        match self.properties.get(name) {
+            Some(Value::Image(value)) => Some((*value).into()),
+            Some(Value::ImageAsset(value)) => Some(value.clone()),
             _ => None,
         }
     }
@@ -1785,6 +2044,25 @@ impl Node {
             node = child;
         }
         (node.is_visible() && node.boolean("enabled", true)).then_some(node)
+    }
+
+    /// Resolve a scene target for an event without an explicit payload.
+    #[doc(hidden)]
+    pub fn dispatch_target(&self, path: &[usize], event: &str) -> Option<&Self> {
+        let node = self.at_path(path)?;
+        let terminal = matches!(
+            (node.kind, event),
+            ("ScaleRotateGestureHandler", "ended" | "cancelled")
+                | ("SwipeGestureHandler", "swiped" | "cancelled")
+                | ("HoverHandler", "exited")
+        );
+        let target = if terminal {
+            node
+        } else {
+            self.interactive_at_path(path)?
+        };
+        (event != "accepted" || !is_text_input(target.kind) || target.accepts_text_submission())
+            .then_some(target)
     }
 
     pub fn group_checkable(&self) -> bool {

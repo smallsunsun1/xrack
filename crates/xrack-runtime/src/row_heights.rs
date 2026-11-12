@@ -117,11 +117,12 @@ fn projected_height(value: Length) -> Option<f32> {
 }
 
 impl RowHeightProjection {
+    /// Keep the field selector fixed for this projection's lifetime.
     pub fn snapshot<T: 'static>(
         &self,
         model: &VecModel<T>,
         base: f32,
-        project: fn(&T) -> Length,
+        project: impl Fn(&T) -> Length + Clone + 'static,
     ) -> Option<Arc<RowHeights>> {
         self.project(model, base, None, None, project)
     }
@@ -131,17 +132,18 @@ impl RowHeightProjection {
         model: &VecModel<T>,
         base: f32,
         tree: &Arc<TreeSnapshot>,
-        project: fn(&T) -> Length,
+        project: impl Fn(&T) -> Length + Clone + 'static,
     ) -> Option<Arc<RowHeights>> {
         self.project(model, base, Some(tree), None, project)
     }
 
+    /// Project the same field in the current displayed row order.
     pub fn table_snapshot<T: 'static>(
         &self,
         model: &VecModel<T>,
         base: f32,
         positions: &TableRowPositions,
-        project: fn(&T) -> Length,
+        project: impl Fn(&T) -> Length + Clone + 'static,
     ) -> Option<Arc<RowHeights>> {
         self.project(model, base, None, Some(positions), project)
     }
@@ -152,7 +154,7 @@ impl RowHeightProjection {
         base: f32,
         tree: Option<&Arc<TreeSnapshot>>,
         table: Option<&TableRowPositions>,
-        field: fn(&T) -> Length,
+        field: impl Fn(&T) -> Length + Clone + 'static,
     ) -> Option<Arc<RowHeights>> {
         let stamp = model.structure_stamp();
         let table_stamp = table.map(TableRowPositions::stamp);
@@ -184,6 +186,7 @@ impl RowHeightProjection {
                 {
                     let updates = FieldUpdates::default();
                     let pending = Rc::downgrade(&updates);
+                    let project = project.clone();
                     let changed =
                         model.observe_projection_changes(MAX_ROWS, move |index, old, new| {
                             let before = project(old);

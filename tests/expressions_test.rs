@@ -1,11 +1,185 @@
 use expressions_ui::{
-    EmbeddedList, Expressions, GradientPlans, GridPlans, LazyList, LazyProperties, ModelBindings,
-    RadioByValue, ScenePlans, SelectionByValue, SharedVisuals,
+    EmbeddedList, Expressions, FixedTextUpdates, GradientPlans, GridPlans, LazyList,
+    LazyProperties, LocalAliasUpdates, ModelBindings, RadioByValue, ScenePlans, SelectionByValue,
+    SharedVisuals,
 };
 use std::{cell::Cell, rc::Rc};
 use xrack_runtime::{
     Color, Component, ControlAction, Length, Value, VecModel, combo_index, group_index,
 };
+
+#[test]
+fn anonymous_static_scenes_and_gradient_stops_share_storage() {
+    use std::sync::Arc;
+    use xrack_runtime::Brush;
+
+    let first = expressions_ui::InternedScenes::new().render_shared();
+    let second = expressions_ui::InternedScenes::new().render_shared();
+    assert!(first.children[0].shares_storage_with(&first.children[1]));
+    assert!(first.children[0].shares_storage_with(&second.children[1]));
+    let mut edited = first.children[0].clone();
+    edited
+        .properties
+        .insert("text", "changed".to_owned().into());
+    assert_eq!(second.children[1].text("text"), Some("Same"));
+    assert!(!edited.shares_storage_with(&second.children[1]));
+    fn stops(node: &xrack_runtime::Node) -> &Arc<[xrack_runtime::GradientStop]> {
+        match node.properties.get("background").unwrap() {
+            Value::Brush(Brush::Linear { stops, .. }) => stops,
+            _ => panic!("expected linear gradient"),
+        }
+    }
+    assert!(Arc::ptr_eq(
+        stops(&first.children[2]),
+        stops(&second.children[3])
+    ));
+    let before = first
+        .find("observed")
+        .unwrap()
+        .geometry_handle
+        .as_ref()
+        .unwrap();
+    let after = second
+        .find("observed")
+        .unwrap()
+        .geometry_handle
+        .as_ref()
+        .unwrap();
+    assert_ne!(before, after);
+}
+
+#[test]
+fn fixed_image_source_updates_preserve_layout_but_intrinsic_sources_do_not() {
+    use xrack_runtime::{Image, ImageFormat};
+
+    let mut ui = expressions_ui::FixedImageUpdates::new();
+    let before = ui.render_shared();
+    let image = Image::Embedded {
+        format: ImageFormat::Png,
+        bytes: &[],
+        size: [48, 24],
+    };
+    ui.set_picture(image.into());
+    let fixed = ui.render_shared();
+    assert_eq!(
+        fixed.children[0].image_asset("source").unwrap().size(),
+        [48, 24]
+    );
+    assert!(before.same_frame_inputs(&fixed));
+    ui.set_intrinsic_picture(image.into());
+    assert!(!fixed.same_frame_inputs(&ui.render_shared()));
+}
+
+#[test]
+fn builtin_constant_projection_matches_runtime_time_normalization() {
+    let mut ui = expressions_ui::StaticBuiltinValues::new();
+    assert_eq!(
+        (
+            ui.get_fixed_hour(),
+            ui.get_fixed_minute(),
+            ui.get_fixed_second()
+        ),
+        (23, 0, 59)
+    );
+    assert_eq!(ui.get_live_hour(), 23);
+    ui.set_live(xrack_runtime::Time::new(8, 0, 0).unwrap());
+    assert_eq!(ui.get_live_hour(), 8);
+    assert_eq!(ui.get_fixed_hour(), 23);
+    assert_eq!(ui.get_date_day(), 12);
+    assert_eq!(ui.get_font_size_value(), Length(18.0));
+}
+
+#[test]
+fn empty_repeats_keep_slots_and_skip_rows_without_changing_dynamic_or_virtual_views() {
+    let mut ui = expressions_ui::EmptyOrdinaryRepeats::new();
+    let calls = Rc::new(Cell::new(0));
+    let observed = calls.clone();
+    ui.on_describe(move |index| {
+        observed.set(observed.get() + 1);
+        format!("row {index}")
+    });
+    let initial = ui.render_shared();
+    assert_eq!(initial.children.len(), 7);
+    assert!(
+        initial.children[..4]
+            .iter()
+            .all(|child| child.kind == "Empty")
+    );
+    assert_eq!(initial.children[4].list.unwrap().row_count, 0);
+    assert!(initial.children[5].has_natural_paint_order());
+    assert_eq!(calls.get(), 0);
+    ui.set_count(2);
+    let scene = ui.render_shared();
+    assert_eq!(scene.children[3].children[1].text("text"), Some("row 1"));
+    assert_eq!(calls.get(), 2);
+    assert!(ui.dispatch_at(&scene, &[6], "clicked"));
+    assert_eq!(ui.get_clicks(), 1);
+}
+
+#[test]
+fn record_projection_caches_invalidate_siblings_and_visible_rows() {
+    let mut ui = expressions_ui::RecordVisualCaches::new();
+    let before = ui.render_shared();
+    assert_eq!(before.children[0].text("text"), Some("old end"));
+    assert_eq!(before.children[1].text("text"), Some("old end"));
+    assert_eq!(before.children[2].children[0].text("text"), Some("old A"));
+    ui.set_style(expressions_ui::VisualStrings {
+        prefix: "new ".into(),
+        suffix: "start".into(),
+    });
+    let after = ui.render_shared();
+    assert_eq!(after.children[0].text("text"), Some("new start"));
+    assert_eq!(after.children[1].text("text"), Some("new start"));
+    assert_eq!(after.children[2].children[1].text("text"), Some("new B"));
+}
+
+#[test]
+fn materialized_state_uses_static_layout_and_skips_the_superseded_binding() {
+    let mut ui = expressions_ui::StaticStatePlans::new();
+    ui.on_fallback_width(|| panic!("inactive base binding was evaluated"));
+    let initial = ui.render_shared();
+    let grid = initial.find("grid").unwrap();
+    assert!(grid.static_grid().is_some());
+    let tile = initial.find("tile").unwrap();
+    assert_eq!(tile.int("col"), Some(1));
+    assert_eq!(tile.length("width"), Some(40.0));
+    assert_eq!(initial.find("status").unwrap().length("height"), Some(24.0));
+
+    ui.set_message("Updating…".into());
+    let next = ui.render_shared();
+    assert!(initial.same_frame_inputs(&next));
+    assert!(tile.shares_storage_with(next.find("tile").unwrap()));
+}
+
+#[test]
+fn collapsed_local_aliases_keep_the_public_endpoint_and_shared_state() {
+    let mut ui = LocalAliasUpdates::new();
+    assert_eq!((ui.get_exposed(), ui.get_observed()), (7, 7));
+    ui.set_exposed(10);
+    ui.invoke_step();
+    assert_eq!((ui.get_exposed(), ui.get_observed()), (12, 12));
+}
+
+#[test]
+fn fixed_text_updates_keep_the_generated_frame_layout_valid() {
+    let mut ui = FixedTextUpdates::new();
+    let before = ui.render_shared();
+    ui.set_message("A longer status message".into());
+    let updated = ui.render_shared();
+    assert!(before.same_frame_inputs(&updated));
+    for node in &updated.children[..2] {
+        assert_eq!(node.text("text"), Some("A longer status message"));
+    }
+    ui.set_summary("A longer summary".into());
+    assert!(!updated.same_frame_inputs(&ui.render_shared()));
+}
+
+#[test]
+fn constant_record_projections_generate_typed_values() {
+    let ui = constant_record_ui::ConstantRecord::new();
+    assert_eq!(ui.get_answer(), 85);
+    assert_eq!(ui.get_padding(), Length(12.0));
+}
 
 #[test]
 fn shared_visual_bindings_invalidate_and_keep_repeat_rows_independent() {

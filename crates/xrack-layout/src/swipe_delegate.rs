@@ -169,7 +169,7 @@ impl SwipeDrag {
 
     fn matches(&self, node: &Node, geometry: &SwipeDelegateGeometry, row: Option<RowKey>) -> bool {
         node.kind == "SwipeDelegate"
-            && node.id == self.target.id
+            && self.target.matches_node(node)
             && node.swipe_side() == self.initial
             && row == self.target.row_key
             && self.geometry.bounds == geometry.bounds

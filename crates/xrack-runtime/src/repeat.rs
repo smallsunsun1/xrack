@@ -6,6 +6,26 @@ use std::{
     rc::Rc,
 };
 
+/// Build a scene for a compiler-proven static integer repeat.
+#[doc(hidden)]
+pub fn static_repeat_scene(template: Node, count: i64, positioned: bool) -> Node {
+    let template = template.into_shared();
+    let kind = if positioned {
+        "Rectangle"
+    } else {
+        "VerticalLayout"
+    };
+    let mut scene = Node::new(kind, None);
+    scene.children = (0..count.row_count())
+        .map(|index| {
+            let mut row = template.clone();
+            row.set_row_key(Some(count.row_key(index)));
+            row
+        })
+        .collect();
+    scene.into_shared()
+}
+
 struct Row<Item, State> {
     synchronize: Property<()>,
     item: Property<Item>,
@@ -132,7 +152,7 @@ impl<Model: ListModel, State: Default> Repeater<Model, State> {
                     || self.model.get(|| Rc::new(model())).item(index),
                     &render_row,
                 );
-                node.row_key = Some(resolved.row_key(index));
+                node.set_row_key(Some(resolved.row_key(index)));
                 node
             })
             .collect()
@@ -158,7 +178,7 @@ impl<Model: ListModel, State: Default> Repeater<Model, State> {
                     || self.model.get(|| Rc::new(model())).item(index),
                     &render_row,
                 );
-                node.row_key = Some(resolved.row_key(index));
+                node.set_row_key(Some(resolved.row_key(index)));
                 node
             })
             .collect()

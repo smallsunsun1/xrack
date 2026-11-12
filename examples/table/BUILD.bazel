@@ -24,6 +24,8 @@ xr_ui_library(
     visibility = ["//tests:__pkg__"],
 )
 
+exports_files(["records.xr", "table.xr"], visibility = ["//tests:__pkg__"])
+
 rust_binary(
     name = "table",
     srcs = ["main.rs"],

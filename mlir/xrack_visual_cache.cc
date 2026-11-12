@@ -25,6 +25,23 @@ constexpr llvm::StringLiteral repeatInvariantGroup =
 constexpr llvm::StringLiteral repeatSubexpressionGroup =
     "xr.repeat_subexpression_group";
 
+bool cacheValue(Type type) {
+  return isa<IntType, FloatType, BoolType, StringType, LengthType, PercentType,
+             ColorType, BrushType>(type);
+}
+
+bool shareableExpression(Operation *op) {
+  return isa_and_nonnull<UnaryOp, BinaryOp, CastOp, ToRatioOp, StringifyOp,
+                         SelectOp, GetFieldOp, DateFieldOp, TimeFieldOp,
+                         FontFieldOp, TranslateOp, SolidBrushOp, GradientStopOp,
+                         LinearGradientOp, RadialGradientOp>(op);
+}
+
+bool isStaticGradient(Operation *op) {
+  return isa_and_nonnull<LinearGradientOp, RadialGradientOp>(op) &&
+         op->getDiscardableAttr("xr.static_gradient");
+}
+
 Operation *visualScope(Operation *binding) {
   auto *parent = binding->getParentOp();
   if (auto element = dyn_cast_or_null<ElementOp>(parent)) {
@@ -56,14 +73,21 @@ Value cacheableInput(Operation *op) {
     return {};
   Value input = op->getOperand(0);
   // These leaves already bypass the backend's visual binding cache.
-  if (isa_and_nonnull<LiteralOp, ReadOp, ParamOp>(input.getDefiningOp()))
+  auto *definition = input.getDefiningOp();
+  if (isa_and_nonnull<LiteralOp, ReadOp, ParamOp>(definition) ||
+      isStaticGradient(definition))
     return {};
   return input;
 }
 
-bool insideStaticHiddenVisual(Operation *binding) {
+bool insideSpecializedVisual(Operation *binding) {
   for (auto *op = binding->getParentOp();
        isa_and_nonnull<ElementOp, InstanceOp>(op); op = op->getParentOp()) {
+    if (op->getDiscardableAttr("xr.static_subtree"))
+      return true;
+    for (auto repeat : op->getRegion(0).front().getOps<RepeatOp>())
+      if (repeat->getDiscardableAttr("xr.empty_repeat"))
+        return true;
     for (auto guard : op->getRegion(0).front().getOps<ShowIfOp>()) {
       if (guard->getDiscardableAttr("xr.static_hidden"))
         return true;
@@ -90,8 +114,13 @@ struct ScopePlan {
 private:
   unsigned classifyDefinition(Value value, bool inRow) {
     auto *op = value.getDefiningOp();
-    if (!op || !isa<IntType, FloatType, BoolType, StringType, LengthType,
-                    PercentType, ColorType>(value.getType()))
+    if (!op)
+      return 0;
+    auto type = value.getType();
+    // Aggregate projections and stops are intermediates in the signature.
+    if (!cacheValue(type) && !isa<GradientStopOp>(op) &&
+        !(isa<RecordType, DateType, TimeType, FontType>(type) &&
+          isa<ReadOp, ParamOp, GetFieldOp>(op)))
       return 0;
     if (auto read = dyn_cast<ReadOp>(op)) {
       if (read.getOwner().value_or("root") != "root")
@@ -99,17 +128,22 @@ private:
     } else if (isa<ParamOp>(op)) {
       if (!inRow)
         return 0;
-    } else if (!isa<LiteralOp, UnaryOp, BinaryOp, CastOp, ToRatioOp,
-                    StringifyOp, SelectOp>(op)) {
+    } else if (!isa<LiteralOp>(op) && !shareableExpression(op)) {
       // In particular, callback invocations and navigation reads retain their
       // independent evaluation, even if they print the same way in MLIR.
       return 0;
     }
 
     auto *context = op->getContext();
+    auto attributes = op->getAttrDictionary();
+    if (op->getDiscardableAttr(repeatSubexpressionGroup)) {
+      NamedAttrList semantic(attributes);
+      semantic.erase(repeatSubexpressionGroup);
+      attributes = semantic.getDictionary(context);
+    }
     llvm::SmallVector<Attribute, 6> key{
         StringAttr::get(context, op->getName().getStringRef()),
-        TypeAttr::get(value.getType()), op->getAttrDictionary()};
+        TypeAttr::get(value.getType()), attributes};
     auto indexType = IntegerType::get(context, 64);
     for (Value operand : op->getOperands()) {
       auto id = classify(operand, inRow);
@@ -134,7 +168,9 @@ struct ShareVisualBindings
       if (op->getDiscardableAttr(attribute))
         op->removeDiscardableAttr(attribute);
       Value input = cacheableInput(op);
-      if (!input || op->getDiscardableAttr(repeatInvariantGroup))
+      if (!input || !cacheValue(input.getType()) ||
+          op->getDiscardableAttr(repeatInvariantGroup) ||
+          insideSpecializedVisual(op))
         return;
       auto *scope = visualScope(op);
       if (!scope)
@@ -161,26 +197,51 @@ struct ShareVisualBindings
 struct HoistRepeatInvariants
     : impl::XrHoistRepeatInvariantsBase<HoistRepeatInvariants> {
   void runOnOperation() override {
-    llvm::DenseMap<Operation *, ScopePlan> components;
+    struct ComponentPlan {
+      ScopePlan expressions;
+      llvm::DenseSet<unsigned> hoisted;
+    };
+    llvm::DenseMap<Operation *, ComponentPlan> components;
     auto attribute = StringAttr::get(&getContext(), repeatInvariantGroup);
+    auto mark = [&](Operation *op, unsigned id) {
+      op->setDiscardableAttr(
+          attribute, StringAttr::get(&getContext(), std::to_string(id)));
+    };
     getOperation()->walk([&](Operation *op) {
       if (op->getDiscardableAttr(attribute))
         op->removeDiscardableAttr(attribute);
       Value input = cacheableInput(op);
-      if (!input)
+      if (!input || !cacheValue(input.getType()))
         return;
       auto *scope = visualScope(op);
-      if (!scope || isa<ComponentOp>(scope) || insideStaticHiddenVisual(op))
+      if (!scope || isa<ComponentOp>(scope) || insideSpecializedVisual(op))
         return;
       auto component = scope->getParentOfType<ComponentOp>();
       if (!component)
         return;
       // Reject row parameters, local reads and calls anywhere in the graph.
       // The backend will evaluate the shared cache only at a visual use site.
-      auto id = components[component.getOperation()].classify(input, false);
-      if (id)
-        op->setDiscardableAttr(
-            attribute, StringAttr::get(&getContext(), std::to_string(id)));
+      auto &plan = components[component.getOperation()];
+      if (auto id = plan.expressions.classify(input, false)) {
+        plan.hoisted.insert(id);
+        mark(op, id);
+      }
+    });
+    // An equivalent use outside the repeat can use the same component slot.
+    getOperation()->walk([&](Operation *op) {
+      Value input = cacheableInput(op);
+      if (!input || !cacheValue(input.getType()))
+        return;
+      auto *scope = visualScope(op);
+      if (!isa_and_nonnull<ComponentOp>(scope) || insideSpecializedVisual(op))
+        return;
+      auto found = components.find(scope);
+      if (found == components.end() || found->second.hoisted.empty())
+        return;
+      auto &plan = found->second;
+      auto id = plan.expressions.classify(input, false);
+      if (plan.hoisted.contains(id))
+        mark(op, id);
     });
   }
 };
@@ -188,11 +249,10 @@ struct HoistRepeatInvariants
 void markRepeatSubexpressions(Value value, ScopePlan &plan,
                               llvm::DenseSet<Value> &visited, StringAttr name) {
   auto *definition = value.getDefiningOp();
-  if (!isa_and_nonnull<UnaryOp, BinaryOp, CastOp, ToRatioOp, StringifyOp,
-                       SelectOp>(definition) ||
+  if (!shareableExpression(definition) || isStaticGradient(definition) ||
       !visited.insert(value).second)
     return;
-  if (auto id = plan.classify(value, false)) {
+  if (auto id = plan.classify(value, false); id && cacheValue(value.getType())) {
     definition->setDiscardableAttr(
         name, StringAttr::get(definition->getContext(), std::to_string(id)));
     return;
@@ -218,7 +278,7 @@ struct HoistRepeatSubexpressions
       if (!input || op->getDiscardableAttr(repeatInvariantGroup))
         return;
       auto *scope = visualScope(op);
-      if (!scope || isa<ComponentOp>(scope) || insideStaticHiddenVisual(op))
+      if (!scope || isa<ComponentOp>(scope) || insideSpecializedVisual(op))
         return;
       if (auto component = scope->getParentOfType<ComponentOp>())
         markRepeatSubexpressions(input, components[component.getOperation()],

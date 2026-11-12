@@ -1,5 +1,5 @@
 use crate::table_clipboard::{MAX_CLIPBOARD_BYTES, MAX_CLIPBOARD_CELLS};
-use crate::{ChangeSignal, ListModel, Node, RowKey};
+use crate::{ChangeSignal, ControlAction, KeyModifiers, ListModel, Node, RowKey, TableColumnOrder};
 use std::{
     cell::RefCell,
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
@@ -24,6 +24,19 @@ pub enum RowSelection {
     Move,
 }
 
+impl RowSelection {
+    #[doc(hidden)]
+    pub fn from_modifiers(modifiers: KeyModifiers, keyboard: bool) -> Self {
+        match (modifiers.shift, modifiers.control || modifiers.meta) {
+            (true, true) => Self::AddRange,
+            (true, false) => Self::Extend,
+            (false, true) if keyboard => Self::Move,
+            (false, true) => Self::Toggle,
+            (false, false) => Self::Replace,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TableSelectionAction {
     Row {
@@ -46,6 +59,30 @@ pub enum TableSelectionAction {
     },
     All,
     Clear,
+}
+
+impl TableSelectionAction {
+    /// Resolve a selection against the table column order seen by the input event.
+    #[doc(hidden)]
+    pub fn from_control(
+        table: &Node,
+        live_order: &TableColumnOrder,
+        action: ControlAction,
+    ) -> Option<Self> {
+        if table.table_selection.is_none() || &table.table_column_order != live_order {
+            return None;
+        }
+        let selection = match action {
+            ControlAction::Select(index) => Self::Row {
+                index,
+                operation: RowSelection::Replace,
+            },
+            ControlAction::TableSelection(selection) => selection,
+            _ => return None,
+        };
+        (!matches!(selection, Self::DragRange { .. }) || table.boolean("drag-select", false))
+            .then_some(selection)
+    }
 }
 
 type RowKeys = Arc<BTreeSet<RowKey>>;
@@ -305,11 +342,28 @@ pub fn copy_table_text_in_order<M: ListModel>(
     columns: &[usize],
     mut cell: impl FnMut(usize, usize, &M::Item) -> Option<String>,
 ) -> Option<String> {
+    try_copy_table_text_in_order(rows, table, columns, |row, column, item| {
+        Ok::<_, std::convert::Infallible>(cell(row, column, item))
+    })
+    .unwrap_or_else(|error| match error {})
+}
+
+/// Serialize a selection, stopping before evaluating any cells after an error.
+#[doc(hidden)]
+pub fn try_copy_table_text_in_order<M: ListModel, E>(
+    rows: &crate::TableRows<M>,
+    table: &Node,
+    columns: &[usize],
+    mut cell: impl FnMut(usize, usize, &M::Item) -> Result<Option<String>, E>,
+) -> Result<Option<String>, E> {
     if table.standard_list_stamp != Some(rows.positions().stamp()) {
-        return None;
+        return Ok(None);
     }
-    copy_table_text(rows, table, columns, |row, column, item| {
-        cell(rows.positions().source_index(row)?, column, item)
+    try_copy_table_text(rows, table, columns, |row, column, item| {
+        let Some(source) = rows.positions().source_index(row) else {
+            return Ok(None);
+        };
+        cell(source, column, item)
     })
 }
 
@@ -320,6 +374,24 @@ pub fn copy_table_text<M: ListModel>(
     displayed_columns: &[usize],
     mut cell: impl FnMut(usize, usize, &M::Item) -> Option<String>,
 ) -> Option<String> {
+    try_copy_table_text(model, table, displayed_columns, |row, column, item| {
+        Ok::<_, std::convert::Infallible>(cell(row, column, item))
+    })
+    .unwrap_or_else(|error| match error {})
+}
+
+struct ClipboardSelection<'a> {
+    rows: Vec<usize>,
+    range: Range<usize>,
+    columns: Vec<usize>,
+    cells: Option<&'a TableSelectionSnapshot>,
+}
+
+fn clipboard_selection<'a>(
+    model: &impl ListModel,
+    table: &'a Node,
+    displayed_columns: &[usize],
+) -> Option<ClipboardSelection<'a>> {
     let count = model.row_count();
     let column_count = table.table_header.as_ref()?.columns.len();
     let mut columns: Vec<_> = displayed_columns
@@ -409,10 +481,36 @@ pub fn copy_table_text<M: ListModel>(
         range = row..row + 1;
     }
 
-    let size = (rows.len() + range.len()).checked_mul(columns.len())?;
+    let size = rows
+        .len()
+        .checked_add(range.len())?
+        .checked_mul(columns.len())?;
     if size == 0 || size > MAX_CLIPBOARD_CELLS {
         return None;
     }
+    Some(ClipboardSelection {
+        rows,
+        range,
+        columns,
+        cells,
+    })
+}
+
+fn try_copy_table_text<M: ListModel, E>(
+    model: &M,
+    table: &Node,
+    displayed_columns: &[usize],
+    mut cell: impl FnMut(usize, usize, &M::Item) -> Result<Option<String>, E>,
+) -> Result<Option<String>, E> {
+    let Some(ClipboardSelection {
+        rows,
+        range,
+        columns,
+        cells,
+    }) = clipboard_selection(model, table, displayed_columns)
+    else {
+        return Ok(None);
+    };
     let mut text = String::new();
     for (line, row) in rows.into_iter().chain(range).enumerate() {
         if line != 0 {
@@ -426,23 +524,25 @@ pub fn copy_table_text<M: ListModel>(
                 text.push('\t');
             }
             if cells.is_none_or(|selection| selection.contains_cell(key, column))
-                && let Some(value) = cell(row, column, &item)
+                && let Some(value) = cell(row, column, &item)?
             {
-                append_cell(&mut text, &value)?;
+                let Some(()) = append_cell(&mut text, &value) else {
+                    return Ok(None);
+                };
             }
             if text.len() > MAX_CLIPBOARD_BYTES {
-                return None;
+                return Ok(None);
             }
         }
         if text.len() == line_start {
             // A blank final single-column row would otherwise look like a trailing newline.
-            if text.len().checked_add(2)? > MAX_CLIPBOARD_BYTES {
-                return None;
+            if text.len().saturating_add(2) > MAX_CLIPBOARD_BYTES {
+                return Ok(None);
             }
             text.push_str("\"\"");
         }
     }
-    Some(text)
+    Ok(Some(text))
 }
 
 fn append_cell(text: &mut String, value: &str) -> Option<()> {

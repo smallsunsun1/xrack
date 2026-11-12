@@ -38,7 +38,7 @@ use windows_sys::{
     },
     core::w,
 };
-use xrack_runtime::Image;
+use xrack_runtime::ImageAsset;
 
 const ICON_ID: u32 = 1;
 const TRAY_MESSAGE: u32 = WM_APP + 1;
@@ -141,7 +141,7 @@ impl NativeTray {
         }
         let icon_changed = previous.is_none_or(|last| last.icon != current.icon);
         if icon_changed {
-            self.icon = Some(Icon::new(current.icon)?);
+            self.icon = Some(Icon::new(&current.icon)?);
         }
         let tooltip = windows_payload::tooltip(if current.tooltip.is_empty() {
             &current.title
@@ -162,7 +162,7 @@ impl NativeTray {
     ) -> Result<(), String> {
         if taskbar_created {
             // Explorer sends this message after both a restart and a primary-display DPI change.
-            self.icon = Some(Icon::new(current.icon)?);
+            self.icon = Some(Icon::new(&current.icon)?);
             let revision = self.target.menu.borrow().as_ref().map(|menu| menu.revision);
             if let Some(revision) = revision {
                 self.target
@@ -389,10 +389,11 @@ unsafe extern "system" fn window_proc(
 struct Icon(HICON);
 
 impl Icon {
-    fn new(image: Image) -> Result<Self, String> {
+    fn new(image: &ImageAsset) -> Result<Self, String> {
         let size = unsafe { [GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON)] }
             .map(|dimension| dimension.clamp(16, 64) as u32);
-        let raster = xrack_assets::rasterize_icon(image, size)?.ok_or("empty notification icon")?;
+        let raster =
+            xrack_assets::rasterize_icon_asset(image, size)?.ok_or("empty notification icon")?;
         let bitmap = Bitmap::new(&raster)?;
         let stride = size[0].div_ceil(16) as usize * 2;
         let mut mask_bits = vec![0u8; stride * size[1] as usize];
@@ -584,7 +585,7 @@ fn popup_menu(
                 if *checked == Some(true) {
                     info.fState |= MFS_CHECKED;
                 }
-                if let Some(raster) = xrack_assets::rasterize_icon(*icon, icon_size)? {
+                if let Some(raster) = xrack_assets::rasterize_icon_asset(icon, icon_size)? {
                     let bitmap = Bitmap::new(&raster)?;
                     info.fMask |= MIIM_BITMAP;
                     info.hbmpItem = bitmap.0;

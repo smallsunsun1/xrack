@@ -8,6 +8,11 @@ xr_ui_library(
     visibility = ["//tests:__pkg__"],
 )
 
+exports_files(
+    ["form.xr", "widgets.xr"],
+    visibility = ["//tests:__pkg__"],
+)
+
 rust_binary(
     name = "form",
     srcs = ["main.rs"],

@@ -229,6 +229,35 @@ impl CalendarState {
         }
     }
 
+    #[doc(hidden)]
+    pub fn apply(
+        self,
+        action: CalendarAction,
+        grid_week_start: Option<i64>,
+    ) -> Option<(Option<Date>, Date)> {
+        match action {
+            CalendarAction::Select(date) if self.allows(date) => {
+                let month = if grid_week_start.is_some_and(|start| self.shows(date, start)) {
+                    self.month
+                } else {
+                    date.first_of_month()
+                };
+                Some((Some(date), month))
+            }
+            CalendarAction::Activate(date)
+                if self.allows(date)
+                    && grid_week_start.is_some_and(|start| self.shows(date, start)) =>
+            {
+                Some((Some(date), self.month))
+            }
+            CalendarAction::Browse(month) if grid_week_start.is_some() => {
+                (month.valid() && month.day == 1).then_some((None, month))
+            }
+            CalendarAction::Browse(month) if self.allows_month(month) => Some((None, month)),
+            _ => None,
+        }
+    }
+
     pub fn allows(self, date: Date) -> bool {
         date.valid() && (self.minimum..=self.maximum).contains(&date)
     }
@@ -303,6 +332,17 @@ pub struct CalendarCells(RefCell<BTreeMap<Date, CachedCalendarCell>>);
 
 impl CalendarCells {
     pub fn render(&self, grid: &Node, render_cell: impl Fn(CalendarCell) -> Node) -> Node {
+        self.try_render(grid, |cell| {
+            Ok::<_, std::convert::Infallible>(render_cell(cell))
+        })
+        .unwrap_or_else(|error| match error {})
+    }
+
+    pub fn try_render<E>(
+        &self,
+        grid: &Node,
+        render_cell: impl Fn(CalendarCell) -> Result<Node, E>,
+    ) -> Result<Node, E> {
         let state = CalendarState::from_node(grid);
         let start = grid.int("week-start").unwrap_or(1).clamp(1, 7);
         let today = grid.date("today");
@@ -315,7 +355,7 @@ impl CalendarCells {
             .enumerate()
             .map(|(index, date)| {
                 let Some(date) = date else {
-                    return Node::hidden();
+                    return Ok(Node::hidden());
                 };
                 let (week_year, week) =
                     date.iso_week().expect("calendar cells contain valid dates");
@@ -332,10 +372,12 @@ impl CalendarCells {
                 };
                 let cached = cache.entry(date).or_default();
                 cached.input.set_if_changed(input);
-                cached.scene.get(|| render_cell(cached.input.get(|| input)))
+                cached
+                    .scene
+                    .try_get(|| render_cell(cached.input.get(|| input)))
             })
-            .collect();
-        cells
+            .collect::<Result<_, _>>()?;
+        Ok(cells)
     }
 }
 
@@ -350,12 +392,22 @@ impl DatePopupState {
     }
 
     pub fn populate(&self, dialog: &mut Node, date: impl FnOnce() -> Date) {
+        self.try_populate(dialog, || Ok::<_, std::convert::Infallible>(date()))
+            .unwrap_or_else(|error| match error {});
+    }
+
+    pub fn try_populate<E>(
+        &self,
+        dialog: &mut Node,
+        date: impl FnOnce() -> Result<Date, E>,
+    ) -> Result<(), E> {
         let bounds = DateBounds::from_node(dialog);
-        let Some((date, month)) = self.0.begin(dialog, || {
-            let date = bounds.constrain(date());
-            (date, date.first_of_month())
-        }) else {
-            return;
+        let Some((date, month)) = self.0.try_begin(dialog, || {
+            let date = bounds.constrain(date()?);
+            Ok((date, date.first_of_month()))
+        })?
+        else {
+            return Ok(());
         };
         let state = CalendarState::with_bounds(date, Some(month), bounds);
         let mut calendar = Node::new("Calendar", None);
@@ -384,6 +436,7 @@ impl DatePopupState {
             .insert("maximum-date", state.maximum.into());
         self.0.stamp(&mut calendar);
         append_picker_dialog(dialog, calendar);
+        Ok(())
     }
 
     pub fn edit(&self, bounds: DateBounds, node: &Node, action: ControlAction) -> bool {
@@ -395,11 +448,10 @@ impl DatePopupState {
         if node.kind != "Calendar" || CalendarState::from_node(node) != state {
             return false;
         }
-        let next = match action {
-            CalendarAction::Select(date) if state.allows(date) => (date, date.first_of_month()),
-            CalendarAction::Browse(month) if state.allows_month(month) => (state.selected, month),
-            _ => return false,
+        let Some((selected, month)) = state.apply(action, None) else {
+            return false;
         };
+        let next = (selected.unwrap_or(state.selected), month);
         if next == (state.selected, state.month) {
             return false;
         }

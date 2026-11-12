@@ -83,7 +83,7 @@ pub fn paste_table_text<T: Clone + PartialEq>(
     start: usize,
     columns: &[usize],
     text: &str,
-    assign: impl FnMut(usize, usize, &T, &mut T, &str) -> Option<()>,
+    mut assign: impl FnMut(usize, usize, &T, &mut T, &str) -> Option<()>,
 ) -> Option<bool> {
     let input = TablePasteInput {
         stamp,
@@ -91,38 +91,76 @@ pub fn paste_table_text<T: Clone + PartialEq>(
         columns,
         text,
     };
-    let staged = stage_table_text(model, input, Some, assign, |_, _, _| {})?;
+    let staged = try_stage_table_text(
+        model,
+        input,
+        Some,
+        || Ok(true),
+        |row, column, before, after, text| {
+            Ok::<_, std::convert::Infallible>(assign(row, column, before, after, text))
+        },
+        |_, _, _| {},
+    )
+    .unwrap_or_else(|error| match error {})?;
     Some(model.replace_rows_if_current(stamp, staged))
 }
 
-pub(crate) fn stage_table_text<T: Clone + PartialEq>(
+pub(crate) fn try_stage_table_text<T: Clone + PartialEq, E>(
     model: &VecModel<T>,
     input: TablePasteInput<'_>,
     source_index: impl Fn(usize) -> Option<usize>,
-    mut assign: impl FnMut(usize, usize, &T, &mut T, &str) -> Option<()>,
+    mut still_current: impl FnMut() -> Result<bool, E>,
+    mut assign: impl FnMut(usize, usize, &T, &mut T, &str) -> Result<Option<()>, E>,
     mut capture: impl FnMut(usize, &T, &T),
-) -> Option<Vec<(usize, T)>> {
-    if model.edit_stamp() != input.stamp {
-        return None;
-    }
-    let (width, cells) = parse(input.text)?;
-    let columns = input.columns.get(..width)?;
-    let height = cells.len() / width;
-    if input.row.checked_add(height)? > model.len() {
-        return None;
-    }
-    let mut staged = Vec::with_capacity(height);
-    for (offset, row) in cells.chunks_exact(width).enumerate() {
-        let index = source_index(input.row + offset)?;
-        let current = model.row(index)?;
-        let mut next = current.clone();
-        for (&column, value) in columns.iter().zip(row) {
-            assign(index, column, &current, &mut next, value)?;
+) -> Result<Option<Vec<(usize, T)>>, E> {
+    crate::property::watch_reads(|reads| {
+        let mut current_target = || {
+            if reads.changed() || model.edit_stamp() != input.stamp {
+                return Ok(false);
+            }
+            Ok(still_current()? && !reads.changed() && model.edit_stamp() == input.stamp)
+        };
+        if !current_target()? {
+            return Ok(None);
         }
-        capture(index, &current, &next);
-        staged.push((index, next));
-    }
-    Some(staged)
+        let Some((width, cells)) = parse(input.text) else {
+            return Ok(None);
+        };
+        let Some(columns) = input.columns.get(..width) else {
+            return Ok(None);
+        };
+        let height = cells.len() / width;
+        if input
+            .row
+            .checked_add(height)
+            .is_none_or(|end| end > model.len())
+        {
+            return Ok(None);
+        }
+        let mut staged = Vec::with_capacity(height);
+        for (offset, row) in cells.chunks_exact(width).enumerate() {
+            let Some(index) = source_index(input.row + offset) else {
+                return Ok(None);
+            };
+            let Some(current) = model.project_row_untracked(index, T::clone) else {
+                return Ok(None);
+            };
+            let mut next = current.clone();
+            for (&column, value) in columns.iter().zip(row) {
+                if assign(index, column, &current, &mut next, value)?.is_none()
+                    || !current_target()?
+                {
+                    return Ok(None);
+                }
+            }
+            capture(index, &current, &next);
+            if !current_target()? {
+                return Ok(None);
+            }
+            staged.push((index, next));
+        }
+        Ok(Some(staged))
+    })
 }
 
 #[doc(hidden)]

@@ -26,7 +26,7 @@ mod window_presentation;
 
 use accessibility::{Projection, Route};
 use accesskit::{Action as AccessibleAction, ActionData, ActionRequest, TreeId};
-use clipboard::{ClipboardPort, ClipboardValue, EditContext, Reply as ClipboardReply};
+use clipboard::{ClipboardPort, ClipboardValue, Reply as ClipboardReply};
 pub use desktop::{Desktop, DesktopTray, DesktopWindow, run_desktop};
 use desktop::{DesktopGraphics, HostedWindow, WindowEvents};
 use frame::FrameCache;
@@ -57,20 +57,19 @@ use winit::{
 use xrack_layout::{
     ActivationKey, ChoiceKey, ComboGeometry, ControlInput, DragUpdate, EditAction, EditSource,
     FocusObservers, HoverObservers, Interaction, LayoutNode, MenuKey, MenuShortcut, NavigationKey,
-    Point, PointerDelivery, PointerSequence, RangeInput, Rect, ScrollBarUpdate, ScrollGestureKind,
+    Point, PointerDelivery, PointerSequence, RangeInput, ScrollBarUpdate, ScrollGestureKind,
     ShortcutKey, ShortcutModifiers, ShortcutOutcome, Size, SpinGeometry, SplitResize,
-    StackTransitions, TableEditCommit, TableEditTarget, TablePasteDestination, TableSelectionKey,
-    Target, TextAreaMotion, TumblerScroll, ViewportObservers, WheelAdjustment,
+    StackTransitions, TableEditCommit, TableEditTarget, TablePasteDestination, Target,
+    TextAreaMotion, TumblerScroll, ViewportObservers, WheelAdjustment, WindowEffects,
 };
-use xrack_renderer_femtovg::Renderer;
+use xrack_renderer_femtovg::{PointerCaret, Renderer};
 use xrack_runtime::{
     ColorScheme, Component, ControlAction, CursorShape, DragAction, EventResult, FocusRequests,
-    ImagePlaybackQueue, ImagePlaybackRegistration, KeyPhase, NativeDialogQueue,
-    NativeDialogRegistration, NativeDialogResult, Node, Orientation, PointerButton, PointerEvent,
-    PointerEventKind, PointerHandle, RangeAction, RowKey, RowSelection, SceneTransition,
-    ScrollRequests, SecondaryWindowRegistration, SpinAction, SpinDecimal, TablePaste, TextCommand,
-    TimerQueue, TimerRegistration, combo_editable, decimal_separator, is_calendar_control,
-    is_multiline_text_input, is_spin_box, spin_editable, text_input_value,
+    ImagePlaybackQueue, KeyPhase, NativeDialogQueue, NativeDialogResult, Node, Orientation,
+    PointerButton, PointerEvent, PointerEventKind, PointerHandle, RangeAction, RowKey,
+    RowSelection, SceneTransition, ScrollRequests, SecondaryWindowRegistration, SpinAction,
+    SpinDecimal, TablePaste, TextCommand, TimerQueue, combo_editable, decimal_separator,
+    is_calendar_control, is_multiline_text_input, is_spin_box, spin_editable, text_input_value,
 };
 
 struct WindowState {
@@ -294,7 +293,7 @@ enum ClipboardShortcut {
 }
 
 enum ClipboardContext {
-    Edit(EditContext),
+    Edit(xrack_layout::TextEditContext),
     Table {
         destination: TablePasteDestination,
         apply: TablePaste,
@@ -363,11 +362,10 @@ struct PointerClick {
 impl PointerClick {
     fn follows(&self, previous: &Self) -> bool {
         self.touch_device == previous.touch_device
-            && self
-                .time
-                .checked_duration_since(previous.time)
-                .is_some_and(|elapsed| elapsed <= Duration::from_millis(450))
-            && (self.point.x - previous.point.x).hypot(self.point.y - previous.point.y) <= 6.0
+            && xrack_layout::pointer_click_follows(
+                (previous.point, previous.time),
+                (self.point, self.time),
+            )
     }
 }
 
@@ -406,18 +404,6 @@ struct Application<C, M, R> {
     clipboard: Option<Rc<RefCell<ClipboardPort>>>,
     pending_clipboard: Option<(u64, ClipboardContext)>,
     events: Option<WindowEvents>,
-}
-
-fn text_area_item<'a>(
-    scene: &'a Node,
-    layout: Option<&LayoutNode>,
-    target: &Target,
-) -> Option<(&'a Node, Rect)> {
-    let node = scene
-        .at_path(&target.path)
-        .filter(|node| is_multiline_text_input(node.kind))?;
-    let item = layout?.at_path(&target.path)?;
-    (item.visible && item.enabled).then_some((node, item.bounds))
 }
 
 impl<C: Component, M, R: FnMut(&mut C, M)> Application<C, M, R> {
@@ -1636,59 +1622,14 @@ impl<C: Component, M, R: FnMut(&mut C, M)> Application<C, M, R> {
                 && state.window.has_focus()
                 && !self.input.menu_open(),
         );
-        if let Some(node) = field
-            && let Some(target) = focused.as_ref()
-            && let Some(layout) = self
-                .layout
-                .as_ref()
-                .and_then(|layout| layout.at_path(&target.path))
+        if let Some(layout) = &self.layout
+            && let Some(caret) = state.renderer.text.editor_ime_area(
+                &mut self.input,
+                &self.scene,
+                layout,
+                follow_caret,
+            )
         {
-            let bounds = if is_spin_box(node.kind) {
-                SpinGeometry::new(layout.bounds).text
-            } else if combo_editable(node) {
-                ComboGeometry::new(layout.bounds).entry
-            } else if node.kind == "SearchField" {
-                xrack_layout::SearchGeometry::new(layout.bounds).entry
-            } else {
-                layout.bounds
-            };
-            if is_multiline_text_input(node.kind) {
-                let (geometry, caret) =
-                    state
-                        .renderer
-                        .text
-                        .text_area_caret(node, bounds, self.input.editor.as_ref());
-                let mut scroll = geometry.clamp_scroll(self.input.text_scroll(&target.path));
-                if let Some(caret) = caret {
-                    if follow_caret {
-                        scroll = geometry.keep_visible(scroll, caret);
-                    }
-                    let area = geometry.area;
-                    let caret = layout.window_bounds(Rect::new(
-                        area.x + (caret.x - scroll.x).clamp(0.0, area.width),
-                        area.y
-                            + (caret.y - scroll.y)
-                                .clamp(0.0, (area.height - geometry.line_height).max(0.0)),
-                        1.0,
-                        geometry.line_height,
-                    ));
-                    state.window.set_ime_cursor_area(
-                        LogicalPosition::new(caret.x, caret.y),
-                        LogicalSize::new(caret.width, caret.height),
-                    );
-                }
-                self.input.set_text_scroll(target, scroll);
-                state.window.request_redraw();
-                return;
-            }
-            let text = self.input.editor_value(node);
-            let x = state.renderer.text.single_line_caret_x(
-                node,
-                bounds,
-                &text,
-                self.input.editor.as_ref(),
-            );
-            let caret = layout.window_bounds(Rect::new(x, bounds.y, 1.0, bounds.height.max(1.0)));
             state.window.set_ime_cursor_area(
                 LogicalPosition::new(caret.x, caret.y),
                 LogicalSize::new(caret.width, caret.height),
@@ -1781,178 +1722,43 @@ impl<C: Component, M, R: FnMut(&mut C, M)> Application<C, M, R> {
     }
 
     fn place_text_caret(&mut self, point: Point, selecting: bool) {
-        let Some(target) = self.input.focused.as_ref() else {
+        let (Some(state), Some(layout)) = (&self.state, &self.layout) else {
             return;
         };
-        if self.input.pressed.as_ref() != Some(target) {
-            return;
-        }
-        let Some(node) = self
-            .scene
-            .interactive_at_path(&target.path)
-            .filter(|node| self.input.is_text_editor(node, target) || spin_editable(node))
-        else {
-            return;
-        };
-        let Some(item) = self
-            .layout
-            .as_ref()
-            .and_then(|layout| layout.at_path(&target.path))
-        else {
-            return;
-        };
-        let origin = self.input.pointer_press_origin().unwrap_or(point);
-        let Some(origin) = item.map_from_window(origin) else {
-            return;
-        };
-        let Some(point) = item.map_from_window(point) else {
-            return;
-        };
-        let Some(state) = &self.state else {
-            return;
-        };
-        let value = if is_spin_box(node.kind) || matches!(node.kind, "TableCell" | "TreeCell") {
-            Cow::Owned(self.input.editor_value(node).into_owned())
-        } else {
-            Cow::Borrowed(text_input_value(node))
-        };
-        let text = value.as_ref();
-        let bounds = if is_spin_box(node.kind) {
-            SpinGeometry::new(item.bounds).text
-        } else if combo_editable(node) {
-            ComboGeometry::new(item.bounds).entry
-        } else if node.kind == "SearchField" {
-            xrack_layout::SearchGeometry::new(item.bounds).entry
-        } else {
-            item.bounds
-        };
-        if (is_spin_box(node.kind) || combo_editable(node) || node.kind == "SearchField")
-            && !bounds.contains(origin)
+        if let Some(pointer) =
+            PointerCaret::from_pressed(&self.input, &self.scene, layout, point, selecting)
+            && pointer.place(&state.renderer.text, &mut self.input, &self.scene, layout)
         {
-            return;
-        }
-        let position = if is_multiline_text_input(node.kind) {
-            let geometry = state
-                .renderer
-                .text
-                .text_area_layout(node, item.bounds, text);
-            let scroll = geometry.clamp_scroll(self.input.text_scroll(&target.path));
-            geometry.hit(text, point, scroll, |text| {
-                state.renderer.text.advance_node(node, text)
-            })
-        } else {
-            state.renderer.text.single_line_hit_with_text(
-                node,
-                bounds,
-                point,
-                self.input.editor.as_ref(),
-                text,
-            )
-        };
-        self.input.sync_editor(&self.scene);
-        self.pending_clipboard = None;
-        self.input.break_text_edit_group();
-        if let Some(editor) = &mut self.input.editor {
-            editor.place_caret(text, position, selecting);
+            self.pending_clipboard = None;
         }
     }
 
     fn move_text_caret(&mut self, motion: TextAreaMotion, selecting: bool) -> bool {
-        let (Some(target), Some(state)) = (self.input.focused.as_ref(), &self.state) else {
+        let (Some(state), Some(layout)) = (&self.state, &self.layout) else {
             return false;
         };
-        let Some(node) = self.scene.interactive_at_path(&target.path) else {
+        if !state.renderer.text.move_editor_caret(
+            &mut self.input,
+            &self.scene,
+            layout,
+            motion,
+            selecting,
+        ) {
             return false;
-        };
-        if !self.input.is_text_editor(node, target) || node.password_masked() {
-            return false;
-        }
-        let bounds = self
-            .layout
-            .as_ref()
-            .and_then(|layout| layout.at_path(&target.path))
-            .filter(|item| item.visible && item.enabled)
-            .map(|item| item.bounds);
-        let Some(bounds) = bounds else {
-            return false;
-        };
-        let text = if matches!(node.kind, "TableCell" | "TreeCell") {
-            Cow::Owned(self.input.editor_value(node).into_owned())
-        } else {
-            Cow::Borrowed(text_input_value(node))
-        };
-        let Some(editor) = &mut self.input.editor else {
-            return false;
-        };
-        if is_multiline_text_input(node.kind) {
-            let layout = state.renderer.text.text_area_layout(node, bounds, &text);
-            layout.move_caret(&text, editor, motion, selecting, |text| {
-                state.renderer.text.advance_node(node, text)
-            });
-        } else {
-            let visual = state.renderer.text.single_line_layout(node, &text);
-            let position = match motion {
-                TextAreaMotion::Left | TextAreaMotion::Right => {
-                    let right = matches!(motion, TextAreaMotion::Right);
-                    let edge = (!selecting)
-                        .then(|| visual.selection_edge(editor.selection(&text), right))
-                        .flatten();
-                    edge.or_else(|| visual.step(editor.position(&text), right))
-                }
-                TextAreaMotion::Home | TextAreaMotion::End => {
-                    Some(visual.edge(matches!(motion, TextAreaMotion::End) != visual.is_rtl()))
-                }
-                _ => return false,
-            };
-            if let Some(position) = position {
-                editor.place_caret(&text, position, selecting);
-            }
         }
         self.pending_clipboard = None;
-        self.input.break_text_edit_group();
         self.update_editor();
         true
     }
 
     fn scroll_text_area(&mut self, delta: Point) -> Point {
-        let Some(target) = self
-            .layout
-            .as_ref()
-            .and_then(|layout| self.input.pointer_hover_target(&self.scene, layout))
-        else {
+        let (Some(state), Some(layout)) = (&self.state, &self.layout) else {
             return delta;
         };
-        let Some((node, bounds)) = text_area_item(&self.scene, self.layout.as_deref(), &target)
-        else {
-            return delta;
-        };
-        if !delta.x.is_finite() || !delta.y.is_finite() {
-            return delta;
-        }
-        let Some(state) = &self.state else {
-            return delta;
-        };
-        let editor = self
-            .input
-            .editor
-            .as_ref()
-            .filter(|_| self.input.focused.as_ref() == Some(&target));
-        let (geometry, _) = state.renderer.text.text_area_caret(node, bounds, editor);
-        let old = geometry.clamp_scroll(self.input.text_scroll(&target.path));
-        let scroll = geometry.clamp_scroll(Point {
-            x: old.x + delta.x,
-            y: old.y + delta.y,
-        });
-        if scroll == old {
-            return delta;
-        }
-        self.input.set_text_scroll(&target, scroll);
-        let remaining =
-            |delta: f32, used: f32| (delta - used).clamp(delta.min(0.0), delta.max(0.0));
-        Point {
-            x: remaining(delta.x, scroll.x - old.x),
-            y: remaining(delta.y, scroll.y - old.y),
-        }
+        state
+            .renderer
+            .text
+            .scroll_editor_area(&mut self.input, &self.scene, layout, delta)
     }
 
     fn edit_text(&mut self, action: EditAction<'_>) {
@@ -1996,7 +1802,8 @@ impl<C: Component, M, R: FnMut(&mut C, M)> Application<C, M, R> {
     fn request_clipboard(&mut self, shortcut: ClipboardShortcut) {
         self.pending_clipboard = None;
         self.input.break_text_edit_group();
-        let Some((operation, context)) = EditContext::request(&self.input, &self.scene, &shortcut)
+        let Some((operation, context)) =
+            clipboard::edit_request(&self.input, &self.scene, &shortcut)
         else {
             return;
         };
@@ -2236,17 +2043,9 @@ impl<C: Component, M, R: FnMut(&mut C, M)> Application<C, M, R> {
         {
             return true;
         }
-        if let Some(motion) = match event.logical_key {
-            Key::Named(NamedKey::ArrowLeft) if !shortcut => Some(TextAreaMotion::Left),
-            Key::Named(NamedKey::ArrowRight) if !shortcut => Some(TextAreaMotion::Right),
-            Key::Named(NamedKey::ArrowUp) if multiline => Some(TextAreaMotion::Up),
-            Key::Named(NamedKey::ArrowDown) if multiline => Some(TextAreaMotion::Down),
-            Key::Named(NamedKey::Home) if !shortcut => Some(TextAreaMotion::Home),
-            Key::Named(NamedKey::End) if !shortcut => Some(TextAreaMotion::End),
-            Key::Named(NamedKey::PageUp) if multiline => Some(TextAreaMotion::PageUp),
-            Key::Named(NamedKey::PageDown) if multiline => Some(TextAreaMotion::PageDown),
-            _ => None,
-        } && self.move_text_caret(motion, shift)
+        if let Some(motion) = navigation_key_value(&event.logical_key)
+            .and_then(|key| TextAreaMotion::from_navigation(key, shortcut))
+            && self.move_text_caret(motion, shift)
         {
             return true;
         }
@@ -2949,6 +2748,7 @@ impl<C: Component, M, R: FnMut(&mut C, M)> Application<C, M, R> {
             Key::Named(NamedKey::F10) => ShortcutKey::Function(10),
             Key::Named(NamedKey::F11) => ShortcutKey::Function(11),
             Key::Named(NamedKey::F12) => ShortcutKey::Function(12),
+            Key::Named(NamedKey::Escape) => ShortcutKey::Escape,
             Key::Named(
                 NamedKey::Control
                 | NamedKey::Alt
@@ -3498,41 +3298,20 @@ impl<C: Component, M, R: FnMut(&mut C, M)> Application<C, M, R> {
     }
 
     fn row_selection(&self, keyboard: bool) -> RowSelection {
-        let additive = self.modifiers.control_key() || self.modifiers.super_key();
-        match (self.modifiers.shift_key(), additive) {
-            (true, true) => RowSelection::AddRange,
-            (true, false) => RowSelection::Extend,
-            (false, true) if keyboard => RowSelection::Move,
-            (false, true) => RowSelection::Toggle,
-            (false, false) => RowSelection::Replace,
-        }
+        RowSelection::from_modifiers(self.input_modifiers(), keyboard)
     }
 
     fn selection_key(&mut self, event: &KeyEvent) -> bool {
-        let additive = self.modifiers.control_key() || self.modifiers.super_key();
         let key = match &event.logical_key {
-            Key::Named(NamedKey::Space) => TableSelectionKey::Toggle,
-            Key::Named(NamedKey::Escape) => TableSelectionKey::Clear,
-            Key::Character(key)
-                if key.eq_ignore_ascii_case("a")
-                    && additive
-                    && !self.modifiers.alt_key()
-                    && !self.modifiers.shift_key() =>
-            {
-                TableSelectionKey::All
-            }
+            Key::Named(NamedKey::Space) => " ",
+            Key::Named(NamedKey::Escape) => "Escape",
+            Key::Character(key) => key.as_str(),
             _ => return false,
         };
-        let input = self
-            .input
-            .table_selection_key(&self.scene, key)
-            .or_else(|| {
-                if key == TableSelectionKey::Toggle && !additive {
-                    return None;
-                }
-                self.input
-                    .tree_selection_key(&self.scene, self.layout.as_ref()?, key)
-            });
+        let input = self.layout.as_ref().and_then(|layout| {
+            self.input
+                .selection_key_action(&self.scene, layout, key, self.input_modifiers())
+        });
         let Some(input) = input else {
             return false;
         };
@@ -3811,12 +3590,12 @@ impl<C: Component, M, R: FnMut(&mut C, M)> Application<C, M, R> {
     }
 
     fn requested_drag_action(&self) -> Option<DragAction> {
-        match (self.modifiers.control_key(), self.modifiers.shift_key()) {
-            (false, false) => None,
-            (true, false) => Some(DragAction::Copy),
-            (false, true) => Some(DragAction::Move),
-            (true, true) => Some(DragAction::Link),
+        xrack_runtime::KeyModifiers {
+            control: self.modifiers.control_key(),
+            shift: self.modifiers.shift_key(),
+            ..Default::default()
         }
+        .drag_action()
     }
 
     fn dispatch_drag(&mut self, update: DragUpdate) -> bool {
@@ -4044,7 +3823,7 @@ impl<C: Component, M, R: FnMut(&mut C, M)> Application<C, M, R> {
                     input: &self.input,
                 },
                 scale_rotate::ContactId(device, id),
-                phase,
+                scale_rotate::phase(phase),
                 point,
             );
             self.apply_scale_rotate_batch(events);
@@ -4232,15 +4011,7 @@ impl<C: Component, M, R: FnMut(&mut C, M)> Application<C, M, R> {
     }
 
     fn dispatch_scale_rotate(&mut self, scene: &Node, event: scale_rotate::Delivery) {
-        event.target.handle.publish(event.sample);
-        if scene
-            .at_path(&event.target.path)
-            .and_then(|node| node.scale_rotate_handle.as_ref())
-            == Some(&event.target.handle)
-        {
-            self.component
-                .dispatch_at(scene, &event.target.path, event.event);
-        }
+        event.apply(&mut self.component, scene);
     }
 
     fn apply_scale_rotate(&mut self, event: scale_rotate::Delivery) {
@@ -4321,7 +4092,7 @@ impl<C: Component, M, R: FnMut(&mut C, M)> Application<C, M, R> {
                 input: &self.input,
             },
             device,
-            phase,
+            scale_rotate::phase(phase),
             delta,
         );
         self.apply_scale_rotate_batch(deliveries);
@@ -4344,45 +4115,15 @@ impl<C: Component, M, R: FnMut(&mut C, M)> Application<C, M, R> {
     }
 
     fn sync_window_effects(&mut self, now: Instant) {
-        fn collect<'a>(
-            node: &'a Node,
-            layout: &LayoutNode,
-            timers: &mut Vec<&'a TimerRegistration>,
-            dialogs: &mut Vec<&'a NativeDialogRegistration>,
-            playback: &mut Vec<(&'a Rc<ImagePlaybackRegistration>, bool)>,
-        ) {
-            if layout.visible {
-                timers.extend(&node.timers);
-                if layout.enabled {
-                    dialogs.extend(&node.native_dialogs);
-                }
-            }
-            if let Some(image) = &node.image_playback {
-                let clip = layout.clip_rect(layout.bounds);
-                playback.push((
-                    image,
-                    layout.visible && clip.width > 0.0 && clip.height > 0.0,
-                ));
-            }
-            for (child, item) in node.children.iter().zip(&layout.children) {
-                collect(child, item, timers, dialogs, playback);
-            }
-        }
-        let mut timers = Vec::new();
-        let mut dialogs = Vec::new();
-        let mut playback = Vec::new();
-        if let Some(layout) = &self.layout {
-            collect(
-                &self.scene,
-                layout,
-                &mut timers,
-                &mut dialogs,
-                &mut playback,
-            );
-        }
-        self.timers.sync(now, timers);
-        self.native_dialogs.sync(&dialogs);
-        self.image_playback.sync(now, playback);
+        let effects = self
+            .layout
+            .as_ref()
+            .map_or_else(WindowEffects::default, |layout| {
+                WindowEffects::collect(&self.scene, layout)
+            });
+        self.timers.sync(now, effects.timers);
+        self.native_dialogs.sync(&effects.dialogs);
+        self.image_playback.sync(now, effects.playback);
     }
 
     fn tick_image_playback(&mut self, now: Instant) {

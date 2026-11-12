@@ -398,7 +398,7 @@ pub(crate) fn menu_panel(
                 .unwrap_or(15.0)
                 .clamp(1.0, (rect.height / 1.4).max(1.0));
             let paint = text.paint_node_at_size(row.node, size, color(tint), false);
-            if let Some(image) = row.icon {
+            if let Some(image) = &row.icon {
                 images.draw_icon(canvas, image, panel.icon_bounds(slot), scale, row.enabled)?;
             }
             let left = rect.x + panel.label_offset();

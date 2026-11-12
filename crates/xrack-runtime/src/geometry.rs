@@ -2,7 +2,7 @@ use crate::{Length, Property};
 use std::{fmt, rc::Rc};
 
 #[doc(hidden)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub enum GeometryMetric {
     LayoutX,
     LayoutY,
@@ -14,6 +14,25 @@ pub enum GeometryMetric {
     WindowHeight,
     AvailableWidth,
     AvailableHeight,
+}
+
+impl GeometryMetric {
+    #[doc(hidden)]
+    pub fn from_name(name: &str) -> Option<Self> {
+        Some(match name {
+            "layout-x" => Self::LayoutX,
+            "layout-y" => Self::LayoutY,
+            "layout-width" => Self::LayoutWidth,
+            "layout-height" => Self::LayoutHeight,
+            "window-bounds-x" => Self::WindowX,
+            "window-bounds-y" => Self::WindowY,
+            "window-bounds-width" => Self::WindowWidth,
+            "window-bounds-height" => Self::WindowHeight,
+            "available-width" => Self::AvailableWidth,
+            "available-height" => Self::AvailableHeight,
+            _ => return None,
+        })
+    }
 }
 
 #[derive(Default)]

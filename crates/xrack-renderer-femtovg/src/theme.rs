@@ -1,7 +1,7 @@
 use std::ops::Deref;
 use xrack_runtime::{Color, ColorScheme, Node};
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub struct Theme {
     pub window: Color,
     pub text: Color,
@@ -69,7 +69,7 @@ pub(crate) enum PaletteRole {
     Scrim,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Palette {
     theme: Theme,
     light: bool,

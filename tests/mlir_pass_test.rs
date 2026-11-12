@@ -33,6 +33,695 @@ fn visual_slots(module: &Module) -> usize {
 }
 
 #[test]
+fn static_integer_repeats_share_only_equal_passive_scenes() {
+    let module = raw(
+        r#"
+        component Badge inherits Text { text: "Delegate"; }
+        export component App inherits Window {
+            in property <int> live: 3;
+            for row in 4 : Text { text: "Fixed"; }
+            for row in 4 : Text { text: "Fixed"; }
+            for row in 5 : Text { text: "Fixed"; }
+            for row in 4 : Text { text: "Row " + row; }
+            for row in live : Text { text: "Dynamic count"; }
+            ListView { for row in 4 : Badge {} }
+            for row in 129 : Text { text: "Large"; }
+            ListView { for row in 4 : Text { text: "Virtualized"; } }
+        }
+        "#,
+        "static-integer-repeats.xr",
+    )
+    .optimize()
+    .unwrap();
+    let elements: Vec<_> = module
+        .operations()
+        .find(|op| op.attribute("sym_name") == Some("App"))
+        .unwrap()
+        .children()
+        .find(|op| op.name() == "xr.element")
+        .unwrap()
+        .children()
+        .filter(|op| matches!(op.name(), "xr.element" | "xr.instance"))
+        .collect();
+    let count = |op: OperationRef<'_>| op.integer_attribute("xr.static_repeat_count");
+    assert_eq!(
+        elements.iter().copied().map(count).collect::<Vec<_>>(),
+        [Some(4), Some(4), Some(5), None, None, None, None, None]
+    );
+    let group = |op: OperationRef<'_>| op.integer_attribute("xr.static_subtree_group");
+    assert!(group(elements[0]).is_some());
+    assert_eq!(group(elements[0]), group(elements[1]));
+    assert_ne!(group(elements[0]), group(elements[2]));
+    for view in [elements[5], elements[7]] {
+        assert!(view.children().all(|op| count(op).is_none()));
+    }
+    let rust = codegen::generate(&module).unwrap().to_string();
+    assert_eq!(rust.matches("static_repeat_scene").count(), 3);
+    assert_eq!(rust.matches("xrack_runtime :: Repeater <").count(), 4);
+    assert_eq!(
+        rust.matches("xrack_runtime :: ComponentRepeater <").count(),
+        1
+    );
+}
+
+#[test]
+fn reactive_gradients_and_translations_can_use_shared_component_caches() {
+    let module = raw(
+        r#"
+        translations "catalog.toml";
+        export component App inherits Window {
+            in property <color> accent: #48a;
+            pure callback tint() -> color;
+            Rectangle { background: @linear-gradient(90deg, root.accent, #fff); }
+            Rectangle { background: @linear-gradient(90deg, root.accent, #fff); }
+            for row in 5 : Rectangle {
+                background: @linear-gradient(90deg, root.accent, #fff);
+                Text { text: @tr("title"); }
+            }
+            for row in 5 : Rectangle {
+                background: @linear-gradient(90deg, root.accent, #fff);
+                Text { text: @tr("title"); }
+            }
+            for row in 5 : Rectangle { background: @linear-gradient(90deg, root.tint(), #fff); }
+        }
+        "#,
+        "reactive-visuals.xr",
+    )
+    .optimize()
+    .unwrap();
+    let rectangles: Vec<_> = module
+        .operations()
+        .find(|op| op.name() == "xr.component")
+        .unwrap()
+        .children()
+        .find(|op| op.name() == "xr.element")
+        .unwrap()
+        .children()
+        .filter(|op| op.name() == "xr.element")
+        .collect();
+    let binding = |index: usize| member(rectangles[index], "xr.bind", "background");
+    let pair = |first, second, attribute| {
+        assert!(binding(first).attribute(attribute).is_some());
+        assert_eq!(
+            binding(first).attribute(attribute),
+            binding(second).attribute(attribute)
+        );
+    };
+    pair(0, 1, "xr.repeat_invariant_group");
+    pair(0, 2, "xr.repeat_invariant_group");
+    pair(2, 3, "xr.repeat_invariant_group");
+    assert_eq!(binding(4).attribute("xr.repeat_invariant_group"), None);
+    let translation = |index: usize| {
+        let text = rectangles[index]
+            .children()
+            .find(|op| op.name() == "xr.element")
+            .unwrap();
+        member(text, "xr.bind", "text").attribute("xr.repeat_invariant_group")
+    };
+    assert!(translation(2).is_some());
+    assert_eq!(translation(2), translation(3));
+}
+
+#[test]
+fn unused_private_bindings_release_their_initializer_graph() {
+    let unoptimized = raw(
+        r#"
+        export component App inherits Window {
+            in property <int> seed: 10;
+            property <int> dead-input: root.seed + 1;
+            property <int> dead-middle: root.dead-input + root.dead-input;
+            property <string> dead-tip: "unused marker " + root.dead-middle;
+            property <int> dead-call: root.compute(root.dead-middle);
+            property <[string]> dead-model: ["one", "two"];
+            property <int> live: root.seed * 2;
+            out property <int> result: root.live + 3;
+            property <int> written;
+            property <bool> linked;
+            pure callback compute(int) -> int;
+            callback change();
+            change => { root.written = 2; }
+            CheckBox { checked <=> root.linked; }
+        }
+        "#,
+        "unused-private-bindings.xr",
+    );
+    assert_eq!(
+        unoptimized
+            .operations()
+            .next()
+            .unwrap()
+            .children()
+            .filter(|op| op.name() == "xr.property")
+            .count(),
+        10
+    );
+    let optimized = unoptimized.optimize().unwrap();
+    let component = optimized.operations().next().unwrap();
+    let properties: Vec<_> = component
+        .children()
+        .filter(|op| op.name() == "xr.property")
+        .map(|op| op.attribute("name").unwrap())
+        .collect();
+    assert_eq!(properties, ["seed", "live", "result", "written", "linked"]);
+    assert!(!component.children().any(|op| op.name() == "xr.call"));
+    let rust = codegen::generate(&optimized).unwrap().to_string();
+    assert!(!rust.contains("dead_middle"));
+    assert!(!rust.contains("unused marker"));
+}
+
+#[test]
+fn state_merging_requires_adjacent_identical_overrides_and_no_transitions() {
+    let optimized = raw(
+        r#"
+        component Badge inherits Text { in property <string> caption; text: root.caption; }
+        export component App inherits Window {
+            in property <int> mode: 0;
+            panel := Rectangle { width: 20px; }
+            badge := Badge { caption: "base"; }
+            states [
+                first when root.mode == 1: { panel.width: 40px; badge.caption: "same"; }
+                second when root.mode == 2: { panel.width: 40px; badge.caption: "same";
+                    in { animate panel.width { duration: 180ms; enabled: false; } } }
+                different when root.mode == 3: { panel.width: 80px; badge.caption: "same"; }
+                later when root.mode == 4: { panel.width: 40px; badge.caption: "same"; }
+            ]
+        }
+        component Timed inherits Window {
+            in property <int> mode: 0;
+            panel := Rectangle { width: 20px; }
+            states [
+                first when root.mode == 1: { panel.width: 40px;
+                    out { animate panel.width { duration: 160ms; enabled: true; } } }
+                second when root.mode == 2: { panel.width: 40px; }
+            ]
+        }
+        "#,
+        "merged-state-cases.xr",
+    )
+    .optimize()
+    .unwrap();
+    let window = |name| {
+        optimized
+            .operations()
+            .find(|op| op.attribute("sym_name") == Some(name))
+            .unwrap()
+            .children()
+            .find(|op| op.name() == "xr.element")
+            .unwrap()
+    };
+    fn selector(window: OperationRef<'_>) -> OperationRef<'_> {
+        window
+            .children()
+            .find(|op| op.name() == "xr.state_select")
+            .unwrap()
+    }
+    let app = window("App");
+    let merged = selector(app);
+    assert_eq!(
+        merged.string_array_attribute("names").unwrap(),
+        ["first", "different", "later"]
+    );
+    let condition = definition(merged, 0);
+    assert_eq!(condition.attribute("value"), Some("||"));
+    for (i, number) in ["1", "2"].into_iter().enumerate() {
+        assert_eq!(
+            definition(definition(condition, i), 1).attribute("value"),
+            Some(number)
+        );
+    }
+    for (target, operation) in [("panel", "xr.state_set"), ("badge", "xr.instance_state")] {
+        let element = app
+            .children()
+            .find(|op| op.attribute("id") == Some(target))
+            .unwrap();
+        assert!(!element.children().any(|op| op.name() == "xr.state_timing"));
+        let overrides: Vec<_> = element
+            .children()
+            .filter(|op| op.name() == operation)
+            .map(|op| op.integer_attribute("case_index").unwrap())
+            .collect();
+        assert_eq!(overrides, [0, 1, 2]);
+    }
+    let timed = window("Timed");
+    assert_eq!(
+        selector(timed).string_array_attribute("names").unwrap(),
+        ["first", "second"]
+    );
+    let panel = timed
+        .children()
+        .find(|op| op.attribute("id") == Some("panel"))
+        .unwrap();
+    let timing = member(panel, "xr.state_timing", "width");
+    assert_eq!(timing.attribute("direction"), Some("out"));
+    assert!(timing.operand(2).is_none());
+}
+
+#[test]
+fn boolean_selects_lower_to_short_circuit_operators() {
+    let optimized = raw(
+        r#"
+        export component App inherits Window {
+            in property <bool> condition;
+            in property <bool> value;
+            out property <bool> left-true: root.condition ? true : root.value;
+            out property <bool> left-false: root.condition ? false : root.value;
+            out property <bool> right-true: root.condition ? root.value : true;
+            out property <bool> right-false: root.condition ? root.value : false;
+            out property <bool> inverse: root.condition ? false : true;
+            out property <bool> comparison: true != root.condition;
+            out property <bool> same: root.condition ? true : true;
+        }
+        "#,
+        "boolean-selects.xr",
+    )
+    .optimize()
+    .unwrap();
+    let component = optimized.operations().next().unwrap();
+    let initial = |name| definition(member(component, "xr.property", name), 0);
+    for (name, operator, negated) in [
+        ("left-true", "||", false),
+        ("left-false", "&&", true),
+        ("right-true", "||", true),
+        ("right-false", "&&", false),
+    ] {
+        let expression = initial(name);
+        assert_eq!(expression.attribute("value"), Some(operator));
+        let left = definition(expression, 0);
+        let read = if negated {
+            assert_eq!(left.attribute("value"), Some("!"));
+            definition(left, 0)
+        } else {
+            left
+        };
+        assert_eq!(read.attribute("value"), Some("condition"));
+        assert_eq!(definition(expression, 1).attribute("value"), Some("value"));
+    }
+    for name in ["inverse", "comparison"] {
+        assert_eq!(initial(name).attribute("value"), Some("!"));
+    }
+    assert_eq!(initial("same").name(), "xr.select");
+}
+
+#[test]
+fn static_resource_groups_are_shared_across_components() {
+    let module = raw(
+        r#"
+        component First inherits Window {
+            out property <length> measured: observed.layout-width;
+            Label { text: "shared"; width: 80px; height: 24px; }
+            Rectangle { background: @radial-gradient(circle, #111, #eee); }
+            observed := Rectangle { width: 120px; height: 24px; }
+        }
+        component Second inherits Window {
+            Label { text: "shared"; width: 80px; height: 24px; }
+            Rectangle { background: @radial-gradient(circle, #111, #eee); }
+            Label { text: "different"; width: 80px; height: 24px; }
+        }
+        "#,
+        "shared-static-resources.xr",
+    )
+    .optimize()
+    .unwrap();
+    let visual_children = |name| {
+        module
+            .operations()
+            .find(|op| op.attribute("sym_name") == Some(name))
+            .unwrap()
+            .children()
+            .find(|op| op.name() == "xr.element")
+            .unwrap()
+            .children()
+            .filter(|op| op.name() == "xr.element")
+            .collect::<Vec<_>>()
+    };
+    let first = visual_children("First");
+    let second = visual_children("Second");
+    for index in [0, 1] {
+        let group = first[index]
+            .integer_attribute("xr.static_subtree_group")
+            .unwrap();
+        assert_eq!(
+            second[index].integer_attribute("xr.static_subtree_group"),
+            Some(group)
+        );
+    }
+    assert_eq!(first[2].attribute("xr.static_subtree"), None);
+    assert_eq!(second[2].integer_attribute("xr.static_subtree_group"), None);
+    let gradient_group = |node| {
+        definition(member(node, "xr.bind", "background"), 0)
+            .integer_attribute("xr.static_gradient_group")
+    };
+    assert!(gradient_group(first[1]).is_some());
+    assert_eq!(gradient_group(first[1]), gradient_group(second[1]));
+    let rust = codegen::generate(&module).unwrap().to_string();
+    assert_eq!(rust.matches("static __XR_GRADIENT_").count(), 1);
+    assert_eq!(rust.matches("static __XR_STATIC_SCENE_").count(), 2);
+}
+
+#[test]
+fn fixed_image_source_plan_requires_a_stable_box_and_a_plain_image() {
+    let optimized = raw(
+        r#"
+        component App inherits Window {
+            in property <image> picture;
+            in property <length> live-width: 100px;
+            fixed := Image { source: root.picture; width: 100px; height: 50px; }
+            intrinsic := Image { source: root.picture; width: 100px; }
+            changing := Image { source: root.picture; width: root.live-width; height: 50px; }
+            animated := AnimatedImage { source: root.picture; width: 100px; height: 50px; }
+        }
+        "#,
+        "fixed-image-plans.xr",
+    )
+    .optimize()
+    .unwrap();
+    let root = optimized
+        .operations()
+        .next()
+        .unwrap()
+        .children()
+        .find(|op| op.name() == "xr.element")
+        .unwrap();
+    for (id, expected) in [
+        ("fixed", Some("paint")),
+        ("intrinsic", None),
+        ("changing", None),
+        ("animated", None),
+    ] {
+        let image = root
+            .children()
+            .find(|op| op.attribute("id") == Some(id))
+            .unwrap();
+        assert_eq!(
+            member(image, "xr.bind", "source").attribute("xr.update_effect"),
+            expected
+        );
+    }
+}
+
+#[test]
+fn builtin_literal_fields_fold_and_leave_public_values_reactive() {
+    let module = raw(
+        r#"
+        component App inherits Window {
+            property <Time> fixed: Time { hour: 30, minute: -2, second: 99 };
+            in-out property <Time> live: Time { hour: 30, minute: -2, second: 99 };
+            property <Date> today: Date { year: 2026, month: 11, day: 12 };
+            property <Font> face: Font { family: "sans-serif", size: 18px, weight: 500, italic: false };
+            out property <int> hour: root.fixed.hour;
+            out property <int> minute: root.fixed.minute;
+            out property <int> second: root.fixed.second;
+            out property <int> active-hour: root.live.hour;
+            out property <int> day: root.today.day;
+            out property <length> size: root.face.size;
+        }
+        "#,
+        "builtin-projections.xr",
+    )
+    .optimize()
+    .unwrap();
+    let component = module.operations().next().unwrap();
+    for (property, value) in [
+        ("hour", "23"),
+        ("minute", "0"),
+        ("second", "59"),
+        ("day", "12"),
+        ("size", "18"),
+    ] {
+        let result = definition(member(component, "xr.property", property), 0);
+        assert_eq!(result.name(), "xr.literal");
+        assert_eq!(result.attribute("value"), Some(value));
+    }
+    for property in ["fixed", "today", "face"] {
+        assert!(
+            !component
+                .children()
+                .any(|op| op.attribute("name") == Some(property))
+        );
+    }
+    let live = definition(member(component, "xr.property", "active-hour"), 0);
+    assert_eq!(live.name(), "xr.time_field");
+}
+
+#[test]
+fn empty_repeat_plan_keeps_virtual_templates_and_normalizes_known_paint_order() {
+    let optimized = raw(
+        r#"
+        component App inherits Window {
+            in-out property <int> count: 0;
+            for row in 0 : Text { text: "" + row; }
+            for item in [] : Label { text: item; }
+            for row in root.count : Text { text: "" + row; }
+            ListView { for row in 0 : Text {} }
+            sorted := Rectangle {
+                Rectangle { z: 0; }
+                Rectangle { z: 1; }
+            }
+            unsorted := Rectangle {
+                Rectangle { z: 2; }
+                Rectangle { z: 1; }
+            }
+        }
+        "#,
+        "empty-repeat-plans.xr",
+    )
+    .optimize()
+    .unwrap();
+    let root = optimized
+        .operations()
+        .next()
+        .unwrap()
+        .children()
+        .find(|op| op.name() == "xr.element")
+        .unwrap();
+    let children: Vec<_> = root
+        .children()
+        .filter(|op| op.name() == "xr.element")
+        .collect();
+    fn mark<'m>(element: OperationRef<'m>) -> Option<&'m str> {
+        element
+            .children()
+            .find(|op| op.name() == "xr.repeat")
+            .and_then(|repeat| repeat.attribute("xr.empty_repeat"))
+    }
+    assert_eq!(mark(children[0]), Some("true"));
+    assert_eq!(mark(children[1]), Some("true"));
+    assert_eq!(mark(children[2]), None);
+    let virtual_row = children[3]
+        .children()
+        .find(|op| op.name() == "xr.element")
+        .unwrap();
+    assert_eq!(mark(virtual_row), None);
+    assert_eq!(
+        children[4].i64_array_attribute("xr.static_z_order"),
+        Some(vec![])
+    );
+    assert_eq!(
+        children[5].i64_array_attribute("xr.static_z_order"),
+        Some(vec![1, 0])
+    );
+    let rust = codegen::generate(&optimized).unwrap().to_string();
+    assert!(rust.contains("__xr_empty_repeat_"));
+    assert!(rust.contains("set_natural_paint_order"));
+    let unplanned = Module::parse(&optimized.to_mlir()).unwrap();
+    let fallback = codegen::generate(&unplanned).unwrap().to_string();
+    let repeater_fields = |source: &str| source.matches("xrack_runtime :: Repeater <").count();
+    assert_eq!(repeater_fields(&fallback), repeater_fields(&rust) + 2);
+}
+
+#[test]
+fn scalar_record_projections_share_slots_and_hoist_the_row_independent_prefix() {
+    let optimized = raw(
+        r#"
+        struct Strings { prefix: string, suffix: string }
+        component App inherits Window {
+            in-out property <Strings> style: Strings { prefix: "x", suffix: "y" };
+            in property <[string]> items: ["one", "two"];
+            Text { text: root.style.prefix + root.style.suffix; }
+            Text { text: root.style.prefix + root.style.suffix; }
+            for item in root.items : Text { text: root.style.prefix + item; }
+        }
+        "#,
+        "record-cache-plans.xr",
+    )
+    .optimize()
+    .unwrap();
+    let root = optimized
+        .operations()
+        .find(|op| op.name() == "xr.component")
+        .unwrap()
+        .children()
+        .find(|op| op.name() == "xr.element")
+        .unwrap();
+    let texts: Vec<_> = root
+        .children()
+        .filter(|op| op.name() == "xr.element")
+        .collect();
+    let group = |text| member(text, "xr.bind", "text").attribute("xr.visual_cache_group");
+    let shared = group(texts[0]).unwrap();
+    assert_eq!(group(texts[1]), Some(shared));
+    let prefix = definition(definition(member(texts[2], "xr.bind", "text"), 0), 0);
+    assert_eq!(prefix.name(), "xr.get_field");
+    assert!(prefix.attribute("xr.repeat_subexpression_group").is_some());
+}
+
+#[test]
+fn private_alias_chains_forward_reads_writes_and_public_endpoints() {
+    let optimized = raw(
+        r#"
+        component App inherits Window {
+            property <int> storage: 7;
+            property <int> middle <=> root.storage;
+            property <int> tail <=> root.middle;
+            in-out property <int> exposed <=> root.tail;
+            out property <int> observed: root.tail;
+            callback step();
+            step => { root.tail += 2; }
+            property <int> fixed: 11;
+            property <int> private-alias <=> root.fixed;
+            out property <int> constant: root.private-alias + 1;
+            entry := TextInput { text: "value"; }
+            property <string> control-alias <=> entry.text;
+            out property <string> edited: root.control-alias;
+        }
+        "#,
+        "private-aliases.xr",
+    )
+    .optimize()
+    .unwrap();
+    let component = optimized.operations().next().unwrap();
+    for alias in ["middle", "tail", "private-alias"] {
+        assert!(
+            !component
+                .children()
+                .any(|op| { op.name() == "xr.property" && op.attribute("name") == Some(alias) })
+        );
+    }
+    let exposed = member(component, "xr.property", "exposed");
+    assert_eq!(exposed.attribute("alias"), Some("true"));
+    assert_eq!(definition(exposed, 0).attribute("value"), Some("storage"));
+    let observed = member(component, "xr.property", "observed");
+    assert_eq!(definition(observed, 0).attribute("value"), Some("storage"));
+    let step = member(component, "xr.callback", "step");
+    assert!(
+        step.children()
+            .any(|op| { op.name() == "xr.assign" && op.attribute("name") == Some("storage") })
+    );
+    let constant = definition(member(component, "xr.property", "constant"), 0);
+    assert_eq!(constant.name(), "xr.literal");
+    assert_eq!(constant.attribute("value"), Some("12"));
+    assert_eq!(
+        definition(member(component, "xr.property", "control-alias"), 0).name(),
+        "xr.control_read"
+    );
+}
+
+#[test]
+fn fixed_text_update_plan_requires_two_stable_absolute_dimensions() {
+    let optimized = raw(
+        r#"
+        component App inherits Window {
+            in property <string> message: "status";
+            in property <length> height-input: 30px;
+            in property <bool> compact: false;
+            states [ compact when root.compact: { stateful.height: 18px; } ]
+
+            fixed := Text { text: root.message; width: 120px; height: 24px; }
+            grid := GridLayout {
+                label := Label { text: root.message; width: 120px; height: 24px; }
+            }
+            intrinsic := Text { text: root.message; width: 120px; }
+            relative := Label { text: root.message; width: 50%; height: 24px; }
+            dynamic := Text { text: root.message; width: 120px; height: root.height-input; }
+            stateful := Text { text: root.message; width: 120px; height: 24px; }
+            animated := Text {
+                text: root.message; width: 120px; height: 24px;
+                animate width { duration: 120ms; }
+            }
+        }
+        "#,
+        "fixed-text-updates.xr",
+    )
+    .optimize()
+    .unwrap();
+    let root = optimized
+        .operations()
+        .next()
+        .unwrap()
+        .children()
+        .find(|op| op.name() == "xr.element")
+        .unwrap();
+    fn element<'m>(parent: OperationRef<'m>, id: &str) -> OperationRef<'m> {
+        parent
+            .children()
+            .find(|op| op.attribute("id") == Some(id))
+            .unwrap()
+    }
+    let text_effect = |element| member(element, "xr.bind", "text").attribute("xr.update_effect");
+    assert_eq!(text_effect(element(root, "fixed")), Some("paint"));
+    assert_eq!(
+        text_effect(element(element(root, "grid"), "label")),
+        Some("paint")
+    );
+    for id in ["intrinsic", "relative", "dynamic", "stateful", "animated"] {
+        assert_eq!(text_effect(element(root, id)), None, "{id}");
+    }
+}
+
+#[test]
+fn record_projection_folding_keeps_writable_storage_and_other_field_evaluation() {
+    let optimized = raw(
+        r#"
+        struct Pair { count: int, label: string }
+        component App inherits Window {
+            property <Pair> immutable: Pair { count: 7, label: "preset" };
+            property <Pair> writable: Pair { count: 8, label: "old" };
+            in-out property <Pair> linked <=> root.writable;
+            property <Pair> assigned: Pair { count: 6, label: "old" };
+            callback change();
+            change => { root.assigned = Pair { count: 10, label: "new" }; }
+            property <Pair> dynamic: Pair { count: 9, label: root.label() };
+            pure callback label() -> string;
+            label => { "dynamic" }
+
+            out property <int> fixed: root.immutable.count;
+            out property <int> updated: root.writable.count;
+            out property <int> assigned-count: root.assigned.count;
+            out property <int> evaluated: root.dynamic.count;
+        }
+        "#,
+        "record-projections.xr",
+    )
+    .optimize()
+    .unwrap();
+    let component = optimized
+        .operations()
+        .find(|op| op.name() == "xr.component")
+        .unwrap();
+    let fixed = definition(member(component, "xr.property", "fixed"), 0);
+    assert_eq!(fixed.name(), "xr.literal");
+    assert_eq!(fixed.attribute("value"), Some("7"));
+    assert!(
+        !component
+            .children()
+            .any(|op| op.attribute("name") == Some("immutable"))
+    );
+    for (property, owner) in [
+        ("updated", "writable"),
+        ("assigned-count", "assigned"),
+        ("evaluated", "dynamic"),
+    ] {
+        let field = definition(member(component, "xr.property", property), 0);
+        assert_eq!(field.name(), "xr.get_field");
+        let record = definition(field, 0);
+        assert_eq!(record.name(), "xr.read");
+        assert_eq!(record.attribute("value"), Some(owner));
+    }
+    let dynamic = definition(member(component, "xr.property", "dynamic"), 0);
+    assert_eq!(definition(dynamic, 1).name(), "xr.call");
+}
+
+#[test]
 fn optimized_scroll_targets_keep_viewport_identity_and_reject_foreign_ids() {
     let optimized = raw(
         r#"
@@ -335,6 +1024,78 @@ fn static_gradient_plans_exclude_live_colors() {
         cache_count(&Module::parse(&optimized.to_mlir()).unwrap()),
         0
     );
+}
+
+#[test]
+fn unconditional_literal_states_become_bindings_and_unlock_scene_plans() {
+    let optimized = raw(
+        r#"
+        component Badge inherits Rectangle {}
+        export component App inherits Window {
+            in property <string> message: "Ready";
+            in property <bool> live: false;
+            grid := GridLayout {
+                tile := Rectangle { col: 0; width: 20px; height: 20px; }
+            }
+            status := Text { text: root.message; width: 120px; }
+            badge := Badge {}
+            states [
+                ignored when false: { tile.col: 3; }
+                settled when true: { tile.col: 1; status.height: 24px; badge.width: 70px; }
+                later when root.live: { tile.col: 4; }
+            ]
+        }
+        component Timed inherits Window {
+            panel := Rectangle { width: 20px; }
+            states [ settled when true: {
+                panel.width: 40px;
+                in { animate panel.width { duration: 160ms; } }
+            } ]
+        }
+        component DynamicValue inherits Window {
+            in property <length> target-width: 120px;
+            panel := Rectangle { width: 20px; }
+            states [ settled when true: { panel.width: root.target-width; } ]
+        }
+        "#,
+        "materialize-states.xr",
+    )
+    .optimize()
+    .unwrap();
+    let window = |name| {
+        optimized
+            .operations()
+            .find(|op| op.attribute("sym_name") == Some(name))
+            .unwrap()
+            .children()
+            .find(|op| op.name() == "xr.element")
+            .unwrap()
+    };
+    fn child<'m>(parent: OperationRef<'m>, id: &str) -> OperationRef<'m> {
+        parent
+            .children()
+            .find(|op| op.attribute("id") == Some(id))
+            .unwrap()
+    }
+    let app = window("App");
+    assert!(!app.children().any(|op| op.name() == "xr.state_select"));
+    let grid = child(app, "grid");
+    assert_eq!(grid.attribute("xr.static_grid"), Some("true"));
+    assert_eq!(grid.attribute("xr.static_subtree"), Some("true"));
+    let tile = child(grid, "tile");
+    let col = member(tile, "xr.bind", "col");
+    assert_eq!(definition(col, 0).attribute("value"), Some("1"));
+    assert!(!tile.children().any(|op| op.name() == "xr.state_set"));
+    let text = member(child(app, "status"), "xr.bind", "text");
+    assert_eq!(text.attribute("xr.update_effect"), Some("paint"));
+    let width = member(child(app, "badge"), "xr.layout_bind", "width");
+    assert_eq!(definition(width, 0).attribute("value"), Some("70"));
+    let timed = window("Timed");
+    assert!(timed.children().any(|op| op.name() == "xr.state_select"));
+    let timing = child(timed, "panel");
+    assert!(timing.children().any(|op| op.name() == "xr.state_timing"));
+    let dynamic = child(window("DynamicValue"), "panel");
+    assert!(dynamic.children().any(|op| op.name() == "xr.state_set"));
 }
 
 #[test]
@@ -927,8 +1688,14 @@ fn optimization_preserves_dynamic_conditions_and_trapping_operations() {
         condition => { root.count += 1; true }
         callback choose();
         choose() => { root.count = root.condition() ? 7 : 7; }
-        out property <int> overflow: 9223372036854775807 + 1;
+        out property <int> wrap-add: 9223372036854775807 + 1;
+        out property <int> wrap-subtract: (0 - 9223372036854775807 - 1) - 1;
+        out property <int> wrap-multiply: 4611686018427387904 * 2;
+        out property <int> wrap-negate: -(0 - 9223372036854775807 - 1);
         out property <int> div-zero: 12 / 0;
+        out property <int> rem-zero: 12 % 0;
+        out property <int> div-overflow: (0 - 9223372036854775807 - 1) / -1;
+        out property <int> rem-overflow: (0 - 9223372036854775807 - 1) % -1;
     }"#,
         "effects.xr",
     );
@@ -942,7 +1709,22 @@ fn optimization_preserves_dynamic_conditions_and_trapping_operations() {
         .unwrap();
     assert_eq!(select.operand(1), select.operand(2));
     assert_eq!(definition(select, 0).name(), "xr.call");
-    for (property, operator) in [("overflow", "+"), ("div-zero", "/")] {
+    for (property, value) in [
+        ("wrap-add", "-9223372036854775808"),
+        ("wrap-subtract", "9223372036854775807"),
+        ("wrap-multiply", "-9223372036854775808"),
+        ("wrap-negate", "-9223372036854775808"),
+    ] {
+        let initializer = definition(member(component, "xr.property", property), 0);
+        assert_eq!(initializer.name(), "xr.literal");
+        assert_eq!(initializer.attribute("value"), Some(value));
+    }
+    for (property, operator) in [
+        ("div-zero", "/"),
+        ("rem-zero", "%"),
+        ("div-overflow", "/"),
+        ("rem-overflow", "%"),
+    ] {
         let initializer = definition(member(component, "xr.property", property), 0);
         assert_eq!(initializer.name(), "xr.binary");
         assert_eq!(initializer.attribute("value"), Some(operator));

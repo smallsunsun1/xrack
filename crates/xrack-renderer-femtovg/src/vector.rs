@@ -13,18 +13,16 @@ pub(crate) fn draw_path(
     let Some(commands) = node.text("commands") else {
         return Ok(());
     };
-    if let Some(path) = node.precompiled_path(commands) {
-        if path.segments.is_empty() {
+    if let Some((extents, segments)) = node.vector_path_geometry(commands) {
+        if segments.is_empty() {
             return Ok(());
         }
-        return draw_segments(canvas, node, bounds, path.segments.iter().copied(), || {
-            path.bounds
-        });
+        return draw_segments(canvas, node, bounds, segments.iter().copied(), || extents);
     }
     let Some(source) = parse_path(commands).map_err(|error| {
         format!(
             "invalid Path commands on {}: {error}",
-            node.id.unwrap_or("an anonymous element")
+            node.element_id().unwrap_or("an anonymous element")
         )
     })?
     else {

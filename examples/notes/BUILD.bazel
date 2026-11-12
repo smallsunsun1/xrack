@@ -1,6 +1,8 @@
 load("@rules_rust//rust:defs.bzl", "rust_binary")
 load("//bazel:xrack.bzl", "xr_ui_library")
 
+exports_files(["notes.xr"], visibility = ["//tests:__pkg__"])
+
 xr_ui_library(
     name = "notes_ui",
     src = "notes.xr",

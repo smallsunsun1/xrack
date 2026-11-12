@@ -295,6 +295,14 @@ impl TreeSnapshot {
         self.visible_index(self.entry_for_source(source)?.key)
     }
 
+    /// Resolve a rendered row only if it still appears in the live tree.
+    #[doc(hidden)]
+    pub fn event_source_index(&self, live: &Self, index: usize, row: RowKey) -> Option<usize> {
+        let item = self.rows().get(index).filter(|item| item.row == row)?;
+        let current = live.rows().get(live.visible_index(item.key)?)?;
+        (current.row == row && current.model_index == item.model_index).then_some(item.model_index)
+    }
+
     fn entry_for_source(&self, source: usize) -> Option<&Entry> {
         let index = self
             .topology
@@ -486,6 +494,20 @@ impl TreeState {
         field: Option<fn(&T) -> &str>,
         query: impl FnOnce() -> String,
     ) -> Arc<TreeSnapshot> {
+        self.snapshot_projected_by(model, roles, root, visible, field, query)
+    }
+
+    /// Project using field selectors that may capture immutable schema paths.
+    #[doc(hidden)]
+    pub fn snapshot_projected_by<T: 'static>(
+        &self,
+        model: impl FnOnce() -> Rc<VecModel<T>>,
+        roles: impl Fn(&T) -> (i64, i64) + Clone + 'static,
+        root: impl FnOnce() -> i64,
+        visible: Option<impl Fn(&T) -> bool + Clone + 'static>,
+        field: Option<impl Fn(&T) -> &str + Clone + 'static>,
+        query: impl FnOnce() -> String,
+    ) -> Arc<TreeSnapshot> {
         self.snapshot.get(|| {
             let root = root();
             let model = std::cell::LazyCell::new(model);
@@ -498,7 +520,7 @@ impl TreeState {
                     while let Some(index) = pending.pop() {
                         let entry = &topology.entries[index];
                         if model
-                            .project_row_untracked(entry.model_index, visible)
+                            .project_row_untracked(entry.model_index, &visible)
                             .unwrap_or(false)
                         {
                             shown[index] = true;
@@ -533,6 +555,7 @@ impl TreeState {
                 })
             });
             let query: Rc<str> = field
+                .as_ref()
                 .map_or_else(String::new, |_| query().trim().to_lowercase())
                 .into();
             let Some(field) = field.filter(|_| !query.is_empty()) else {
@@ -557,6 +580,7 @@ impl TreeState {
                     let needle = query.clone();
                     let observed = topology_ref.clone();
                     let shown = available.clone();
+                    let field = field.clone();
                     *observation = Some(FilterObservation {
                         topology: topology_ref,
                         available: available.clone(),

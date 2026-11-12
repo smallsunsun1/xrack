@@ -1,0 +1,18 @@
+[package]
+name = "xrack-preview"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+pollster.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+wgpu.workspace = true
+xrack-compiler = { path = "../xrack-compiler" }
+xrack-interpreter = { path = "../xrack-interpreter" }
+xrack-layout.workspace = true
+xrack-renderer-femtovg.workspace = true
+xrack-runtime.workspace = true

@@ -93,6 +93,15 @@ extern "C" bool xrackMlirVerifyModule(MlirModule module) {
   return mlir::succeeded(xrack::dialect::verifyModule(unwrap(module)));
 }
 
+extern "C" bool xrackMlirParseFloatLiteral(MlirStringRef spelling,
+                                            double *result) {
+  auto value = xrack::dialect::parseFloatLiteral(unwrap(spelling));
+  if (!value || !result)
+    return false;
+  *result = *value;
+  return true;
+}
+
 extern "C" void xrackMlirAddPipeline(MlirPassManager manager) {
   xrack::dialect::buildPipeline(*unwrap(manager));
 }

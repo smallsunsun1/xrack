@@ -30,7 +30,10 @@ mod password;
 mod pointer_events;
 mod popup;
 mod range;
+mod row_layout;
 mod scale_rotate;
+#[doc(hidden)]
+pub mod scale_rotate_gestures;
 mod scroll_bar;
 mod scroll_gesture;
 mod search;
@@ -59,7 +62,7 @@ pub use choice::{ChoiceKey, ChoiceMenu, ComboCompletion, ComboGeometry};
 use clip::ClipChain;
 pub use clip::{RoundedClip, corner_radii, normalize_radii};
 pub use drag::{DragDispatch, DragUpdate};
-pub use edit::{EditAction, TextEdit, TextPosition};
+pub use edit::{EditAction, TextEdit, TextEditContext, TextPosition};
 pub use file_drop::{FileDragInput, FileDropScope};
 pub use focus_observers::{FocusDelivery, FocusObservers};
 pub use geometry::{Point, Rect, Size};
@@ -79,8 +82,10 @@ pub use modal::{dialog_title_height, drawer_grip};
 pub use overscroll::OverscrollFrame;
 pub use page_indicator::{PageIndicatorGeometry, PageMarker};
 pub use password::PasswordMask;
-pub use pointer_events::{PointerDelivery, PointerSequence};
+pub use pointer_events::{PointerDelivery, PointerSequence, pointer_click_follows};
 pub use range::{ColorPlaneGeometry, DialGeometry, SliderGeometry};
+#[doc(hidden)]
+pub use row_layout::{RowLayoutCache, RowLayoutStats};
 pub use scale_rotate::{ScaleRotateTarget, TouchTransform, touch_centroid};
 pub use scroll_bar::ScrollBarGeometry;
 pub use scroll_gesture::{ScrollGestureEnd, ScrollGestureKind};
@@ -199,7 +204,7 @@ pub struct LayoutNode {
     pub styled_text: Option<Box<StyledTextLayout>>,
     font_size: f32,
     overlays: Option<Box<modal::OverlayIndex>>,
-    paint_order: Option<std::borrow::Cow<'static, [usize]>>,
+    paint_order: Option<xrack_runtime::ScenePlanSlice<usize>>,
     overflow: bool,
     child_shape: Option<RoundedClip>,
     ancestor_shapes: Option<Arc<ClipChain>>,
@@ -235,7 +240,55 @@ impl ScrollLayout {
     }
 }
 
+/// Window-level registrations visible in a prepared scene.
+#[doc(hidden)]
+#[derive(Default)]
+pub struct WindowEffects<'a> {
+    pub timers: Vec<&'a xrack_runtime::TimerRegistration>,
+    pub dialogs: Vec<&'a xrack_runtime::NativeDialogRegistration>,
+    pub playback: Vec<(&'a Rc<xrack_runtime::ImagePlaybackRegistration>, bool)>,
+}
+
+impl<'a> WindowEffects<'a> {
+    pub fn collect(node: &'a Node, layout: &LayoutNode) -> Self {
+        let mut effects = Self::default();
+        effects.extend(node, layout);
+        effects
+    }
+
+    fn extend(&mut self, node: &'a Node, layout: &LayoutNode) {
+        self.timers.extend(layout.timer_registrations(node));
+        if layout.visible && layout.enabled {
+            self.dialogs.extend(&node.native_dialogs);
+        }
+        self.playback.extend(layout.image_playback(node));
+        for (child, item) in node.children.iter().zip(&layout.children) {
+            self.extend(child, item);
+        }
+    }
+}
+
 impl LayoutNode {
+    #[doc(hidden)]
+    pub fn timer_registrations<'a>(
+        &self,
+        node: &'a Node,
+    ) -> &'a [xrack_runtime::TimerRegistration] {
+        if self.visible { &node.timers } else { &[] }
+    }
+
+    pub fn image_playback<'a>(
+        &self,
+        node: &'a Node,
+    ) -> Option<(&'a Rc<xrack_runtime::ImagePlaybackRegistration>, bool)> {
+        let registration = node.image_playback.as_ref()?;
+        let clip = self.clip_rect(self.bounds);
+        Some((
+            registration,
+            self.visible && clip.width > 0.0 && clip.height > 0.0,
+        ))
+    }
+
     pub fn allows_overflow(&self) -> bool {
         self.overflow
     }
@@ -436,14 +489,14 @@ impl LayoutNode {
     }
 }
 
-fn sibling_paint_order(node: &Node, count: usize) -> Option<std::borrow::Cow<'static, [usize]>> {
-    use std::borrow::Cow;
+fn sibling_paint_order(node: &Node, count: usize) -> Option<xrack_runtime::ScenePlanSlice<usize>> {
+    use xrack_runtime::ScenePlanSlice;
 
-    if let Some(order) = node
-        .static_paint_order()
-        .filter(|order| order.len() == count)
-    {
-        return Some(Cow::Borrowed(order));
+    if node.has_natural_paint_order() {
+        return None;
+    }
+    if let Some(order) = node.paint_order_plan().filter(|order| order.len() == count) {
+        return Some(order.clone());
     }
     let children = &node.children[..count];
     // Already ordered (including the default of all zeroes) needs no storage.
@@ -452,7 +505,7 @@ fn sibling_paint_order(node: &Node, count: usize) -> Option<std::borrow::Cow<'st
     }
     let mut order: Vec<_> = (0..children.len()).collect();
     order.sort_by(|&left, &right| children[left].z().total_cmp(&children[right].z()));
-    Some(Cow::Owned(order))
+    Some(ScenePlanSlice::Owned(order))
 }
 
 pub fn font_size(node: &Node) -> f32 {
@@ -577,6 +630,7 @@ fn layout_current_window(
         row_key: None,
         anchor: None,
         resolved_list_scroll: None,
+        row_layouts: None,
         ancestor_shapes: None,
         space: None,
         viewport: bounds,
@@ -595,7 +649,7 @@ pub fn prepare_scene(
     text: &mut impl TextMeasurer,
     offsets: &BTreeMap<Vec<usize>, f32>,
 ) -> (Rc<Node>, LayoutNode) {
-    prepare_scene_with_offsets(component, scene, viewport, text, offsets, None)
+    prepare_scene_with_offsets(component, scene, viewport, text, offsets, None, None)
 }
 
 pub fn prepare_scene_with_input(
@@ -612,7 +666,31 @@ pub fn prepare_scene_with_input(
         text,
         input.scroll_offsets(),
         Some(input),
+        None,
     )
+}
+
+#[doc(hidden)]
+pub fn prepare_scene_with_row_cache(
+    component: &impl Component,
+    scene: Rc<Node>,
+    viewport: Size,
+    text: &mut impl TextMeasurer,
+    input: &Interaction,
+    cache: &mut RowLayoutCache,
+) -> (Rc<Node>, LayoutNode) {
+    cache.begin_frame(&scene);
+    let result = prepare_scene_with_offsets(
+        component,
+        scene,
+        viewport,
+        text,
+        input.scroll_offsets(),
+        Some(input),
+        Some(cache),
+    );
+    cache.finish_frame();
+    result
 }
 
 fn prepare_scene_with_offsets(
@@ -622,6 +700,7 @@ fn prepare_scene_with_offsets(
     text: &mut impl TextMeasurer,
     offsets: &BTreeMap<Vec<usize>, f32>,
     input: Option<&Interaction>,
+    row_layouts: Option<&mut RowLayoutCache>,
 ) -> (Rc<Node>, LayoutNode) {
     fn has_lists(node: &Node) -> bool {
         node.list.is_some() || node.children.iter().any(has_lists)
@@ -645,6 +724,7 @@ fn prepare_scene_with_offsets(
             row_key: None,
             anchor: None,
             resolved_list_scroll: None,
+            row_layouts,
             ancestor_shapes: None,
             space: None,
             viewport,
@@ -679,6 +759,7 @@ struct LayoutContext<'a, T> {
     row_key: Option<RowKey>,
     anchor: Option<Rect>,
     resolved_list_scroll: Option<ScrollLayout>,
+    row_layouts: Option<&'a mut RowLayoutCache>,
     ancestor_shapes: Option<Arc<ClipChain>>,
     space: Option<Arc<TransformSpace>>,
     viewport: Rect,
@@ -931,18 +1012,67 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
         let outer_shapes = self.ancestor_shapes.clone();
         let outer_space = self.space.clone();
         self.row_key = node.routing_row_key().or(outer_key);
-        let layout = self.place_node(
-            node,
-            bounds,
-            clip,
-            parent_visible,
-            parent_enabled,
-            row_children,
-        );
+        let row_cache = node.kind == "ListRow"
+            && row_children.is_none()
+            && self.space.is_none()
+            && self.ancestor_shapes.is_none()
+            && self.row_layouts.is_some();
+        let layout = if row_cache && let Some(row) = node.routing_row_key() {
+            let slot = row_layout::Slot { row, column: None };
+            let inputs = row_layout::RowInputs {
+                size: Size::new(bounds.width, bounds.height),
+                visible: parent_visible,
+                enabled: parent_enabled,
+            };
+            self.place_cached_content(node, bounds, clip, inputs, slot)
+        } else {
+            self.place_node(
+                node,
+                bounds,
+                clip,
+                parent_visible,
+                parent_enabled,
+                row_children,
+            )
+        };
         self.row_key = outer_key;
         self.anchor = outer_anchor;
         self.ancestor_shapes = outer_shapes;
         self.space = outer_space;
+        layout
+    }
+
+    fn place_cached_content(
+        &mut self,
+        node: &Node,
+        bounds: Rect,
+        clip: Rect,
+        inputs: row_layout::RowInputs,
+        slot: row_layout::Slot,
+    ) -> LayoutNode {
+        let depth = if slot.column.is_some() { 3 } else { 1 };
+        let path_len = self.path.len().saturating_sub(depth);
+        let path = &self.path[..path_len];
+        if let Some(mut layout) = self
+            .row_layouts
+            .as_deref_mut()
+            .unwrap()
+            .get(path, slot, node, inputs)
+        {
+            row_layout::place_in_view(&mut layout, bounds, clip);
+            return layout;
+        }
+        if !row_layout::cacheable(node) {
+            return self.place_node(node, bounds, clip, inputs.visible, inputs.enabled, None);
+        }
+        let local = Rect::new(0.0, 0.0, inputs.size.width, inputs.size.height);
+        let mut layout = self.place_node(node, local, local, inputs.visible, inputs.enabled, None);
+        let path = &self.path[..path_len];
+        self.row_layouts
+            .as_deref_mut()
+            .unwrap()
+            .insert(path, slot, node, inputs, &layout);
+        row_layout::place_in_view(&mut layout, bounds, clip);
         layout
     }
 
@@ -1180,6 +1310,7 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
         } else {
             (None, None)
         };
+        let table_cells = node.kind == "TableRow" && row_children.is_some();
         let mut row_children = row_children;
         let page = (visible && (node.kind == "Page" || node.application_window))
             .then(|| page::Regions::new(node, bounds, self.text));
@@ -1428,19 +1559,46 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
                 let clip = pane.map_or(clip, |(bounds, to_parent)| {
                     clip.intersect(to_parent.map_rect(bounds))
                 });
-                let mut child = self.place(
-                    child,
-                    placement.bounds,
-                    clip,
-                    visible
-                        && region
-                            .as_ref()
-                            .is_none_or(|_| clip.width > 0.0 && clip.height > 0.0),
-                    children_enabled
-                        && node.group_content_enabled()
-                        && region.is_none_or(|region| region.enabled),
-                    placement.row_children,
-                );
+                let visible = visible
+                    && region
+                        .as_ref()
+                        .is_none_or(|_| clip.width > 0.0 && clip.height > 0.0);
+                let enabled = children_enabled
+                    && node.group_content_enabled()
+                    && region.is_none_or(|region| region.enabled);
+                let mut child = if table_cells
+                    && !child.children.is_empty()
+                    && self.row_layouts.is_some()
+                    && self.space.is_none()
+                    && self.ancestor_shapes.is_none()
+                    && child.routing_row_key().is_none()
+                    && row_layout::cacheable(child)
+                    && let Some(row) = self.row_key
+                {
+                    let outer_anchor = self.anchor;
+                    let inputs = row_layout::RowInputs {
+                        size: Size::new(placement.bounds.width, placement.bounds.height),
+                        visible,
+                        enabled,
+                    };
+                    let slot = row_layout::Slot {
+                        row,
+                        column: Some(index),
+                    };
+                    let child =
+                        self.place_cached_content(child, placement.bounds, clip, inputs, slot);
+                    self.anchor = outer_anchor;
+                    child
+                } else {
+                    self.place(
+                        child,
+                        placement.bounds,
+                        clip,
+                        visible,
+                        enabled,
+                        placement.row_children,
+                    )
+                };
                 if let Some(shapes) = outer_shapes {
                     self.ancestor_shapes = shapes;
                 }

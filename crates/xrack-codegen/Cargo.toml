@@ -14,3 +14,4 @@ xrack-syntax.workspace = true
 xrack-ir.workspace = true
 xrack-mlir.workspace = true
 xrack-runtime.workspace = true
+xrack-resources.workspace = true

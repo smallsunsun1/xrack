@@ -7,6 +7,16 @@ xr_ui_library(
     visibility = ["//tests:__pkg__"],
 )
 
+filegroup(
+    name = "bundled_sources",
+    srcs = [
+        "bundled.xr",
+        "fonts/demo.ttc",
+        "fonts/sample.xr",
+    ],
+    visibility = ["//tests:__pkg__"],
+)
+
 xr_ui_library(
     name = "bundled_ui",
     src = "bundled.xr",
@@ -15,7 +25,14 @@ xr_ui_library(
     visibility = ["//tests:__pkg__"],
 )
 
-exports_files(["fonts/demo.ttc"], visibility = ["//tests:__pkg__"])
+exports_files(
+    [
+        "fonts/demo.ttc",
+        "fonts/sample.xr",
+        "layout.xr",
+    ],
+    visibility = ["//tests:__pkg__"],
+)
 
 rust_binary(
     name = "layout",

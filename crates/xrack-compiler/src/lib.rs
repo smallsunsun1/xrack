@@ -2,14 +2,11 @@
 use proc_macro2::TokenStream;
 use std::{
     collections::{BTreeMap, BTreeSet},
-    path::PathBuf,
+    path::{Path, PathBuf},
 };
 
-mod animated_image;
 mod error;
-mod localization;
 mod modules;
-mod resources;
 pub use error::CompilerError;
 pub use modules::parse_document;
 
@@ -18,6 +15,9 @@ pub use xrack_ir as ir;
 pub use xrack_ir::semantic;
 pub use xrack_mlir as mlir;
 pub use xrack_parser::{ast, parse};
+use xrack_resources::{
+    PrepareMlirError, ResolvedTranslations, prepare_mlir, resolve_assets, resolve_translations,
+};
 
 pub struct Compilation {
     pub rust: TokenStream,
@@ -40,12 +40,45 @@ pub struct Preview {
     pub inputs: BTreeSet<PathBuf>,
 }
 
-/// Generate a snapshot host interface for the editor buffer and its open imports.
-pub fn compile_preview(
+pub struct PreviewModule {
+    pub module: mlir::Module,
+    pub components: Vec<String>,
+    pub inputs: BTreeSet<PathBuf>,
+    translations: ResolvedTranslations,
+}
+
+pub struct PreviewAssets {
+    pub fonts: Vec<Vec<u8>>,
+    pub images: BTreeMap<String, codegen::EmbeddedImage>,
+    pub inputs: BTreeSet<PathBuf>,
+}
+
+pub fn load_preview_assets(
+    module: &mlir::Module,
+    filename: &str,
+) -> Result<PreviewAssets, CompilerError> {
+    let assets =
+        resolve_assets(module, Path::new(filename), None).map_err(CompilerError::Resources)?;
+    codegen::check_nine_slices(module, &assets.images).map_err(CompilerError::Resources)?;
+    Ok(PreviewAssets {
+        fonts: assets.fonts,
+        images: assets.images,
+        inputs: assets.inputs,
+    })
+}
+
+impl PreviewModule {
+    pub fn take_translation_catalog(&mut self) -> Option<codegen::EmbeddedTranslations> {
+        self.translations.catalog.take()
+    }
+}
+
+/// Prepare the editor buffer and its open imports for either preview backend.
+pub fn prepare_preview(
     source: &str,
     filename: &str,
     buffers: BTreeMap<PathBuf, String>,
-) -> Result<Preview, CompilerError> {
+) -> Result<PreviewModule, CompilerError> {
     let buffers = buffers
         .into_iter()
         .filter_map(|(path, text)| Some((path.canonicalize().ok()?, text)))
@@ -64,11 +97,55 @@ pub fn compile_preview(
         .collect();
     // Default to an exported entry component, retaining source order among peers.
     components.sort_by_key(|component| !component.exported);
-    let components: Vec<_> = components
+    let components = components
         .iter()
         .map(|component| component.name.clone())
         .collect();
     let (module, translations) = prepare(&doc, filename, None, &buffers)?;
+    inputs.insert(filename.into());
+    inputs.extend(translations.inputs.iter().cloned());
+    Ok(PreviewModule {
+        module,
+        components,
+        inputs,
+        translations,
+    })
+}
+
+/// Prepare standalone XR dialect IR and resolve assets relative to its file.
+pub fn prepare_mlir_preview(source: &str, filename: &str) -> Result<PreviewModule, CompilerError> {
+    let (module, translations) =
+        prepare_mlir(source, Path::new(filename)).map_err(|error| match error {
+            PrepareMlirError::Mlir(message) => CompilerError::Mlir(message),
+            PrepareMlirError::Resources(message) => CompilerError::Resources(message),
+        })?;
+    let components = module
+        .operations()
+        .filter(|op| op.name() == "xr.component" && op.attribute("exported") == Some("true"))
+        .filter_map(|op| op.attribute("sym_name").map(str::to_owned))
+        .collect();
+    let mut inputs = BTreeSet::from([filename.into()]);
+    inputs.extend(translations.inputs.iter().cloned());
+    Ok(PreviewModule {
+        module,
+        components,
+        inputs,
+        translations,
+    })
+}
+
+/// Generate a snapshot host interface for the editor buffer and its open imports.
+pub fn compile_preview(
+    source: &str,
+    filename: &str,
+    buffers: BTreeMap<PathBuf, String>,
+) -> Result<Preview, CompilerError> {
+    let PreviewModule {
+        module,
+        components,
+        mut inputs,
+        translations,
+    } = prepare_preview(source, filename, buffers)?;
     let mut rust = emit_with_inputs(&module, filename, None, translations, &mut inputs)?;
     rust.extend(codegen::preview_factory(
         components.iter().map(String::as_str),
@@ -85,8 +162,13 @@ pub fn generate_rust(
     filename: &str,
     declared_assets: Option<&[PathBuf]>,
 ) -> Result<TokenStream, CompilerError> {
-    let translations = localization::resolve(module, filename, declared_assets, &BTreeMap::new())
-        .map_err(CompilerError::Resources)?;
+    let translations = resolve_translations(
+        module,
+        Path::new(filename),
+        declared_assets,
+        &BTreeMap::new(),
+    )
+    .map_err(CompilerError::Resources)?;
     emit_with_inputs(
         module,
         filename,
@@ -135,11 +217,11 @@ fn emit_with_inputs(
     module: &mlir::Module,
     filename: &str,
     declared_assets: Option<&[PathBuf]>,
-    translations: localization::Translations,
+    translations: ResolvedTranslations,
     inputs: &mut BTreeSet<PathBuf>,
 ) -> Result<TokenStream, CompilerError> {
-    let assets =
-        resources::resolve(module, filename, declared_assets).map_err(CompilerError::Resources)?;
+    let assets = resolve_assets(module, Path::new(filename), declared_assets)
+        .map_err(CompilerError::Resources)?;
     let rust = codegen::generate_with_translations(
         module,
         &assets.images,
@@ -168,8 +250,13 @@ pub fn check_resources(
     filename: &str,
     declared_assets: Option<&[PathBuf]>,
 ) -> Result<(), CompilerError> {
-    localization::resolve(module, filename, declared_assets, &BTreeMap::new())
-        .map_err(CompilerError::Resources)?;
+    resolve_translations(
+        module,
+        Path::new(filename),
+        declared_assets,
+        &BTreeMap::new(),
+    )
+    .map_err(CompilerError::Resources)?;
     check_output_resources(module, filename, declared_assets)
 }
 
@@ -178,8 +265,8 @@ fn check_output_resources(
     filename: &str,
     declared_assets: Option<&[PathBuf]>,
 ) -> Result<(), CompilerError> {
-    let assets =
-        resources::resolve(module, filename, declared_assets).map_err(CompilerError::Resources)?;
+    let assets = resolve_assets(module, Path::new(filename), declared_assets)
+        .map_err(CompilerError::Resources)?;
     codegen::check_nine_slices(module, &assets.images).map_err(CompilerError::Resources)?;
     codegen::check_markdown(module).map_err(CompilerError::Codegen)
 }
@@ -189,10 +276,10 @@ fn prepare(
     filename: &str,
     declared_assets: Option<&[PathBuf]>,
     buffers: &BTreeMap<PathBuf, String>,
-) -> Result<(mlir::Module, localization::Translations), CompilerError> {
+) -> Result<(mlir::Module, ResolvedTranslations), CompilerError> {
     let module = lower_raw(doc, filename)?;
     // Validate every call before visual and expression passes remove unused code.
-    let translations = localization::resolve(&module, filename, declared_assets, buffers)
+    let translations = resolve_translations(&module, Path::new(filename), declared_assets, buffers)
         .map_err(CompilerError::Resources)?;
     let module = module.optimize().map_err(CompilerError::Mlir)?;
     Ok((module, translations))

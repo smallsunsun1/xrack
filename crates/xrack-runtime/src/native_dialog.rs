@@ -26,6 +26,43 @@ pub struct FileDialogOptions {
     pub name_filters: Vec<String>,
 }
 
+impl FileDialogOptions {
+    #[doc(hidden)]
+    pub fn filters(&self) -> Result<Vec<(&str, Vec<&str>)>, &'static str> {
+        if matches!(
+            self.mode,
+            FileDialogMode::SelectFolder | FileDialogMode::SelectFolders
+        ) {
+            return Ok(Vec::new());
+        }
+        self.name_filters
+            .iter()
+            .map(|filter| parse_filter(filter))
+            .collect::<Option<_>>()
+            .ok_or("Invalid name filter. Use a label and extension patterns, for example Text files (*.txt *.md).")
+    }
+}
+
+fn parse_filter(filter: &str) -> Option<(&str, Vec<&str>)> {
+    let (label, patterns) = filter.trim().strip_suffix(')')?.rsplit_once('(')?;
+    let label = label.trim();
+    let extensions = patterns
+        .split_whitespace()
+        .map(|pattern| {
+            if pattern == "*" || pattern == "*.*" {
+                return Some("*");
+            }
+            let extension = pattern.strip_prefix("*.")?;
+            (!extension.is_empty()
+                && extension
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-')))
+            .then_some(extension)
+        })
+        .collect::<Option<Vec<_>>>()?;
+    (!label.is_empty() && !extensions.is_empty()).then_some((label, extensions))
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum MessageLevel {
     #[default]
@@ -86,8 +123,15 @@ impl NativeDialogSlot {
     }
 
     pub fn open(&self, options: impl FnOnce() -> NativeDialogOptions) {
+        let _: Result<(), std::convert::Infallible> = self.try_open(|| Ok(options()));
+    }
+
+    pub fn try_open<E>(
+        &self,
+        options: impl FnOnce() -> Result<NativeDialogOptions, E>,
+    ) -> Result<(), E> {
         if self.pending() {
-            return;
+            return Ok(());
         }
         static NEXT: AtomicU64 = AtomicU64::new(1);
         let id = NEXT
@@ -95,8 +139,9 @@ impl NativeDialogSlot {
             .expect("native dialog request identities exhausted");
         self.0.set(Some(Request {
             id,
-            options: Rc::new(options()),
+            options: Rc::new(options()?),
         }));
+        Ok(())
     }
 
     pub fn register(
@@ -278,7 +323,28 @@ impl NativeDialogQueue {
 
 #[cfg(test)]
 mod tests {
-    use super::FileDialogSelection;
+    use super::{FileDialogSelection, parse_filter};
+
+    #[test]
+    fn name_filters_preserve_labels_and_validate_extensions() {
+        assert_eq!(
+            parse_filter("Text (source) (*.txt *.md)"),
+            Some(("Text (source)", vec!["txt", "md"]))
+        );
+        assert_eq!(
+            parse_filter("All files (*.*)"),
+            Some(("All files", vec!["*"]))
+        );
+        for invalid in [
+            "*.txt",
+            "Text ()",
+            "(*.txt)",
+            "Text (file*.txt)",
+            "Text (*../x)",
+        ] {
+            assert_eq!(parse_filter(invalid), None);
+        }
+    }
 
     #[test]
     fn accepted_paths_are_independent_of_the_returned_model() {

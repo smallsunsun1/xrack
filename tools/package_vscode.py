@@ -15,7 +15,7 @@ import xml.etree.ElementTree as ET
 import zipfile
 
 from compiler_bundles import ROOT, archive_members, verified_archive, workspace_version
-from package_xrackc import BAZEL_OPTIONS
+from package_xrackc import BAZEL_OPTIONS, cargo_licenses
 
 EXTENSION = ROOT / "crates" / "xrack-lsp" / "vscode"
 VSCE = "@vscode/vsce@4.1.0"
@@ -44,6 +44,10 @@ EXTENSION_FILES = (
     "preview-queue.js",
 )
 SAMPLE = "export component PreviewProbe inherits Window { width: 120px; height: 80px; }"
+SERVER_TARGETS = {
+    "xrack-lsp": "crates/xrack-lsp",
+    "xrack-preview": "crates/xrack-preview",
+}
 
 
 def tool(name):
@@ -101,13 +105,20 @@ def stage_servers(destination, archives, host, suffix):
     if not executable.is_file() or executable.stat().st_size == 0:
         raise ValueError(f"{archive}: missing {compiler}")
     executable.chmod(0o755)
+    for source, relative in cargo_licenses(host, roots=("xrack-lsp", "xrack-preview")):
+        output = destination / relative
+        if not output.exists():
+            output.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(source, output)
 
     bazel = tool("bazel")
-    subprocess.run((bazel, "build", *BAZEL_OPTIONS, "//crates/xrack-lsp:xrack-lsp"), cwd=ROOT, check=True)
+    targets = [f"//{directory}:{name}" for name, directory in SERVER_TARGETS.items()]
+    subprocess.run((bazel, "build", *BAZEL_OPTIONS, *targets), cwd=ROOT, check=True)
     bin_dir = subprocess.check_output((bazel, "info", *BAZEL_OPTIONS, "bazel-bin"), cwd=ROOT, text=True).strip()
-    server = destination / ("xrack-lsp" + suffix)
-    shutil.copyfile(Path(bin_dir) / "crates" / "xrack-lsp" / server.name, server)
-    server.chmod(0o755)
+    for name, directory in SERVER_TARGETS.items():
+        server = destination / (name + suffix)
+        shutil.copyfile(Path(bin_dir) / directory / server.name, server)
+        server.chmod(0o755)
 
 
 def verify_vsix(package, extension, target):
@@ -128,7 +139,7 @@ def verify_vsix(package, extension, target):
         if any(packed_manifest.get(key) != extension[key] for key in ("name", "publisher", "version")):
             raise ValueError(f"{package}: extension manifest does not match the release")
         suffix = ".exe" if target.startswith("win32-") else ""
-        for name in ("xrackc", "xrack-lsp"):
+        for name in ("xrackc", *SERVER_TARGETS):
             binary = archive.getinfo("extension/server/" + name + suffix)
             mode = binary.external_attr >> 16
             if binary.file_size == 0 or (not suffix and not (mode & stat.S_IXUSR)):
@@ -150,12 +161,13 @@ def lsp_message(method, **fields):
 
 def smoke_test(package, directory, suffix):
     with zipfile.ZipFile(package) as archive:
-        compiler, lsp = (
+        compiler, lsp, preview = (
             Path(archive.extract(f"extension/server/{name}{suffix}", directory))
-            for name in ("xrackc", "xrack-lsp")
+            for name in ("xrackc", *SERVER_TARGETS)
         )
     compiler.chmod(0o755)
     lsp.chmod(0o755)
+    preview.chmod(0o755)
     compiled = json.loads(subprocess.run(
         (compiler, directory / "probe.xr", "--emit", "preview"),
         input=json.dumps({"text": SAMPLE}).encode(),
@@ -165,6 +177,15 @@ def smoke_test(package, directory, suffix):
     ).stdout)
     if compiled["components"] != ["PreviewProbe"] or "__xrack_preview_component" not in compiled["rust"]:
         raise ValueError(f"{package}: preview compiler smoke test failed")
+    request = {"type": "load", "filename": str(directory / "probe.xr"), "text": SAMPLE}
+    frame = subprocess.run(
+        (preview, "--check"), input=(json.dumps(request) + "\n").encode(),
+        stdout=subprocess.PIPE, check=True, timeout=60,
+    ).stdout
+    size = int.from_bytes(frame[:4], "big")
+    response = json.loads(frame[4:4 + size])
+    if response["error"] or response["component"] != "PreviewProbe":
+        raise ValueError(f"{package}: interpreter smoke test failed: {response}")
     messages = (
         lsp_message("initialize", id=1, params={})
         + lsp_message("shutdown", id=2)

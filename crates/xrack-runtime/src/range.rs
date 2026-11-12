@@ -37,6 +37,31 @@ impl RangeAction {
     }
 }
 
+impl Node {
+    #[doc(hidden)]
+    pub const RANGE_THUMBS: usize = 2;
+
+    #[doc(hidden)]
+    pub fn range_target(&self, path: &[usize]) -> Option<&Self> {
+        let target = self.interactive_at_path(path)?;
+        match target.kind {
+            "Slider" | "Dial" | "ScrollBar" | "ColorPlane" => Some(target),
+            "RangeThumb" => {
+                let (&index, parent) = path.split_last()?;
+                self.at_path(parent)
+                    .filter(|node| node.kind == "RangeSlider" && index < Self::RANGE_THUMBS)
+            }
+            _ => None,
+        }
+    }
+
+    #[doc(hidden)]
+    pub fn add_range_thumbs(&mut self) {
+        self.children
+            .extend([Self::new("RangeThumb", None), Self::new("RangeThumb", None)]);
+    }
+}
+
 /// Step by a wheel batch without iterating once per detent.
 pub(crate) fn step_float(
     value: f64,

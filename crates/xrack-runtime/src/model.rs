@@ -3,6 +3,7 @@ use std::{
     cell::{Cell, RefCell},
     cmp::Ordering as Comparison,
     collections::BTreeMap,
+    fmt,
     ops::Range,
     rc::{Rc, Weak},
     sync::atomic::{AtomicU64, Ordering},
@@ -24,7 +25,7 @@ struct RowSignals {
 impl RowSignals {
     fn track(&mut self, index: usize) {
         if !self.signals.contains_key(&index) && self.signals.len() >= self.next_prune {
-            self.signals.retain(|_, signal| signal.has_dependents());
+            self.signals.retain(|_, signal| signal.has_observers());
             self.next_prune = (self.signals.len() * 2).max(64);
         }
         self.signals.entry(index).or_default().track();
@@ -32,6 +33,7 @@ impl RowSignals {
 }
 
 type ProjectionDiff<T> = dyn Fn(usize, &T, &T) -> bool;
+pub(crate) type RowObserver<T> = dyn Fn(RowKey, Option<&T>);
 
 struct RowProjection<T> {
     signal: Weak<ChangeSignal>,
@@ -51,11 +53,20 @@ struct ModelData<T> {
     values: ChangeSignal,
     row_signals: RefCell<RowSignals>,
     projections: RefCell<Vec<RowProjection<T>>>,
+    row_observers: RefCell<Vec<Weak<RowObserver<T>>>>,
 }
 
 /// A shared UI-thread model with separately tracked row and length reads.
 /// Cloning the handle shares its data and subscriptions.
 pub struct VecModel<T>(Rc<ModelData<T>>);
+
+impl<T> fmt::Debug for VecModel<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("VecModel")
+            .field("id", &self.0.id)
+            .finish_non_exhaustive()
+    }
+}
 
 impl<T> Clone for VecModel<T> {
     fn clone(&self) -> Self {
@@ -89,6 +100,7 @@ impl<T> From<Vec<T>> for VecModel<T> {
             values: ChangeSignal::default(),
             row_signals: RefCell::default(),
             projections: RefCell::default(),
+            row_observers: RefCell::default(),
         }))
     }
 }
@@ -129,6 +141,10 @@ impl<T> VecModel<T> {
     /// Find a record's current index by its stable identity.
     pub fn row_index(&self, key: RowKey) -> Option<usize> {
         self.0.structure.track();
+        self.row_index_untracked(key)
+    }
+
+    pub(crate) fn row_index_untracked(&self, key: RowKey) -> Option<usize> {
         if key.model != self.0.id {
             return None;
         }
@@ -230,6 +246,29 @@ impl<T> VecModel<T> {
         signal
     }
 
+    /// Observe row contents by stable key. Observers run while the model may be borrowed.
+    pub(crate) fn observe_rows(&self, observer: &Rc<RowObserver<T>>) {
+        let mut observers = self.0.row_observers.borrow_mut();
+        observers.retain(|observer| observer.strong_count() != 0);
+        observers.push(Rc::downgrade(observer));
+    }
+
+    fn row_changed(&self, id: u64, value: Option<&T>) {
+        let key = RowKey {
+            model: self.0.id,
+            row: id,
+            scope: 0,
+        };
+        self.0.row_observers.borrow_mut().retain(|observer| {
+            if let Some(observer) = observer.upgrade() {
+                observer(key, value);
+                true
+            } else {
+                false
+            }
+        });
+    }
+
     pub(crate) fn row_lifetime(&self, key: RowKey) -> RowLifetime {
         let mut lifetimes = self.0.lifetimes.borrow_mut();
         RowLifetime(Some(Rc::downgrade(lifetimes.entry(key.row).or_default())))
@@ -259,7 +298,9 @@ impl<T> VecModel<T> {
         let index = {
             let mut rows = self.0.rows.borrow_mut();
             let index = rows.len();
-            rows.push(self.entry(value));
+            let entry = self.entry(value);
+            self.row_changed(entry.id, Some(&entry.value));
+            rows.push(entry);
             index
         };
         self.structure_changed(index, true);
@@ -272,7 +313,9 @@ impl<T> VecModel<T> {
             if index > rows.len() {
                 return false;
             }
-            rows.insert(index, self.entry(value));
+            let entry = self.entry(value);
+            self.row_changed(entry.id, Some(&entry.value));
+            rows.insert(index, entry);
         }
         self.structure_changed(index, true);
         true
@@ -286,6 +329,7 @@ impl<T> VecModel<T> {
             }
             rows.remove(index)
         };
+        self.row_changed(removed.id, None);
         self.0.lifetimes.borrow_mut().remove(&removed.id);
         self.structure_changed(index, true);
         Some(removed.value)
@@ -339,9 +383,11 @@ impl<T> VecModel<T> {
 
     fn structure_changed(&self, index: usize, count_changed: bool) {
         self.0.revision.set(self.0.revision.get().wrapping_add(1));
-        // Dropping the old signals invalidates reads at the shifted indices.
+        // Notify readers before discarding signals for indices whose rows have shifted.
         let shifted = self.0.row_signals.borrow_mut().signals.split_off(&index);
-        drop(shifted);
+        for signal in shifted.into_values() {
+            signal.notify();
+        }
         if count_changed {
             self.0.count.notify();
         }
@@ -422,7 +468,7 @@ impl<T: PartialEq> VecModel<T> {
             let Some(current) = rows.get_mut(index) else {
                 return false;
             };
-            self.swap_row(index, &mut current.value, &mut value)
+            self.swap_row(index, current, &mut value)
         };
         if changed {
             self.values_changed();
@@ -444,7 +490,7 @@ impl<T: PartialEq> VecModel<T> {
         }
         let mut changed = false;
         for (index, value) in &mut values {
-            changed |= self.swap_row(*index, &mut rows[*index].value, value);
+            changed |= self.swap_row(*index, &mut rows[*index], value);
         }
         drop(rows);
         if changed {
@@ -453,20 +499,21 @@ impl<T: PartialEq> VecModel<T> {
         changed
     }
 
-    fn swap_row(&self, index: usize, current: &mut T, next: &mut T) -> bool {
-        if current == next {
+    fn swap_row(&self, index: usize, entry: &mut Entry<T>, next: &mut T) -> bool {
+        if &entry.value == next {
             return false;
         }
         self.0.projections.borrow_mut().retain(|projection| {
             let Some(signal) = projection.signal.upgrade() else {
                 return false;
             };
-            if index < projection.limit && (projection.changed)(index, current, next) {
+            if index < projection.limit && (projection.changed)(index, &entry.value, next) {
                 signal.notify();
             }
             true
         });
-        std::mem::swap(current, next);
+        std::mem::swap(&mut entry.value, next);
+        self.row_changed(entry.id, Some(&entry.value));
         if let Some(signal) = self.0.row_signals.borrow().signals.get(&index) {
             signal.notify();
         }
@@ -534,6 +581,27 @@ mod tests {
         assert_eq!(model.row_key(3), Some(keys[3]));
         assert!(lifetime.is_live(keys[2], model.structure_stamp().0, 4));
         assert!(!model.sort_by(|a, b| a.0.cmp(&b.0)));
+    }
+
+    #[test]
+    fn watched_model_rows_survive_pruning_and_detect_shifts() {
+        use crate::property::watch_reads;
+
+        let model = VecModel::from((0..128).collect::<Vec<_>>());
+        watch_reads(|reads| {
+            for index in 0..100 {
+                assert_eq!(model.row(index), Some(index));
+            }
+            assert!(model.set_row(120, 0));
+            assert!(!reads.changed());
+            assert!(model.set_row(0, 120));
+            assert!(reads.changed());
+        });
+        watch_reads(|reads| {
+            assert_eq!(model.row(1), Some(1));
+            assert_eq!(model.remove(0), Some(120));
+            assert!(reads.changed());
+        });
     }
 
     #[test]

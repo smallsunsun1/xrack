@@ -1,0 +1,30 @@
+load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_test")
+
+rust_binary(
+    name = "xrack-preview",
+    srcs = [
+        "src/dialog.rs",
+        "src/main.rs",
+        "src/windows.rs",
+    ],
+    edition = "2024",
+    version = "0.2.0",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//crates/xrack-compiler:xrack_compiler",
+        "//crates/xrack-interpreter:xrack_interpreter",
+        "//crates/xrack-layout:xrack_layout",
+        "//crates/xrack-renderer-femtovg:xrack_renderer_femtovg",
+        "//crates/xrack-runtime:xrack_runtime",
+        "@crates//:pollster",
+        "@crates//:serde",
+        "@crates//:serde_json",
+        "@crates//:wgpu",
+    ],
+)
+
+rust_test(
+    name = "preview_test",
+    size = "small",
+    crate = ":xrack-preview",
+)

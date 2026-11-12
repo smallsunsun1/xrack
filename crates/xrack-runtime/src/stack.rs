@@ -1,5 +1,6 @@
 use crate::Property;
 use std::{
+    borrow::Cow,
     cell::Cell,
     sync::{
         Arc,
@@ -22,12 +23,12 @@ pub enum StackNavigation<'a> {
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct StackSnapshot {
-    routes: Vec<&'static str>,
+    routes: Vec<Cow<'static, str>>,
     revision: u64,
 }
 
 impl StackSnapshot {
-    fn new(routes: Vec<&'static str>) -> Self {
+    fn new(routes: Vec<Cow<'static, str>>) -> Self {
         let revision = NEXT_REVISION
             .try_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
                 value.checked_add(1)
@@ -36,16 +37,16 @@ impl StackSnapshot {
         Self { routes, revision }
     }
 
-    pub fn routes(&self) -> &[&'static str] {
+    pub fn routes(&self) -> &[Cow<'static, str>] {
         &self.routes
     }
 
-    pub fn current(&self) -> Option<&'static str> {
-        self.routes.last().copied()
+    pub fn current(&self) -> Option<&str> {
+        self.routes.last().map(Cow::as_ref)
     }
 
     pub fn index_of(&self, route: &str) -> Option<usize> {
-        self.routes.iter().position(|page| *page == route)
+        self.routes.iter().position(|page| page == route)
     }
 
     pub fn depth(&self) -> usize {
@@ -65,23 +66,23 @@ pub struct StackChange<'a> {
 }
 
 impl StackChange<'_> {
-    pub fn deactivated(&self) -> Option<&'static str> {
+    pub fn deactivated(&self) -> Option<&str> {
         self.before
             .current()
             .filter(|page| Some(*page) != self.after.current())
     }
 
-    pub fn activated(&self) -> Option<&'static str> {
+    pub fn activated(&self) -> Option<&str> {
         self.after
             .current()
             .filter(|page| Some(*page) != self.before.current())
     }
 
-    pub fn removed(&self) -> impl Iterator<Item = &'static str> + '_ {
+    pub fn removed(&self) -> impl Iterator<Item = &str> + '_ {
         self.before
             .routes
             .iter()
-            .copied()
+            .map(Cow::as_ref)
             .rev()
             .filter(|route| self.after.index_of(route).is_none())
     }
@@ -108,14 +109,27 @@ impl StackState {
         pages: &[&'static str],
         initial: impl FnOnce() -> String,
     ) -> Arc<StackSnapshot> {
-        self.snapshot.get(|| {
-            let initial = initial();
+        self.try_snapshot(pages, || Ok::<_, std::convert::Infallible>(initial()))
+            .unwrap_or_else(|error| match error {})
+    }
+
+    pub fn try_snapshot<R, E>(
+        &self,
+        pages: &[R],
+        initial: impl FnOnce() -> Result<String, E>,
+    ) -> Result<Arc<StackSnapshot>, E>
+    where
+        R: Clone + AsRef<str> + Into<Cow<'static, str>>,
+    {
+        self.snapshot.try_get(|| {
+            let initial = initial()?;
             let route = pages
                 .iter()
-                .copied()
-                .find(|&page| page == initial)
-                .or_else(|| pages.first().copied());
-            Arc::new(StackSnapshot::new(route.into_iter().collect()))
+                .find(|page| page.as_ref() == initial)
+                .or_else(|| pages.first())
+                .cloned()
+                .map(Into::into);
+            Ok(Arc::new(StackSnapshot::new(route.into_iter().collect())))
         })
     }
 
@@ -148,20 +162,52 @@ impl StackState {
         mut can_leave: impl FnMut(&str, &str, bool) -> bool,
         changed: impl FnOnce(StackChange<'_>),
     ) -> bool {
+        self.try_navigate_guarded(
+            pages,
+            || Ok::<_, std::convert::Infallible>(initial()),
+            expected,
+            action,
+            |route, destination, removing| Ok(can_leave(route, destination, removing)),
+            |change| {
+                changed(change);
+                Ok(())
+            },
+        )
+        .unwrap_or_else(|error| match error {})
+    }
+
+    pub fn try_navigate_guarded<R, E>(
+        &self,
+        pages: &[R],
+        initial: impl FnOnce() -> Result<String, E>,
+        expected: Option<u64>,
+        action: StackNavigation<'_>,
+        mut can_leave: impl FnMut(&str, &str, bool) -> Result<bool, E>,
+        changed: impl FnOnce(StackChange<'_>) -> Result<(), E>,
+    ) -> Result<bool, E>
+    where
+        R: Clone + AsRef<str> + Into<Cow<'static, str>>,
+    {
         if self.notifying.replace(true) {
-            return false;
+            return Ok(false);
         }
         let _guard = NavigationGuard(&self.notifying);
-        let current = self.snapshot(pages, initial);
+        let current = self.try_snapshot(pages, initial)?;
         if expected.is_some_and(|revision| revision != current.revision()) {
-            return false;
+            return Ok(false);
         }
-        let resolve = |route| pages.iter().copied().find(|&page| page == route);
+        let resolve = |route| {
+            pages
+                .iter()
+                .find(|page| page.as_ref() == route)
+                .cloned()
+                .map(Into::into)
+        };
         let mut routes = current.routes.clone();
         match action {
             StackNavigation::Push(route) | StackNavigation::Replace(route) => {
                 let Some(page) = resolve(route).filter(|page| !routes.contains(page)) else {
-                    return false;
+                    return Ok(false);
                 };
                 if matches!(action, StackNavigation::Replace(_)) {
                     routes.pop();
@@ -171,23 +217,23 @@ impl StackState {
             StackNavigation::Pop if routes.len() > 1 => {
                 routes.pop();
             }
-            StackNavigation::Pop => return false,
+            StackNavigation::Pop => return Ok(false),
             StackNavigation::PopTo(route) => {
-                let Some(index) = routes.iter().position(|&page| page == route) else {
-                    return false;
+                let Some(index) = routes.iter().position(|page| page == route) else {
+                    return Ok(false);
                 };
                 routes.truncate(index + 1);
             }
             StackNavigation::Reset(route) => {
                 let Some(page) = resolve(route) else {
-                    return false;
+                    return Ok(false);
                 };
                 routes.clear();
                 routes.push(page);
             }
             StackNavigation::PushPages(path) | StackNavigation::ResetTo(path) => {
                 if path.is_empty() {
-                    return false;
+                    return Ok(false);
                 }
                 if matches!(action, StackNavigation::ResetTo(_)) {
                     routes.clear();
@@ -195,14 +241,14 @@ impl StackState {
                 for route in path {
                     let Some(page) = resolve(route.as_str()).filter(|page| !routes.contains(page))
                     else {
-                        return false;
+                        return Ok(false);
                     };
                     routes.push(page);
                 }
             }
         }
         if routes == current.routes {
-            return false;
+            return Ok(false);
         }
         let next = Arc::new(StackSnapshot::new(routes));
         let change = StackChange {
@@ -215,8 +261,8 @@ impl StackState {
             .chain(change.removed().filter(|route| Some(*route) != outgoing));
         let destination = next.current().unwrap_or("");
         for route in leaving {
-            if !can_leave(route, destination, next.index_of(route).is_none()) {
-                return false;
+            if !can_leave(route, destination, next.index_of(route).is_none())? {
+                return Ok(false);
             }
         }
         // An effectful guard can change an input to the still-implicit initial route.
@@ -224,17 +270,60 @@ impl StackState {
             .snapshot
             .matches_current(|latest| Arc::ptr_eq(latest, &current))
         {
-            return false;
+            return Ok(false);
         }
         self.snapshot.set(next.clone());
-        changed(change);
-        true
+        changed(change)?;
+        Ok(true)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn owned_routes_recover_from_initialization_and_guard_errors() {
+        let pages = ["home".to_owned(), "editor".to_owned()];
+        let state = StackState::default();
+        assert!(matches!(
+            state.try_snapshot(&pages, || Err("initial route")),
+            Err("initial route")
+        ));
+        let initial = || Ok::<_, &str>("home".to_owned());
+        let before = state.try_snapshot(&pages, initial).unwrap();
+        assert!(matches!(
+            state.try_navigate_guarded(
+                &pages,
+                initial,
+                Some(before.revision()),
+                StackNavigation::Push("editor"),
+                |_, _, _| Err("guard failed"),
+                |_| unreachable!(),
+            ),
+            Err("guard failed")
+        ));
+        assert!(Arc::ptr_eq(
+            &before,
+            &state.try_snapshot(&pages, initial).unwrap()
+        ));
+        assert!(
+            state
+                .try_navigate_guarded(
+                    &pages,
+                    initial,
+                    Some(before.revision()),
+                    StackNavigation::Push("editor"),
+                    |_, _, _| Ok(true),
+                    |_| Ok(()),
+                )
+                .unwrap()
+        );
+        assert_eq!(
+            state.try_snapshot(&pages, initial).unwrap().routes(),
+            ["home", "editor"]
+        );
+    }
 
     #[test]
     fn navigation_rejects_stale_actions_and_reentrant_notifications() {

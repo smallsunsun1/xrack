@@ -1,7 +1,7 @@
 use crate::Property;
 use fluent_bundle::{FluentArgs, FluentBundle, FluentResource};
 use fluent_langneg::{NegotiationStrategy, negotiate_languages};
-use std::{cell::OnceCell, rc::Rc};
+use std::{borrow::Cow, cell::OnceCell, collections::BTreeMap, rc::Rc};
 
 pub use fluent_bundle::FluentValue as TranslationValue;
 pub use unic_langid::LanguageIdentifier as LocaleId;
@@ -45,28 +45,77 @@ impl LocaleBinding {
 /// Parsed catalogs shared by all instances of a generated UI on one thread.
 pub struct TranslationCatalog {
     locales: Vec<LocaleId>,
-    sources: Vec<&'static str>,
+    sources: Vec<Cow<'static, str>>,
     bundles: Vec<OnceCell<FluentBundle<FluentResource>>>,
     default: usize,
 }
 
 impl TranslationCatalog {
     pub fn new(default: &str, sources: &[(&str, &'static str)]) -> Self {
-        let default = sources
-            .iter()
-            .position(|(locale, _)| *locale == default)
-            .expect("generated catalog has a default language");
-        let (locales, text) = sources
-            .iter()
-            .map(|(locale, source)| (locale.parse().expect("validated locale"), *source))
-            .unzip();
-        let bundles = sources.iter().map(|_| OnceCell::new()).collect();
-        Self {
+        Self::from_sources(
+            default,
+            sources
+                .iter()
+                .map(|&(locale, text)| (locale, Cow::Borrowed(text))),
+        )
+        .expect("validated generated translation catalog")
+    }
+
+    pub fn from_owned(default: &str, sources: BTreeMap<String, String>) -> Result<Self, String> {
+        let catalog = Self::from_sources(
+            default,
+            sources
+                .into_iter()
+                .map(|(locale, text)| (locale, Cow::Owned(text))),
+        )?;
+        for index in 0..catalog.locales.len() {
+            let bundle = catalog.build_bundle(index)?;
+            catalog.bundles[index]
+                .set(bundle)
+                .map_err(|_| "translation bundle was already initialized")?;
+        }
+        Ok(catalog)
+    }
+
+    fn from_sources(
+        default: &str,
+        sources: impl IntoIterator<Item = (impl AsRef<str>, Cow<'static, str>)>,
+    ) -> Result<Self, String> {
+        let mut default_index = None;
+        let mut locales = Vec::new();
+        let mut text = Vec::new();
+        for (locale, source) in sources {
+            let locale = locale.as_ref();
+            if locale == default {
+                default_index = Some(locales.len());
+            }
+            locales.push(
+                locale
+                    .parse::<LocaleId>()
+                    .map_err(|error| error.to_string())?,
+            );
+            text.push(source);
+        }
+        let bundles = locales.iter().map(|_| OnceCell::new()).collect();
+        Ok(Self {
             locales,
             sources: text,
             bundles,
-            default,
-        }
+            default: default_index.ok_or("translation catalog missing default language")?,
+        })
+    }
+
+    fn build_bundle(&self, index: usize) -> Result<FluentBundle<FluentResource>, String> {
+        let resource = FluentResource::try_new(self.sources[index].to_string())
+            .map_err(|(_, errors)| format!("invalid Fluent resource: {errors:?}"))?;
+        let mut bundle = FluentBundle::new(vec![self.locales[index].clone()]);
+        bundle
+            .add_resource(resource)
+            .map_err(|errors| format!("invalid Fluent messages: {errors:?}"))?;
+        bundle
+            .add_builtins()
+            .map_err(|errors| format!("invalid Fluent builtins: {errors:?}"))?;
+        Ok(bundle)
     }
 
     pub fn translate(
@@ -95,16 +144,8 @@ impl TranslationCatalog {
                 .iter()
                 .position(|candidate| candidate == language)
                 .expect("negotiated a catalog language");
-            let bundle = self.bundles[index].get_or_init(|| {
-                let resource = FluentResource::try_new(self.sources[index].to_owned())
-                    .expect("validated Fluent resource");
-                let mut bundle = FluentBundle::new(vec![language.clone()]);
-                bundle
-                    .add_resource(resource)
-                    .expect("validated Fluent message IDs");
-                bundle.add_builtins().expect("validated Fluent builtins");
-                bundle
-            });
+            let bundle = self.bundles[index]
+                .get_or_init(|| self.build_bundle(index).expect("validated Fluent resource"));
             if let Some(pattern) = bundle.get_message(id).and_then(|message| message.value()) {
                 let mut errors = Vec::new();
                 let text = bundle.format_pattern(pattern, Some(&args), &mut errors);

@@ -136,8 +136,9 @@ jobs:
         run: >-
           bazel test --announce_rc --lockfile_mode=update
           //tests:compiler_test //tests:mlir_pass_test //tests:expressions_test
-          //tests:mlir_filecheck_test
-          //crates/xrack-lsp:xrack_lsp_test
+          //tests:mlir_filecheck_test //tests:interpreter_parity_test
+          //crates/xrack-interpreter:interpreter_test
+          //crates/xrack-preview:preview_test //crates/xrack-lsp:xrack_lsp_test
       - name: Run Clippy through Bazel
         if: runner.os == 'macOS'
         run: bazel build --config=lint --lockfile_mode=error //... //tests:gpu_test

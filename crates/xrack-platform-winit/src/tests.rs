@@ -469,30 +469,24 @@ fn password_clipboard_allows_paste_and_rejects_copy_and_cut_even_when_revealed()
         .properties
         .insert("text", "e\u{301}👩‍💻".to_owned().into());
     let mut input = Interaction::default();
-    input.focused = Some(Target {
-        text_link: None,
-        path: vec![],
-        id: None,
-        focusable: true,
-        row_key: None,
-    });
+    input.focused = Some(Target::from_node(vec![], &field, true, None));
     input.sync_editor(&field);
     input
         .editor
         .as_mut()
         .unwrap()
         .apply(field.text("text").unwrap(), EditAction::SelectAll);
-    let (_, normal) = EditContext::request(&input, &field, &ClipboardShortcut::Cut).unwrap();
+    let (_, normal) = clipboard::edit_request(&input, &field, &ClipboardShortcut::Cut).unwrap();
     field
         .properties
         .insert("input-type", InputType::Password.into());
     assert!(!normal.is_current(&input, &field));
     for revealed in [false, true] {
         field.properties.insert("password-visible", revealed.into());
-        assert!(EditContext::request(&input, &field, &ClipboardShortcut::Copy).is_none());
-        assert!(EditContext::request(&input, &field, &ClipboardShortcut::Cut).is_none());
+        assert!(clipboard::edit_request(&input, &field, &ClipboardShortcut::Copy).is_none());
+        assert!(clipboard::edit_request(&input, &field, &ClipboardShortcut::Cut).is_none());
         assert!(matches!(
-            EditContext::request(&input, &field, &ClipboardShortcut::Paste),
+            clipboard::edit_request(&input, &field, &ClipboardShortcut::Paste),
             Some((clipboard::Operation::Read, _))
         ));
     }
@@ -2434,13 +2428,7 @@ fn clipboard_reply_commits_only_for_the_current_selection() {
         Inbox::<()>::new(|| {}),
         |_: &mut Editor, _| {},
     );
-    app.input.focused = Some(Target {
-        text_link: None,
-        path: vec![],
-        id: None,
-        focusable: true,
-        row_key: None,
-    });
+    app.input.focused = Some(Target::from_node(vec![], &app.scene, true, None));
     app.input.sync_editor(&app.scene);
     app.input
         .editor
@@ -2448,7 +2436,7 @@ fn clipboard_reply_commits_only_for_the_current_selection() {
         .unwrap()
         .apply_multiline("初始", EditAction::SelectAll);
 
-    let context = EditContext::capture(&app.input, &app.scene).unwrap();
+    let context = xrack_layout::TextEditContext::capture(&app.input, &app.scene).unwrap();
     assert_eq!(context.selection(), "初始");
     app.pending_clipboard = Some((1, ClipboardContext::Edit(context)));
     app.process_user_event(UserEvent::Clipboard(ClipboardReply {
@@ -2459,7 +2447,9 @@ fn clipboard_reply_commits_only_for_the_current_selection() {
 
     app.pending_clipboard = Some((
         5,
-        ClipboardContext::Edit(EditContext::capture(&app.input, &app.scene).unwrap()),
+        ClipboardContext::Edit(
+            xrack_layout::TextEditContext::capture(&app.input, &app.scene).unwrap(),
+        ),
     ));
     app.process_user_event(UserEvent::Clipboard(ClipboardReply {
         id: 5,
@@ -2469,7 +2459,9 @@ fn clipboard_reply_commits_only_for_the_current_selection() {
 
     app.pending_clipboard = Some((
         2,
-        ClipboardContext::Edit(EditContext::capture(&app.input, &app.scene).unwrap()),
+        ClipboardContext::Edit(
+            xrack_layout::TextEditContext::capture(&app.input, &app.scene).unwrap(),
+        ),
     ));
     app.process_user_event(UserEvent::Clipboard(ClipboardReply {
         id: 2,
@@ -2479,7 +2471,9 @@ fn clipboard_reply_commits_only_for_the_current_selection() {
     app.scene = app.base_scene.clone();
     app.pending_clipboard = Some((
         3,
-        ClipboardContext::Edit(EditContext::capture(&app.input, &app.scene).unwrap()),
+        ClipboardContext::Edit(
+            xrack_layout::TextEditContext::capture(&app.input, &app.scene).unwrap(),
+        ),
     ));
     app.process_user_event(UserEvent::Clipboard(ClipboardReply {
         id: 3,
@@ -2489,7 +2483,9 @@ fn clipboard_reply_commits_only_for_the_current_selection() {
     app.scene = app.base_scene.clone();
     app.pending_clipboard = Some((
         4,
-        ClipboardContext::Edit(EditContext::capture(&app.input, &app.scene).unwrap()),
+        ClipboardContext::Edit(
+            xrack_layout::TextEditContext::capture(&app.input, &app.scene).unwrap(),
+        ),
     ));
     app.component.0 = "后台更新".into();
     app.scene = app.component.render_shared();

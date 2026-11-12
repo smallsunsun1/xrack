@@ -45,6 +45,24 @@ pub enum KeyPhase {
 
 impl KeyPhase {
     #[doc(hidden)]
+    pub const ALL: [Self; 4] = [
+        Self::CapturePressed,
+        Self::CaptureReleased,
+        Self::Pressed,
+        Self::Released,
+    ];
+
+    #[doc(hidden)]
+    pub const fn handler(self) -> &'static str {
+        match self {
+            Self::CapturePressed => "capture-key-pressed",
+            Self::CaptureReleased => "capture-key-released",
+            Self::Pressed => "key-pressed",
+            Self::Released => "key-released",
+        }
+    }
+
+    #[doc(hidden)]
     pub const fn mask(self) -> u8 {
         1 << self as u8
     }

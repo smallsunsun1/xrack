@@ -1,15 +1,17 @@
-use crate::resources::{asset_path, declared_paths, local_path, read_asset};
+use crate::{
+    EmbeddedTranslations,
+    assets::{asset_path, declared_paths, local_path, read_asset},
+};
 use fluent_syntax::ast::{Entry, Expression, InlineExpression, Pattern, PatternElement};
 use std::{
     collections::{BTreeMap, BTreeSet},
     path::{Path, PathBuf},
 };
 use unic_langid::LanguageIdentifier;
-use xrack_codegen::EmbeddedTranslations;
 use xrack_mlir::{Module, OperationRef};
 
 #[derive(Default)]
-pub(crate) struct Translations {
+pub struct ResolvedTranslations {
     pub catalog: Option<EmbeddedTranslations>,
     pub inputs: BTreeSet<PathBuf>,
 }
@@ -21,12 +23,12 @@ struct Manifest {
     locales: BTreeMap<String, String>,
 }
 
-pub(crate) fn resolve(
+pub fn resolve_translations(
     module: &Module,
-    filename: &str,
+    filename: &Path,
     declared_assets: Option<&[PathBuf]>,
     buffers: &BTreeMap<PathBuf, String>,
-) -> Result<Translations, String> {
+) -> Result<ResolvedTranslations, String> {
     fn collect<'a>(op: OperationRef<'a>, calls: &mut Vec<OperationRef<'a>>) {
         if op.name() == "xr.translate" {
             calls.push(op);
@@ -36,6 +38,8 @@ pub(crate) fn resolve(
         }
     }
 
+    let base = filename.parent().unwrap_or_else(|| Path::new("."));
+    let filename = filename.to_string_lossy();
     let mut calls = Vec::new();
     for op in module.operations() {
         collect(op, &mut calls);
@@ -47,14 +51,13 @@ pub(crate) fn resolve(
         if let Some(&call) = calls.first() {
             return Err(at(
                 call,
-                filename,
+                &filename,
                 "@tr requires a translation catalog in the entry file",
             ));
         }
-        return Ok(Translations::default());
+        return Ok(ResolvedTranslations::default());
     };
 
-    let base = Path::new(filename).parent().unwrap_or(Path::new("."));
     let declared = declared_paths(declared_assets)?;
     let load = |base: &Path, path: &str, kind| {
         asset_path(base, local_path(path)?, declared.as_ref(), kind)
@@ -71,12 +74,12 @@ pub(crate) fn resolve(
             .map_err(|error| format!("{}: {error}", path.display()))
     };
     let manifest_path = load(base, catalog.attr("path")?, "translation catalog")
-        .map_err(|error| at(catalog, filename, &error))?;
+        .map_err(|error| at(catalog, &filename, &error))?;
     let manifest: Manifest = toml::from_str(&read(&manifest_path, "translation catalog")?)
         .map_err(|error| format!("{}: {error}", manifest_path.display()))?;
     let default = locale_id(&manifest.default)
         .map_err(|error| format!("{}: {error}", manifest_path.display()))?;
-    let mut result = Translations::default();
+    let mut result = ResolvedTranslations::default();
     result.inputs.insert(manifest_path.clone());
     let mut locales = BTreeMap::new();
     for (language, relative) in manifest.locales {
@@ -95,7 +98,7 @@ pub(crate) fn resolve(
             &language,
             language == default,
             &calls,
-            filename,
+            &filename,
         )?;
         if locales.insert(language.clone(), text).is_some() {
             return Err(format!(

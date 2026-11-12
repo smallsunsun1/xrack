@@ -1,0 +1,35 @@
+// RAW: "xr.property"{{.*}}name = "preset"
+// RAW: "xr.get_field"{{.*}}value = "count"
+// RAW: "xr.property"{{.*}}name = "derived"
+// CHECK-NOT: name = "preset"
+// CHECK-NOT: name = "derived"
+// CHECK-NOT: "xr.make_record"
+// CHECK-NOT: "xr.get_field"
+// CHECK-DAG: %[[ANSWER:[0-9]+]] = "xr.literal"() <{value = "85"}>
+// CHECK-DAG: %[[PADDING:[0-9]+]] = "xr.literal"() <{value = "12"}>
+// CHECK-NOT: "xr.get_field"
+// CHECK: "xr.property"(%[[ANSWER]]) <{name = "answer", visibility = "out"}>
+// CHECK-NEXT: "xr.property"(%[[PADDING]]) <{name = "padding", visibility = "out"}>
+
+struct Metrics {
+    padding: length,
+    count: int,
+}
+
+struct Preset {
+    metrics: Metrics,
+    title: string,
+}
+
+export component ConstantRecord inherits Window {
+    property <Preset> preset: Preset {
+        title: "Default",
+        metrics: Metrics { padding: 12px, count: 6 * 7 },
+    };
+    property <Metrics> derived: Metrics {
+        count: root.preset.metrics.count * 2,
+        padding: root.preset.metrics.padding,
+    };
+    out property <int> answer: root.derived.count + 1;
+    out property <length> padding: root.derived.padding;
+}

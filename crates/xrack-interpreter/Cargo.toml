@@ -1,0 +1,18 @@
+[package]
+name = "xrack-interpreter"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+serde_json.workspace = true
+thiserror.workspace = true
+xrack-mlir.workspace = true
+xrack-runtime.workspace = true
+xrack-syntax.workspace = true
+xrack-resources.workspace = true
+
+[dev-dependencies]
+xrack-parser.workspace = true

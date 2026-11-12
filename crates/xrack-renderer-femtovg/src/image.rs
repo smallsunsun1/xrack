@@ -10,11 +10,13 @@ use rgb::{FromSlice, Gray};
 use std::collections::{HashMap, hash_map::Entry};
 use xrack_assets::{MAX_IMAGE_DIMENSION, Raster, decode_png, rasterize_svg_region};
 use xrack_layout::{ImagePresentation, ImageRegion, Rect, Size};
-use xrack_runtime::{Image, ImageFit, ImageFormat, ImageRendering};
+use xrack_runtime::{
+    ImageAsset, ImageFit, ImageFormat, ImageIdentity, ImagePixels, ImageRendering,
+};
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 struct RasterKey {
-    address: usize,
+    identity: ImageIdentity,
     len: usize,
     format: ImageFormat,
     size: [u32; 2],
@@ -135,7 +137,7 @@ impl Images {
     pub(crate) fn draw_icon(
         &mut self,
         canvas: &mut Canvas<WGPURenderer>,
-        image: Image,
+        image: &ImageAsset,
         bounds: Rect,
         scale: f32,
         enabled: bool,
@@ -180,32 +182,26 @@ impl Images {
     pub(crate) fn draw(
         &mut self,
         canvas: &mut Canvas<WGPURenderer>,
-        image: Image,
+        image: &ImageAsset,
         bounds: Rect,
         scale: f32,
         presentation: ImagePresentation,
         colorize: Colorize<'_>,
     ) -> Result<(), String> {
-        let (format, bytes, source, edges) = match image.frame(0) {
-            Image::Animated(_) => unreachable!("a sampled frame is static"),
-            Image::Empty => return Ok(()),
-            Image::Embedded {
-                format,
-                bytes,
-                size,
-            } => (format, bytes, size, None),
-            Image::NineSliced {
-                format,
-                bytes,
-                size,
-                edges,
-            } => {
-                if !edges.fits(size) {
-                    return Err(xrack_runtime::InvalidNineSlice.to_string());
-                }
-                (format, bytes, size, Some(edges))
-            }
+        let image = image.frame(0);
+        let Some(ImagePixels {
+            identity,
+            format,
+            bytes,
+            size: source,
+            edges,
+        }) = image.pixels()
+        else {
+            return Ok(());
         };
+        if edges.is_some_and(|edges| !edges.fits(source)) {
+            return Err(xrack_runtime::InvalidNineSlice.to_string());
+        }
         let clip = presentation.region;
         if clip.width == 0 || clip.height == 0 || bounds.width <= 0.0 || bounds.height <= 0.0 {
             return Ok(());
@@ -248,7 +244,7 @@ impl Images {
         let is_png = format == ImageFormat::Png;
         let key = Key {
             raster: RasterKey {
-                address: bytes.as_ptr() as usize,
+                identity,
                 len: bytes.len(),
                 format,
                 size: raster_size,

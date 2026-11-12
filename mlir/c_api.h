@@ -21,6 +21,7 @@ MlirOperation xrackMlirBuildOp(MlirBlock block, MlirLocation location,
                                intptr_t numAttributes,
                                const MlirNamedAttribute *attributes);
 bool xrackMlirVerifyModule(MlirModule module);
+bool xrackMlirParseFloatLiteral(MlirStringRef spelling, double *result);
 void xrackMlirAddPipeline(MlirPassManager manager);
 
 #ifdef __cplusplus

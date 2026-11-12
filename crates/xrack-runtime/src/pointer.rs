@@ -35,6 +35,12 @@ impl PointerButtons {
 
 impl<const N: usize> From<[PointerButton; N]> for PointerButtons {
     fn from(buttons: [PointerButton; N]) -> Self {
+        buttons.into_iter().collect()
+    }
+}
+
+impl FromIterator<PointerButton> for PointerButtons {
+    fn from_iter<T: IntoIterator<Item = PointerButton>>(buttons: T) -> Self {
         Self(
             buttons
                 .into_iter()
@@ -67,7 +73,7 @@ pub struct TouchPoint {
 }
 
 /// Read-only, reactive rows in contact order. Cloning shares the same rows.
-#[derive(Clone, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct TouchPoints(VecModel<TouchPoint>);
 
 impl From<Vec<TouchPoint>> for TouchPoints {

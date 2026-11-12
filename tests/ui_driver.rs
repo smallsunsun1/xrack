@@ -84,8 +84,12 @@ impl<C: Component, T: TextMeasurer> UiDriver<C, T> {
     }
 
     pub fn scroll(&mut self, id: &str, delta: Point) -> bool {
-        let path = self.path(id);
-        self.move_to(&path);
+        let point = self.point_at(&self.path(id));
+        self.scroll_at(point, delta)
+    }
+
+    pub fn scroll_at(&mut self, point: Point, delta: Point) -> bool {
+        self.input.pointer_move(&self.scene, &self.layout, point);
         let moved = self.input.scroll_wheel(&self.layout, delta, false);
         if moved {
             self.refresh();
@@ -296,6 +300,11 @@ impl<C: Component, T: TextMeasurer> UiDriver<C, T> {
     }
 
     fn move_to(&mut self, path: &[usize]) {
+        let point = self.point_at(path);
+        self.input.pointer_move(&self.scene, &self.layout, point);
+    }
+
+    fn point_at(&self, path: &[usize]) -> Point {
         let item = self.layout.at_path(path).expect("target has layout");
         let node = self.scene.at_path(path).expect("target has scene node");
         let bounds = if node.group_checkable() {
@@ -308,14 +317,10 @@ impl<C: Component, T: TextMeasurer> UiDriver<C, T> {
             hit.width > 0.0 && hit.height > 0.0,
             "target is outside the viewport"
         );
-        self.input.pointer_move(
-            &self.scene,
-            &self.layout,
-            Point {
-                x: hit.x + hit.width * 0.5,
-                y: hit.y + hit.height * 0.5,
-            },
-        );
+        Point {
+            x: hit.x + hit.width * 0.5,
+            y: hit.y + hit.height * 0.5,
+        }
     }
 
     pub fn click(&mut self, id: &str) {

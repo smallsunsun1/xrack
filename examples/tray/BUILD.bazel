@@ -1,15 +1,23 @@
 load("@rules_rust//rust:defs.bzl", "rust_binary")
 load("//bazel:xrack.bzl", "xr_ui_library")
 
+TRAY_ASSETS = [
+    "assets/status.svg",
+    "i18n/catalog.toml",
+    "i18n/en-US.ftl",
+    "i18n/zh-CN.ftl",
+]
+
+filegroup(
+    name = "tray_sources",
+    srcs = ["tray.xr"] + TRAY_ASSETS,
+    visibility = ["//tests:__pkg__"],
+)
+
 xr_ui_library(
     name = "tray_ui",
     src = "tray.xr",
-    assets = [
-        "assets/status.svg",
-        "i18n/catalog.toml",
-        "i18n/en-US.ftl",
-        "i18n/zh-CN.ftl",
-    ],
+    assets = TRAY_ASSETS,
     visibility = ["//tests:__pkg__"],
 )
 

@@ -231,6 +231,13 @@ impl ListMetrics {
             "current-index"
         })
     }
+
+    /// Check that a selection position still belongs to the rendered model order.
+    #[doc(hidden)]
+    pub fn has_row_in_model(node: &Node, index: usize, live_stamp: Option<(u64, u64)>) -> bool {
+        node.standard_list_stamp == live_stamp
+            && node.list.is_some_and(|list| index < list.row_count)
+    }
 }
 
 /// Resolves stable model row identities without constructing their delegates.
@@ -355,7 +362,7 @@ fn standard_list_rows_at<T: Clone + PartialEq>(
             let value = model.row(index)?;
             let key = model.row_key(index)?;
             let mut item = Node::new("StandardListItem", None);
-            item.row_key = Some(key);
+            item.set_row_key(Some(key));
             item.properties.insert("text", label(value).into());
             Some(item)
         })
@@ -512,7 +519,7 @@ fn standard_table_rows_at<T, const COLUMNS: usize>(
 
 fn projected_table_row(key: RowKey, header: Option<String>) -> Node {
     let mut row = Node::new("TableRow", None);
-    row.row_key = Some(key);
+    row.set_row_key(Some(key));
     if let Some(header) = header {
         row.properties.insert("row-header-text", header.into());
     }

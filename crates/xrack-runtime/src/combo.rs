@@ -18,11 +18,15 @@ trait Rows {
     fn find_value(&self, value: &Value) -> Option<usize>;
 }
 
+type LabelProjection<T> = dyn Fn(&T) -> &str;
+type ValueProjection<T> = dyn Fn(&T) -> Value;
+type EnabledProjection<T> = dyn Fn(&T) -> bool;
+
 struct RecordRows<T> {
     model: VecModel<T>,
-    label: fn(&T) -> &str,
-    value: fn(&T) -> Value,
-    enabled: fn(&T) -> bool,
+    label: Rc<LabelProjection<T>>,
+    value: Rc<ValueProjection<T>>,
+    enabled: Rc<EnabledProjection<T>>,
 }
 
 impl<T> Rows for RecordRows<T> {
@@ -37,11 +41,12 @@ impl<T> Rows for RecordRows<T> {
             .project_row_untracked(index, |row| (self.label)(row).to_owned())
     }
     fn value(&self, index: usize) -> Option<Value> {
-        self.model.project_row_untracked(index, self.value)
+        self.model
+            .project_row_untracked(index, |row| (self.value)(row))
     }
     fn enabled(&self, index: usize) -> bool {
         self.model
-            .project_row_untracked(index, self.enabled)
+            .project_row_untracked(index, |row| (self.enabled)(row))
             .unwrap_or(false)
     }
     fn key(&self, index: usize) -> Option<RowKey> {
@@ -77,22 +82,30 @@ pub struct ComboItems {
 impl ComboItems {
     pub fn new<T: 'static>(
         model: VecModel<T>,
-        label: fn(&T) -> &str,
-        value: fn(&T) -> Value,
+        label: impl Fn(&T) -> &str + 'static,
+        value: impl Fn(&T) -> Value + 'static,
     ) -> Self {
         Self::with_enabled(model, label, value, |_| true)
     }
 
     pub fn with_enabled<T: 'static>(
         model: VecModel<T>,
-        label: fn(&T) -> &str,
-        value: fn(&T) -> Value,
-        enabled: fn(&T) -> bool,
+        label: impl Fn(&T) -> &str + 'static,
+        value: impl Fn(&T) -> Value + 'static,
+        enabled: impl Fn(&T) -> bool + 'static,
     ) -> Self {
-        let changes = model.observe_projection_changes(usize::MAX, move |_, before, after| {
-            enabled(before) != enabled(after)
-                || label(before) != label(after)
-                || value(before) != value(after)
+        let label: Rc<LabelProjection<T>> = Rc::new(label);
+        let value: Rc<ValueProjection<T>> = Rc::new(value);
+        let enabled: Rc<EnabledProjection<T>> = Rc::new(enabled);
+        let changes = model.observe_projection_changes(usize::MAX, {
+            let label = label.clone();
+            let value = value.clone();
+            let enabled = enabled.clone();
+            move |_, before, after| {
+                enabled(before) != enabled(after)
+                    || label(before) != label(after)
+                    || value(before) != value(after)
+            }
         });
         Self {
             rows: Rc::new(RecordRows {

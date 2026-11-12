@@ -13,6 +13,7 @@ struct PageLayer {
     page: Rc<(Node, LayoutNode)>,
     offset: f32,
     visible: Range<f32>,
+    first_frame_direct: bool,
 }
 
 fn visible_slice(offset: f32, slice: Range<f32>) -> Option<Range<f32>> {
@@ -22,11 +23,17 @@ fn visible_slice(offset: f32, slice: Range<f32>) -> Option<Range<f32>> {
 }
 
 impl PageLayer {
-    fn capture(node: &Node, layout: &LayoutNode, offset: f32) -> Option<Self> {
+    fn capture(
+        node: &Node,
+        layout: &LayoutNode,
+        offset: f32,
+        first_frame_direct: bool,
+    ) -> Option<Self> {
         Some(Self {
             visible: visible_slice(offset, 0.0..1.0)?,
             page: Rc::new((node.clone(), layout.clone())),
             offset,
+            first_frame_direct,
         })
     }
 
@@ -53,9 +60,20 @@ impl StackSlide {
     }
 
     pub fn outgoing(&self) -> impl Iterator<Item = (&Node, &LayoutNode, f32, Range<f32>)> {
-        self.layers().map(|(layer, offset, clip)| {
-            let (node, layout) = &*layer.page;
+        self.outgoing_layers().map(|(page, offset, clip, _)| {
+            let (node, layout) = &**page;
             (node, layout, offset, clip)
+        })
+    }
+
+    /// The same snapshot is shared by successive frames and interrupted slides.
+    #[doc(hidden)]
+    pub fn outgoing_layers(
+        &self,
+    ) -> impl Iterator<Item = (&Rc<(Node, LayoutNode)>, f32, Range<f32>, bool)> {
+        self.layers().map(|(layer, offset, clip)| {
+            let cacheable = !(layer.first_frame_direct && self.progress == 0.0);
+            (&layer.page, offset, clip, cacheable)
         })
     }
 
@@ -117,7 +135,8 @@ impl StackTransitions {
     ) {
         if !old_layout.visible
             || !new_layout.visible
-            || (old.kind, old.id, old.row_key) != (new.kind, new.id, new.row_key)
+            || (old.kind, old.element_id(), old.row_key)
+                != (new.kind, new.element_id(), new.row_key)
         {
             return;
         }
@@ -179,12 +198,22 @@ fn outgoing_pages(
                 page: layer.page.clone(),
                 offset,
                 visible,
+                first_frame_direct: layer.first_frame_direct && previous.progress == 0.0,
             })
             .collect();
-        layers.extend(PageLayer::capture(node, layout, previous.incoming_offset()));
+        // The incoming page was drawn directly in the presented frame.
+        // Keep its subpixel coverage when an interruption replays that frame.
+        layers.extend(PageLayer::capture(
+            node,
+            layout,
+            previous.incoming_offset(),
+            true,
+        ));
         if layers.len() <= MAX_INTERRUPTED_LAYERS {
             return layers;
         }
     }
-    PageLayer::capture(node, layout, 0.0).into_iter().collect()
+    PageLayer::capture(node, layout, 0.0, false)
+        .into_iter()
+        .collect()
 }

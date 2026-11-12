@@ -208,9 +208,9 @@ impl FileDrag {
     }
 
     pub fn over(&self, node: &Node, path: &[usize]) -> bool {
-        self.hover
-            .as_ref()
-            .is_some_and(|hover| hover.hit.target.path == path && hover.hit.target.id == node.id)
+        self.hover.as_ref().is_some_and(|hover| {
+            hover.hit.target.path == path && hover.hit.target.matches_node(node)
+        })
     }
 
     fn update_hover(&mut self, next: Option<Hover>, update: &mut DragUpdate) {

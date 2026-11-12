@@ -1,5 +1,7 @@
+use crate::{Interaction, Target};
 use std::ops::Range;
 use unicode_segmentation::UnicodeSegmentation;
+use xrack_runtime::{Node, TextCommand, spin_editable};
 
 #[derive(Clone, Debug, Default)]
 pub struct TextEdit {
@@ -7,6 +9,7 @@ pub struct TextEdit {
     anchor: usize,
     trailing: bool,
     preferred_x: Option<f32>,
+    composition: Option<(u64, TextEditContext)>,
     pub preedit: String,
     pub preedit_cursor: Option<usize>,
 }
@@ -125,6 +128,11 @@ impl TextEdit {
     }
 
     pub fn set_preedit(&mut self, value: String, cursor: Option<(usize, usize)>) {
+        self.composition = None;
+        self.update_preedit(value, cursor);
+    }
+
+    fn update_preedit(&mut self, value: String, cursor: Option<(usize, usize)>) {
         self.preedit_cursor = cursor.map(|(start, _)| boundary(&value, start));
         self.preedit = value;
     }
@@ -144,8 +152,7 @@ impl TextEdit {
         action: EditAction<'_>,
         multiline: bool,
     ) -> Option<AppliedEdit> {
-        self.preedit.clear();
-        self.preedit_cursor = None;
+        self.set_preedit(String::new(), None);
         self.preferred_x = None;
         self.trailing = matches!(action, EditAction::Right(_) | EditAction::End(_));
         let caret = self.caret(text);
@@ -254,4 +261,168 @@ impl TextEdit {
             inserted: replacement,
         })
     }
+}
+
+/// The focused editor and selection at the start of an asynchronous edit.
+#[derive(Clone, Debug)]
+pub struct TextEditContext {
+    target: Target,
+    text: String,
+    selection: Range<usize>,
+    caret: TextPosition,
+    password: bool,
+}
+
+impl TextEditContext {
+    pub fn for_clipboard(input: &Interaction, scene: &Node, command: TextCommand) -> Option<Self> {
+        let node = scene.interactive_at_path(&input.focused.as_ref()?.path)?;
+        if node.is_password() && command != TextCommand::Paste
+            || node.boolean("read-only", false) && command != TextCommand::Copy
+        {
+            return None;
+        }
+        let context = Self::capture(input, scene)?;
+        match command {
+            TextCommand::Paste => Some(context),
+            TextCommand::Cut | TextCommand::Copy if !context.selection().is_empty() => {
+                Some(context)
+            }
+            _ => None,
+        }
+    }
+
+    pub fn capture(input: &Interaction, scene: &Node) -> Option<Self> {
+        let editor = input.editor.as_ref()?;
+        if !editor.preedit.is_empty() || editor.composition.is_some() {
+            return None;
+        }
+        let (target, text, selection, caret) = current(input, scene)?;
+        Some(Self {
+            target: target.clone(),
+            text: text.into_owned(),
+            selection,
+            caret,
+            password: scene.at_path(&target.path)?.is_password(),
+        })
+    }
+
+    pub fn selection(&self) -> &str {
+        &self.text[self.selection.clone()]
+    }
+
+    pub fn is_current(&self, input: &Interaction, scene: &Node) -> bool {
+        input
+            .editor
+            .as_ref()
+            .is_some_and(|editor| editor.preedit.is_empty() && editor.composition.is_none())
+            && self.matches(input, scene)
+    }
+
+    fn matches(&self, input: &Interaction, scene: &Node) -> bool {
+        current(input, scene).is_some_and(|(target, text, selection, caret)| {
+            self.target == *target
+                && scene
+                    .at_path(&target.path)
+                    .is_some_and(|node| node.is_password() == self.password)
+                && self.text == text
+                && self.selection == selection
+                && self.caret == caret
+        })
+    }
+}
+
+impl Interaction {
+    pub fn begin_text_composition(&mut self, scene: &Node, id: u64) -> bool {
+        let cancelled = self.cancel_text_composition(None);
+        let Some(context) = TextEditContext::capture(self, scene)
+            .filter(|context| !self.menu_open() && context.can_compose(self, scene))
+        else {
+            return cancelled;
+        };
+        self.cancel_shortcut_sequence();
+        self.dismiss_choice();
+        self.break_text_edit_group();
+        if let Some(editor) = &mut self.editor {
+            editor.composition = Some((id, context));
+        }
+        true
+    }
+
+    pub fn update_text_composition(&mut self, scene: &Node, id: u64, text: String) -> bool {
+        let (current_id, valid) = match self.text_composition(scene) {
+            Some(composition) => composition,
+            None => return false,
+        };
+        if id != current_id {
+            return false;
+        }
+        if !valid {
+            return self.cancel_text_composition(Some(id));
+        }
+        if let Some(editor) = &mut self.editor {
+            let end = text.len();
+            editor.update_preedit(text, Some((end, end)));
+        }
+        true
+    }
+
+    pub fn finish_text_composition(&mut self, scene: &Node, id: u64) -> (bool, bool) {
+        let commit = self.text_composition(scene) == Some((id, true));
+        let ended = self.cancel_text_composition(Some(id));
+        (ended, commit)
+    }
+
+    pub fn cancel_text_composition(&mut self, id: Option<u64>) -> bool {
+        if let Some(editor) = &mut self.editor
+            && let Some((current_id, _)) = &editor.composition
+            && id.is_none_or(|id| id == *current_id)
+        {
+            editor.set_preedit(String::new(), None);
+            return true;
+        }
+        false
+    }
+
+    pub(crate) fn reconcile_text_composition(&mut self, scene: &Node) {
+        if let Some((id, false)) = self.text_composition(scene) {
+            self.cancel_text_composition(Some(id));
+        }
+    }
+
+    fn text_composition(&self, scene: &Node) -> Option<(u64, bool)> {
+        let (id, context) = self.editor.as_ref()?.composition.as_ref()?;
+        Some((*id, !self.menu_open() && context.can_compose(self, scene)))
+    }
+}
+
+impl TextEditContext {
+    fn can_compose(&self, input: &Interaction, scene: &Node) -> bool {
+        self.matches(input, scene)
+            && scene
+                .interactive_at_path(&self.target.path)
+                .is_some_and(|node| !node.boolean("read-only", false))
+    }
+}
+
+fn current<'a>(
+    input: &'a Interaction,
+    scene: &'a Node,
+) -> Option<(
+    &'a Target,
+    std::borrow::Cow<'a, str>,
+    Range<usize>,
+    TextPosition,
+)> {
+    let target = input.focused.as_ref()?;
+    let node = scene
+        .interactive_at_path(&target.path)
+        .filter(|node| input.is_text_editor(node, target) || spin_editable(node))?;
+    if !target.matches_node(node) || scene.row_key_at(&target.path) != target.row_key {
+        return None;
+    }
+    let editor = input.editor.as_ref()?;
+    let text = input.editor_value(node);
+    let selection = editor.selection(&text);
+    let caret = editor.position(&text);
+    Some((target, text, selection, caret))
 }

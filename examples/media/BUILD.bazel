@@ -1,17 +1,25 @@
 load("@rules_rust//rust:defs.bzl", "rust_binary")
 load("//bazel:xrack.bzl", "xr_ui_library")
 
+MEDIA_ASSETS = [
+    "assets/color-mask.png",
+    "assets/landscape.png",
+    "assets/nine-slice.svg",
+    "assets/orbit.svg",
+    "assets/pulse.gif",
+    "assets/sprite-atlas.png",
+]
+
+filegroup(
+    name = "media_sources",
+    srcs = ["media.xr"] + MEDIA_ASSETS,
+    visibility = ["//tests:__pkg__"],
+)
+
 xr_ui_library(
     name = "media_ui",
     src = "media.xr",
-    assets = [
-        "assets/color-mask.png",
-        "assets/landscape.png",
-        "assets/nine-slice.svg",
-        "assets/orbit.svg",
-        "assets/pulse.gif",
-        "assets/sprite-atlas.png",
-    ],
+    assets = MEDIA_ASSETS,
     visibility = ["//tests:__pkg__"],
 )
 

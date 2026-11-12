@@ -8,6 +8,16 @@ use std::sync::{
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ActionKey(u64);
 
+impl ActionKey {
+    #[doc(hidden)]
+    pub fn present(self, node: &mut crate::Node, enabled: bool, checkable: bool, checked: bool) {
+        node.action = Some(self);
+        node.properties.insert("enabled", enabled.into());
+        node.properties.insert("checkable", checkable.into());
+        node.properties.insert("checked", checked.into());
+    }
+}
+
 impl Default for ActionKey {
     fn default() -> Self {
         static NEXT_ACTION: AtomicU64 = AtomicU64::new(1);
@@ -262,6 +272,11 @@ pub enum StandardButtonKind {
 }
 
 impl StandardButtonKind {
+    #[doc(hidden)]
+    pub fn accepts_message(self) -> bool {
+        matches!(self, Self::Ok | Self::Yes)
+    }
+
     pub fn label(self) -> &'static str {
         match self {
             Self::Ok => "OK",

@@ -41,14 +41,57 @@ use xrack_runtime::{
     spin_text_is_valid, text_input_value,
 };
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug)]
+pub(crate) enum ElementId {
+    Static(&'static str),
+    Shared(std::sync::Arc<str>),
+}
+
+impl ElementId {
+    pub(crate) fn of(node: &Node) -> Option<Self> {
+        node.id
+            .map(Self::Static)
+            .or_else(|| node.shared_element_id().map(Self::Shared))
+    }
+
+    pub(crate) fn as_str(&self) -> &str {
+        match self {
+            Self::Static(id) => id,
+            Self::Shared(id) => id,
+        }
+    }
+}
+
+impl PartialEq for ElementId {
+    fn eq(&self, other: &Self) -> bool {
+        self.as_str() == other.as_str()
+    }
+}
+
+impl Eq for ElementId {}
+
+#[derive(Clone, Debug)]
 pub struct Target {
     pub path: Vec<usize>,
+    /// ID of an element constructed with a static name.
     pub id: Option<&'static str>,
     pub focusable: bool,
     pub row_key: Option<RowKey>,
     pub text_link: Option<TextLinkTarget>,
+    owned_id: Option<std::sync::Arc<str>>,
 }
+
+impl PartialEq for Target {
+    fn eq(&self, other: &Self) -> bool {
+        self.path == other.path
+            && self.element_id() == other.element_id()
+            && self.focusable == other.focusable
+            && self.row_key == other.row_key
+            && self.text_link == other.text_link
+    }
+}
+
+impl Eq for Target {}
 
 /// The focused table and the start of a paste in visual column order.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -68,6 +111,56 @@ pub struct TextLinkTarget {
 }
 
 impl Target {
+    /// Capture the source identity of a node at its current scene path.
+    pub fn from_node(
+        path: Vec<usize>,
+        node: &Node,
+        focusable: bool,
+        row_key: Option<RowKey>,
+    ) -> Self {
+        Self::from_element_id(path, ElementId::of(node), focusable, row_key)
+    }
+
+    pub(crate) fn from_element_id(
+        path: Vec<usize>,
+        id: Option<ElementId>,
+        focusable: bool,
+        row_key: Option<RowKey>,
+    ) -> Self {
+        let mut target = Self {
+            path,
+            id: None,
+            focusable,
+            row_key,
+            text_link: None,
+            owned_id: None,
+        };
+        target.set_element_id(id);
+        target
+    }
+
+    fn set_element_id(&mut self, id: Option<ElementId>) {
+        (self.id, self.owned_id) = match id {
+            Some(ElementId::Static(id)) => (Some(id), None),
+            Some(ElementId::Shared(id)) => (None, Some(id)),
+            None => (None, None),
+        };
+    }
+
+    /// The captured source ID, including dynamically loaded elements.
+    pub fn element_id(&self) -> Option<&str> {
+        self.id.or(self.owned_id.as_deref())
+    }
+
+    pub(crate) fn matches_node(&self, node: &Node) -> bool {
+        self.element_id() == node.element_id()
+    }
+
+    pub(crate) fn node_in<'a>(&self, scene: &'a Node) -> Option<&'a Node> {
+        let node = scene.at_path(&self.path)?;
+        (self.matches_node(node) && self.row_key == scene.row_key_at(&self.path)).then_some(node)
+    }
+
     pub fn text_link_index(&self) -> Option<usize> {
         self.text_link.as_ref().map(|link| link.index)
     }
@@ -75,16 +168,12 @@ impl Target {
     pub(crate) fn for_text_link(node: &Node, path: &[usize], index: usize) -> Option<Self> {
         let document = node.styled_text("text")?;
         document.links().get(index)?;
-        Some(Self {
-            path: path.to_vec(),
-            id: node.id,
-            focusable: true,
-            row_key: None,
-            text_link: Some(TextLinkTarget {
-                index,
-                document: document.clone(),
-            }),
-        })
+        let mut target = Self::from_node(path.to_vec(), node, true, None);
+        target.text_link = Some(TextLinkTarget {
+            index,
+            document: document.clone(),
+        });
+        Some(target)
     }
 }
 
@@ -121,6 +210,7 @@ pub struct RangeInput {
     pub action: RangeAction,
 }
 
+#[derive(Debug, PartialEq)]
 pub enum WheelAdjustment {
     Pending,
     Range(RangeInput),
@@ -382,9 +472,14 @@ struct ScrollTarget {
     path: Vec<usize>,
     orientation: Orientation,
     row_key: Option<RowKey>,
+    id: Option<ElementId>,
 }
 
 impl ScrollTarget {
+    fn matches_node(&self, node: &Node) -> bool {
+        self.id.as_ref().map(ElementId::as_str) == node.element_id()
+    }
+
     fn resolve<'a, 'b>(
         &self,
         scene: &'a Node,
@@ -395,6 +490,7 @@ impl ScrollTarget {
         (item.visible
             && item.enabled
             && item.scroll_on(self.orientation).is_some()
+            && self.matches_node(node)
             && scene.row_key_at(&self.path) == self.row_key)
             .then_some((node, item))
     }
@@ -403,7 +499,7 @@ impl ScrollTarget {
 #[derive(Clone, Debug)]
 struct ScrollBarPress {
     target: ScrollTarget,
-    source: (&'static str, Option<&'static str>),
+    source: &'static str,
     viewport: Option<xrack_runtime::ViewportHandle>,
     grab: Option<f32>,
     start: Point,
@@ -414,7 +510,9 @@ struct ScrollBarPress {
 impl ScrollBarPress {
     fn node<'a>(&self, scene: &'a Node) -> Option<&'a Node> {
         scene.at_path(&self.target.path).filter(|node| {
-            (node.kind, node.id) == self.source && node.scroll_target == self.viewport
+            node.kind == self.source
+                && self.target.matches_node(node)
+                && node.scroll_target == self.viewport
         })
     }
 }
@@ -423,6 +521,7 @@ impl ScrollBarPress {
 struct ScrollRoute {
     scope: Vec<usize>,
     scope_row: Option<RowKey>,
+    scope_id: Option<ElementId>,
     axes: [Option<ScrollTarget>; 2],
     mouse_viewport: bool,
     pan_device: PanDevice,
@@ -504,6 +603,7 @@ impl PageSwipe {
         (distance.abs() >= self.threshold
             && distance.abs() > across
             && view.kind == "SwipeView"
+            && self.target.matches_node(view)
             && view.boolean("interactive", true)
             && view.orientation() == self.target.orientation
             && item.visible
@@ -532,6 +632,7 @@ fn swipe_neighbor(view: &Node, current: usize, forward: bool) -> Option<usize> {
 struct DrawerSwipe {
     path: Vec<usize>,
     row_key: Option<RowKey>,
+    id: Option<ElementId>,
     edge: DrawerEdge,
     open: bool,
     start: Point,
@@ -557,6 +658,7 @@ impl DrawerSwipe {
         let (distance, across) = self.movement(point);
         (distance >= self.threshold
             && distance >= across
+            && node.element_id() == self.id.as_ref().map(ElementId::as_str)
             && node.drawer_edge() == self.edge
             && node.boolean("open", false) == self.open
             && scene.row_key_at(&self.path) == self.row_key
@@ -638,8 +740,8 @@ pub struct Interaction {
     tooltip: TooltipState,
     hovered_radio: Option<(String, String)>,
     pressed_radio: Option<(String, String)>,
-    hovered_list_row: Option<(usize, Option<&'static str>)>,
-    pressed_list_row: Option<(usize, Option<&'static str>)>,
+    hovered_list_row: Option<(usize, Option<ElementId>)>,
+    pressed_list_row: Option<(usize, Option<ElementId>)>,
     hovered_tree_indicator: bool,
     pressed_tree_indicator: bool,
     hovered_table_column: Option<usize>,
@@ -754,11 +856,11 @@ fn interactive(node: &Node) -> bool {
     matches!(node.kind, "TouchArea" | "ListRow" | "RangeSlider") || focusable(node)
 }
 
-fn list_row(scene: &Node, target: &Target) -> Option<(usize, Option<&'static str>)> {
+fn list_row(scene: &Node, target: &Target) -> Option<(usize, Option<ElementId>)> {
     let (&slot, parent) = target.path.split_last()?;
     let list = scene.at_path(parent)?;
     let index = list.list?.first_row + slot;
-    (list.children.get(slot)?.kind == "ListRow").then_some((index, list.id))
+    (list.children.get(slot)?.kind == "ListRow").then(|| (index, ElementId::of(list)))
 }
 
 fn table_cell_row<'a>(scene: &Node, path: &'a [usize]) -> Option<(&'a [usize], usize)> {
@@ -854,13 +956,7 @@ fn hit(
             .is_some_and(|header| header.contains(point) && layout.contains_clip_point(window))
     {
         return if layout.enabled {
-            Hit::Target(Target {
-                text_link: None,
-                path: path.clone(),
-                id: node.id,
-                focusable: true,
-                row_key: None,
-            })
+            Hit::Target(Target::from_node(path.clone(), node, true, None))
         } else {
             Hit::Blocked(path.clone())
         };
@@ -900,39 +996,18 @@ fn hit(
     {
         let mut target = path.clone();
         target.push(slot);
-        return Hit::Target(Target {
-            text_link: None,
-            path: target,
-            id: handle.id,
-            focusable: true,
-            row_key: None,
-        });
+        return Hit::Target(Target::from_node(target, handle, true, None));
     }
     if node.group_checkable() && layout.group_header(node).contains(point) {
         return if layout.enabled {
-            Hit::Target(Target {
-                text_link: None,
-                path: path.clone(),
-                id: node.id,
-                focusable: true,
-                row_key: None,
-            })
+            Hit::Target(Target::from_node(path.clone(), node, true, None))
         } else {
             Hit::Blocked(path.clone())
         };
     }
     if let Some(action) = layout.tumbler.as_ref().and_then(|wheel| wheel.hit(point)) {
         return if layout.enabled {
-            Hit::ControlPart(
-                Target {
-                    text_link: None,
-                    path: path.clone(),
-                    id: node.id,
-                    focusable: true,
-                    row_key: None,
-                },
-                action,
-            )
+            Hit::ControlPart(Target::from_node(path.clone(), node, true, None), action)
         } else {
             Hit::Blocked(path.clone())
         };
@@ -941,16 +1016,7 @@ fn hit(
         && let Some(action) = SearchGeometry::new(layout.bounds).action_at(node, point)
     {
         return if layout.enabled {
-            Hit::ControlPart(
-                Target {
-                    text_link: None,
-                    path: path.clone(),
-                    id: node.id,
-                    focusable: true,
-                    row_key: None,
-                },
-                action,
-            )
+            Hit::ControlPart(Target::from_node(path.clone(), node, true, None), action)
         } else {
             Hit::Blocked(path.clone())
         };
@@ -961,13 +1027,7 @@ fn hit(
             && let Some(action) = action
         {
             Hit::ControlPart(
-                Target {
-                    text_link: None,
-                    path: path.clone(),
-                    id: node.id,
-                    focusable: true,
-                    row_key: None,
-                },
+                Target::from_node(path.clone(), node, true, None),
                 ControlAction::Calendar(action),
             )
         } else {
@@ -985,13 +1045,7 @@ fn hit(
         };
         return if layout.enabled {
             Hit::ControlPart(
-                Target {
-                    text_link: None,
-                    path: path.clone(),
-                    id: node.id,
-                    focusable: true,
-                    row_key: None,
-                },
+                Target::from_node(path.clone(), node, true, None),
                 ControlAction::Select(index),
             )
         } else {
@@ -1008,16 +1062,7 @@ fn hit(
         && rect.contains(point)
     {
         return if layout.enabled {
-            Hit::ControlPart(
-                Target {
-                    text_link: None,
-                    path: path.clone(),
-                    id: node.id,
-                    focusable: true,
-                    row_key: None,
-                },
-                action,
-            )
+            Hit::ControlPart(Target::from_node(path.clone(), node, true, None), action)
         } else {
             Hit::Blocked(path.clone())
         };
@@ -1031,6 +1076,7 @@ fn hit(
                 path: path.clone(),
                 orientation: bar.orientation,
                 row_key: None,
+                id: ElementId::of(node),
             })
         } else {
             Hit::Blocked(path.clone())
@@ -1045,16 +1091,7 @@ fn hit(
         .and_then(|table| table.row_resize_at(node, layout, point))
     {
         return if layout.enabled {
-            Hit::TableRowGrip(
-                Target {
-                    text_link: None,
-                    path: path.clone(),
-                    id: node.id,
-                    focusable: true,
-                    row_key: None,
-                },
-                slot,
-            )
+            Hit::TableRowGrip(Target::from_node(path.clone(), node, true, None), slot)
         } else {
             Hit::Blocked(path.clone())
         };
@@ -1077,13 +1114,7 @@ fn hit(
         };
     }
     if node.kind == "WindowMoveArea" && layout.enabled && node.boolean("enabled", true) {
-        return Hit::WindowMove(Target {
-            text_link: None,
-            path: path.clone(),
-            id: node.id,
-            focusable: false,
-            row_key: None,
-        });
+        return Hit::WindowMove(Target::from_node(path.clone(), node, false, None));
     }
     if purpose == HitPurpose::Gesture(node.kind)
         && (node.kind == "WheelHandler"
@@ -1112,13 +1143,7 @@ fn hit(
     if !layout.enabled {
         return Hit::Blocked(path.clone());
     }
-    Hit::Target(Target {
-        text_link: None,
-        path: path.clone(),
-        id: node.id,
-        focusable: focusable(node),
-        row_key: None,
-    })
+    Hit::Target(Target::from_node(path.clone(), node, focusable(node), None))
 }
 
 fn hit_children(
@@ -1151,15 +1176,12 @@ fn hit_children(
 }
 
 pub(crate) fn valid(target: &Target, scene: &Node, layout: &LayoutNode) -> bool {
-    let Some(node) = scene.at_path(&target.path) else {
+    let Some(node) = target.node_in(scene) else {
         return false;
     };
     let Some(item) = layout.at_path(&target.path) else {
         return false;
     };
-    if node.id != target.id || target.row_key != scene.row_key_at(&target.path) {
-        return false;
-    }
     if let Some(link) = &target.text_link {
         return item.enabled
             && node.styled_text("text") == Some(&link.document)
@@ -1348,16 +1370,7 @@ fn group_targets(
             }
             let mut child_path = path.to_vec();
             child_path.push(index);
-            Some((
-                index,
-                Target {
-                    text_link: None,
-                    path: child_path,
-                    id: child.id,
-                    focusable: true,
-                    row_key: None,
-                },
-            ))
+            Some((index, Target::from_node(child_path, child, true, None)))
         })
 }
 
@@ -1384,7 +1397,7 @@ fn attached_radio_tab_stop(scene: &Node, path: &[usize], targets: &[Target]) -> 
     targets.iter().position(|target| {
         attached_radio(scene, &target.path).is_some_and(|(member, component)| {
             path.strip_prefix(component)
-                .is_some_and(|path| member.group.paths.contains(&path))
+                .is_some_and(|path| member.group.paths().any(|member| member == path))
         })
     })
 }
@@ -1411,13 +1424,7 @@ pub(crate) fn focus_targets(scene: &Node, layout: &LayoutNode, scope: &[usize]) 
             && focusable(node)
             && (node.kind != "GroupBox" || eligible(node, layout))
         {
-            out.push(Target {
-                text_link: None,
-                path: path.clone(),
-                id: node.id,
-                focusable: true,
-                row_key: None,
-            });
+            out.push(Target::from_node(path.clone(), node, true, None));
         }
         if node.kind == "SplitHandle" {
             return;
@@ -1452,26 +1459,14 @@ pub(crate) fn focus_targets(scene: &Node, layout: &LayoutNode, scope: &[usize]) 
             && out.len() == before_children
             && node.boolean("focus-on-tab-navigation", true)
         {
-            out.push(Target {
-                text_link: None,
-                path: path.clone(),
-                id: node.id,
-                focusable: true,
-                row_key: None,
-            });
+            out.push(Target::from_node(path.clone(), node, true, None));
         }
     }
     let mut targets = Vec::new();
     if let Some((node, item)) = scene.at_path(scope).zip(layout.at_path(scope)) {
         collect(node, item, &mut scope.to_vec(), &mut targets);
         if targets.is_empty() && is_window_overlay(node.kind) && eligible(node, item) {
-            targets.push(Target {
-                text_link: None,
-                path: scope.to_vec(),
-                id: node.id,
-                focusable: true,
-                row_key: None,
-            });
+            targets.push(Target::from_node(scope.to_vec(), node, true, None));
         }
     }
     let mut groups = BTreeMap::new();
@@ -1479,7 +1474,7 @@ pub(crate) fn focus_targets(scene: &Node, layout: &LayoutNode, scope: &[usize]) 
     for mut target in targets {
         target.row_key = scene.row_key_at(&target.path);
         if let Some((member, component)) = attached_radio(scene, &target.path) {
-            let key = (component.to_vec(), member.group.key);
+            let key = (component.to_vec(), member.group.key.clone());
             if let Some(&slot) = groups.get(&key) {
                 if member.group.selected == Some(member.index) {
                     stops[slot] = target;
@@ -1518,13 +1513,8 @@ fn dialog_entry_focus(scene: &Node, layout: &LayoutNode, path: &[usize]) -> Opti
         return Some(primary.clone());
     }
     first.cloned().or_else(|| {
-        eligible(node, layout.at_path(path)?).then(|| Target {
-            text_link: None,
-            path: path.to_vec(),
-            id: node.id,
-            focusable: true,
-            row_key: scene.row_key_at(path),
-        })
+        eligible(node, layout.at_path(path)?)
+            .then(|| Target::from_node(path.to_vec(), node, true, scene.row_key_at(path)))
     })
 }
 
@@ -1566,13 +1556,8 @@ fn sibling_menu(
             }
             let mut path = parent.to_vec();
             path.push(slot);
-            let sibling = Target {
-                text_link: None,
-                id: child.id,
-                row_key: scene.row_key_at(&path),
-                focusable: true,
-                path,
-            };
+            let row_key = scene.row_key_at(&path);
+            let sibling = Target::from_node(path, child, true, row_key);
             valid(&sibling, scene, layout).then_some((slot, sibling))
         })
         .collect();
@@ -2256,6 +2241,9 @@ impl Interaction {
         now: Instant,
     ) -> ShortcutOutcome {
         let mut pending = self.pending_shortcut.take();
+        if key.is_escape() && (self.menu_open() || self.choice_open()) {
+            return ShortcutOutcome::Unmatched;
+        }
         if self.menu.as_ref().is_some_and(|menu| menu.text.is_some()) {
             if repeat || !self.reconcile_text_menu(scene, layout) {
                 return ShortcutOutcome::Consumed;
@@ -2579,13 +2567,7 @@ impl Interaction {
         };
         let popup = if let Some((path, area, index)) = context_menu_area(scene, &target.path, scope)
         {
-            let trigger = Target {
-                text_link: None,
-                path: path.to_vec(),
-                id: area.id,
-                focusable: true,
-                row_key: scene.row_key_at(path),
-            };
+            let trigger = Target::from_node(path.to_vec(), area, true, scene.row_key_at(path));
             let mut path = path.to_vec();
             path.push(index);
             MenuPopup::open(trigger, path, Some(point), scene, layout, None)
@@ -3020,7 +3002,11 @@ impl Interaction {
         }
         let item = layout.at_path(path)?;
         let node = scene.interactive_at_path(path)?;
-        if !item.visible || !item.enabled || scene.row_key_at(path) != target.row_key {
+        if !item.visible
+            || !item.enabled
+            || !target.matches_node(node)
+            || scene.row_key_at(path) != target.row_key
+        {
             return None;
         }
         if node.kind == "ScrollBar" && !node.boolean("interactive", true) {
@@ -3068,13 +3054,12 @@ impl Interaction {
         let node = scene.at_path(&target.path)?;
         if node.kind == "ScrollBar" {
             self.set_focus_with_reason(
-                Some(Target {
-                    path: target.path.clone(),
-                    id: node.id,
-                    focusable: true,
-                    row_key: target.row_key,
-                    text_link: None,
-                }),
+                Some(Target::from_node(
+                    target.path.clone(),
+                    node,
+                    true,
+                    target.row_key,
+                )),
                 xrack_runtime::FocusReason::PointerClick,
             );
             self.remember_focus_scope(scene, layout);
@@ -3087,7 +3072,7 @@ impl Interaction {
         };
         self.scroll_bar_press = Some(ScrollBarPress {
             target,
-            source: (node.kind, node.id),
+            source: node.kind,
             viewport: node.scroll_target.clone(),
             grab,
             start,
@@ -3552,16 +3537,19 @@ impl Interaction {
             (scope.len()..=path.len()).rev().find_map(|depth| {
                 let path = &path[..depth];
                 let item = layout.at_path(path)?;
+                let node = scene.at_path(path)?;
                 can_pan(item, orientation).then(|| ScrollTarget {
                     path: path.to_vec(),
                     orientation,
                     row_key: scene.row_key_at(path),
+                    id: ElementId::of(node),
                 })
             })
         });
         self.scroll_gesture = Some(ScrollGesture {
             route: ScrollRoute {
                 scope_row: scene.row_key_at(&scope),
+                scope_id: scene.at_path(&scope).and_then(ElementId::of),
                 scope,
                 axes,
                 mouse_viewport: true,
@@ -3695,10 +3683,12 @@ impl Interaction {
                         .is_some_and(|scroll| scroll.max_offset > 0.0)
             })?;
             let row_key = scene.row_key_at(&path);
+            let id = ElementId::of(scene.at_path(&path)?);
             Some(ScrollTarget {
                 path,
                 orientation,
                 row_key,
+                id,
             })
         });
         if kind == ScrollGestureKind::MousePan
@@ -3757,6 +3747,7 @@ impl Interaction {
         self.scroll_gesture = Some(ScrollGesture {
             route: ScrollRoute {
                 scope_row: scene.row_key_at(&scope),
+                scope_id: scene.at_path(&scope).and_then(ElementId::of),
                 scope,
                 axes,
                 mouse_viewport: false,
@@ -3863,6 +3854,7 @@ impl Interaction {
                         path: path.to_vec(),
                         row_key: scene.row_key_at(path),
                         orientation,
+                        id: ElementId::of(view),
                     },
                     current,
                     previous,
@@ -3942,6 +3934,7 @@ impl Interaction {
                         DrawerSwipe {
                             path: path.clone(),
                             row_key: scene.row_key_at(path),
+                            id: ElementId::of(node),
                             edge,
                             open,
                             start: point,
@@ -3963,6 +3956,8 @@ impl Interaction {
         (self.active_dialog(layout).unwrap_or_default() == route.scope
             || self.popups(layout).any(|path| path == route.scope))
             && scene.row_key_at(&route.scope) == route.scope_row
+            && scene.at_path(&route.scope).and_then(Node::element_id)
+                == route.scope_id.as_ref().map(ElementId::as_str)
             && (!route.mouse_viewport
                 || route.axes.iter().flatten().any(|target| {
                     target.resolve(scene, layout).is_some_and(|(_, item)| {
@@ -5074,7 +5069,7 @@ impl Interaction {
                 })
             };
             let cell = cell?;
-            target.id = cell.id;
+            target.set_element_id(ElementId::of(cell));
             target.row_key = scene.row_key_at(&target.path);
         }
         Some(target)
@@ -5281,6 +5276,7 @@ impl Interaction {
             self.editor = None;
             self.spin_draft = None;
         }
+        self.reconcile_text_composition(scene);
     }
 
     pub fn break_text_edit_group(&mut self) {
@@ -5581,7 +5577,7 @@ impl Interaction {
         let target = self
             .focused
             .as_ref()
-            .filter(|target| target.path == path && target.id == node.id)?;
+            .filter(|target| target.path == path && target.matches_node(node))?;
         if !combo_editable(node)
             || !node.boolean("auto-complete", false)
             || self.choice_open()
@@ -5618,7 +5614,7 @@ impl Interaction {
         let painted = self.painted_combo_completion.take()?;
         let path = &painted.target.path;
         let node = scene.interactive_at_path(path)?;
-        if node.id != painted.target.id || scene.row_key_at(path) != painted.target.row_key {
+        if !painted.target.matches_node(node) || scene.row_key_at(path) != painted.target.row_key {
             return None;
         }
         (self.combo_completion(node, path)? == painted).then_some(painted)
@@ -6125,30 +6121,15 @@ impl Interaction {
             })
         });
         self.press(proxy, Some(layout), preserve_focus);
-        self.table_column_move = (|| {
-            if self.table_resize.is_some() || self.table_row_resize.is_some() {
-                return None;
-            }
-            let target = self.pressed.clone()?;
-            let node = scene.at_path(&target.path)?;
-            if !node.boolean("movable-columns", false) {
-                return None;
-            }
-            let start = self.pointer?;
-            let item = layout.at_path(&target.path)?;
-            let column = item
-                .table
-                .as_ref()?
-                .column_at(item.map_from_window(start)?)?;
-            Some(TableColumnMove {
-                target,
-                column,
-                start,
-                order: node.table_column_order.clone(),
-                claimed: false,
-                scroll_wake: None,
-            })
-        })();
+        if self.table_resize.is_none() && self.table_row_resize.is_none() {
+            self.table_column_move =
+                self.pressed
+                    .as_ref()
+                    .zip(self.pointer)
+                    .and_then(|(target, point)| {
+                        Self::table_column_move_at(scene, layout, target, point)
+                    });
+        }
         if self.table_row_resize.is_none() && self.table_column_move.is_none() {
             self.table_row_move =
                 self.pressed
@@ -6174,7 +6155,7 @@ impl Interaction {
         self.tooltip.dismiss();
         self.pressed = self.hovered.clone();
         self.pressed_radio.clone_from(&self.hovered_radio);
-        self.pressed_list_row = self.hovered_list_row;
+        self.pressed_list_row = self.hovered_list_row.clone();
         self.pressed_tree_indicator = self.hovered_tree_indicator;
         self.pressed_table_column = self.hovered_table_column;
         self.table_column_move = None;
@@ -6219,9 +6200,9 @@ impl Interaction {
         self.dial_pointer = None;
         self.spin_pressed = None;
         let focus = self.hovered.clone().and_then(|mut target| {
-            if let Some((_, id)) = self.hovered_list_row {
+            if let Some((_, id)) = &self.hovered_list_row {
                 target.path.pop();
-                target.id = id;
+                target.set_element_id(id.clone());
                 target.focusable = true;
                 target.row_key = None;
             }
@@ -6367,7 +6348,7 @@ impl Interaction {
         geometry.resize(path.to_vec(), handle, delta as f32)
     }
 
-    pub fn touch_range_press(&mut self, scene: &Node, layout: &LayoutNode, point: Point) -> bool {
+    pub fn range_pointer_press(&mut self, scene: &Node, layout: &LayoutNode, point: Point) -> bool {
         if self.menu.is_some() || self.choice.is_some() {
             return false;
         }
@@ -6379,6 +6360,13 @@ impl Interaction {
         }
         self.pointer_move(scene, layout, point);
         self.pointer_press_in_scene(scene, layout);
+        true
+    }
+
+    pub fn touch_range_press(&mut self, scene: &Node, layout: &LayoutNode, point: Point) -> bool {
+        if !self.range_pointer_press(scene, layout, point) {
+            return false;
+        }
         self.touch_range = true;
         true
     }
@@ -6446,13 +6434,7 @@ impl Interaction {
     }
 
     fn focus_slider_thumb(&mut self, scene: &Node, path: &[usize]) {
-        let target = Target {
-            text_link: None,
-            path: path.to_vec(),
-            id: None,
-            focusable: true,
-            row_key: scene.row_key_at(path),
-        };
+        let target = Target::from_element_id(path.to_vec(), None, true, scene.row_key_at(path));
         self.set_focus(Some(target.clone()));
         self.pressed = Some(target);
     }
@@ -6674,6 +6656,10 @@ impl Interaction {
         )
     }
 
+    pub fn tree_has_focus(&self, scene: &Node, layout: &LayoutNode) -> bool {
+        self.focused_tree(scene, layout).is_some()
+    }
+
     fn focused_tree<'a>(&'a self, scene: &Node, layout: &LayoutNode) -> Option<&'a [usize]> {
         let target = self.focused.as_ref()?;
         if self.table_edit.is_some()
@@ -6736,13 +6722,12 @@ impl Interaction {
             })?
         };
         self.reveal_row(&path, node, layout.at_path(&path)?, next);
-        self.set_focus(Some(Target {
-            text_link: None,
-            path: path.clone(),
-            id: node.id,
-            focusable: true,
-            row_key: scene.row_key_at(&path),
-        }));
+        self.set_focus(Some(Target::from_node(
+            path.clone(),
+            node,
+            true,
+            scene.row_key_at(&path),
+        )));
         Some(ControlInput {
             path,
             action: ControlAction::Select(next),
@@ -6916,6 +6901,52 @@ impl Interaction {
         (visible.width > 0.0 && visible.height > 0.0).then_some((path, slot))
     }
 
+    fn table_column_move_at(
+        scene: &Node,
+        layout: &LayoutNode,
+        target: &Target,
+        start: Point,
+    ) -> Option<TableColumnMove> {
+        let node = target.node_in(scene)?;
+        if !node.boolean("movable-columns", false) {
+            return None;
+        }
+        let item = layout.at_path(&target.path)?;
+        let column = item
+            .table
+            .as_ref()?
+            .column_at(item.map_from_window(start)?)?;
+        Some(TableColumnMove {
+            target: target.clone(),
+            column,
+            start,
+            order: node.table_column_order.clone(),
+            claimed: false,
+            scroll_wake: None,
+        })
+    }
+
+    /// Start the ordinary press route only on a movable table header.
+    pub fn press_table_reorder(&mut self, scene: &Node, layout: &LayoutNode) -> bool {
+        if self.menu_open()
+            || self.choice_open()
+            || self.hovered_table_grip.is_some()
+            || self.hovered_table_row_grip.is_some()
+        {
+            return false;
+        }
+        let Some((target, point)) = self.hovered.as_ref().zip(self.pointer) else {
+            return false;
+        };
+        if Self::table_column_move_at(scene, layout, target, point).is_none()
+            && Self::table_row_move_at(scene, layout, target, point).is_none()
+        {
+            return false;
+        }
+        self.pointer_press_in_scene(scene, layout);
+        self.table_row_move.is_some() || self.table_column_move.is_some()
+    }
+
     fn table_row_move_at(
         scene: &Node,
         layout: &LayoutNode,
@@ -6935,13 +6966,7 @@ impl Interaction {
             return None;
         }
         Some(TableRowMove {
-            table: Target {
-                path: path.to_vec(),
-                id: node.id,
-                focusable: true,
-                row_key: scene.row_key_at(path),
-                text_link: None,
-            },
+            table: Target::from_node(path.to_vec(), node, true, scene.row_key_at(path)),
             from: node.list?.first_row.checked_add(slot)?,
             row: node.children.get(slot)?.row_key?,
             stamp: node.standard_list_stamp?,
@@ -7075,6 +7100,35 @@ impl Interaction {
             node = node.child_at(index)?;
         }
         None
+    }
+
+    /// Resolve a table or tree selection shortcut in the current focus scope.
+    pub fn selection_key_action(
+        &self,
+        scene: &Node,
+        layout: &LayoutNode,
+        key: &str,
+        modifiers: xrack_runtime::KeyModifiers,
+    ) -> Option<ControlInput> {
+        let additive = modifiers.control || modifiers.meta;
+        let key = match key {
+            " " | "Space" => TableSelectionKey::Toggle,
+            "Escape" => TableSelectionKey::Clear,
+            key if key.eq_ignore_ascii_case("a")
+                && additive
+                && !modifiers.alt
+                && !modifiers.shift =>
+            {
+                TableSelectionKey::All
+            }
+            _ => return None,
+        };
+        self.table_selection_key(scene, key).or_else(|| {
+            if key == TableSelectionKey::Toggle && !additive {
+                return None;
+            }
+            self.tree_selection_key(scene, layout, key)
+        })
     }
 
     pub fn tree_selection_key(
@@ -7412,13 +7466,12 @@ impl Interaction {
                 offset,
             );
         }
-        self.set_focus(Some(Target {
-            text_link: None,
-            path: path.clone(),
-            id: node.id,
-            focusable: true,
-            row_key: scene.row_key_at(&path),
-        }));
+        self.set_focus(Some(Target::from_node(
+            path.clone(),
+            node,
+            true,
+            scene.row_key_at(&path),
+        )));
         Some(ControlInput {
             path,
             action: ControlAction::TableSelection(action),
@@ -7520,13 +7573,12 @@ impl Interaction {
         };
         self.reveal_row(&action.path, node, layout, index);
         if focused_cell {
-            self.set_focus(Some(Target {
-                text_link: None,
-                path: action.path.clone(),
-                id: node.id,
-                focusable: true,
-                row_key: scene.row_key_at(&action.path),
-            }));
+            self.set_focus(Some(Target::from_node(
+                action.path.clone(),
+                node,
+                true,
+                scene.row_key_at(&action.path),
+            )));
         }
         Some(action)
     }
@@ -7545,22 +7597,16 @@ impl Interaction {
                 .unwrap_or_default();
             let choices: Vec<_> = member
                 .group
-                .paths
-                .iter()
+                .paths()
                 .filter_map(|path| {
-                    let path = [component, *path].concat();
+                    let path = [component, path].concat();
                     if !path.starts_with(scope) {
                         return None;
                     }
                     let node = scene.interactive_at_path(&path)?;
                     let item = layout.at_path(&path)?;
-                    eligible(node, item).then(|| Target {
-                        id: node.id,
-                        row_key: scene.row_key_at(&path),
-                        path,
-                        focusable: true,
-                        text_link: None,
-                    })
+                    let row_key = scene.row_key_at(&path);
+                    eligible(node, item).then(|| Target::from_node(path, node, true, row_key))
                 })
                 .collect();
             let position = choices.iter().position(|choice| choice == target)?;
@@ -7680,13 +7726,12 @@ impl Interaction {
             return None;
         }
         let path = path.to_vec();
-        self.set_focus(Some(Target {
-            text_link: None,
-            row_key: scene.row_key_at(&path),
-            path: path.clone(),
-            id: view.id,
-            focusable: true,
-        }));
+        self.set_focus(Some(Target::from_node(
+            path.clone(),
+            view,
+            true,
+            scene.row_key_at(&path),
+        )));
         Some(ControlInput {
             path,
             action: ControlAction::Select(index),
@@ -8045,6 +8090,36 @@ impl Interaction {
             )
         })();
         self.table_drag_selection.is_some()
+    }
+
+    /// Press a table cell only if it can arm a drag selection.
+    pub fn press_table_drag_selection(
+        &mut self,
+        scene: &Node,
+        layout: &LayoutNode,
+        additive: bool,
+    ) -> bool {
+        if self.drag.is_some()
+            || self.hovered_table_row_grip.is_some()
+            || self.hovered_table_grip.is_some()
+            || self.menu_open()
+            || self.choice_open()
+        {
+            return false;
+        }
+        let Some(drag) = self
+            .hovered
+            .as_ref()
+            .zip(self.pointer)
+            .and_then(|(target, point)| {
+                self.table_selection_at(scene, layout, target, point, additive)
+            })
+        else {
+            return false;
+        };
+        self.pointer_press_in_scene(scene, layout);
+        self.table_drag_selection = Some(drag);
+        true
     }
 
     fn table_selection_at(
@@ -8460,7 +8535,7 @@ impl Interaction {
         point: Point,
     ) -> Option<(Rect, Point)> {
         if !drag.claimed
-            || node.id != drag.table.id
+            || !drag.table.matches_node(node)
             || node.standard_list_stamp != Some(drag.stamp)
             || !node.boolean("movable-rows", false)
             || !layout.visible
@@ -8634,6 +8709,7 @@ impl Interaction {
         point: Point,
     ) -> Option<(&'a crate::TableGeometry, Point)> {
         if !drag.claimed
+            || !drag.target.matches_node(node)
             || !layout.visible
             || !layout.enabled
             || !node.boolean("movable-columns", false)
@@ -8658,7 +8734,8 @@ impl Interaction {
             return None;
         }
         let item = layout.at_path(path)?;
-        let (table, point) = Self::column_move_position(drag, scene.at_path(path)?, item, point)?;
+        let (table, point) =
+            Self::column_move_position(drag, drag.target.node_in(scene)?, item, point)?;
         let visible = table.scrollable_header().intersect(item.clip);
         if !visible.contains(point) {
             return None;
@@ -9027,13 +9104,7 @@ impl Interaction {
                             | "GroupBox"
                                 if eligible(node, item) =>
                             {
-                                Target {
-                                    text_link: None,
-                                    path: path.to_vec(),
-                                    id: node.id,
-                                    focusable: true,
-                                    row_key: None,
-                                }
+                                Target::from_node(path.to_vec(), node, true, None)
                             }
                             "TabWidget" | "TabBar" | "RadioGroup" => group_focus(node, item, path)?,
                             "Dialog" | "Drawer" => dialog_entry_focus(scene, layout, path)?,
@@ -9156,15 +9227,7 @@ impl Interaction {
         focus_targets(scene, layout, &page)
             .into_iter()
             .next()
-            .or_else(|| {
-                Some(Target {
-                    text_link: None,
-                    path: path.to_vec(),
-                    id: view.id,
-                    focusable: true,
-                    row_key: row,
-                })
-            })
+            .or_else(|| Some(Target::from_node(path.to_vec(), view, true, row)))
     }
 
     fn reconcile_dialogs(&mut self, scene: &Node, layout: &LayoutNode) {
@@ -9327,13 +9390,12 @@ impl Interaction {
         if !eligible(node, item) && !scrollable {
             return None;
         }
-        Some(Target {
-            text_link: None,
-            path: path.to_vec(),
-            id: node.id,
-            focusable: focusable(node),
-            row_key: scene.row_key_at(path),
-        })
+        Some(Target::from_node(
+            path.to_vec(),
+            node,
+            focusable(node),
+            scene.row_key_at(path),
+        ))
     }
 
     pub(crate) fn focus_reason(&self) -> xrack_runtime::FocusReason {
@@ -9366,13 +9428,7 @@ impl Interaction {
                 Some(crate::focus_observers::FocusEntry {
                     handle: node.focus_handle.clone()?,
                     direct: depth == focus.path.len(),
-                    target: Target {
-                        text_link: None,
-                        path: path.to_vec(),
-                        id: node.id,
-                        focusable: true,
-                        row_key: scene.row_key_at(path),
-                    },
+                    target: Target::from_node(path.to_vec(), node, true, scene.row_key_at(path)),
                 })
             })
             .collect()
@@ -9617,11 +9673,8 @@ impl Interaction {
     pub fn key_release_with_scene(&mut self, scene: &Node, key: ActivationKey) -> Option<Target> {
         let kind = self.key_standard_button;
         let target = self.key_release_target(key)?;
-        (scene
-            .at_path(&target.path)
-            .and_then(Node::standard_button_kind)
-            == kind)
-            .then_some(target)
+        let node = target.node_in(scene)?;
+        (node.standard_button_kind() == kind).then_some(target)
     }
     pub fn cancel_press(&mut self) {
         if self.touch_table_drag_claimed() {

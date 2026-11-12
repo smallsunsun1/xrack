@@ -81,6 +81,20 @@ impl SplitResizeHandle {
 }
 
 impl Node {
+    pub fn has_split_fill(&self) -> bool {
+        self.split_fill_index.is_some() || self.split_fill_pane.is_some()
+    }
+
+    #[doc(hidden)]
+    pub fn split_fill_slot(&self) -> Option<usize> {
+        self.split_fill_index.or_else(|| {
+            let target = self.split_fill_pane?;
+            self.children[..self.split_pane_count()]
+                .iter()
+                .position(|pane| pane.element_id() == Some(target))
+        })
+    }
+
     pub fn split_pane_count(&self) -> usize {
         self.children
             .iter()
@@ -118,7 +132,7 @@ impl Node {
 
     #[doc(hidden)]
     pub fn resized_split_weights(&self, weights: &[(usize, f32)]) -> Option<Arc<[Option<f32>]>> {
-        if self.split_fill_pane.is_some()
+        if self.has_split_fill()
             || self
                 .split_panes()
                 .map(|(index, _)| index)
@@ -131,7 +145,9 @@ impl Node {
 
     #[doc(hidden)]
     pub fn resized_split_sizes(&self, sizes: &[(usize, f32)]) -> Option<Arc<[Option<f32>]>> {
-        self.split_fill_pane?;
+        if !self.has_split_fill() {
+            return None;
+        }
         if self
             .split_panes()
             .map(|(index, _)| index)

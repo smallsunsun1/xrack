@@ -12,12 +12,10 @@ pub struct DragDispatch {
 
 impl DragDispatch {
     pub fn apply(self, component: &mut impl Component, scene: &Node) -> bool {
-        let path = &self.target.path;
-        scene.row_key_at(path) == self.target.row_key
-            && scene.at_path(path).is_some_and(|node| {
-                node.id == self.target.id && node.kind == self.event.target_kind()
-            })
-            && component.drag_event_at(scene, path, &self.event)
+        self.target
+            .node_in(scene)
+            .is_some_and(|node| node.kind == self.event.target_kind())
+            && component.drag_event_at(scene, &self.target.path, &self.event)
     }
 }
 
@@ -113,18 +111,13 @@ impl Context<'_> {
                 .transitions
                 .iter()
                 .any(|path| target.path.starts_with(path))
-            || self.scene.row_key_at(&target.path) != target.row_key
         {
             return None;
         }
-        let node = self.scene.at_path(&target.path)?;
+        let node = target.node_in(self.scene)?;
         let item = self.layout.at_path(&target.path)?;
-        (node.kind == kind
-            && node.id == target.id
-            && item.visible
-            && item.enabled
-            && node.boolean("enabled", true))
-        .then_some(node)
+        (node.kind == kind && item.visible && item.enabled && node.boolean("enabled", true))
+            .then_some(node)
     }
 
     pub(crate) fn find<T>(
@@ -176,16 +169,9 @@ impl Context<'_> {
             self.transitions,
             accept,
         )?;
-        Some((
-            Target {
-                text_link: None,
-                id: self.scene.at_path(&path)?.id,
-                row_key: self.scene.row_key_at(&path),
-                path,
-                focusable: false,
-            },
-            result,
-        ))
+        let node = self.scene.at_path(&path)?;
+        let row_key = self.scene.row_key_at(&path);
+        Some((Target::from_node(path, node, false, row_key), result))
     }
 
     fn hover(&self, offer: &Offer, point: Point, requested: Option<DragAction>) -> Option<Hover> {
@@ -249,7 +235,7 @@ impl DragSession {
         self.active
             .as_ref()
             .and_then(|active| active.hover.as_ref())
-            .is_some_and(|over| over.target.path == path && over.target.id == node.id)
+            .is_some_and(|over| over.target.path == path && over.target.matches_node(node))
     }
 
     pub fn motion(

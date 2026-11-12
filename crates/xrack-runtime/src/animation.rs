@@ -108,7 +108,7 @@ impl SceneTransition {
             now: Duration,
         ) {
             if previous.kind != next.kind
-                || previous.id != next.id
+                || previous.element_id() != next.element_id()
                 || previous.row_key != next.row_key
             {
                 return;

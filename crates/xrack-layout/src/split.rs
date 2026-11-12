@@ -114,12 +114,11 @@ impl SplitGeometry {
                 info.preferred = info.min;
             }
         }
-        let (lengths, weight, sides_constrained) = if let Some(target) = node.split_fill_pane
-            && !visible.is_empty()
-        {
+        let (lengths, weight, sides_constrained) = if node.has_split_fill() && !visible.is_empty() {
+            let target = node.split_fill_slot();
             let fill = visible
                 .iter()
-                .position(|(_, pane)| pane.id == Some(target))
+                .position(|(slot, _)| Some(*slot) == target)
                 .unwrap_or(visible.len() - 1);
             let fill_info = constraints[fill];
             let fixed: Vec<_> = visible
@@ -230,7 +229,7 @@ impl SplitGeometry {
                 hit_radius: (hit_size > gap).then_some(hit_size * 0.5),
                 panes,
                 weight,
-                sized: node.split_fill_pane.is_some(),
+                sized: node.has_split_fill(),
                 sides_constrained,
             },
             rects,

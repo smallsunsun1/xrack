@@ -12,21 +12,12 @@ path = "src/main.rs"
 
 [dependencies]
 clap.workspace = true
-fluent-syntax.workspace = true
-unic-langid.workspace = true
-gif.workspace = true
-gif-dispose.workspace = true
-png.workspace = true
 proc-macro2.workspace = true
-rgb.workspace = true
-serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
-toml.workspace = true
-ttf-parser.workspace = true
 xrack-syntax.workspace = true
 xrack-parser.workspace = true
 xrack-ir.workspace = true
 xrack-mlir.workspace = true
 xrack-codegen.workspace = true
-xrack-assets.workspace = true
+xrack-resources.workspace = true

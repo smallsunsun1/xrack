@@ -1,16 +1,48 @@
 use crate::{CheckState, Node};
-use std::rc::Rc;
+use std::{borrow::Cow, rc::Rc};
 
 /// The compiler's declaration-order option slots for one nonvisual group.
 #[doc(hidden)]
 #[derive(Debug, PartialEq, Eq)]
 pub struct ButtonGroup {
-    pub key: &'static str,
+    pub key: Cow<'static, str>,
     pub name: String,
-    pub paths: &'static [&'static [usize]],
+    paths: Paths,
     pub selected: Option<usize>,
     pub enabled: bool,
     pub exclusive: bool,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum Paths {
+    Static(&'static [&'static [usize]]),
+    Owned(Rc<[Vec<usize>]>),
+}
+
+impl Paths {
+    fn len(&self) -> usize {
+        match self {
+            Self::Static(paths) => paths.len(),
+            Self::Owned(paths) => paths.len(),
+        }
+    }
+
+    fn get(&self, index: usize) -> Option<&[usize]> {
+        match self {
+            Self::Static(paths) => paths.get(index).copied(),
+            Self::Owned(paths) => paths.get(index).map(Vec::as_slice),
+        }
+    }
+
+    fn iter(&self) -> impl ExactSizeIterator<Item = &[usize]> {
+        (0..self.len()).map(|index| self.get(index).expect("group path index"))
+    }
+}
+
+impl ButtonGroup {
+    pub fn paths(&self) -> impl ExactSizeIterator<Item = &[usize]> {
+        self.paths.iter()
+    }
 }
 
 #[doc(hidden)]
@@ -24,7 +56,7 @@ pub type RadioMembership = ButtonGroupMembership;
 
 impl ButtonGroupMembership {
     pub fn component_path<'a>(&self, path: &'a [usize]) -> Option<&'a [usize]> {
-        path.strip_suffix(*self.group.paths.get(self.index)?)
+        path.strip_suffix(self.group.paths.get(self.index)?)
     }
 }
 
@@ -49,26 +81,13 @@ pub fn bind_button_group(
     selection: ButtonGroupSelection,
     enabled: bool,
 ) {
-    let selected = match selection {
-        ButtonGroupSelection::Index(index) => usize::try_from(index)
-            .ok()
-            .filter(|&index| index < paths.len()),
-        ButtonGroupSelection::Value(value) => paths.iter().position(|path| {
-            scene
-                .at_path(path)
-                .is_some_and(|node| node.kind == "RadioButton" && radio_value(node) == value)
-        }),
-    };
     bind_group(
         scene,
-        Rc::new(ButtonGroup {
-            key,
-            name,
-            paths,
-            selected,
-            enabled,
-            exclusive: true,
-        }),
+        Cow::Borrowed(key),
+        name,
+        Paths::Static(paths),
+        Some(selection),
+        enabled,
     );
 }
 
@@ -82,18 +101,61 @@ pub fn bind_check_group(
 ) {
     bind_group(
         scene,
-        Rc::new(ButtonGroup {
-            key,
-            name,
-            paths,
-            selected: None,
-            enabled,
-            exclusive: false,
-        }),
+        Cow::Borrowed(key),
+        name,
+        Paths::Static(paths),
+        None,
+        enabled,
     );
 }
 
-fn bind_group(scene: &mut Node, group: Rc<ButtonGroup>) {
+#[doc(hidden)]
+pub fn bind_dynamic_button_group(
+    scene: &mut Node,
+    key: String,
+    name: String,
+    paths: Rc<[Vec<usize>]>,
+    selection: Option<ButtonGroupSelection>,
+    enabled: bool,
+) {
+    bind_group(
+        scene,
+        Cow::Owned(key),
+        name,
+        Paths::Owned(paths),
+        selection,
+        enabled,
+    );
+}
+
+fn bind_group(
+    scene: &mut Node,
+    key: Cow<'static, str>,
+    name: String,
+    paths: Paths,
+    selection: Option<ButtonGroupSelection>,
+    enabled: bool,
+) {
+    let exclusive = selection.is_some();
+    let selected = match selection {
+        Some(ButtonGroupSelection::Index(index)) => usize::try_from(index)
+            .ok()
+            .filter(|&index| index < paths.len()),
+        Some(ButtonGroupSelection::Value(value)) => paths.iter().position(|path| {
+            scene
+                .at_path(path)
+                .is_some_and(|node| node.kind == "RadioButton" && radio_value(node) == value)
+        }),
+        None => None,
+    };
+    let group = Rc::new(ButtonGroup {
+        key,
+        name,
+        paths,
+        selected,
+        enabled,
+        exclusive,
+    });
     for (index, path) in group.paths.iter().enumerate() {
         let member = path
             .iter()
@@ -126,15 +188,31 @@ fn bind_group(scene: &mut Node, group: Rc<ButtonGroup>) {
 /// subscribe to just the members that established the result.
 #[doc(hidden)]
 pub fn summarize_checks(checks: &[&dyn Fn() -> CheckState]) -> CheckState {
-    let Some((first, rest)) = checks.split_first() else {
-        return CheckState::Unchecked;
+    try_summarize_checks(
+        checks
+            .iter()
+            .map(|read| Ok::<_, std::convert::Infallible>(read())),
+    )
+    .unwrap_or_else(|error| match error {})
+}
+
+#[doc(hidden)]
+pub fn try_summarize_checks<E>(
+    checks: impl IntoIterator<Item = Result<CheckState, E>>,
+) -> Result<CheckState, E> {
+    let mut checks = checks.into_iter();
+    let Some(first) = checks.next().transpose()? else {
+        return Ok(CheckState::Unchecked);
     };
-    let first = first();
-    if first == CheckState::PartiallyChecked || rest.iter().any(|read| read() != first) {
-        CheckState::PartiallyChecked
-    } else {
-        first
+    if first == CheckState::PartiallyChecked {
+        return Ok(first);
     }
+    for check in checks {
+        if check? != first {
+            return Ok(CheckState::PartiallyChecked);
+        }
+    }
+    Ok(first)
 }
 
 #[cfg(test)]

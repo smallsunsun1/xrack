@@ -40,7 +40,7 @@ void XrackDialect::initialize() {
       >();
 }
 
-static bool isExpression(Operation &op) {
+bool isExpression(Operation &op) {
   return isa<LiteralOp, ReadOp, ControlReadOp, GeometryReadOp, StackReadOp, TreeQueryOp, ViewIndexOp, TableSortReadOp, TableSelectionReadOp, TableHistoryReadOp, SplitStateReadOp, SplitResizingOp, ImagePlaybackReadOp, WindowReadOp, CheckGroupReadOp, ActionGroupReadOp, NativeDialogReadOp, FocusReadOp, ViewportReadOp, FlickMotionReadOp, ScrollControlReadOp, ScaleRotateReadOp, SwipeReadOp, HoverReadOp, TouchAreaReadOp, ParamOp, UnaryOp, CastOp,
              StringifyOp, BinaryOp, SelectOp, SolidBrushOp, GradientStopOp,
              LinearGradientOp, RadialGradientOp, ImageUrlOp, ImageDimensionOp, NineSliceOp, MarkdownOp, TranslateOp, ArrayOp, PointerButtonsOp, CallOp,
@@ -3028,6 +3028,13 @@ LogicalResult HandlerOp::verify() {
   return verifyCallback(*this, getBody(), getParameters());
 }
 
+std::optional<double> parseFloatLiteral(llvm::StringRef spelling) {
+  double value;
+  if (spelling.getAsDouble(value) || !std::isfinite(value))
+    return std::nullopt;
+  return value;
+}
+
 LogicalResult LiteralOp::verify() {
   auto type = getResult().getType();
   auto spelling = getValue();
@@ -3036,8 +3043,7 @@ LogicalResult LiteralOp::verify() {
     int64_t value;
     valid = !spelling.getAsInteger(10, value);
   } else if (isa<FloatType, LengthType, PercentType>(type)) {
-    double value;
-    valid = !spelling.getAsDouble(value) && std::isfinite(value);
+    valid = parseFloatLiteral(spelling).has_value();
   } else if (isa<BoolType>(type)) {
     valid = spelling == "true" || spelling == "false";
   } else if (isa<ImageFitType>(type)) {
@@ -3183,9 +3189,8 @@ OpFoldResult SelectOp::fold(FoldAdaptor) {
 
 static std::optional<double> gradientOffset(GradientStopOp stop) {
   auto literal = stop.getOffset().getDefiningOp<LiteralOp>();
-  double offset;
-  if (!literal || literal.getValue().getAsDouble(offset) ||
-      !std::isfinite(offset) || offset < 0.0 || offset > 1.0)
+  auto offset = literal ? parseFloatLiteral(literal.getValue()) : std::nullopt;
+  if (!offset || *offset < 0.0 || *offset > 1.0)
     return std::nullopt;
   return offset;
 }

@@ -1,10 +1,10 @@
 use crate::dimension;
-use xrack_runtime::{Image, Node, button_text};
+use xrack_runtime::{ImageAsset, Node, button_text};
 
 /// Shared intrinsic content for button measurement and painting.
 pub struct ButtonContent<'a> {
     pub label: &'a str,
-    pub icon: Option<(Image, f32)>,
+    pub icon: Option<(ImageAsset, f32)>,
     pub padding: f32,
 }
 
@@ -12,7 +12,7 @@ impl<'a> ButtonContent<'a> {
     pub fn new(node: &'a Node) -> Self {
         let size = dimension(node, "icon-size").unwrap_or(18.0);
         let icon = node
-            .image("icon")
+            .image_asset("icon")
             .filter(|image| size > 0.0 && !image.size().contains(&0))
             .map(|image| (image, size));
         let label = if icon.is_some() && node.boolean("icon-only", false) {

@@ -1,8 +1,9 @@
+use crate::input::ElementId;
 use crate::{
     ControlInput, LayoutNode, MenuShortcut, Point, Rect, Target, edit::SelectionState, input::valid,
 };
 use std::sync::atomic::{AtomicU64, Ordering};
-use xrack_runtime::{ControlAction, Image, Node, TextCommand, is_window_overlay};
+use xrack_runtime::{ControlAction, ImageAsset, Node, TextCommand, is_window_overlay};
 
 const ROW_HEIGHT: f32 = 28.0;
 const MAX_VISIBLE_ROWS: usize = 14;
@@ -22,7 +23,7 @@ pub enum MenuKey {
 pub struct MenuRow<'a> {
     pub node: &'a Node,
     pub label: &'a str,
-    pub icon: Option<Image>,
+    pub icon: Option<ImageAsset>,
     pub shortcut: Option<String>,
     pub enabled: bool,
     pub separator: bool,
@@ -120,6 +121,8 @@ struct PressedItem {
     index: usize,
     label: String,
     kind: &'static str,
+    id: Option<ElementId>,
+    command: Option<xrack_runtime::ActionKey>,
 }
 
 #[derive(Clone, Debug)]
@@ -228,8 +231,9 @@ fn shortcut(row: &Node) -> Option<MenuShortcut> {
     row.text("shortcut")?.parse().ok()
 }
 
-fn icon(row: &Node) -> Option<Image> {
-    row.image("icon").filter(|image| !image.size().contains(&0))
+fn icon(row: &Node) -> Option<ImageAsset> {
+    row.image_asset("icon")
+        .filter(|image| !image.size().contains(&0))
 }
 
 fn visit_menu_shortcuts(
@@ -540,6 +544,8 @@ impl MenuPopup {
                 index: row.index,
                 label: row.label.into(),
                 kind: row.node.kind,
+                id: ElementId::of(row.node),
+                command: row.node.action,
             });
         }
         true
@@ -558,6 +564,8 @@ impl MenuPopup {
             || row.index != pressed.index
             || row.label != pressed.label
             || row.node.kind != pressed.kind
+            || row.node.element_id() != pressed.id.as_ref().map(ElementId::as_str)
+            || row.node.action != pressed.command
         {
             return None;
         }

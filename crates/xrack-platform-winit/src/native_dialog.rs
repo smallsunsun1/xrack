@@ -50,28 +50,19 @@ async fn present_file(
     if !options.file_name.is_empty() {
         dialog = dialog.set_file_name(&options.file_name);
     }
-    if !matches!(
-        options.mode,
-        FileDialogMode::SelectFolder | FileDialogMode::SelectFolders
-    ) {
-        let filters = options
-            .name_filters
+    let filters = match options.filters() {
+        Ok(filters) => filters,
+        Err(message) => return NativeDialogResult::Failed(message.into()),
+    };
+    // AppKit flattens filter groups into one list of allowed extensions.
+    // An all-files group makes that list unrestricted.
+    if !cfg!(target_os = "macos")
+        || !filters
             .iter()
-            .map(|filter| parse_filter(filter))
-            .collect::<Option<Vec<_>>>();
-        let Some(filters) = filters else {
-            return NativeDialogResult::Failed("Invalid name filter. Use a label and extension patterns, for example Text files (*.txt *.md).".into());
-        };
-        // AppKit flattens filter groups into one list of allowed extensions.
-        // An all-files group makes that list unrestricted.
-        if !cfg!(target_os = "macos")
-            || !filters
-                .iter()
-                .any(|(_, extensions)| extensions.contains(&"*"))
-        {
-            for (name, extensions) in filters {
-                dialog = dialog.add_filter(name, &extensions);
-            }
+            .any(|(_, extensions)| extensions.contains(&"*"))
+    {
+        for (name, extensions) in filters {
+            dialog = dialog.add_filter(name, &extensions);
         }
     }
     let selected = match options.mode {
@@ -143,27 +134,6 @@ async fn present_message(
     })
 }
 
-#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
-fn parse_filter(filter: &str) -> Option<(&str, Vec<&str>)> {
-    let (label, patterns) = filter.trim().strip_suffix(')')?.rsplit_once('(')?;
-    let label = label.trim();
-    let extensions = patterns
-        .split_whitespace()
-        .map(|pattern| {
-            if pattern == "*" || pattern == "*.*" {
-                return Some("*");
-            }
-            let extension = pattern.strip_prefix("*.")?;
-            (!extension.is_empty()
-                && extension
-                    .bytes()
-                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-')))
-            .then_some(extension)
-        })
-        .collect::<Option<Vec<_>>>()?;
-    (!label.is_empty() && !extensions.is_empty()).then_some((label, extensions))
-}
-
 #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
 pub(crate) async fn present(_: &Window, _: &NativeDialogOptions) -> NativeDialogResult {
     NativeDialogResult::Failed("Native dialogs are unavailable on this platform.".into())
@@ -174,28 +144,7 @@ pub(crate) async fn present(_: &Window, _: &NativeDialogOptions) -> NativeDialog
     any(target_os = "macos", target_os = "windows", target_os = "linux")
 ))]
 mod tests {
-    use super::{NativeDialogResult, catch_backend, parse_filter};
-
-    #[test]
-    fn name_filters_preserve_labels_and_validate_extensions() {
-        assert_eq!(
-            parse_filter("Text (source) (*.txt *.md)"),
-            Some(("Text (source)", vec!["txt", "md"]))
-        );
-        assert_eq!(
-            parse_filter("All files (*.*)"),
-            Some(("All files", vec!["*"]))
-        );
-        for invalid in [
-            "*.txt",
-            "Text ()",
-            "(*.txt)",
-            "Text (file*.txt)",
-            "Text (*../x)",
-        ] {
-            assert_eq!(parse_filter(invalid), None);
-        }
-    }
+    use super::{NativeDialogResult, catch_backend};
 
     #[test]
     fn native_backend_panics_report_failure() {

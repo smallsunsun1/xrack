@@ -1,6 +1,8 @@
 load("@rules_rust//rust:defs.bzl", "rust_binary")
 load("//bazel:xrack.bzl", "xr_ui_library")
 
+exports_files(["tooltip.xr"], visibility = ["//tests:__pkg__"])
+
 xr_ui_library(
     name = "tooltip_ui",
     src = "tooltip.xr",

@@ -7,6 +7,11 @@ xr_ui_library(
     visibility = ["//tests:__pkg__"],
 )
 
+exports_files(
+    ["navigation.xr"],
+    visibility = ["//tests:__pkg__"],
+)
+
 rust_binary(
     name = "navigation",
     srcs = ["main.rs"],

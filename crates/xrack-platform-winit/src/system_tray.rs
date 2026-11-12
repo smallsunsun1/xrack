@@ -2,8 +2,8 @@ use crate::{
     LocalExecutor,
     desktop::{TrayEvent, TrayEvents},
 };
-use std::rc::Rc;
-use xrack_runtime::{ActionKey, Component, ControlAction, Image, Node};
+use std::{borrow::Cow, rc::Rc};
+use xrack_runtime::{ActionKey, Component, ControlAction, ImageAsset, Node};
 
 #[cfg(target_os = "linux")]
 use crate::system_tray_linux::NativeTray;
@@ -92,7 +92,7 @@ enum ResolvedActivation<'a> {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct TrayPresentation {
-    pub icon: Image,
+    pub icon: ImageAsset,
     pub template: bool,
     pub title: String,
     pub tooltip: String,
@@ -118,21 +118,21 @@ pub(crate) enum TrayMenuItem {
         label: String,
         enabled: bool,
         checked: Option<bool>,
-        icon: Image,
+        icon: ImageAsset,
     },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct MenuRoute {
     path: Vec<usize>,
-    id: Option<&'static str>,
+    id: Option<Cow<'static, str>>,
     action: Option<ActionKey>,
 }
 
 impl TrayPresentation {
     fn project(scene: &Node) -> Option<Self> {
         let icon = scene
-            .image("icon")
+            .image_asset("icon")
             .filter(|icon| !icon.size().contains(&0))?;
         if !scene.is_visible() {
             return None;
@@ -177,7 +177,9 @@ impl TrayPresentation {
             } if source == revision => {
                 let route = self.menu.routes.get(item)?;
                 let node = scene.interactive_at_path(&route.path)?;
-                (node.kind == "MenuItem" && node.id == route.id && node.action == route.action)
+                (node.kind == "MenuItem"
+                    && node.element_id() == route.id.as_deref()
+                    && node.action == route.action)
                     .then_some(ResolvedActivation::Menu(&route.path))
             }
             _ => None,
@@ -211,7 +213,7 @@ fn project_menu(
                 let index = routes.len();
                 routes.push(MenuRoute {
                     path: path.clone(),
-                    id: node.id,
+                    id: node.element_id_owned(),
                     action: node.action,
                 });
                 Some(TrayMenuItem::Command {
@@ -221,7 +223,7 @@ fn project_menu(
                     checked: node
                         .boolean("checkable", false)
                         .then(|| node.boolean("checked", false)),
-                    icon: node.image("icon").unwrap_or_default(),
+                    icon: node.image_asset("icon").unwrap_or_default(),
                 })
             }
             _ => None,
@@ -361,7 +363,7 @@ impl TrayHost {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use xrack_runtime::{ImageFormat, Value};
+    use xrack_runtime::{Image, ImageFormat, Value};
 
     #[test]
     fn windows_payload_preserves_signed_anchors_and_unicode_boundaries() {
@@ -459,6 +461,57 @@ mod tests {
                 11
             ),
             Some(ResolvedActivation::Menu(&[0, 1]))
+        );
+    }
+
+    #[test]
+    fn a_stale_native_menu_route_rejects_a_different_runtime_id_at_the_same_path() {
+        let mut tray = tray();
+        let mut menu = Node::new("Menu", None);
+        let mut item = command("generated");
+        item.set_owned_id(Some("original".into()));
+        menu.children.push(item);
+        tray.children.push(menu);
+        let presentation = TrayPresentation::project(&tray).unwrap();
+        let event = || TrayActivation::Menu {
+            revision: 10,
+            item: 0,
+        };
+        assert_eq!(
+            presentation.resolve_activation(&tray, event(), 1, 10),
+            Some(ResolvedActivation::Menu(&[0, 0]))
+        );
+
+        tray.children[0].children[0].set_owned_id(Some("replacement".into()));
+        assert_eq!(presentation.resolve_activation(&tray, event(), 1, 10), None);
+    }
+
+    #[test]
+    fn tray_projection_accepts_loaded_root_and_menu_icons() {
+        use xrack_runtime::LoadedImage;
+
+        let mut tray = tray();
+        let mut menu = Node::new("Menu", None);
+        menu.children.push(command("toggle"));
+        tray.children.push(menu);
+        let loaded = ImageAsset::Loaded(LoadedImage::new(
+            ImageFormat::Png,
+            b"projection only".to_vec(),
+            [1, 1],
+        ));
+        let mut compiled = tray.clone();
+        let embedded = compiled.image("icon").unwrap();
+        compiled.children[0].children[0]
+            .properties
+            .insert("icon", Value::Image(embedded));
+        tray.properties
+            .insert("icon", Value::ImageAsset(loaded.clone()));
+        tray.children[0].children[0]
+            .properties
+            .insert("icon", Value::ImageAsset(loaded));
+        assert_eq!(
+            TrayPresentation::project(&tray),
+            TrayPresentation::project(&compiled)
         );
     }
 

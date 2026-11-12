@@ -14,7 +14,7 @@ use objc2_app_kit::{
     NSStatusBarButton, NSStatusItem, NSVariableStatusItemLength,
 };
 use objc2_foundation::{NSData, NSSize, NSString};
-use xrack_runtime::{Image, ImageFormat};
+use xrack_runtime::{ImageAsset, ImageFormat};
 
 struct ActionState {
     events: TrayEvents,
@@ -101,7 +101,7 @@ impl NativeTray {
         if previous
             .is_none_or(|last| last.icon != current.icon || last.template != current.template)
         {
-            let image = native_image(current.icon, 18.0, current.template)?;
+            let image = native_image(&current.icon, 18.0, current.template)?;
             self.button.setImage(image.as_deref());
         }
         if previous.is_none_or(|last| last.title != current.title) {
@@ -211,7 +211,7 @@ fn native_menu(
                         NSControlStateValueOff
                     });
                 }
-                if let Some(image) = native_image(*icon, 16.0, false)? {
+                if let Some(image) = native_image(icon, 16.0, false)? {
                     item.setImage(Some(&image));
                 }
                 item
@@ -223,24 +223,15 @@ fn native_menu(
 }
 
 fn native_image(
-    image: Image,
+    image: &ImageAsset,
     points: f64,
     template: bool,
 ) -> Result<Option<Retained<NSImage>>, String> {
-    let (format, bytes, [width, height]) = match image.frame(0) {
-        Image::Embedded {
-            format,
-            bytes,
-            size,
-        }
-        | Image::NineSliced {
-            format,
-            bytes,
-            size,
-            ..
-        } => (format, bytes, size),
-        Image::Empty | Image::Animated(_) => return Ok(None),
+    let frame = image.frame(0);
+    let Some(pixels) = frame.pixels() else {
+        return Ok(None);
     };
+    let (format, bytes, [width, height]) = (pixels.format, pixels.bytes, pixels.size);
     xrack_assets::validate_image_size([width, height])?;
     let scale = points / f64::from(width.max(height));
     let size = NSSize::new(f64::from(width) * scale, f64::from(height) * scale);

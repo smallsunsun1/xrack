@@ -24,6 +24,130 @@ fn button(id: &'static str) -> Node {
 }
 
 #[test]
+fn fixed_plain_text_boxes_skip_intrinsic_text_measurement() {
+    #[derive(Default)]
+    struct Measure(usize);
+    impl TextMeasurer for Measure {
+        fn measure(&mut self, text: &str, _: f32, _: f32) -> Size {
+            self.0 += 1;
+            Size::new(text.len() as f32 * 10.0, 40.0)
+        }
+    }
+
+    let mut root = node("VerticalLayout", "root");
+    for kind in ["Text", "Label"] {
+        let mut text = Node::new(kind, None);
+        length(&mut text, "width", 100.0);
+        length(&mut text, "height", 24.0);
+        text.properties
+            .insert("text", "a long message".to_owned().into());
+        root.children.push(text);
+    }
+    let mut measure = Measure::default();
+    let viewport = Size::new(180.0, 120.0);
+    let fixed = layout(&root, viewport, &mut measure);
+    assert_eq!(measure.0, 0);
+    for child in fixed.children {
+        assert_eq!((child.bounds.width, child.bounds.height), (100.0, 24.0));
+    }
+
+    root.children[0].properties.remove("height");
+    let intrinsic = layout(&root, viewport, &mut measure);
+    assert!(measure.0 > 0);
+    assert!(intrinsic.children[0].bounds.height > 24.0);
+}
+
+#[test]
+fn scrolling_reuses_unchanged_row_layouts_and_recomputes_entering_rows() {
+    use xrack_runtime::{ListRowRenderer, VecModel};
+
+    #[derive(Default)]
+    struct Measured(usize);
+    impl TextMeasurer for Measured {
+        fn measure(&mut self, text: &str, size: f32, width: f32) -> Size {
+            self.0 += 1;
+            Text.measure(text, size, width)
+        }
+    }
+
+    struct View(Node);
+    impl Component for View {
+        fn render(&self) -> Node {
+            self.0.clone()
+        }
+
+        fn dispatch(&mut self, _: &str, _: &str) -> bool {
+            false
+        }
+    }
+
+    let records = VecModel::from(
+        (0..50_000)
+            .map(|row| format!("Record {row}"))
+            .collect::<Vec<_>>(),
+    );
+    let model = records.clone();
+    let mut list = node("ListView", "list");
+    list.list = Some(ListMetrics {
+        row_count: records.len(),
+        first_row: 0,
+    });
+    length(&mut list, "row-height", 24.0);
+    list.list_row_renderer = Some(ListRowRenderer::new(move |range| {
+        range
+            .map(|index| {
+                let mut row = Node::new("HorizontalLayout", None);
+                row.row_key = model.row_key(index);
+                let mut label = Node::new("Text", None);
+                label
+                    .properties
+                    .insert("text", model.row(index).unwrap().into());
+                row.children.extend([label.clone(), label]);
+                row
+            })
+            .collect()
+    }));
+    let view = View(list);
+    let base = view.render_shared();
+    let viewport = Size::new(240.0, 96.0);
+    let mut input = Interaction::default();
+    let mut cache = RowLayoutCache::default();
+    let mut text = Measured::default();
+    let mut baseline = Measured::default();
+    let mut layout = layout_with_input(&base, viewport, &mut Text, &input);
+    for offset in [2.0, 4.0, 26.0] {
+        assert!(input.accessibility_scroll_to(&layout, &[], Orientation::Vertical, offset));
+        let (scene, next) = prepare_scene_with_row_cache(
+            &view,
+            base.clone(),
+            viewport,
+            &mut text,
+            &input,
+            &mut cache,
+        );
+        let expected =
+            prepare_scene_with_input(&view, base.clone(), viewport, &mut baseline, &input);
+        assert_eq!(*scene, *expected.0);
+        assert_eq!(next, expected.1);
+        layout = next;
+    }
+    let stats = cache.stats();
+    assert_eq!((stats.calculated, stats.reused), (6, 9));
+    assert!(text.0 > 0 && text.0 < baseline.0);
+    eprintln!(
+        "scroll text measurements with cache: {}, without: {}",
+        text.0, baseline.0
+    );
+
+    assert!(records.set_row(1, "Updated".into()));
+    let (_, actual) =
+        prepare_scene_with_row_cache(&view, base.clone(), viewport, &mut text, &input, &mut cache);
+    let (_, expected) = prepare_scene_with_input(&view, base, viewport, &mut baseline, &input);
+    assert_eq!(actual, expected);
+    assert_eq!(cache.stats().calculated, 7);
+}
+
+#[test]
 fn wide_table_stores_only_the_materialized_scene_and_layout_cells() {
     use std::rc::Rc;
     use xrack_runtime::{
@@ -50,7 +174,7 @@ fn wide_table_stores_only_the_materialized_scene_and_layout_cells() {
     }));
     table.list_row_renderer = Some(ListRowRenderer::with_columns(
         move |range, columns: &TableColumnWindow| {
-            project_standard_table_rows(
+            let mut projected = project_standard_table_rows(
                 &rows,
                 range,
                 columns,
@@ -58,7 +182,17 @@ fn wide_table_stores_only_the_materialized_scene_and_layout_cells() {
                 |_| None,
                 |row, column| format!("{row}:{column}"),
                 |_| None,
-            )
+            );
+            for row in &mut projected {
+                for cell in &mut row.children {
+                    let mut label = Node::new("Text", None);
+                    label
+                        .properties
+                        .insert("text", cell.text("text").unwrap().to_owned().into());
+                    cell.children.push(label);
+                }
+            }
+            projected
         },
     ));
 
@@ -98,6 +232,39 @@ fn wide_table_stores_only_the_materialized_scene_and_layout_cells() {
     assert!(row.child_at(1).is_none());
     assert!(placed.child_at(1).is_none());
     assert!(placed.child_at(COLUMNS - 1).is_some());
+
+    let base = view.render_shared();
+    let mut cache = RowLayoutCache::default();
+    let mut layout = layout;
+    let mut measurements = Vec::new();
+    for offset in [2.0, 4.0, 82.0] {
+        assert!(input.accessibility_scroll_to(&layout, &[], Orientation::Horizontal, offset));
+        let (scene, next) = prepare_scene_with_row_cache(
+            &view,
+            base.clone(),
+            viewport,
+            &mut Text,
+            &input,
+            &mut cache,
+        );
+        let expected = prepare_scene_with_input(&view, base.clone(), viewport, &mut Text, &input);
+        assert_eq!(*scene, *expected.0);
+        assert_eq!(next, expected.1);
+        assert_eq!(
+            next.table.as_ref().unwrap().columns[0],
+            layout.table.as_ref().unwrap().columns[0]
+        );
+        measurements.push((scene.children.len() as u64, cache.stats()));
+        layout = next;
+    }
+    let (rows, first) = measurements[0];
+    let (_, same_columns) = measurements[1];
+    let (_, next_column) = measurements[2];
+    assert_eq!(first.calculated, rows * 5);
+    assert_eq!(same_columns.calculated, first.calculated);
+    assert_eq!(same_columns.reused, rows * 5);
+    assert_eq!(next_column.calculated - same_columns.calculated, rows);
+    assert_eq!(next_column.reused - same_columns.reused, rows * 4);
 }
 
 #[test]
@@ -2241,6 +2408,164 @@ fn model_change_cancels_capture_without_retargeting_a_click() {
 }
 
 #[test]
+fn runtime_element_ids_preserve_activation_and_reject_a_replacement() {
+    let mut root = node("Window", "root");
+    let mut control = button("unused");
+    control.set_owned_id(Some(String::from("original").into()));
+    root.children.push(control);
+    let size = Size::new(100.0, 100.0);
+    let point = Point { x: 10.0, y: 10.0 };
+    let bounds = layout(&root, size, &mut Text);
+    let mut input = Interaction::default();
+
+    input.pointer_move(&root, &bounds, point);
+    input.pointer_press_in_scene(&root, &bounds);
+    let target = input.pointer_release_target().unwrap();
+    assert_eq!(target.element_id(), Some("original"));
+    assert_eq!(
+        target,
+        Target::from_node(vec![0], &button("original"), true, None)
+    );
+
+    input.pointer_press_in_scene(&root, &bounds);
+    let mut replacement = root.clone();
+    replacement.children[0].set_owned_id(Some(String::from("replacement").into()));
+    let new_bounds = layout(&replacement, size, &mut Text);
+    input.reconcile(&replacement, &new_bounds);
+    assert!(input.pointer_release_target().is_none());
+
+    input.focus_next(&root, &bounds, false);
+    input.key_press_with_scene(&root, ActivationKey::Space);
+    assert!(
+        input
+            .key_release_with_scene(&replacement, ActivationKey::Space)
+            .is_none()
+    );
+    input.reconcile(&replacement, &new_bounds);
+    input.focus_next(&replacement, &new_bounds, false);
+    input.key_press_with_scene(&replacement, ActivationKey::Space);
+    assert_eq!(
+        input
+            .key_release_with_scene(&replacement, ActivationKey::Space)
+            .unwrap()
+            .element_id(),
+        Some("replacement")
+    );
+}
+
+#[test]
+fn scroll_capture_does_not_transfer_to_a_different_runtime_view_at_the_same_path() {
+    use std::time::{Duration, Instant};
+
+    let mut root = node("Window", "root");
+    let mut view = Node::new("ScrollView", None);
+    view.set_owned_id(Some("original".into()));
+    length(&mut view, "width", 140.0);
+    length(&mut view, "height", 120.0);
+    length(&mut view, "content-height", 400.0);
+    root.children.push(view);
+    let size = Size::new(160.0, 140.0);
+    let mut input = Interaction::default();
+    let start = Point { x: 50.0, y: 80.0 };
+    let end = Point { x: 50.0, y: 30.0 };
+    let now = Instant::now();
+    let bounds = layout(&root, size, &mut Text);
+    assert!(input.begin_scroll_gesture(&root, &bounds, start, now, ScrollGestureKind::Touch));
+
+    root.children[0].set_owned_id(Some("replacement".into()));
+    let bounds = layout(&root, size, &mut Text);
+    assert!(!input.move_scroll_gesture(&root, &bounds, end, now + Duration::from_millis(20)));
+    assert!(
+        !input
+            .end_scroll_gesture(&root, &bounds, end, now + Duration::from_millis(40))
+            .scrolled
+    );
+    assert_eq!(
+        input
+            .scroll_offsets()
+            .get(&[0][..])
+            .copied()
+            .unwrap_or_default(),
+        0.0
+    );
+
+    assert!(input.begin_scroll_gesture(
+        &root,
+        &bounds,
+        start,
+        now + Duration::from_millis(60),
+        ScrollGestureKind::Touch,
+    ));
+    assert!(input.move_scroll_gesture(&root, &bounds, end, now + Duration::from_millis(80)));
+    assert!(
+        input
+            .scroll_offsets()
+            .get(&[0][..])
+            .is_some_and(|offset| *offset > 0.0)
+    );
+}
+
+#[test]
+fn deferred_drop_rejects_a_replacement_with_a_different_runtime_id() {
+    use xrack_runtime::{Component, DragEvent};
+
+    #[derive(Default)]
+    struct Receiver(usize);
+    impl Component for Receiver {
+        fn render(&self) -> Node {
+            Node::new("Window", None)
+        }
+
+        fn dispatch(&mut self, _: &str, _: &str) -> bool {
+            false
+        }
+
+        fn drag_event_at(&mut self, _: &Node, _: &[usize], event: &DragEvent) -> bool {
+            if matches!(event, DragEvent::Dropped { .. }) {
+                self.0 += 1;
+            }
+            true
+        }
+    }
+
+    let mut root = node("Window", "root");
+    let mut source = node("DragArea", "source");
+    boolean(&mut source, "allow-copy", true);
+    let mut target = Node::new("DropArea", None);
+    target.set_owned_id(Some("receiver".into()));
+    for area in [&mut source, &mut target] {
+        length(area, "width", 70.0);
+        length(area, "height", 45.0);
+    }
+    length(&mut target, "x", 90.0);
+    root.children.extend([source, target]);
+
+    let frame = layout(&root, Size::new(180.0, 100.0), &mut Text);
+    let mut input = Interaction::default();
+    input.arm_drag(&root, &frame, Point { x: 25.0, y: 25.0 });
+    let end = Point { x: 112.0, y: 24.0 };
+    let update = input.drag_motion(&root, &frame, end, None);
+    assert!(update.captured);
+    let drop = input
+        .finish_drag(&root, &frame, end, None)
+        .events
+        .into_iter()
+        .find(|delivery| matches!(delivery.event, DragEvent::Dropped { .. }))
+        .unwrap();
+    assert_eq!(drop.target.element_id(), Some("receiver"));
+    let mut receiver = Receiver::default();
+    let old = root.clone();
+    root.children[1].set_owned_id(Some("replacement".into()));
+    let result = DragDispatch {
+        target: drop.target.clone(),
+        event: drop.event.clone(),
+    };
+    assert!(!result.apply(&mut receiver, &root));
+    assert!(drop.apply(&mut receiver, &old));
+    assert_eq!(receiver.0, 1);
+}
+
+#[test]
 fn overlapping_scroll_views_route_wheel_input_in_paint_order() {
     let mut window = node("Window", "root");
     for id in ["first", "second"] {
@@ -2257,7 +2582,7 @@ fn overlapping_scroll_views_route_wheel_input_in_paint_order() {
     let frame = layout(&window, viewport, &mut Text);
     assert!(matches!(
         frame.paint_order,
-        Some(std::borrow::Cow::Borrowed(&[1, 0]))
+        Some(xrack_runtime::ScenePlanSlice::Static(&[1, 0]))
     ));
     let mut input = Interaction::default();
     input.pointer_move(&window, &frame, point);
@@ -2268,6 +2593,13 @@ fn overlapping_scroll_views_route_wheel_input_in_paint_order() {
     assert!(window.static_paint_order().is_none());
     let frame = layout(&window, viewport, &mut Text);
     assert_eq!(frame.child_paint_order().collect::<Vec<_>>(), [0, 1]);
+    window.set_natural_paint_order();
+    assert!(window.has_natural_paint_order());
+    assert!(layout(&window, viewport, &mut Text).paint_order.is_none());
+    window.children[0].properties.insert("z", 2.0_f64.into());
+    assert!(!window.has_natural_paint_order());
+    let changed = layout(&window, viewport, &mut Text);
+    assert_eq!(changed.child_paint_order().collect::<Vec<_>>(), [1, 0]);
 }
 
 #[test]

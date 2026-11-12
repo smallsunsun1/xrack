@@ -23,7 +23,6 @@ PropertyAnalysis::PropertyAnalysis(Operation *module) {
     auto property = resolve(read);
     if (!property)
       return;
-    reads.insert(property);
     for (auto *user : read.getResult().getUsers()) {
       auto alias = dyn_cast<PropertyOp>(user);
       if (isa<ControlLinkOp, InstanceLinkOp, RowLinkOp>(user) ||
@@ -52,16 +51,16 @@ PropertyOp PropertyAnalysis::resolve(ReadOp read) const {
   return resolve(read, read.getOwner().value_or("root"), read.getValue());
 }
 
-bool PropertyAnalysis::isImmutablePrivateScalar(PropertyOp property) const {
+bool PropertyAnalysis::isImmutablePrivate(PropertyOp property) const {
   return property && property.getVisibility() == "private" &&
          property.getAlias().value_or("") != "true" &&
-         isa<IntType, FloatType, BoolType, StringType, LengthType, PercentType,
-             ColorType>(property.getInitial().getType()) &&
          !writes.contains(property);
 }
 
-bool PropertyAnalysis::hasRead(PropertyOp property) const {
-  return reads.contains(property);
+bool PropertyAnalysis::isImmutablePrivateScalar(PropertyOp property) const {
+  return isImmutablePrivate(property) &&
+         isa<IntType, FloatType, BoolType, StringType, LengthType, PercentType,
+             ColorType>(property.getInitial().getType());
 }
 
 } // namespace xrack::dialect

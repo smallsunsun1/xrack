@@ -1,36 +1,6 @@
 use proc_macro2::{Ident, TokenStream};
 use quote::quote;
-use std::collections::BTreeMap;
-use xrack_mlir::{Module, OperationRef};
 use xrack_runtime::StyledText;
-
-pub(crate) fn collect(module: &Module) -> Result<BTreeMap<&str, StyledText>, String> {
-    let mut texts = BTreeMap::new();
-    for op in module.operations() {
-        collect_in(op, &mut texts)?;
-    }
-    Ok(texts)
-}
-
-fn collect_in<'m>(
-    op: OperationRef<'m>,
-    texts: &mut BTreeMap<&'m str, StyledText>,
-) -> Result<(), String> {
-    if op.name() == "xr.markdown"
-        && let std::collections::btree_map::Entry::Vacant(entry) = texts.entry(op.attr("value")?)
-    {
-        let text = StyledText::from_markdown(entry.key()).map_err(|error| {
-            let file = op.source_file().unwrap_or("<unknown>");
-            let span = op.span();
-            format!("{file}:{}:{}: {error}", span.line, span.column)
-        })?;
-        entry.insert(text);
-    }
-    for child in op.children() {
-        collect_in(child, texts)?;
-    }
-    Ok(())
-}
 
 pub(crate) fn declaration(name: &Ident, text: &StyledText) -> TokenStream {
     let plain = text.text();

@@ -12,13 +12,8 @@ pub(crate) struct FocusHistory {
 pub(crate) fn target_at(scene: &Node, layout: &LayoutNode, path: &[usize]) -> Option<Target> {
     let node = scene.interactive_at_path(path)?;
     let item = layout.at_path(path)?;
-    (focusable(node) && eligible(node, item)).then(|| Target {
-        text_link: None,
-        path: path.to_vec(),
-        id: node.id,
-        focusable: true,
-        row_key: scene.row_key_at(path),
-    })
+    (focusable(node) && eligible(node, item))
+        .then(|| Target::from_node(path.to_vec(), node, true, scene.row_key_at(path)))
 }
 
 pub(crate) fn handle_target(
@@ -88,10 +83,9 @@ impl FocusHistory {
 
     pub fn reconcile(&mut self, scene: &Node, layout: &LayoutNode) {
         let mounted = |target: &Target| {
-            scene.row_key_at(&target.path) == target.row_key
-                && scene.at_path(&target.path).is_some_and(|node| {
-                    node.id == target.id && (focusable(node) || target.text_link_index().is_some())
-                })
+            target
+                .node_in(scene)
+                .is_some_and(|node| focusable(node) || target.text_link_index().is_some())
         };
         self.entries.retain_mut(|(scope, leaf)| {
             if !mounted(scope) {

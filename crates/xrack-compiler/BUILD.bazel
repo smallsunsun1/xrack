@@ -19,7 +19,7 @@ rust_library(
         "//crates/xrack-ir:xrack_ir",
         "//crates/xrack-mlir:xrack_mlir",
         "//crates/xrack-codegen:xrack_codegen",
-        "//crates/xrack-assets:xrack_assets",
+        "//crates/xrack-resources:xrack_resources",
     ] + all_crate_deps(normal = True),
 )
 

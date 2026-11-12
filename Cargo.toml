@@ -30,6 +30,7 @@ xrack-syntax = { path = "crates/xrack-syntax" }
 xrack-ir = { path = "crates/xrack-ir" }
 xrack-mlir = { path = "crates/xrack-mlir" }
 xrack-codegen = { path = "crates/xrack-codegen" }
+xrack-resources = { path = "crates/xrack-resources" }
 xrack-layout = { path = "crates/xrack-layout", version = "0.2.0" }
 xrack-renderer-femtovg = { path = "crates/xrack-renderer-femtovg", version = "0.2.0" }
 xrack-platform-winit = { path = "crates/xrack-platform-winit", version = "0.2.0" }

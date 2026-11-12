@@ -4,7 +4,8 @@ const files = require('node:fs/promises');
 class PreviewProcess {
     constructor(program, component, cwd) {
         this.program = program;
-        this.child = spawn(program, [component], { cwd, windowsHide: true });
+        this.temporary = component !== undefined;
+        this.child = spawn(program, this.temporary ? [component] : [], { cwd, windowsHide: true });
         this.stderr = '';
         this.remaining = Buffer.alloc(0);
         this.stdout = this.child.stdout[Symbol.asyncIterator]();
@@ -39,6 +40,28 @@ class PreviewProcess {
     }
 
     frame(command) {
+        return this.exchange(command, async () => {
+            const length = (await this.read(4)).readUInt32BE();
+            if (!length || length > 32 * 1024 * 1024) throw new Error('Invalid preview frame length');
+            return (await this.read(length)).toString('base64');
+        });
+    }
+
+    request(message) {
+        return this.exchange(JSON.stringify(message), async () => {
+            const length = (await this.read(4)).readUInt32BE();
+            if (!length || length > 4 * 1024 * 1024) throw new Error('Invalid preview reply length');
+            const response = JSON.parse((await this.read(length)).toString('utf8'));
+            const size = response.image_length;
+            if (!Number.isSafeInteger(size) || size < 0 || size > 32 * 1024 * 1024) {
+                throw new Error('Invalid preview image length');
+            }
+            if (size) response.image = (await this.read(size)).toString('base64');
+            return response;
+        });
+    }
+
+    exchange(command, response) {
         const request = this.pending.then(async () => {
             let timedOut = false;
             const timeout = setTimeout(() => {
@@ -50,9 +73,7 @@ class PreviewProcess {
                     await new Promise((resolve, reject) => this.child.stdin.write(command + '\n',
                         error => error ? reject(error) : resolve()));
                 }
-                const length = (await this.read(4)).readUInt32BE();
-                if (!length || length > 32 * 1024 * 1024) throw new Error('Invalid preview frame length');
-                return (await this.read(length)).toString('base64');
+                return await response();
             } catch (error) {
                 void this.stop();
                 if (timedOut) throw new Error('Preview renderer timed out');
@@ -68,7 +89,7 @@ class PreviewProcess {
     stop() {
         if (!this.stopped) {
             this.child.kill();
-            this.stopped = this.exited.then(() => files.rm(this.program, { force: true })).catch(() => {});
+            this.stopped = this.exited.then(() => this.temporary && files.rm(this.program, { force: true })).catch(() => {});
         }
         return this.stopped;
     }

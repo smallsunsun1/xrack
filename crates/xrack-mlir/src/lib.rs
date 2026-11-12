@@ -11,4 +11,18 @@ mod ffi {
     #![allow(nonstandard_style, dead_code, clippy::all)]
     include!(concat!(env!("OUT_DIR"), "/c_bindings.rs"));
 }
-pub use module::{BlockRef, Module, OperationRef, RegionRef, ValueRef, process};
+pub use module::{
+    BlockRef, Module, OperationRef, RegionRef, ValueRef, parse_float_literal, process,
+};
+
+mod visual;
+pub use visual::{
+    AnimationRef, RepeatRef, RowSceneCache, StateCaseRef, TranslationRef, VisualCacheGroup,
+    VisualCacheKey, nine_slice_edges, repeat_is_positioned, scene_children, visual_cache_operand,
+};
+
+mod record;
+pub use record::{RecordDeclRef, record_field_path, record_role};
+
+mod aliases;
+pub use aliases::{AliasGraph, PropertyEndpoint, canonical_input};

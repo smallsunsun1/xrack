@@ -4,7 +4,7 @@ use std::io::Cursor;
 use svgtypes::{SimplePathSegment, SimplifyingPathParser};
 pub use tiny_skia::{Path as VectorPath, PathSegment};
 pub use xrack_runtime::ImageFormat;
-use xrack_runtime::{Image, VectorSegment};
+use xrack_runtime::{Image, ImageAsset, VectorSegment};
 
 pub const MAX_IMAGE_DIMENSION: u32 = 4096;
 pub const MAX_ASSET_BYTES: u64 = 16 * 1024 * 1024;
@@ -99,20 +99,15 @@ pub fn rasterize_svg(bytes: &[u8], size: [u32; 2]) -> Result<Raster, String> {
 
 /// Fit an embedded image into an icon canvas with transparent padding and premultiplied RGBA.
 pub fn rasterize_icon(image: Image, size: [u32; 2]) -> Result<Option<Raster>, String> {
-    let (format, bytes, intrinsic) = match image.frame(0) {
-        Image::Embedded {
-            format,
-            bytes,
-            size,
-        }
-        | Image::NineSliced {
-            format,
-            bytes,
-            size,
-            ..
-        } => (format, bytes, size),
-        Image::Empty | Image::Animated(_) => return Ok(None),
+    rasterize_icon_asset(&image.into(), size)
+}
+
+pub fn rasterize_icon_asset(image: &ImageAsset, size: [u32; 2]) -> Result<Option<Raster>, String> {
+    let frame = image.frame(0);
+    let Some(pixels) = frame.pixels() else {
+        return Ok(None);
     };
+    let (format, bytes, intrinsic) = (pixels.format, pixels.bytes, pixels.size);
     let [width, height] = validate_image_size(size)?;
     let fit = |[source_width, source_height]: [u32; 2]| {
         let scale = (f64::from(width) / f64::from(source_width))
@@ -170,7 +165,11 @@ pub fn rasterize_icon(image: Image, size: [u32; 2]) -> Result<Option<Raster>, St
 
 /// Encode a fitted icon for native menus that accept PNG data.
 pub fn rasterize_icon_png(image: Image, size: [u32; 2]) -> Result<Vec<u8>, String> {
-    let Some(raster) = rasterize_icon(image, size)? else {
+    rasterize_icon_asset_png(&image.into(), size)
+}
+
+pub fn rasterize_icon_asset_png(image: &ImageAsset, size: [u32; 2]) -> Result<Vec<u8>, String> {
+    let Some(raster) = rasterize_icon_asset(image, size)? else {
         return Ok(Vec::new());
     };
     let size =
@@ -297,14 +296,22 @@ mod tests {
 
     #[test]
     fn svg_icon_preserves_aspect_ratio_and_premultiplied_alpha() {
+        let bytes = br#"<svg xmlns="http://www.w3.org/2000/svg" width="8" height="4">
+            <rect width="8" height="4" fill="red" fill-opacity="0.5"/>
+        </svg>"#;
         let image = Image::Embedded {
             format: ImageFormat::Svg,
-            bytes: br#"<svg xmlns="http://www.w3.org/2000/svg" width="8" height="4">
-                <rect width="8" height="4" fill="red" fill-opacity="0.5"/>
-            </svg>"#,
+            bytes,
             size: [8, 4],
         };
+        let loaded = ImageAsset::Loaded(xrack_runtime::LoadedImage::new(
+            ImageFormat::Svg,
+            bytes.to_vec(),
+            [8, 4],
+        ));
         let icon = rasterize_icon(image, [16, 16]).unwrap().unwrap();
+        let loaded_icon = rasterize_icon_asset(&loaded, [16, 16]).unwrap().unwrap();
+        assert_eq!(icon.rgba, loaded_icon.rgba);
         assert_eq!(icon.size, [16, 16]);
         let rows = icon.rgba.chunks_exact(64).collect::<Vec<_>>();
         assert_eq!(rows[3], &[0; 64]);

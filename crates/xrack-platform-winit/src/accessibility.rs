@@ -88,7 +88,7 @@ enum Location {
 struct Key {
     location: Location,
     kind: &'static str,
-    id: Option<&'static str>,
+    id: Option<std::borrow::Cow<'static, str>>,
     option: Option<(usize, String)>,
     row_option: Option<RowKey>,
     text_run: Option<(usize, String)>,
@@ -113,7 +113,7 @@ impl Key {
         Self {
             location,
             kind: node.kind,
-            id: node.id,
+            id: node.element_id_owned(),
             option: node
                 .standard_button_kind()
                 .map(|kind| (0, kind.label().to_owned())),
@@ -392,7 +392,7 @@ impl Builder<'_> {
             row.filter(|(_, depth)| *depth <= component.len()),
         );
         key.kind = "AttachedButtonGroup";
-        key.id = Some(member.group.key);
+        key.id = Some(member.group.key.clone());
         if let Some(&id) = self.ids.get(&key) {
             return Some(id);
         }
@@ -2462,6 +2462,53 @@ mod tests {
                 .iter()
                 .any(|(_, node)| node.label() == Some("Background"))
         );
+    }
+
+    #[test]
+    fn a_fixed_label_refreshes_accessible_text_with_a_reused_layout() {
+        use crate::frame::FrameCache;
+
+        let make_scene = |value: &str| {
+            let mut window = Node::new("Window", None);
+            let mut label = Node::new("Label", Some("status"));
+            label.mark_paint_only("text");
+            length(&mut label, "width", 120.0);
+            length(&mut label, "height", 24.0);
+            label.properties.insert("text", value.to_owned().into());
+            window.children.push(label);
+            Rc::new(window)
+        };
+        let input = Interaction::default();
+        let viewport = Size::new(180.0, 100.0);
+        let mut cache = FrameCache::default();
+        let mut projection = Projection::default();
+        let mut resolves = 0;
+        let mut prepare = |scene| {
+            cache.prepare(scene, viewport, &input, |scene| {
+                resolves += 1;
+                let frame = layout(&scene, viewport, &mut Text);
+                (scene, frame)
+            })
+        };
+        let (before, original) = prepare(make_scene("Ready"));
+        let first = projection
+            .update(&before, &original, &input, 1.0, None)
+            .unwrap();
+        let (id, _) = first
+            .nodes
+            .iter()
+            .find(|(_, node)| node.value() == Some("Ready"))
+            .unwrap();
+
+        let (after, reused) = prepare(make_scene("Downloading an update"));
+        assert!(Rc::ptr_eq(&original, &reused));
+        let update = projection
+            .update(&after, &reused, &input, 1.0, None)
+            .unwrap();
+        assert!(update.nodes.iter().any(|(updated, node)| {
+            updated == id && node.value() == Some("Downloading an update")
+        }));
+        assert_eq!(resolves, 1);
     }
 
     #[test]

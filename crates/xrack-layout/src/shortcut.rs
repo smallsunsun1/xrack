@@ -1,3 +1,4 @@
+use crate::input::ElementId;
 use crate::{ControlInput, LayoutNode, Target, menu::MenuPopup};
 use std::{
     fmt,
@@ -21,6 +22,7 @@ pub struct ShortcutModifiers {
 pub enum ShortcutKey {
     Character(char),
     Function(u8),
+    Escape,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -30,6 +32,10 @@ pub struct MenuShortcut {
 }
 
 impl MenuShortcut {
+    pub(crate) fn is_escape(self) -> bool {
+        self.key == ShortcutKey::Escape
+    }
+
     pub fn new(key: ShortcutKey, modifiers: ShortcutModifiers) -> Option<Self> {
         let key = match key {
             ShortcutKey::Character(key)
@@ -38,7 +44,7 @@ impl MenuShortcut {
             {
                 ShortcutKey::Character(key.to_ascii_uppercase())
             }
-            ShortcutKey::Function(1..=12) => key,
+            ShortcutKey::Function(1..=12) | ShortcutKey::Escape => key,
             _ => return None,
         };
         Some(Self { key, modifiers })
@@ -51,7 +57,9 @@ impl FromStr for MenuShortcut {
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         let mut parts = value.split('+');
         let key = parts.next_back().ok_or(())?.trim();
-        let key = if let Some(function) = key.strip_prefix(['F', 'f']).filter(|_| key.len() > 1) {
+        let key = if key.eq_ignore_ascii_case("Escape") {
+            ShortcutKey::Escape
+        } else if let Some(function) = key.strip_prefix(['F', 'f']).filter(|_| key.len() > 1) {
             ShortcutKey::Function(function.parse().map_err(|_| ())?)
         } else {
             let mut chars = key.chars();
@@ -105,6 +113,7 @@ impl fmt::Display for MenuShortcut {
         match self.key {
             ShortcutKey::Character(key) => write!(f, "{key}"),
             ShortcutKey::Function(key) => write!(f, "F{key}"),
+            ShortcutKey::Escape => f.write_str("Escape"),
         }
     }
 }
@@ -122,7 +131,7 @@ pub enum ShortcutOutcome {
 pub(crate) struct Binding {
     keys: Vec<MenuShortcut>,
     target: ControlInput,
-    element_id: Option<&'static str>,
+    element_id: Option<ElementId>,
     row_key: Option<RowKey>,
     command: Option<ActionKey>,
     auto_repeat: bool,
@@ -183,7 +192,7 @@ pub(crate) fn bindings(
                     path: path.to_vec(),
                     action,
                 },
-                element_id: node.id,
+                element_id: ElementId::of(node),
                 row_key: scene.row_key_at(path),
                 command: node.action,
                 auto_repeat: node.boolean("auto-repeat", false),

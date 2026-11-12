@@ -1,0 +1,25 @@
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+
+rust_library(
+    name = "xrack_interpreter",
+    srcs = glob(["src/*.rs"]),
+    crate_root = "src/lib.rs",
+    edition = "2024",
+    version = "0.2.0",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//crates/xrack-mlir:xrack_mlir",
+        "//crates/xrack-resources:xrack_resources",
+        "//crates/xrack-runtime:xrack_runtime",
+        "//crates/xrack-syntax:xrack_syntax",
+        "@crates//:serde_json",
+        "@crates//:thiserror",
+    ],
+)
+
+rust_test(
+    name = "interpreter_test",
+    size = "small",
+    crate = ":xrack_interpreter",
+    deps = ["//crates/xrack-parser:xrack_parser"],
+)

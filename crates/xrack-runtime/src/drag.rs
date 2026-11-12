@@ -1,4 +1,4 @@
-use crate::Length;
+use crate::{KeyModifiers, Length};
 use std::sync::Arc;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -8,6 +8,18 @@ pub enum DragAction {
     Copy,
     Move,
     Link,
+}
+
+impl KeyModifiers {
+    #[doc(hidden)]
+    pub fn drag_action(self) -> Option<DragAction> {
+        match (self.control, self.shift) {
+            (false, false) => None,
+            (true, false) => Some(DragAction::Copy),
+            (false, true) => Some(DragAction::Move),
+            (true, true) => Some(DragAction::Link),
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]

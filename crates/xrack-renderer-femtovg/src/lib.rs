@@ -4,16 +4,23 @@ mod entry;
 mod image;
 mod image_colorize;
 mod nine_slice;
+pub mod preview;
+mod preview_pointer;
 mod range;
+mod retained_layers;
 mod shadow;
 mod styled_text;
 mod text;
 mod theme;
 mod vector;
+#[doc(hidden)]
+pub use entry::PointerCaret;
 use femtovg::{
     Canvas, Color, FillRule, LayerEffects, Paint, Path, Solidity, Transform2D,
     renderer::WGPURenderer,
 };
+#[doc(hidden)]
+pub use retained_layers::LayerStats;
 use std::{
     fs::File,
     io::{BufWriter, Write},
@@ -133,6 +140,8 @@ pub struct Renderer {
     canvas: Canvas<WGPURenderer>,
     canvas_font_context: Rc<()>,
     images: image::Images,
+    retained_layers: retained_layers::RetainedLayers,
+    row_layouts: xrack_layout::RowLayoutCache,
     clock: Instant,
     needs_redraw: bool,
     painted_combo_completion: Option<ComboCompletion>,
@@ -226,6 +235,8 @@ impl Renderer {
             canvas,
             canvas_font_context: text.context_key().clone(),
             images: image::Images::default(),
+            retained_layers: Default::default(),
+            row_layouts: Default::default(),
             clock: Instant::now(),
             needs_redraw: false,
             painted_combo_completion: None,
@@ -255,7 +266,14 @@ impl Renderer {
         viewport: Size,
         input: &Interaction,
     ) -> (Rc<Node>, LayoutNode) {
-        xrack_layout::prepare_scene_with_input(component, scene, viewport, &mut self.text, input)
+        xrack_layout::prepare_scene_with_row_cache(
+            component,
+            scene,
+            viewport,
+            &mut self.text,
+            input,
+            &mut self.row_layouts,
+        )
     }
 
     /// An animated element was visible in the last frame.
@@ -382,7 +400,11 @@ impl Renderer {
             .map_err(|error| error.to_string())?;
             self.canvas_font_context = self.text.context_key().clone();
             self.images = image::Images::default();
+            self.retained_layers.reset_canvas();
         }
+        self.retained_layers.begin_frame(&mut self.canvas);
+        self.retained_layers
+            .sync_font_defaults(&mut self.canvas, self.text.default_style());
         self.needs_redraw = false;
         self.painted_combo_completion = None;
         let size = target.size();
@@ -452,6 +474,7 @@ impl Renderer {
         }
         self.queue.submit(self.canvas.flush_to_output(target));
         self.images.end_frame(&mut self.canvas);
+        self.retained_layers.finish_frame(&mut self.canvas);
         Ok(())
     }
 
@@ -545,6 +568,9 @@ impl Renderer {
                     renderer.paint_element(node, layout, path, frame, in_layout)
                 })
             });
+        }
+        if opacity < 1.0 && self.paint_retained_opacity(node, layout, path, frame, in_layout)? {
+            return Ok(());
         }
         self.paint_group(content, opacity, |renderer| {
             renderer.paint_element(node, layout, path, frame, in_layout)
@@ -969,7 +995,7 @@ impl Renderer {
             self.canvas.stroke_path(&path, &paint);
         }
         if matches!(node.kind, "Image" | "AnimatedImage")
-            && let Some(image) = node.image("source")
+            && let Some(image) = node.image_asset("source")
         {
             let image = if node.kind == "AnimatedImage" {
                 image.frame(node.int("current-frame").unwrap_or_default().max(0) as usize)
@@ -979,7 +1005,7 @@ impl Renderer {
             let presentation = ImagePresentation::for_node(node, image.size(), in_layout);
             self.images.draw(
                 &mut self.canvas,
-                image,
+                &image,
                 bounds,
                 image_scale,
                 presentation,
@@ -1299,7 +1325,7 @@ impl Renderer {
                 .map_or(bounds, |button| bounds.inset(button.padding));
             let icon = button
                 .as_ref()
-                .and_then(|button| button.icon)
+                .and_then(|button| button.icon.as_ref())
                 .map(|(image, size)| (image, size.min(area.width).min(area.height)))
                 .filter(|&(_, size)| size > 0.0);
             let gap = button
@@ -1426,7 +1452,7 @@ impl Renderer {
                 transitions: None,
                 indicator_phase: None,
             };
-            for (page, page_layout, offset, visible) in slide.outgoing() {
+            for (page, offset, visible, cacheable) in slide.outgoing_layers() {
                 self.canvas.save();
                 self.canvas.intersect_scissor(
                     slide_viewport.x + visible.start * slide_viewport.width,
@@ -1434,8 +1460,13 @@ impl Renderer {
                     (visible.end - visible.start) * slide_viewport.width,
                     slide_viewport.height,
                 );
-                self.canvas.translate(offset * slide_viewport.width, 0.0);
-                let result = self.paint(page, page_layout, &mut Vec::new(), frozen, false);
+                let result = self.paint_stack_layer(
+                    page,
+                    bounds,
+                    offset * slide_viewport.width,
+                    frozen,
+                    cacheable,
+                );
                 self.canvas.restore();
                 result?;
             }
@@ -1699,6 +1730,31 @@ impl Renderer {
         scale: f32,
         input: &Interaction,
     ) -> Result<Snapshot, String> {
+        self.snapshot_prepared_frame(scene, layout, [width, height], scale, input, None)
+    }
+
+    /// Capture a prepared preview frame with its current stack slides.
+    pub fn snapshot_prepared_with_transitions(
+        &mut self,
+        scene: &Node,
+        layout: LayoutNode,
+        size: [u32; 2],
+        scale: f32,
+        input: &Interaction,
+        transitions: &StackTransitions,
+    ) -> Result<Snapshot, String> {
+        self.snapshot_prepared_frame(scene, layout, size, scale, input, Some(transitions))
+    }
+
+    fn snapshot_prepared_frame(
+        &mut self,
+        scene: &Node,
+        layout: LayoutNode,
+        [width, height]: [u32; 2],
+        scale: f32,
+        input: &Interaction,
+        transitions: Option<&StackTransitions>,
+    ) -> Result<Snapshot, String> {
         self.snapshot_frame(
             scene,
             width,
@@ -1708,7 +1764,7 @@ impl Renderer {
                 input,
                 scale,
                 theme: self.palette(scene),
-                transitions: None,
+                transitions,
                 indicator_phase: Some(indicator_phase(self.clock.elapsed())),
             },
         )

@@ -21,14 +21,14 @@ def output(*args):
     return subprocess.check_output(args, cwd=ROOT, text=True).strip()
 
 
-def cargo_licenses(host):
+def cargo_licenses(host, roots=("xrack-compiler",)):
     metadata = json.loads(subprocess.check_output(
         ("cargo", "metadata", "--locked", "--format-version", "1", "--filter-platform", host),
         cwd=ROOT,
     ))
     packages = {package["id"]: package for package in metadata["packages"]}
     dependencies = {node["id"]: node["deps"] for node in metadata["resolve"]["nodes"]}
-    pending = [key for key, package in packages.items() if package["name"] == "xrack-compiler"]
+    pending = [key for key, package in packages.items() if package["name"] in roots]
     seen = set()
     while pending:
         key = pending.pop()
@@ -57,10 +57,16 @@ def cargo_licenses(host):
         bundled_license = ROOT / "tools" / "licenses" / name / "LICENSE-MIT"
         if not files and bundled_license.is_file():
             files.add(bundled_license)
-        if not files and name == "gif-dispose-6.0.0" and package["license"] == "MIT OR Apache-2.0":
-            # This crate declares both licenses but ships neither text.
-            # Include the declaration and the Apache-2.0 terms.
-            files.update((directory / "Cargo.toml.orig", ROOT / "LICENSE-APACHE"))
+        if not files:
+            repository = package["repository"]
+            if (
+                name == "gif-dispose-6.0.0" and package["license"] == "MIT OR Apache-2.0"
+                or repository in ("https://github.com/gfx-rs/rspirv", "https://github.com/aclysma/profiling")
+                and "Apache-2.0" in (package["license"] or "")
+            ):
+                files.update((directory / "Cargo.toml.orig", ROOT / "LICENSE-APACHE"))
+            if repository == "https://github.com/madsmtm/objc2" and "MIT" in (package["license"] or ""):
+                files.update((directory / "Cargo.toml.orig", ROOT / "tools/licenses/objc2/LICENSE-MIT"))
         if not files:
             raise RuntimeError(f"no license files for {name}")
         for file in sorted(files):

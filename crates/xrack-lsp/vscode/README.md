@@ -8,13 +8,13 @@ Type `root.` or `self.` for properties and callbacks in scope, or press **Ctrl+S
 
 With the `from "widgets.xr"` path in place, completion inside the import braces suggests exported components and records. A preceding font import can stay in the same file. In `for item[index] in root.people : Text { ... }`, a declared `[Person]` model lets `item.` suggest the record's fields and shows `index` as an `int`.
 
-Install the VSIX for your platform with **Extensions → Install from VSIX…** and open an `.xr` file. The platform package includes `xrack-lsp`, `xrackc`, and a small Cargo workspace for the preview runtime.
+Install the VSIX for your platform with **Extensions → Install from VSIX…** and open an `.xr` file. The platform package includes `xrack-lsp`, `xrackc`, the `xrack-preview` host, and runtime sources for the generated-code fallback.
 
 ## Live preview
 
 Open a saved `.xr` file and choose **XRack: Open Live Preview** from the Command Palette or use the preview button in the editor title bar. The side panel follows edits to that file and its open imports, including unsaved edits. Use the component dropdown to choose an entry component. Click buttons in the preview to run their XRack handlers and see the updated component state. While a new frame is building, the previous frame stays visible. Compiler errors appear above it and clear automatically after the next successful render.
 
-The panel uses the XRack compiler and the same FemtoVG/wgpu renderer as the desktop runtime. The renderer stays active between clicks and component selections. Edits that produce identical Rust reuse the current state, while edits that change the generated code compile and start a new component. Preview requires Cargo, a compatible Rust toolchain, and a working graphics adapter. The first preview may take longer while Cargo builds its dependencies. In an XRack checkout the preview uses the local runtime crates. The platform package supplies the matching runtime source for other projects, and Cargo fetches its third-party dependencies. Set `xrack.preview.compilerPath` to override the checkout's Bazel build, the bundled compiler, or `xrackc` on PATH.
+For supported components, the bundled preview host loads optimized XR MLIR into the XRack interpreter and keeps the FemtoVG/wgpu renderer alive across edits. Click a text input to type or paste into it, and click a slider track to change its value. Use the wheel to scroll a viewport or click its scrollbar track. Supported transitions and animated GIFs play in the panel. PNG, SVG, sprite atlases, and nine-slice images use the same renderer as compiled components. Source edits create a fresh component instance, and a failed edit leaves the previous frame available. This path requires a working graphics adapter. Components that use operations the interpreter does not yet support use the generated-code preview, which requires Cargo and a compatible Rust toolchain. In a source checkout, build the preview host with `bazel build //crates/xrack-preview`. Use `xrack.preview.compilerPath` to configure the compiler for the generated-code preview.
 
 ## Development
 
@@ -38,7 +38,7 @@ bazel test //crates/xrack-lsp:xrack_lsp_test
 
 ## Packaging and Marketplace releases
 
-The GitHub Actions **CI** workflow accepts a `package-vsix` input when run manually. Enable it to build and smoke-test all five VSIX files and download them as Actions artifacts. The packages target `darwin-arm64`, `linux-x64`, `linux-arm64`, `win32-x64`, and `win32-arm64`. Each includes the host's compiler and language server plus the preview runtime source.
+The GitHub Actions **CI** workflow accepts a `package-vsix` input when run manually. Enable it to build and smoke-test all five VSIX files and download them as Actions artifacts. The packages target `darwin-arm64`, `linux-x64`, `linux-arm64`, `win32-x64`, and `win32-arm64`. Each includes the host's compiler, language server, preview executable, and fallback runtime sources.
 
 To build a native VSIX locally, run the following from the repository root with Python 3.11+ and Node.js 22+. Set `host` to the native Rust host triple shown by `rustc -vV`.
 

@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::{collections::BTreeSet, sync::Arc};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum VectorSegment {
@@ -14,6 +14,65 @@ pub struct StaticVectorPath {
     pub commands: &'static str,
     pub bounds: [f32; 4],
     pub segments: &'static [VectorSegment],
+}
+
+/// Immutable geometry of a path loaded from a verified XR module.
+#[derive(Clone, Debug)]
+pub struct LoadedVectorPath(Arc<LoadedPathData>);
+
+#[derive(Debug)]
+struct LoadedPathData {
+    commands: String,
+    bounds: [f32; 4],
+    segments: Vec<VectorSegment>,
+}
+
+impl LoadedVectorPath {
+    pub fn new(commands: String, bounds: [f32; 4], segments: Vec<VectorSegment>) -> Self {
+        Self(Arc::new(LoadedPathData {
+            commands,
+            bounds,
+            segments,
+        }))
+    }
+
+    pub(crate) fn geometry(&self, commands: &str) -> Option<([f32; 4], &[VectorSegment])> {
+        (self.0.commands == commands).then_some((self.0.bounds, &self.0.segments))
+    }
+}
+
+impl PartialEq for LoadedVectorPath {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+/// A scene plan backed by generated constants, loaded IR, or runtime layout.
+#[doc(hidden)]
+#[derive(Clone, Debug)]
+pub enum ScenePlanSlice<T: 'static> {
+    Static(&'static [T]),
+    Shared(Arc<[T]>),
+    Owned(Vec<T>),
+}
+
+impl<T> std::ops::Deref for ScenePlanSlice<T> {
+    type Target = [T];
+
+    fn deref(&self) -> &[T] {
+        match self {
+            Self::Static(values) => values,
+            Self::Shared(values) => values,
+            Self::Owned(values) => values,
+        }
+    }
+}
+
+impl<T: PartialEq> PartialEq for ScenePlanSlice<T> {
+    fn eq(&self, other: &Self) -> bool {
+        matches!((self, other), (Self::Shared(a), Self::Shared(b)) if Arc::ptr_eq(a, b))
+            || **self == **other
+    }
 }
 
 const MAX_TRACKS: usize = 128;

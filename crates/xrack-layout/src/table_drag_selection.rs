@@ -1,4 +1,4 @@
-use crate::{LayoutNode, Point, Rect, TableGeometry, Target};
+use crate::{LayoutNode, Point, Rect, TableGeometry, Target, input::ElementId};
 use std::time::Instant;
 use xrack_runtime::{
     Node, Orientation, RowKey, SelectionTarget, TableColumnOrder, TableSelectionAction,
@@ -12,7 +12,7 @@ pub(crate) struct TableDragSelection {
     pub touch: bool,
     pub scroll_wake: Option<Instant>,
     pub parent_row: Option<RowKey>,
-    id: Option<&'static str>,
+    id: Option<ElementId>,
     anchor: (usize, usize),
     stamp: (u64, u64),
     order: TableColumnOrder,
@@ -28,13 +28,7 @@ pub(crate) struct TableSelectionHandle {
 
 impl TableDragSelection {
     pub fn focus_target(&self) -> Target {
-        Target {
-            path: self.path.clone(),
-            id: self.id,
-            focusable: true,
-            row_key: self.parent_row,
-            text_link: None,
-        }
+        Target::from_element_id(self.path.clone(), self.id.clone(), true, self.parent_row)
     }
 
     pub fn new(
@@ -56,7 +50,7 @@ impl TableDragSelection {
             touch: false,
             scroll_wake: None,
             parent_row,
-            id: node.id,
+            id: ElementId::of(node),
             anchor,
             stamp: view.structure_stamp(),
             order: node.table_column_order.clone(),
@@ -73,7 +67,7 @@ impl TableDragSelection {
 
     pub fn valid(&self, node: &Node, item: &LayoutNode) -> bool {
         self.claimed
-            && node.id == self.id
+            && node.element_id() == self.id.as_ref().map(ElementId::as_str)
             && node.boolean("drag-select", false)
             && node.table_column_order == self.order
             && item.visible

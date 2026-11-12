@@ -28,24 +28,30 @@ impl<T: Clone> PickerSession<T> {
         self.draft.reset();
     }
 
-    pub(crate) fn begin(&self, dialog: &mut Node, initial: impl FnOnce() -> T) -> Option<T> {
+    pub(crate) fn try_begin<E>(
+        &self,
+        dialog: &mut Node,
+        initial: impl FnOnce() -> Result<T, E>,
+    ) -> Result<Option<T>, E> {
         if !dialog.is_visible() {
             self.close();
-            return None;
+            return Ok(None);
         }
         let session = self.initial.borrow().clone();
-        let (revision, initial) = session.unwrap_or_else(|| {
+        let (revision, initial) = if let Some(session) = session {
+            session
+        } else {
             let revision = NEXT_SESSION.with(|next| {
                 let current = next.get();
                 next.set(current.checked_add(1).expect("picker sessions exhausted"));
                 current
             });
-            let session = (revision, initial());
+            let session = (revision, initial()?);
             self.initial.replace(Some(session.clone()));
             session
-        });
+        };
         dialog.properties.insert(SESSION, revision.into());
-        Some(self.draft.get(|| None).unwrap_or(initial))
+        Ok(Some(self.draft.get(|| None).unwrap_or(initial)))
     }
 
     pub(crate) fn stamp(&self, child: &mut Node) {

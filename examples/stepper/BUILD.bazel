@@ -4,7 +4,10 @@ load("//bazel:xrack.bzl", "xr_ui_library")
 xr_ui_library(
     name = "stepper_ui",
     src = "stepper.xr",
+    visibility = ["//tests:__pkg__"],
 )
+
+exports_files(["stepper.xr"], visibility = ["//tests:__pkg__"])
 
 rust_binary(
     name = "stepper",

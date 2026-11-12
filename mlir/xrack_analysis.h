@@ -15,13 +15,13 @@ public:
   explicit PropertyAnalysis(mlir::Operation *module);
 
   PropertyOp resolve(ReadOp read) const;
+  bool isImmutablePrivate(PropertyOp property) const;
   bool isImmutablePrivateScalar(PropertyOp property) const;
-  bool hasRead(PropertyOp property) const;
 
 private:
   using Owners = llvm::StringMap<llvm::StringMap<PropertyOp>>;
   llvm::DenseMap<mlir::Operation *, Owners> components;
-  llvm::DenseSet<mlir::Operation *> reads, writes;
+  llvm::DenseSet<mlir::Operation *> writes;
 
   PropertyOp resolve(mlir::Operation *op, llvm::StringRef owner,
                      llvm::StringRef name) const;

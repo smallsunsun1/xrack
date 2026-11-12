@@ -14,6 +14,7 @@ rust_library(
         "//crates/xrack-syntax:xrack_syntax",
         "//crates/xrack-ir:xrack_ir",
         "//crates/xrack-mlir:xrack_mlir",
+        "//crates/xrack-resources:xrack_resources",
         "//crates/xrack-runtime:xrack_runtime",
     ] + all_crate_deps(normal = True),
 )

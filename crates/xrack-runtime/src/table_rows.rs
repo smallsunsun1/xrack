@@ -1,12 +1,7 @@
 use crate::{
     ChangeSignal, ListModel, Property, RowKey, RowLifetime, TableSort, VecModel, list::MAX_ROWS,
 };
-use std::{
-    cell::{LazyCell, RefCell},
-    cmp::Ordering,
-    ops::Range,
-    rc::Rc,
-};
+use std::{cell::RefCell, cmp::Ordering, ops::Range, rc::Rc};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[doc(hidden)]
@@ -23,56 +18,96 @@ pub fn next_table_edit_cell<T: Clone + PartialEq>(
     origin: TableEditPosition,
     columns: &[usize],
     backward: bool,
-    editable: impl Fn(usize, usize, &T) -> bool,
+    mut editable: impl FnMut(usize, usize, &T) -> bool,
 ) -> Option<TableEditPosition> {
+    try_next_table_edit_cell(rows, origin, columns, backward, |row, column, record| {
+        Ok::<_, std::convert::Infallible>(editable(row, column, record))
+    })
+    .unwrap_or_else(|error| match error {})
+}
+
+/// Find the next writable cell, stopping at the first failed projection.
+#[doc(hidden)]
+pub fn try_next_table_edit_cell<T: Clone + PartialEq, E>(
+    rows: &TableRows<VecModel<T>>,
+    origin: TableEditPosition,
+    columns: &[usize],
+    backward: bool,
+    mut editable: impl FnMut(usize, usize, &T) -> Result<bool, E>,
+) -> Result<Option<TableEditPosition>, E> {
     let count = rows.row_count();
     let origin_row = if origin.row < count && rows.row_key(origin.row) == origin.key {
         Some(origin.row)
     } else {
         rows.index_of_key(origin.key)
     };
-    let origin_column = columns.iter().position(|column| *column == origin.column)?;
+    let Some(origin_column) = columns.iter().position(|column| *column == origin.column) else {
+        return Ok(None);
+    };
     let mut row = if let Some(row) = origin_row {
         row
     } else {
         // A successful edit may filter the record out of the view. Resume at its
         // former position if the same record is still in the source model.
-        rows.source().index_of_key(origin.key)?;
+        if rows.source().index_of_key(origin.key).is_none() {
+            return Ok(None);
+        }
         if backward {
-            origin.row.min(count).checked_sub(1)?
+            let Some(previous) = origin.row.min(count).checked_sub(1) else {
+                return Ok(None);
+            };
+            previous
         } else {
             origin.row
         }
     };
     while row < count {
-        let source = rows.positions().source_index(row)?;
+        let Some(source) = rows.positions().source_index(row) else {
+            return Ok(None);
+        };
         let mut slots = match (Some(row) == origin_row, backward) {
             (true, false) => origin_column + 1..columns.len(),
             (true, true) => 0..origin_column,
             (false, _) => 0..columns.len(),
         };
-        let column = rows.source().project_row(source, |record| {
-            let available = |slot: &usize| editable(source, columns[*slot], record);
-            if backward {
-                slots.rev().find(available)
-            } else {
-                slots.find(available)
-            }
-        })?;
+        let Some(column) = rows
+            .source()
+            .project_row(source, |record| {
+                let mut next = || {
+                    if backward {
+                        slots.next_back()
+                    } else {
+                        slots.next()
+                    }
+                };
+                while let Some(slot) = next() {
+                    if editable(source, columns[slot], record)? {
+                        return Ok(Some(slot));
+                    }
+                }
+                Ok(None)
+            })
+            .transpose()?
+        else {
+            return Ok(None);
+        };
         if let Some(column) = column {
-            return Some(TableEditPosition {
+            return Ok(rows.source().row_key(source).map(|key| TableEditPosition {
                 row,
                 column: columns[column],
-                key: rows.source().row_key(source)?,
-            });
+                key,
+            }));
         }
         row = if backward {
-            row.checked_sub(1)?
+            let Some(previous) = row.checked_sub(1) else {
+                return Ok(None);
+            };
+            previous
         } else {
             row + 1
         };
     }
-    None
+    Ok(None)
 }
 
 struct Permutation {
@@ -102,6 +137,10 @@ pub struct TableRowPositions {
 }
 
 impl TableRowPositions {
+    pub fn row_count(&self) -> usize {
+        self.count
+    }
+
     pub fn stamp(&self) -> (u64, u64) {
         self.stamp
     }
@@ -206,20 +245,22 @@ pub struct TableRowOrder {
     state: RefCell<State>,
     changed: ChangeSignal,
     projection: Property<Option<ProjectedOrder>>,
+    projection_source: Property<u64>,
     observation: RefCell<Option<ProjectionObservation>>,
 }
 
 impl TableRowOrder {
+    /// Keep the predicate fixed for this order's lifetime. It may capture a field path.
     pub fn visible_rows<T: Clone + PartialEq + 'static>(
         &self,
         source: impl FnOnce() -> Rc<VecModel<T>>,
-        visible: fn(&T) -> bool,
+        visible: impl Fn(&T) -> bool + Clone + 'static,
     ) -> TableRows<VecModel<T>> {
-        self.projected_rows_with_visibility(
+        self.project_rows_by(
             source,
             || None,
             |_, _, _| Ordering::Equal,
-            None,
+            None::<fn(&T) -> &str>,
             String::new,
             Some(visible),
         )
@@ -269,11 +310,29 @@ impl TableRowOrder {
         query: impl FnOnce() -> String,
         visible: Option<fn(&T) -> bool>,
     ) -> TableRows<VecModel<T>> {
+        self.project_rows_by(source, sort, compare, field, query, visible)
+    }
+
+    /// Project the source with immutable field selectors that can capture schema paths.
+    #[doc(hidden)]
+    pub fn project_rows_by<T: Clone + PartialEq + 'static>(
+        &self,
+        source: impl FnOnce() -> Rc<VecModel<T>>,
+        sort: impl FnOnce() -> Option<TableSort>,
+        compare: impl Fn(usize, &T, &T) -> Ordering + Clone + 'static,
+        field: Option<impl Fn(&T) -> &str + Clone + 'static>,
+        query: impl FnOnce() -> String,
+        visible: Option<impl Fn(&T) -> bool + Clone + 'static>,
+    ) -> TableRows<VecModel<T>> {
         self.changed.track();
-        let source = LazyCell::new(source);
+        let source = source();
+        let stamp = source.structure_stamp();
+        self.projection_source.set_if_changed(stamp.0);
         let projection = self.projection.get(|| {
+            self.projection_source.get(|| stamp.0);
             let sort = sort();
             let query: Rc<str> = field
+                .as_ref()
                 .map_or_else(String::new, |_| query().trim().to_lowercase())
                 .into();
             if sort.is_none() && query.is_empty() && visible.is_none() {
@@ -282,10 +341,14 @@ impl TableRowOrder {
             }
             let stamp = source.structure_stamp();
             let column = sort.map(|sort| sort.column);
+            let predicate = visible.clone();
+            let filter = field.clone();
             let matches = move |row: &T, query: &str| {
-                visible.is_none_or(|visible| visible(row))
+                predicate.as_ref().is_none_or(|visible| visible(row))
                     && (query.is_empty()
-                        || field.is_some_and(|field| field(row).to_lowercase().contains(query)))
+                        || filter
+                            .as_ref()
+                            .is_some_and(|field| field(row).to_lowercase().contains(query)))
             };
             {
                 let mut observation = self.observation.borrow_mut();
@@ -295,6 +358,8 @@ impl TableRowOrder {
                         || observed.query != query
                 }) {
                     let needle = query.clone();
+                    let matches = matches.clone();
+                    let compare = compare.clone();
                     *observation = Some(ProjectionObservation {
                         model: stamp.0,
                         column,
@@ -303,9 +368,12 @@ impl TableRowOrder {
                             MAX_ROWS,
                             move |_, before, after| {
                                 let field_changed = visible
+                                    .as_ref()
                                     .is_some_and(|visible| visible(before) != visible(after))
                                     || !needle.is_empty()
-                                        && field.is_some_and(|field| field(before) != field(after));
+                                        && field
+                                            .as_ref()
+                                            .is_some_and(|field| field(before) != field(after));
                                 let order_changed = column.is_some_and(|column| {
                                     compare(column, before, after) != Ordering::Equal
                                 });
@@ -354,8 +422,6 @@ impl TableRowOrder {
                 sorted: sort.is_some(),
             })
         });
-        let source = Rc::clone(&source);
-        let stamp = source.structure_stamp();
         let mut state = self.state.borrow_mut();
         state.reconcile(stamp);
         state.use_projection(projection);
@@ -393,6 +459,7 @@ impl TableRowOrder {
 
 /// The list interface in visual order, retaining source keys and lifetimes.
 #[doc(hidden)]
+#[derive(Clone)]
 pub struct TableRows<M> {
     source: Rc<M>,
     positions: TableRowPositions,
@@ -405,6 +472,15 @@ impl<M> TableRows<M> {
 
     pub fn positions(&self) -> &TableRowPositions {
         &self.positions
+    }
+}
+
+impl<M: ListModel> TableRows<M> {
+    /// Apply positions to the same source exposed through a different item type.
+    #[doc(hidden)]
+    pub fn from_positions(source: Rc<M>, positions: TableRowPositions) -> Self {
+        debug_assert_eq!(source.structure_stamp(), positions.source_stamp);
+        Self { source, positions }
     }
 }
 

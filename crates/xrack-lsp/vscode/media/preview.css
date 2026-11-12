@@ -142,6 +142,7 @@ select:disabled { opacity: .65; }
 .waiting p { margin: 0; color: var(--muted); font-size: 11px; line-height: 1.5; }
 
 #snapshot {
+    touch-action: none;
     display: block;
     max-width: 100%;
     height: auto;
@@ -164,3 +165,27 @@ body.vscode-high-contrast, body.vscode-high-contrast-light {
 body.vscode-high-contrast .canvas, body.vscode-high-contrast-light .canvas {
     background-image: none;
 }
+
+.preview-editor {
+    position: fixed;
+    inset: 0 auto auto 0;
+    width: 1px;
+    height: 1px;
+    opacity: 0;
+    pointer-events: none;
+}
+
+#snapshot[data-cursor="default"] { cursor: default; }
+#snapshot[data-cursor="pointer"] { cursor: pointer; }
+#snapshot[data-cursor="text"] { cursor: text; }
+#snapshot[data-cursor="crosshair"] { cursor: crosshair; }
+#snapshot[data-cursor="move"] { cursor: move; }
+#snapshot[data-cursor="grab"] { cursor: grab; }
+#snapshot[data-cursor="grabbing"] { cursor: grabbing; }
+#snapshot[data-cursor="not-allowed"] { cursor: not-allowed; }
+#snapshot[data-cursor="wait"] { cursor: wait; }
+#snapshot[data-cursor="help"] { cursor: help; }
+#snapshot[data-cursor="ew-resize"] { cursor: ew-resize; }
+#snapshot[data-cursor="ns-resize"] { cursor: ns-resize; }
+#snapshot[data-cursor="zoom-in"] { cursor: zoom-in; }
+#snapshot[data-cursor="zoom-out"] { cursor: zoom-out; }

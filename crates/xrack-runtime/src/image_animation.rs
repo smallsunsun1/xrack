@@ -1,4 +1,4 @@
-use crate::{Image, ImageFormat, Node, Property};
+use crate::{Image, ImageAsset, ImageFormat, LoadedAnimation, Node, Property};
 use std::{
     collections::BTreeMap,
     fmt,
@@ -59,15 +59,55 @@ impl PartialEq for ImageAnimation {
 
 impl Eq for ImageAnimation {}
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum Timeline<'a> {
+    Embedded(&'a ImageAnimation),
+    Loaded(&'a LoadedAnimation),
+}
+
+impl<'a> Timeline<'a> {
+    fn for_image(image: &'a ImageAsset) -> Option<Self> {
+        match image {
+            ImageAsset::Embedded(Image::Animated(animation)) => Some(Self::Embedded(animation)),
+            ImageAsset::Animated(animation) => Some(Self::Loaded(animation)),
+            _ => None,
+        }
+    }
+
+    fn plays(&self) -> u32 {
+        match self {
+            Self::Embedded(animation) => animation.plays,
+            Self::Loaded(animation) => animation.plays,
+        }
+    }
+
+    fn end(&self, frame: usize) -> f64 {
+        f64::from(match self {
+            Self::Embedded(animation) => animation.frames[frame].end_ms,
+            Self::Loaded(animation) => animation.frames[frame].0,
+        })
+    }
+
+    fn frame_at(&self, position: f64) -> usize {
+        match self {
+            Self::Embedded(animation) => animation
+                .frames
+                .partition_point(|frame| f64::from(frame.end_ms) <= position),
+            Self::Loaded(animation) => animation
+                .frames
+                .partition_point(|(end, _)| f64::from(*end) <= position),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct Sample {
-    source: Image,
+    source: ImageAsset,
     frame: usize,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 struct Playback {
-    source: Image,
+    source: ImageAsset,
     playing: bool,
     paused: bool,
     speed: f64,
@@ -78,7 +118,7 @@ impl Playback {
     fn from_node(node: &Node) -> Self {
         let speed = node.number("speed").unwrap_or(1.0);
         Self {
-            source: node.image("source").unwrap_or_default(),
+            source: node.image_asset("source").unwrap_or_default(),
             playing: node.boolean("playing", true),
             paused: node.boolean("paused", false),
             speed: if speed.is_finite() {
@@ -90,14 +130,14 @@ impl Playback {
         }
     }
 
-    fn active(self) -> bool {
+    fn active(&self) -> bool {
         self.playing && !self.paused && self.speed > 0.0
     }
 
-    fn plays(self, animation: &ImageAnimation) -> u32 {
+    fn plays(&self, animation: &Timeline<'_>) -> u32 {
         match self.loops {
             i64::MIN..=-1 => 0,
-            0 => animation.plays,
+            0 => animation.plays(),
             count => count.min(i64::from(u32::MAX)) as u32,
         }
     }
@@ -178,7 +218,7 @@ struct Entry {
 
 impl Entry {
     fn integrate(&mut self, now: Instant) {
-        let config = self.registration.config;
+        let config = &self.registration.config;
         if self.next.is_some() {
             let elapsed_ms =
                 now.saturating_duration_since(self.anchor).as_nanos() as f64 / 1_000_000.0;
@@ -188,27 +228,26 @@ impl Entry {
     }
 
     fn sample(&mut self) -> bool {
-        let config = self.registration.config;
+        let config = &self.registration.config;
         let mut frame = 0;
         let mut ended = false;
         self.next = None;
         if config.playing
-            && let Image::Animated(animation) = config.source
-            && let [_, _, ..] = animation.frames
+            && let Some(animation) = Timeline::for_image(&config.source)
+            && config.source.frame_count() >= 2
         {
-            let duration = f64::from(animation.frames.last().unwrap().end_ms);
+            let count = config.source.frame_count();
+            let duration = animation.end(count - 1);
             if duration > 0.0 {
-                let plays = config.plays(animation);
+                let plays = config.plays(&animation);
                 ended = plays != 0 && self.position_ms >= duration * f64::from(plays);
                 if ended {
-                    frame = animation.frame_count() - 1;
+                    frame = count - 1;
                 } else {
                     let within = self.position_ms % duration;
-                    frame = animation
-                        .frames
-                        .partition_point(|frame| f64::from(frame.end_ms) <= within);
+                    frame = animation.frame_at(within);
                     if self.presented && config.active() {
-                        let remaining_ms = f64::from(animation.frames[frame].end_ms) - within;
+                        let remaining_ms = animation.end(frame) - within;
                         self.next = Duration::try_from_secs_f64(
                             (remaining_ms / config.speed / 1000.0).max(0.001),
                         )
@@ -221,7 +260,7 @@ impl Entry {
         self.pending_finished |= ended && !self.ended;
         self.ended = ended;
         let sample = Sample {
-            source: config.source,
+            source: config.source.clone(),
             frame,
         };
         if self.registration.sample.get(Sample::default) == sample {
@@ -244,7 +283,8 @@ impl ImagePlaybackQueue {
         &mut self,
         now: Instant,
         registrations: impl IntoIterator<Item = (&'a Rc<ImagePlaybackRegistration>, bool)>,
-    ) {
+    ) -> bool {
+        let mut changed = false;
         let mut previous = std::mem::take(&mut self.entries);
         for (registration, presented) in registrations {
             let key = registration.key();
@@ -252,15 +292,16 @@ impl ImagePlaybackQueue {
                 continue;
             }
             let mut entry = if let Some(mut entry) = previous.remove(&key) {
-                let old = entry.registration.config;
-                let next = registration.config;
+                let old = &entry.registration.config;
+                let next = &registration.config;
                 if old == next && entry.presented == presented {
                     entry.registration = registration.clone();
                     self.entries.insert(key, entry);
                     continue;
                 }
+                let reset = old.source != next.source || !next.playing || !old.playing;
                 entry.integrate(now);
-                if old.source != next.source || !next.playing || !old.playing {
+                if reset {
                     entry.position_ms = 0.0;
                     entry.ended = false;
                     entry.pending_finished = false;
@@ -279,12 +320,18 @@ impl ImagePlaybackQueue {
                     pending_finished: false,
                 }
             };
-            entry.sample();
+            changed |= entry.sample();
             self.entries.insert(key, entry);
         }
         for entry in previous.into_values() {
-            entry.registration.sample.set_if_changed(Sample::default());
+            let sample = &entry.registration.sample;
+            let empty = Sample::default();
+            if sample.get(Sample::default) != empty {
+                sample.set(empty);
+                changed = true;
+            }
         }
+        changed
     }
 
     pub fn deadline(&self) -> Option<Instant> {

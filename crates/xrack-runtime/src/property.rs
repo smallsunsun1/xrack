@@ -1,11 +1,72 @@
 //! Lazy property bindings with dynamically tracked dependencies.
 use std::{
     cell::{Cell, RefCell},
+    collections::HashMap,
     rc::{Rc, Weak},
 };
 
 thread_local! {
-    static EVALUATING: RefCell<Option<Rc<DependencyNode>>> = const { RefCell::new(None) };
+    static EVALUATING: RefCell<EvaluationContext> = const {
+        RefCell::new(EvaluationContext { binding: None, watches: Vec::new() })
+    };
+}
+
+struct EvaluationContext {
+    binding: Option<Rc<DependencyNode>>,
+    watches: Vec<Rc<ReadWatch>>,
+}
+
+/// Observe writes to dependencies read while preparing a transaction.
+#[derive(Default)]
+pub(crate) struct ReadWatch {
+    sources: RefCell<HashMap<*const DependencyNode, Weak<DependencyNode>>>,
+    next_prune: Cell<usize>,
+    changed: Cell<bool>,
+}
+
+impl ReadWatch {
+    fn observe(&self, node: &Rc<DependencyNode>) {
+        let mut sources = self.sources.borrow_mut();
+        if sources.contains_key(&Rc::as_ptr(node)) {
+            return;
+        }
+        if sources.len() >= self.next_prune.get() {
+            sources.retain(|_, source| source.strong_count() != 0);
+            self.next_prune.set(sources.len().saturating_mul(2).max(64));
+        }
+        // Clean bindings may use their cached value without reading their inputs again.
+        let mut pending = Vec::new();
+        let mut next = Some(node.clone());
+        while let Some(node) = next {
+            if let std::collections::hash_map::Entry::Vacant(source) =
+                sources.entry(Rc::as_ptr(&node))
+            {
+                source.insert(Rc::downgrade(&node));
+                if !node.dirty.get() {
+                    pending.extend(node.sources.borrow().iter().filter_map(Weak::upgrade));
+                }
+            }
+            next = pending.pop();
+        }
+    }
+
+    pub(crate) fn changed(&self) -> bool {
+        self.changed.get()
+    }
+}
+
+pub(crate) fn watch_reads<T>(operation: impl FnOnce(&ReadWatch) -> T) -> T {
+    struct Scope;
+    impl Drop for Scope {
+        fn drop(&mut self) {
+            EVALUATING.with(|context| context.borrow_mut().watches.pop());
+        }
+    }
+
+    let watch = Rc::new(ReadWatch::default());
+    EVALUATING.with(|context| context.borrow_mut().watches.push(watch.clone()));
+    let _scope = Scope;
+    operation(&watch)
 }
 
 #[derive(Default)]
@@ -20,7 +81,10 @@ impl DependencyNode {
     fn track(self: &Rc<Self>) {
         EVALUATING.with(|current| {
             let current = current.borrow();
-            let Some(binding) = current.as_ref() else {
+            for watch in &current.watches {
+                watch.observe(self);
+            }
+            let Some(binding) = current.binding.as_ref() else {
                 return;
             };
             if Rc::ptr_eq(self, binding) {
@@ -59,6 +123,18 @@ impl DependencyNode {
     }
 
     fn notify(&self) {
+        EVALUATING.with(|context| {
+            let address = std::ptr::from_ref(self);
+            for watch in &context.borrow().watches {
+                if watch.sources.borrow().contains_key(&address) {
+                    watch.changed.set(true);
+                }
+            }
+        });
+        self.invalidate_dependents();
+    }
+
+    fn invalidate_dependents(&self) {
         let mut pending = Vec::new();
         self.push_dependents(&mut pending);
         while let Some(binding) = pending.pop() {
@@ -74,7 +150,7 @@ impl DependencyNode {
         self.dirty.set(false);
         let mut evaluation = Evaluation {
             node: self,
-            previous: EVALUATING.with(|current| current.replace(Some(self.clone()))),
+            previous: EVALUATING.with(|current| current.borrow_mut().binding.replace(self.clone())),
             completed: false,
         };
         let value = binding();
@@ -86,7 +162,8 @@ impl DependencyNode {
 impl Drop for DependencyNode {
     fn drop(&mut self) {
         self.detach();
-        self.notify();
+        // Ending a temporary binding is not a write to an input used by a transaction.
+        self.invalidate_dependents();
     }
 }
 
@@ -98,7 +175,9 @@ struct Evaluation<'a> {
 
 impl Drop for Evaluation<'_> {
     fn drop(&mut self) {
-        EVALUATING.with(|current| current.replace(self.previous.take()));
+        EVALUATING.with(|current| {
+            current.borrow_mut().binding = self.previous.take();
+        });
         self.node.evaluating.set(false);
         if !self.completed && !self.node.dirty.replace(true) {
             self.node.notify();
@@ -112,11 +191,22 @@ pub struct ChangeSignal(Rc<DependencyNode>);
 
 impl ChangeSignal {
     pub(crate) fn is_tracking() -> bool {
-        EVALUATING.with(|current| current.borrow().is_some())
+        EVALUATING.with(|current| {
+            let current = current.borrow();
+            current.binding.is_some() || !current.watches.is_empty()
+        })
     }
 
-    pub(crate) fn has_dependents(&self) -> bool {
+    pub(crate) fn has_observers(&self) -> bool {
         !self.0.dependents.borrow().is_empty()
+            || EVALUATING.with(|context| {
+                let address = Rc::as_ptr(&self.0);
+                context
+                    .borrow()
+                    .watches
+                    .iter()
+                    .any(|watch| watch.sources.borrow().contains_key(&address))
+            })
     }
 
     pub fn track(&self) {
@@ -191,22 +281,26 @@ impl<T> Property<T> {
         }
         drop(previous);
     }
+    #[doc(hidden)]
+    pub fn set_if_changed_by(&self, value: T, equal: impl FnOnce(&T, &T) -> bool) {
+        let changed = match &*self.value.borrow() {
+            Stored::Explicit(current) => {
+                if equal(current, &value) {
+                    return;
+                }
+                true
+            }
+            Stored::Cached(current) if !self.dependency.dirty.get() => !equal(current, &value),
+            Stored::Unset | Stored::Cached(_) => true,
+        };
+        self.replace(Stored::Explicit(value), changed);
+    }
 }
 
 impl<T: PartialEq> Property<T> {
     /// Override the binding and invalidate dependents only when its known value changes.
     pub fn set_if_changed(&self, value: T) {
-        let changed = match &*self.value.borrow() {
-            Stored::Explicit(current) => {
-                if *current == value {
-                    return;
-                }
-                true
-            }
-            Stored::Cached(current) if !self.dependency.dirty.get() => *current != value,
-            Stored::Unset | Stored::Cached(_) => true,
-        };
-        self.replace(Stored::Explicit(value), changed);
+        self.set_if_changed_by(value, T::eq);
     }
 }
 
@@ -221,28 +315,43 @@ impl<T: Clone> Property<T> {
     }
 
     pub fn get(&self, default: impl FnOnce() -> T) -> T {
+        self.try_get(|| Ok::<_, std::convert::Infallible>(default()))
+            .unwrap_or_else(|error| match error {})
+    }
+
+    /// Evaluate a binding without caching a failed result.
+    pub(crate) fn try_get<E>(&self, default: impl FnOnce() -> Result<T, E>) -> Result<T, E> {
         assert!(
             !self.dependency.evaluating.get(),
             "cyclic property evaluation"
         );
         self.dependency.track();
         match &*self.value.borrow() {
-            Stored::Explicit(value) => return value.clone(),
-            Stored::Cached(value) if !self.dependency.dirty.get() => return value.clone(),
+            Stored::Explicit(value) => return Ok(value.clone()),
+            Stored::Cached(value) if !self.dependency.dirty.get() => return Ok(value.clone()),
             Stored::Unset | Stored::Cached(_) => {}
         }
 
         let value = self.dependency.evaluate(|| match &self.binding {
-            Some(binding) => binding(),
+            Some(binding) => Ok(binding()),
             None => default(),
         });
+        let value = match value {
+            Ok(value) => value,
+            Err(error) => {
+                if !self.dependency.dirty.replace(true) {
+                    self.dependency.notify();
+                }
+                return Err(error);
+            }
+        };
         if !self.dependency.dirty.get() {
             let cached = value.clone();
             if !self.dependency.dirty.get() {
                 self.value.replace(Stored::Cached(cached));
             }
         }
-        value
+        Ok(value)
     }
 }
 
@@ -296,6 +405,17 @@ impl<T> InputProperty<T> {
             Self::Linked { .. } => {}
         }
     }
+
+    #[doc(hidden)]
+    pub fn set_if_changed_by(&self, value: T, equal: impl FnOnce(&T, &T) -> bool) {
+        match self {
+            Self::Local(property)
+            | Self::State {
+                value: property, ..
+            } => property.set_if_changed_by(value, equal),
+            Self::Linked { write, .. } => write(value),
+        }
+    }
 }
 
 impl<T: Clone> InputProperty<T> {
@@ -312,13 +432,7 @@ impl<T: Clone> InputProperty<T> {
 
 impl<T: PartialEq> InputProperty<T> {
     pub fn set_if_changed(&self, value: T) {
-        match self {
-            Self::Local(property)
-            | Self::State {
-                value: property, ..
-            } => property.set_if_changed(value),
-            Self::Linked { write, .. } => write(value),
-        }
+        self.set_if_changed_by(value, T::eq);
     }
 }
 
@@ -326,6 +440,25 @@ impl<T: PartialEq> InputProperty<T> {
 mod tests {
     use super::*;
     use std::panic::{AssertUnwindSafe, catch_unwind};
+
+    #[test]
+    fn read_watch_keeps_live_inputs_of_a_dropped_cached_binding() {
+        let input = Rc::new(Property::default());
+        input.set(1);
+        let sampled = Property::new(Some(Box::new({
+            let input = input.clone();
+            move || input.get(|| 0)
+        })));
+        assert_eq!(sampled.get(|| 0), 1);
+
+        watch_reads(|reads| {
+            assert_eq!(sampled.get(|| 0), 1);
+            drop(sampled);
+            assert!(!reads.changed());
+            input.set(2);
+            assert!(reads.changed());
+        });
+    }
 
     #[test]
     fn state_input_restores_the_live_fallback_after_reset() {

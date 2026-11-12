@@ -3975,6 +3975,7 @@ dependencies = [
  "serde_json",
  "xrack-ir",
  "xrack-mlir",
+ "xrack-resources",
  "xrack-runtime",
  "xrack-syntax",
 ]
@@ -3984,23 +3985,27 @@ name = "xrack-compiler"
 version = "0.2.0"
 dependencies = [
  "clap",
- "fluent-syntax",
- "gif",
- "gif-dispose",
- "png",
  "proc-macro2",
- "rgb",
- "serde",
  "serde_json",
  "thiserror 2.0.21",
- "toml",
- "ttf-parser",
- "unic-langid",
- "xrack-assets",
  "xrack-codegen",
  "xrack-ir",
  "xrack-mlir",
  "xrack-parser",
+ "xrack-resources",
+ "xrack-syntax",
+]
+
+[[package]]
+name = "xrack-interpreter"
+version = "0.2.0"
+dependencies = [
+ "serde_json",
+ "thiserror 2.0.21",
+ "xrack-mlir",
+ "xrack-parser",
+ "xrack-resources",
+ "xrack-runtime",
  "xrack-syntax",
 ]
 
@@ -4075,6 +4080,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "xrack-preview"
+version = "0.2.0"
+dependencies = [
+ "pollster",
+ "serde",
+ "serde_json",
+ "wgpu",
+ "xrack-compiler",
+ "xrack-interpreter",
+ "xrack-layout",
+ "xrack-renderer-femtovg",
+ "xrack-runtime",
+]
+
+[[package]]
 name = "xrack-renderer-femtovg"
 version = "0.2.0"
 dependencies = [
@@ -4088,6 +4108,27 @@ dependencies = [
  "xrack-assets",
  "xrack-layout",
  "xrack-runtime",
+]
+
+[[package]]
+name = "xrack-resources"
+version = "0.2.0"
+dependencies = [
+ "fluent-syntax",
+ "gif",
+ "gif-dispose",
+ "png",
+ "rgb",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "toml",
+ "ttf-parser",
+ "unic-langid",
+ "xrack-assets",
+ "xrack-mlir",
+ "xrack-runtime",
+ "xrack-syntax",
 ]
 
 [[package]]

@@ -1,6 +1,5 @@
 use crate::{ClipboardShortcut, UserEvent, desktop::WindowEvents};
 use std::{
-    ops::Range,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -9,8 +8,8 @@ use std::{
     thread::{self, JoinHandle},
     time::Duration,
 };
-use xrack_layout::{Interaction, Target, TextPosition};
-use xrack_runtime::{Node, spin_editable};
+use xrack_layout::{Interaction, TextEditContext};
+use xrack_runtime::{Node, TextCommand};
 
 pub(crate) enum Operation {
     Read,
@@ -148,87 +147,21 @@ impl ClipboardPort {
     }
 }
 
-pub(crate) struct EditContext {
-    target: Target,
-    text: String,
-    selection: Range<usize>,
-    caret: TextPosition,
-    password: bool,
-}
-
-impl EditContext {
-    pub(super) fn request(
-        input: &Interaction,
-        scene: &Node,
-        shortcut: &ClipboardShortcut,
-    ) -> Option<(Operation, Self)> {
-        let node = scene.interactive_at_path(&input.focused.as_ref()?.path)?;
-        if node.is_password() && !matches!(shortcut, ClipboardShortcut::Paste)
-            || node.boolean("read-only", false) && !matches!(shortcut, ClipboardShortcut::Copy)
-        {
-            return None;
-        }
-        let context = Self::capture(input, scene)?;
-        let operation = match shortcut {
-            ClipboardShortcut::Paste => Operation::Read,
-            ClipboardShortcut::Copy | ClipboardShortcut::Cut if !context.selection().is_empty() => {
-                Operation::Write(context.selection().into())
-            }
-            _ => return None,
-        };
-        Some((operation, context))
-    }
-
-    pub(crate) fn capture(input: &Interaction, scene: &Node) -> Option<Self> {
-        let (target, text, selection, caret) = current(input, scene)?;
-        Some(Self {
-            target: target.clone(),
-            text: text.into_owned(),
-            selection,
-            caret,
-            password: scene.at_path(&target.path)?.is_password(),
-        })
-    }
-
-    pub(crate) fn selection(&self) -> &str {
-        &self.text[self.selection.clone()]
-    }
-
-    pub(crate) fn is_current(&self, input: &Interaction, scene: &Node) -> bool {
-        current(input, scene).is_some_and(|(target, text, selection, caret)| {
-            self.target == *target
-                && scene
-                    .at_path(&target.path)
-                    .is_some_and(|node| node.is_password() == self.password)
-                && self.text == text
-                && self.selection == selection
-                && self.caret == caret
-        })
-    }
-}
-
-fn current<'a>(
-    input: &'a Interaction,
-    scene: &'a Node,
-) -> Option<(
-    &'a Target,
-    std::borrow::Cow<'a, str>,
-    Range<usize>,
-    TextPosition,
-)> {
-    let target = input.focused.as_ref()?;
-    let node = scene
-        .interactive_at_path(&target.path)
-        .filter(|node| input.is_text_editor(node, target) || spin_editable(node))?;
-    if scene.row_key_at(&target.path) != target.row_key {
-        return None;
-    }
-    let editor = input
-        .editor
-        .as_ref()
-        .filter(|editor| editor.preedit.is_empty())?;
-    let text = input.editor_value(node);
-    let selection = editor.selection(&text);
-    let caret = editor.position(&text);
-    Some((target, text, selection, caret))
+pub(super) fn edit_request(
+    input: &Interaction,
+    scene: &Node,
+    shortcut: &ClipboardShortcut,
+) -> Option<(Operation, TextEditContext)> {
+    let command = match shortcut {
+        ClipboardShortcut::Cut => TextCommand::Cut,
+        ClipboardShortcut::Copy => TextCommand::Copy,
+        ClipboardShortcut::Paste => TextCommand::Paste,
+    };
+    let context = TextEditContext::for_clipboard(input, scene, command)?;
+    let operation = if command == TextCommand::Paste {
+        Operation::Read
+    } else {
+        Operation::Write(context.selection().to_owned())
+    };
+    Some((operation, context))
 }

@@ -18,7 +18,7 @@ use std::{
     time::Duration,
 };
 use tokio::sync::watch;
-use xrack_runtime::Image;
+use xrack_runtime::ImageAsset;
 use zbus::{
     Proxy,
     connection::Builder,
@@ -99,7 +99,7 @@ impl NativeTray {
             snapshot.pixmaps = Arc::new(
                 [16, 22, 32, 48, 64]
                     .into_iter()
-                    .map(|size| pixmap(current.icon, size))
+                    .map(|size| pixmap(&current.icon, size))
                     .collect::<Result<_, _>>()?,
             );
         }
@@ -128,8 +128,9 @@ fn dbus_text(text: &str) -> String {
 type Pixmap = (i32, i32, Vec<u8>);
 type Tooltip = (String, Vec<Pixmap>, String, String);
 
-fn pixmap(image: Image, size: u32) -> Result<Pixmap, String> {
-    let mut raster = xrack_assets::rasterize_icon(image, [size; 2])?.ok_or("empty tray icon")?;
+fn pixmap(image: &ImageAsset, size: u32) -> Result<Pixmap, String> {
+    let mut raster =
+        xrack_assets::rasterize_icon_asset(image, [size; 2])?.ok_or("empty tray icon")?;
     for pixel in raster.rgba.as_chunks_mut::<4>().0 {
         let alpha = u16::from(pixel[3]);
         for channel in &mut pixel[..3] {
@@ -430,7 +431,7 @@ impl MenuLayout {
                                 .properties
                                 .insert("toggle-state".into(), i32::from(*checked).into());
                         }
-                        let icon = xrack_assets::rasterize_icon_png(*icon, [24; 2])?;
+                        let icon = xrack_assets::rasterize_icon_asset_png(icon, [24; 2])?;
                         if !icon.is_empty() {
                             entry.properties.insert("icon-data".into(), icon.into());
                         }

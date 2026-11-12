@@ -1,5 +1,5 @@
 use crate::{
-    Property, RowKey, TablePasteInput, TableRows, VecModel, table_clipboard::stage_table_text,
+    Property, RowKey, TablePasteInput, TableRows, VecModel, table_clipboard::try_stage_table_text,
 };
 use std::{
     cell::RefCell,
@@ -29,6 +29,32 @@ impl<T: 'static> TableRowPatch<T> {
         same: fn(&V, &V) -> bool,
         payload_bytes: fn(&V) -> usize,
     ) {
+        self.record_with(
+            before,
+            after,
+            same,
+            payload_bytes,
+            0,
+            move |row, expected, replacement| {
+                let value = field(row);
+                if !same(value, expected) {
+                    return false;
+                }
+                *value = replacement.clone();
+                true
+            },
+        );
+    }
+
+    pub(crate) fn record_with<V: Clone + 'static>(
+        &mut self,
+        before: &V,
+        after: &V,
+        same: fn(&V, &V) -> bool,
+        payload_bytes: fn(&V) -> usize,
+        metadata_bytes: usize,
+        replace: impl Fn(&mut T, &V, &V) -> bool + 'static,
+    ) {
         if self.bytes > self.limit || same(before, after) {
             return;
         }
@@ -36,6 +62,7 @@ impl<T: 'static> TableRowPatch<T> {
         self.bytes = self
             .bytes
             .saturating_add(overhead)
+            .saturating_add(metadata_bytes)
             .saturating_add(payload_bytes(before))
             .saturating_add(payload_bytes(after));
         if self.bytes > self.limit {
@@ -49,12 +76,7 @@ impl<T: 'static> TableRowPatch<T> {
             } else {
                 (&after, &before)
             };
-            let value = field(row);
-            if !same(value, expected) {
-                return false;
-            }
-            *value = replacement.clone();
-            true
+            replace(row, expected, replacement)
         }));
     }
 }
@@ -226,10 +248,20 @@ impl<T: Clone + PartialEq> TableEditHistory<T> {
         &self,
         model: &VecModel<T>,
         input: TablePasteInput<'_>,
-        assign: impl FnMut(usize, usize, &T, &mut T, &str) -> Option<()>,
+        mut assign: impl FnMut(usize, usize, &T, &mut T, &str) -> Option<()>,
         capture: impl Fn(&T, &T, &mut TableRowPatch<T>),
     ) -> Option<bool> {
-        self.paste_mapped(model, input, Some, assign, capture)
+        self.try_paste_mapped(
+            model,
+            input,
+            Some,
+            || Ok(true),
+            |row, column, before, after, text| {
+                Ok::<_, std::convert::Infallible>(assign(row, column, before, after, text))
+            },
+            capture,
+        )
+        .unwrap_or_else(|error| match error {})
     }
 
     pub fn paste_in_order(
@@ -239,28 +271,64 @@ impl<T: Clone + PartialEq> TableEditHistory<T> {
         assign: impl FnMut(usize, usize, &T, &mut T, &str) -> Option<()>,
         capture: impl Fn(&T, &T, &mut TableRowPatch<T>),
     ) -> Option<bool> {
-        self.paste_mapped(
+        self.paste_in_order_if(model, input, || true, assign, capture)
+    }
+
+    /// Recheck the live destination as callbacks stage the cells of a paste.
+    pub fn paste_in_order_if(
+        &self,
+        model: &TableRows<VecModel<T>>,
+        input: TablePasteInput<'_>,
+        mut still_current: impl FnMut() -> bool,
+        mut assign: impl FnMut(usize, usize, &T, &mut T, &str) -> Option<()>,
+        capture: impl Fn(&T, &T, &mut TableRowPatch<T>),
+    ) -> Option<bool> {
+        self.try_paste_in_order(
+            model,
+            input,
+            || Ok(still_current()),
+            |row, column, before, after, text| {
+                Ok::<_, std::convert::Infallible>(assign(row, column, before, after, text))
+            },
+            capture,
+        )
+        .unwrap_or_else(|error| match error {})
+    }
+
+    /// Stage and commit a paste while preserving the first projection error.
+    pub fn try_paste_in_order<E>(
+        &self,
+        model: &TableRows<VecModel<T>>,
+        input: TablePasteInput<'_>,
+        still_current: impl FnMut() -> Result<bool, E>,
+        assign: impl FnMut(usize, usize, &T, &mut T, &str) -> Result<Option<()>, E>,
+        capture: impl Fn(&T, &T, &mut TableRowPatch<T>),
+    ) -> Result<Option<bool>, E> {
+        self.try_paste_mapped(
             model.source(),
             input,
             |row| model.positions().source_index(row),
+            still_current,
             assign,
             capture,
         )
     }
 
-    fn paste_mapped(
+    fn try_paste_mapped<E>(
         &self,
         model: &VecModel<T>,
         input: TablePasteInput<'_>,
         source_index: impl Fn(usize) -> Option<usize>,
-        assign: impl FnMut(usize, usize, &T, &mut T, &str) -> Option<()>,
+        still_current: impl FnMut() -> Result<bool, E>,
+        assign: impl FnMut(usize, usize, &T, &mut T, &str) -> Result<Option<()>, E>,
         capture: impl Fn(&T, &T, &mut TableRowPatch<T>),
-    ) -> Option<bool> {
+    ) -> Result<Option<bool>, E> {
         let mut batch = Some(Batch::new());
-        let staged = stage_table_text(
+        let Some(staged) = try_stage_table_text(
             model,
             input,
             source_index,
+            still_current,
             assign,
             |index, before, after| {
                 if let Some(current) = &mut batch
@@ -271,15 +339,18 @@ impl<T: Clone + PartialEq> TableEditHistory<T> {
                     batch = None;
                 }
             },
-        )?;
+        )?
+        else {
+            return Ok(None);
+        };
         if batch.as_ref().is_some_and(|batch| batch.rows.is_empty()) {
-            return Some(false);
+            return Ok(Some(false));
         }
         let changed = model.replace_rows_if_current(input.stamp, staged);
         if changed {
             self.record_commit(input.stamp.0, batch);
         }
-        Some(changed)
+        Ok(Some(changed))
     }
 
     fn record_commit(&self, model: u64, batch: Option<Batch<T>>) {

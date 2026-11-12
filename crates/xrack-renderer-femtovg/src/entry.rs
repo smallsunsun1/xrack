@@ -5,9 +5,151 @@ use crate::{
 use femtovg::{Canvas, Color, Paint, Path, renderer::WGPURenderer};
 use std::{borrow::Cow, ops::Range};
 use xrack_layout::{
-    PasswordMask, Point, Rect, TextAreaLayout, TextEdit, TextMeasurer, TextPosition,
+    ComboGeometry, Interaction, LayoutNode, PasswordMask, Point, Rect, SearchGeometry,
+    SpinGeometry, Target, TextAreaLayout, TextAreaMotion, TextEdit, TextMeasurer, TextPosition,
 };
-use xrack_runtime::{CheckState, Color as UiColor, Node};
+use xrack_runtime::{
+    CheckState, Color as UiColor, Node, combo_editable, is_multiline_text_input, is_spin_box,
+    spin_editable, text_input_value,
+};
+
+fn editor_text<'a>(input: &Interaction, node: &'a Node) -> Cow<'a, str> {
+    if is_spin_box(node.kind) || matches!(node.kind, "TableCell" | "TreeCell") {
+        Cow::Owned(input.editor_value(node).into_owned())
+    } else {
+        Cow::Borrowed(text_input_value(node))
+    }
+}
+
+fn editor_part(node: &Node, bounds: Rect) -> Option<Rect> {
+    if is_spin_box(node.kind) {
+        Some(SpinGeometry::new(bounds).text)
+    } else if combo_editable(node) {
+        Some(ComboGeometry::new(bounds).entry)
+    } else if node.kind == "SearchField" {
+        Some(SearchGeometry::new(bounds).entry)
+    } else {
+        None
+    }
+}
+
+/// A pointer hit bound to the editor that owned the press.
+#[doc(hidden)]
+pub struct PointerCaret {
+    target: Target,
+    origin: Point,
+    point: Point,
+    selecting: bool,
+}
+
+impl PointerCaret {
+    pub fn new(
+        input: &Interaction,
+        scene: &Node,
+        layout: &LayoutNode,
+        target: &Target,
+        origin: Point,
+        point: Point,
+        selecting: bool,
+    ) -> Option<Self> {
+        let pointer = Self {
+            target: target.clone(),
+            origin,
+            point,
+            selecting,
+        };
+        pointer.hit(input, scene, layout)?;
+        Some(pointer)
+    }
+
+    pub fn from_pressed(
+        input: &Interaction,
+        scene: &Node,
+        layout: &LayoutNode,
+        point: Point,
+        selecting: bool,
+    ) -> Option<Self> {
+        let target = input
+            .focused
+            .as_ref()
+            .filter(|target| input.pressed.as_ref() == Some(target))?;
+        let origin = input.pointer_press_origin().unwrap_or(point);
+        Self::new(input, scene, layout, target, origin, point, selecting)
+    }
+
+    fn hit<'a>(
+        &self,
+        input: &Interaction,
+        scene: &'a Node,
+        layout: &LayoutNode,
+    ) -> Option<(&'a Node, Rect, Point)> {
+        let path = &self.target.path;
+        let node = scene.interactive_at_path(path)?;
+        if node.element_id() != self.target.element_id()
+            || scene.row_key_at(path) != self.target.row_key
+            || !(input.is_text_editor(node, &self.target) || spin_editable(node))
+        {
+            return None;
+        }
+        let item = layout
+            .at_path(path)
+            .filter(|item| item.visible && item.enabled)?;
+        let point = item.map_from_window(self.point)?;
+        let part = editor_part(node, item.bounds);
+        if let Some(bounds) = part {
+            let origin = item.map_from_window(self.origin)?;
+            if !bounds.contains(origin) {
+                return None;
+            }
+        }
+        Some((node, part.unwrap_or(item.bounds), point))
+    }
+
+    pub fn place(
+        self,
+        text_system: &TextSystem,
+        input: &mut Interaction,
+        scene: &Node,
+        layout: &LayoutNode,
+    ) -> bool {
+        if input.focused.as_ref() != Some(&self.target) {
+            return false;
+        }
+        let Some((node, bounds, point)) = self.hit(input, scene, layout) else {
+            return false;
+        };
+        input.sync_editor(scene);
+        let value = editor_text(input, node);
+        let (position, reveal) = if is_multiline_text_input(node.kind) {
+            let geometry = text_system.text_area_layout(node, bounds, &value);
+            let scroll = geometry.clamp_scroll(input.text_scroll(&self.target.path));
+            let advance = |text: &str| text_system.advance_node(node, text);
+            let position = geometry.hit(&value, point, scroll, advance);
+            let caret = geometry.caret_point(&value, position, advance);
+            (position, Some(geometry.keep_visible(scroll, caret)))
+        } else {
+            (
+                text_system.single_line_hit_with_text(
+                    node,
+                    bounds,
+                    point,
+                    input.editor.as_ref(),
+                    &value,
+                ),
+                None,
+            )
+        };
+        input.break_text_edit_group();
+        let Some(editor) = &mut input.editor else {
+            return false;
+        };
+        editor.place_caret(&value, position, self.selecting);
+        if let Some(scroll) = reveal {
+            input.set_text_scroll(&self.target, scroll);
+        }
+        true
+    }
+}
 
 pub(crate) struct EntryText<'a> {
     pub value: &'a str,
@@ -67,6 +209,118 @@ fn display_text<'a>(node: &'a Node, value: &'a str, editor: Option<&TextEdit>) -
 }
 
 impl TextSystem {
+    /// Move the focused editor through its shaped visual caret positions.
+    #[doc(hidden)]
+    pub fn move_editor_caret(
+        &self,
+        input: &mut Interaction,
+        scene: &Node,
+        layout: &LayoutNode,
+        motion: TextAreaMotion,
+        selecting: bool,
+    ) -> bool {
+        let Some(target) = input.focused.clone() else {
+            return false;
+        };
+        let Some(node) = scene.interactive_at_path(&target.path) else {
+            return false;
+        };
+        if node.password_masked()
+            || !input.is_text_editor(node, &target)
+            || node.element_id() != target.element_id()
+            || scene.row_key_at(&target.path) != target.row_key
+        {
+            return false;
+        }
+        let Some(item) = layout
+            .at_path(&target.path)
+            .filter(|item| item.visible && item.enabled)
+        else {
+            return false;
+        };
+        let value = editor_text(input, node);
+        let scroll = input.text_scroll(&target.path);
+        let Some(editor) = &mut input.editor else {
+            return false;
+        };
+        if is_multiline_text_input(node.kind) {
+            let geometry = self.text_area_layout(node, item.bounds, &value);
+            let advance = |text: &str| self.advance_node(node, text);
+            geometry.move_caret(&value, editor, motion, selecting, advance);
+            let caret = geometry.caret_point(&value, editor.position(&value), advance);
+            input.set_text_scroll(&target, geometry.keep_visible(scroll, caret));
+        } else {
+            let visual = self.single_line_layout(node, &value);
+            let position = match motion {
+                TextAreaMotion::Left | TextAreaMotion::Right => {
+                    let right = matches!(motion, TextAreaMotion::Right);
+                    let edge = (!selecting)
+                        .then(|| visual.selection_edge(editor.selection(&value), right))
+                        .flatten();
+                    edge.or_else(|| visual.step(editor.position(&value), right))
+                }
+                TextAreaMotion::Home | TextAreaMotion::End => {
+                    Some(visual.edge(matches!(motion, TextAreaMotion::End) != visual.is_rtl()))
+                }
+                _ => return false,
+            };
+            if let Some(position) = position {
+                editor.place_caret(&value, position, selecting);
+            }
+        }
+        input.break_text_edit_group();
+        true
+    }
+
+    /// Scroll the multiline editor under the pointer and return unconsumed motion.
+    #[doc(hidden)]
+    pub fn scroll_editor_area(
+        &self,
+        input: &mut Interaction,
+        scene: &Node,
+        layout: &LayoutNode,
+        delta: Point,
+    ) -> Point {
+        if !delta.x.is_finite() || !delta.y.is_finite() {
+            return delta;
+        }
+        let Some(target) = input.pointer_hover_target(scene, layout) else {
+            return delta;
+        };
+        let Some(node) = scene
+            .at_path(&target.path)
+            .filter(|node| is_multiline_text_input(node.kind))
+        else {
+            return delta;
+        };
+        let Some(item) = layout
+            .at_path(&target.path)
+            .filter(|item| item.visible && item.enabled)
+        else {
+            return delta;
+        };
+        let editor = input
+            .editor
+            .as_ref()
+            .filter(|_| input.focused.as_ref() == Some(&target));
+        let (geometry, _) = self.text_area_caret(node, item.bounds, editor);
+        let old = geometry.clamp_scroll(input.text_scroll(&target.path));
+        let scroll = geometry.clamp_scroll(Point {
+            x: old.x + delta.x,
+            y: old.y + delta.y,
+        });
+        if scroll == old {
+            return delta;
+        }
+        input.set_text_scroll(&target, scroll);
+        let remaining =
+            |delta: f32, used: f32| (delta - used).clamp(delta.min(0.0), delta.max(0.0));
+        Point {
+            x: remaining(delta.x, scroll.x - old.x),
+            y: remaining(delta.y, scroll.y - old.y),
+        }
+    }
+
     pub fn single_line_hit(
         &self,
         node: &Node,
@@ -136,6 +390,47 @@ impl TextSystem {
             })
         });
         (layout, caret)
+    }
+
+    /// Return the editor caret in window coordinates for the platform input method.
+    pub fn editor_ime_area(
+        &self,
+        input: &mut Interaction,
+        scene: &Node,
+        layout: &LayoutNode,
+        follow_caret: bool,
+    ) -> Option<Rect> {
+        let target = input.focused.as_ref()?;
+        let node = scene.interactive_at_path(&target.path)?;
+        if !input.is_text_editor(node, target) && !spin_editable(node) {
+            return None;
+        }
+        let layout = layout.at_path(&target.path)?;
+        let bounds = editor_part(node, layout.bounds).unwrap_or(layout.bounds);
+        if is_multiline_text_input(node.kind) {
+            let (geometry, caret) = self.text_area_caret(node, bounds, input.editor.as_ref());
+            let mut scroll = geometry.clamp_scroll(input.text_scroll(&target.path));
+            let rect = caret.map(|caret| {
+                if follow_caret {
+                    scroll = geometry.keep_visible(scroll, caret);
+                }
+                let area = geometry.area;
+                layout.window_bounds(Rect::new(
+                    area.x + (caret.x - scroll.x).clamp(0.0, area.width),
+                    area.y
+                        + (caret.y - scroll.y)
+                            .clamp(0.0, (area.height - geometry.line_height).max(0.0)),
+                    1.0,
+                    geometry.line_height,
+                ))
+            });
+            input.set_text_scroll(&target.clone(), scroll);
+            rect
+        } else {
+            let text = input.editor_value(node);
+            let x = self.single_line_caret_x(node, bounds, &text, input.editor.as_ref());
+            Some(layout.window_bounds(Rect::new(x, bounds.y, 1.0, bounds.height.max(1.0))))
+        }
     }
 }
 

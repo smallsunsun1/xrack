@@ -770,6 +770,380 @@ fn focus_observation_repaints_the_active_scope_and_clears_on_window_blur() {
 }
 
 #[test]
+fn preview_keyboard_capture_and_clipboard_results_share_the_focused_editor() {
+    use layout_ui::ScopedKeysDemo;
+    use xrack_renderer_femtovg::preview::PreviewScene;
+    use xrack_runtime::{KeyEvent, KeyModifiers};
+
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))
+    .unwrap();
+    let ui = ScopedKeysDemo::new();
+    let mut preview = PreviewScene::new(Box::new(ui.as_weak().upgrade().unwrap()));
+    preview.render_animated(&mut renderer).unwrap();
+    preview.click(Point { x: 350.0, y: 190.0 });
+    preview.render_animated(&mut renderer).unwrap();
+
+    let key = |key: &str, text: &str| KeyEvent {
+        key: key.into(),
+        text: text.into(),
+        ..Default::default()
+    };
+    assert!(preview.keyboard(&mut renderer, &key("x", "x"), true));
+    assert!(preview.keyboard(&mut renderer, &key("x", ""), false));
+    assert_eq!(ui.get_accepted_releases(), 1);
+    assert_eq!(ui.get_text(), "");
+    assert!(preview.keyboard(&mut renderer, &key("a", "a"), true));
+    assert_eq!(ui.get_text(), "a");
+    preview.render_animated(&mut renderer).unwrap();
+
+    let command = |name| KeyEvent {
+        modifiers: KeyModifiers {
+            control: true,
+            primary: true,
+            ..Default::default()
+        },
+        ..key(name, "")
+    };
+    assert!(preview.keyboard(&mut renderer, &command("a"), true));
+    assert!(preview.keyboard(&mut renderer, &command("x"), true));
+    let cut = preview.take_clipboard_request().unwrap();
+    assert_eq!(cut.text.as_deref(), Some("a"));
+    assert!(!preview.finish_clipboard(cut.id + 1, true, ""));
+    assert_eq!(ui.get_text(), "a");
+    assert!(preview.finish_clipboard(cut.id, true, ""));
+    assert_eq!(ui.get_text(), "");
+    preview.render_animated(&mut renderer).unwrap();
+
+    assert!(preview.keyboard(&mut renderer, &command("v"), true));
+    let paste = preview.take_clipboard_request().unwrap();
+    assert!(paste.text.is_none());
+    assert!(preview.finish_clipboard(paste.id, true, "剪贴板"));
+    assert_eq!(ui.get_text(), "剪贴板");
+}
+
+#[test]
+fn preview_context_menu_selects_and_copies_text_from_the_focused_editor() {
+    use form_ui::EditorMenuDemo;
+    use xrack_renderer_femtovg::preview::PreviewScene;
+    use xrack_runtime::{KeyEvent, KeyModifiers};
+
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))
+    .unwrap();
+    let ui = EditorMenuDemo::new();
+    let mut preview = PreviewScene::new(Box::new(ui.as_weak().upgrade().unwrap()));
+    preview.render_animated(&mut renderer).unwrap();
+    assert!(preview.open_context_menu(Some(Point { x: 120.0, y: 72.0 })));
+    assert!(preview.menu_open());
+    preview.render_animated(&mut renderer).unwrap();
+    let key = |key: &str| KeyEvent {
+        key: key.into(),
+        ..Default::default()
+    };
+    assert!(preview.keyboard(&mut renderer, &key("End"), true));
+    assert!(preview.keyboard(&mut renderer, &key("Enter"), true));
+    assert!(!preview.menu_open());
+    preview.render_animated(&mut renderer).unwrap();
+
+    let copy = KeyEvent {
+        modifiers: KeyModifiers {
+            control: true,
+            primary: true,
+            ..Default::default()
+        },
+        ..key("c")
+    };
+    assert!(preview.keyboard(&mut renderer, &copy, true));
+    let request = preview.take_clipboard_request().unwrap();
+    assert_eq!(request.text.as_deref(), Some(ui.get_document().as_str()));
+}
+
+#[test]
+fn preview_native_close_guard_waits_for_the_current_dialog_result() {
+    use form_ui::CloseGuardDemo;
+    use xrack_renderer_femtovg::preview::PreviewScene;
+    use xrack_runtime::{NativeDialogOptions, NativeDialogResult, StandardButtonKind};
+
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))
+    .unwrap();
+    let mut ui = CloseGuardDemo::new();
+    ui.set_dirty(true);
+    let mut preview = PreviewScene::new(Box::new(ui.as_weak().upgrade().unwrap()));
+    preview.render_animated(&mut renderer).unwrap();
+
+    assert!(ui.dispatch("close-window", "clicked"));
+    preview.render_animated(&mut renderer).unwrap();
+    assert!(!preview.window_closed());
+    let first = preview.begin_native_dialog().unwrap();
+    assert!(matches!(
+        first.options.as_ref(),
+        NativeDialogOptions::Message(_)
+    ));
+    assert!(preview.begin_native_dialog().is_none());
+    assert!(preview.finish_native_dialog(
+        first.id,
+        NativeDialogResult::Button(StandardButtonKind::Cancel)
+    ));
+    preview.render_animated(&mut renderer).unwrap();
+    assert!(!preview.window_closed() && ui.get_dirty());
+
+    assert!(ui.dispatch("close-window", "clicked"));
+    preview.render_animated(&mut renderer).unwrap();
+    let current = preview.begin_native_dialog().unwrap();
+    assert_ne!(first.id, current.id);
+    assert!(
+        !preview.finish_native_dialog(first.id, NativeDialogResult::Button(StandardButtonKind::Ok))
+    );
+    assert!(preview.finish_native_dialog(
+        current.id,
+        NativeDialogResult::Button(StandardButtonKind::Ok)
+    ));
+    preview.render_animated(&mut renderer).unwrap();
+    assert!(preview.window_closed() && !ui.get_dirty());
+}
+
+#[test]
+fn preview_calendar_keyboard_commits_only_the_accepted_popup_draft() {
+    use xrack_renderer_femtovg::preview::PreviewScene;
+    use xrack_runtime::{Date, KeyEvent};
+
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))
+    .unwrap();
+    let mut ui = CalendarDemo::new();
+    let mut preview = PreviewScene::new(Box::new(ui.as_weak().upgrade().unwrap()));
+    let send = |preview: &mut PreviewScene, renderer: &mut Renderer, name: &str, pressed| {
+        let event = KeyEvent {
+            key: name.into(),
+            ..Default::default()
+        };
+        assert!(preview.keyboard(renderer, &event, pressed));
+        preview.render_animated(renderer).unwrap();
+    };
+
+    ui.set_picker_open(true);
+    preview.render_animated(&mut renderer).unwrap();
+    assert!(preview.control_navigation_enabled());
+    send(&mut preview, &mut renderer, "ArrowRight", true);
+    assert_eq!(ui.get_selected(), Date::new(2024, 2, 28).unwrap());
+    send(&mut preview, &mut renderer, "Escape", true);
+    assert_eq!(ui.get_cancels(), 1);
+    assert_eq!(ui.get_selected(), Date::new(2024, 2, 28).unwrap());
+
+    ui.set_picker_open(true);
+    preview.render_animated(&mut renderer).unwrap();
+    send(&mut preview, &mut renderer, "ArrowRight", true);
+    send(&mut preview, &mut renderer, "Tab", true);
+    send(&mut preview, &mut renderer, "Tab", true);
+    send(&mut preview, &mut renderer, "Enter", true);
+    assert_eq!(ui.get_accepts(), 0);
+    send(&mut preview, &mut renderer, "Enter", false);
+    assert_eq!(ui.get_accepts(), 1);
+    assert_eq!(ui.get_selected(), Date::new(2024, 2, 29).unwrap());
+}
+
+#[test]
+fn preview_color_hex_blocks_confirmation_until_the_draft_is_valid() {
+    use xrack_layout::EditAction;
+    use xrack_renderer_femtovg::preview::PreviewScene;
+    use xrack_runtime::KeyEvent;
+
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))
+    .unwrap();
+    let mut ui = ColorDemo::new();
+    let mut preview = PreviewScene::new(Box::new(ui.as_weak().upgrade().unwrap()));
+    ui.set_picker_open(true);
+    preview.render_animated(&mut renderer).unwrap();
+    preview.edit(EditAction::SelectAll);
+    preview.edit(EditAction::Insert("#12"));
+    preview.render_animated(&mut renderer).unwrap();
+
+    let enter = KeyEvent {
+        key: "Enter".into(),
+        ..Default::default()
+    };
+    assert!(preview.keyboard(&mut renderer, &enter, true));
+    preview.render_animated(&mut renderer).unwrap();
+    assert!(ui.get_picker_open());
+    assert_eq!(ui.get_accepts(), 0);
+    assert_eq!(ui.get_selected(), Color(0x4080c080));
+
+    preview.edit(EditAction::SelectAll);
+    preview.edit(EditAction::Insert("#12AB349A"));
+    preview.render_animated(&mut renderer).unwrap();
+    assert!(preview.keyboard(&mut renderer, &enter, true));
+    assert!(!ui.get_picker_open());
+    assert_eq!(ui.get_accepts(), 1);
+    assert_eq!(ui.get_selected(), Color(0x12ab349a));
+}
+
+#[test]
+fn preview_links_keyboard_tabs_and_middle_button_swipe_pages() {
+    use navigation_ui::TabBarDemo;
+    use xrack_renderer_femtovg::preview::PreviewScene;
+    use xrack_runtime::KeyEvent;
+
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))
+    .unwrap();
+    let ui = TabBarDemo::new();
+    let mut preview = PreviewScene::new(Box::new(ui.as_weak().upgrade().unwrap()));
+    preview.render_animated(&mut renderer).unwrap();
+    preview.click(Point { x: 64.0, y: 75.0 });
+    preview.render_animated(&mut renderer).unwrap();
+    let right = KeyEvent {
+        key: "ArrowRight".into(),
+        ..Default::default()
+    };
+    assert!(preview.keyboard(&mut renderer, &right, true));
+    assert_eq!(ui.get_page(), 3);
+    preview.render_animated(&mut renderer).unwrap();
+
+    let start = Point { x: 460.0, y: 165.0 };
+    let end = Point { x: 225.0, y: 165.0 };
+    assert!(preview.begin_pan(start));
+    preview.move_pointer(end);
+    assert_eq!(ui.get_page(), 3);
+    assert!(preview.release_pointer(end, false));
+    assert_eq!(ui.get_page(), 4);
+    assert_eq!(ui.get_changes(), 1);
+    preview.render_animated(&mut renderer).unwrap();
+}
+
+#[test]
+fn preview_stack_renders_slides_and_routes_keyboard_back_to_the_current_stack() {
+    use navigation_ui::StackDemo;
+    use xrack_renderer_femtovg::preview::PreviewScene;
+    use xrack_runtime::{Component, KeyEvent, KeyModifiers};
+
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))
+    .unwrap();
+    let ui = StackDemo::new();
+    let (_, layout) = renderer.prepare_scene(
+        &ui,
+        ui.render_shared(),
+        Size::new(590.0, 324.0),
+        &Interaction::default(),
+    );
+    let button = layout.at_path(&[0, 2, 0, 0, 1]).unwrap().bounds;
+    let point = Point {
+        x: button.x + button.width / 2.0,
+        y: button.y + button.height / 2.0,
+    };
+    let mut preview = PreviewScene::new(Box::new(ui.as_weak().upgrade().unwrap()));
+    preview.render_animated(&mut renderer).unwrap();
+    preview.click(point);
+    preview.render_animated(&mut renderer).unwrap();
+    assert!(preview.next_frame_delay().is_some());
+    assert_eq!(
+        ui.stack_snapshot("navigation").unwrap().current(),
+        Some("details")
+    );
+
+    let back = KeyEvent {
+        key: "ArrowLeft".into(),
+        modifiers: KeyModifiers {
+            alt: true,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    assert!(preview.keyboard(&mut renderer, &back, true));
+    preview.render_animated(&mut renderer).unwrap();
+    assert_eq!(
+        ui.stack_snapshot("navigation").unwrap().current(),
+        Some("overview")
+    );
+    assert_eq!(ui.get_navigations(), 2);
+    assert!(preview.next_frame_delay().is_some());
+}
+
+#[test]
+fn preview_selects_a_table_delegate_cell_before_clicking_its_button() {
+    use records_ui::DelegateTableDemo;
+    use xrack_renderer_femtovg::preview::PreviewScene;
+    use xrack_runtime::Component;
+
+    let ui = DelegateTableDemo::new();
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))
+    .unwrap();
+    let input = Interaction::default();
+    let size = Size::new(620.0, 338.0);
+    let (_, layout) = renderer.prepare_scene(&ui, ui.render_shared(), size, &input);
+    let star = [0, 1, 0, 0, 0, 1];
+    let button = layout.at_path(&star).unwrap().bounds;
+    let point = Point {
+        x: button.x + button.width / 2.0,
+        y: button.y + button.height / 2.0,
+    };
+
+    let mut preview = PreviewScene::new(Box::new(ui.as_weak().upgrade().unwrap()));
+    preview.render_animated(&mut renderer).unwrap();
+    assert_eq!(ui.get_selected_row(), -1);
+    preview.click(point);
+    preview.render_animated(&mut renderer).unwrap();
+    assert_eq!(ui.get_selected_row(), 0);
+    let (scene, _) = renderer.prepare_scene(&ui, ui.render_shared(), size, &input);
+    assert_eq!(scene.at_path(&star).unwrap().text("text"), Some("★ 1"));
+}
+
+#[test]
+fn preview_touch_scroll_cancels_the_captured_area_before_release() {
+    use layout_ui::PointerDemo;
+    use xrack_renderer_femtovg::preview::{PointerContact, PreviewScene};
+    use xrack_runtime::{PointerEvent, PointerEventKind};
+
+    let ui = PointerDemo::new();
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))
+    .unwrap();
+    let mut preview = PreviewScene::new(Box::new(ui.as_weak().upgrade().unwrap()));
+    preview.render_animated(&mut renderer).unwrap();
+    let start = Point { x: 80.0, y: 128.0 };
+    let end = Point { x: 80.0, y: 67.0 };
+    let contact = PointerContact {
+        id: 1,
+        primary: true,
+        event: PointerEvent {
+            is_touch: true,
+            ..Default::default()
+        },
+    };
+    assert!(preview.press_contact(contact, start, false));
+    assert_eq!(ui.get_phase(), PointerEventKind::Down);
+    assert_eq!(ui.get_active_touches(), 1);
+    assert!(preview.move_contact(contact, end));
+    preview.render_animated(&mut renderer).unwrap();
+    assert_eq!(ui.get_phase(), PointerEventKind::Cancel);
+    assert!(preview.finish_contact(contact, end, false, false));
+    assert_eq!(ui.get_active_touches(), 0);
+    assert_eq!(ui.get_clicks(), 0);
+}
+
+#[test]
 fn frameless_title_area_covers_the_resized_client_width() {
     use layout_ui::FramelessDemo;
 
@@ -1032,6 +1406,18 @@ fn bundled_font_collection_shapes_and_paints_without_system_fonts() {
             })
         );
     }
+
+    let mut loaded = scene.clone();
+    let sources = loaded.fonts.take().unwrap().sources();
+    loaded.loaded_fonts = Some(xrack_runtime::LoadedFonts::new(
+        sources.iter().map(|source| source.to_vec()).collect(),
+    ));
+    let interpreted = renderer.snapshot(&loaded, 420, 190, 1.0, &input).unwrap();
+    assert_eq!(frame.rgba, interpreted.rgba);
+    assert_eq!(
+        frame.layout.at_path(&[0, 1]).unwrap().bounds,
+        interpreted.layout.at_path(&[0, 1]).unwrap().bounds,
+    );
 
     let blank = xrack_runtime::Node::new("Window", None);
     renderer.snapshot(&blank, 420, 190, 1.0, &input).unwrap();
@@ -2977,7 +3363,10 @@ fn cascaded_menu_panels_render_and_stay_inside_the_viewport() {
     ui.click("view-menu");
     let panels = ui.menus();
     let panel = &panels[0];
-    assert_eq!(panel.rows[0].icon, ui.node("grid-button").image("icon"));
+    assert_eq!(
+        panel.rows[0].icon,
+        ui.node("grid-button").image_asset("icon")
+    );
     assert_eq!(panel.rows[0].checked, Some(true));
     let icon = panel.icon_bounds(0);
     let menu_frame = renderer
@@ -6005,6 +6394,13 @@ fn stack_slide_rebases_on_the_presented_frame_and_preserves_keyboard_navigation(
     assert_eq!(before.pixel(left, y), Some(outgoing));
     assert_eq!(before.pixel(right, y), Some(incoming));
     assert_eq!(&*calls.borrow(), &["overview", "details"]);
+    assert_eq!(renderer.stack_layer_stats().rasterized, 1);
+    let repeated = renderer
+        .snapshot_with_transitions(&details, 1180, 648, 2.0, &input, &slides)
+        .unwrap();
+    assert_eq!(before.pixel(left, y), repeated.pixel(left, y));
+    assert_eq!(renderer.stack_layer_stats().rasterized, 1);
+    assert_eq!(renderer.stack_layer_stats().reused, 1);
 
     let back = input.stack_back(&details, &detail_layout).unwrap();
     assert!(ui.control_at(&details, &back.path, back.action));
@@ -6041,6 +6437,304 @@ fn stack_slide_rebases_on_the_presented_frame_and_preserves_keyboard_navigation(
     assert!(!input.pointer_on_stack_slide());
     input.pointer_press();
     assert_eq!(input.pointer_release(), Some("overview-next"));
+}
+
+#[test]
+#[ignore = "manual GPU performance measurement"]
+fn benchmark_stack_compositing() {
+    use std::time::{Duration, Instant};
+    use xrack_layout::StackTransitions;
+    use xrack_runtime::{Length, Node, StackNavigation};
+
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))
+    .unwrap();
+    let mut ui = StackDemo::new();
+    let input = Interaction::default();
+    let viewport = Size::new(590.0, 324.0);
+    let mut outgoing = ui.render();
+    let page = outgoing
+        .child_at_mut(0)
+        .unwrap()
+        .child_at_mut(2)
+        .unwrap()
+        .child_at_mut(0)
+        .unwrap();
+    for row in 0..14 {
+        for column in 0..10 {
+            let mut text = Node::new("Text", None);
+            text.properties
+                .insert("x", Length(4.0 + f64::from(column) * 47.0).into());
+            text.properties
+                .insert("y", Length(5.0 + f64::from(row) * 15.0).into());
+            text.properties
+                .insert("text", format!("{row}.{column}").into());
+            page.children.push(text);
+        }
+    }
+    let outgoing_layout = renderer.layout_with_input(&outgoing, viewport, &input);
+    assert!(ui.navigate_stack("navigation", StackNavigation::Push("details")));
+    let incoming = ui.render_shared();
+    let incoming_layout = renderer.layout_with_input(&incoming, viewport, &input);
+    let texture = renderer.device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("Stack compositor benchmark"),
+        size: wgpu::Extent3d {
+            width: 1180,
+            height: 648,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8Unorm,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+        view_formats: &[],
+    });
+
+    let mut measure = |budget| {
+        renderer.set_layer_budget(budget);
+        let stats = renderer.stack_layer_stats();
+        let start = Instant::now();
+        let mut slides = StackTransitions::default();
+        slides.update(
+            (&outgoing, &outgoing_layout),
+            (&incoming, &incoming_layout),
+            start,
+        );
+        let mut submit = Vec::new();
+        let mut completed = Vec::new();
+        for step in 0..60 {
+            slides.advance(start + Duration::from_millis(1 + step * 3));
+            let begin = Instant::now();
+            renderer
+                .draw_with_transitions(&incoming, &incoming_layout, &texture, 2.0, &input, &slides)
+                .unwrap();
+            let submitted = begin.elapsed().as_secs_f64() * 1000.0;
+            renderer
+                .device
+                .poll(wgpu::PollType::Wait {
+                    submission_index: None,
+                    timeout: Some(Duration::from_secs(10)),
+                })
+                .unwrap();
+            if step >= 8 {
+                submit.push(submitted);
+                completed.push(begin.elapsed().as_secs_f64() * 1000.0);
+            }
+        }
+        let p95 = |mut values: Vec<f64>| {
+            values.sort_by(f64::total_cmp);
+            values[(values.len() * 95).div_ceil(100) - 1]
+        };
+        let end = renderer.stack_layer_stats();
+        (
+            p95(submit),
+            p95(completed),
+            end.rasterized - stats.rasterized,
+            end.reused - stats.reused,
+            end.direct - stats.direct,
+        )
+    };
+    let direct = measure(0);
+    let cached = measure(32 * 1024 * 1024);
+    assert_eq!((direct.2, direct.3, direct.4), (0, 0, 60));
+    assert_eq!((cached.2, cached.3, cached.4), (1, 59, 0));
+    println!(
+        "stack direct: submit p95 {:.3} ms, GPU completion p95 {:.3} ms",
+        direct.0, direct.1
+    );
+    println!(
+        "stack cached: submit p95 {:.3} ms, GPU completion p95 {:.3} ms",
+        cached.0, cached.1
+    );
+}
+
+#[test]
+#[ignore = "manual scroll layout performance measurement"]
+fn benchmark_scroll_row_layout() {
+    use std::time::Instant;
+    use xrack_layout::{RowLayoutCache, prepare_scene_with_input, prepare_scene_with_row_cache};
+    use xrack_renderer_femtovg::TextSystem;
+    use xrack_runtime::{
+        Component, Length, ListMetrics, ListRowRenderer, Node, Orientation, VecModel,
+    };
+
+    struct View(Node);
+    impl Component for View {
+        fn render(&self) -> Node {
+            self.0.clone()
+        }
+        fn dispatch(&mut self, _: &str, _: &str) -> bool {
+            false
+        }
+    }
+
+    let model = VecModel::from((0..50_000).collect::<Vec<_>>());
+    let mut list = Node::new("ListView", None);
+    list.properties.insert("row-height", Length(24.0).into());
+    list.list = Some(ListMetrics {
+        row_count: model.len(),
+        first_row: 0,
+    });
+    list.list_row_renderer = Some(ListRowRenderer::new(move |range| {
+        range
+            .map(|index| {
+                let mut row = Node::new("HorizontalLayout", None);
+                row.row_key = model.row_key(index);
+                for column in 0..8 {
+                    let mut label = Node::new("Text", None);
+                    label
+                        .properties
+                        .insert("text", format!("Record {index}, field {column}").into());
+                    row.children.push(label);
+                }
+                row
+            })
+            .collect()
+    }));
+    let view = View(list);
+    let base = view.render_shared();
+    let viewport = Size::new(1200.0, 1152.0);
+    let measure = |cached| {
+        let mut text = TextSystem::system().unwrap();
+        let mut input = Interaction::default();
+        let mut cache = RowLayoutCache::default();
+        let mut layout = xrack_layout::layout(&base, viewport, &mut text);
+        let mut times = Vec::new();
+        for step in 1..=120 {
+            assert!(input.accessibility_scroll_to(
+                &layout,
+                &[],
+                Orientation::Vertical,
+                step as f32 * 4.0,
+            ));
+            let start = Instant::now();
+            let result = if cached {
+                prepare_scene_with_row_cache(
+                    &view,
+                    base.clone(),
+                    viewport,
+                    &mut text,
+                    &input,
+                    &mut cache,
+                )
+            } else {
+                prepare_scene_with_input(&view, base.clone(), viewport, &mut text, &input)
+            };
+            if step > 20 {
+                times.push(start.elapsed().as_secs_f64() * 1000.0);
+            }
+            layout = result.1;
+        }
+        times.sort_by(f64::total_cmp);
+        (times[(times.len() * 95).div_ceil(100) - 1], cache.stats())
+    };
+    let direct = measure(false);
+    let cached = measure(true);
+    assert!(cached.1.reused > 5000);
+    println!(
+        "scroll layout p95 direct {:.3} ms, cached {:.3} ms; {:?}",
+        direct.0, cached.0, cached.1
+    );
+    profile_scroll_frames(
+        "dense list",
+        &view,
+        viewport,
+        &[],
+        Orientation::Vertical,
+        4.0,
+    );
+    profile_scroll_frames(
+        "dense list fast scroll",
+        &view,
+        viewport,
+        &[],
+        Orientation::Vertical,
+        36.0,
+    );
+    profile_scroll_frames(
+        "wide table",
+        &table_ui::WideTableDemo::new(),
+        Size::new(620.0, 320.0),
+        &[1],
+        Orientation::Horizontal,
+        4.0,
+    );
+}
+
+fn profile_scroll_frames(
+    label: &str,
+    component: &impl xrack_runtime::Component,
+    viewport: Size,
+    path: &[usize],
+    axis: xrack_runtime::Orientation,
+    pixels_per_frame: f32,
+) {
+    use std::time::{Duration, Instant};
+
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))
+    .unwrap();
+    let scale = 2.0;
+    let target = renderer.device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("XRack scroll frame profile"),
+        size: wgpu::Extent3d {
+            width: (viewport.width * scale) as u32,
+            height: (viewport.height * scale) as u32,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8Unorm,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+        view_formats: &[],
+    });
+    let base = component.render_shared();
+    let mut input = Interaction::default();
+    let mut layout = renderer.layout_with_input(&base, viewport, &input);
+    let mut samples: [Vec<f64>; 4] = std::array::from_fn(|_| Vec::new());
+    for step in 1..=120 {
+        assert!(input.accessibility_scroll_to(&layout, path, axis, step as f32 * pixels_per_frame));
+        let start = Instant::now();
+        let (scene, next) = renderer.prepare_scene(component, base.clone(), viewport, &input);
+        input.reconcile(&scene, &next);
+        let prepared = Instant::now();
+        renderer
+            .draw_with_layout(&scene, &next, &target, scale, &input)
+            .unwrap();
+        let submitted = Instant::now();
+        renderer
+            .device
+            .poll(wgpu::PollType::Wait {
+                submission_index: None,
+                timeout: Some(Duration::from_secs(10)),
+            })
+            .unwrap();
+        let complete = Instant::now();
+        if step > 20 {
+            for (samples, elapsed) in samples.iter_mut().zip([
+                prepared - start,
+                submitted - prepared,
+                complete - submitted,
+                complete - start,
+            ]) {
+                samples.push(elapsed.as_secs_f64() * 1000.0);
+            }
+        }
+        layout = next;
+    }
+    let [prepare, submit, gpu_wait, total] = samples.map(|mut samples| {
+        samples.sort_by(f64::total_cmp);
+        samples[(samples.len() * 95).div_ceil(100) - 1]
+    });
+    println!(
+        "{label} frame p95 at 2x: prepare {prepare:.3} ms, submit {submit:.3} ms, GPU wait {gpu_wait:.3} ms, total {total:.3} ms"
+    );
 }
 
 #[test]
@@ -6456,6 +7150,48 @@ fn range_controls_share_pointer_keyboard_and_rendering() {
             .save_png(std::path::Path::new(&path).join("controls-demo.png"))
             .unwrap();
     }
+}
+
+#[test]
+fn preview_drag_commits_deferred_numeric_values_only_on_release() {
+    use controls_ui::SnapSlidersDemo;
+    use xrack_renderer_femtovg::preview::PreviewScene;
+    use xrack_runtime::{Component, Orientation};
+
+    let ui = SnapSlidersDemo::new();
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))
+    .unwrap();
+    let (_, layout) = renderer.prepare_scene(
+        &ui,
+        ui.render_shared(),
+        Size::new(500.0, 290.0),
+        &Interaction::default(),
+    );
+    let geometry = SliderGeometry::new(
+        layout.at_path(&[0, 3]).unwrap().bounds,
+        Orientation::Horizontal,
+    );
+    let mut preview = PreviewScene::new(Box::new(ui.as_weak().upgrade().unwrap()));
+    let original = preview.render_animated(&mut renderer).unwrap().to_vec();
+    assert!(preview.begin_pointer(geometry.position(0.2)));
+    assert!(preview.move_pointer(geometry.position(0.46)));
+    let draft = preview.render_animated(&mut renderer).unwrap();
+    assert_ne!(draft, original);
+    assert_eq!(ui.get_level(), 20.0);
+    assert_eq!(ui.get_level_changes(), 0);
+    assert!(preview.release_pointer(geometry.position(0.46), false));
+    assert_eq!(ui.get_level(), 50.0);
+    assert_eq!(ui.get_level_releases(), 1);
+    preview.render_animated(&mut renderer).unwrap();
+    assert!(preview.begin_pointer(geometry.position(0.5)));
+    assert!(preview.move_pointer(geometry.position(0.85)));
+    assert!(preview.cancel_pointer());
+    assert!(!preview.release_pointer(geometry.position(0.85), false));
+    assert_eq!(ui.get_level(), 50.0);
+    assert_eq!(ui.get_level_releases(), 1);
 }
 
 #[test]
@@ -7220,6 +7956,39 @@ fn gallery_renders_typed_gradients_and_individual_corners() {
 }
 
 #[test]
+fn a_fixed_image_paints_its_new_source_with_the_previous_layout() {
+    use media_ui::NineSliceDemo;
+    use xrack_runtime::{Length, Node};
+
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))
+    .unwrap();
+    let mut scene = Node::new("Window", None);
+    let mut image = Node::new("Image", None);
+    image.properties.insert("x", Length(8.0).into());
+    image.properties.insert("y", Length(8.0).into());
+    image.properties.insert("width", Length(48.0).into());
+    image.properties.insert("height", Length(32.0).into());
+    image.mark_paint_only("source");
+    scene.children.push(image);
+    let input = Interaction::default();
+    let before = renderer.snapshot(&scene, 64, 48, 1.0, &input).unwrap();
+    let mut updated = scene.clone();
+    updated.children[0]
+        .properties
+        .insert("source", NineSliceDemo::new().get_frame().into());
+    assert!(scene.same_frame_inputs(&updated));
+    let after = renderer
+        .snapshot_prepared(&updated, before.layout.clone(), 64, 48, 1.0, &input)
+        .unwrap();
+    assert_eq!(before.layout, after.layout);
+    assert_eq!(before.pixel(0, 0), after.pixel(0, 0));
+    assert!((8..40).any(|y| (8..56).any(|x| before.pixel(x, y) != after.pixel(x, y))));
+}
+
+#[test]
 fn media_renders_embedded_images_and_vector_paths() {
     let mut renderer = pollster::block_on(Renderer::new(
         wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
@@ -7233,8 +8002,8 @@ fn media_renders_embedded_images_and_vector_paths() {
     let card = [0x1d, 0x29, 0x3d, 255];
 
     let mut badge = scene.find("badge").unwrap().clone();
-    let commands = badge.text("commands").unwrap();
-    let plan = badge.precompiled_path(commands).unwrap();
+    let commands = badge.text("commands").unwrap().to_owned();
+    let plan = badge.precompiled_path(&commands).unwrap();
     assert!(!plan.segments.is_empty());
     // Exercise the precomputed tight bounds as well as the normalized segments.
     badge.properties.remove("viewbox-width");
@@ -7246,6 +8015,13 @@ fn media_renders_embedded_images_and_vector_paths() {
             .precompiled_path(fallback.text("commands").unwrap())
             .is_none()
     );
+    let mut loaded = fallback.clone();
+    loaded.set_loaded_vector_path(xrack_runtime::LoadedVectorPath::new(
+        commands,
+        plan.bounds,
+        plan.segments.to_vec(),
+    ));
+    let loaded_pixels = renderer.snapshot(&loaded, 128, 128, 1.0, &input).unwrap();
     let planned_pixels = renderer.snapshot(&badge, 128, 128, 1.0, &input).unwrap();
     let parsed_pixels = renderer.snapshot(&fallback, 128, 128, 1.0, &input).unwrap();
     let corner = planned_pixels.pixel(0, 0).unwrap();
@@ -7256,6 +8032,7 @@ fn media_renders_embedded_images_and_vector_paths() {
             .any(|pixel| pixel != corner)
     );
     assert_eq!(planned_pixels.rgba, parsed_pixels.rgba);
+    assert_eq!(planned_pixels.rgba, loaded_pixels.rgba);
     badge
         .properties
         .insert("commands", xrack_runtime::Value::String("M0 0 L1 1".into()));
@@ -7461,6 +8238,24 @@ fn nine_slice_preserves_asymmetric_corners_and_tiles_each_axis() {
             .unwrap()
     };
     let stretch = snapshot(&mut renderer, &ui);
+    let scene = ui.render_shared();
+    let embedded = scene.find("sliced").unwrap();
+    let image = embedded.image_asset("source").unwrap();
+    let pixels = image.pixels().unwrap();
+    let mut loaded = embedded.clone();
+    let asset = xrack_runtime::ImageAsset::Loaded(xrack_runtime::LoadedImage::new(
+        pixels.format,
+        pixels.bytes.to_vec(),
+        pixels.size,
+    ))
+    .with_nine_slice(pixels.edges.unwrap())
+    .unwrap();
+    loaded
+        .properties
+        .insert("source", xrack_runtime::Value::ImageAsset(asset));
+    let embedded_pixels = renderer.snapshot(embedded, 240, 160, 1.0, &input).unwrap();
+    let loaded_pixels = renderer.snapshot(&loaded, 240, 160, 1.0, &input).unwrap();
+    assert_eq!(loaded_pixels.rgba, embedded_pixels.rgba);
     let first = Some([0x6b, 0x3d, 0x92, 255]);
     let second = Some([0xd4, 0x4b, 0x76, 255]);
     let top_left = Some([0xff, 0xd1, 0x77, 255]);
@@ -7875,6 +8670,28 @@ fn whole_subtree_opacity_and_sibling_z_match_gpu_and_input() {
     let point = Point { x: 312.0, y: 92.0 };
     input.pointer_move(&scene, &half.layout, point);
     assert_eq!(input.hovered.as_ref().unwrap().id, Some("first"));
+
+    let stats = renderer.opacity_layer_stats();
+    assert_eq!(stats.rasterized, 1);
+    ui.set_fade(0.25);
+    let quarter = renderer
+        .snapshot(&ui.render_shared(), 460, 292, 1.0, &input)
+        .unwrap();
+    assert_eq!(quarter.layout, half.layout);
+    assert_rgb(quarter.pixel(78, 91), [12, 17, 92, 255]);
+    assert_eq!(renderer.opacity_layer_stats().rasterized, stats.rasterized);
+    assert_eq!(renderer.opacity_layer_stats().reused, stats.reused + 1);
+
+    let mut changed = ui.render();
+    changed.children[2].children[0]
+        .properties
+        .insert("background", xrack_runtime::Color(0xffff00ff).into());
+    let refreshed = renderer.snapshot(&changed, 460, 292, 1.0, &input).unwrap();
+    assert_rgb(refreshed.pixel(78, 91), [76, 81, 28, 255]);
+    assert_eq!(
+        renderer.opacity_layer_stats().rasterized,
+        stats.rasterized + 1
+    );
 
     ui.set_fade(0.0);
     let clear = ui.render_shared();
@@ -8323,4 +9140,774 @@ fn table_cell_positioning_draws_the_last_virtual_row_beside_a_frozen_column() {
             .save_png(std::path::Path::new(&path).join("table-position-cell.png"))
             .unwrap();
     }
+}
+
+#[test]
+fn preview_routes_swipe_and_two_finger_transforms_without_an_extra_click() {
+    use layout_ui::{ScaleRotateDemo, SwipeGestureDemo};
+    use xrack_renderer_femtovg::preview::{PointerContact, PreviewScene};
+    use xrack_runtime::{Length, PointerEvent};
+
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))
+    .unwrap();
+    let swipe = SwipeGestureDemo::new();
+    let mut preview = PreviewScene::new(Box::new(swipe.as_weak().upgrade().unwrap()));
+    preview.render_animated(&mut renderer).unwrap();
+    let mouse = PointerContact {
+        id: 1,
+        primary: true,
+        event: PointerEvent::default(),
+    };
+    let start = Point { x: 120.0, y: 105.0 };
+    let end = Point { x: 180.0, ..start };
+    assert!(preview.press_contact(mouse, start, false));
+    assert!(preview.move_contact(mouse, end));
+    preview.render_animated(&mut renderer).unwrap();
+    assert!(swipe.get_swiping());
+    assert!(preview.finish_contact(mouse, end, false, false));
+    preview.render_animated(&mut renderer).unwrap();
+    assert_eq!(swipe.get_shift(), Length(60.0));
+    assert_eq!(swipe.get_swipes(), 1);
+    assert!(!swipe.get_swiping());
+
+    let mut pinch = ScaleRotateDemo::new();
+    let mut preview = PreviewScene::new(Box::new(pinch.as_weak().upgrade().unwrap()));
+    preview.render_animated(&mut renderer).unwrap();
+    let first = PointerContact {
+        event: PointerEvent {
+            is_touch: true,
+            ..Default::default()
+        },
+        ..mouse
+    };
+    let second = PointerContact {
+        id: 2,
+        primary: false,
+        ..first
+    };
+    let a = Point { x: 56.0, y: 52.0 };
+    let b = Point { x: 116.0, y: 52.0 };
+    let c = Point { x: 56.0, y: 142.0 };
+    preview.press_contact(first, a, false);
+    assert!(preview.press_contact(second, b, false));
+    assert_eq!(pinch.get_starts(), 1);
+    assert!(preview.move_contact(second, c));
+    assert_eq!(pinch.get_zoom(), 1.5);
+    assert_eq!(pinch.get_angle(), 90.0);
+    assert!(preview.finish_contact(second, c, false, false));
+    assert!(preview.finish_contact(first, a, true, false));
+    assert_eq!(pinch.get_ends(), 1);
+    assert_eq!(pinch.get_taps(), 0);
+    assert!(!pinch.get_recognizing());
+
+    preview.press_contact(first, a, false);
+    assert!(preview.press_contact(second, b, false));
+    pinch.set_gestures_enabled(false);
+    preview.render_animated(&mut renderer).unwrap();
+    assert_eq!(pinch.get_cancellations(), 1);
+    assert!(!pinch.get_recognizing());
+}
+
+#[test]
+fn preview_uses_shared_internal_and_file_drop_routing() {
+    use xrack_renderer_femtovg::preview::{PointerContact, PreviewScene};
+    use xrack_runtime::{DragAction, KeyModifiers, PointerEvent};
+
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))
+    .unwrap();
+    let card = DragDropDemo::new();
+    let mut preview = PreviewScene::new(Box::new(card.as_weak().upgrade().unwrap()));
+    preview.render_animated(&mut renderer).unwrap();
+    let contact = PointerContact {
+        id: 1,
+        primary: true,
+        event: PointerEvent {
+            modifiers: KeyModifiers {
+                control: true,
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+    };
+    let start = Point { x: 102.0, y: 117.0 };
+    let target = Point { x: 420.0, y: 117.0 };
+    preview.press_contact(contact, start, false);
+    assert!(preview.move_contact(contact, target));
+    preview.render_animated(&mut renderer).unwrap();
+    assert_eq!(card.get_trace(), "start-enter");
+    assert!(preview.finish_contact(contact, target, false, false));
+    assert_eq!(card.get_received(), "XR-42");
+    assert_eq!(card.get_result(), DragAction::Copy);
+    assert_eq!(card.get_trace(), "start-enter-drop-finish");
+
+    let files = FileDropDemo::new();
+    let mut preview = PreviewScene::new(Box::new(files.as_weak().upgrade().unwrap()));
+    preview.render_animated(&mut renderer).unwrap();
+    let point = Point { x: 120.0, y: 110.0 };
+    let path = std::env::temp_dir()
+        .join("photo.png")
+        .to_string_lossy()
+        .into_owned();
+    assert!(preview.file_drag(1, point, vec![path.clone()], false));
+    assert_eq!(files.get_preview(), std::slice::from_ref(&path));
+    assert!(preview.file_drag(1, point, vec![path.clone()], true));
+    assert_eq!(files.get_paths(), [path]);
+    assert_eq!(files.get_batches(), 1);
+    assert!(files.get_preview().is_empty());
+}
+
+#[test]
+fn preview_table_range_drag_supports_copy_and_followup_keyboard_selection() {
+    use xrack_renderer_femtovg::preview::{PointerContact, PreviewScene};
+    use xrack_runtime::{Component, KeyEvent, KeyModifiers, PointerEvent, SelectionTarget};
+
+    let mut ui = TableDemo::new();
+    ui.set_records(["first", "second", "third"].map(str::to_owned).to_vec());
+    ui.set_target(SelectionTarget::Cells);
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))
+    .unwrap();
+    let (_, layout) = renderer.prepare_scene(
+        &ui,
+        ui.render_shared(),
+        Size::new(560.0, 370.0),
+        &Interaction::default(),
+    );
+    let table = layout.at_path(&[0, 2]).unwrap();
+    let x = table.table.as_ref().unwrap().columns[0].x + 75.0;
+    let start = Point {
+        x,
+        y: table.children[0].bounds.y + 16.0,
+    };
+    let end = Point {
+        x,
+        y: table.children[1].bounds.y + 16.0,
+    };
+    let mut preview = PreviewScene::new(Box::new(ui.as_weak().upgrade().unwrap()));
+    let contact = PointerContact {
+        id: 1,
+        primary: true,
+        event: PointerEvent::default(),
+    };
+    preview.render_animated(&mut renderer).unwrap();
+    assert!(preview.press_contact(contact, start, false));
+    assert!(preview.move_contact(contact, end));
+    preview.render_animated(&mut renderer).unwrap();
+    assert_eq!(ui.get_selected_count(), 0);
+    assert!(preview.finish_contact(contact, end, false, false));
+    preview.render_animated(&mut renderer).unwrap();
+    assert_eq!(ui.get_selected_count(), 2);
+
+    let control = KeyModifiers {
+        control: true,
+        ..Default::default()
+    };
+    let key = |name: &str, modifiers| KeyEvent {
+        key: name.into(),
+        modifiers,
+        ..Default::default()
+    };
+    assert!(preview.keyboard(&mut renderer, &key("c", control), true));
+    assert_eq!(
+        preview.take_clipboard_request().unwrap().text.as_deref(),
+        Some("first\nsecond")
+    );
+    assert!(preview.keyboard(&mut renderer, &key("a", control), true));
+    preview.render_animated(&mut renderer).unwrap();
+    assert_eq!(ui.get_selected_count(), 6);
+
+    assert!(preview.keyboard(&mut renderer, &key("Escape", KeyModifiers::default()), true));
+    preview.render_animated(&mut renderer).unwrap();
+    assert_eq!(ui.get_selected_count(), 0);
+    assert!(preview.keyboard(
+        &mut renderer,
+        &key("ArrowDown", KeyModifiers::default()),
+        true
+    ));
+    preview.render_animated(&mut renderer).unwrap();
+    assert_eq!(ui.get_selected_count(), 1);
+}
+
+#[test]
+fn preview_scrollbar_keeps_capture_until_release_and_uses_keyboard_focus() {
+    use list_ui::StandaloneScrollDemo;
+    use xrack_renderer_femtovg::preview::{PointerContact, PreviewScene};
+    use xrack_runtime::{KeyEvent, PointerEvent};
+
+    let mut ui = StandaloneScrollDemo::new();
+    ui.set_snap_on_release(true);
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))
+    .unwrap();
+    let mut preview = PreviewScene::new(Box::new(ui.as_weak().upgrade().unwrap()));
+    let contact = PointerContact {
+        id: 1,
+        primary: true,
+        event: PointerEvent::default(),
+    };
+    preview.render_animated(&mut renderer).unwrap();
+    let start = Point { x: 295.0, y: 34.0 };
+    let end = Point { x: 330.0, y: 97.0 };
+    assert!(preview.press_contact(contact, start, false));
+    assert_eq!(ui.get_position(), 0.0);
+    assert!(preview.move_contact(contact, end));
+    let drag_position = ui.get_position();
+    assert!(drag_position > 0.3 && drag_position < 0.7);
+    preview.render_animated(&mut renderer).unwrap();
+    assert!(preview.finish_contact(contact, end, false, false));
+    let snapped = ui.get_position() / 0.125;
+    assert_eq!(snapped, snapped.round());
+    preview.render_animated(&mut renderer).unwrap();
+    assert!(preview.keyboard(
+        &mut renderer,
+        &KeyEvent {
+            key: "End".into(),
+            ..Default::default()
+        },
+        true
+    ));
+    assert_eq!(ui.get_position(), 0.75);
+}
+
+#[test]
+fn preview_table_column_resize_updates_the_live_layout_after_pointer_capture() {
+    use xrack_renderer_femtovg::preview::{PointerContact, PreviewScene};
+    use xrack_runtime::{Component, PointerEvent};
+
+    let mut ui = TableDemo::new();
+    ui.set_records((0..20).map(|row| format!("Row {row}")).collect());
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))
+    .unwrap();
+    let viewport = Size::new(560.0, 370.0);
+    let input = Interaction::default();
+    let (_, layout) = renderer.prepare_scene(&ui, ui.render_shared(), viewport, &input);
+    let table = layout.at_path(&[0, 2]).unwrap().table.as_ref().unwrap();
+    let before = table.columns[0].width;
+    let start = Point {
+        x: table.columns[0].x + before - 1.0,
+        y: table.header.y + 10.0,
+    };
+    let end = Point {
+        x: start.x + 42.0,
+        y: start.y,
+    };
+    let mut preview = PreviewScene::new(Box::new(ui.as_weak().upgrade().unwrap()));
+    let contact = PointerContact {
+        id: 1,
+        primary: true,
+        event: PointerEvent::default(),
+    };
+    preview.render_animated(&mut renderer).unwrap();
+    assert!(preview.press_contact(contact, start, false));
+    assert!(preview.move_contact(contact, end));
+    preview.render_animated(&mut renderer).unwrap();
+    assert!(preview.finish_contact(contact, end, false, false));
+    preview.render_animated(&mut renderer).unwrap();
+    let (_, layout) = renderer.prepare_scene(&ui, ui.render_shared(), viewport, &input);
+    let after = layout
+        .at_path(&[0, 2])
+        .unwrap()
+        .table
+        .as_ref()
+        .unwrap()
+        .columns[0]
+        .width;
+    assert_eq!(after, before + 42.0);
+    assert_eq!(ui.get_selected_count(), 0);
+}
+
+#[test]
+fn preview_table_header_reorder_keeps_unclaimed_clicks_and_alt_sort() {
+    use std::{cell::RefCell, rc::Rc};
+    use xrack_renderer_femtovg::preview::{PointerContact, PreviewScene};
+    use xrack_runtime::{Component, KeyModifiers, PointerEvent, SelectionTarget};
+
+    let mut ui = TableDemo::new();
+    ui.set_records(vec!["first".into(), "second".into()]);
+    ui.set_target(SelectionTarget::Columns);
+    let sorts = Rc::new(RefCell::new(Vec::new()));
+    ui.on_sort_requested({
+        let sorts = sorts.clone();
+        move |column, descending| sorts.borrow_mut().push((column, descending))
+    });
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))
+    .unwrap();
+    let size = Size::new(560.0, 370.0);
+    let input = Interaction::default();
+    let path = [0, 2];
+    let prepare = |renderer: &mut Renderer, ui: &TableDemo| {
+        renderer.prepare_scene(ui, ui.render_shared(), size, &input)
+    };
+    let (_, layout) = prepare(&mut renderer, &ui);
+    let table = layout.at_path(&path).unwrap().table.as_ref().unwrap();
+    let header_point =
+        |geometry: &xrack_layout::TableGeometry, index: usize, fraction: f32| Point {
+            x: geometry.columns[index].x + geometry.columns[index].width * fraction,
+            y: geometry.header.y + geometry.header.height * 0.5,
+        };
+    let start = header_point(table, 0, 0.5);
+    let end = header_point(table, 1, 0.85);
+    let contact = PointerContact {
+        id: 1,
+        primary: true,
+        event: PointerEvent::default(),
+    };
+    let mut preview = PreviewScene::new(Box::new(ui.as_weak().upgrade().unwrap()));
+    preview.render_animated(&mut renderer).unwrap();
+    assert!(preview.press_contact(contact, start, false));
+    assert!(preview.move_contact(contact, end));
+    preview.render_animated(&mut renderer).unwrap();
+    assert!(preview.finish_contact(contact, end, false, false));
+    preview.render_animated(&mut renderer).unwrap();
+
+    let (scene, layout) = prepare(&mut renderer, &ui);
+    assert_eq!(
+        scene
+            .at_path(&path)
+            .unwrap()
+            .table_column_order
+            .visual_index(2, 0),
+        Some(1)
+    );
+    assert!(sorts.borrow().is_empty());
+    let table = layout.at_path(&path).unwrap().table.as_ref().unwrap();
+    let sortable = header_point(table, 0, 0.5);
+    assert!(preview.press_contact(contact, sortable, false));
+    assert!(preview.finish_contact(contact, sortable, true, false));
+    preview.render_animated(&mut renderer).unwrap();
+    assert_eq!(ui.get_selected_count(), 1);
+    assert!(sorts.borrow().is_empty());
+
+    let alt = PointerContact {
+        event: PointerEvent {
+            modifiers: KeyModifiers {
+                alt: true,
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        ..contact
+    };
+    assert!(preview.press_contact(alt, sortable, false));
+    assert!(preview.finish_contact(alt, sortable, true, false));
+    assert_eq!(sorts.borrow().as_slice(), &[(0, false)]);
+}
+
+#[test]
+fn preview_table_row_reorder_keeps_the_moved_key_and_cancels_without_reordering() {
+    use table_ui::{InventoryRow, StandardTableDemo};
+    use xrack_renderer_femtovg::preview::{PointerContact, PreviewScene};
+    use xrack_runtime::{Component, KeyEvent, KeyModifiers, Length, PointerEvent};
+
+    let mut ui = StandardTableDemo::new();
+    ui.set_inventory(
+        (0..8)
+            .map(|row| InventoryRow {
+                name: format!("Row {row}"),
+                ..Default::default()
+            })
+            .collect(),
+    );
+    ui.set_row_header_size(Length(36.0));
+    ui.set_move_rows(true);
+    ui.set_current(0);
+    let first = ui.model_inventory().row_key(0).unwrap();
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))
+    .unwrap();
+    let size = Size::new(620.0, 380.0);
+    let input = Interaction::default();
+    let path = [0, 1];
+    let prepare = |renderer: &mut Renderer, ui: &StandardTableDemo| {
+        renderer.prepare_scene(ui, ui.render_shared(), size, &input)
+    };
+    let row_point = |layout: &xrack_layout::LayoutNode, row: usize, fraction: f32| {
+        let item = layout.at_path(&path).unwrap();
+        let gutter = item.table.as_ref().unwrap().row_header;
+        let row = item.children[row].bounds;
+        Point {
+            x: gutter.x + 16.0,
+            y: row.y + row.height * fraction,
+        }
+    };
+
+    let (_, layout) = prepare(&mut renderer, &ui);
+    let start = row_point(&layout, 0, 0.5);
+    let end = row_point(&layout, 2, 0.85);
+    let contact = PointerContact {
+        id: 1,
+        primary: true,
+        event: PointerEvent::default(),
+    };
+    let mut preview = PreviewScene::new(Box::new(ui.as_weak().upgrade().unwrap()));
+    preview.render_animated(&mut renderer).unwrap();
+    assert!(preview.press_contact(contact, start, false));
+    assert!(preview.move_contact(contact, end));
+    preview.render_animated(&mut renderer).unwrap();
+    assert_eq!(ui.get_moved_row_to(), -1);
+    assert!(preview.finish_contact(contact, end, false, false));
+    preview.render_animated(&mut renderer).unwrap();
+    assert_eq!((ui.get_moved_row_from(), ui.get_moved_row_to()), (0, 2));
+
+    let (scene, layout) = prepare(&mut renderer, &ui);
+    let row_keys = |scene: &xrack_runtime::Node| {
+        scene
+            .at_path(&path)
+            .unwrap()
+            .children
+            .iter()
+            .map(|row| row.row_key)
+            .collect::<Vec<_>>()
+    };
+    let after = row_keys(&scene);
+    assert_eq!(after[2], Some(first));
+    let start = row_point(&layout, 0, 0.5);
+    let end = row_point(&layout, 3, 0.85);
+    assert!(preview.press_contact(contact, start, false));
+    assert!(preview.move_contact(contact, end));
+    assert!(preview.finish_contact(contact, end, false, true));
+    preview.render_animated(&mut renderer).unwrap();
+    let (scene, _) = prepare(&mut renderer, &ui);
+    assert_eq!(row_keys(&scene), after);
+
+    let key = KeyEvent {
+        key: "ArrowUp".into(),
+        modifiers: KeyModifiers {
+            alt: true,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    assert!(preview.keyboard(&mut renderer, &key, true));
+    preview.render_animated(&mut renderer).unwrap();
+    assert_eq!((ui.get_moved_row_from(), ui.get_moved_row_to()), (2, 1));
+    let (scene, _) = prepare(&mut renderer, &ui);
+    assert_eq!(row_keys(&scene)[1], Some(first));
+}
+
+#[test]
+fn preview_composition_paints_without_writing_and_commits_once_to_the_original_editor() {
+    use xrack_renderer_femtovg::preview::PreviewScene;
+    use xrack_runtime::Component;
+
+    let mut ui = BidiEditorDemo::new();
+    ui.set_line("original".into());
+    ui.set_document("other editor".into());
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))
+    .unwrap();
+    let (_, layout) = renderer.prepare_scene(
+        &ui,
+        ui.render_shared(),
+        Size::new(520.0, 300.0),
+        &Interaction::default(),
+    );
+    let editor_point = |index| {
+        let bounds = layout.at_path(&[0, index]).unwrap().bounds;
+        Point {
+            x: bounds.x + bounds.width * 0.5,
+            y: bounds.y + bounds.height * 0.5,
+        }
+    };
+    let mut preview = PreviewScene::new(Box::new(ui.as_weak().upgrade().unwrap()));
+    preview.render_animated(&mut renderer).unwrap();
+    preview.click(editor_point(1));
+    preview.render_animated(&mut renderer).unwrap();
+    preview.edit(EditAction::SelectAll);
+    let selection = preview.render_animated(&mut renderer).unwrap().to_vec();
+    let original_caret = preview.ime_area().unwrap();
+
+    assert!(preview.begin_text_composition(&mut renderer, 1));
+    assert!(preview.update_text_composition(1, "ni".into()));
+    let preedit = preview.render_animated(&mut renderer).unwrap().to_vec();
+    assert_ne!(selection, preedit);
+    let composition_caret = preview.ime_area().unwrap();
+    assert_eq!(original_caret.y, composition_caret.y);
+    assert_ne!(original_caret.x, composition_caret.x);
+    assert_eq!(ui.get_line(), "original");
+    assert!(preview.update_text_composition(1, "你好".into()));
+    assert!(preview.finish_text_composition(1, "你好"));
+    assert!(!preview.finish_text_composition(1, "你好"));
+    assert_eq!(ui.get_line(), "你好");
+    preview.render_animated(&mut renderer).unwrap();
+    preview.replay_edit(false);
+    assert_eq!(ui.get_line(), "original");
+    preview.render_animated(&mut renderer).unwrap();
+
+    assert!(preview.begin_text_composition(&mut renderer, 2));
+    assert!(preview.update_text_composition(2, "discard".into()));
+    assert!(preview.cancel_text_composition(2));
+    assert!(!preview.finish_text_composition(2, "discard"));
+    assert_eq!(ui.get_line(), "original");
+
+    assert!(preview.begin_text_composition(&mut renderer, 3));
+    assert!(preview.update_text_composition(3, "stale".into()));
+    preview.click(editor_point(3));
+    preview.render_animated(&mut renderer).unwrap();
+    assert!(preview.ime_area().unwrap().y > original_caret.y);
+    assert!(preview.begin_text_composition(&mut renderer, 4));
+    assert!(!preview.update_text_composition(3, "stale".into()));
+    assert!(!preview.finish_text_composition(3, "stale"));
+    preview.edit(EditAction::SelectAll);
+    assert!(!preview.finish_text_composition(4, "stale"));
+    assert!(preview.begin_text_composition(&mut renderer, 5));
+    assert!(preview.finish_text_composition(5, "新内容"));
+    assert_eq!(ui.get_line(), "original");
+    assert_eq!(ui.get_document(), "新内容");
+
+    preview.render_animated(&mut renderer).unwrap();
+    assert!(preview.begin_text_composition(&mut renderer, 6));
+    assert!(preview.update_text_composition(6, "stale".into()));
+    ui.set_document("updated by the component".into());
+    preview.render_animated(&mut renderer).unwrap();
+    assert!(!preview.finish_text_composition(6, "stale"));
+    assert_eq!(ui.get_document(), "updated by the component");
+}
+
+#[test]
+fn preview_places_the_text_caret_and_preserves_drag_and_shift_anchors() {
+    use xrack_layout::{Interaction, TextEdit, TextPosition};
+    use xrack_renderer_femtovg::preview::{PointerContact, PreviewScene};
+    use xrack_runtime::{Component, KeyEvent, KeyModifiers, PointerEvent};
+
+    let mut ui = BidiEditorDemo::new();
+    ui.set_line("abcdef".into());
+    let document = "alpha\nβeta\ngamma";
+    ui.set_document(document.into());
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))
+    .unwrap();
+    let size = Size::new(520.0, 300.0);
+    let input = Interaction::default();
+    let (scene, layout) = renderer.prepare_scene(&ui, ui.render_shared(), size, &input);
+    let line_path = [0, 1];
+    let line = layout.at_path(&line_path).unwrap().bounds;
+    let entry = scene.at_path(&line_path).unwrap();
+    let value = ui.get_line();
+    let line_point = |offset| {
+        let mut editor = TextEdit::at_end(&value);
+        editor.place_caret(
+            &value,
+            TextPosition {
+                offset,
+                trailing: false,
+            },
+            false,
+        );
+        Point {
+            x: renderer
+                .text
+                .single_line_caret_x(entry, line, &value, Some(&editor)),
+            y: line.y + line.height * 0.5,
+        }
+    };
+    let first = line_point(0);
+    let start = line_point(1);
+    let end = line_point(4);
+    let extend = line_point(5);
+    let paragraph_path = [0, 3];
+    let paragraph = layout.at_path(&paragraph_path).unwrap().bounds;
+    let node = scene.at_path(&paragraph_path).unwrap();
+    let geometry = renderer.text.text_area_layout(node, paragraph, document);
+    let paragraph_point = |offset| {
+        let caret = geometry.caret_point(
+            document,
+            TextPosition {
+                offset,
+                trailing: false,
+            },
+            |text| renderer.text.advance_node(node, text),
+        );
+        Point {
+            x: geometry.area.x + caret.x,
+            y: geometry.area.y + caret.y + geometry.line_height * 0.5,
+        }
+    };
+    let multiline_start = paragraph_point(1);
+    let multiline_end = paragraph_point("alpha\nβ".len());
+    let copy = KeyEvent {
+        key: "c".into(),
+        modifiers: KeyModifiers {
+            control: true,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+
+    let mut preview = PreviewScene::new(Box::new(ui.as_weak().upgrade().unwrap()));
+    preview.render_animated(&mut renderer).unwrap();
+    preview.click(first);
+    assert!(preview.keyboard(
+        &mut renderer,
+        &KeyEvent {
+            key: "X".into(),
+            text: "X".into(),
+            ..Default::default()
+        },
+        true
+    ));
+    assert_eq!(ui.get_line(), "Xabcdef");
+    ui.set_line("abcdef".into());
+    preview.render_animated(&mut renderer).unwrap();
+
+    let contact = PointerContact {
+        id: 1,
+        primary: true,
+        event: PointerEvent::default(),
+    };
+    assert!(preview.press_contact(contact, start, false));
+    assert!(preview.move_contact(contact, end));
+    assert!(preview.finish_contact(contact, end, false, false));
+    preview.render_animated(&mut renderer).unwrap();
+    assert!(preview.keyboard(&mut renderer, &copy, true));
+    assert_eq!(
+        preview.take_clipboard_request().unwrap().text.as_deref(),
+        Some("bcd")
+    );
+
+    let shift = PointerContact {
+        event: PointerEvent {
+            modifiers: KeyModifiers {
+                shift: true,
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        ..contact
+    };
+    assert!(preview.press_contact(shift, extend, false));
+    assert!(preview.finish_contact(shift, extend, true, false));
+    assert!(preview.keyboard(&mut renderer, &copy, true));
+    assert_eq!(
+        preview.take_clipboard_request().unwrap().text.as_deref(),
+        Some("bcde")
+    );
+
+    preview.render_animated(&mut renderer).unwrap();
+    assert!(preview.press_contact(contact, multiline_start, false));
+    preview.render_animated(&mut renderer).unwrap();
+    assert!(preview.move_contact(contact, multiline_end));
+    assert!(preview.finish_contact(contact, multiline_end, false, false));
+    assert!(preview.keyboard(&mut renderer, &copy, true));
+    assert_eq!(
+        preview.take_clipboard_request().unwrap().text.as_deref(),
+        Some("lpha\nβ")
+    );
+}
+
+#[test]
+fn preview_multiline_editor_uses_shaped_vertical_navigation_and_wheel_scroll() {
+    use xrack_renderer_femtovg::preview::PreviewScene;
+    use xrack_runtime::{Component, KeyEvent, KeyModifiers, Length, WheelEvent};
+
+    let mut ui = BidiEditorDemo::new();
+    ui.set_document("same\nsame\nlast".into());
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))
+    .unwrap();
+    let path = [0, 3];
+    let point_at = |renderer: &mut Renderer, ui: &BidiEditorDemo, offset| {
+        let input = Interaction::default();
+        let (scene, layout) =
+            renderer.prepare_scene(ui, ui.render_shared(), Size::new(520.0, 300.0), &input);
+        let bounds = layout.at_path(&path).unwrap().bounds;
+        let node = scene.at_path(&path).unwrap();
+        let value = node.text("text").unwrap();
+        let geometry = renderer.text.text_area_layout(node, bounds, value);
+        let caret = geometry.caret_point(
+            value,
+            TextPosition {
+                offset,
+                trailing: false,
+            },
+            |text| renderer.text.advance_node(node, text),
+        );
+        Point {
+            x: geometry.area.x + caret.x,
+            y: geometry.area.y + caret.y + geometry.line_height * 0.5,
+        }
+    };
+    let point = point_at(&mut renderer, &ui, 1);
+    let mut preview = PreviewScene::new(Box::new(ui.as_weak().upgrade().unwrap()));
+    preview.render_animated(&mut renderer).unwrap();
+    preview.click(point);
+    preview.render_animated(&mut renderer).unwrap();
+    assert!(preview.control_navigation_enabled());
+    let down = KeyEvent {
+        key: "ArrowDown".into(),
+        modifiers: KeyModifiers {
+            shift: true,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let copy = KeyEvent {
+        key: "c".into(),
+        modifiers: KeyModifiers {
+            control: true,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    assert!(preview.keyboard(&mut renderer, &down, true));
+    assert!(preview.keyboard(&mut renderer, &copy, true));
+    assert_eq!(
+        preview.take_clipboard_request().unwrap().text.as_deref(),
+        Some("ame\ns")
+    );
+
+    let long = (0..40)
+        .map(|line| format!("line {line}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    ui.set_document(long.clone());
+    preview.render_animated(&mut renderer).unwrap();
+    let top = point_at(&mut renderer, &ui, 0);
+    preview.wheel_event_with_renderer(
+        &mut renderer,
+        top,
+        WheelEvent {
+            delta_y: Length(180.0),
+            ..Default::default()
+        },
+    );
+    preview.render_animated(&mut renderer).unwrap();
+    preview.click(top);
+    assert!(preview.keyboard(
+        &mut renderer,
+        &KeyEvent {
+            key: "X".into(),
+            text: "X".into(),
+            ..Default::default()
+        },
+        true
+    ));
+    let edited = ui.get_document();
+    let insertion = edited.find('X').expect("text inserted");
+    assert!(insertion > 0 && insertion < long.len());
+    assert_eq!(edited.replacen('X', "", 1), long);
 }

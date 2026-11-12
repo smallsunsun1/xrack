@@ -163,6 +163,13 @@ pub fn process(source: &str) -> Result<Module, String> {
     Module::parse(source)?.optimize()
 }
 
+/// Decode the finite floating-point spellings accepted by the XR dialect.
+pub fn parse_float_literal(spelling: &str) -> Option<f64> {
+    let mut value = 0.0;
+    let parsed = unsafe { ffi::xrackMlirParseFloatLiteral(string_ref(spelling), &mut value) };
+    parsed.then_some(value)
+}
+
 pub(crate) fn string_ref(text: &str) -> ffi::MlirStringRef {
     ffi::MlirStringRef {
         data: text.as_ptr().cast(),

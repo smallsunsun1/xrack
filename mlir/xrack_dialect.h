@@ -6,6 +6,8 @@
 #include "mlir/IR/OpDefinition.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "mlir/XrackDialect.h.inc"
+#include "llvm/ADT/StringRef.h"
+#include <optional>
 
 #define GET_TYPEDEF_CLASSES
 #include "mlir/XrackTypes.h.inc"
@@ -14,6 +16,12 @@
 #include "mlir/XrackOps.h.inc"
 
 namespace xrack::dialect {
+/// XR expressions evaluate at their use sites. Standalone actions are separate operations.
+bool isExpression(::mlir::Operation &op);
+
+/// Decode a finite XR float, length or percentage literal.
+std::optional<double> parseFloatLiteral(llvm::StringRef spelling);
+
 /// Check the XR compiler's top-level contract, beyond the per-operation ODS
 /// checks.
 ::mlir::LogicalResult verifyModule(::mlir::ModuleOp module);

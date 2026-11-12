@@ -47,8 +47,17 @@ impl FontPopupState {
     }
 
     pub fn populate(&self, dialog: &mut Node, initial: impl FnOnce() -> Font) {
-        let Some(font) = self.0.begin(dialog, || {
-            let mut font = initial();
+        self.try_populate(dialog, || Ok::<_, std::convert::Infallible>(initial()))
+            .unwrap_or_else(|error| match error {});
+    }
+
+    pub fn try_populate<E>(
+        &self,
+        dialog: &mut Node,
+        initial: impl FnOnce() -> Result<Font, E>,
+    ) -> Result<(), E> {
+        let Some(font) = self.0.try_begin(dialog, || {
+            let mut font = initial()?;
             if font.family.trim().is_empty() {
                 font.family = Font::default().family;
             }
@@ -58,9 +67,10 @@ impl FontPopupState {
                 Font::default().size.0
             };
             font.weight = font.weight.clamp(1, 1000);
-            font
-        }) else {
-            return;
+            Ok(font)
+        })?
+        else {
+            return Ok(());
         };
         dialog
             .properties
@@ -143,6 +153,7 @@ impl FontPopupState {
             .insert("vertical-alignment", TextVerticalAlignment::Center.into());
         body.children.push(preview);
         append_picker_dialog(dialog, body);
+        Ok(())
     }
 
     pub fn edit(&self, node: &Node, action: ControlAction) -> bool {

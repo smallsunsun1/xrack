@@ -71,7 +71,7 @@
         "xrack.preview.compilerPath": {
           "type": "string",
           "default": "",
-          "description": "Path to xrackc for live preview, absolute or relative to the workspace. The default uses the workspace Bazel build, the bundled compiler, or xrackc on PATH."
+          "description": "Path to xrackc for the generated-code preview, absolute or relative to the workspace. The default uses the workspace Bazel build, the bundled compiler, or xrackc on PATH."
         },
         "xrack.server.path": {
           "type": "string",
