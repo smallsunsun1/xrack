@@ -12,6 +12,10 @@ on:
         default: false
   workflow_call:
     inputs:
+      source-sha:
+        description: Exact source commit to test and package
+        type: string
+        default: ''
       package-vsix:
         description: Build and smoke-test a native VS Code extension package for each compiler host
         type: boolean
@@ -21,7 +25,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-${{ inputs.source-sha || github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -39,9 +43,12 @@ jobs:
           persist-credentials: false
       - name: Install Linux desktop build dependencies
         if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y pkg-config libdbus-1-dev libwayland-dev libxkbcommon-dev
+        run: bash tools/install_ci_linux_deps.sh
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        if: inputs.source-sha && inputs.source-sha != github.sha
+        with:
+          ref: ${{ inputs.source-sha }}
+          persist-credentials: false
       - name: Select native Rust on Windows arm64
         if: matrix.os == 'windows-11-arm'
         run: rustup set default-host aarch64-pc-windows-msvc
@@ -88,6 +95,7 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
+          ref: ${{ inputs.source-sha || github.sha }}
           persist-credentials: false
       - name: Configure Windows shell and SDK license settings
         if: runner.os == 'Windows'
