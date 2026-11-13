@@ -10,7 +10,7 @@
     "editor.formatOnSave": true
   },
   "[xrack]": {
-    "editor.defaultFormatter": "xrack.xrack",
+    "editor.defaultFormatter": "SunJiahe.xrack",
     "editor.formatOnSave": true
   },
   "files.exclude": {

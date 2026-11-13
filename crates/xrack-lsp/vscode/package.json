@@ -3,7 +3,7 @@
   "displayName": "XRack",
   "description": "Navigation, semantic highlighting, diagnostics, completions and live XRack preview",
   "version": "0.5.0",
-  "publisher": "xrack",
+  "publisher": "SunJiahe",
   "license": "MIT OR Apache-2.0",
   "repository": {
     "type": "git",

@@ -19,7 +19,7 @@ Use **Format Document** to format a `.xr` file. The formatter uses the editor's 
 ```json
 {
   "[xrack]": {
-    "editor.defaultFormatter": "xrack.xrack",
+    "editor.defaultFormatter": "SunJiahe.xrack",
     "editor.formatOnSave": true
   }
 }
@@ -75,7 +75,7 @@ python3 tools/package_vscode.py package --host "$host" --archives .tools/dist --
 
 ### Configure Trusted Publishing
 
-1. Sign in to [Visual Studio Marketplace publisher management](https://marketplace.visualstudio.com/manage/publishers/) and create or select the publisher. Its ID must match `publisher` in this extension's `package.json`, currently `xrack`.
+1. Sign in to [Visual Studio Marketplace publisher management](https://marketplace.visualstudio.com/manage/publishers/) and create or select the publisher. Its ID must match `publisher` in this extension's `package.json`, currently `SunJiahe`.
 2. In [the GitHub repository's Environments settings](https://github.com/smallsunsun1/xrack/settings/environments), create `vscode-marketplace`. If you restrict deployments to selected branches and tags, allow release tags such as `v0.5.0`.
 3. In the Marketplace publisher, open **Trusted Publishing** and create the following policy.
 
