@@ -139,12 +139,6 @@ rust_bindgen(
 cc_static_library(
     name = "xrack_mlir_native",
     deps = [":xrack_c_api"],
-    # The LLVM validator reports COFF COMDAT definitions as duplicates.
-    # The standalone Cargo consumer still links this archive on both MSVC targets.
-    features = select({
-        "@platforms//os:windows": ["-symbol_check"],
-        "//conditions:default": [],
-    }),
     tags = ["manual"],
 )
 

@@ -83,8 +83,12 @@ def main():
     bazel = Path(bazel).absolute()
     host = next(line.removeprefix("host: ") for line in output("rustc", "-vV").splitlines()
                 if line.startswith("host: "))
+    subprocess.run((bazel, "build", *BAZEL_OPTIONS, "//:xrackc"), cwd=ROOT, check=True)
+    # The LLVM toolchain's validation action treats COFF COMDAT definitions as
+    # duplicate symbols. The native Cargo smoke test links the archive on MSVC.
+    native_options = ("--norun_validations",) if "windows" in host else ()
     subprocess.run(
-        (bazel, "build", *BAZEL_OPTIONS, "//:xrackc", *mlir_bundles.TARGETS),
+        (bazel, "build", *BAZEL_OPTIONS, *native_options, *mlir_bundles.TARGETS),
         cwd=ROOT,
         check=True,
     )
