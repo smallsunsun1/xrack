@@ -16,6 +16,7 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 concurrency:
   group: xrack-release
@@ -32,6 +33,7 @@ jobs:
       commit: ${{ steps.source.outputs.commit }}
       tag: ${{ steps.source.outputs.tag }}
       marketplace: ${{ steps.source.outputs.marketplace }}
+      ci-run: ${{ steps.source.outputs.ci-run }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -40,6 +42,7 @@ jobs:
       - name: Resolve release source
         id: source
         env:
+          GH_TOKEN: ${{ github.token }}
           PUBLISH: ${{ github.event_name == 'push' || inputs.publish }}
         run: |
           commit=$(git rev-parse HEAD)
@@ -64,11 +67,19 @@ jobs:
             fi
           fi
           marketplace=false
+          ci_run=
           if [[ "$GITHUB_EVENT_NAME" == push && "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
             python3 tools/package_vscode.py check-tag "$tag"
+            ci_run=$(gh api --method GET "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs" \
+              -f branch=main -f event=push -f status=success -f head_sha="$commit" \
+              --jq '.workflow_runs[0].id // empty')
+            if [[ -z "$ci_run" ]]; then
+              echo "::error::The release commit must pass CI on main before publishing."
+              exit 1
+            fi
             marketplace=true
           fi
-          printf 'commit=%s\ntag=%s\nmarketplace=%s\n' "$commit" "$tag" "$marketplace" >> "$GITHUB_OUTPUT"
+          printf 'commit=%s\ntag=%s\nmarketplace=%s\nci-run=%s\n' "$commit" "$tag" "$marketplace" "$ci_run" >> "$GITHUB_OUTPUT"
       - name: Install Linux desktop build dependencies
         run: bash tools/install_ci_linux_deps.sh
       - name: Verify crate release
@@ -79,21 +90,24 @@ jobs:
           python3 tools/publish_crates.py -- "${XRACK_RELEASE_VERSION#v}"
 
   build:
-    if: github.event_name == 'push' || inputs.publish
+    if: (github.event_name == 'push' || inputs.publish) && needs.verify.outputs.ci-run == ''
     needs: verify
     uses: ./.github/workflows/ci.yml
     with:
       source-sha: ${{ needs.verify.outputs.commit }}
-      package-vsix: ${{ needs.verify.outputs.marketplace == 'true' }}
 
   publish:
-    if: github.event_name == 'push' || inputs.publish
+    if: >-
+      !cancelled() && needs.verify.result == 'success' &&
+      (needs.verify.outputs.ci-run != '' || needs.build.result == 'success') &&
+      (github.event_name == 'push' || inputs.publish)
     needs: [verify, build]
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     environment: crates-io
     permissions:
       contents: write
+      actions: read
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -101,6 +115,8 @@ jobs:
           persist-credentials: false
       - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
         with:
+          github-token: ${{ needs.verify.outputs.ci-run != '' && github.token || '' }}
+          run-id: ${{ needs.verify.outputs.ci-run || github.run_id }}
           pattern: xrackc-*
           merge-multiple: true
           path: .tools/release
@@ -127,12 +143,13 @@ jobs:
 
   publish-vscode:
     if: needs.verify.outputs.marketplace == 'true'
-    needs: [verify, build]
+    needs: verify
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     environment: vscode-marketplace
     permissions:
       contents: read
+      actions: read
       id-token: write
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -145,6 +162,8 @@ jobs:
           package-manager-cache: false
       - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
         with:
+          github-token: ${{ github.token }}
+          run-id: ${{ needs.verify.outputs.ci-run }}
           pattern: vscode-vsix-*
           merge-multiple: true
           path: .tools/vsix-release

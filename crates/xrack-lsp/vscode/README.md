@@ -99,4 +99,4 @@ git tag -a v0.5.0 origin/main -m "XRack 0.5.0"
 git push origin v0.5.0
 ```
 
-**Release XRack** checks the tag and runs the native matrix once for both registries. The crates.io and Marketplace jobs use the artifacts from that build. If an upload fails after some targets have been published, rerun the failed jobs to finish the release.
+**Release XRack** checks the tag and downloads the verified artifacts from the successful native matrix on that exact commit. If an upload fails after some targets have been published, rerun the failed jobs to finish the release.
