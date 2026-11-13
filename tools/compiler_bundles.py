@@ -77,6 +77,7 @@ def install_bundle(workspace, archives, version, host, source_commit):
     package = workspace / "bundles/compiler" / host
     executable = "xrackc.exe" if "windows" in host else "xrackc"
     compiler_digest = hashlib.sha256()
+    native_tail = None
     found = False
     with tarfile.open(archive, "r:gz") as bundle:
         for relative, entry in archive_members(bundle, archive):
@@ -89,6 +90,9 @@ def install_bundle(workspace, archives, version, host, source_commit):
                             compiler_digest.update(chunk)
                             compressed.write(chunk)
                 found = True
+            elif relative.as_posix() == "mlir/xrack_mlir_native.lib.xz.tail" and "windows" in host:
+                native_tail = bundle.extractfile(entry).read()
+                (package / "mlir-tail.xz").write_bytes(native_tail)
             elif relative.parts[:1] == ("licenses",) or relative.name in ("LICENSE-APACHE", "LICENSE-MIT"):
                 destination = package.joinpath(*relative.parts)
                 destination.parent.mkdir(parents=True, exist_ok=True)
@@ -103,15 +107,18 @@ def install_bundle(workspace, archives, version, host, source_commit):
         raise ValueError(f"{manifest}: expected a compiler placeholder")
     manifest.write_text(text.replace("publish = false\n", "").replace('../stub.rs', 'src/lib.rs'))
     (package / "src").mkdir()
-    (package / "src/lib.rs").write_text(
-        'pub const COMPILER: &[u8] = include_bytes!("../xrackc.gz");\n'
-    )
+    source = 'pub const COMPILER: &[u8] = include_bytes!("../xrackc.gz");\n'
+    if "windows" in host:
+        source += ('pub const MLIR_TAIL: &[u8] = include_bytes!("../mlir-tail.xz");\n'
+                   if native_tail else 'pub const MLIR_TAIL: &[u8] = &[];\n')
+    (package / "src/lib.rs").write_text(source)
     provenance = {
         "version": version,
         "host": host,
         "source_commit": source_commit,
         "archive_sha256": digest,
         "compiler_sha256": compiler_digest.hexdigest(),
+        "mlir_tail_sha256": hashlib.sha256(native_tail).hexdigest() if native_tail else None,
     }
     (package / "release.json").write_text(json.dumps(provenance, sort_keys=True) + "\n")
     return provenance

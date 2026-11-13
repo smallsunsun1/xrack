@@ -106,7 +106,9 @@ def pending_bundles(workspace, archives, version, commit):
     for host in bundles.hosts():
         provenance = bundles.install_bundle(workspace, archives, version, host, commit)
         add(bundles.crate_name(host), {
-            key: provenance[key] for key in ("version", "host", "source_commit", "compiler_sha256")
+            key: provenance[key] for key in (
+                "version", "host", "source_commit", "compiler_sha256", "mlir_tail_sha256"
+            )
         })
         archive, _ = bundles.verified_archive(archives, version, host)
         native = {

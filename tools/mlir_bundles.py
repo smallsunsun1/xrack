@@ -69,20 +69,19 @@ def native_inputs(bazel, options, bin_dir, host, directory):
              for name in ("native-libraries.txt", "system-libraries.txt")]
     for source in libraries:
         compressed = directory / (source.name + ".xz")
-        # The combined COFF archive exceeds the registry limit with the
-        # default preset even though its compiler executable fits.
-        preset = 9 | lzma.PRESET_EXTREME if windows else 6
-        if windows and source.name == archive_name:
-            stripped = directory / archive_name
-            subprocess.run(
-                (bazel, "run", *options, "@llvm-project//llvm:llvm-strip", "--",
-                 "--strip-unneeded", "-o", stripped, source),
-                cwd=ROOT,
-                check=True,
-            )
-            source = stripped
-        with source.open("rb") as input_file, lzma.open(compressed, "wb", preset=preset) as output:
+        with source.open("rb") as input_file, lzma.open(compressed, "wb", preset=6) as output:
             shutil.copyfileobj(input_file, output)
+        # Keep COFF objects intact and distribute the compressed stream across
+        # the two existing platform crates when the native archive is large.
+        if windows and source.name == archive_name:
+            with compressed.open("r+b") as payload:
+                payload.seek(8_000_000)
+                tail = payload.read()
+                if tail:
+                    payload.truncate(8_000_000)
+                    part = directory / (compressed.name + ".tail")
+                    part.write_bytes(tail)
+                    files.append((part, "mlir/" + part.name))
         files.append((compressed, "mlir/" + compressed.name))
     files.append((bin_dir / "mlir/c_bindings_out_dir/c_bindings.rs", "mlir/c_bindings.rs"))
     files.extend((bin_dir / "grammar/generated/rust" / name, "antlr/" + name)
@@ -107,6 +106,8 @@ def stage_bundle(workspace, archive, host):
                 destination.write_bytes(content)
                 payloads.add(relative.as_posix())
             elif relative.parts[0] == "mlir" and len(relative.parts) == 2:
+                if relative.name == "xrack_mlir_native.lib.xz.tail" and "windows" in host:
+                    continue
                 if relative.name not in NATIVE_METADATA and not relative.name.endswith(".xz"):
                     raise ValueError(f"{archive}: unexpected MLIR artifact {relative}")
                 destination = package / relative.name

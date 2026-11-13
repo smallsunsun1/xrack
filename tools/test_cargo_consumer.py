@@ -72,6 +72,9 @@ def main():
             env.pop(key, None)
         if args.interpreter:
             archive, _ = bundles.verified_archive(archives, version, args.host)
+            if "windows" in args.host:
+                commit = subprocess.check_output(("git", "rev-parse", "HEAD"), cwd=root, text=True).strip()
+                bundles.install_bundle(workspace, archives, version, args.host, commit)
             mlir_bundles.stage_bundle(workspace, archive, args.host)
             compiler = bundles.extract_compiler(archive, stage)
             check_interpreter(app, compiler, env)
@@ -88,12 +91,24 @@ def main():
         if args.interpreter:
             patches.pop("xrack-build")
         for host in bundles.hosts():
-            if not args.interpreter:
+            if not args.interpreter or "windows" in host:
                 patches[bundles.crate_name(host)] = workspace / "bundles/compiler" / host
             patches[f"xrack-mlir-bin-{host}"] = workspace / "bundles/mlir" / host
         for name, directory in patches.items():
             path = directory.as_posix()
             command.extend(("--config", f"patch.crates-io.{name}.path={json.dumps(path)}"))
+        if args.interpreter:
+            names = [f"xrack-mlir-bin-{args.host}"]
+            if "windows" in args.host:
+                names.append(bundles.crate_name(args.host))
+            packages = ["cargo", "package", "--locked", "--no-verify", "--allow-dirty"]
+            for name in names:
+                packages.extend(("-p", name))
+            subprocess.run(packages, cwd=workspace, env=env, check=True)
+            for name in names:
+                artifact = Path(env["CARGO_TARGET_DIR"]) / "package" / f"{name}-{version}.crate"
+                if artifact.stat().st_size > 10_000_000:
+                    raise ValueError(f"{artifact.name} exceeds the crates.io package size limit")
         result = subprocess.run(command, cwd=app, env=env, check=True, text=True, stdout=subprocess.PIPE)
         print(result.stdout, end="")
         if result.stdout.strip() != expected:

@@ -4144,6 +4144,7 @@ name = "xrack-mlir-bin-aarch64-pc-windows-msvc"
 version = "0.5.0"
 dependencies = [
  "lzma-rust2",
+ "xrackc-bin-aarch64-pc-windows-msvc",
 ]
 
 [[package]]
@@ -4158,6 +4159,7 @@ name = "xrack-mlir-bin-x86_64-pc-windows-msvc"
 version = "0.5.0"
 dependencies = [
  "lzma-rust2",
+ "xrackc-bin-x86_64-pc-windows-msvc",
 ]
 
 [[package]]
