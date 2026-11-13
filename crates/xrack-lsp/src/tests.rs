@@ -1255,7 +1255,7 @@ fn rename_checks_scopes_in_incomplete_buffers() {
 #[test]
 fn rename_rejects_conflicts_in_unedited_transitive_importers() {
     let root = workspace_fixture("rename-importer-conflict");
-    let workspace = completion::Workspace::new(URI, std::iter::empty()).unwrap();
+    let workspace = completion::Workspace::new(&fixture_uri("app.xr"), std::iter::empty()).unwrap();
     let base = root.join("base.xr");
     let base_uri = workspace.uri(&base).unwrap();
     let source = "export component Base inherits Window { property <int> count: 1; }";
@@ -1295,7 +1295,7 @@ fn rename_rejects_conflicts_in_unedited_transitive_importers() {
 #[test]
 fn signature_help_tracks_nested_calls_and_imported_unsaved_callbacks() {
     let root = workspace_fixture("signature-help");
-    let workspace = completion::Workspace::new(URI, std::iter::empty()).unwrap();
+    let workspace = completion::Workspace::new(&fixture_uri("app.xr"), std::iter::empty()).unwrap();
     let library = workspace.uri(&root.join("math.xr")).unwrap();
     let implementation = workspace.uri(&root.join("implementation.xr")).unwrap();
     let app = workspace.uri(&root.join("app.xr")).unwrap();
@@ -1364,7 +1364,7 @@ component App inherits Window {
 #[test]
 fn import_paths_expose_document_links_and_definition_targets() {
     let root = workspace_fixture("import-links");
-    let workspace = completion::Workspace::new(URI, std::iter::empty()).unwrap();
+    let workspace = completion::Workspace::new(&fixture_uri("app.xr"), std::iter::empty()).unwrap();
     let library = workspace.uri(&root.join("ui 部件.xr")).unwrap();
     let font_path = root.join("body.ttf");
     std::fs::write(&font_path, []).unwrap();
@@ -1413,7 +1413,7 @@ fn import_paths_expose_document_links_and_definition_targets() {
 #[test]
 fn missing_component_diagnostic_offers_a_versioned_quick_fix() {
     let root = workspace_fixture("import-quick-fix");
-    let workspace = completion::Workspace::new(URI, std::iter::empty()).unwrap();
+    let workspace = completion::Workspace::new(&fixture_uri("app.xr"), std::iter::empty()).unwrap();
     let app = workspace.uri(&root.join("app.xr")).unwrap();
     let widget = root.join("widgets.xr");
     let widget_uri = workspace.uri(&widget).unwrap();
@@ -1603,7 +1603,7 @@ states[active when true:{width:20 px;in{animate width{duration:2 ms;}}}]
 #[test]
 fn index_progress_waits_for_client_ack_and_reports_completion() {
     let root = workspace_fixture("index-progress");
-    let workspace = completion::Workspace::new(URI, std::iter::empty()).unwrap();
+    let workspace = completion::Workspace::new(&fixture_uri("app.xr"), std::iter::empty()).unwrap();
     std::fs::write(
         root.join("card.xr"),
         "export component Card inherits Rectangle {}",
