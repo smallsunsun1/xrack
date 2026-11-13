@@ -32,13 +32,13 @@ use std::{
     sync::Arc,
 };
 use xrack_runtime::{
-    Easing, ImageAsset, LoadedFonts, LoadedVectorPath, Node, RecordList, RecordRowValidator,
-    RecordValue, TranslationCatalog, Value,
+    Animation, Component, ImageAsset, LoadedFonts, LoadedVectorPath, LocaleContext, Node,
+    RecordList, RecordRowValidator, RecordValue, TouchPoints, TranslationCatalog, Value,
 };
 
 pub use load::load_mlir;
-use xrack_mlir::{RowSceneCache, VisualCacheGroup, VisualCacheKey};
-use xrack_resources::EmbeddedTranslations;
+use xrack_mlir::{BinaryOperator, RowSceneCache, UnaryOperator, VisualCacheGroup, VisualCacheKey};
+use xrack_resources::{EmbeddedTranslations, field::BuiltinField};
 pub use xrack_runtime::Value as HostValue;
 
 /// Load XR dialect IR and resolve its resources relative to the MLIR file.
@@ -103,6 +103,7 @@ impl Program {
         images: BTreeMap<String, ImageAsset>,
     ) -> Result<Self> {
         let paths = xrack_resources::collect_vector_paths(module).map_err(Error::Invalid)?;
+        xrack_resources::check_loaded_nine_slices(module, &images).map_err(Error::Invalid)?;
         load::program(module, translations, fonts, images, paths)
     }
 
@@ -138,6 +139,13 @@ impl Program {
     pub fn create(&self, name: &str) -> Result<Instance> {
         self.validate_dependencies(name, &mut BTreeSet::new())?;
         self.allocate(name, None, BTreeMap::new(), &mut Vec::new())
+    }
+
+    /// Create a component whose translations share the supplied locale context.
+    pub fn create_with_locale(&self, name: &str, context: LocaleContext) -> Result<Instance> {
+        let instance = self.create(name)?;
+        instance.set_locale_context(context);
+        Ok(instance)
     }
 }
 
@@ -238,8 +246,8 @@ enum Expression {
     RowParam(String),
     SplitHandleParam(split::Parameter),
     CalendarCellParam(calendar::Parameter),
-    Unary(Unary, Expr),
-    Binary(Binary, Expr, Expr),
+    Unary(UnaryOperator, Expr),
+    Binary(BinaryOperator, Expr, Expr),
     Select(Expr, Expr, Expr),
     Cast(Expr),
     Stringify(Expr),
@@ -263,7 +271,6 @@ enum Expression {
     NativeDialogRead(String, native_dialog::Read),
     WindowRead(xrack_runtime::WindowMetric),
     ScrollControlRead(Member),
-    PopupOpen(String),
     NineSlice(Expr, xrack_runtime::NineSlice),
     Gradient {
         angle: Option<Expr>,
@@ -281,34 +288,12 @@ enum Expression {
         fields: Vec<(String, Expr)>,
     },
     RecordArray(Rc<str>, Vec<Expr>),
-    Field(Expr, String),
+    RecordField(Expr, String),
+    BuiltinField(Expr, BuiltinField),
     MakeDate([Expr; 3]),
     MakeTime([Expr; 3]),
     MakeFont([Expr; 4]),
     Call(Member, Vec<Expr>),
-}
-
-#[derive(Clone, Copy)]
-enum Unary {
-    Negate,
-    Not,
-}
-
-#[derive(Clone, Copy, PartialEq)]
-enum Binary {
-    Add,
-    Subtract,
-    Multiply,
-    Divide,
-    Remainder,
-    Equal,
-    NotEqual,
-    Less,
-    LessEqual,
-    Greater,
-    GreaterEqual,
-    And,
-    Or,
 }
 
 #[derive(Clone)]
@@ -341,15 +326,18 @@ struct Function {
     body: Vec<Statement>,
     pure: bool,
     alias: Option<Member>,
-    alias_implementation: bool,
 }
 
 struct PropertyDef {
     ty: ValueType,
-    initial: Expr,
+    source: PropertySource,
     public: bool,
     writable: bool,
-    alias: Option<Member>,
+}
+
+enum PropertySource {
+    Initial(Expr),
+    Alias(Member),
 }
 
 struct RecordField {
@@ -361,9 +349,11 @@ type RecordSchemas = BTreeMap<String, Vec<RecordField>>;
 
 struct Definition {
     properties: BTreeMap<Member, PropertyDef>,
+    property_forwards: BTreeMap<String, Vec<Member>>,
     callbacks: BTreeMap<Member, Function>,
+    callback_defaults: Vec<Member>,
     root: Element,
-    selectors: Vec<Vec<Expr>>,
+    selectors: Vec<StateSelector>,
     geometry_targets: BTreeSet<String>,
     viewport_targets: BTreeSet<String>,
     source_scroll_targets: BTreeSet<String>,
@@ -407,6 +397,7 @@ struct Element {
     action_group: Option<action::Membership>,
     button_group: Option<group::Membership>,
     non_exclusive: bool,
+    render_selector: Option<usize>,
     state_bindings: BTreeMap<&'static str, Vec<StateCase>>,
     animations: Vec<(&'static str, AnimationSpec)>,
     state_timings: BTreeMap<&'static str, Vec<StateTimingSpec>>,
@@ -465,14 +456,17 @@ struct Binding {
 }
 
 struct AnimationSpec {
-    duration: Expr,
+    timing: Animation,
     enabled: Option<Expr>,
-    delay_ms: u64,
-    easing: Easing,
+}
+
+struct StateSelector {
+    conditions: Vec<Expr>,
+    persistent: bool,
 }
 
 struct StateTimingSpec {
-    selector: Expr,
+    selector: usize,
     index: i64,
     enter: bool,
     animation: AnimationSpec,
@@ -480,15 +474,29 @@ struct StateTimingSpec {
 
 #[derive(Clone)]
 struct StateCase {
-    selector: Expr,
+    selector: usize,
     index: i64,
     value: Expr,
 }
 
-#[derive(Clone, Default)]
+#[derive(Clone)]
 struct Input {
+    endpoint: Vec<Member>,
     source: Option<InputSource>,
     cases: Vec<StateCase>,
+}
+
+impl Input {
+    fn new(endpoint: Vec<xrack_mlir::PropertyEndpoint<'_>>) -> Self {
+        Self {
+            endpoint: endpoint
+                .into_iter()
+                .map(|(owner, name)| Member::new(owner, name))
+                .collect(),
+            source: None,
+            cases: Vec::new(),
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -510,6 +518,11 @@ pub type Callback = Rc<dyn Fn(&[Value]) -> std::result::Result<Option<Value>, St
 pub struct Instance(Rc<evaluate::State>);
 
 impl Instance {
+    /// Capture this instance in a callback without keeping the component alive.
+    pub fn as_weak(&self) -> xrack_runtime::WeakComponent<Self> {
+        xrack_runtime::WeakComponent::new(&self.0, Self)
+    }
+
     pub fn properties(&self) -> impl Iterator<Item = (&str, ValueType, bool)> {
         self.definition()
             .properties
@@ -558,6 +571,35 @@ impl Instance {
         }
     }
 
+    /// Get the shared record model, validating its current rows against the declared schema.
+    pub fn record_model(&self, name: &str) -> Result<RecordList> {
+        let member = Member::root(name);
+        let property = self.require_public(&member, false)?;
+        let Value::RecordList(model) = self.read(&member)? else {
+            return Err(Error::Evaluation(format!(
+                "property {name} is not a record list"
+            )));
+        };
+        self.program().validate_host_value(
+            &property.ty,
+            &Value::RecordList(model.clone()),
+            format_args!("property {name}"),
+        )?;
+        Ok(model)
+    }
+
+    /// Get the shared read-only touch model without copying its rows.
+    pub fn touch_points_model(&self, name: &str) -> Result<TouchPoints> {
+        let member = Member::root(name);
+        self.require_public(&member, false)?;
+        match self.read(&member)? {
+            Value::TouchPoints(model) => Ok(model),
+            _ => Err(Error::Evaluation(format!(
+                "property {name} is not a touch-point list"
+            ))),
+        }
+    }
+
     pub fn reset(&self, name: &str) -> Result<()> {
         let member = Member::root(name);
         self.require_public(&member, true)?;
@@ -589,9 +631,9 @@ impl Instance {
         let arguments: Vec<_> = arguments
             .iter()
             .cloned()
-            .map(evaluate::model_value)
+            .map(evaluate::callback_value)
             .collect();
-        let result = self.call(&member, &arguments)?;
+        let result = self.call(&member, arguments)?;
         let result_type = function.and_then(|function| function.result.as_ref());
         self.program()
             .validate_host_result(name, result_type, result.as_ref())?;

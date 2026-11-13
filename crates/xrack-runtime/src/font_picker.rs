@@ -200,7 +200,11 @@ impl FontPopupState {
     }
 
     pub fn finish(&self, dialog: &Node) -> Option<Font> {
-        self.0.finish(dialog)
+        self.finish_with_role(dialog, crate::DialogRole::Accept)
+    }
+
+    pub fn finish_with_role(&self, dialog: &Node, role: crate::DialogRole) -> Option<Font> {
+        self.0.finish(dialog, role)
     }
 }
 

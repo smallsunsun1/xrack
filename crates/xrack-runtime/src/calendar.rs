@@ -1,5 +1,5 @@
 use crate::{
-    ControlAction, Node, Property,
+    ControlAction, DialogRole, InputRoute, Node, Property,
     picker::{PickerSession, append_picker_dialog},
 };
 use std::{cell::RefCell, collections::BTreeMap, fmt};
@@ -144,6 +144,125 @@ pub enum CalendarAction {
     Select(Date),
     Browse(Date),
     Activate(Date),
+}
+
+/// Apply calendar state before emitting its change notifications.
+#[doc(hidden)]
+pub enum CalendarUpdate {
+    SetDate(Date),
+    SetMonth(Date),
+    DateChanged(Date),
+    MonthChanged(Date),
+    Activated(Date),
+}
+
+#[doc(hidden)]
+pub fn apply_calendar_action(
+    node: &Node,
+    action: CalendarAction,
+    mut update: impl FnMut(CalendarUpdate),
+) -> bool {
+    try_apply_calendar_action(node, action, |change| {
+        update(change);
+        Ok::<_, std::convert::Infallible>(())
+    })
+    .unwrap_or_else(|error| match error {})
+}
+
+#[doc(hidden)]
+pub fn try_apply_calendar_action<E>(
+    node: &Node,
+    action: CalendarAction,
+    mut update: impl FnMut(CalendarUpdate) -> Result<(), E>,
+) -> Result<bool, E> {
+    let calendar = CalendarState::from_node(node);
+    let week_start = (node.kind == "MonthGrid").then(|| node.int("week-start").unwrap_or(1));
+    let Some((date, month)) = calendar.apply(action, week_start) else {
+        return Ok(false);
+    };
+    let date = date.filter(|date| node.date("date") != Some(*date));
+    let month_changed = month != calendar.month;
+    if let Some(date) = date {
+        update(CalendarUpdate::SetDate(date))?;
+    }
+    if month_changed {
+        update(CalendarUpdate::SetMonth(month))?;
+    }
+    if let Some(date) = date {
+        update(CalendarUpdate::DateChanged(date))?;
+    }
+    if month_changed {
+        update(CalendarUpdate::MonthChanged(month))?;
+    }
+    if let CalendarAction::Activate(date) = action {
+        update(CalendarUpdate::Activated(date))?;
+        return Ok(true);
+    }
+    Ok(date.is_some() || month_changed)
+}
+
+/// Check the calendar bindings that determine how the displayed action is interpreted.
+#[doc(hidden)]
+pub fn try_calendar_input_is_current<E>(
+    node: &Node,
+    input: crate::InputRoute<'_>,
+    mut read: impl FnMut(&str, Date) -> Result<Date, E>,
+    week_start: impl FnOnce() -> Result<i64, E>,
+) -> Result<bool, E> {
+    let selected = node.date("date").unwrap_or_default();
+    input.try_available(|| {
+        if node.kind == "MonthGrid" {
+            let mut read_current = |name, default| {
+                let date = read(name, default)?;
+                Ok(input.is_current().then_some(date))
+            };
+            let Some(minimum) = read_current("minimum-date", Date::MIN)? else {
+                return Ok(false);
+            };
+            let Some(maximum) = read_current("maximum-date", Date::MAX)? else {
+                return Ok(false);
+            };
+            let Some(date) = read_current("date", Date::default())? else {
+                return Ok(false);
+            };
+            let Some(month) = read_current("display-month", date)? else {
+                return Ok(false);
+            };
+            let live =
+                CalendarState::for_month_grid(date, month, DateBounds::new(minimum, maximum));
+            return Ok(live == CalendarState::from_node(node)
+                && week_start()? == node.int("week-start").unwrap_or(1));
+        }
+        for (property, default) in [
+            ("minimum-date", Date::MIN),
+            ("maximum-date", Date::MAX),
+            ("date", Date::default()),
+            ("display-month", selected),
+        ] {
+            if read(property, default)? != node.date(property).unwrap_or(default)
+                || !input.is_current()
+            {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    })
+}
+
+#[doc(hidden)]
+pub fn calendar_input_is_current(
+    node: &Node,
+    input: crate::InputRoute<'_>,
+    mut read: impl FnMut(&str, Date) -> Date,
+    week_start: impl FnOnce() -> i64,
+) -> bool {
+    try_calendar_input_is_current(
+        node,
+        input,
+        |name, default| Ok::<_, std::convert::Infallible>(read(name, default)),
+        || Ok(week_start()),
+    )
+    .unwrap_or_else(|error| match error {})
 }
 
 pub fn is_calendar_control(kind: &str) -> bool {
@@ -459,9 +578,46 @@ impl DatePopupState {
         true
     }
 
+    pub fn try_finish_input<E>(
+        &self,
+        dialog: &Node,
+        role: DialogRole,
+        input: InputRoute<'_>,
+        bounds: impl FnOnce() -> Result<DateBounds, E>,
+    ) -> Result<Option<Date>, E> {
+        let draft = self
+            .0
+            .try_finish_input(dialog, role, input, |(date, month)| {
+                Ok(Some((bounds()?.constrain(date), month)))
+            })?;
+        Ok(draft.map(|(date, _)| date))
+    }
+
+    pub fn finish_input(
+        &self,
+        dialog: &Node,
+        role: DialogRole,
+        input: InputRoute<'_>,
+        bounds: impl FnOnce() -> DateBounds,
+    ) -> Option<Date> {
+        self.try_finish_input(dialog, role, input, || {
+            Ok::<_, std::convert::Infallible>(bounds())
+        })
+        .unwrap_or_else(|error| match error {})
+    }
+
     pub fn finish(&self, bounds: DateBounds, dialog: &Node) -> Option<Date> {
+        self.finish_with_role(bounds, dialog, DialogRole::Accept)
+    }
+
+    pub fn finish_with_role(
+        &self,
+        bounds: DateBounds,
+        dialog: &Node,
+        role: DialogRole,
+    ) -> Option<Date> {
         self.0
-            .finish(dialog)
+            .finish(dialog, role)
             .map(|(date, _)| bounds.constrain(date))
     }
 }

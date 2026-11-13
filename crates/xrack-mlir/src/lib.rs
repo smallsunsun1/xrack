@@ -17,8 +17,10 @@ pub use module::{
 
 mod visual;
 pub use visual::{
-    AnimationRef, RepeatRef, RowSceneCache, StateCaseRef, TranslationRef, VisualCacheGroup,
-    VisualCacheKey, nine_slice_edges, repeat_is_positioned, scene_children, visual_cache_operand,
+    AnimationRef, CallbackForward, ComponentAnalysis, InstanceBinding, InstanceBindings,
+    InstanceStateInput, PropertyForward, RepeatRef, RowSceneCache, StateCaseRef, TranslationRef,
+    VisualCacheGroup, VisualCacheKey, nine_slice_edges, repeat_is_positioned, scene_children,
+    visual_cache_operand,
 };
 
 mod record;
@@ -26,3 +28,6 @@ pub use record::{RecordDeclRef, record_field_path, record_role};
 
 mod aliases;
 pub use aliases::{AliasGraph, PropertyEndpoint, canonical_input};
+
+mod operator;
+pub use operator::{BinaryOperator, UnaryOperator};

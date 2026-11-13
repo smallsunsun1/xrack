@@ -1,5 +1,5 @@
-use crate::{ChangeSignal, Node, RowKey, Value, VecModel};
-use std::{borrow::Cow, fmt, ops::Range, rc::Rc};
+use crate::{ChangeSignal, ControlAction, Node, RowKey, Value, VecModel};
+use std::{borrow::Cow, cell::Cell, fmt, ops::Range, rc::Rc};
 
 trait Rows {
     fn structure(&self) -> (u64, u64);
@@ -77,6 +77,7 @@ impl<T> Rows for RecordRows<T> {
 pub struct ComboItems {
     rows: Rc<dyn Rows>,
     changes: Rc<ChangeSignal>,
+    revision: Rc<Cell<u64>>,
 }
 
 impl ComboItems {
@@ -97,14 +98,20 @@ impl ComboItems {
         let label: Rc<LabelProjection<T>> = Rc::new(label);
         let value: Rc<ValueProjection<T>> = Rc::new(value);
         let enabled: Rc<EnabledProjection<T>> = Rc::new(enabled);
+        let revision = Rc::new(Cell::new(0_u64));
         let changes = model.observe_projection_changes(usize::MAX, {
             let label = label.clone();
             let value = value.clone();
             let enabled = enabled.clone();
+            let revision = revision.clone();
             move |_, before, after| {
-                enabled(before) != enabled(after)
+                let changed = enabled(before) != enabled(after)
                     || label(before) != label(after)
-                    || value(before) != value(after)
+                    || value(before) != value(after);
+                if changed {
+                    revision.set(revision.get().wrapping_add(1));
+                }
+                changed
             }
         });
         Self {
@@ -115,6 +122,7 @@ impl ComboItems {
                 enabled,
             }),
             changes,
+            revision,
         }
     }
 
@@ -129,6 +137,7 @@ impl ComboItems {
         ComboModel {
             items: self.clone(),
             structure,
+            revision: self.revision.get(),
             selected,
         }
     }
@@ -139,6 +148,7 @@ impl ComboItems {
 pub struct ComboModel {
     items: ComboItems,
     structure: (u64, u64),
+    revision: u64,
     selected: Option<(usize, String)>,
 }
 
@@ -146,6 +156,7 @@ impl fmt::Debug for ComboModel {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("ComboModel")
             .field("structure", &self.structure)
+            .field("revision", &self.revision)
             .field("selected", &self.selected)
             .finish()
     }
@@ -155,6 +166,7 @@ impl PartialEq for ComboModel {
     fn eq(&self, other: &Self) -> bool {
         Rc::ptr_eq(&self.items.rows, &other.items.rows)
             && self.structure == other.structure
+            && self.revision == other.revision
             && self.selected == other.selected
     }
 }
@@ -250,6 +262,148 @@ pub fn combo_find_enabled_label(
     })
 }
 
+#[doc(hidden)]
+pub struct ComboSubmission {
+    pub text: String,
+    pub index: Option<usize>,
+}
+
+/// Interpret the text in an editable ComboBox snapshot. A disabled record cannot be
+/// submitted as free text. Keep the selected record when its label still matches.
+#[doc(hidden)]
+pub fn combo_submission(node: &Node) -> Option<ComboSubmission> {
+    if !crate::combo_editable(node) {
+        return None;
+    }
+
+    let draft = crate::text_input_value(node);
+    let index = if model(node).is_some() {
+        let index = combo_index(node)
+            .filter(|&index| choice_enabled(node, index) && combo_text(node) == draft)
+            .or_else(|| combo_find_enabled_label(node, 0, |label| label == draft));
+        if index.is_none() && combo_find_label(node, |label| label == draft).is_some() {
+            return None;
+        }
+        index
+    } else {
+        node.strings("model").iter().position(|item| item == draft)
+    };
+    Some(ComboSubmission {
+        text: draft.to_owned(),
+        index,
+    })
+}
+
+#[doc(hidden)]
+pub struct ComboSelection {
+    pub index: usize,
+    pub label: String,
+    pub value: Value,
+}
+
+#[doc(hidden)]
+pub enum ComboInput {
+    Select {
+        selection: ComboSelection,
+        editable: bool,
+    },
+    Accept {
+        text: String,
+        selection: Option<ComboSelection>,
+    },
+}
+
+fn combo_selection(node: &Node, index: usize) -> Option<ComboSelection> {
+    if !choice_enabled(node, index) {
+        return None;
+    }
+    let label = combo_label(node, index)?.into_owned();
+    let value = if model(node).is_some() {
+        combo_value(node, index)?
+    } else {
+        Value::String(label.clone())
+    };
+    Some(ComboSelection {
+        index,
+        label,
+        value,
+    })
+}
+
+/// Check live bindings before resolving the choice or draft from the input scene.
+#[doc(hidden)]
+pub fn try_prepare_combo_input<E>(
+    node: &Node,
+    action: ControlAction,
+    available: impl FnOnce() -> Result<bool, E>,
+    editable: impl FnOnce() -> Result<bool, E>,
+    model_current: impl FnOnce() -> Result<bool, E>,
+) -> Result<Option<ComboInput>, E> {
+    if !matches!(
+        action,
+        ControlAction::Select(_) | ControlAction::AcceptComboText
+    ) {
+        return Ok(None);
+    }
+    crate::property::watch_reads(|reads| {
+        if !available()? || reads.changed() {
+            return Ok(None);
+        }
+        let editable = editable()?;
+        if (action == ControlAction::AcceptComboText && !editable)
+            || reads.changed()
+            || !model_current()?
+            || reads.changed()
+        {
+            return Ok(None);
+        }
+        Ok(match action {
+            ControlAction::Select(index) => {
+                combo_selection(node, index).map(|selection| ComboInput::Select {
+                    selection,
+                    editable,
+                })
+            }
+            ControlAction::AcceptComboText => {
+                let Some(submission) = combo_submission(node) else {
+                    return Ok(None);
+                };
+                let selection = if let Some(index) = submission.index {
+                    let Some(selection) = combo_selection(node, index) else {
+                        return Ok(None);
+                    };
+                    Some(selection)
+                } else {
+                    None
+                };
+                Some(ComboInput::Accept {
+                    text: submission.text,
+                    selection,
+                })
+            }
+            _ => None,
+        })
+    })
+}
+
+#[doc(hidden)]
+pub fn prepare_combo_input(
+    node: &Node,
+    action: ControlAction,
+    available: impl FnOnce() -> bool,
+    editable: impl FnOnce() -> bool,
+    model_current: impl FnOnce() -> bool,
+) -> Option<ComboInput> {
+    try_prepare_combo_input(
+        node,
+        action,
+        || Ok::<_, std::convert::Infallible>(available()),
+        || Ok(editable()),
+        || Ok(model_current()),
+    )
+    .unwrap_or_else(|error| match error {})
+}
+
 pub fn choice_enabled(node: &Node, index: usize) -> bool {
     if node.kind == "SearchField" {
         return crate::search_suggestion(node, index).is_some();
@@ -260,9 +414,22 @@ pub fn choice_enabled(node: &Node, index: usize) -> bool {
     )
 }
 
+impl Node {
+    #[doc(hidden)]
+    pub fn set_string_combo_model(&mut self, source: VecModel<String>) {
+        self.standard_list_stamp = Some(source.edit_stamp());
+        self.properties.insert("model", source.into());
+    }
+}
+
 #[doc(hidden)]
 pub fn combo_model_is_current<T>(node: &Node, source: &VecModel<T>) -> bool {
-    model(node).is_some_and(|model| model.structure == source.structure_stamp())
+    if let Some(model) = model(node) {
+        model.items.changes.track();
+        model.structure == source.structure_stamp() && model.revision == model.items.revision.get()
+    } else {
+        node.standard_list_stamp == Some(source.edit_stamp())
+    }
 }
 
 #[doc(hidden)]

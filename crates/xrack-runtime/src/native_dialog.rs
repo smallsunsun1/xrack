@@ -28,6 +28,41 @@ pub struct FileDialogOptions {
 
 impl FileDialogOptions {
     #[doc(hidden)]
+    pub fn read_bindings(
+        mode: impl FnOnce() -> FileDialogMode,
+        title: impl FnOnce() -> String,
+        directory: impl FnOnce() -> String,
+        file_name: impl FnOnce() -> String,
+        name_filters: impl FnOnce() -> Vec<String>,
+    ) -> Self {
+        Self::try_read_bindings(
+            || Ok::<_, std::convert::Infallible>(mode()),
+            || Ok(title()),
+            || Ok(directory()),
+            || Ok(file_name()),
+            || Ok(name_filters()),
+        )
+        .unwrap_or_else(|error| match error {})
+    }
+
+    #[doc(hidden)]
+    pub fn try_read_bindings<E>(
+        mode: impl FnOnce() -> Result<FileDialogMode, E>,
+        title: impl FnOnce() -> Result<String, E>,
+        directory: impl FnOnce() -> Result<String, E>,
+        file_name: impl FnOnce() -> Result<String, E>,
+        name_filters: impl FnOnce() -> Result<Vec<String>, E>,
+    ) -> Result<Self, E> {
+        Ok(Self {
+            mode: mode()?,
+            title: title()?,
+            directory: directory()?,
+            file_name: file_name()?,
+            name_filters: name_filters()?,
+        })
+    }
+
+    #[doc(hidden)]
     pub fn filters(&self) -> Result<Vec<(&str, Vec<&str>)>, &'static str> {
         if matches!(
             self.mode,
@@ -89,6 +124,43 @@ pub struct MessageDialogOptions {
     pub informative_text: String,
 }
 
+impl MessageDialogOptions {
+    #[doc(hidden)]
+    pub fn read_bindings(
+        level: impl FnOnce() -> MessageLevel,
+        buttons: impl FnOnce() -> MessageButtons,
+        title: impl FnOnce() -> String,
+        text: impl FnOnce() -> String,
+        informative_text: impl FnOnce() -> String,
+    ) -> Self {
+        Self::try_read_bindings(
+            || Ok::<_, std::convert::Infallible>(level()),
+            || Ok(buttons()),
+            || Ok(title()),
+            || Ok(text()),
+            || Ok(informative_text()),
+        )
+        .unwrap_or_else(|error| match error {})
+    }
+
+    #[doc(hidden)]
+    pub fn try_read_bindings<E>(
+        level: impl FnOnce() -> Result<MessageLevel, E>,
+        buttons: impl FnOnce() -> Result<MessageButtons, E>,
+        title: impl FnOnce() -> Result<String, E>,
+        text: impl FnOnce() -> Result<String, E>,
+        informative_text: impl FnOnce() -> Result<String, E>,
+    ) -> Result<Self, E> {
+        Ok(Self {
+            level: level()?,
+            buttons: buttons()?,
+            title: title()?,
+            text: text()?,
+            informative_text: informative_text()?,
+        })
+    }
+}
+
 #[doc(hidden)]
 #[derive(Debug)]
 pub enum NativeDialogOptions {
@@ -106,6 +178,28 @@ pub enum NativeDialogResult {
     Abandoned,
 }
 
+impl NativeDialogOptions {
+    fn accepts_result(&self, result: &NativeDialogResult) -> bool {
+        match result {
+            NativeDialogResult::Files(_) | NativeDialogResult::Canceled => {
+                matches!(self, Self::File(_))
+            }
+            NativeDialogResult::Button(_) => matches!(self, Self::Message(_)),
+            NativeDialogResult::Failed(_) | NativeDialogResult::Abandoned => true,
+        }
+    }
+}
+
+#[doc(hidden)]
+pub enum NativeDialogEvent {
+    FilesSelected(VecModel<String>),
+    FileCanceled,
+    MessageAccepted,
+    MessageRejected,
+    MessageFinished(StandardButtonKind),
+    Failed(String),
+}
+
 #[derive(Clone, Debug)]
 struct Request {
     id: u64,
@@ -115,11 +209,22 @@ struct Request {
 /// The component owns the pending request. Render snapshots only register it with the host.
 #[doc(hidden)]
 #[derive(Default)]
-pub struct NativeDialogSlot(Property<Option<Request>>);
+pub struct NativeDialogSlot {
+    request: Property<Option<Request>>,
+    opening: Cell<bool>,
+}
+
+struct OpeningGuard<'a>(&'a Cell<bool>);
+
+impl Drop for OpeningGuard<'_> {
+    fn drop(&mut self) {
+        self.0.set(false);
+    }
+}
 
 impl NativeDialogSlot {
     pub fn pending(&self) -> bool {
-        self.0.get(|| None).is_some()
+        self.request.get(|| None).is_some()
     }
 
     pub fn open(&self, options: impl FnOnce() -> NativeDialogOptions) {
@@ -130,17 +235,47 @@ impl NativeDialogSlot {
         &self,
         options: impl FnOnce() -> Result<NativeDialogOptions, E>,
     ) -> Result<(), E> {
-        if self.pending() {
+        self.try_open_if(|| Ok(true), options)
+    }
+
+    #[doc(hidden)]
+    pub fn open_if(
+        &self,
+        enabled: impl FnOnce() -> bool,
+        options: impl FnOnce() -> NativeDialogOptions,
+    ) {
+        let _: Result<(), std::convert::Infallible> =
+            self.try_open_if(|| Ok(enabled()), || Ok(options()));
+    }
+
+    /// Prevent reentry and publish only while the permission and options remain current.
+    #[doc(hidden)]
+    pub fn try_open_if<E>(
+        &self,
+        enabled: impl FnOnce() -> Result<bool, E>,
+        options: impl FnOnce() -> Result<NativeDialogOptions, E>,
+    ) -> Result<(), E> {
+        if self.opening.replace(true) {
             return Ok(());
         }
-        static NEXT: AtomicU64 = AtomicU64::new(1);
-        let id = NEXT
-            .try_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
-            .expect("native dialog request identities exhausted");
-        self.0.set(Some(Request {
-            id,
-            options: Rc::new(options()?),
-        }));
+        let _opening = OpeningGuard(&self.opening);
+        let request = crate::property::watch_reads(|reads| {
+            if self.pending() || !enabled()? || reads.changed() {
+                return Ok(None);
+            }
+            static NEXT: AtomicU64 = AtomicU64::new(1);
+            let id = NEXT
+                .try_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
+                .expect("native dialog request identities exhausted");
+            let options = options()?;
+            Ok((!reads.changed()).then(|| Request {
+                id,
+                options: Rc::new(options),
+            }))
+        })?;
+        if let Some(request) = request {
+            self.request.set(Some(request));
+        }
         Ok(())
     }
 
@@ -149,16 +284,82 @@ impl NativeDialogSlot {
         deliver: impl Fn(u64, NativeDialogResult) -> bool + 'static,
     ) -> Option<NativeDialogRegistration> {
         Some(NativeDialogRegistration {
-            request: self.0.get(|| None)?,
+            request: self.request.get(|| None)?,
             deliver: Rc::new(deliver),
         })
     }
 
+    #[doc(hidden)]
+    pub fn complete(
+        &self,
+        id: u64,
+        result: NativeDialogResult,
+        selection: Option<&FileDialogSelection>,
+        mut notify: impl FnMut(NativeDialogEvent),
+    ) -> bool {
+        self.try_complete(id, result, selection, |event| {
+            notify(event);
+            Ok::<_, std::convert::Infallible>(())
+        })
+        .unwrap_or_else(|error| match error {})
+    }
+
+    /// Clear the pending request and commit the selection before notifying handlers.
+    #[doc(hidden)]
+    pub fn try_complete<E>(
+        &self,
+        id: u64,
+        result: NativeDialogResult,
+        selection: Option<&FileDialogSelection>,
+        mut notify: impl FnMut(NativeDialogEvent) -> Result<(), E>,
+    ) -> Result<bool, E> {
+        let Some(request) = self.request.get(|| None).filter(|request| request.id == id) else {
+            return Ok(false);
+        };
+        if !request.options.accepts_result(&result) {
+            return Ok(false);
+        }
+        let selection_matches = match &result {
+            NativeDialogResult::Files(_) | NativeDialogResult::Canceled => selection.is_some(),
+            NativeDialogResult::Button(_) => selection.is_none(),
+            NativeDialogResult::Failed(_) | NativeDialogResult::Abandoned => true,
+        };
+        if !selection_matches {
+            return Ok(false);
+        }
+        self.request.set(None);
+        match result {
+            NativeDialogResult::Files(paths) => {
+                let selection = selection.expect("validated file dialog selection");
+                selection.commit(&paths);
+                notify(NativeDialogEvent::FilesSelected(VecModel::from(paths)))?;
+            }
+            NativeDialogResult::Canceled => {
+                notify(NativeDialogEvent::FileCanceled)?;
+            }
+            NativeDialogResult::Button(button) => {
+                notify(if button.accepts_message() {
+                    NativeDialogEvent::MessageAccepted
+                } else {
+                    NativeDialogEvent::MessageRejected
+                })?;
+                notify(NativeDialogEvent::MessageFinished(button))?;
+            }
+            NativeDialogResult::Failed(message) => notify(NativeDialogEvent::Failed(message))?,
+            NativeDialogResult::Abandoned => {}
+        }
+        Ok(true)
+    }
+
     pub fn finish(&self, id: u64) -> bool {
-        if self.0.get(|| None).is_none_or(|request| request.id != id) {
+        if self
+            .request
+            .get(|| None)
+            .is_none_or(|request| request.id != id)
+        {
             return false;
         }
-        self.0.set(None);
+        self.request.set(None);
         true
     }
 }
@@ -304,14 +505,13 @@ impl NativeDialogQueue {
     }
 
     pub fn complete(&mut self, id: u64, result: NativeDialogResult) -> bool {
-        if self
-            .active
-            .as_ref()
-            .is_none_or(|active| active.registration.id() != id)
-        {
+        let Some(active) = self.active.take_if(|active| {
+            active.registration.id() == id
+                && (active.abandoned.get()
+                    || active.registration.request.options.accepts_result(&result))
+        }) else {
             return false;
-        }
-        let active = self.active.take().expect("matching active native dialog");
+        };
         active.registration.deliver(if active.abandoned.get() {
             NativeDialogResult::Abandoned
         } else {
@@ -323,7 +523,29 @@ impl NativeDialogQueue {
 
 #[cfg(test)]
 mod tests {
-    use super::{FileDialogSelection, parse_filter};
+    use super::{
+        FileDialogOptions, FileDialogSelection, NativeDialogOptions, NativeDialogSlot, parse_filter,
+    };
+    use std::panic::{AssertUnwindSafe, catch_unwind};
+
+    #[test]
+    fn failed_open_bindings_release_the_slot() {
+        let slot = NativeDialogSlot::default();
+        assert_eq!(
+            slot.try_open(|| Err("invalid options")),
+            Err("invalid options")
+        );
+        assert!(
+            catch_unwind(AssertUnwindSafe(
+                || slot.open(|| panic!("option callback failed"))
+            ))
+            .is_err()
+        );
+        assert!(!slot.pending());
+
+        slot.open(|| NativeDialogOptions::File(FileDialogOptions::default()));
+        assert!(slot.pending());
+    }
 
     #[test]
     fn name_filters_preserve_labels_and_validate_extensions() {

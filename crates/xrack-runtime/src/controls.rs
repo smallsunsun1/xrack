@@ -1,4 +1,4 @@
-use crate::{DecimalSpinRange, Node, SpinDecimal};
+use crate::{DecimalSpinRange, InputRoute, ListModel, Node, RoutedEvent, SpinDecimal, Value};
 use std::sync::{
     Arc,
     atomic::{AtomicU64, Ordering},
@@ -10,11 +10,226 @@ pub struct ActionKey(u64);
 
 impl ActionKey {
     #[doc(hidden)]
+    pub fn present_with(
+        self,
+        node: &mut Node,
+        checkable: impl FnOnce() -> bool,
+        enabled: impl FnOnce() -> bool,
+        checked: impl FnOnce(bool) -> bool,
+    ) {
+        self.try_present_with(
+            node,
+            || Ok::<_, std::convert::Infallible>(checkable()),
+            || Ok(enabled()),
+            |checkable| Ok(checked(checkable)),
+        )
+        .unwrap_or_else(|error| match error {});
+    }
+
+    /// Resolve presentation bindings in their render order.
+    #[doc(hidden)]
+    pub fn try_present_with<E>(
+        self,
+        node: &mut Node,
+        checkable: impl FnOnce() -> Result<bool, E>,
+        enabled: impl FnOnce() -> Result<bool, E>,
+        checked: impl FnOnce(bool) -> Result<bool, E>,
+    ) -> Result<bool, E> {
+        let checkable = checkable()?;
+        let enabled = enabled()?;
+        let checked = checked(checkable)?;
+        self.present(node, enabled, checkable, checked);
+        Ok(enabled)
+    }
+
+    #[doc(hidden)]
     pub fn present(self, node: &mut crate::Node, enabled: bool, checkable: bool, checked: bool) {
         node.action = Some(self);
         node.properties.insert("enabled", enabled.into());
         node.properties.insert("checkable", checkable.into());
         node.properties.insert("checked", checked.into());
+    }
+}
+
+/// Return a pending checked update only while the activation bindings remain current.
+#[doc(hidden)]
+pub fn try_prepare_action_activation<E>(
+    enabled: impl FnOnce() -> Result<bool, E>,
+    checkable: impl FnOnce() -> Result<bool, E>,
+    checked: impl FnOnce() -> Result<bool, E>,
+) -> Result<Option<Option<bool>>, E> {
+    crate::property::watch_reads(|reads| {
+        if !enabled()? || reads.changed() {
+            return Ok(None);
+        }
+        let checkable = checkable()?;
+        if reads.changed() {
+            return Ok(None);
+        }
+        let next = if checkable { Some(!checked()?) } else { None };
+        Ok((!reads.changed()).then_some(next))
+    })
+}
+
+#[doc(hidden)]
+pub fn prepare_action_activation(
+    enabled: impl FnOnce() -> bool,
+    checkable: impl FnOnce() -> bool,
+    checked: impl FnOnce() -> bool,
+) -> Option<Option<bool>> {
+    try_prepare_action_activation(
+        || Ok::<_, std::convert::Infallible>(enabled()),
+        || Ok(checkable()),
+        || Ok(checked()),
+    )
+    .unwrap_or_else(|error| match error {})
+}
+
+/// Read the next expansion state while the group and its input route remain current.
+#[doc(hidden)]
+pub fn try_prepare_group_box_toggle<E>(
+    input: Option<InputRoute<'_>>,
+    checkable: impl FnOnce() -> Result<bool, E>,
+    checked: impl FnOnce() -> Result<bool, E>,
+) -> Result<Option<bool>, E> {
+    if input.is_some_and(|input| !input.is_current()) {
+        return Ok(None);
+    }
+    Ok(
+        try_prepare_action_activation(|| Ok(true), checkable, checked)?
+            .flatten()
+            .filter(|_| input.is_none_or(InputRoute::is_current)),
+    )
+}
+
+#[doc(hidden)]
+pub fn prepare_group_box_toggle(
+    input: Option<InputRoute<'_>>,
+    checkable: impl FnOnce() -> bool,
+    checked: impl FnOnce() -> bool,
+) -> Option<bool> {
+    try_prepare_group_box_toggle(
+        input,
+        || Ok::<_, std::convert::Infallible>(checkable()),
+        || Ok(checked()),
+    )
+    .unwrap_or_else(|error| match error {})
+}
+
+/// Resolve an activation target without allowing bindings to invalidate it mid-read.
+#[doc(hidden)]
+pub fn try_prepare_action_view<T, E>(
+    read: impl FnOnce() -> Result<Option<T>, E>,
+) -> Result<Option<T>, E> {
+    crate::property::watch_reads(|reads| Ok(read()?.filter(|_| !reads.changed())))
+}
+
+#[doc(hidden)]
+pub fn prepare_action_view<T>(read: impl FnOnce() -> Option<T>) -> Option<T> {
+    try_prepare_action_view(|| Ok::<_, std::convert::Infallible>(read()))
+        .unwrap_or_else(|error| match error {})
+}
+
+/// Sample toggle settings before history, with the same input guard as the write.
+#[doc(hidden)]
+pub fn try_prepare_row_toggle<E>(
+    node: &Node,
+    input: crate::InputRoute<'_>,
+    tristate: Option<impl FnOnce() -> Result<bool, E>>,
+    history: impl FnOnce() -> Result<bool, E>,
+) -> Result<Option<bool>, E> {
+    input.try_prepare(
+        || match tristate {
+            Some(read) => Ok(read()? == node.boolean("tristate", false)),
+            None => Ok(true),
+        },
+        || history().map(Some),
+    )
+}
+
+#[doc(hidden)]
+pub fn prepare_row_toggle(
+    node: &Node,
+    input: crate::InputRoute<'_>,
+    tristate: Option<impl FnOnce() -> bool>,
+    history: impl FnOnce() -> bool,
+) -> Option<bool> {
+    try_prepare_row_toggle(
+        node,
+        input,
+        tristate.map(|read| move || Ok::<_, std::convert::Infallible>(read())),
+        || Ok(history()),
+    )
+    .unwrap_or_else(|error| match error {})
+}
+
+/// Resolve an index only while the control and its options remain current.
+#[doc(hidden)]
+pub fn try_prepare_index_selection<E>(
+    index: usize,
+    available: impl FnOnce() -> Result<bool, E>,
+    contains: impl FnOnce(i64) -> Result<bool, E>,
+    current: impl FnOnce() -> Result<i64, E>,
+) -> Result<Option<i64>, E> {
+    let Ok(index) = i64::try_from(index) else {
+        return Ok(None);
+    };
+    crate::property::watch_reads(|reads| {
+        if !available()? || reads.changed() || !contains(index)? || reads.changed() {
+            return Ok(None);
+        }
+        Ok((current()? != index && !reads.changed()).then_some(index))
+    })
+}
+
+#[doc(hidden)]
+pub fn prepare_index_selection(
+    index: usize,
+    available: impl FnOnce() -> bool,
+    contains: impl FnOnce(i64) -> bool,
+    current: impl FnOnce() -> i64,
+) -> Option<i64> {
+    try_prepare_index_selection(
+        index,
+        || Ok::<_, std::convert::Infallible>(available()),
+        |index| Ok(contains(index)),
+        || Ok(current()),
+    )
+    .unwrap_or_else(|error| match error {})
+}
+
+/// Resolve a source row and discard the selection if its projection changes during the cursor read.
+#[doc(hidden)]
+pub fn try_prepare_source_selection<E>(
+    resolve: impl FnOnce() -> Result<Option<usize>, E>,
+    current: impl FnOnce() -> Result<i64, E>,
+) -> Result<Option<i64>, E> {
+    try_prepare_action_view(|| {
+        let Some(index) = resolve()?.and_then(|index| i64::try_from(index).ok()) else {
+            return Ok(None);
+        };
+        Ok((current()? != index).then_some(index))
+    })
+}
+
+#[doc(hidden)]
+pub fn prepare_source_selection(
+    resolve: impl FnOnce() -> Option<usize>,
+    current: impl FnOnce() -> i64,
+) -> Option<i64> {
+    try_prepare_source_selection(
+        || Ok::<_, std::convert::Infallible>(resolve()),
+        || Ok(current()),
+    )
+    .unwrap_or_else(|error| match error {})
+}
+
+impl Node {
+    /// A disabled Action forces its presentation's state-controlled enabled value.
+    #[doc(hidden)]
+    pub fn action_state_override(&self, property: &str) -> Option<crate::Value> {
+        (property == "enabled" && self.action.is_some() && !self.boolean("enabled", true))
+            .then_some(crate::Value::Bool(false))
     }
 }
 
@@ -47,6 +262,31 @@ pub enum SpinAction {
         original: Option<SpinDecimal>,
         value: SpinDecimal,
     },
+}
+
+impl SpinAction {
+    /// Read the live control value only for a commit that carries an original value.
+    #[doc(hidden)]
+    pub fn try_accepts_current<E>(
+        self,
+        current: impl FnOnce() -> Result<Value, E>,
+    ) -> Result<bool, E> {
+        Ok(match self {
+            Self::CommitIfCurrent { original, .. } => {
+                matches!(current()?, Value::Int(value) if value == original)
+            }
+            Self::CommitDecimalIfCurrent { original, .. } => {
+                matches!(current()?, Value::Float(value) if SpinDecimal::new(value) == original)
+            }
+            _ => true,
+        })
+    }
+
+    #[doc(hidden)]
+    pub fn accepts_current(self, current: impl FnOnce() -> Value) -> bool {
+        self.try_accepts_current(|| Ok::<_, std::convert::Infallible>(current()))
+            .unwrap_or_else(|error| match error {})
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -203,6 +443,53 @@ pub fn resizable_table_column(table: &Node, column: usize) -> Option<&Node> {
         .then_some(definition)
 }
 
+/// Validate a drag against both the originating scene and the current bindings.
+#[doc(hidden)]
+pub fn try_table_drag_available<E>(
+    table: &Node,
+    input: InputRoute<'_>,
+    flag: impl FnOnce(&str) -> Result<bool, E>,
+    column_resizable: impl FnOnce(usize) -> Result<bool, E>,
+) -> Result<bool, E> {
+    let (property, column) = match *input.event() {
+        RoutedEvent::Control(ControlAction::ResizeColumn { column, .. }) => {
+            if resizable_table_column(table, column).is_none() {
+                return Ok(false);
+            }
+            ("resizable-columns", Some(column))
+        }
+        RoutedEvent::Control(ControlAction::ResizeRow { .. }) => ("resizable-rows", None),
+        RoutedEvent::Control(ControlAction::MoveColumn { .. }) => ("movable-columns", None),
+        RoutedEvent::Control(ControlAction::MoveRow { .. }) => ("movable-rows", None),
+        _ => return Ok(true),
+    };
+    if !table.boolean(property, false) {
+        return Ok(false);
+    }
+    input.try_available(|| {
+        if !flag(property)? {
+            return Ok(false);
+        }
+        column.map_or(Ok(true), column_resizable)
+    })
+}
+
+#[doc(hidden)]
+pub fn table_drag_available(
+    table: &Node,
+    input: InputRoute<'_>,
+    flag: impl FnOnce(&str) -> bool,
+    column_resizable: impl FnOnce(usize) -> bool,
+) -> bool {
+    try_table_drag_available(
+        table,
+        input,
+        |name| Ok::<_, std::convert::Infallible>(flag(name)),
+        |column| Ok(column_resizable(column)),
+    )
+    .unwrap_or_else(|error| match error {})
+}
+
 impl TableHeader {
     pub fn next_sort(&self, column: usize) -> Option<TableSort> {
         let definition = self.columns.get(column)?;
@@ -339,7 +626,49 @@ pub fn is_button(kind: &str) -> bool {
 }
 
 pub fn delay_millis(node: &Node) -> u64 {
-    node.int("delay").unwrap_or(3_000).clamp(0, 60_000) as u64
+    normalized_delay_millis(node.int("delay"))
+}
+
+fn normalized_delay_millis(delay: Option<i64>) -> u64 {
+    delay.unwrap_or(3_000).clamp(0, 60_000) as u64
+}
+
+/// Confirm that a pending hold or reset still applies to the live button.
+#[doc(hidden)]
+pub fn try_delay_button_transition_is_current<E>(
+    node: &Node,
+    checked: bool,
+    available: impl FnOnce() -> Result<bool, E>,
+    delay: impl FnOnce() -> Result<Option<i64>, E>,
+    current: impl FnOnce() -> Result<bool, E>,
+) -> Result<bool, E> {
+    crate::property::watch_reads(|reads| {
+        if !available()? || reads.changed() {
+            return Ok(false);
+        }
+        if checked && (normalized_delay_millis(delay()?) != delay_millis(node) || reads.changed()) {
+            return Ok(false);
+        }
+        Ok(current()? != checked && !reads.changed())
+    })
+}
+
+#[doc(hidden)]
+pub fn delay_button_transition_is_current(
+    node: &Node,
+    checked: bool,
+    available: impl FnOnce() -> bool,
+    delay: impl FnOnce() -> Option<i64>,
+    current: impl FnOnce() -> bool,
+) -> bool {
+    try_delay_button_transition_is_current(
+        node,
+        checked,
+        || Ok::<_, std::convert::Infallible>(available()),
+        || Ok(delay()),
+        || Ok(current()),
+    )
+    .unwrap_or_else(|error| match error {})
 }
 
 pub fn button_text(node: &Node) -> &str {
@@ -449,6 +778,113 @@ pub fn spin_value_after(node: &Node, action: SpinAction) -> Option<i64> {
     SpinRange::from_node(node).apply(action)
 }
 
+#[doc(hidden)]
+pub const SPIN_VIEW_PROPERTIES: &[&str] = &[
+    "read-only",
+    "editable",
+    "minimum",
+    "maximum",
+    "decimals",
+    "decimal-separator",
+    "step-size",
+    "wrap",
+];
+
+/// Check that the options used to interpret an input are still current.
+#[doc(hidden)]
+pub fn try_spin_view_is_current<E>(
+    node: &Node,
+    action: SpinAction,
+    available: impl FnOnce() -> Result<bool, E>,
+    current: impl FnOnce() -> Result<Value, E>,
+    read: impl FnMut(&str) -> Result<Option<Value>, E>,
+) -> Result<bool, E> {
+    try_prepare_spin_view(node, action, available, current, read, || Ok(Some(())))
+        .map(|prepared| prepared.is_some())
+}
+
+#[doc(hidden)]
+pub fn try_prepare_spin_view<T, E>(
+    node: &Node,
+    action: SpinAction,
+    available: impl FnOnce() -> Result<bool, E>,
+    current: impl FnOnce() -> Result<Value, E>,
+    mut read: impl FnMut(&str) -> Result<Option<Value>, E>,
+    prepare: impl FnOnce() -> Result<Option<T>, E>,
+) -> Result<Option<T>, E> {
+    let decimal = node.kind == "DoubleSpinBox";
+    let commit = matches!(
+        action,
+        SpinAction::Commit(_)
+            | SpinAction::CommitIfCurrent { .. }
+            | SpinAction::CommitDecimal(_)
+            | SpinAction::CommitDecimalIfCurrent { .. }
+    );
+    let step = matches!(
+        action,
+        SpinAction::Increase | SpinAction::Decrease | SpinAction::Step(_)
+    );
+    crate::property::watch_reads(|reads| {
+        if !available()? || reads.changed() {
+            return Ok(None);
+        }
+        for &name in SPIN_VIEW_PROPERTIES {
+            let used = match name {
+                "editable" => commit,
+                "decimals" => decimal,
+                "decimal-separator" => decimal && commit,
+                "step-size" | "wrap" => step,
+                _ => true,
+            };
+            if used && (read(name)?.as_ref() != node.properties.get(name) || reads.changed()) {
+                return Ok(None);
+            }
+        }
+        if !action.try_accepts_current(current)? || reads.changed() {
+            return Ok(None);
+        }
+        Ok(prepare()?.filter(|_| !reads.changed()))
+    })
+}
+
+#[doc(hidden)]
+pub fn spin_view_is_current(
+    node: &Node,
+    action: SpinAction,
+    available: impl FnOnce() -> bool,
+    current: impl FnOnce() -> Value,
+    mut read: impl FnMut(&str) -> Option<Value>,
+) -> bool {
+    try_spin_view_is_current(
+        node,
+        action,
+        || Ok::<_, std::convert::Infallible>(available()),
+        || Ok(current()),
+        |name| Ok(read(name)),
+    )
+    .unwrap_or_else(|error| match error {})
+}
+
+#[doc(hidden)]
+pub fn prepare_spin_view<T>(
+    node: &Node,
+    action: SpinAction,
+    available: impl FnOnce() -> bool,
+    current: impl FnOnce() -> Value,
+    mut read: impl FnMut(&str) -> Option<Value>,
+    prepare: impl FnOnce() -> Option<T>,
+) -> Option<T> {
+    try_prepare_spin_view(
+        node,
+        action,
+        || Ok::<_, std::convert::Infallible>(available()),
+        || Ok(current()),
+        |name| Ok(read(name)),
+        || Ok(prepare()),
+    )
+    .unwrap_or_else(|error| match error {})
+}
+
 pub fn is_spin_box(kind: &str) -> bool {
     matches!(kind, "SpinBox" | "DoubleSpinBox")
 }
@@ -522,6 +958,103 @@ pub fn group_item(node: &Node, index: usize) -> Option<&Node> {
     })
 }
 
+/// Resolve a selectable option that is distinct from the scene's selected option.
+#[doc(hidden)]
+pub fn group_selection_item(node: &Node, index: usize) -> Option<&Node> {
+    let item = group_item(node, index)?;
+    (group_index(node) != Some(index)).then_some(item)
+}
+
+/// Validate the displayed option against the live group before committing a selection.
+#[doc(hidden)]
+pub fn try_prepare_group_selection<E>(
+    node: &Node,
+    index: usize,
+    route: crate::InputRoute<'_>,
+    model_current: impl FnOnce() -> Result<bool, E>,
+    current: impl FnOnce() -> Result<crate::ButtonGroupSelection, E>,
+    mut option: impl FnMut(usize, bool) -> Result<Option<String>, E>,
+) -> Result<Option<String>, E> {
+    let Some(shown) = group_item(node, index) else {
+        return Ok(None);
+    };
+    let radio = node.kind == "RadioGroup";
+    if !route.try_available(model_current)? {
+        return Ok(None);
+    }
+    let Some(label) = option(index, radio)? else {
+        return Ok(None);
+    };
+    if !route.is_current() || (radio && label != crate::radio_value(shown)) {
+        return Ok(None);
+    }
+    let current = current()?;
+    if !route.is_current() {
+        return Ok(None);
+    }
+    let unchanged = match current {
+        crate::ButtonGroupSelection::Value(value) => value == label,
+        crate::ButtonGroupSelection::Index(current) => {
+            let current = usize::try_from(current).ok();
+            if current == Some(index) {
+                true
+            } else if matches!(node.kind, "TabBar" | "SwipeView") {
+                let mut selected = false;
+                let valid_current = if let Some(current) = current {
+                    option(current, false)?.is_some()
+                } else {
+                    false
+                };
+                if !valid_current && route.is_current() {
+                    selected = true;
+                    for preceding in 0..index {
+                        if option(preceding, false)?.is_some() || !route.is_current() {
+                            selected = false;
+                            break;
+                        }
+                    }
+                }
+                selected
+            } else {
+                false
+            }
+        }
+    };
+    Ok((!unchanged && route.is_current()).then_some(label))
+}
+
+#[doc(hidden)]
+pub fn prepare_group_selection(
+    node: &Node,
+    index: usize,
+    route: crate::InputRoute<'_>,
+    model_current: impl FnOnce() -> bool,
+    current: impl FnOnce() -> crate::ButtonGroupSelection,
+    mut option: impl FnMut(usize, bool) -> Option<String>,
+) -> Option<String> {
+    try_prepare_group_selection(
+        node,
+        index,
+        route,
+        || Ok::<_, std::convert::Infallible>(model_current()),
+        || Ok(current()),
+        |index, label| Ok(option(index, label)),
+    )
+    .unwrap_or_else(|error| match error {})
+}
+
+impl Node {
+    #[doc(hidden)]
+    pub fn snapshot_group_options(&mut self, model: &impl ListModel) {
+        self.standard_list_stamp = Some(model.contents_stamp());
+    }
+
+    #[doc(hidden)]
+    pub fn group_options_are_current(&self, model: &impl ListModel) -> bool {
+        self.standard_list_stamp == Some(model.contents_stamp())
+    }
+}
+
 pub fn group_index(node: &Node) -> Option<usize> {
     if matches!(node.kind, "SwipeView" | "TabBar") {
         return resolve_swipe_index(
@@ -543,23 +1076,50 @@ pub fn group_index(node: &Node) -> Option<usize> {
     group_item(node, index).map(|_| index)
 }
 
+impl Node {
+    /// Mount the same SwipePage that layout will select from the rendered page properties.
+    #[doc(hidden)]
+    pub fn mount_active_swipe_page<T>(
+        &mut self,
+        mount: impl FnOnce(usize, &mut Node) -> T,
+    ) -> Option<T> {
+        if self.kind != "SwipeView" || !self.is_visible() {
+            return None;
+        }
+        let index = group_index(self)?;
+        Some(mount(index, &mut self.children[index]))
+    }
+}
+
 /// Preserve declared page indexes while falling back to the first available page.
 #[doc(hidden)]
 pub fn resolve_swipe_index(
     requested: Option<i64>,
     available: impl IntoIterator<Item = bool>,
 ) -> Option<usize> {
+    try_resolve_swipe_index(
+        requested,
+        available.into_iter().map(Ok::<_, std::convert::Infallible>),
+    )
+    .unwrap_or_else(|error| match error {})
+}
+
+#[doc(hidden)]
+pub fn try_resolve_swipe_index<E>(
+    requested: Option<i64>,
+    available: impl IntoIterator<Item = Result<bool, E>>,
+) -> Result<Option<usize>, E> {
     let requested = requested.and_then(|index| usize::try_from(index).ok());
     let mut first = None;
     for (index, available) in available.into_iter().enumerate() {
-        if available {
+        if available? {
             if requested == Some(index) {
-                return Some(index);
+                return Ok(Some(index));
             }
             first.get_or_insert(index);
         }
     }
-    first
+    Ok(first)
 }
 
 #[cfg(test)]

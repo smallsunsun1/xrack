@@ -1,6 +1,8 @@
 //! Resolve assets and localization catalogs referenced by XR dialect modules.
 mod animated_image;
 mod assets;
+pub mod field;
+pub mod literal;
 mod localization;
 mod scene_plan;
 pub mod visual;
@@ -10,7 +12,7 @@ pub use localization::{ResolvedTranslations, resolve_translations};
 pub use scene_plan::ScenePlan;
 use std::{collections::BTreeMap, path::Path};
 use xrack_mlir::{Module, OperationRef};
-use xrack_runtime::{ImageFormat, NineSlice, StyledText, VectorSegment};
+use xrack_runtime::{Image, ImageAsset, ImageFormat, NineSlice, StyledText, VectorSegment};
 
 pub enum EmbeddedImage {
     Static {
@@ -73,36 +75,64 @@ pub fn check_nine_slices(
     module: &Module,
     images: &BTreeMap<String, EmbeddedImage>,
 ) -> Result<(), String> {
-    fn check(op: OperationRef<'_>, images: &BTreeMap<String, EmbeddedImage>) -> Result<(), String> {
+    check_nine_slice_sources(module, |url| {
+        images.get(url).map(|image| {
+            (
+                image.size(),
+                matches!(image, EmbeddedImage::Animated { .. }),
+            )
+        })
+    })
+}
+
+/// Check the same constraints when a host supplies decoded image assets.
+pub fn check_loaded_nine_slices(
+    module: &Module,
+    images: &BTreeMap<String, ImageAsset>,
+) -> Result<(), String> {
+    check_nine_slice_sources(module, |url| {
+        images.get(url).map(|image| {
+            (
+                image.size(),
+                matches!(
+                    image,
+                    ImageAsset::Animated(_) | ImageAsset::Embedded(Image::Animated(_))
+                ),
+            )
+        })
+    })
+}
+
+fn check_nine_slice_sources(
+    module: &Module,
+    lookup: impl Fn(&str) -> Option<([u32; 2], bool)>,
+) -> Result<(), String> {
+    let mut check = |op: OperationRef<'_>| {
         if op.name() == "xr.nine_slice" {
             let url = op
                 .operand(0)
                 .and_then(|value| value.defining_operation())
                 .ok_or("missing nine-slice source")?
                 .attr("value")?;
-            let image = images
-                .get(url)
-                .ok_or_else(|| format!("unresolved image {url:?}"))?;
-            if matches!(image, EmbeddedImage::Animated { .. }) {
+            let (size, animated) =
+                lookup(url).ok_or_else(|| format!("unresolved image {url:?}"))?;
+            if animated {
                 return Err("nine-slice requires a static PNG or SVG source".into());
             }
-            if !nine_slice_edges(op)?.fits(image.size()) {
+            if !nine_slice_edges(op)?.fits(size) {
                 let span = op.span();
                 let source = op.source_file().unwrap_or("<unknown>");
-                let [width, height] = image.size();
+                let [width, height] = size;
                 return Err(format!(
                     "{source}:{}:{}: nine-slice edges must leave a nonempty center in image {url:?} ({width} × {height})",
                     span.line, span.column
                 ));
             }
         }
-        for child in op.children() {
-            check(child, images)?;
-        }
         Ok(())
-    }
+    };
     for op in module.operations() {
-        check(op, images)?;
+        assets::walk(op, &mut check)?;
     }
     Ok(())
 }

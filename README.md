@@ -195,7 +195,9 @@ C++ 使用 clangd。运行 **Bazel: Generate compile_commands.json** 或 `python
 
 在仓库中用 `bazel build //crates/xrack-preview` 构建预览宿主，或安装平台 VSIX。打开 `.xr` 文件后运行 **XRack: Open Live Preview**。宿主会读取当前编辑缓冲区和打开的导入文件，执行校验及优化，再由解释器创建组件。可点击按钮，也可点击文本框后输入或粘贴。预览支持 PNG、SVG、九宫格图像和 GIF 播放。后续编辑复用宿主和 GPU 渲染器，语法错误时保留上一个可交互的画面。使用解释器尚未覆盖的控件、资源或操作时，扩展使用生成 Rust 的预览路径。
 
-Rust 宿主可用 `xrack_interpreter::load_mlir_file` 加载文本 MLIR。图片、字体和翻译清单按 MLIR 文件所在目录解析，Fluent 文件按清单所在目录解析。用 `Program::create` 创建独立实例，再通过 `Instance::get`、`set`、`on`、`invoke` 操作公开接口。动态实例实现 `xrack_runtime::Component`。宿主已有资源时可通过 `Program::from_module_with_assets` 提供。
+Rust 宿主可用 `xrack_interpreter::load_mlir_file` 加载文本 MLIR。图片、字体和翻译清单按 MLIR 文件所在目录解析，Fluent 文件按清单所在目录解析。用 `Program::create` 创建独立实例，再通过 `Instance::get`、`set`、`on`、`invoke` 操作公开接口。动态实例实现 `xrack_runtime::Component`。宿主回调需要访问组件时，可捕获 `Instance::as_weak()` 返回的弱引用，并在执行时用 `upgrade()` 获取仍存活的实例。宿主已有资源时可通过 `Program::from_module_with_assets` 提供。 用 `Program::create_with_locale` 可在创建时传入共享语言环境。
+
+`Instance::string_model`、`record_model` 和 `touch_points_model` 返回共享模型。宿主可以通过 `RecordList::from_model` 包装已有的记录模型，再用 `Instance::set` 绑定到可写属性，保留模型和行身份。
 
 ## Bazel 磁盘缓存
 

@@ -1,6 +1,6 @@
 //! Lazy property bindings with dynamically tracked dependencies.
 use std::{
-    cell::{Cell, RefCell},
+    cell::{Cell, OnceCell, RefCell},
     collections::HashMap,
     rc::{Rc, Weak},
 };
@@ -218,6 +218,17 @@ impl ChangeSignal {
     }
 }
 
+/// A dependency on the lifetime of a component that owns a weak binding.
+#[doc(hidden)]
+#[derive(Default)]
+pub struct ComponentLifetime(OnceCell<ChangeSignal>);
+
+impl ComponentLifetime {
+    pub fn track(&self) {
+        self.0.get_or_init(ChangeSignal::default).track();
+    }
+}
+
 enum Stored<T> {
     Unset,
     Explicit(T),
@@ -320,7 +331,15 @@ impl<T: Clone> Property<T> {
     }
 
     /// Evaluate a binding without caching a failed result.
-    pub(crate) fn try_get<E>(&self, default: impl FnOnce() -> Result<T, E>) -> Result<T, E> {
+    #[doc(hidden)]
+    pub fn try_get<E>(&self, default: impl FnOnce() -> Result<T, E>) -> Result<T, E> {
+        self.try_get_with(|| match &self.binding {
+            Some(binding) => Ok(binding()),
+            None => default(),
+        })
+    }
+
+    fn try_get_with<E>(&self, read: impl FnOnce() -> Result<T, E>) -> Result<T, E> {
         assert!(
             !self.dependency.evaluating.get(),
             "cyclic property evaluation"
@@ -332,10 +351,7 @@ impl<T: Clone> Property<T> {
             Stored::Unset | Stored::Cached(_) => {}
         }
 
-        let value = self.dependency.evaluate(|| match &self.binding {
-            Some(binding) => Ok(binding()),
-            None => default(),
-        });
+        let value = self.dependency.evaluate(read);
         let value = match value {
             Ok(value) => value,
             Err(error) => {
@@ -352,6 +368,18 @@ impl<T: Clone> Property<T> {
             }
         }
         Ok(value)
+    }
+}
+
+impl<T: Clone, E: Clone> Property<Result<T, E>> {
+    fn get_result(&self, default: impl FnOnce() -> Result<T, E>) -> Result<T, E> {
+        self.try_get_with(|| {
+            match &self.binding {
+                Some(binding) => binding(),
+                None => default(),
+            }
+            .map(Ok)
+        })?
     }
 }
 
@@ -380,6 +408,13 @@ impl<T> Default for InputProperty<T> {
 impl<T> InputProperty<T> {
     pub fn bound(read: impl Fn() -> T + 'static) -> Self {
         Self::Local(Property::new(Some(Box::new(read))))
+    }
+
+    /// Evaluate a supplied binding while it is available, then use the
+    /// component's own property default.
+    #[doc(hidden)]
+    pub fn bound_optional(read: impl Fn() -> Option<T> + 'static) -> Self {
+        Self::default().with_state(read)
     }
 
     pub fn linked(read: impl Fn() -> Option<T> + 'static, write: impl Fn(T) + 'static) -> Self {
@@ -425,6 +460,20 @@ impl<T: Clone> InputProperty<T> {
             Self::Linked { read, .. } => read().unwrap_or_else(default),
             Self::State { value, read, base } => {
                 value.get(|| read().unwrap_or_else(|| base.get(default)))
+            }
+        }
+    }
+}
+
+impl<T: Clone, E: Clone> InputProperty<Result<T, E>> {
+    /// A failed input read leaves the binding dirty so it can be retried.
+    #[doc(hidden)]
+    pub fn get_result(&self, default: impl FnOnce() -> Result<T, E>) -> Result<T, E> {
+        match self {
+            Self::Local(property) => property.get_result(default),
+            Self::Linked { read, .. } => read().unwrap_or_else(default),
+            Self::State { value, read, base } => {
+                value.get_result(|| read().unwrap_or_else(|| base.get_result(default)))
             }
         }
     }

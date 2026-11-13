@@ -164,7 +164,7 @@ fn visual_caches_stay_lazy_and_use_the_component_or_row_scope() {
     let items = ui.string_model("items").unwrap();
     let row = |index| {
         ui.repeat_state(template)
-            .row(&ui, repeat, index, items.row_key(index).unwrap())
+            .row(&ui, repeat, index, items.row_key(index).unwrap(), false)
             .unwrap()
             .unwrap()
     };

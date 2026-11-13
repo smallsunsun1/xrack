@@ -5,13 +5,13 @@ use crate::{
 };
 use std::{cell::RefCell, collections::HashMap};
 use xrack_mlir::{
-    AliasGraph, AnimationRef, Module, OperationRef, RecordDeclRef, RepeatRef, StateCaseRef,
-    TranslationRef, ValueRef,
+    AliasGraph, AnimationRef, ComponentAnalysis, Module, OperationRef, RecordDeclRef, RepeatRef,
+    StateCaseRef, TranslationRef, ValueRef,
 };
 use xrack_resources::visual::{
     ControlDefault, ControlLiteral, control_default, controlled_properties, default_combo_edit_text,
 };
-use xrack_runtime::{self as runtime, Color, Length, Percent};
+use xrack_runtime::{self as runtime, Percent};
 use xrack_syntax::ast::{Parameter, Type};
 
 /// Load XR dialect text without consulting the filesystem.
@@ -216,13 +216,21 @@ fn kind(op: Op<'_>, ty: &Type) -> Result<ValueType> {
     })
 }
 
-fn value_kind(op: Op<'_>, value: ValueRef<'_>) -> Result<ValueType> {
+fn value_type(op: Op<'_>, value: ValueRef<'_>) -> Result<Type> {
     let ty = value.type_name();
-    let parsed = ty
-        .strip_prefix("!xr.")
+    ty.strip_prefix("!xr.")
         .and_then(Type::parse)
-        .ok_or_else(|| unsupported(op, &ty))?;
-    kind(op, &parsed)
+        .ok_or_else(|| unsupported(op, &ty))
+}
+
+fn value_kind(op: Op<'_>, value: ValueRef<'_>) -> Result<ValueType> {
+    kind(op, &value_type(op, value)?)
+}
+
+fn literal(op: Op<'_>, ty: &Type, spelling: &str) -> Result<Value> {
+    xrack_resources::literal::decode(ty, spelling)
+        .map(xrack_resources::literal::Literal::into_value)
+        .map_err(|error| invalid(op, error))
 }
 
 fn member(op: Op<'_>, name: &str) -> Result<Member> {
@@ -271,7 +279,8 @@ struct Loader<'m> {
     visual_scope: Option<&'m str>,
     use_visual_plan: bool,
     can_translate: bool,
-    selectors: Vec<Vec<Expr>>,
+    selectors: Vec<StateSelector>,
+    analysis: ComponentAnalysis<'m>,
     geometry_targets: BTreeSet<String>,
     viewport_targets: BTreeSet<String>,
     source_scroll_targets: BTreeSet<String>,
@@ -304,6 +313,13 @@ impl<'m> Loader<'m> {
             use_visual_plan,
             can_translate,
             visual_bindings,
+            analysis: ComponentAnalysis::from_component(
+                op,
+                aliases.properties,
+                aliases.callbacks,
+                use_visual_plan,
+            )
+            .map_err(|error| invalid(op, error))?,
             records,
             assets,
             ..Self::default()
@@ -321,48 +337,49 @@ impl<'m> Loader<'m> {
         }
         let component = attribute(op, "sym_name")?;
         for (member, property) in &mut loader.properties {
-            if property.alias.is_some() {
+            if let PropertySource::Alias(target) = &mut property.source {
                 let (owner, name) = aliases.properties[component]
                     .resolve(aliases.properties, (&member.owner, &member.name))
                     .map_err(|error| invalid(op, error))?;
-                property.alias = Some(Member::new(owner, name));
+                *target = Member::new(owner, name);
             }
         }
-        let mut defaults = BTreeSet::new();
         for (member, callback) in &mut loader.callbacks {
             if callback.alias.is_some() {
-                let graph = &aliases.callbacks[component];
-                let (owner, name) = graph
+                let (owner, name) = aliases.callbacks[component]
                     .resolve(aliases.callbacks, (&member.owner, &member.name))
                     .map_err(|error| invalid(op, error))?;
                 callback.alias = Some(Member::new(owner, name));
-                if callback.alias_implementation {
-                    let mut path = vec![(owner, name)];
-                    if let Some(child) = graph.instance(owner) {
-                        path[0].1 = "";
-                        path.extend(
-                            xrack_mlir::canonical_input(aliases.callbacks, child, name)
-                                .map_err(|error| invalid(op, error))?,
-                        );
-                    }
-                    if !defaults.insert(
-                        path.into_iter()
-                            .map(|(owner, name)| Member::new(owner, name))
-                            .collect::<Vec<_>>(),
-                    ) {
-                        return Err(invalid(
-                            op,
-                            "multiple alias handlers target the same callback",
-                        ));
-                    }
-                }
             }
         }
         let root = root.ok_or_else(|| invalid(op, "component has no root element"))?;
         let button_groups = group::members(&root);
         Ok(Definition {
             properties: loader.properties,
+            property_forwards: loader
+                .analysis
+                .property_forwards
+                .iter()
+                .filter(|(path, _)| path.len() > 1)
+                .flat_map(|(path, forward)| {
+                    let path: Vec<_> = path
+                        .iter()
+                        .map(|(owner, name)| Member::new(owner, name))
+                        .collect();
+                    forward
+                        .inputs
+                        .iter()
+                        .map(move |name| ((*name).to_owned(), path.clone()))
+                })
+                .collect(),
             callbacks: loader.callbacks,
+            callback_defaults: loader
+                .analysis
+                .callback_forwards
+                .values()
+                .filter_map(|forward| forward.implementation)
+                .map(|((owner, name), _)| Member::new(owner, name))
+                .collect(),
             root,
             button_groups,
             selectors: loader.selectors,
@@ -380,12 +397,14 @@ impl<'m> Loader<'m> {
         let name = attribute(op, "name")?;
         let visibility = attribute(op, "visibility")?;
         let input = operand(op, 0)?;
+        let source = if op.attribute("alias") == Some("true") {
+            PropertySource::Alias(reference(op, input)?)
+        } else {
+            PropertySource::Initial(self.expression(input, &[])?)
+        };
         let property = PropertyDef {
             ty: value_kind(op, input)?,
-            initial: self.expression(input, &[])?,
-            alias: (op.attribute("alias") == Some("true"))
-                .then(|| reference(op, input))
-                .transpose()?,
+            source,
             public: owner == "root" && visibility != "private",
             writable: matches!(visibility, "in" | "in-out"),
         };
@@ -397,7 +416,6 @@ impl<'m> Loader<'m> {
         let mut callback = self.function(op)?;
         if let Some(target) = op.attribute("alias_owner") {
             callback.alias = Some(Member::new(target, attribute(op, "alias_name")?));
-            callback.alias_implementation = op.attribute("implementation") == Some("true");
         }
         self.callbacks
             .insert(Member::new(owner, attribute(op, "name")?), callback);
@@ -605,7 +623,6 @@ impl<'m> Loader<'m> {
             body,
             pure: op.attribute("pure") == Some("true"),
             alias: None,
-            alias_implementation: false,
         })
     }
 
@@ -762,8 +779,22 @@ impl<'m> Loader<'m> {
             (None, None)
         };
         let mut instance_handlers = BTreeMap::new();
+        let instance_bindings = self.analysis.instances.remove(key).unwrap_or_default();
+        for handler in instance_bindings.callbacks {
+            let callback = handler.operation;
+            if callback.attribute("alias_owner").is_some() {
+                return Err(unsupported(callback, "instance callback aliases"));
+            }
+            instance_handlers.insert(
+                attribute(callback, "name")?.into(),
+                self.function(callback)?,
+            );
+        }
         let mut clipboard_parser = None;
-        let mut clipboard_text = None;
+        let mut clipboard_text = instance_bindings
+            .clipboard_text
+            .map(|binding| self.expression(operand(binding, 0)?, &[]))
+            .transpose()?;
         let mut bindings = Vec::new();
         let mut offsets = Vec::new();
         let mut scroll_target = None;
@@ -773,6 +804,34 @@ impl<'m> Loader<'m> {
         let mut button_group = None;
         let mut non_exclusive = false;
         let mut inputs = BTreeMap::<String, Input>::new();
+        for input in instance_bindings.inputs {
+            let binding = input.operation;
+            let value = operand(binding, 0)?;
+            let source = if binding.name() == "xr.bind" {
+                InputSource::Binding(self.expression(value, &[])?)
+            } else if value
+                .defining_operation()
+                .is_some_and(|op| op.name() == "xr.read")
+            {
+                InputSource::Linked(reference(binding, value)?)
+            } else {
+                InputSource::RowLink(self.row_field(binding, value)?)
+            };
+            let mut decoded = Input::new(input.endpoint);
+            decoded.source = Some(source);
+            inputs.insert(attribute(binding, "name")?.into(), decoded);
+        }
+        for input in instance_bindings.state_inputs {
+            inputs
+                .entry(input.name.into())
+                .or_insert_with(|| Input::new(input.endpoint))
+                .cases = input
+                .cases
+                .into_iter()
+                .map(|case| self.state_case(case))
+                .collect::<Result<_>>()?;
+        }
+        let mut render_selector = None;
         let mut state_bindings = BTreeMap::<_, Vec<_>>::new();
         let mut conditions = Vec::new();
         let mut static_hidden = false;
@@ -792,13 +851,7 @@ impl<'m> Loader<'m> {
         for child in op.children() {
             match child.name() {
                 "xr.property" => self.property(key, child)?,
-                "xr.callback" if is_instance => {
-                    if child.attribute("alias_owner").is_some() {
-                        return Err(unsupported(child, "instance callback aliases"));
-                    }
-                    instance_handlers
-                        .insert(attribute(child, "name")?.into(), self.function(child)?);
-                }
+                "xr.callback" if is_instance => {}
                 "xr.callback" => self.callback(key, child)?,
                 "xr.clipboard_paste" => {
                     let parameter = Parameter {
@@ -960,37 +1013,27 @@ impl<'m> Loader<'m> {
                     initial_focus = Some(target.into());
                 }
                 "xr.split_fill" => split_fill = Some(attribute(child, "target")?),
+                "xr.bind" | "xr.instance_link" if is_instance => {}
                 "xr.bind" if child.attribute("name") == Some("clipboard-text") => {
                     clipboard_text = Some(self.expression(operand(child, 0)?, &[])?);
                 }
-                "xr.bind" if is_instance => {
-                    let name = attribute(child, "name")?;
-                    inputs.entry(name.into()).or_default().source = Some(InputSource::Binding(
-                        self.expression(operand(child, 0)?, &[])?,
-                    ));
-                }
-                "xr.instance_link" => {
-                    let name = attribute(child, "name")?;
-                    let input = operand(child, 0)?;
-                    let source = if input
-                        .defining_operation()
-                        .is_some_and(|op| op.name() == "xr.read")
+                "xr.state_select" => {
+                    if self
+                        .analysis
+                        .visual_state_selectors
+                        .contains(attribute(child, "owner")?)
                     {
-                        InputSource::Linked(reference(child, input)?)
-                    } else {
-                        InputSource::RowLink(self.row_field(child, input)?)
-                    };
-                    inputs.entry(name.into()).or_default().source = Some(source);
+                        let result = child
+                            .result(0)
+                            .ok_or_else(|| invalid(child, "missing selector result"))?;
+                        render_selector = Some(self.state_selector(child, result)?);
+                    }
                 }
                 "xr.state_set" => state_bindings
                     .entry(property_name(child)?)
                     .or_default()
                     .push(self.state_case(child)?),
-                "xr.instance_state" => inputs
-                    .entry(attribute(child, "name")?.into())
-                    .or_default()
-                    .cases
-                    .push(self.state_case(child)?),
+                "xr.instance_state" => {}
                 "xr.scroll_target" => {
                     let target = attribute(child, "target")?.to_owned();
                     self.viewport_targets.insert(target.clone());
@@ -1114,7 +1157,7 @@ impl<'m> Loader<'m> {
                         .entry(property_name(child)?)
                         .or_default()
                         .push(StateTimingSpec {
-                            selector: self.expression(case.selector, &[])?,
+                            selector: self.state_selector(child, case.selector)?,
                             index: case.index,
                             enter: attribute(child, "direction")? == "in",
                             animation: self.animation(child)?,
@@ -1229,6 +1272,7 @@ impl<'m> Loader<'m> {
             action_group,
             button_group,
             non_exclusive,
+            render_selector,
             state_bindings,
             animations,
             state_timings,
@@ -1314,16 +1358,25 @@ impl<'m> Loader<'m> {
         })
     }
 
+    fn state_selector(&mut self, op: Op<'m>, value: ValueRef<'m>) -> Result<usize> {
+        match self.expression(value, &[])?.as_ref() {
+            Expression::StateSelect(index) => Ok(*index),
+            _ => Err(invalid(op, "expected a state selector")),
+        }
+    }
+
     fn state_case(&mut self, op: Op<'m>) -> Result<StateCase> {
         let case = StateCaseRef::from_operation(op).map_err(|error| invalid(op, error))?;
         Ok(StateCase {
-            selector: self.expression(case.selector, &[])?,
+            selector: self.state_selector(op, case.selector)?,
             index: case.index,
             value: self.expression(case.value, &[])?,
         })
     }
 
     fn animation(&mut self, op: Op<'m>) -> Result<AnimationSpec> {
+        use xrack_runtime::Easing;
+
         let timing = AnimationRef::from_operation(op).map_err(|error| invalid(op, error))?;
         let easing = match timing.curve {
             Some([x1, y1, x2, y2]) => Easing::cubic_bezier(x1, y1, x2, y2)
@@ -1331,13 +1384,11 @@ impl<'m> Loader<'m> {
             None => Easing::LINEAR,
         };
         Ok(AnimationSpec {
-            duration: self.expression(timing.duration, &[])?,
+            timing: Animation::new(timing.duration_ms, timing.delay_ms, easing),
             enabled: timing
                 .enabled
                 .map(|value| self.expression(value, &[]))
                 .transpose()?,
-            delay_ms: timing.delay_ms,
-            easing,
         })
     }
 
@@ -1348,20 +1399,8 @@ impl<'m> Loader<'m> {
             .ok_or_else(|| invalid(op, format_args!("unknown record {name}")))
     }
 
-    fn default_field(&self, op: Op<'m>, ty: &ValueType) -> Result<Value> {
-        if let ValueType::Record(name) = ty {
-            return self.default_record(op, name.clone());
-        }
-        runtime_default(ty).ok_or_else(|| unsupported(op, &format!("record default {ty:?}")))
-    }
-
     fn default_record(&self, op: Op<'m>, name: Rc<str>) -> Result<Value> {
-        let fields = self
-            .record_fields(op, &name)?
-            .iter()
-            .map(|field| Ok((field.name.clone(), self.default_field(op, &field.ty)?)))
-            .collect::<Result<_>>()?;
-        Ok(Value::Record(RecordValue::new(name, fields)))
+        default_value(&self.records, &ValueType::Record(name)).map_err(|error| invalid(op, error))
     }
 
     fn visual_binding(&mut self, binding: Op<'m>) -> Result<Expr> {
@@ -1403,7 +1442,7 @@ impl<'m> Loader<'m> {
             self.expressions.insert(key, expression.clone());
             return Ok(expression);
         }
-        let ty = value_kind(op, value)?;
+        let ty = value_type(op, value)?;
         let argument = |this: &mut Self, index| this.expression(operand(op, index)?, parameters);
         let arguments = |this: &mut Self| {
             (0..op.operand_count())
@@ -1412,7 +1451,7 @@ impl<'m> Loader<'m> {
         };
         let spelling = || attribute(op, "value");
         let expression = match op.name() {
-            "xr.literal" => Expression::Literal(literal(op, ty, spelling()?)?),
+            "xr.literal" => Expression::Literal(literal(op, &ty, spelling()?)?),
             "xr.read" => Expression::Read(member(op, "value")?),
             "xr.geometry_read" => {
                 let target = attribute(op, "owner")?.to_owned();
@@ -1507,27 +1546,6 @@ impl<'m> Loader<'m> {
                 Expression::TableRead(member(op, "value")?)
             }
             "xr.scroll_control_read" => Expression::ScrollControlRead(member(op, "value")?),
-            "xr.control_read" if spelling()? == "open" => {
-                Expression::PopupOpen(attribute(op, "owner")?.into())
-            }
-            "xr.control_read"
-                if matches!(
-                    spelling()?,
-                    "text"
-                        | "value"
-                        | "checked"
-                        | "check-state"
-                        | "current-row"
-                        | "current-index"
-                        | "current-value"
-                        | "edit-text"
-                        | "position"
-                        | "running"
-                        | "open-side"
-                ) =>
-            {
-                Expression::Read(member(op, "value")?)
-            }
             "xr.image_url" => {
                 let url = spelling()?;
                 let image = if url.is_empty() {
@@ -1579,33 +1597,19 @@ impl<'m> Loader<'m> {
                 }
             }
             "xr.unary" => {
-                let operator = match spelling()? {
-                    "+" => return argument(self, 0),
-                    "!" => Unary::Not,
-                    "-" => Unary::Negate,
-                    name => return Err(unsupported(op, name)),
-                };
-                Expression::Unary(operator, argument(self, 0)?)
+                let operator =
+                    UnaryOperator::from_operation(op).map_err(|error| invalid(op, error))?;
+                let input = argument(self, 0)?;
+                if operator == UnaryOperator::Positive {
+                    return Ok(input);
+                }
+                Expression::Unary(operator, input)
             }
-            "xr.binary" => {
-                let operator = match spelling()? {
-                    "+" => Binary::Add,
-                    "-" => Binary::Subtract,
-                    "*" => Binary::Multiply,
-                    "/" => Binary::Divide,
-                    "%" => Binary::Remainder,
-                    "==" => Binary::Equal,
-                    "!=" => Binary::NotEqual,
-                    "<" => Binary::Less,
-                    "<=" => Binary::LessEqual,
-                    ">" => Binary::Greater,
-                    ">=" => Binary::GreaterEqual,
-                    "&&" => Binary::And,
-                    "||" => Binary::Or,
-                    name => return Err(unsupported(op, name)),
-                };
-                Expression::Binary(operator, argument(self, 0)?, argument(self, 1)?)
-            }
+            "xr.binary" => Expression::Binary(
+                BinaryOperator::from_operation(op).map_err(|error| invalid(op, error))?,
+                argument(self, 0)?,
+                argument(self, 1)?,
+            ),
             "xr.select" => {
                 Expression::Select(argument(self, 0)?, argument(self, 1)?, argument(self, 2)?)
             }
@@ -1644,7 +1648,13 @@ impl<'m> Loader<'m> {
             "xr.state_select" => {
                 let conditions = arguments(self)?;
                 let index = self.selectors.len();
-                self.selectors.push(conditions);
+                self.selectors.push(StateSelector {
+                    conditions,
+                    persistent: self
+                        .analysis
+                        .persistent_state_selectors
+                        .contains_key(attribute(op, "owner")?),
+                });
                 Expression::StateSelect(index)
             }
             "xr.translate" => {
@@ -1672,7 +1682,7 @@ impl<'m> Loader<'m> {
                     .clone(),
             )),
             "xr.make_record" => {
-                let ValueType::Record(name) = ty else {
+                let Type::Record(name) = ty else {
                     return Err(invalid(op, "expected record result"));
                 };
                 let names: Vec<_> = self
@@ -1685,32 +1695,33 @@ impl<'m> Loader<'m> {
                     return Err(invalid(op, "record field count mismatch"));
                 }
                 Expression::Record {
-                    name,
+                    name: name.into(),
                     fields: names.into_iter().zip(values).collect(),
                 }
             }
             "xr.default_record" => {
-                let ValueType::Record(name) = ty else {
+                let Type::Record(name) = ty else {
                     return Err(invalid(op, "expected record result"));
                 };
-                Expression::Literal(self.default_record(op, name)?)
+                Expression::Literal(self.default_record(op, name.into())?)
             }
             "xr.record_array" => {
-                let ValueType::RecordList(name) = ty else {
+                let Type::RecordList(name) = ty else {
                     return Err(invalid(op, "expected record list result"));
                 };
-                Expression::RecordArray(name, arguments(self)?)
+                Expression::RecordArray(name.into(), arguments(self)?)
             }
-            "xr.get_field"
-            | "xr.date_field"
+            "xr.get_field" => Expression::RecordField(argument(self, 0)?, spelling()?.to_owned()),
+            "xr.date_field"
             | "xr.time_field"
             | "xr.font_field"
             | "xr.key_field"
             | "xr.wheel_field"
             | "xr.pointer_field"
-            | "xr.touch_point_field" => {
-                Expression::Field(argument(self, 0)?, spelling()?.to_owned())
-            }
+            | "xr.touch_point_field" => Expression::BuiltinField(
+                argument(self, 0)?,
+                BuiltinField::from_operation(op).map_err(|error| invalid(op, error))?,
+            ),
             "xr.make_date" => {
                 Expression::MakeDate([argument(self, 0)?, argument(self, 1)?, argument(self, 2)?])
             }
@@ -1743,7 +1754,7 @@ fn load_control(op: Op<'_>, name: &'static str, ty: Type) -> Result<Control> {
         )
     })?;
     let fallback = |value| match value {
-        ControlLiteral::Literal(value) => literal(op, kind(op, &ty)?, value),
+        ControlLiteral::Literal(value) => literal(op, &ty, value),
         ControlLiteral::TypeDefault => runtime_default(&kind(op, &ty)?)
             .ok_or_else(|| invalid(op, "missing control type default")),
     };
@@ -1758,6 +1769,28 @@ fn load_control(op: Op<'_>, name: &'static str, ty: Type) -> Result<Control> {
         },
         omit_default: name == "edit-text" && default_combo_edit_text(op),
     })
+}
+
+pub(super) fn default_value(
+    records: &RecordSchemas,
+    ty: &ValueType,
+) -> std::result::Result<Value, String> {
+    match ty {
+        ValueType::Record(name) => {
+            let fields = records
+                .get(name.as_ref())
+                .ok_or_else(|| format!("unknown record {name}"))?
+                .iter()
+                .map(|field| Ok((field.name.clone(), default_value(records, &field.ty)?)))
+                .collect::<std::result::Result<_, String>>()?;
+            Ok(Value::Record(RecordValue::new(name.clone(), fields)))
+        }
+        ValueType::RecordList(name) => {
+            Ok(Value::RecordList(RecordList::new(name.clone(), Vec::new())))
+        }
+        ValueType::StringList => Ok(Value::StringList(Vec::new())),
+        _ => runtime_default(ty).ok_or_else(|| format!("no runtime default for {ty:?}")),
+    }
 }
 
 /// Match the defaults of the concrete runtime fields in generated Rust records.
@@ -1831,177 +1864,6 @@ fn runtime_default(kind: &ValueType) -> Option<Value> {
         ImageVerticalAlignment,
         ImageRendering,
     ))
-}
-
-fn literal(op: Op<'_>, kind: ValueType, value: &str) -> Result<Value> {
-    macro_rules! enumeration {
-        ($kind:ident, $($name:literal => $variant:ident),+ $(,)?) => {
-            Value::$kind(match value {
-                $($name => runtime::$kind::$variant,)+
-                _ => return Err(invalid(op, format_args!("invalid {} value {value}", stringify!($kind)))),
-            })
-        };
-    }
-    let number = || {
-        xrack_mlir::parse_float_literal(value)
-            .ok_or_else(|| invalid(op, format_args!("invalid floating-point literal `{value}`")))
-    };
-    Ok(match kind {
-        ValueType::StandardButtonKind => enumeration!(StandardButtonKind,
-            "ok" => Ok,
-            "open" => Open,
-            "save" => Save,
-            "save-all" => SaveAll,
-            "cancel" => Cancel,
-            "close" => Close,
-            "apply" => Apply,
-            "reset" => Reset,
-            "restore-defaults" => RestoreDefaults,
-            "help" => Help,
-            "yes" => Yes,
-            "yes-to-all" => YesToAll,
-            "no" => No,
-            "no-to-all" => NoToAll,
-            "abort" => Abort,
-            "retry" => Retry,
-            "ignore" => Ignore,
-            "discard" => Discard,
-        ),
-        ValueType::FileDialogMode => enumeration!(FileDialogMode,
-            "open-file" => OpenFile, "open-files" => OpenFiles, "save-file" => SaveFile,
-            "select-folder" => SelectFolder, "select-folders" => SelectFolders,
-        ),
-        ValueType::MessageLevel => enumeration!(MessageLevel,
-            "info" => Info, "warning" => Warning, "error" => Error,
-        ),
-        ValueType::MessageButtons => enumeration!(MessageButtons,
-            "ok" => Ok, "ok-cancel" => OkCancel, "yes-no" => YesNo, "yes-no-cancel" => YesNoCancel,
-        ),
-        ValueType::DrawerEdge => enumeration!(DrawerEdge,
-            "left" => Left, "right" => Right, "top" => Top, "bottom" => Bottom
-        ),
-        ValueType::DialogRole => enumeration!(DialogRole, "accept" => Accept, "reject" => Reject),
-        ValueType::KeyEvent
-        | ValueType::KeyModifiers
-        | ValueType::WheelEvent
-        | ValueType::PointerEvent
-        | ValueType::TouchPoint
-        | ValueType::TouchPoints
-            if value.is_empty() =>
-        {
-            runtime_default(&kind)
-                .ok_or_else(|| invalid(op, format_args!("missing {kind:?} default")))?
-        }
-        ValueType::PointerEventKind => enumeration!(PointerEventKind,
-            "down" => Down, "move" => Move, "up" => Up, "cancel" => Cancel),
-        ValueType::PointerButton => enumeration!(PointerButton,
-            "primary" => Primary, "secondary" => Secondary, "middle" => Middle),
-        ValueType::CursorShape => enumeration!(CursorShape,
-            "auto" => Auto, "default" => Default, "pointer" => Pointer, "text" => Text,
-            "crosshair" => Crosshair, "move" => Move, "grab" => Grab, "grabbing" => Grabbing,
-            "not-allowed" => NotAllowed, "wait" => Wait, "help" => Help,
-            "resize-horizontal" => ResizeHorizontal, "resize-vertical" => ResizeVertical,
-            "zoom-in" => ZoomIn, "zoom-out" => ZoomOut),
-        ValueType::EventResult => enumeration!(EventResult, "accept" => Accept, "reject" => Reject),
-        ValueType::FocusReason => enumeration!(FocusReason,
-            "programmatic" => Programmatic,
-            "tab-navigation" => TabNavigation,
-            "pointer-click" => PointerClick,
-            "popup-activation" => PopupActivation,
-            "window-activation" => WindowActivation,
-            "accessibility" => Accessibility,
-            "layout-change" => LayoutChange,
-            "keyboard-navigation" => KeyboardNavigation,
-        ),
-        ValueType::Bool => Value::Bool(value.parse().map_err(|error| invalid(op, error))?),
-        ValueType::Int => Value::Int(value.parse().map_err(|error| invalid(op, error))?),
-        ValueType::Float => Value::Float(number()?),
-        ValueType::Length => Value::Length(Length(number()?)),
-        ValueType::Percent => Value::Percent(Percent(number()? / 100.0)),
-        ValueType::String => {
-            Value::String(serde_json::from_str(value).map_err(|err| invalid(op, err))?)
-        }
-        ValueType::Color => {
-            let digits = value
-                .strip_prefix('#')
-                .ok_or_else(|| invalid(op, "invalid color"))?;
-            let mut rgba = if digits.len() <= 4 {
-                digits.chars().flat_map(|c| [c, c]).collect::<String>()
-            } else {
-                digits.into()
-            };
-            if rgba.len() == 6 {
-                rgba.push_str("ff");
-            }
-            Value::Color(Color(
-                u32::from_str_radix(&rgba, 16).map_err(|err| invalid(op, err))?,
-            ))
-        }
-        ValueType::CheckState => enumeration!(CheckState,
-            "unchecked" => Unchecked, "partially-checked" => PartiallyChecked, "checked" => Checked),
-        ValueType::LayoutAlignment => enumeration!(LayoutAlignment,
-            "stretch" => Stretch, "center" => Center, "start" => Start, "end" => End,
-            "space-between" => SpaceBetween, "space-around" => SpaceAround, "space-evenly" => SpaceEvenly),
-        ValueType::Orientation => {
-            enumeration!(Orientation, "horizontal" => Horizontal, "vertical" => Vertical)
-        }
-        ValueType::PopupPlacement => enumeration!(PopupPlacement,
-            "below" => Below, "above" => Above, "left" => Left, "right" => Right, "offset" => Offset),
-        ValueType::FlickDirection => enumeration!(FlickDirection,
-            "both" => Both, "horizontal" => Horizontal, "vertical" => Vertical),
-        ValueType::FlickBoundsBehavior => enumeration!(FlickBoundsBehavior,
-            "stop-at-bounds" => StopAtBounds, "drag-over-bounds" => DragOverBounds,
-            "overshoot-bounds" => OvershootBounds, "drag-and-overshoot-bounds" => DragAndOvershootBounds),
-        ValueType::FlickBoundsMovement => enumeration!(FlickBoundsMovement,
-            "follow-bounds-behavior" => FollowBoundsBehavior, "stop-at-bounds" => StopAtBounds),
-        ValueType::ScrollBarPolicy => enumeration!(ScrollBarPolicy,
-            "as-needed" => AsNeeded, "always-on" => AlwaysOn, "always-off" => AlwaysOff),
-        ValueType::SelectionTarget => enumeration!(SelectionTarget,
-            "rows" => Rows, "cells" => Cells, "columns" => Columns),
-        ValueType::ScrollAlignment => enumeration!(ScrollAlignment,
-            "beginning" => Beginning, "center" => Center, "end" => End,
-            "visible" => Visible, "contain" => Contain),
-        ValueType::ScrollSnapMode => enumeration!(ScrollSnapMode,
-            "none" => None, "always" => Always, "on-release" => OnRelease),
-        ValueType::FlexboxLayoutDirection => enumeration!(FlexboxLayoutDirection,
-            "row" => Row, "row-reverse" => RowReverse, "column" => Column, "column-reverse" => ColumnReverse),
-        ValueType::FlexboxLayoutWrap => enumeration!(FlexboxLayoutWrap,
-            "wrap" => Wrap, "no-wrap" => NoWrap, "wrap-reverse" => WrapReverse),
-        ValueType::CrossAxisAlignment => enumeration!(CrossAxisAlignment,
-            "auto" => Auto, "stretch" => Stretch, "start" => Start, "end" => End, "center" => Center),
-        ValueType::TextWrap => {
-            enumeration!(TextWrap, "word-wrap" => WordWrap, "no-wrap" => NoWrap, "char-wrap" => CharWrap)
-        }
-        ValueType::TextHorizontalAlignment => enumeration!(TextHorizontalAlignment,
-            "start" => Start, "end" => End, "left" => Left, "center" => Center, "right" => Right),
-        ValueType::TextVerticalAlignment => enumeration!(TextVerticalAlignment,
-            "top" => Top, "center" => Center, "bottom" => Bottom),
-        ValueType::TextOverflow => enumeration!(TextOverflow, "clip" => Clip, "elide" => Elide),
-        ValueType::ColorScheme => {
-            enumeration!(ColorScheme, "system" => System, "light" => Light, "dark" => Dark)
-        }
-        ValueType::SwipeSide => {
-            enumeration!(SwipeSide, "closed" => Closed, "left" => Left, "right" => Right)
-        }
-        ValueType::DragAction => {
-            enumeration!(DragAction, "none" => None, "copy" => Copy, "move" => Move, "link" => Link)
-        }
-        ValueType::DialInputMode => enumeration!(DialInputMode,
-            "circular" => Circular, "horizontal" => Horizontal, "vertical" => Vertical),
-        ValueType::InputType => enumeration!(InputType,
-            "text" => Text, "password" => Password, "number" => Number, "decimal" => Decimal, "search" => Search),
-        ValueType::ImageFit => enumeration!(ImageFit,
-            "fill" => Fill, "contain" => Contain, "cover" => Cover, "preserve" => Preserve),
-        ValueType::ImageTileMode => enumeration!(ImageTileMode,
-            "stretch" => Stretch, "repeat" => Repeat, "round" => Round),
-        ValueType::ImageHorizontalAlignment => enumeration!(ImageHorizontalAlignment,
-            "left" => Left, "center" => Center, "right" => Right),
-        ValueType::ImageVerticalAlignment => enumeration!(ImageVerticalAlignment,
-            "top" => Top, "center" => Center, "bottom" => Bottom),
-        ValueType::ImageRendering => enumeration!(ImageRendering,
-            "smooth" => Smooth, "pixelated" => Pixelated),
-        _ => return Err(unsupported(op, &format!("{kind:?} literal"))),
-    })
 }
 
 fn static_name(value: &str, names: &'static [&'static str]) -> Option<&'static str> {

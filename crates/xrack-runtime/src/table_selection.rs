@@ -1,5 +1,8 @@
 use crate::table_clipboard::{MAX_CLIPBOARD_BYTES, MAX_CLIPBOARD_CELLS};
-use crate::{ChangeSignal, ControlAction, KeyModifiers, ListModel, Node, RowKey, TableColumnOrder};
+use crate::{
+    ChangeSignal, ControlAction, KeyModifiers, ListModel, Node, RowKey, TableColumnOrder,
+    TableRows, table_rows::with_table_rows_in_view,
+};
 use std::{
     cell::RefCell,
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
@@ -351,7 +354,7 @@ pub fn copy_table_text_in_order<M: ListModel>(
 /// Serialize a selection, stopping before evaluating any cells after an error.
 #[doc(hidden)]
 pub fn try_copy_table_text_in_order<M: ListModel, E>(
-    rows: &crate::TableRows<M>,
+    rows: &TableRows<M>,
     table: &Node,
     columns: &[usize],
     mut cell: impl FnMut(usize, usize, &M::Item) -> Result<Option<String>, E>,
@@ -359,11 +362,97 @@ pub fn try_copy_table_text_in_order<M: ListModel, E>(
     if table.standard_list_stamp != Some(rows.positions().stamp()) {
         return Ok(None);
     }
-    try_copy_table_text(rows, table, columns, |row, column, item| {
+    let source = rows.source();
+    let stamp = source.contents_stamp();
+    try_copy_table_rows(
+        rows,
+        table,
+        columns,
+        || source.contents_stamp() == stamp,
+        |row, column, _, item| cell(row, column, item),
+    )
+}
+
+#[doc(hidden)]
+pub fn copy_table_text_in_view<M: ListModel>(
+    table: &Node,
+    columns: &[usize],
+    rows: impl FnOnce() -> TableRows<M>,
+    cell: impl FnMut(usize, usize, RowKey, &M::Item) -> Option<String>,
+) -> Option<String> {
+    copy_table_text_in_view_if(table, columns, || Some(rows()), cell)
+}
+
+#[doc(hidden)]
+pub fn copy_table_text_in_view_if<M: ListModel>(
+    table: &Node,
+    columns: &[usize],
+    rows: impl FnOnce() -> Option<TableRows<M>>,
+    mut cell: impl FnMut(usize, usize, RowKey, &M::Item) -> Option<String>,
+) -> Option<String> {
+    try_copy_table_text_in_view(
+        table,
+        columns,
+        || Ok::<_, std::convert::Infallible>(rows()),
+        |row, column, key, item| Ok(cell(row, column, key, item)),
+    )
+    .unwrap_or_else(|error| match error {})
+}
+
+/// Copy cells only while the model and the dependencies read by the projection stay current.
+#[doc(hidden)]
+pub fn try_copy_table_text_in_view<M: ListModel, E>(
+    table: &Node,
+    columns: &[usize],
+    rows: impl FnOnce() -> Result<Option<TableRows<M>>, E>,
+    cell: impl FnMut(usize, usize, RowKey, &M::Item) -> Result<Option<String>, E>,
+) -> Result<Option<String>, E> {
+    try_copy_table_text_while_current(table, columns, || true, rows, cell)
+}
+
+#[doc(hidden)]
+pub fn copy_table_text_while_current<M: ListModel>(
+    table: &Node,
+    columns: &[usize],
+    available: impl Fn() -> bool,
+    rows: impl FnOnce() -> Option<TableRows<M>>,
+    mut cell: impl FnMut(usize, usize, RowKey, &M::Item) -> Option<String>,
+) -> Option<String> {
+    try_copy_table_text_while_current(
+        table,
+        columns,
+        available,
+        || Ok::<_, std::convert::Infallible>(rows()),
+        |row, column, key, item| Ok(cell(row, column, key, item)),
+    )
+    .unwrap_or_else(|error| match error {})
+}
+
+#[doc(hidden)]
+pub fn try_copy_table_text_while_current<M: ListModel, E>(
+    table: &Node,
+    columns: &[usize],
+    available: impl Fn() -> bool,
+    rows: impl FnOnce() -> Result<Option<TableRows<M>>, E>,
+    cell: impl FnMut(usize, usize, RowKey, &M::Item) -> Result<Option<String>, E>,
+) -> Result<Option<String>, E> {
+    with_table_rows_in_view(table, available, rows, |rows, current| {
+        try_copy_table_rows(rows, table, columns, current, cell)
+    })
+}
+
+fn try_copy_table_rows<M: ListModel, E>(
+    rows: &TableRows<M>,
+    table: &Node,
+    columns: &[usize],
+    current: impl Fn() -> bool,
+    mut cell: impl FnMut(usize, usize, RowKey, &M::Item) -> Result<Option<String>, E>,
+) -> Result<Option<String>, E> {
+    try_copy_table_text(rows, table, columns, current, |row, column, key, item| {
         let Some(source) = rows.positions().source_index(row) else {
             return Ok(None);
         };
-        cell(source, column, item)
+        cell(source, column, key, item)
     })
 }
 
@@ -374,9 +463,14 @@ pub fn copy_table_text<M: ListModel>(
     displayed_columns: &[usize],
     mut cell: impl FnMut(usize, usize, &M::Item) -> Option<String>,
 ) -> Option<String> {
-    try_copy_table_text(model, table, displayed_columns, |row, column, item| {
-        Ok::<_, std::convert::Infallible>(cell(row, column, item))
-    })
+    let stamp = model.contents_stamp();
+    try_copy_table_text(
+        model,
+        table,
+        displayed_columns,
+        || model.contents_stamp() == stamp,
+        |row, column, _, item| Ok::<_, std::convert::Infallible>(cell(row, column, item)),
+    )
     .unwrap_or_else(|error| match error {})
 }
 
@@ -500,7 +594,8 @@ fn try_copy_table_text<M: ListModel, E>(
     model: &M,
     table: &Node,
     displayed_columns: &[usize],
-    mut cell: impl FnMut(usize, usize, &M::Item) -> Result<Option<String>, E>,
+    current: impl Fn() -> bool,
+    mut cell: impl FnMut(usize, usize, RowKey, &M::Item) -> Result<Option<String>, E>,
 ) -> Result<Option<String>, E> {
     let Some(ClipboardSelection {
         rows,
@@ -523,12 +618,16 @@ fn try_copy_table_text<M: ListModel, E>(
             if slot != 0 {
                 text.push('\t');
             }
-            if cells.is_none_or(|selection| selection.contains_cell(key, column))
-                && let Some(value) = cell(row, column, &item)?
-            {
-                let Some(()) = append_cell(&mut text, &value) else {
+            if cells.is_none_or(|selection| selection.contains_cell(key, column)) {
+                let value = cell(row, column, key, &item)?;
+                if !current() {
                     return Ok(None);
-                };
+                }
+                if let Some(value) = value {
+                    let Some(()) = append_cell(&mut text, &value) else {
+                        return Ok(None);
+                    };
+                }
             }
             if text.len() > MAX_CLIPBOARD_BYTES {
                 return Ok(None);
@@ -575,6 +674,21 @@ pub struct TableSelectionChange {
     pub current: Option<usize>,
     pub column_changed: bool,
     pub selected_count: Option<usize>,
+}
+
+#[doc(hidden)]
+pub struct TableSelectionOptions {
+    pub target: SelectionTarget,
+    pub multiple: bool,
+    pub order: TableColumnOrder,
+    pub drag_select: bool,
+}
+
+/// Address a table selection by its displayed position or source row.
+#[doc(hidden)]
+pub enum TableSelectionCommand {
+    Visual(TableSelectionAction),
+    Source { row: usize, column: Option<usize> },
 }
 
 #[derive(Default)]
@@ -776,6 +890,191 @@ impl TableSelection {
             selected: state.selected(model, current),
             drag_range: state.drag_range.clone(),
         }
+    }
+
+    /// Apply a scene's selection only while its row order and selection mode still apply.
+    #[doc(hidden)]
+    pub fn try_apply_control<M: ListModel, E>(
+        &self,
+        table: &Node,
+        input: crate::InputRoute<'_>,
+        available: impl FnOnce() -> Result<bool, E>,
+        rows: impl FnOnce() -> Result<M, E>,
+        options: impl FnOnce() -> Result<TableSelectionOptions, E>,
+        current: impl FnOnce() -> Result<i64, E>,
+    ) -> Result<Option<TableSelectionChange>, E> {
+        let crate::RoutedEvent::Control(action) = *input.event() else {
+            return Ok(None);
+        };
+        let prepared = crate::property::watch_reads(|reads| {
+            if !available()? || reads.changed() {
+                return Ok(None);
+            }
+            let rows = rows()?;
+            if table.standard_list_stamp != Some(rows.structure_stamp()) || reads.changed() {
+                return Ok(None);
+            }
+            let row_count = rows.row_count();
+            let options = options()?;
+            if options.target != table.selection_target()
+                || options.multiple != table.boolean("multi-select", false)
+                || reads.changed()
+            {
+                return Ok(None);
+            }
+            let selection = if table.table_selection.is_some() {
+                let Some(selection) =
+                    TableSelectionAction::from_control(table, &options.order, action)
+                else {
+                    return Ok(None);
+                };
+                if matches!(selection, TableSelectionAction::DragRange { .. })
+                    && !options.drag_select
+                {
+                    return Ok(None);
+                }
+                Some(selection)
+            } else {
+                if !matches!(action, ControlAction::Select(index) if index < row_count)
+                    || self.has_explicit_selection()
+                {
+                    return Ok(None);
+                }
+                None
+            };
+            let current = usize::try_from(current()?).ok();
+            Ok((input.is_current() && !reads.changed())
+                .then_some((rows, options, current, selection)))
+        })?;
+        let Some((rows, options, current, selection)) = prepared else {
+            return Ok(None);
+        };
+        if let Some(selection) = selection {
+            let column_count = table
+                .table_header
+                .as_ref()
+                .map_or(0, |header| header.columns.len());
+            let view = self
+                .snapshot(
+                    &rows,
+                    current,
+                    options.target,
+                    column_count,
+                    options.multiple,
+                )
+                .with_column_order(options.order);
+            return Ok(self.apply(&rows, &view, current, selection));
+        }
+        Ok(match action {
+            ControlAction::Select(index) if Some(index) != current => Some(TableSelectionChange {
+                current: Some(index),
+                column_changed: false,
+                selected_count: None,
+            }),
+            _ => None,
+        })
+    }
+
+    #[doc(hidden)]
+    pub fn apply_control<M: ListModel>(
+        &self,
+        table: &Node,
+        input: crate::InputRoute<'_>,
+        available: impl FnOnce() -> bool,
+        rows: impl FnOnce() -> M,
+        options: impl FnOnce() -> TableSelectionOptions,
+        current: impl FnOnce() -> i64,
+    ) -> Option<TableSelectionChange> {
+        self.try_apply_control(
+            table,
+            input,
+            || Ok::<_, std::convert::Infallible>(available()),
+            || Ok(rows()),
+            || Ok(options()),
+            || Ok(current()),
+        )
+        .unwrap_or_else(|error| match error {})
+    }
+
+    /// Apply a command using one live model and cursor snapshot.
+    #[doc(hidden)]
+    pub fn try_apply_command<M: ListModel, E>(
+        &self,
+        command: TableSelectionCommand,
+        column_count: usize,
+        rows: impl FnOnce() -> Result<TableRows<M>, E>,
+        current: impl FnOnce() -> Result<i64, E>,
+        options: impl FnOnce() -> Result<TableSelectionOptions, E>,
+    ) -> Result<Option<TableSelectionChange>, E> {
+        let prepared = crate::property::watch_reads(|reads| {
+            let rows = rows()?;
+            let command = match command {
+                TableSelectionCommand::Source { row, column } => {
+                    let Some(row) = rows.positions().visual_index(row) else {
+                        return Ok(None);
+                    };
+                    TableSelectionCommand::Source { row, column }
+                }
+                command => command,
+            };
+            let current = usize::try_from(current()?).ok();
+            let options = options()?;
+            Ok((!reads.changed()).then_some((rows, current, options, command)))
+        })?;
+        let Some((rows, current, options, command)) = prepared else {
+            return Ok(None);
+        };
+        let action = match command {
+            TableSelectionCommand::Visual(action) => action,
+            TableSelectionCommand::Source {
+                row,
+                column: Some(column),
+            } => TableSelectionAction::Cell {
+                row,
+                column,
+                operation: RowSelection::Replace,
+            },
+            TableSelectionCommand::Source { row, column: None } => {
+                let operation = match options.target {
+                    SelectionTarget::Rows => RowSelection::Replace,
+                    SelectionTarget::Cells if options.multiple => RowSelection::Replace,
+                    _ => RowSelection::Move,
+                };
+                TableSelectionAction::Row {
+                    index: row,
+                    operation,
+                }
+            }
+        };
+        let view = self
+            .snapshot(
+                &rows,
+                current,
+                options.target,
+                column_count,
+                options.multiple,
+            )
+            .with_column_order(options.order);
+        Ok(self.apply(&rows, &view, current, action))
+    }
+
+    #[doc(hidden)]
+    pub fn apply_command<M: ListModel>(
+        &self,
+        command: TableSelectionCommand,
+        column_count: usize,
+        rows: impl FnOnce() -> TableRows<M>,
+        current: impl FnOnce() -> i64,
+        options: impl FnOnce() -> TableSelectionOptions,
+    ) -> Option<TableSelectionChange> {
+        self.try_apply_command(
+            command,
+            column_count,
+            || Ok::<_, std::convert::Infallible>(rows()),
+            || Ok(current()),
+            || Ok(options()),
+        )
+        .unwrap_or_else(|error| match error {})
     }
 
     pub fn apply(

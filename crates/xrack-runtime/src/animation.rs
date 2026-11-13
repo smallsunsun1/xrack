@@ -53,6 +53,20 @@ impl Animation {
             easing,
         }
     }
+
+    fn is_immediate(self) -> bool {
+        self.duration.is_zero() && self.delay.is_zero()
+    }
+}
+
+impl Node {
+    /// Immediate standalone animations do not need a scene entry.
+    #[doc(hidden)]
+    pub fn set_animation(&mut self, property: &'static str, timing: Animation) {
+        if !timing.is_immediate() {
+            self.animations.insert(property, timing);
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -116,8 +130,7 @@ impl SceneTransition {
             let mut old_at_path = old.remove(path.as_slice()).unwrap_or_default();
             let mut tracks = BTreeMap::new();
             let mut track = |property, timing: Option<Animation>| {
-                if timing.is_some_and(|timing| timing.duration.is_zero() && timing.delay.is_zero())
-                {
+                if timing.is_some_and(Animation::is_immediate) {
                     return;
                 }
                 let (Some(previous_target), Some(next_target)) = (

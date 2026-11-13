@@ -67,6 +67,28 @@ impl TimerSlot {
         );
     }
 
+    /// Check the scheduled revision and configuration across reactive reads.
+    pub fn try_tick_is_current<E>(
+        &self,
+        tick: &TimerTick,
+        config: impl FnOnce() -> Result<Option<TimerConfig>, E>,
+    ) -> Result<bool, E> {
+        crate::property::watch_reads(|reads| {
+            Ok(self.revision() == tick.revision
+                && config()? == Some(tick.config)
+                && !reads.changed())
+        })
+    }
+
+    pub fn tick_is_current(
+        &self,
+        tick: &TimerTick,
+        config: impl FnOnce() -> Option<TimerConfig>,
+    ) -> bool {
+        self.try_tick_is_current(tick, || Ok::<_, std::convert::Infallible>(config()))
+            .unwrap_or_else(|error| match error {})
+    }
+
     pub fn register(
         &self,
         config: TimerConfig,

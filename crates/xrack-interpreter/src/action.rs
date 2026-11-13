@@ -1,5 +1,5 @@
 use crate::{Element, Error, Instance, Member, Result};
-use xrack_runtime::{ControlAction, DialogCommand, DialogRole, Node, Value};
+use xrack_runtime::{ControlAction, DialogCommand, DialogRole, InputRoute, Node, Value};
 
 pub(crate) struct Membership {
     pub(crate) group: String,
@@ -53,15 +53,20 @@ impl Instance {
             .get(target)
             .ok_or_else(|| Error::Evaluation(format!("unmounted action {target}")))?;
         let group = owner.action_group(element)?;
-        let enabled = owner.action_enabled(element, group.as_ref())?;
         let exclusive = group.as_ref().filter(|(_, group, _)| !group.non_exclusive);
-        let checkable = owner.action_flag(element, "checkable", exclusive.is_some())?;
-        let checked = if let Some((owner, group, value)) = exclusive {
-            checkable && owner.action_group_value(&group.key)? == Value::String((*value).into())
-        } else {
-            owner.control_value(element, "checked")? == Some(Value::Bool(true))
-        };
-        identity.present(node, enabled, checkable, checked);
+        let enabled = identity.try_present_with(
+            node,
+            || owner.action_flag(element, "checkable", exclusive.is_some()),
+            || owner.action_enabled(element, group.as_ref()),
+            |checkable| {
+                Ok(if let Some((owner, group, value)) = exclusive {
+                    checkable
+                        && owner.action_group_value(&group.key)? == Value::String((*value).into())
+                } else {
+                    owner.control_value(element, "checked")? == Some(Value::Bool(true))
+                })
+            },
+        )?;
         for name in ["text", "shortcut", "icon"] {
             if let Some(value) = owner.binding_value(element, name)? {
                 node.properties.insert(name, value);
@@ -70,19 +75,39 @@ impl Instance {
         Ok(enabled)
     }
 
-    pub(crate) fn activate_action(&self, target: &str) -> Result<bool> {
+    pub(crate) fn activate_action(
+        &self,
+        presentation: &Element,
+        target: &str,
+        input: Option<InputRoute<'_>>,
+    ) -> Result<bool> {
         let (owner, element) = self.element_owner(target)?;
         let group = owner.action_group(element)?;
-        if !owner.action_enabled(element, group.as_ref())? {
+        let exclusive = group.as_ref().filter(|(_, group, _)| !group.non_exclusive);
+        let Some(next) = xrack_runtime::try_prepare_action_activation(
+            || {
+                Ok(owner.action_enabled(element, group.as_ref())?
+                    && (input.is_some()
+                        || self.row_template().is_some()
+                        || self.element_allows_editing(presentation)?))
+            },
+            || owner.action_flag(element, "checkable", exclusive.is_some()),
+            || {
+                Ok(exclusive.is_none()
+                    && owner.control_value(element, "checked")? == Some(Value::Bool(true)))
+            },
+        )?
+        else {
+            return Ok(false);
+        };
+        if input.is_some_and(|input| !input.is_current()) {
             return Ok(false);
         }
-        let exclusive = group.as_ref().filter(|(_, group, _)| !group.non_exclusive);
-        if owner.action_flag(element, "checkable", exclusive.is_some())? {
+        if let Some(next) = next {
             if let Some((owner, group, value)) = exclusive {
                 owner.set_control_value(group, "current-value", Value::String((*value).into()))?;
             } else {
-                let checked = owner.control_value(element, "checked")? == Some(Value::Bool(true));
-                owner.set_control_value(element, "checked", (!checked).into())?;
+                owner.set_control_value(element, "checked", next.into())?;
             }
         }
         owner.handler(element, "activated", &[])?;
@@ -92,27 +117,54 @@ impl Instance {
         Ok(true)
     }
 
-    pub(crate) fn activate_menu_item(&self, element: &Element, node: &Node) -> Result<bool> {
-        if node.boolean("checkable", false) {
-            let checked = self.control_value(element, "checked")? == Some(Value::Bool(true));
-            self.set_control_value(element, "checked", (!checked).into())?;
+    pub(crate) fn activate_menu_item(
+        &self,
+        element: &Element,
+        input: xrack_runtime::InputRoute<'_>,
+    ) -> Result<bool> {
+        let Some(next) = xrack_runtime::try_prepare_action_activation(
+            || self.element_allows_editing(element),
+            || self.action_flag(element, "checkable", false),
+            || Ok(self.control_value(element, "checked")? == Some(Value::Bool(true))),
+        )?
+        else {
+            return Ok(false);
+        };
+        if !input.is_current() {
+            return Ok(false);
+        }
+        if let Some(next) = next {
+            self.set_control_value(element, "checked", next.into())?;
         }
         self.handler(element, "activated", &[])?;
         Ok(true)
     }
 
-    pub(crate) fn toggle_group_box(&self, element: &Element) -> Result<bool> {
-        if !self.action_flag(element, "checkable", false)? {
+    pub(crate) fn toggle_group_box(
+        &self,
+        element: &Element,
+        input: Option<InputRoute<'_>>,
+    ) -> Result<bool> {
+        let Some(checked) = xrack_runtime::try_prepare_group_box_toggle(
+            input,
+            || self.action_flag(element, "checkable", false),
+            || Ok(self.control_value(element, "checked")? != Some(Value::Bool(false))),
+        )?
+        else {
             return Ok(false);
-        }
-        let checked = self.control_value(element, "checked")? == Some(Value::Bool(false));
+        };
         self.set_control_value(element, "checked", checked.into())?;
         self.handler(element, "toggled", &[checked.into()])?;
         Ok(true)
     }
 
-    pub(crate) fn dialog_action(&self, element: &Element, action: ControlAction) -> Result<bool> {
-        if self.control_value(element, "open")? != Some(Value::Bool(true)) {
+    pub(crate) fn dialog_action(
+        &self,
+        element: &Element,
+        action: ControlAction,
+        input: xrack_runtime::InputRoute<'_>,
+    ) -> Result<bool> {
+        if self.control_value(element, "open")? != Some(Value::Bool(true)) || !input.is_current() {
             return Ok(false);
         }
         let (event, close) = match action {

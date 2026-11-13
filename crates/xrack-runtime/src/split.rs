@@ -1,4 +1,4 @@
-use crate::{Node, Orientation, Property, Value, is_window_overlay};
+use crate::{InputRoute, Node, Orientation, Property, RoutedEvent, Value, is_window_overlay};
 use std::{cell::RefCell, collections::BTreeMap, fmt, fmt::Write, rc::Rc, sync::Arc};
 
 #[doc(hidden)]
@@ -81,6 +81,27 @@ impl SplitResizeHandle {
 }
 
 impl Node {
+    /// Resolve a resize only if the pane configuration still matches the input scene.
+    #[doc(hidden)]
+    pub fn prepare_split_resize(
+        &self,
+        input: InputRoute<'_>,
+        current: Option<&[Option<f32>]>,
+    ) -> Option<Arc<[Option<f32>]>> {
+        if !input.is_current() {
+            return None;
+        }
+        match input.event() {
+            RoutedEvent::ResizeSplit(weights) if current == self.split_weights.as_deref() => {
+                self.resized_split_weights(weights)
+            }
+            RoutedEvent::ResizeSplitSizes(sizes) if current == self.split_sizes.as_deref() => {
+                self.resized_split_sizes(sizes)
+            }
+            _ => None,
+        }
+    }
+
     pub fn has_split_fill(&self) -> bool {
         self.split_fill_index.is_some() || self.split_fill_pane.is_some()
     }

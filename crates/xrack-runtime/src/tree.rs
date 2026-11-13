@@ -1,7 +1,10 @@
-use crate::{ChangeSignal, Property, RowKey, RowSelection, VecModel, list::MAX_ROWS};
+use crate::{
+    ChangeSignal, ControlAction, Node, Property, RowKey, RowSelection, VecModel, list::MAX_ROWS,
+};
 use std::{
     cell::RefCell,
     collections::{BTreeMap, HashMap, HashSet},
+    ops::Range,
     rc::Rc,
     sync::{Arc, Weak},
 };
@@ -48,6 +51,15 @@ pub enum TreeSelectionAction {
 pub struct TreeSelectionChange {
     pub current: Option<i64>,
     pub selected_count: Option<usize>,
+}
+
+#[doc(hidden)]
+pub enum TreeControlChange {
+    Selection(TreeSelectionChange),
+    Expansion {
+        change: TreeExpansionChange,
+        current: Option<i64>,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -287,6 +299,13 @@ impl TreeSnapshot {
         &self.visible
     }
 
+    #[doc(hidden)]
+    pub fn rows_in_range(&self, range: Range<usize>) -> &[TreeItem] {
+        self.visible
+            .get(range.start..range.end.min(self.visible.len()))
+            .unwrap_or_default()
+    }
+
     pub fn visible_index(&self, key: i64) -> Option<usize> {
         self.visible_indices.get(&key).copied()
     }
@@ -389,6 +408,16 @@ impl TreeSnapshot {
         Some(self.topology.entries[index].depth - base)
     }
 
+    #[doc(hidden)]
+    pub fn query_depth(&self, key: i64) -> i64 {
+        self.depth(key).map_or(-1, |depth| depth as i64)
+    }
+
+    #[doc(hidden)]
+    pub fn query_row(&self, key: i64) -> i64 {
+        self.visible_index(key).map_or(-1, |index| index as i64)
+    }
+
     pub fn nearest_visible_ancestor(&self, key: i64) -> Option<i64> {
         let mut index = self.structural_index(key)?;
         loop {
@@ -400,9 +429,47 @@ impl TreeSnapshot {
         }
     }
 
+    fn nearest_visible_after_expansion(
+        &self,
+        key: i64,
+        expanded: &BTreeMap<i64, RowKey>,
+    ) -> Option<i64> {
+        let mut index = self.structural_index(key)?;
+        let mut path = vec![index];
+        while let Some(parent) = self.topology.entries[index]
+            .parent
+            .filter(|parent| Some(*parent) != self.root)
+        {
+            path.push(parent);
+            index = parent;
+        }
+        let mut visible = None;
+        for index in path.into_iter().rev() {
+            if !self.is_available(index) {
+                break;
+            }
+            let entry = &self.topology.entries[index];
+            visible = Some(entry.key);
+            if expanded.get(&entry.key) != Some(&entry.row) {
+                break;
+            }
+        }
+        visible
+    }
+
     #[doc(hidden)]
     pub fn same_model(&self, other: &Self) -> bool {
         self.topology.model == other.topology.model
+    }
+
+    fn same_visible_rows(&self, other: &Self) -> bool {
+        let identity = |item: &TreeItem| (item.key, item.row);
+        std::ptr::eq(self, other)
+            || self
+                .rows()
+                .iter()
+                .map(identity)
+                .eq(other.rows().iter().map(identity))
     }
 
     pub fn is_descendant(&self, key: i64, ancestor: i64) -> bool {
@@ -443,6 +510,7 @@ struct FilterObservation {
 #[doc(hidden)]
 #[derive(Default)]
 pub struct TreeState {
+    source: Property<u64>,
     topology: Property<Arc<Topology>>,
     roles_changed: RefCell<Option<(u64, Rc<ChangeSignal>)>>,
     visibility_changed: RefCell<Option<Rc<ChangeSignal>>>,
@@ -470,8 +538,22 @@ impl TreeState {
         roles: impl Fn(&T) -> (i64, i64) + Clone + 'static,
         root: impl FnOnce() -> i64,
     ) -> Arc<TreeSnapshot> {
-        self.snapshot
-            .get(|| self.build_snapshot(self.topology(model, roles), root(), None, None))
+        self.try_snapshot_with_root(model(), roles, || Ok::<_, std::convert::Infallible>(root()))
+            .unwrap_or_else(|error| match error {})
+    }
+
+    #[doc(hidden)]
+    pub fn try_snapshot_with_root<T, E>(
+        &self,
+        model: Rc<VecModel<T>>,
+        roles: impl Fn(&T) -> (i64, i64) + Clone + 'static,
+        root: impl FnOnce() -> Result<i64, E>,
+    ) -> Result<Arc<TreeSnapshot>, E> {
+        self.source.set_if_changed(model.edit_stamp().0);
+        self.snapshot.try_get(|| {
+            self.track_source();
+            Ok(self.build_snapshot(self.topology(&model, roles), root()?, None, None))
+        })
     }
 
     pub fn snapshot_filtered<T: 'static>(
@@ -508,13 +590,36 @@ impl TreeState {
         field: Option<impl Fn(&T) -> &str + Clone + 'static>,
         query: impl FnOnce() -> String,
     ) -> Arc<TreeSnapshot> {
-        self.snapshot.get(|| {
-            let root = root();
-            let model = std::cell::LazyCell::new(model);
-            let topology = self.topology(|| Rc::clone(&model), roles.clone());
+        self.try_snapshot_projected_by(
+            model(),
+            roles,
+            || Ok::<_, std::convert::Infallible>(root()),
+            visible,
+            field,
+            || Ok(query()),
+        )
+        .unwrap_or_else(|error| match error {})
+    }
+
+    /// Resolve fallible view bindings without caching a substitute projection.
+    #[doc(hidden)]
+    pub fn try_snapshot_projected_by<T: 'static, E>(
+        &self,
+        model: Rc<VecModel<T>>,
+        roles: impl Fn(&T) -> (i64, i64) + Clone + 'static,
+        root: impl FnOnce() -> Result<i64, E>,
+        visible: Option<impl Fn(&T) -> bool + Clone + 'static>,
+        field: Option<impl Fn(&T) -> &str + Clone + 'static>,
+        query: impl FnOnce() -> Result<String, E>,
+    ) -> Result<Arc<TreeSnapshot>, E> {
+        self.source.set_if_changed(model.edit_stamp().0);
+        self.snapshot.try_get(|| {
+            self.track_source();
+            let root = root()?;
+            let topology = self.topology(&model, roles.clone());
             let available = visible.map(|visible| {
                 self.availability.get(|| {
-                    let topology = self.topology(|| Rc::clone(&model), roles);
+                    let topology = self.topology(&model, roles);
                     let mut shown = vec![false; topology.entries.len()];
                     let mut pending = topology.roots.clone();
                     while let Some(index) = pending.pop() {
@@ -554,13 +659,14 @@ impl TreeState {
                     shown
                 })
             });
-            let query: Rc<str> = field
-                .as_ref()
-                .map_or_else(String::new, |_| query().trim().to_lowercase())
-                .into();
+            let query: Rc<str> = if field.is_some() {
+                query()?.trim().to_lowercase().into()
+            } else {
+                Rc::from("")
+            };
             let Some(field) = field.filter(|_| !query.is_empty()) else {
                 self.filter_observation.borrow_mut().take();
-                return self.build_snapshot(topology, root, available, None);
+                return Ok(self.build_snapshot(topology, root, available, None));
             };
             let branch = topology.index.get(&root).copied();
             let matches = |row: &T| field(row).to_lowercase().contains(query.as_ref());
@@ -636,17 +742,22 @@ impl TreeState {
                     ancestor = topology.entries[index].parent;
                 }
             }
-            self.build_snapshot(topology, root, available, Some(included))
+            Ok(self.build_snapshot(topology, root, available, Some(included)))
         })
+    }
+
+    fn track_source(&self) {
+        self.source
+            .get(|| unreachable!("tree source is initialized"));
     }
 
     fn topology<T>(
         &self,
-        model: impl FnOnce() -> Rc<VecModel<T>>,
+        model: &VecModel<T>,
         roles: impl Fn(&T) -> (i64, i64) + Clone + 'static,
     ) -> Arc<Topology> {
         self.topology.get(|| {
-            let model = model();
+            self.track_source();
             let model_id = model.structure_stamp().0;
             {
                 let mut observation = self.roles_changed.borrow_mut();
@@ -658,7 +769,7 @@ impl TreeState {
                     *observation = Some((model_id, signal));
                 }
             }
-            let topology = Arc::new(Topology::new(&model, model_id, roles));
+            let topology = Arc::new(Topology::new(model, model_id, roles));
             self.selection.borrow_mut().retain_live(&topology);
             topology
         })
@@ -701,6 +812,56 @@ impl TreeState {
         tree: &TreeSnapshot,
         command: TreeCommand,
     ) -> Option<TreeExpansionChange> {
+        let (expanded, change) = self.prepare_command(tree, command)?;
+        self.expanded.set(expanded);
+        Some(change)
+    }
+
+    /// Resolve the command and cursor against the same live tree before committing.
+    #[doc(hidden)]
+    pub fn try_apply_command<E>(
+        &self,
+        command: TreeCommand,
+        live: impl FnOnce() -> Result<Arc<TreeSnapshot>, E>,
+        current: impl FnOnce() -> Result<i64, E>,
+    ) -> Result<Option<(TreeExpansionChange, Option<i64>)>, E> {
+        let prepared = crate::try_prepare_action_view(|| {
+            let tree = live()?;
+            let Some((expanded, change)) = self.prepare_command(&tree, command) else {
+                return Ok(None);
+            };
+            let current = current()?;
+            let next = tree
+                .nearest_visible_after_expansion(current, &expanded)
+                .filter(|key| *key != current);
+            Ok(Some((expanded, change, next)))
+        })?;
+        Ok(prepared.map(|(expanded, change, next)| {
+            self.expanded.set(expanded);
+            (change, next)
+        }))
+    }
+
+    #[doc(hidden)]
+    pub fn apply_command(
+        &self,
+        command: TreeCommand,
+        live: impl FnOnce() -> Arc<TreeSnapshot>,
+        current: impl FnOnce() -> i64,
+    ) -> Option<(TreeExpansionChange, Option<i64>)> {
+        self.try_apply_command(
+            command,
+            || Ok::<_, std::convert::Infallible>(live()),
+            || Ok(current()),
+        )
+        .unwrap_or_else(|error| match error {})
+    }
+
+    fn prepare_command(
+        &self,
+        tree: &TreeSnapshot,
+        command: TreeCommand,
+    ) -> Option<(Arc<BTreeMap<i64, RowKey>>, TreeExpansionChange)> {
         if tree.is_filtering()
             || !self
                 .topology
@@ -781,16 +942,195 @@ impl TreeState {
         if !changed {
             return None;
         }
-        self.expanded.set(state);
-        Some(TreeExpansionChange {
-            key,
-            expanded: expand,
-        })
+        Some((
+            state,
+            TreeExpansionChange {
+                key,
+                expanded: expand,
+            },
+        ))
     }
 
     pub fn selection(&self) -> Arc<BTreeMap<i64, RowKey>> {
         self.selection_changed.track();
         self.selection.borrow().keys.clone()
+    }
+
+    /// Resolve a scene's positional input to stable rows before changing tree state.
+    #[doc(hidden)]
+    pub fn try_apply_control<E>(
+        &self,
+        node: &Node,
+        input: crate::InputRoute<'_>,
+        available: impl FnOnce() -> Result<bool, E>,
+        multiple: impl FnOnce() -> Result<bool, E>,
+        live: impl FnOnce() -> Result<Arc<TreeSnapshot>, E>,
+        current: impl FnOnce() -> Result<i64, E>,
+    ) -> Result<Option<TreeControlChange>, E> {
+        let crate::RoutedEvent::Control(action) = *input.event() else {
+            return Ok(None);
+        };
+        let Some(snapshot) = &node.tree else {
+            return Ok(None);
+        };
+        let snapshot_multiple = node.tree_selection.is_some();
+        let action = match action {
+            ControlAction::Select(index) => {
+                let Some(item) = snapshot.rows().get(index) else {
+                    return Ok(None);
+                };
+                TreeAction::Selection(TreeSelectionAction::Row {
+                    key: item.key,
+                    row: item.row,
+                    operation: RowSelection::Replace,
+                })
+            }
+            ControlAction::Tree(action @ TreeAction::SetExpanded { .. }) => action,
+            ControlAction::Tree(action @ TreeAction::Selection(_)) if snapshot_multiple => action,
+            _ => return Ok(None),
+        };
+        let prepared = crate::property::watch_reads(|reads| {
+            if !available()? || reads.changed() {
+                return Ok(None);
+            }
+            if matches!(action, TreeAction::Selection(_))
+                && (multiple()? != snapshot_multiple || reads.changed())
+            {
+                return Ok(None);
+            }
+            let live = live()?;
+            if reads.changed() {
+                return Ok(None);
+            }
+            if let TreeAction::Selection(selection) = action
+                && snapshot_multiple
+            {
+                let needs_order = matches!(
+                    selection,
+                    TreeSelectionAction::Row {
+                        operation: RowSelection::Extend | RowSelection::AddRange,
+                        ..
+                    }
+                );
+                if !snapshot.same_model(&live)
+                    || (needs_order && !snapshot.same_visible_rows(&live))
+                {
+                    return Ok(None);
+                }
+            }
+            let current = current()?;
+            Ok((input.is_current() && !reads.changed()).then_some((live, current)))
+        })?;
+        let Some((live, current)) = prepared else {
+            return Ok(None);
+        };
+        Ok(match action {
+            TreeAction::Selection(selection) => self
+                .select_in_mode(&live, current, snapshot_multiple, selection)
+                .map(TreeControlChange::Selection),
+            TreeAction::SetExpanded { key, row, expanded } => self
+                .set_expanded(&live, key, row, expanded)
+                .then(|| TreeControlChange::Expansion {
+                    change: TreeExpansionChange { key, expanded },
+                    current: (!expanded && live.is_descendant(current, key)).then_some(key),
+                }),
+        })
+    }
+
+    #[doc(hidden)]
+    pub fn apply_control(
+        &self,
+        node: &Node,
+        input: crate::InputRoute<'_>,
+        available: impl FnOnce() -> bool,
+        multiple: impl FnOnce() -> bool,
+        live: impl FnOnce() -> Arc<TreeSnapshot>,
+        current: impl FnOnce() -> i64,
+    ) -> Option<TreeControlChange> {
+        self.try_apply_control(
+            node,
+            input,
+            || Ok::<_, std::convert::Infallible>(available()),
+            || Ok(multiple()),
+            || Ok(live()),
+            || Ok(current()),
+        )
+        .unwrap_or_else(|error| match error {})
+    }
+
+    /// Resolve a source index against the same live tree used to update selection.
+    #[doc(hidden)]
+    pub fn try_select_source<E>(
+        &self,
+        source: usize,
+        live: impl FnOnce() -> Result<Arc<TreeSnapshot>, E>,
+        multiple: impl FnOnce() -> Result<bool, E>,
+        current: impl FnOnce() -> Result<i64, E>,
+    ) -> Result<Option<TreeSelectionChange>, E> {
+        let prepared = crate::try_prepare_action_view(|| {
+            let tree = live()?;
+            let Some(item) = tree
+                .visible_index_for_source(source)
+                .and_then(|index| tree.rows().get(index))
+            else {
+                return Ok(None);
+            };
+            let action = TreeSelectionAction::Row {
+                key: item.key,
+                row: item.row,
+                operation: RowSelection::Replace,
+            };
+            let multiple = multiple()?;
+            let current = current()?;
+            Ok(Some((tree, multiple, current, action)))
+        })?;
+        Ok(prepared.and_then(|(tree, multiple, current, action)| {
+            self.select_in_mode(&tree, current, multiple, action)
+        }))
+    }
+
+    #[doc(hidden)]
+    pub fn select_source(
+        &self,
+        source: usize,
+        live: impl FnOnce() -> Arc<TreeSnapshot>,
+        multiple: impl FnOnce() -> bool,
+        current: impl FnOnce() -> i64,
+    ) -> Option<TreeSelectionChange> {
+        self.try_select_source(
+            source,
+            || Ok::<_, std::convert::Infallible>(live()),
+            || Ok(multiple()),
+            || Ok(current()),
+        )
+        .unwrap_or_else(|error| match error {})
+    }
+
+    #[doc(hidden)]
+    pub fn select_in_mode(
+        &self,
+        tree: &TreeSnapshot,
+        current: i64,
+        multiple: bool,
+        action: TreeSelectionAction,
+    ) -> Option<TreeSelectionChange> {
+        if !self
+            .snapshot
+            .matches_current(|live| std::ptr::eq(live.as_ref(), tree))
+        {
+            return None;
+        }
+        if multiple {
+            return self.select(tree, current, action);
+        }
+        let TreeSelectionAction::Row { key, row, .. } = action else {
+            return None;
+        };
+        let item = tree.rows().get(tree.visible_index(key)?)?;
+        (item.row == row && key != current).then_some(TreeSelectionChange {
+            current: Some(key),
+            selected_count: None,
+        })
     }
 
     pub fn select(

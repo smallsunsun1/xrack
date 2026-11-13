@@ -4,7 +4,7 @@ use crate::{
 };
 use xrack_runtime::{
     Property, RecordValue, RowContext, RowKey, TableCellEditor, TableColumnOrder, TableEditHistory,
-    TableEditPosition, TablePaste, TablePasteInput, TableRowPatch, TableRows, VecModel,
+    TableEditPosition, TablePasteInput, TableRowPatch, TableRows, VecModel,
 };
 
 pub(crate) struct ClipboardParser {
@@ -75,13 +75,24 @@ impl Element {
         None
     }
 
-    pub(crate) fn table_for_template(&self, template: &str) -> Option<&Self> {
-        if self.table.is_some() && self.view_template().is_some_and(|row| row.key == template) {
+    pub(crate) fn editor_view_for_template(&self, template: &str) -> Option<&Self> {
+        if (self.table.is_some() || self.tree.is_some())
+            && self.view_template().is_some_and(|row| row.key == template)
+        {
             return Some(self);
         }
         self.children
             .iter()
-            .find_map(|child| child.table_for_template(template))
+            .find_map(|child| child.editor_view_for_template(template))
+    }
+
+    pub(crate) fn table_history_configured(&self) -> bool {
+        self.paste_configured()
+            || self
+                .bindings
+                .iter()
+                .any(|binding| binding.name == "undoable")
+            || self.state_bindings.contains_key("undoable")
     }
 
     fn paste_configured(&self) -> bool {
@@ -90,14 +101,6 @@ impl Element {
             .any(|binding| binding.name == "pasteable")
             || self.state_bindings.contains_key("pasteable")
     }
-}
-
-struct PendingPaste {
-    model_stamp: (u64, u64),
-    order_stamp: (u64, u64),
-    column_order: TableColumnOrder,
-    row: usize,
-    columns: Vec<usize>,
 }
 
 fn capture(before: &RecordValue, after: &RecordValue, patch: &mut TableRowPatch<RecordValue>) {
@@ -184,28 +187,74 @@ impl EditableRow for String {
 }
 
 impl Instance {
-    fn visual_flag(&self, element: &Element, name: &str, default: bool) -> Result<bool> {
-        if let Some(cases) = element.state_bindings.get(name)
-            && let Some(Value::Bool(value)) = self.state_value(cases)?
-        {
-            return Ok(value);
+    pub(crate) fn visual_flag_value(&self, element: &Element, name: &str) -> Result<Option<bool>> {
+        if let Some(cases) = element.state_bindings.get(name) {
+            if self.caches_action_flag(element, name, cases) {
+                return Ok(match self.cached_action_flag(element, name, cases)? {
+                    Some(Value::Bool(value)) => Some(value),
+                    _ => None,
+                });
+            }
+            if let Some(Value::Bool(value)) = self.state_value(cases)? {
+                return Ok(Some(value));
+            }
         }
-        self.table_flag(element, name, default)
+        Ok(match self.binding_value(element, name)? {
+            Some(Value::Bool(value)) => Some(value),
+            _ => None,
+        })
     }
 
-    pub(crate) fn shown_for_table(&self, element: &Element) -> Result<bool> {
+    pub(crate) fn visual_flag(&self, element: &Element, name: &str, default: bool) -> Result<bool> {
+        Ok(self.visual_flag_value(element, name)?.unwrap_or(default))
+    }
+
+    pub(crate) fn element_conditions_met(&self, element: &Element) -> Result<bool> {
+        if element.static_hidden {
+            return Ok(false);
+        }
         for condition in &element.conditions {
             if self.evaluate(condition, &[])? == Value::Bool(false) {
                 return Ok(false);
             }
         }
-        self.visual_flag(element, "visible", true)
+        Ok(true)
+    }
+
+    pub(crate) fn element_shown(&self, element: &Element) -> Result<bool> {
+        Ok(self.element_conditions_met(element)? && self.visual_flag(element, "visible", true)?)
     }
 
     fn editable_for_table(&self, element: &Element) -> Result<bool> {
-        Ok(self.shown_for_table(element)?
+        Ok(self.element_shown(element)?
             && self.visual_flag(element, "enabled", true)?
             && !self.visual_flag(element, "read-only", false)?)
+    }
+
+    pub(crate) fn element_allows_editing(&self, element: &Element) -> Result<bool> {
+        Ok(self.visual_flag(element, "enabled", true)? && self.element_shown(element)?)
+    }
+
+    pub(crate) fn editable_table_view_model(&self, view: &Element) -> Result<Option<ViewModel>> {
+        if !self.element_allows_editing(view)? {
+            return Ok(None);
+        }
+        self.view_model(view).map(Some)
+    }
+
+    pub(crate) fn table_action_view_model(
+        &self,
+        view: &Element,
+        flag: &str,
+        column_order: &TableColumnOrder,
+    ) -> Result<Option<ViewModel>> {
+        if !self.visual_flag(view, flag, false)?
+            || !self.element_allows_editing(view)?
+            || &self.repeat_state(view).table_state().column_order() != column_order
+        {
+            return Ok(None);
+        }
+        self.view_model(view).map(Some)
     }
 
     pub(crate) fn table_history_enabled(&self, view: &Element) -> Result<bool> {
@@ -217,10 +266,10 @@ impl Instance {
         if !self.table_history_enabled(view)? {
             return Ok(false);
         }
-        let model = self.view_model(view)?;
+        let model = self.view_source_model(view)?;
         let state = self.repeat_state(view);
         let table = state.table_state();
-        Ok(match &model.source {
+        Ok(match &model {
             Some(Model::Records(records)) => table.history.can_replay(records.model(), redo),
             Some(Model::Strings(strings)) => table.string_history.can_replay(strings, redo),
             _ => false,
@@ -228,17 +277,46 @@ impl Instance {
     }
 
     pub(crate) fn replay_table(&self, view: &Element, redo: bool) -> Result<bool> {
-        if !self.table_history_enabled(view)? {
+        if !view.table_history_configured() {
             return Ok(false);
         }
-        let model = self.view_model(view)?;
+        let model = xrack_runtime::try_prepare_history_replay(
+            None,
+            || self.view_source_model(view).map(|model| model.map(Rc::new)),
+            || self.table_history_enabled(view),
+        )?;
+        Ok(model.is_some_and(|source| self.replay_table_source(view, &source, redo)))
+    }
+
+    pub(crate) fn replay_table_from_view(
+        &self,
+        view: &Element,
+        model: u64,
+        redo: bool,
+        route: xrack_runtime::InputRoute<'_>,
+    ) -> Result<bool> {
+        let source = xrack_runtime::try_history_replay_source(
+            model,
+            || {
+                if !self.element_allows_editing(view)? {
+                    return Ok(None);
+                }
+                self.view_source_model(view).map(|model| model.map(Rc::new))
+            },
+            || self.table_history_enabled(view),
+        )?;
+        Ok(route.is_current()
+            && source.is_some_and(|source| self.replay_table_source(view, &source, redo)))
+    }
+
+    fn replay_table_source(&self, view: &Element, model: &Model, redo: bool) -> bool {
         let state = self.repeat_state(view);
         let table = state.table_state();
-        Ok(match &model.source {
-            Some(Model::Records(records)) => table.history.replay(records.model(), redo),
-            Some(Model::Strings(strings)) => table.string_history.replay(strings, redo),
+        match model {
+            Model::Records(records) => table.history.replay(records.model(), redo),
+            Model::Strings(strings) => table.string_history.replay(strings, redo),
             _ => false,
-        })
+        }
     }
 
     pub(crate) fn commit_projected_cell(
@@ -247,64 +325,71 @@ impl Instance {
         table: &Node,
         slot: usize,
         column: usize,
-        original: &str,
-        text: &str,
+        input: xrack_runtime::InputRoute<'_>,
     ) -> Result<bool> {
-        let Some(definition) = view.table_columns().nth(column) else {
+        let xrack_runtime::RoutedEvent::CommitCell { original, text } = *input.event() else {
             return Ok(false);
         };
-        if !self.table_flag(definition, "editable", false)? {
-            return Ok(false);
-        }
-        let model = self.view_model(view)?;
-        if model.stamp() != table.standard_list_stamp {
-            return Ok(false);
-        }
-        let Some(rows) = &model.projected else {
+        let Some(definition) = view.table_columns().nth(column) else {
             return Ok(false);
         };
         let Some(path) = &definition.column_field else {
             return Ok(false);
         };
-        let Some(source) = table
-            .list
-            .and_then(|list| list.first_row.checked_add(slot))
-            .and_then(|row| model.source_index(row))
+        let Some(editor) = table
+            .at_path(&[slot, 0, column])
+            .and_then(|cell| cell.table_cell_editor)
         else {
             return Ok(false);
         };
-        let Some(key) = table.child_at(slot).and_then(|row| row.row_key) else {
+        let Some((target, (value, record_history))) = xrack_runtime::try_table_cell_edit_target(
+            table,
+            slot,
+            || {
+                Ok(self
+                    .editable_table_view_model(view)?
+                    .and_then(|model| model.projected))
+            },
+            || {
+                input.try_prepare(
+                    || self.table_flag(definition, "editable", false),
+                    || {
+                        let Some(value) = editor.parse(text) else {
+                            return Ok(None);
+                        };
+                        Ok(Some((value, self.table_history_enabled(view)?)))
+                    },
+                )
+            },
+        )?
+        else {
             return Ok(false);
         };
+        if !input.is_current() {
+            return Ok(false);
+        }
         let update = |record: &RecordValue| {
-            let value = record.field_path(path)?;
-            if table::field_text(Some(value)) != original {
+            if table::field_text(record.field_path(path)) != original {
                 return None;
             }
-            let value = table::editor(value)?.parse(text)?;
             record.with_field(path, value)
         };
         let state = self.repeat_state(view);
-        let history = &state.table_state().history;
-        let model = rows.source();
-        if self.table_history_enabled(view)? {
-            Ok(history.commit_cell(model, source, key, update, capture))
-        } else {
-            let changed = model.update_row_if_key(source, key, update);
-            if changed {
-                history.clear();
-            }
-            Ok(changed)
-        }
+        Ok(state.table_state().history.commit_cell_if_enabled(
+            target.rows.source(),
+            target.index,
+            target.key,
+            record_history,
+            update,
+            capture,
+        ))
     }
 
-    pub(crate) fn capture_table_paste(
+    pub(crate) fn capture_table_paste_stamp(
         &self,
         scene: &Node,
         path: &[usize],
-        row: usize,
-        columns: Vec<usize>,
-    ) -> Result<Option<TablePaste>> {
+    ) -> Result<Option<(u64, u64)>> {
         let Some(node) = scene
             .interactive_at_path(path)
             .filter(|node| node.boolean("pasteable", false))
@@ -341,25 +426,7 @@ impl Instance {
         if node.standard_list_stamp != Some(order_stamp) {
             return Ok(None);
         }
-        let paste = PendingPaste {
-            model_stamp,
-            order_stamp,
-            column_order: node.table_column_order.clone(),
-            row,
-            columns,
-        };
-        let root = Rc::downgrade(&self.0);
-        let scene = scene.clone();
-        let path = path.to_vec();
-        Ok(Some(Box::new(move |text| {
-            let Some(root) = root.upgrade().map(Instance) else {
-                return false;
-            };
-            let Some((owner, view)) = root.target(&scene, &path) else {
-                return false;
-            };
-            root.handle_result(owner.apply_table_paste(view, &paste, text))
-        })))
+        Ok(Some(model_stamp))
     }
 
     pub(crate) fn sample_table_row(
@@ -382,22 +449,44 @@ impl Instance {
         )
     }
 
-    fn apply_table_paste(&self, view: &Element, paste: &PendingPaste, text: &str) -> Result<bool> {
+    pub(crate) fn route_table_paste(
+        &self,
+        scene: &Node,
+        path: &[usize],
+        paste: TablePasteInput<'_>,
+        route: xrack_runtime::InputRoute<'_>,
+    ) -> Result<bool> {
+        let Some(node) = scene.at_path(path) else {
+            return Ok(false);
+        };
+        let Some((owner, view)) = self.input_route_target(scene, path, route)? else {
+            return Ok(false);
+        };
+        if view.table.is_none() || !view.paste_configured() {
+            return Ok(false);
+        }
+        owner.apply_table_paste(view, node, paste, route)
+    }
+
+    fn apply_table_paste(
+        &self,
+        view: &Element,
+        node: &Node,
+        paste: TablePasteInput<'_>,
+        route: xrack_runtime::InputRoute<'_>,
+    ) -> Result<bool> {
         let state = self.repeat_state(view);
         let table = state.table_state();
-        let target = Property::<Result<Option<ViewModel>>>::default();
+        let target = Property::<Option<ViewModel>>::default();
         let read_target = || {
-            target.get(|| {
-                if !self.visual_flag(view, "pasteable", false)?
-                    || !self.visual_flag(view, "enabled", true)?
-                    || !self.shown_for_table(view)?
-                    || table.column_order() != paste.column_order
-                {
+            target.try_get(|| {
+                let Some(model) =
+                    self.table_action_view_model(view, "pasteable", &node.table_column_order)?
+                else {
                     return Ok(None);
-                }
-                let model = self.view_model(view)?;
-                let matches = model.stamp() == Some(paste.order_stamp)
-                    && edit_stamp(&model) == Some(paste.model_stamp);
+                };
+                let matches = model.stamp() == node.standard_list_stamp
+                    && edit_stamp(&model) == Some(paste.stamp);
                 Ok(matches.then_some(model))
             })
         };
@@ -405,22 +494,19 @@ impl Instance {
             return Ok(false);
         };
         let still_current = || {
+            if !route.is_current() {
+                return Ok(false);
+            }
             if target.is_dirty() {
-                read_target().map(|model| model.is_some())
+                read_target().map(|model| model.is_some() && route.is_current())
             } else {
                 Ok(true)
             }
         };
-        let input = TablePasteInput {
-            stamp: paste.model_stamp,
-            row: paste.row,
-            columns: &paste.columns,
-            text,
-        };
         if let Some(rows) = &model.projected {
-            self.paste_rows(view, rows, &table.history, input, still_current)
+            self.paste_rows(view, rows, &table.history, paste, still_current)
         } else if let Some(rows) = string_rows(&model) {
-            self.paste_rows(view, &rows, &table.string_history, input, still_current)
+            self.paste_rows(view, &rows, &table.string_history, paste, still_current)
         } else {
             Ok(false)
         }
@@ -451,17 +537,17 @@ impl Instance {
             template.children.iter().map(PasteColumn::for_row).collect()
         };
         let mut sample = None::<(usize, Self)>;
-        let changed = history.try_paste_in_order(
+        let changed = history.try_paste_in_order_guarded(
             rows,
             input,
             still_current,
-            |row, column, current, next, text| {
+            |row, column, current, next, text, still_current| {
                 let Some(definition) = definitions.get(column).and_then(Option::as_ref) else {
                     return Ok(None);
                 };
                 let value = match definition {
                     PasteColumn::Field { column, path } => {
-                        if !self.table_flag(column, "editable", false)? {
+                        if !self.table_flag(column, "editable", false)? || !still_current()? {
                             return Ok(None);
                         }
                         current
@@ -488,6 +574,7 @@ impl Instance {
                             definition,
                             current.field_value(definition.path()),
                             text,
+                            still_current,
                         )?
                     }
                 };
@@ -510,15 +597,19 @@ impl Instance {
         column: &PasteColumn<'_>,
         current: Option<Value>,
         text: &str,
+        still_current: &mut dyn FnMut() -> Result<bool>,
     ) -> Result<Option<Value>> {
         let PasteColumn::Row { guards, parser, .. } = column else {
             return Ok(None);
         };
-        if !self.shown_for_table(row)? || !self.visual_flag(row, "enabled", true)? {
+        if !self.element_shown(row)?
+            || !self.visual_flag(row, "enabled", true)?
+            || !still_current()?
+        {
             return Ok(None);
         }
         for element in guards {
-            if !self.editable_for_table(element)? {
+            if !self.editable_for_table(element)? || !still_current()? {
                 return Ok(None);
             }
         }
@@ -536,7 +627,7 @@ impl Instance {
         }
         let cell = guards[0];
         if matches!(cell.visual, Visual::Builtin("SpinBox" | "DoubleSpinBox"))
-            && !self.visual_flag(cell, "editable", true)?
+            && (!self.visual_flag(cell, "editable", true)? || !still_current()?)
         {
             return Ok(None);
         }
@@ -552,33 +643,47 @@ impl Instance {
                 let Some(Value::Int(value)) = TableCellEditor::Int.parse(text) else {
                     return Ok(None);
                 };
-                let min = match self.binding_value(cell, "minimum")? {
-                    Some(Value::Int(value)) => value,
-                    _ => 0,
-                };
-                let max = match self.binding_value(cell, "maximum")? {
-                    Some(Value::Int(value)) => value,
-                    _ => 100,
-                };
-                (min..=max.max(min))
-                    .contains(&value)
-                    .then_some(Value::Int(value))
+                xrack_runtime::try_table_paste_number(
+                    Some(value),
+                    still_current,
+                    || {
+                        Ok(match self.binding_value(cell, "minimum")? {
+                            Some(Value::Int(value)) => value,
+                            _ => 0,
+                        })
+                    },
+                    || {
+                        Ok(match self.binding_value(cell, "maximum")? {
+                            Some(Value::Int(value)) => value,
+                            _ => 100,
+                        })
+                    },
+                    i64::max,
+                )?
+                .map(Value::Int)
             }
             Some(Value::Float(_)) => {
                 let Some(Value::Float(value)) = TableCellEditor::Float.parse(text) else {
                     return Ok(None);
                 };
-                let min = match self.binding_value(cell, "minimum")? {
-                    Some(Value::Float(value)) => value,
-                    _ => 0.0,
-                };
-                let max = match self.binding_value(cell, "maximum")? {
-                    Some(Value::Float(value)) => value,
-                    _ => 100.0,
-                };
-                (min..=max.max(min))
-                    .contains(&value)
-                    .then_some(Value::Float(value))
+                xrack_runtime::try_table_paste_number(
+                    Some(value),
+                    still_current,
+                    || {
+                        Ok(match self.binding_value(cell, "minimum")? {
+                            Some(Value::Float(value)) => value,
+                            _ => 0.0,
+                        })
+                    },
+                    || {
+                        Ok(match self.binding_value(cell, "maximum")? {
+                            Some(Value::Float(value)) => value,
+                            _ => 100.0,
+                        })
+                    },
+                    f64::max,
+                )?
+                .map(Value::Float)
             }
             _ => None,
         };
@@ -589,91 +694,70 @@ impl Instance {
         &self,
         view: &Element,
         node: &Node,
-        origin: TableEditPosition,
-        columns: &[usize],
-        backward: bool,
+        navigation: xrack_runtime::TableEditNavigation<'_>,
+        input: xrack_runtime::InputRoute<'_>,
     ) -> Result<Option<TableEditPosition>> {
-        if !node.boolean("edit-on-tab", false) {
-            return Ok(None);
-        }
-        let model = self.view_model(view)?;
-        if model.stamp() != node.standard_list_stamp {
-            return Ok(None);
-        }
-        let Some(header) = &node.table_header else {
-            return Ok(None);
+        let columns = navigation.columns;
+        let rows = || {
+            self.table_action_view_model(view, "edit-on-tab", &node.table_column_order)?
+                .map(|model| model.table_rows())
+                .transpose()
         };
         if view.table_definition().model.is_some() {
-            let Some(rows) = &model.projected else {
-                return Ok(None);
+            let editor = |column| {
+                view.table_columns().nth(column).filter(|column| {
+                    column
+                        .bindings
+                        .iter()
+                        .any(|binding| binding.name == "editable")
+                })
             };
-            let editable = |column: usize| {
-                header
-                    .columns
-                    .get(column)
-                    .is_some_and(|column| column.boolean("editable", false))
-            };
-            if !columns.iter().copied().any(editable) {
+            if !columns.iter().any(|&column| editor(column).is_some()) {
                 return Ok(None);
             }
-            return Ok(xrack_runtime::next_table_edit_cell(
+            return xrack_runtime::try_next_table_edit_cell_while_current(
+                node,
+                navigation,
+                || input.is_current(),
                 rows,
-                origin,
-                columns,
-                backward,
-                |_, column, _| editable(column),
-            ));
+                |_, column, _, _| {
+                    editor(column).map_or(Ok(false), |column| {
+                        self.table_flag(column, "editable", false)
+                    })
+                },
+            );
         }
         let Some(template) = view.view_template() else {
             return Ok(None);
         };
-        if let Some(rows) = &model.projected {
-            self.next_delegate_cell(template, rows, origin, columns, backward)
-        } else if let Some(rows) = string_rows(&model) {
-            self.next_delegate_cell(template, &rows, origin, columns, backward)
-        } else {
-            Ok(None)
-        }
-    }
-
-    fn next_delegate_cell<T: EditableRow>(
-        &self,
-        template: &Element,
-        rows: &TableRows<VecModel<T>>,
-        origin: TableEditPosition,
-        columns: &[usize],
-        backward: bool,
-    ) -> Result<Option<TableEditPosition>> {
-        let editable = |column| {
+        let editor = |column| {
             template.children.get(column).filter(|cell: &&Element| {
                 matches!(cell.visual, Visual::Builtin("TableCell"))
                     && cell.row_links.contains_key("text")
             })
         };
-        if !columns.iter().any(|&column| editable(column).is_some()) {
+        if !columns.iter().any(|&column| editor(column).is_some()) {
             return Ok(None);
         }
+
         let mut sample = None::<(usize, Self)>;
-        xrack_runtime::try_next_table_edit_cell(
+        xrack_runtime::try_next_table_edit_cell_while_current(
+            node,
+            navigation,
+            || input.is_current(),
             rows,
-            origin,
-            columns,
-            backward,
-            |index, column, record| {
-                let Some(cell) = editable(column) else {
+            |index, column, key, record| {
+                let Some(cell) = editor(column) else {
                     return Ok(false);
                 };
                 if sample.as_ref().is_none_or(|(row, _)| *row != index) {
-                    let Some(key) = rows.source().row_key(index) else {
-                        return Ok(false);
-                    };
                     sample = Some((
                         index,
-                        self.sample_table_row(template, index, key, record.row_value())?,
+                        self.sample_table_row(template, index, key, record.clone())?,
                     ));
                 }
                 let (_, sample) = sample.as_ref().expect("sampled row");
-                Ok(sample.shown_for_table(template)?
+                Ok(sample.element_shown(template)?
                     && sample.visual_flag(template, "enabled", true)?
                     && sample.editable_for_table(cell)?)
             },

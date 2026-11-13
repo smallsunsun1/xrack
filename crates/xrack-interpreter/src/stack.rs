@@ -79,7 +79,7 @@ impl Instance {
 
     pub fn navigate_stack(&mut self, id: &str, action: StackNavigation<'_>) -> Result<bool> {
         let (owner, view) = self.element_owner(id)?;
-        owner.navigate_stack_view(view, None, action)
+        owner.navigate_stack_view(view, None, action, None)
     }
 
     fn initial_route(&self, view: &Element) -> Result<String> {
@@ -124,7 +124,7 @@ impl Instance {
                 ));
             }
         };
-        owner.navigate_stack_view(view, None, action)
+        owner.navigate_stack_view(view, None, action, None)
     }
 
     pub(crate) fn navigate_stack_view(
@@ -132,6 +132,7 @@ impl Instance {
         view: &Element,
         expected: Option<u64>,
         action: StackNavigation<'_>,
+        input: Option<xrack_runtime::InputRoute<'_>>,
     ) -> Result<bool> {
         let routes = routes(view)?;
         let page = |route: &str| {
@@ -147,12 +148,17 @@ impl Instance {
             expected,
             action,
             |route, destination, removing| {
+                if input.is_some_and(|input| !input.is_current()) {
+                    return Ok(false);
+                }
                 let Some(handler) = page(route).handlers.get("leave-requested") else {
                     return Ok(true);
                 };
                 let arguments = [Value::String(destination.into()), Value::Bool(removing)];
                 match self.execute(handler, &arguments, None)? {
-                    Some(Value::Bool(allow)) => Ok(allow),
+                    Some(Value::Bool(allow)) => {
+                        Ok(allow && input.is_none_or(|input| input.is_current()))
+                    }
                     _ => Err(Error::Evaluation(
                         "leave-requested must return a boolean".into(),
                     )),

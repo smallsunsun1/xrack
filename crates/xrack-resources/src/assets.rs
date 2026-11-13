@@ -19,7 +19,7 @@ pub struct ResolvedAssets {
     pub inputs: BTreeSet<PathBuf>,
 }
 
-fn walk<'m>(
+pub(super) fn walk<'m>(
     op: OperationRef<'m>,
     visit: &mut impl FnMut(OperationRef<'m>) -> Result<(), String>,
 ) -> Result<(), String> {

@@ -3175,6 +3175,52 @@ LogicalResult LiteralOp::verify() {
   return success();
 }
 
+LogicalResult UnaryOp::verify() {
+  auto type = getInput().getType();
+  auto op = getValue();
+  if (op == "!" ? isa<BoolType>(type)
+                : (op == "+" || op == "-") && isa<IntType, FloatType, LengthType>(type))
+    return success();
+  return emitOpError("invalid operand or result type for operator '") << op << "'";
+}
+
+LogicalResult BinaryOp::verify() {
+  auto left = getLhs().getType(), right = getRhs().getType();
+  auto op = getValue();
+  Type expected;
+  if (op == "==" || op == "!=") {
+    if (left == right)
+      expected = BoolType::get(getContext());
+  } else if (op == "<" || op == "<=" || op == ">" || op == ">=") {
+    if (left == right && isa<IntType, FloatType, LengthType, DateType, TimeType>(left))
+      expected = BoolType::get(getContext());
+  } else if (op == "&&" || op == "||") {
+    if (left == right && isa<BoolType>(left))
+      expected = left;
+  } else if (op == "%") {
+    if (left == right && isa<IntType>(left))
+      expected = left;
+  } else if (op == "+" || op == "-" || op == "*" || op == "/") {
+    if (left == right && isa<IntType, FloatType>(left)) {
+      expected = left;
+    } else if (left == right && isa<LengthType>(left)) {
+      if (op == "+" || op == "-")
+        expected = left;
+      else if (op == "/")
+        expected = FloatType::get(getContext());
+    } else if ((op == "*" || op == "/") && isa<LengthType>(left) && isa<FloatType>(right)) {
+      expected = left;
+    } else if (op == "*" && isa<FloatType>(left) && isa<LengthType>(right)) {
+      expected = right;
+    } else if (op == "+" && left == right && isa<StringType>(left)) {
+      expected = left;
+    }
+  }
+  if (expected == getResult().getType())
+    return success();
+  return emitOpError("invalid operand or result type for operator '") << op << "'";
+}
+
 OpFoldResult SelectOp::fold(FoldAdaptor) {
   // The backend evaluates expressions at their use site. Equal arms do not
   // eliminate the need to evaluate a condition that may read or call.
@@ -3401,8 +3447,11 @@ static bool matchesDeclaredType(Type type, llvm::StringRef declared) {
   llvm::raw_string_ostream stream(printed);
   type.print(stream);
   auto spelling = llvm::StringRef(stream.str());
-  auto expected = declared == "[string]" ? "stringlist" : declared.lower();
-  return spelling.consume_front("!xr.") && spelling == expected;
+  if (declared == "[string]")
+    declared = "stringlist";
+  else if (declared == "styled-text")
+    declared = "styledtext";
+  return spelling.consume_front("!xr.") && spelling == declared.lower();
 }
 
 static LogicalResult verifyCall(Operation *op, const Owners &owners,
@@ -4467,7 +4516,8 @@ static LogicalResult verifyRecords(ModuleOp module, const Records &records) {
           if (!type)
             continue;
           auto name = *type;
-          if (recordScalarType(name) || name == "[string]" || name == "percent")
+          if (recordScalarType(name) || name == "[string]" ||
+              name == "TouchPoints" || name == "percent")
             continue;
           const bool wellFormed =
               !name.consume_front("[") || name.consume_back("]");

@@ -43,6 +43,30 @@ struct RowRenderer {
 #[derive(Clone)]
 pub struct ListRowRenderer(Rc<RowRenderer>);
 
+impl Node {
+    /// Render rows through the virtual view at this path in the current base scene.
+    #[doc(hidden)]
+    pub fn list_rows_at(&self, path: &[usize], rows: Range<usize>) -> Vec<Node> {
+        let Some(node) = self.at_path(path) else {
+            return Vec::new();
+        };
+        let end = node
+            .list
+            .map_or(rows.end, |list| rows.end.min(list.row_count));
+        node.list_row_renderer
+            .as_ref()
+            .map_or_else(Vec::new, |renderer| renderer.render(rows.start..end))
+    }
+
+    /// Recover the visual index, source key and delegate from a prepared row.
+    #[doc(hidden)]
+    pub fn list_event_row(&self, slot: usize) -> Option<(usize, RowKey, &Node)> {
+        let index = self.list?.first_row.checked_add(slot)?;
+        let row = self.child_at(slot)?;
+        Some((index, row.row_key?, row.child_at(0)?))
+    }
+}
+
 impl ListRowRenderer {
     pub fn new(rows: impl Fn(Range<usize>) -> Vec<Node> + 'static) -> Self {
         Self::with_columns(move |range, _| rows(range))
@@ -422,12 +446,28 @@ pub fn project_standard_table_rows<T>(
     cell: impl Fn(&T, usize) -> String,
     editor: impl Fn(usize) -> Option<TableCellEditor>,
 ) -> Vec<Node> {
+    try_project_standard_table_rows(rows, range, columns, column_count, header, cell, |column| {
+        Ok::<_, std::convert::Infallible>(editor(column))
+    })
+    .unwrap_or_else(|error| match error {})
+}
+
+#[doc(hidden)]
+pub fn try_project_standard_table_rows<T, E>(
+    rows: &TableRows<VecModel<T>>,
+    range: Range<usize>,
+    columns: &TableColumnWindow,
+    column_count: usize,
+    header: impl Fn(&T) -> Option<String>,
+    cell: impl Fn(&T, usize) -> String,
+    editor: impl Fn(usize) -> Result<Option<TableCellEditor>, E>,
+) -> Result<Vec<Node>, E> {
     let model = rows.source();
     let visible: Vec<_> = columns
         .columns(column_count)
-        .map(|column| (column, editor(column)))
-        .collect();
-    range
+        .map(|column| editor(column).map(|editor| (column, editor)))
+        .collect::<Result<_, E>>()?;
+    Ok(range
         .filter_map(|index| {
             let index = rows.positions().source_index(index)?;
             let key = model.row_key(index)?;
@@ -442,7 +482,7 @@ pub fn project_standard_table_rows<T>(
                 row
             })
         })
-        .collect()
+        .collect())
 }
 
 /// The model field type used to validate a projected cell's text draft.
@@ -565,6 +605,11 @@ pub trait ListModel {
     }
     fn row_lifetime(&self, key: RowKey) -> RowLifetime;
     fn structure_stamp(&self) -> (u64, u64);
+    /// Identify the model revision, including changes to its row values.
+    #[doc(hidden)]
+    fn contents_stamp(&self) -> (u64, u64) {
+        self.structure_stamp()
+    }
     #[doc(hidden)]
     fn source_structure_stamp(&self) -> (u64, u64) {
         self.structure_stamp()
@@ -634,6 +679,9 @@ impl<T: Clone + PartialEq> ListModel for VecModel<T> {
     }
     fn structure_stamp(&self) -> (u64, u64) {
         self.structure_stamp()
+    }
+    fn contents_stamp(&self) -> (u64, u64) {
+        self.contents_stamp()
     }
 }
 

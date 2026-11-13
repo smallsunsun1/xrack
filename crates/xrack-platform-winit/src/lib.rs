@@ -2132,11 +2132,10 @@ impl<C: Component, M, R: FnMut(&mut C, M)> Application<C, M, R> {
             }
             ControlAction::ClearSearch if search => {
                 self.pending_clipboard = None;
-                self.input.edit_text(
+                self.input.clear_search(
                     &mut self.component,
                     &self.scene,
-                    EditAction::ReplaceAll(""),
-                    EditSource::Atomic,
+                    &input.path,
                     Instant::now(),
                 )
             }

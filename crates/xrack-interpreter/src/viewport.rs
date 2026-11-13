@@ -137,7 +137,7 @@ impl Element {
                 let writer = reader.clone();
                 let binding = offset.clone();
                 let target = offset.clone();
-                let value = Rc::new(Property::<Result<Value>>::default());
+                let value = Rc::new(Property::<Length>::default());
                 let written = value.clone();
                 handle.bind_offset(
                     *axis,
@@ -145,30 +145,24 @@ impl Element {
                         let Some(instance) = reader.upgrade().map(Instance) else {
                             return Length::default();
                         };
-                        let current = match &binding {
-                            Offset::Linked(target) => instance.read(target),
-                            Offset::Binding(expression) => {
-                                value.get(|| instance.evaluate(expression, &[]))
-                            }
+                        let read_length = |value| match value {
+                            Value::Length(length) => length,
+                            _ => Length::default(), // Verified by the dialect.
                         };
-                        match current {
-                            Ok(Value::Length(length)) => length,
-                            Ok(_) => Length::default(), // Verified by the dialect.
-                            Err(error) => {
-                                instance.0.error.set(Some(error));
-                                Length::default()
-                            }
-                        }
+                        let current = match &binding {
+                            Offset::Linked(target) => instance.read(target).map(read_length),
+                            Offset::Binding(expression) => value
+                                .try_get(|| instance.evaluate(expression, &[]).map(read_length)),
+                        };
+                        instance.capture_result(current).unwrap_or_default()
                     },
                     move |length| match &target {
                         Offset::Linked(target) => {
-                            if let Some(instance) = writer.upgrade().map(Instance)
-                                && let Err(error) = instance.write(target, length.into())
-                            {
-                                instance.0.error.set(Some(error));
+                            if let Some(instance) = writer.upgrade().map(Instance) {
+                                instance.capture_result(instance.write(target, length.into()));
                             }
                         }
-                        Offset::Binding(_) => written.set_if_changed(Ok(length.into())),
+                        Offset::Binding(_) => written.set_if_changed(length),
                     },
                 );
             }

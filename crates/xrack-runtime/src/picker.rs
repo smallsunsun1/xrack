@@ -1,7 +1,8 @@
-use crate::{DialogRole, Node, Property};
+use crate::{DialogRole, InputRoute, Node, Property};
 use std::cell::{Cell, RefCell};
 
 const SESSION: &str = "__picker-session";
+const DRAFT_REVISION: &str = "__picker-draft-revision";
 
 thread_local! {
     static NEXT_SESSION: Cell<i64> = const { Cell::new(1) };
@@ -11,6 +12,7 @@ thread_local! {
 pub(crate) struct PickerSession<T> {
     initial: RefCell<Option<(i64, T)>>,
     draft: Property<Option<T>>,
+    draft_revision: Cell<i64>,
 }
 
 impl<T> Default for PickerSession<T> {
@@ -18,6 +20,7 @@ impl<T> Default for PickerSession<T> {
         Self {
             initial: RefCell::new(None),
             draft: Property::default(),
+            draft_revision: Cell::new(0),
         }
     }
 }
@@ -25,6 +28,7 @@ impl<T> Default for PickerSession<T> {
 impl<T: Clone> PickerSession<T> {
     pub(crate) fn close(&self) {
         self.initial.take();
+        self.draft_revision.set(0);
         self.draft.reset();
     }
 
@@ -51,6 +55,9 @@ impl<T: Clone> PickerSession<T> {
             session
         };
         dialog.properties.insert(SESSION, revision.into());
+        dialog
+            .properties
+            .insert(DRAFT_REVISION, self.draft_revision.get().into());
         Ok(Some(self.draft.get(|| None).unwrap_or(initial)))
     }
 
@@ -68,10 +75,50 @@ impl<T: Clone> PickerSession<T> {
     }
 
     pub(crate) fn set(&self, draft: T) {
+        self.draft_revision.set(
+            self.draft_revision
+                .get()
+                .checked_add(1)
+                .expect("picker draft revisions exhausted"),
+        );
         self.draft.set(Some(draft));
     }
 
-    pub(crate) fn finish(&self, dialog: &Node) -> Option<T> {
+    pub(crate) fn try_finish_input<E>(
+        &self,
+        dialog: &Node,
+        role: DialogRole,
+        input: InputRoute<'_>,
+        accept: impl FnOnce(T) -> Result<Option<T>, E>,
+    ) -> Result<Option<T>, E> {
+        if !input.is_current() {
+            return Ok(None);
+        }
+        if role == DialogRole::Reject {
+            return Ok(self.finish(dialog, role));
+        }
+        if dialog.int(DRAFT_REVISION) != Some(self.draft_revision.get()) {
+            return Ok(None);
+        }
+        let Some(draft) = self.current(dialog) else {
+            return Ok(None);
+        };
+        let Some(value) = accept(draft)? else {
+            return Ok(None);
+        };
+        // Bindings sampled by confirmation may invalidate the route or change the session.
+        if !input.is_current() || self.finish(dialog, role).is_none() {
+            return Ok(None);
+        }
+        Ok(Some(value))
+    }
+
+    pub(crate) fn finish(&self, dialog: &Node, role: DialogRole) -> Option<T> {
+        if role == DialogRole::Accept
+            && dialog.int(DRAFT_REVISION) != Some(self.draft_revision.get())
+        {
+            return None;
+        }
         let value = self.current(dialog)?;
         self.close();
         Some(value)

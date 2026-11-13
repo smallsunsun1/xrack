@@ -101,8 +101,9 @@ impl Instance {
         Ok(owner.split_state(&element.key).handle.resizing())
     }
 
-    pub(crate) fn save_split(&self, key: &str) -> Result<String> {
-        let (owner, element) = self.element_owner(key)?;
+    /// Serialize a split view's pane weights or fixed sizes.
+    pub fn save_split_state(&self, id: &str) -> Result<String> {
+        let (owner, element) = self.element_owner(id)?;
         let definition = element
             .split
             .as_ref()
@@ -117,8 +118,9 @@ impl Instance {
         })
     }
 
-    pub(crate) fn restore_split(&self, key: &str, serialized: &str) -> Result<()> {
-        let (owner, element) = self.element_owner(key)?;
+    /// Restore pane state. Returns false for an invalid payload and true for a valid no-op.
+    pub fn restore_split_state(&self, id: &str, serialized: &str) -> Result<bool> {
+        let (owner, element) = self.element_owner(id)?;
         let definition = element
             .split
             .as_ref()
@@ -130,13 +132,14 @@ impl Instance {
         } else {
             decode_split_state(&names, serialized)
         };
-        if let Some(values) = decoded {
-            owner.update_split(
-                element,
-                values.iter().any(Option::is_some).then_some(values),
-            )?;
-        }
-        Ok(())
+        let Some(values) = decoded else {
+            return Ok(false);
+        };
+        owner.update_split(
+            element,
+            values.iter().any(Option::is_some).then_some(values),
+        )?;
+        Ok(true)
     }
 
     fn update_split(&self, element: &Element, next: Option<Panes>) -> Result<bool> {
@@ -153,40 +156,19 @@ impl Instance {
         &self,
         scene: &Node,
         path: &[usize],
-        values: &[(usize, f32)],
-        sized: bool,
+        input: xrack_runtime::InputRoute<'_>,
     ) -> Result<bool> {
-        let Some(node) = scene.interactive_at_path(path) else {
+        let Some(node) = scene.at_path(path) else {
             return Ok(false);
         };
-        let Some((owner, element)) = self.try_target(scene, path)? else {
+        let Some((owner, element)) = self.input_route_target(scene, path, input)? else {
             return Ok(false);
         };
-        let Some(definition) = &element.split else {
-            return Ok(false);
-        };
-        if sized != definition.fill.is_some() {
+        if element.split.is_none() {
             return Ok(false);
         }
-        let snapshot = if sized {
-            &node.split_sizes
-        } else {
-            &node.split_weights
-        };
-        if owner
-            .split_state(&element.key)
-            .values
-            .get(|| None)
-            .as_deref()
-            != snapshot.as_deref()
-        {
-            return Ok(false);
-        }
-        let next = if sized {
-            node.resized_split_sizes(values)
-        } else {
-            node.resized_split_weights(values)
-        };
+        let current = owner.split_state(&element.key).values.get(|| None);
+        let next = node.prepare_split_resize(input, current.as_deref());
         match next {
             Some(next) => owner.update_split(element, Some(next)),
             None => Ok(false),

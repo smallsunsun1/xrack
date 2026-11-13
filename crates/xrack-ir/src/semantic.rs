@@ -7694,31 +7694,6 @@ fn expression(e: &ast::Expr, scope: &Scope<'_>, owner: &str) -> Result<ir::Expr>
                     _ => None,
                 };
                 if let Some(record) = record {
-                    if matches!(
-                        record.ty,
-                        Type::KeyEvent
-                            | Type::KeyModifiers
-                            | Type::WheelEvent
-                            | Type::PointerEvent
-                            | Type::TouchPoint
-                    ) {
-                        let Some(ty) = record.ty.input_field(field) else {
-                            return fail(
-                                span,
-                                format!("{} has no field `{field}`", record.ty.name()),
-                            );
-                        };
-                        let op = match record.ty {
-                            Type::PointerEvent => "pointer_field",
-                            Type::TouchPoint => "touch_point_field",
-                            Type::WheelEvent => "wheel_field",
-                            _ => "key_field",
-                        };
-                        return Ok(ir::Expr {
-                            value: field.into(),
-                            ..ir::Expr::operation(op, ty, vec![record], span)
-                        });
-                    }
                     if record.ty == Type::Image {
                         if !matches!(field, "width" | "height") {
                             return fail(span, format!("image has no field `{field}`"));
@@ -7728,37 +7703,19 @@ fn expression(e: &ast::Expr, scope: &Scope<'_>, owner: &str) -> Result<ir::Expr>
                             ..ir::Expr::operation("image_dimension", Type::Int, vec![record], span)
                         });
                     }
-                    if record.ty == Type::Font {
-                        let ty = FONT_FIELDS
-                            .iter()
-                            .find(|(name, _)| *name == field)
-                            .map(|(_, ty)| ty.clone())
-                            .ok_or_else(|| Diagnostic {
-                                span,
-                                message: format!("Font has no field `{field}`"),
-                            })?;
-                        return Ok(ir::Expr {
-                            value: field.into(),
-                            ..ir::Expr::operation("font_field", ty, vec![record], span)
-                        });
-                    }
-                    let civil = match record.ty {
-                        Type::Date => Some(("date_field", ["year", "month", "day"])),
-                        Type::Time => Some(("time_field", ["hour", "minute", "second"])),
-                        _ => None,
-                    };
-                    if let Some((op, fields)) = civil {
-                        if !fields.contains(&field) {
-                            let name = if record.ty == Type::Date {
-                                "Date"
-                            } else {
-                                "Time"
+                    if !matches!(record.ty, Type::Record(_)) {
+                        let Some((op, ty)) = record.ty.builtin_field(field) else {
+                            let owner = match record.ty {
+                                Type::Date => "Date".into(),
+                                Type::Time => "Time".into(),
+                                Type::Font => "Font".into(),
+                                _ => record.ty.name(),
                             };
-                            return fail(span, format!("{name} has no field `{field}`"));
-                        }
+                            return fail(span, format!("{owner} has no field `{field}`"));
+                        };
                         return Ok(ir::Expr {
                             value: field.into(),
-                            ..ir::Expr::operation(op, Type::Int, vec![record], span)
+                            ..ir::Expr::operation(op, ty, vec![record], span)
                         });
                     }
                     let Type::Record(name) = &record.ty else {
@@ -7875,18 +7832,12 @@ fn numeric(t: &Type) -> bool {
     matches!(t, Type::Int | Type::Float)
 }
 fn promote(a: ir::Expr, b: ir::Expr) -> Result<(ir::Expr, ir::Expr)> {
-    if matches!(
-        (&a.ty, &b.ty),
-        (Type::Float, Type::Int) | (Type::Brush, Type::Color)
-    ) {
-        Ok((a, coerce(b, Type::Float)?))
-    } else if matches!(
-        (&a.ty, &b.ty),
-        (Type::Int, Type::Float) | (Type::Color, Type::Brush)
-    ) {
-        Ok((coerce(a, Type::Float)?, b))
-    } else {
-        Ok((a, b))
+    match (&a.ty, &b.ty) {
+        (Type::Float, Type::Int) => Ok((a, coerce(b, Type::Float)?)),
+        (Type::Int, Type::Float) => Ok((coerce(a, Type::Float)?, b)),
+        (Type::Brush, Type::Color) => Ok((a, coerce(b, Type::Brush)?)),
+        (Type::Color, Type::Brush) => Ok((coerce(a, Type::Brush)?, b)),
+        _ => Ok((a, b)),
     }
 }
 

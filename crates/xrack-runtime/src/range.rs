@@ -37,6 +37,101 @@ impl RangeAction {
     }
 }
 
+#[doc(hidden)]
+pub const RANGE_VIEW_PROPERTIES: &[&str] = &[
+    "minimum",
+    "maximum",
+    "step",
+    "snap-mode",
+    "wrap",
+    "orientation",
+    "input-mode",
+    "start-angle",
+    "end-angle",
+    "live",
+];
+
+#[doc(hidden)]
+pub fn range_view_properties(kind: &str) -> &'static [&'static str] {
+    if kind == "ScrollBar" {
+        &[
+            "size",
+            "step-size",
+            "minimum-size",
+            "interactive",
+            "policy",
+            "orientation",
+            "snap-mode",
+        ]
+    } else {
+        RANGE_VIEW_PROPERTIES
+    }
+}
+
+/// Validate the range settings and capture live values before applying input.
+#[doc(hidden)]
+pub fn try_prepare_range_view<T, E>(
+    node: &Node,
+    action: RangeAction,
+    available: impl FnOnce() -> Result<bool, E>,
+    mut read: impl FnMut(&str) -> Result<Option<Value>, E>,
+    values: impl FnOnce() -> Result<T, E>,
+) -> Result<Option<T>, E> {
+    if node.kind == "ScrollBar"
+        && !match action {
+            RangeAction::SetFraction(value) => value.is_finite(),
+            RangeAction::Increase
+            | RangeAction::Decrease
+            | RangeAction::Minimum
+            | RangeAction::Maximum => true,
+            _ => false,
+        }
+    {
+        return Ok(None);
+    }
+    let pointer = matches!(
+        action,
+        RangeAction::SetFraction(_) | RangeAction::CommitFraction(_) | RangeAction::SetPoint { .. }
+    );
+    crate::property::watch_reads(|reads| {
+        if !available()? || reads.changed() {
+            return Ok(None);
+        }
+        if action != RangeAction::Release {
+            for &name in range_view_properties(node.kind) {
+                let used = pointer
+                    || !matches!(
+                        name,
+                        "orientation" | "input-mode" | "start-angle" | "end-angle" | "live"
+                    );
+                if used && (read(name)?.as_ref() != node.properties.get(name) || reads.changed()) {
+                    return Ok(None);
+                }
+            }
+        }
+        let values = values()?;
+        Ok((!reads.changed()).then_some(values))
+    })
+}
+
+#[doc(hidden)]
+pub fn prepare_range_view<T>(
+    node: &Node,
+    action: RangeAction,
+    available: impl FnOnce() -> bool,
+    mut read: impl FnMut(&str) -> Option<Value>,
+    values: impl FnOnce() -> T,
+) -> Option<T> {
+    try_prepare_range_view(
+        node,
+        action,
+        || Ok::<_, std::convert::Infallible>(available()),
+        |name| Ok(read(name)),
+        || Ok(values()),
+    )
+    .unwrap_or_else(|error| match error {})
+}
+
 impl Node {
     #[doc(hidden)]
     pub const RANGE_THUMBS: usize = 2;
@@ -145,6 +240,14 @@ impl SliderRange {
         if value.is_finite() {
             self.value = value.clamp(self.min, self.max);
         }
+        self
+    }
+
+    #[doc(hidden)]
+    pub fn with_bounds(mut self, minimum: f64, maximum: f64) -> Self {
+        self.min = minimum;
+        self.max = maximum.max(minimum);
+        self.value = self.value.clamp(self.min, self.max);
         self
     }
 
@@ -278,8 +381,33 @@ impl ScrollBarRange {
         }
     }
 
+    #[doc(hidden)]
+    pub fn position_with(position: impl FnOnce() -> f64, size: impl FnOnce() -> f64) -> f64 {
+        Self::try_position_with(
+            || Ok::<_, std::convert::Infallible>(position()),
+            || Ok(size()),
+        )
+        .unwrap_or_else(|error| match error {})
+    }
+
+    /// Read the position binding before the size that constrains it.
+    #[doc(hidden)]
+    pub fn try_position_with<E>(
+        position: impl FnOnce() -> Result<f64, E>,
+        size: impl FnOnce() -> Result<f64, E>,
+    ) -> Result<f64, E> {
+        let position = position()?;
+        let size = size()?;
+        Ok(Self::new(position, size, 0.0).position)
+    }
+
     pub fn maximum(self) -> f64 {
         1.0 - self.size
+    }
+
+    #[doc(hidden)]
+    pub fn with_position(self, position: f64) -> Self {
+        Self::new(position, self.size, self.step)
     }
 
     pub fn apply(self, action: RangeAction) -> Option<f64> {
@@ -332,7 +460,11 @@ impl SliderInterval {
     }
 
     pub fn from_values(node: &Node, lower: f64, upper: f64) -> Self {
-        let axis = SliderRange::from_node(node);
+        Self::from_range(SliderRange::from_node(node), lower, upper)
+    }
+
+    #[doc(hidden)]
+    pub fn from_range(axis: SliderRange, lower: f64, upper: f64) -> Self {
         let upper = if upper.is_finite() {
             upper.clamp(axis.min, axis.max)
         } else {

@@ -5,6 +5,12 @@ pub enum EventResult {
     Reject,
 }
 
+impl From<bool> for EventResult {
+    fn from(handled: bool) -> Self {
+        if handled { Self::Accept } else { Self::Reject }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct KeyModifiers {
     pub control: bool,

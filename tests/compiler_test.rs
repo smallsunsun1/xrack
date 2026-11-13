@@ -3635,12 +3635,9 @@ fn message_dialog_has_typed_buttons_levels_and_results() {
     let compiled = compile(source, "message.xr").unwrap();
     assert!(compiled.mlir.contains("!xr.messagebuttons"));
     assert!(compiled.mlir.contains("!xr.messagelevel"));
-    assert!(
-        compiled
-            .rust
-            .to_string()
-            .contains("NativeDialogResult :: Button")
-    );
+    let rust = compiled.rust.to_string();
+    assert!(rust.contains("MessageDialogOptions :: read_bindings"));
+    assert!(rust.contains("NativeDialogEvent :: MessageFinished"));
     let raw = lower(source, "message.xr");
     let bad_type = raw.replace("name = \"buttons\"", "name = \"level\"");
     assert!(

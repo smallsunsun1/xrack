@@ -1,5 +1,5 @@
 use crate::{
-    ControlAction, Node, Tumbler, TumblerItems, VecModel,
+    ControlAction, DialogRole, InputRoute, Node, Tumbler, TumblerItems, VecModel,
     picker::{PickerSession, append_picker_dialog},
 };
 use std::fmt;
@@ -53,7 +53,7 @@ fn numbers(values: impl Iterator<Item = i64>) -> TumblerItems {
 }
 
 #[doc(hidden)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub struct TimePickerOptions {
     use_24_hours: bool,
     show_seconds: bool,
@@ -200,7 +200,37 @@ impl TimePopupState {
         true
     }
 
+    /// Confirm only the draft displayed with the current options.
+    pub fn try_finish_input<E>(
+        &self,
+        dialog: &Node,
+        role: DialogRole,
+        input: InputRoute<'_>,
+        options: impl FnOnce() -> Result<TimePickerOptions, E>,
+    ) -> Result<Option<Time>, E> {
+        self.0.try_finish_input(dialog, role, input, |draft| {
+            Ok((options()? == TimePickerOptions::from_node(dialog)).then_some(draft))
+        })
+    }
+
+    pub fn finish_input(
+        &self,
+        dialog: &Node,
+        role: DialogRole,
+        input: InputRoute<'_>,
+        options: impl FnOnce() -> TimePickerOptions,
+    ) -> Option<Time> {
+        self.try_finish_input(dialog, role, input, || {
+            Ok::<_, std::convert::Infallible>(options())
+        })
+        .unwrap_or_else(|error| match error {})
+    }
+
     pub fn finish(&self, dialog: &Node) -> Option<Time> {
-        self.0.finish(dialog)
+        self.finish_with_role(dialog, DialogRole::Accept)
+    }
+
+    pub fn finish_with_role(&self, dialog: &Node, role: DialogRole) -> Option<Time> {
+        self.0.finish(dialog, role)
     }
 }

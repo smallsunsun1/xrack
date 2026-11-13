@@ -21,7 +21,7 @@ impl Command {
 
 pub(crate) struct State {
     slots: BTreeMap<String, SecondaryWindowSlot>,
-    registrations: Property<Result<Rc<[SecondaryWindowRegistration]>>>,
+    registrations: Property<Rc<[SecondaryWindowRegistration]>>,
 }
 
 impl State {
@@ -78,7 +78,7 @@ impl Instance {
         };
         state
             .registrations
-            .get(|| {
+            .try_get(|| {
                 let mut registrations = Vec::new();
                 for window in &self.definition().root.secondary_windows {
                     if !self.secondary_window_visible(window)? {

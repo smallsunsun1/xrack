@@ -223,9 +223,14 @@ impl PartialEq for RecordList {
 
 impl RecordList {
     pub fn new(name: impl Into<Rc<str>>, rows: Vec<RecordValue>) -> Self {
+        Self::from_model(name, VecModel::from(rows))
+    }
+
+    /// Use an existing model, preserving the row identities of the supplied handle.
+    pub fn from_model(name: impl Into<Rc<str>>, model: VecModel<RecordValue>) -> Self {
         Self {
             name: name.into(),
-            model: VecModel::from(rows),
+            model,
             validations: Rc::default(),
         }
     }
@@ -236,6 +241,24 @@ impl RecordList {
 
     pub fn model(&self) -> &VecModel<RecordValue> {
         &self.model
+    }
+
+    #[doc(hidden)]
+    pub fn into_snapshot(self) -> (Rc<str>, Vec<RecordValue>) {
+        (self.name, self.model.into_snapshot())
+    }
+
+    #[doc(hidden)]
+    pub fn values_eq_owned(
+        self,
+        other: Self,
+        validator: &Rc<RecordRowValidator>,
+    ) -> Result<bool, String> {
+        for list in [&self, &other] {
+            list.check_rows(validator, list.model.is_shared())
+                .map_err(|error| format!("model {}{error}", list.name))?;
+        }
+        Ok(self.name == other.name && self.model.values_eq_owned(other.model))
     }
 
     /// Check the current row shapes and track changes to their validity.

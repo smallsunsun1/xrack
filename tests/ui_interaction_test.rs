@@ -5357,13 +5357,11 @@ fn search_clear_click_passes_through_its_popup_and_is_one_edit() {
     let click = input.control_part_release(&scene, &layout).unwrap();
     assert_eq!(click.action, ControlAction::ClearSearch);
     assert_eq!(click.path, target);
-    assert!(input.edit_text(
-        &mut ui,
-        &scene,
-        EditAction::ReplaceAll(""),
-        EditSource::Atomic,
-        Instant::now()
-    ));
+    ui.set_query("new query".into());
+    assert!(!input.clear_search(&mut ui, &scene, &click.path, Instant::now()));
+    assert_eq!(ui.get_query(), "new query");
+    ui.set_query("XRack".into());
+    assert!(input.clear_search(&mut ui, &scene, &click.path, Instant::now()));
     assert_eq!(ui.get_query(), "");
     assert_eq!(input.focused.as_ref().unwrap().path, target);
     let (scene, _) = prepare(&ui, &input);

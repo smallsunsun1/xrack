@@ -7,7 +7,7 @@ use std::{
 };
 
 /// A composited frame and its exclusive end on the source's timeline.
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct ImageAnimationFrame {
     pub end_ms: u32,
     pub png: &'static [u8],
@@ -49,11 +49,25 @@ impl ImageAnimation {
     pub fn size(&self) -> [u32; 2] {
         self.size
     }
+
+    pub(crate) fn matches_loaded(&self, other: &LoadedAnimation) -> bool {
+        self.size == other.size
+            && self.plays == other.plays
+            && self
+                .frames
+                .iter()
+                .map(|frame| (frame.end_ms, frame.png))
+                .eq(other
+                    .frames
+                    .iter()
+                    .map(|(end, frame)| (*end, frame.bytes())))
+    }
 }
 
 impl PartialEq for ImageAnimation {
     fn eq(&self, other: &Self) -> bool {
         std::ptr::eq(self, other)
+            || (self.size == other.size && self.plays == other.plays && self.frames == other.frames)
     }
 }
 

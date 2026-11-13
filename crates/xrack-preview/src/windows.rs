@@ -197,11 +197,18 @@ impl Windows {
     }
 
     pub(crate) fn finish_native_dialog(&mut self, id: u64, result: NativeDialogResult) -> bool {
-        let Some((owner, _)) = self.dialog.take_if(|(_, request)| *request == id) else {
+        let Some((owner, _)) = self.dialog.filter(|(_, request)| *request == id) else {
             return false;
         };
-        self.window(owner)
-            .is_some_and(|scene| scene.finish_native_dialog(id, result))
+        let Some(scene) = self.window(owner).filter(|scene| !scene.window_closed()) else {
+            self.dialog = None;
+            return false;
+        };
+        let completed = scene.finish_native_dialog(id, result);
+        if completed {
+            self.dialog = None;
+        }
+        completed
     }
 
     pub(crate) fn take_clipboard_request(&mut self) -> Option<ClipboardRequest> {

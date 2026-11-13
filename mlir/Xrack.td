@@ -429,7 +429,9 @@ def XR_TouchAreaReadOp : XR_ExpressionOp<"touch_area_read", (ins StrAttr:$owner)
 def XR_ParamOp : XR_ExpressionOp<"param", (ins)>;
 def XR_CallOp : XR_ExpressionOp<"call", (ins Variadic<XR_Value>:$args, StrAttr:$owner)>;
 def XR_UnaryOp : XR_ExpressionOp<"unary", (ins XR_Value:$input), XR_Value,
-                                [AllTypesMatch<["input", "result"]>]>;
+                                [AllTypesMatch<["input", "result"]>]> {
+  let hasVerifier = 1;
+}
 def XR_CastOp : XR_ExpressionOp<"cast", (ins XR_Int:$input), XR_Float>;
 def XR_ToRatioOp : XR_ExpressionOp<"to_ratio", (ins XR_Percent:$input), XR_Float, [Pure]>;
 def XR_StringifyOp : XR_ExpressionOp<"stringify", (ins XR_Stringifiable:$input), XR_String>;
@@ -446,7 +448,9 @@ def XR_RadialGradientOp : XR_ExpressionOp<"radial_gradient",
     (ins Variadic<XR_GradientStop>:$stops), XR_Brush, [Pure]> {
   let hasVerifier = 1;
 }
-def XR_BinaryOp : XR_ExpressionOp<"binary", (ins XR_Value:$lhs, XR_Value:$rhs)>;
+def XR_BinaryOp : XR_ExpressionOp<"binary", (ins XR_Value:$lhs, XR_Value:$rhs)> {
+  let hasVerifier = 1;
+}
 def XR_SelectOp : XR_ExpressionOp<"select", (ins XR_Bool:$condition, XR_Value:$on_true, XR_Value:$on_false),
                                  XR_Value, [Pure, AllTypesMatch<["on_true", "on_false", "result"]>]> {
   let hasFolder = 1;

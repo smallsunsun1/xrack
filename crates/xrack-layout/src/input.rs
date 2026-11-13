@@ -415,10 +415,7 @@ impl SpinDraftMode {
                 separator: decimal_separator(node),
             }
         } else {
-            Self::Integer(
-                node.int("value")
-                    .filter(|_| node.boolean("table-editor", false)),
-            )
+            Self::Integer(node.int("value"))
         }
     }
 
@@ -5136,11 +5133,9 @@ impl Interaction {
         {
             return TableEditCommit::Kept;
         }
-        let current = scene.interactive_at_path(&edit.target.path).filter(|node| {
-            editable_table_cell(node)
-                && node.text("text").unwrap_or_default() == edit.original
-                && scene.row_key_at(&edit.target.path) == edit.target.row_key
-        });
+        let current = scene
+            .table_cell_commit_target(&edit.target.path, &edit.original)
+            .filter(|_| scene.row_key_at(&edit.target.path) == edit.target.row_key);
         let Some(cell) = current else {
             self.cancel_table_edit();
             return TableEditCommit::Rejected;
@@ -5374,6 +5369,32 @@ impl Interaction {
             history.push(next, record, group, now);
         }
         true
+    }
+
+    pub fn clear_search(
+        &mut self,
+        component: &mut impl Component,
+        scene: &Node,
+        path: &[usize],
+        now: Instant,
+    ) -> bool {
+        if self
+            .focused
+            .as_ref()
+            .is_none_or(|target| target.path != path)
+            || scene
+                .at_path(path)
+                .is_none_or(|node| node.kind != "SearchField")
+        {
+            return false;
+        }
+        self.apply_text_edit(
+            scene,
+            EditAction::ReplaceAll(""),
+            EditSource::Atomic,
+            now,
+            |target, _| component.control_at(scene, &target.path, ControlAction::ClearSearch),
+        )
     }
 
     pub fn select_search_suggestion(

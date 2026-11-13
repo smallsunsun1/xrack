@@ -1,6 +1,6 @@
-use crate::{Element, Error, Instance, Result};
+use crate::{Element, Error, Instance, Result, repeat::Model};
 use xrack_runtime::{
-    Node, RangeAction, SliderInterval, SliderRange, SpinAction, SpinDecimal, Value,
+    ListModel, Node, RangeAction, ScrollBarRange, SliderInterval, SliderRange, SpinAction, Value,
 };
 
 impl Instance {
@@ -16,20 +16,73 @@ impl Instance {
         }
     }
 
+    fn range_with_live_bounds(&self, element: &Element, range: SliderRange) -> Result<SliderRange> {
+        let bound = |name, default| match self.binding_value(element, name)? {
+            Some(Value::Float(value)) => Ok(value),
+            _ => Ok::<_, Error>(default),
+        };
+        Ok(range.with_bounds(bound("minimum", 0.0)?, bound("maximum", 100.0)?))
+    }
+
+    fn row_numeric_input_available(
+        &self,
+        element: &Element,
+        owner: &Self,
+        view: Option<&Element>,
+        model: &Model,
+    ) -> Result<bool> {
+        model.contents_stamp();
+        if let Some(tree) = view.filter(|view| view.tree.is_some()) {
+            if !owner.element_allows_editing(tree)? {
+                return Ok(false);
+            }
+            owner.tree_projection(tree)?;
+        }
+        self.element_allows_editing(element)
+    }
+
     pub(crate) fn range_action(
         &self,
         element: &Element,
         node: &Node,
         action: RangeAction,
+        input: xrack_runtime::InputRoute<'_>,
     ) -> Result<bool> {
         let range = SliderRange::from_node(node);
-        if element.row_links.contains_key("value") {
+        if let Some(field) = element.row_links.get("value") {
             let Some(value) = range.apply(action) else {
                 return Ok(false);
             };
-            return self.update_control(element, node, "value", value.into());
+            return self.prepare_row_field_write(
+                field,
+                node.properties.get("value"),
+                value.into(),
+                |owner, view, model, history| {
+                    let prepared = xrack_runtime::try_prepare_range_view(
+                        node,
+                        action,
+                        || self.row_numeric_input_available(element, owner, view, model),
+                        |name| self.binding_value(element, name),
+                        history,
+                    )?;
+                    Ok(prepared.filter(|_| input.is_current()))
+                },
+            );
         }
-        let range = range.with_value(self.range_value(element, "value")?);
+        let Some(current) = xrack_runtime::try_prepare_range_view(
+            node,
+            action,
+            || self.element_allows_editing(element),
+            |name| self.binding_value(element, name),
+            || self.range_value(element, "value"),
+        )?
+        else {
+            return Ok(false);
+        };
+        if !input.is_current() {
+            return Ok(false);
+        }
+        let range = range.with_value(current);
         if let Some(value) = range.apply(action) {
             if !self.update_control(element, node, "value", value.into())? {
                 return Ok(false);
@@ -39,11 +92,46 @@ impl Instance {
             return Ok(false);
         }
         if action.is_release() {
-            let value = range
+            let value = self
+                .range_with_live_bounds(element, range)?
                 .with_value(self.range_value(element, "value")?)
                 .value();
             self.handler(element, "released", &[value.into()])?;
         }
+        Ok(true)
+    }
+
+    pub(crate) fn scroll_bar_action(
+        &self,
+        element: &Element,
+        node: &Node,
+        action: RangeAction,
+        input: xrack_runtime::InputRoute<'_>,
+    ) -> Result<bool> {
+        let Some(position) = xrack_runtime::try_prepare_range_view(
+            node,
+            action,
+            || self.element_allows_editing(element),
+            |name| self.binding_value(element, name),
+            || self.range_value(element, "position"),
+        )?
+        else {
+            return Ok(false);
+        };
+        if !input.is_current() {
+            return Ok(false);
+        }
+        let Some(value) = ScrollBarRange::from_node(node)
+            .with_position(position)
+            .apply(action)
+        else {
+            return Ok(false);
+        };
+        let value = Value::Float(value);
+        if !self.update_control(element, node, "position", value.clone())? {
+            return Ok(false);
+        }
+        self.handler(element, "changed", &[value])?;
         Ok(true)
     }
 
@@ -53,6 +141,7 @@ impl Instance {
         node: &Node,
         handle: usize,
         action: RangeAction,
+        input: xrack_runtime::InputRoute<'_>,
     ) -> Result<bool> {
         let values = || {
             Ok([
@@ -60,11 +149,24 @@ impl Instance {
                 self.range_value(element, "upper-value")?,
             ])
         };
-        let [lower, upper] = values()?;
+        let Some([lower, upper]) = xrack_runtime::try_prepare_range_view(
+            node,
+            action,
+            || self.element_allows_editing(element),
+            |name| self.binding_value(element, name),
+            &values,
+        )?
+        else {
+            return Ok(false);
+        };
+        if !input.is_current() {
+            return Ok(false);
+        }
         let interval = SliderInterval::from_values(node, lower, upper);
         let dispatch = |event| {
+            let range = self.range_with_live_bounds(element, SliderRange::from_node(node))?;
             let [lower, upper] = values()?;
-            let values = SliderInterval::from_values(node, lower, upper)
+            let values = SliderInterval::from_range(range, lower, upper)
                 .values()
                 .map(Value::Float);
             self.handler(element, event, &values)
@@ -91,19 +193,49 @@ impl Instance {
         element: &Element,
         node: &Node,
         action: SpinAction,
+        input: xrack_runtime::InputRoute<'_>,
     ) -> Result<bool> {
         let value = if node.kind == "DoubleSpinBox" {
-            if let SpinAction::CommitDecimalIfCurrent { original, .. } = action
-                && original != SpinDecimal::new(self.range_value(element, "value")?)
-            {
-                return Ok(false);
-            }
             xrack_runtime::decimal_spin_value_after(node, action).map(Value::Float)
         } else {
             xrack_runtime::spin_value_after(node, action).map(Value::Int)
         };
         let Some(value) = value else { return Ok(false) };
-        if !self.update_control(element, node, "value", value.clone())? {
+        let current = || {
+            self.control_value(element, "value")?
+                .map_or_else(|| self.default_control_value(element, "value"), Ok)
+        };
+        if let Some(field) = element.row_links.get("value") {
+            return self.prepare_row_field_write(
+                field,
+                node.properties.get("value"),
+                value,
+                |owner, view, model, history| {
+                    xrack_runtime::try_prepare_spin_view(
+                        node,
+                        action,
+                        || self.row_numeric_input_available(element, owner, view, model),
+                        current,
+                        |name| self.binding_value(element, name),
+                        || {
+                            let history = history()?;
+                            Ok(input.is_current().then_some(history))
+                        },
+                    )
+                },
+            );
+        }
+        let current = xrack_runtime::try_spin_view_is_current(
+            node,
+            action,
+            || self.element_allows_editing(element),
+            current,
+            |name| self.binding_value(element, name),
+        )?;
+        if !current
+            || !input.is_current()
+            || !self.update_control(element, node, "value", value.clone())?
+        {
             return Ok(false);
         }
         self.handler(element, "edited", &[value])?;

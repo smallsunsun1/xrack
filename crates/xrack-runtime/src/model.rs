@@ -120,6 +120,10 @@ impl<T> PartialEq for VecModel<T> {
 impl<T> Eq for VecModel<T> {}
 
 impl<T> VecModel<T> {
+    pub(crate) fn is_shared(&self) -> bool {
+        Rc::strong_count(&self.0) > 1
+    }
+
     fn entry(&self, value: T) -> Entry<T> {
         let id = self.0.next_row.get();
         self.0
@@ -285,6 +289,11 @@ impl<T> VecModel<T> {
         (self.0.id, self.0.edit_revision.get())
     }
 
+    pub(crate) fn contents_stamp(&self) -> (u64, u64) {
+        self.0.values.track();
+        self.edit_stamp()
+    }
+
     pub fn len(&self) -> usize {
         self.0.count.track();
         self.0.rows.borrow().len()
@@ -425,12 +434,33 @@ impl<T: Clone> VecModel<T> {
 
     pub fn snapshot(&self) -> Vec<T> {
         self.0.values.track();
+        self.snapshot_untracked()
+    }
+
+    /// Copy rows that the caller has already sampled from the live model.
+    #[doc(hidden)]
+    pub fn snapshot_untracked(&self) -> Vec<T> {
         self.0
             .rows
             .borrow()
             .iter()
             .map(|entry| entry.value.clone())
             .collect()
+    }
+
+    /// Transfer an owned model's rows at a by-value boundary. A shared model
+    /// still needs a tracked read because its other owners can edit it.
+    #[doc(hidden)]
+    pub fn into_snapshot(self) -> Vec<T> {
+        match Rc::try_unwrap(self.0) {
+            Ok(data) => data
+                .rows
+                .into_inner()
+                .into_iter()
+                .map(|entry| entry.value)
+                .collect(),
+            Err(data) => Self(data).snapshot(),
+        }
     }
 }
 
@@ -522,11 +552,26 @@ impl<T: PartialEq> VecModel<T> {
 
     /// Compare the current values, independently of handle identity.
     pub fn values_eq(&self, other: &Self) -> bool {
+        self.compare_values(other, |model| model.0.values.track())
+    }
+
+    /// Compare expression operands, tracking only models that can outlive
+    /// the comparison and be changed by another owner.
+    #[doc(hidden)]
+    pub fn values_eq_owned(self, other: Self) -> bool {
+        self.compare_values(&other, |model| {
+            if model.is_shared() {
+                model.0.values.track();
+            }
+        })
+    }
+
+    fn compare_values(&self, other: &Self, track: impl Fn(&Self)) -> bool {
         if self == other {
             return true;
         }
-        self.0.values.track();
-        other.0.values.track();
+        track(self);
+        track(other);
         self.0.rows.borrow().iter().map(|row| &row.value).eq(other
             .0
             .rows
@@ -602,6 +647,25 @@ mod tests {
             assert_eq!(model.remove(0), Some(120));
             assert!(reads.changed());
         });
+    }
+
+    #[test]
+    fn consuming_snapshot_tracks_only_models_with_a_live_owner() {
+        let temporary = Property::default();
+        assert_eq!(
+            temporary.get(|| VecModel::from(vec![1]).into_snapshot()),
+            [1]
+        );
+        assert!(!temporary.is_dirty());
+
+        let shared = VecModel::from(vec![2]);
+        let snapshot = Property::default();
+        let read = || snapshot.get(|| shared.clone().into_snapshot());
+        assert_eq!(read(), [2]);
+        assert!(!snapshot.is_dirty());
+        assert!(shared.set_row(0, 3));
+        assert!(snapshot.is_dirty());
+        assert_eq!(read(), [3]);
     }
 
     #[test]

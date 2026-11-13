@@ -1,12 +1,12 @@
 use crate::{Element, Error, Instance, Result};
 use xrack_runtime::{
-    CalendarAction, CalendarCell, CalendarCells, CalendarState, ControlAction, Node, Property,
+    CalendarAction, CalendarCell, CalendarCells, CalendarUpdate, ControlAction, Node, Property,
     Tumbler, TumblerItems, Value,
 };
 
 pub(crate) enum State {
     Cells(CalendarCells),
-    Tumbler(Property<Result<Option<TumblerItems>>>),
+    Tumbler(Property<Option<TumblerItems>>),
 }
 
 #[derive(Clone, Copy)]
@@ -74,31 +74,52 @@ impl Instance {
         element: &Element,
         node: &Node,
         action: CalendarAction,
+        input: xrack_runtime::InputRoute<'_>,
     ) -> Result<bool> {
-        let calendar = CalendarState::from_node(node);
-        let week_start = (node.kind == "MonthGrid").then(|| node.int("week-start").unwrap_or(1));
-        let Some((date, month)) = calendar.apply(action, week_start) else {
+        if !xrack_runtime::try_calendar_input_is_current(
+            node,
+            input,
+            |name, default| {
+                let value = match name {
+                    "date" | "display-month" => self.control_value(element, name)?,
+                    _ => self.binding_value(element, name)?,
+                };
+                match value {
+                    Some(Value::Date(date)) => Ok(date),
+                    None => Ok(default),
+                    _ => Err(Error::Evaluation(format!("expected a date for {name}"))),
+                }
+            },
+            || match self.binding_value(element, "week-start")? {
+                Some(Value::Int(value)) => Ok(value),
+                None => Ok(1),
+                _ => Err(Error::Evaluation(
+                    "expected an integer for week-start".into(),
+                )),
+            },
+        )? {
             return Ok(false);
-        };
-        let date = date.filter(|date| node.date("date") != Some(*date));
-        let month_changed = month != calendar.month;
-        if let Some(date) = date {
-            self.set_control_value(element, "date", date.into())?;
         }
-        if month_changed {
-            self.set_control_value(element, "display-month", month.into())?;
-        }
-        if let Some(date) = date {
-            self.handler(element, "changed", &[date.into()])?;
-        }
-        if month_changed {
-            self.handler(element, "month-changed", &[month.into()])?;
-        }
-        if let CalendarAction::Activate(date) = action {
-            self.handler(element, "activated", &[date.into()])?;
-            return Ok(true);
-        }
-        Ok(date.is_some() || month_changed)
+        xrack_runtime::try_apply_calendar_action(node, action, |update| {
+            match update {
+                CalendarUpdate::SetDate(date) => {
+                    self.set_control_value(element, "date", date.into())?
+                }
+                CalendarUpdate::SetMonth(month) => {
+                    self.set_control_value(element, "display-month", month.into())?
+                }
+                CalendarUpdate::DateChanged(date) => {
+                    self.handler(element, "changed", &[date.into()])?
+                }
+                CalendarUpdate::MonthChanged(month) => {
+                    self.handler(element, "month-changed", &[month.into()])?
+                }
+                CalendarUpdate::Activated(date) => {
+                    self.handler(element, "activated", &[date.into()])?
+                }
+            };
+            Ok(())
+        })
     }
 
     pub(crate) fn tumbler_items(&self, element: &Element) -> Result<Option<TumblerItems>> {
@@ -106,7 +127,7 @@ impl Instance {
         let State::Tumbler(items) = state.as_ref() else {
             unreachable!("tumbler state")
         };
-        items.get(|| match self.binding_value(element, "model")? {
+        items.try_get(|| match self.binding_value(element, "model")? {
             Some(Value::StringModel(model)) => Ok(Some(TumblerItems::new(model))),
             None => Ok(None),
             _ => Err(Error::Evaluation("expected a tumbler string model".into())),
@@ -118,19 +139,27 @@ impl Instance {
         element: &Element,
         node: &Node,
         action: ControlAction,
+        input: xrack_runtime::InputRoute<'_>,
     ) -> Result<bool> {
-        let ControlAction::PickTumbler { index, row } = action else {
+        let Some(index) = Tumbler::try_prepare_selection(
+            node,
+            action,
+            || self.element_allows_editing(element),
+            || self.tumbler_items(element),
+            || match self.binding_value(element, "count")? {
+                Some(Value::Int(count)) => Ok(count),
+                None => Ok(0),
+                _ => Err(Error::Evaluation("expected a tumbler count".into())),
+            },
+            || self.current_index(element),
+        )?
+        else {
             return Ok(false);
         };
-        let index_value = index as i64;
-        if self.tumbler_items(element)? != node.tumbler_items
-            || Tumbler::from_node(node).row_key(index) != Some(row)
-            || node.int("current-index") == Some(index_value)
-        {
+        if !input.is_current() || !self.set_control_value(element, "current-index", index.into())? {
             return Ok(false);
         }
-        self.set_control_value(element, "current-index", index_value.into())?;
-        self.handler(element, "changed", &[index_value.into()])?;
+        self.handler(element, "changed", &[index.into()])?;
         Ok(true)
     }
 }

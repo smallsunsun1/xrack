@@ -7,11 +7,13 @@ use std::{
     rc::Weak,
 };
 use xrack_runtime::{
-    Animation, Brush, CallbackSlot, Component, ControlAction, GradientStop, ImagePlaybackSlot,
-    InputProperty, Length, Property, RangeAction, StateTiming,
+    Brush, CallbackSlot, Component, ComponentLifetime, ControlAction, DragEvent, EffectfulCallback,
+    EventResult, FocusEvent, GradientStop, ImagePlaybackSlot, InputProperty, InputRoute, Length,
+    Property, RangeAction, RoutedEvent, StateTiming,
 };
 
 pub(crate) struct State {
+    binding_lifetime: ComponentLifetime,
     program: Program,
     name: String,
     row: Option<RowScope>,
@@ -34,23 +36,47 @@ pub(crate) struct State {
     locale: xrack_runtime::LocaleBinding,
     incoming: BTreeMap<Member, BoundInput>,
     children: OnceCell<BTreeMap<String, Instance>>,
-    values: BTreeMap<Member, Property<Result<Value>>>,
-    selectors: Vec<Property<Result<i64>>>,
-    visual_cache: RefCell<BTreeMap<VisualSlot, Rc<Property<Result<Value>>>>>,
+    values: BTreeMap<Member, Property<Value>>,
+    selectors: Vec<SelectorState>,
+    visual_cache: RefCell<BTreeMap<VisualSlot, Rc<Property<Value>>>>,
+    action_flags: RefCell<ActionFlagCache>,
     callbacks: BTreeMap<Member, CallbackSlot<CallbackBinding>>,
-    controls: BTreeMap<Member, Property<Result<Option<Value>>>>,
+    controls: BTreeMap<Member, Property<Option<Value>>>,
     pub(crate) layout: viewport::Handles,
-    combo_items: RefCell<BTreeMap<String, Rc<Property<Result<xrack_runtime::ComboItems>>>>>,
+    combo_items: RefCell<BTreeMap<String, Rc<Property<xrack_runtime::ComboItems>>>>,
     image_playback: RefCell<BTreeMap<String, Rc<ImagePlaybackSlot>>>,
     table_columns: OnceCell<Property<xrack_runtime::TableColumnWindow>>,
-    scene: Property<Result<Rc<Node>>>,
+    scene: Property<Rc<Node>>,
     pub(crate) error: Rc<Cell<Option<Error>>>,
-    pub(crate) check_groups:
-        RefCell<BTreeMap<String, Rc<Property<Result<xrack_runtime::CheckState>>>>>,
+    pub(crate) check_groups: RefCell<BTreeMap<String, Rc<Property<xrack_runtime::CheckState>>>>,
+}
+
+#[derive(Default)]
+struct SelectorState {
+    binding: Property<i64>,
+    rendered: Cell<Option<i64>>,
+}
+
+struct RenderedSelection<'a> {
+    slot: &'a Cell<Option<i64>>,
+    previous: Option<i64>,
+}
+
+impl Drop for RenderedSelection<'_> {
+    fn drop(&mut self) {
+        self.slot.set(self.previous);
+    }
+}
+
+#[derive(Clone, Copy)]
+struct TargetRoute<'a> {
+    follow_row: bool,
+    input: Option<xrack_runtime::InputRoute<'a>>,
 }
 
 type BoundInput = InputProperty<Result<Value>>;
 type CallbackBinding = Rc<dyn Fn(&[Value]) -> Result<Option<Value>>>;
+type ActionFlagCache = BTreeMap<Member, Rc<Property<Option<Value>>>>;
 
 fn evaluation(message: impl Into<String>) -> Error {
     Error::Evaluation(message.into())
@@ -89,41 +115,6 @@ impl Program {
             .map_err(Clone::clone)
     }
 
-    fn input_endpoint(&self, component: &str, name: &str) -> Result<Vec<String>> {
-        let mut path = Vec::new();
-        let mut component = component.to_owned();
-        let mut name = name.to_owned();
-        let mut seen = BTreeSet::new();
-        loop {
-            if !seen.insert((component.clone(), name.clone())) {
-                return Err(Error::Invalid(format!(
-                    "cyclic input alias {component}.{name}"
-                )));
-            }
-            let definition = self.definition(&component)?;
-            let endpoint = definition.alias_endpoint(&name)?;
-            let node = definition.root.find_key(&endpoint.owner);
-            if definition.properties.contains_key(&endpoint)
-                || node.is_some_and(|node| matches!(node.visual, Visual::Builtin(_)))
-            {
-                path.extend([endpoint.owner, endpoint.name]);
-                return Ok(path);
-            }
-            let Some(Visual::Instance {
-                component: child, ..
-            }) = node.map(|node| &node.visual)
-            else {
-                return Err(Error::Invalid(format!(
-                    "unknown input alias {}.{}",
-                    endpoint.owner, endpoint.name
-                )));
-            };
-            component = child.clone();
-            name = endpoint.name;
-            path.push(endpoint.owner);
-        }
-    }
-
     fn allocate_scope(
         &self,
         name: &str,
@@ -148,14 +139,19 @@ impl Program {
         let mut forwarded = BTreeMap::new();
         for (name, input) in incoming {
             let endpoint = definition.alias_endpoint(&name)?;
-            let inputs = if definition.properties.contains_key(&endpoint)
+            let previous = if let Some(path) = definition.property_forwards.get(&name) {
+                forwarded.insert(path.clone(), (endpoint, input)).is_some()
+            } else if definition.properties.contains_key(&endpoint)
                 || controls.contains_key(&endpoint)
             {
-                &mut local
+                local.insert(endpoint, input).is_some()
             } else {
-                &mut forwarded
+                return Err(Error::Invalid(format!(
+                    "unknown input target {}.{}",
+                    endpoint.owner, endpoint.name
+                )));
             };
-            if inputs.insert(endpoint, input).is_some() {
+            if previous {
                 return Err(Error::Invalid(format!(
                     "duplicate input binding for {name}"
                 )));
@@ -178,6 +174,7 @@ impl Program {
         let error = owner.map_or_else(Rc::default, |owner| owner.error.clone());
         let layout = viewport::Handles::new(definition, &keys);
         let instance = Instance(Rc::new(State {
+            binding_lifetime: ComponentLifetime::default(),
             program: self.clone(),
             name: name.into(),
             row,
@@ -234,9 +231,10 @@ impl Program {
             selectors: definition
                 .selectors
                 .iter()
-                .map(|_| Property::default())
+                .map(|_| SelectorState::default())
                 .collect(),
             visual_cache: RefCell::default(),
+            action_flags: RefCell::default(),
             callbacks: definition
                 .callbacks
                 .keys()
@@ -258,15 +256,16 @@ impl Program {
         let result = root.allocate_children(self, &instance, &mut forwarded, &mut children, stack);
         stack.pop();
         result?;
-        if let Some((member, _)) = forwarded.first_key_value() {
+        if let Some((_, (member, _))) = forwarded.first_key_value() {
             return Err(Error::Invalid(format!(
                 "unknown input target {}.{}",
                 member.owner, member.name
             )));
         }
         assert!(instance.0.children.set(children).is_ok());
-        for (member, function) in &definition.callbacks {
-            if function.alias_implementation && keys.contains(member.owner.as_str()) {
+        for member in &definition.callback_defaults {
+            if keys.contains(member.owner.as_str()) {
+                let function = &definition.callbacks[member];
                 instance.install_callback(member, instance.bind_callback(function.clone()))?;
             }
         }
@@ -282,7 +281,10 @@ impl Definition {
             .properties
             .get(&member)
             .ok_or_else(|| Error::Invalid(format!("unknown component input {name}")))?;
-        Ok(property.alias.clone().unwrap_or(member))
+        Ok(match &property.source {
+            PropertySource::Initial(_) => member,
+            PropertySource::Alias(target) => target.clone(),
+        })
     }
 }
 
@@ -322,12 +324,12 @@ impl Element {
         &self,
         program: &Program,
         parent: &Instance,
-        forwarded: &mut BTreeMap<Member, BoundInput>,
+        forwarded: &mut BTreeMap<Vec<Member>, (Member, BoundInput)>,
         children: &mut BTreeMap<String, Instance>,
         stack: &mut Vec<String>,
     ) -> Result<()> {
         if let Visual::Instance { component, inputs } = &self.visual {
-            let incoming = self.child_inputs(program, parent, component, inputs, forwarded)?;
+            let incoming = self.child_inputs(parent, inputs, forwarded);
             let child =
                 program.allocate(component, Some(Rc::downgrade(&parent.0)), incoming, stack)?;
             for (name, function) in &self.instance_handlers {
@@ -346,51 +348,42 @@ impl Element {
 
     fn child_inputs(
         &self,
-        program: &Program,
         parent: &Instance,
-        component: &str,
         inputs: &BTreeMap<String, Input>,
-        forwarded: &mut BTreeMap<Member, BoundInput>,
-    ) -> Result<BTreeMap<String, BoundInput>> {
-        let mut bindings = BTreeMap::new();
-        let endpoint = |name: &str| program.input_endpoint(component, name);
-        for (name, input) in inputs {
-            if let Some(source) = &input.source
-                && bindings
-                    .insert(endpoint(name)?, (name.clone(), parent.bind_input(source)))
-                    .is_some()
-            {
-                return Err(Error::Invalid(format!(
-                    "duplicate input binding for {name}"
-                )));
-            }
-        }
-        let forwards: Vec<_> = forwarded
-            .keys()
-            .filter(|member| member.owner == self.key)
-            .cloned()
+        forwarded: &mut BTreeMap<Vec<Member>, (Member, BoundInput)>,
+    ) -> BTreeMap<String, BoundInput> {
+        let mut bindings: BTreeMap<_, _> = inputs
+            .iter()
+            .filter_map(|(name, input)| {
+                let source = input.source.as_ref()?;
+                Some((
+                    input.endpoint.clone(),
+                    (name.clone(), parent.bind_input(source)),
+                ))
+            })
             .collect();
-        for member in forwards {
-            let input = forwarded.remove(&member).expect("forwarded input exists");
-            bindings.insert(endpoint(&member.name)?, (member.name, input));
+        for (path, (member, input)) in forwarded.extract_if(.., |path, _| path[0].owner == self.key)
+        {
+            bindings.insert(path[1..].to_vec(), (member.name, input));
         }
         for (name, input) in inputs.iter().filter(|(_, input)| !input.cases.is_empty()) {
-            let key = endpoint(name)?;
+            let key = input.endpoint.clone();
             let (_, base) = bindings
                 .remove(&key)
                 .unwrap_or_else(|| (name.clone(), BoundInput::default()));
             let cases = input.cases.clone();
             let owner = Rc::downgrade(&parent.0);
-            let state =
-                base.with_state(
-                    move || match Instance(owner.upgrade()?).state_value(&cases) {
-                        Ok(value) => value.map(Ok),
-                        Err(error) => Some(Err(error)),
-                    },
-                );
+            let state = base.with_state(move || {
+                let owner = owner.upgrade()?;
+                owner.binding_lifetime.track();
+                match Instance(owner).state_value(&cases) {
+                    Ok(value) => value.map(Ok),
+                    Err(error) => Some(Err(error)),
+                }
+            });
             bindings.insert(key, (name.clone(), state));
         }
-        Ok(bindings.into_values().collect())
+        bindings.into_values().collect()
     }
 
     pub(crate) fn selection_property(&self) -> &'static str {
@@ -419,7 +412,7 @@ impl Element {
         self.controls.iter().find(|control| control.name == name)
     }
 
-    fn allocate_controls(&self, controls: &mut BTreeMap<Member, Property<Result<Option<Value>>>>) {
+    fn allocate_controls(&self, controls: &mut BTreeMap<Member, Property<Option<Value>>>) {
         for control in &self.controls {
             controls.insert(Member::new(&self.key, control.name), Property::default());
         }
@@ -525,24 +518,32 @@ impl Instance {
         action(&owner, row, &model)
     }
 
+    fn read_row_field_from(
+        field: &RowField,
+        row: &RowScope,
+        model: &Model,
+    ) -> Result<Option<Value>> {
+        Ok(match model {
+            Model::Records(records) => row
+                .context
+                .read_from(records.model(), |record| {
+                    if field.path.is_empty() {
+                        Some(Value::Record(record.clone()))
+                    } else {
+                        record.field_path(&field.path).cloned()
+                    }
+                })
+                .flatten(),
+            Model::Strings(strings) if field.path.is_empty() => row
+                .context
+                .read_from(strings, |text| Value::String(text.clone())),
+            _ => return Err(evaluation("invalid row link")),
+        })
+    }
+
     fn read_row_field(&self, field: &RowField) -> Result<Option<Value>> {
         self.with_row_model(field, |_, row, model| {
-            Ok(match model {
-                Model::Records(records) => row
-                    .context
-                    .read_from(records.model(), |record| {
-                        if field.path.is_empty() {
-                            Some(Value::Record(record.clone()))
-                        } else {
-                            record.field_path(&field.path).cloned()
-                        }
-                    })
-                    .flatten(),
-                Model::Strings(strings) if field.path.is_empty() => row
-                    .context
-                    .read_from(strings, |text| Value::String(text.clone())),
-                _ => return Err(evaluation("invalid row link")),
-            })
+            Self::read_row_field_from(field, row, model)
         })
     }
 
@@ -552,13 +553,64 @@ impl Instance {
         expected: Option<&Value>,
         value: Value,
     ) -> Result<bool> {
+        self.prepare_row_field_write(field, expected, value, |_, _, _, history| {
+            history().map(Some)
+        })
+    }
+
+    pub(crate) fn prepare_row_field_write(
+        &self,
+        field: &RowField,
+        expected: Option<&Value>,
+        value: Value,
+        prepare: impl FnOnce(
+            &Self,
+            Option<&Element>,
+            &Model,
+            &dyn Fn() -> Result<bool>,
+        ) -> Result<Option<bool>>,
+    ) -> Result<bool> {
         self.with_row_model(field, |owner, row, model| {
-            let table = owner.definition().root.table_for_template(&row.root_key);
-            let state = table.map(|table| owner.repeat_state(table));
-            let history = table
-                .map(|table| owner.table_history_enabled(table))
-                .transpose()?
-                .unwrap_or(false);
+            let view = owner
+                .definition()
+                .root
+                .editor_view_for_template(&row.root_key);
+            let table = view.filter(|view| view.table.is_some());
+            let target;
+            let (model, state, history) = if let Some(table) = table {
+                let record_history = table.table_history_configured();
+                let Some((resolved, history)) = row.context.try_table_edit_target_for_field(
+                    || {
+                        owner
+                            .editable_table_view_model(table)?
+                            .map(|model| model.table_rows())
+                            .transpose()
+                    },
+                    |target| {
+                        let value = Self::read_row_field_from(field, row, target.rows.source())?;
+                        Ok(value.filter(|value| expected.is_none_or(|expected| expected == value)))
+                    },
+                    || {
+                        prepare(owner, view, model, &|| {
+                            Ok(record_history && owner.table_history_enabled(table)?)
+                        })
+                    },
+                )?
+                else {
+                    return Ok(false);
+                };
+                target = resolved;
+                (
+                    target.rows.source(),
+                    record_history.then(|| owner.repeat_state(table)),
+                    history,
+                )
+            } else {
+                if prepare(owner, view, model, &|| Ok(false))?.is_none() {
+                    return Ok(false);
+                }
+                (model, None, false)
+            };
             match (model, value) {
                 (Model::Strings(model), Value::String(value)) if field.path.is_empty() => {
                     let update = |text: &String| {
@@ -629,12 +681,10 @@ impl Instance {
         match source {
             InputSource::Binding(expression) => {
                 let expression = expression.clone();
-                BoundInput::bound(move || {
-                    let owner = owner
-                        .upgrade()
-                        .map(Instance)
-                        .ok_or_else(|| evaluation("component parent is no longer available"))?;
-                    owner.evaluate(&expression, &[])
+                BoundInput::bound_optional(move || {
+                    let owner = owner.upgrade()?;
+                    owner.binding_lifetime.track();
+                    Some(Instance(owner).evaluate(&expression, &[]))
                 })
             }
             InputSource::RowLink(field) => {
@@ -643,9 +693,9 @@ impl Instance {
                 let write_owner = owner.clone();
                 BoundInput::linked(
                     move || {
-                        Instance(owner.upgrade()?)
-                            .read_row_field(&read_field)
-                            .transpose()
+                        let owner = owner.upgrade()?;
+                        owner.binding_lifetime.track();
+                        Instance(owner).read_row_field(&read_field).transpose()
                     },
                     move |value| {
                         if let Some(owner) = write_owner.upgrade() {
@@ -664,7 +714,11 @@ impl Instance {
                 let write_target = target.clone();
                 let write_owner = owner.clone();
                 BoundInput::linked(
-                    move || Some(Instance(owner.upgrade()?).read(&read_target)),
+                    move || {
+                        let owner = owner.upgrade()?;
+                        owner.binding_lifetime.track();
+                        Some(Instance(owner).read(&read_target))
+                    },
                     move |value| {
                         if let Some(owner) = write_owner.upgrade() {
                             let instance = Instance(owner);
@@ -718,24 +772,104 @@ impl Instance {
             return owner.read(member);
         }
         let property = self.property(member)?;
-        if let Some(target) = &property.alias {
-            return self.read(target);
-        }
-        let initial = || self.evaluate(&property.initial, &[]);
+        let initial = match &property.source {
+            PropertySource::Initial(initial) => initial,
+            PropertySource::Alias(target) => return self.read(target),
+        };
+        let initial = || self.evaluate(initial, &[]);
         if let Some(input) = self.0.incoming.get(member) {
-            input.get(initial)
+            input.get_result(initial)
         } else {
-            self.0.values[member].get(initial)
+            self.0.values[member].try_get(initial)
         }
     }
 
-    pub(crate) fn state_value(&self, cases: &[StateCase]) -> Result<Option<Value>> {
-        for case in cases {
-            if self.evaluate(&case.selector, &[])? == Value::Int(case.index) {
-                return self.evaluate(&case.value, &[]).map(Some);
+    fn choose_state(&self, index: usize) -> Result<i64> {
+        for (case, condition) in self.definition().selectors[index]
+            .conditions
+            .iter()
+            .enumerate()
+        {
+            match self.evaluate(condition, &[])? {
+                Value::Bool(true) => return Ok(case as i64),
+                Value::Bool(false) => {}
+                _ => return Err(evaluation("invalid state condition")),
             }
         }
-        Ok(None)
+        Ok(-1)
+    }
+
+    fn read_state(&self, index: usize) -> Result<i64> {
+        self.0.selectors[index]
+            .binding
+            .try_get(|| self.choose_state(index))
+    }
+
+    // Match the compiler's local selection for this render, even if a binding mutates a predicate input.
+    fn render_selection(&self, index: usize) -> Result<RenderedSelection<'_>> {
+        let selected = if self.definition().selectors[index].persistent {
+            self.read_state(index)?
+        } else {
+            self.choose_state(index)?
+        };
+        Ok(self.scoped_selection(index, selected))
+    }
+
+    fn scoped_selection(&self, index: usize, selected: i64) -> RenderedSelection<'_> {
+        let slot = &self.0.selectors[index].rendered;
+        RenderedSelection {
+            slot,
+            previous: slot.replace(Some(selected)),
+        }
+    }
+
+    fn rendered_state(&self, index: usize) -> Result<i64> {
+        self.0.selectors[index]
+            .rendered
+            .get()
+            .map_or_else(|| self.read_state(index), Ok)
+    }
+
+    pub(crate) fn state_value(&self, cases: &[StateCase]) -> Result<Option<Value>> {
+        let Some(first) = cases.first() else {
+            return Ok(None);
+        };
+        let selected = self.read_state(first.selector)?;
+        cases
+            .iter()
+            .find(|case| case.index == selected)
+            .map(|case| self.evaluate(&case.value, &[]))
+            .transpose()
+    }
+
+    pub(crate) fn caches_action_flag(
+        &self,
+        element: &Element,
+        name: &str,
+        cases: &[StateCase],
+    ) -> bool {
+        element.action.is_some()
+            && matches!(name, "enabled" | "visible")
+            && self.definition().selectors[cases[0].selector].persistent
+    }
+
+    pub(crate) fn cached_action_flag(
+        &self,
+        element: &Element,
+        name: &str,
+        cases: &[StateCase],
+    ) -> Result<Option<Value>> {
+        let cache = self
+            .0
+            .action_flags
+            .borrow_mut()
+            .entry(Member::new(&element.key, name))
+            .or_default()
+            .clone();
+        cache.try_get(|| match self.state_value(cases)? {
+            Some(value) => Ok(Some(value)),
+            None => self.binding_value(element, name),
+        })
     }
 
     pub(crate) fn write(&self, member: &Member, value: Value) -> Result<()> {
@@ -764,14 +898,15 @@ impl Instance {
                 member.owner, member.name, property.ty
             )));
         }
-        if let Some(target) = &property.alias {
+        if let PropertySource::Alias(target) = &property.source {
             return self.write(target, value);
         }
-        let equal = |left: &Result<Value>, right: &Result<Value>| matches!((left, right), (Ok(left), Ok(right)) if left.eq_with_image_assets(right));
         if let Some(input) = self.0.incoming.get(member) {
-            input.set_if_changed_by(Ok(value), equal);
+            input.set_if_changed_by(Ok(value), |left, right| {
+                matches!((left, right), (Ok(left), Ok(right)) if left.eq_with_image_assets(right))
+            });
         } else {
-            self.0.values[member].set_if_changed_by(Ok(value), equal);
+            self.0.values[member].set_if_changed_by(value, Value::eq_with_image_assets);
         }
         Ok(())
     }
@@ -793,7 +928,7 @@ impl Instance {
         {
             return owner.reset_member(member);
         }
-        if let Some(target) = &self.property(member)?.alias {
+        if let PropertySource::Alias(target) = &self.property(member)?.source {
             return self.reset_member(target);
         }
         if let Some(input) = self.0.incoming.get(member) {
@@ -814,12 +949,17 @@ impl Instance {
 
     fn bind_callback(&self, function: Function) -> CallbackBinding {
         let owner = Rc::downgrade(&self.0);
+        let records = self.program().records.clone();
         Rc::new(move |args| {
-            let owner = owner
-                .upgrade()
-                .map(Instance)
-                .ok_or_else(|| evaluation("callback owner was released"))?;
-            owner.execute(&function, args, None)
+            let Some(owner) = owner.upgrade() else {
+                return function
+                    .result
+                    .as_ref()
+                    .map(|ty| load::default_value(&records, ty).map_err(evaluation))
+                    .transpose();
+            };
+            owner.binding_lifetime.track();
+            Instance(owner).execute(&function, args, None)
         })
     }
 
@@ -831,16 +971,30 @@ impl Instance {
         let result_type = function.result.clone();
         let name = member.name.clone();
         let program = self.program().clone();
-        self.install_callback(
-            member,
+        let invoke = move |args: &[Value]| {
+            program.validate_host_arguments(&name, &parameters, args)?;
+            let host: Vec<_> = args
+                .iter()
+                .map(|arg| match arg {
+                    Value::StringModel(model) => Value::StringList(model.snapshot_untracked()),
+                    value => value.clone(),
+                })
+                .collect();
+            let result = callback(&host).map_err(Error::Evaluation)?;
+            program.validate_host_result(&name, result_type.as_ref(), result.as_ref())?;
+            Ok(result)
+        };
+        let binding: CallbackBinding = if function.pure {
+            Rc::new(invoke)
+        } else {
+            let handler = EffectfulCallback::new(invoke);
             Rc::new(move |args| {
-                program.validate_host_arguments(&name, &parameters, args)?;
-                let host: Vec<_> = args.iter().cloned().map(host_value).collect();
-                let result = callback(&host).map_err(Error::Evaluation)?;
-                program.validate_host_result(&name, result_type.as_ref(), result.as_ref())?;
-                Ok(result.map(model_value))
-            }),
-        )
+                handler
+                    .try_call(|invoke| invoke(args))
+                    .map_err(|error| evaluation(error.to_string()))?
+            })
+        };
+        self.install_callback(member, binding)
     }
 
     fn install_callback(&self, member: &Member, callback: CallbackBinding) -> Result<()> {
@@ -867,7 +1021,7 @@ impl Instance {
         Ok(())
     }
 
-    pub(crate) fn call(&self, member: &Member, arguments: &[Value]) -> Result<Option<Value>> {
+    pub(crate) fn call(&self, member: &Member, arguments: Vec<Value>) -> Result<Option<Value>> {
         if let Some(child) = self.children().get(&member.owner) {
             return child.call(&Member::root(&member.name), arguments);
         }
@@ -883,7 +1037,25 @@ impl Instance {
             return self.call(target, arguments);
         }
         let slot = &self.0.callbacks[member];
-        self.execute(function, arguments, Some(slot))
+        let result = self.execute(function, &arguments, Some(slot))?;
+        // A host handler can return its argument. Release the call's copies
+        // before deciding whether the returned model is shared.
+        drop(arguments);
+        Ok(result.map(callback_value))
+    }
+
+    fn call_with_operands(
+        &self,
+        target: &Member,
+        operands: &[Expr],
+        args: &[Value],
+    ) -> Result<Option<Value>> {
+        // A later operand can call the host and edit a model read by an earlier operand.
+        let arguments = operands
+            .iter()
+            .map(|operand| self.evaluate(operand, args).map(callback_value))
+            .collect::<Result<Vec<_>>>()?;
+        self.call(target, arguments)
     }
 
     fn hover_handle(&self, element: &Element) -> xrack_runtime::HoverHandle {
@@ -939,7 +1111,7 @@ impl Instance {
                     self.write(target, self.evaluate(expression, args)?)?;
                 }
                 Statement::Call(target, arguments) => {
-                    self.call(target, &self.arguments(arguments, args)?)?;
+                    self.call_with_operands(target, arguments, args)?;
                 }
                 Statement::Scroll(target, command, arguments) => {
                     self.scroll_command(target, *command, &self.arguments(arguments, args)?)?;
@@ -986,10 +1158,10 @@ impl Instance {
                     let Value::String(serialized) = self.evaluate(state, args)? else {
                         return Err(evaluation("split state must be a string"));
                     };
-                    self.restore_split(target, &serialized)?;
+                    self.restore_split_state(target, &serialized)?;
                 }
                 Statement::Popup(target, open) => {
-                    self.set_overlay(target, *open)?;
+                    self.set_overlay(target, *open, None)?;
                 }
                 Statement::NativeDialogOpen(target) => self.open_native_dialog(target)?,
                 Statement::WindowClose => self.0.window.request_close(),
@@ -1056,7 +1228,7 @@ impl Instance {
             .entry(slot)
             .or_default()
             .clone();
-        cache.get(|| owner.evaluate(value, &[]))
+        cache.try_get(|| owner.evaluate(value, &[]))
     }
 
     #[cfg(test)]
@@ -1087,7 +1259,7 @@ impl Instance {
                     .transpose()?;
                 read.read(self.stack_snapshot(target)?.as_ref(), route)
             }
-            SplitSave(target) => self.save_split(target).map(Value::String),
+            SplitSave(target) => self.save_split_state(target).map(Value::String),
             SplitResizing(target) => self.split_resizing(target).map(Value::Bool),
             TreeQuery(target, query, key) => {
                 self.tree_query(target, *query, self.int_argument(key, args)?)
@@ -1101,7 +1273,6 @@ impl Instance {
             }
             TableRead(member) => self.table_read(member),
             ScrollControlRead(member) => self.scroll_control_read(member),
-            PopupOpen(key) => Ok(Value::Bool(self.popup_open(key)?)),
             ImageDimension(input, axis) => {
                 let source = image_asset(self.evaluate(input, args)?)?;
                 Ok(Value::Int(i64::from(source.size()[*axis])))
@@ -1124,7 +1295,7 @@ impl Instance {
             }
             Param(index) => args
                 .get(*index)
-                .cloned()
+                .map(callback_parameter)
                 .ok_or_else(|| evaluation("unbound parameter")),
             RowParam(name) => self.row_parameter(name),
             SplitHandleParam(parameter) => self
@@ -1142,10 +1313,10 @@ impl Instance {
             Unary(operator, operand) => {
                 let value = self.evaluate(operand, args)?;
                 match (operator, value) {
-                    (crate::Unary::Not, Value::Bool(v)) => Ok(Value::Bool(!v)),
-                    (crate::Unary::Negate, Value::Int(v)) => Ok(Value::Int(v.wrapping_neg())),
-                    (crate::Unary::Negate, Value::Float(v)) => Ok(Value::Float(-v)),
-                    (crate::Unary::Negate, Value::Length(Length(v))) => {
+                    (UnaryOperator::Not, Value::Bool(v)) => Ok(Value::Bool(!v)),
+                    (UnaryOperator::Negate, Value::Int(v)) => Ok(Value::Int(v.wrapping_neg())),
+                    (UnaryOperator::Negate, Value::Float(v)) => Ok(Value::Float(-v)),
+                    (UnaryOperator::Negate, Value::Length(Length(v))) => {
                         Ok(Value::Length(Length(-v)))
                     }
                     _ => Err(evaluation("invalid unary operand")),
@@ -1153,8 +1324,8 @@ impl Instance {
             }
             Binary(operator, lhs, rhs) => {
                 let left = self.evaluate(lhs, args)?;
-                if (*operator == crate::Binary::And && left == Value::Bool(false))
-                    || (*operator == crate::Binary::Or && left == Value::Bool(true))
+                if (*operator == BinaryOperator::And && left == Value::Bool(false))
+                    || (*operator == BinaryOperator::Or && left == Value::Bool(true))
                 {
                     return Ok(left);
                 }
@@ -1188,6 +1359,13 @@ impl Instance {
                 cache,
             } => {
                 let build = || {
+                    let angle_degrees = angle
+                        .as_ref()
+                        .map(|angle| match self.evaluate(angle, args)? {
+                            Value::Float(degrees) => Ok(degrees),
+                            _ => Err(evaluation("invalid gradient angle")),
+                        })
+                        .transpose()?;
                     let stops = stops
                         .iter()
                         .map(|(color, offset)| {
@@ -1201,10 +1379,7 @@ impl Instance {
                         })
                         .collect::<Result<Vec<_>>>()?
                         .into();
-                    let brush = if let Some(angle) = angle {
-                        let Value::Float(angle_degrees) = self.evaluate(angle, args)? else {
-                            return Err(evaluation("invalid gradient angle"));
-                        };
+                    let brush = if let Some(angle_degrees) = angle_degrees {
                         Brush::Linear {
                             angle_degrees,
                             stops,
@@ -1220,19 +1395,7 @@ impl Instance {
                     build()
                 }
             }
-            StateSelect(index) => self.0.selectors[*index]
-                .get(|| {
-                    for (index, condition) in self.definition().selectors[*index].iter().enumerate()
-                    {
-                        match self.evaluate(condition, &[])? {
-                            Value::Bool(true) => return Ok(index as i64),
-                            Value::Bool(false) => {}
-                            _ => return Err(evaluation("invalid state condition")),
-                        }
-                    }
-                    Ok(-1)
-                })
-                .map(Value::Int),
+            StateSelect(index) => self.read_state(*index).map(Value::Int),
             Translate { id, arguments } => {
                 use xrack_runtime::TranslationValue;
                 let catalog = self
@@ -1310,78 +1473,16 @@ impl Instance {
                     handle.has_focus()
                 }))
             }
-            Field(input, name) => {
+            RecordField(input, name) => {
                 let value = match self.evaluate(input, args)? {
                     Value::Record(record) => record.field(name).cloned(),
-                    Value::KeyEvent(event) => match name.as_str() {
-                        "key" => Some(Value::String(event.key)),
-                        "text" => Some(Value::String(event.text)),
-                        "repeat" => Some(Value::Bool(event.repeat)),
-                        "modifiers" => Some(Value::KeyModifiers(event.modifiers)),
-                        _ => None,
-                    },
-                    Value::PointerEvent(event) => match name.as_str() {
-                        "kind" => Some(Value::PointerEventKind(event.kind)),
-                        "button" => Some(Value::PointerButton(event.button)),
-                        "x" => Some(Value::Length(event.x)),
-                        "y" => Some(Value::Length(event.y)),
-                        "inside" => Some(Value::Bool(event.inside)),
-                        "is-touch" => Some(Value::Bool(event.is_touch)),
-                        "touch-finger-id" => Some(Value::Int(event.touch_finger_id)),
-                        "modifiers" => Some(Value::KeyModifiers(event.modifiers)),
-                        _ => None,
-                    },
-                    Value::TouchPoint(point) => match name.as_str() {
-                        "id" => Some(Value::Int(point.id)),
-                        "x" => Some(Value::Length(point.x)),
-                        "y" => Some(Value::Length(point.y)),
-                        "start-x" => Some(Value::Length(point.start_x)),
-                        "start-y" => Some(Value::Length(point.start_y)),
-                        "inside" => Some(Value::Bool(point.inside)),
-                        _ => None,
-                    },
-                    Value::WheelEvent(event) => match name.as_str() {
-                        "x" => Some(Value::Length(event.x)),
-                        "y" => Some(Value::Length(event.y)),
-                        "delta-x" => Some(Value::Length(event.delta_x)),
-                        "delta-y" => Some(Value::Length(event.delta_y)),
-                        "lines-x" => Some(Value::Float(event.lines_x)),
-                        "lines-y" => Some(Value::Float(event.lines_y)),
-                        "is-line" => Some(Value::Bool(event.is_line)),
-                        "modifiers" => Some(Value::KeyModifiers(event.modifiers)),
-                        _ => None,
-                    },
-                    Value::KeyModifiers(modifiers) => match name.as_str() {
-                        "control" => Some(Value::Bool(modifiers.control)),
-                        "shift" => Some(Value::Bool(modifiers.shift)),
-                        "alt" => Some(Value::Bool(modifiers.alt)),
-                        "meta" => Some(Value::Bool(modifiers.meta)),
-                        "primary" => Some(Value::Bool(modifiers.primary)),
-                        _ => None,
-                    },
-                    Value::Date(date) => match name.as_str() {
-                        "year" => Some(Value::Int(date.year)),
-                        "month" => Some(Value::Int(date.month)),
-                        "day" => Some(Value::Int(date.day)),
-                        _ => None,
-                    },
-                    Value::Font(font) => match name.as_str() {
-                        "family" => Some(Value::String(font.family)),
-                        "size" => Some(Value::Length(font.size)),
-                        "weight" => Some(Value::Int(font.weight)),
-                        "italic" => Some(Value::Bool(font.italic)),
-                        _ => None,
-                    },
-                    Value::Time(time) => match name.as_str() {
-                        "hour" => Some(Value::Int(time.hour)),
-                        "minute" => Some(Value::Int(time.minute)),
-                        "second" => Some(Value::Int(time.second)),
-                        _ => None,
-                    },
                     _ => None,
                 };
-                value.ok_or_else(|| evaluation(format!("unknown field {name}")))
+                value.ok_or_else(|| evaluation(format!("unknown record field {name}")))
             }
+            BuiltinField(input, field) => field
+                .read(self.evaluate(input, args)?)
+                .ok_or_else(|| evaluation("invalid built-in field operand")),
             MakeDate([year, month, day]) => Ok(Value::Date(xrack_runtime::Date {
                 year: self.int_argument(year, args)?,
                 month: self.int_argument(month, args)?,
@@ -1423,7 +1524,7 @@ impl Instance {
                     .collect::<Result<Vec<_>>>()?,
             ))),
             Call(target, arguments) => self
-                .call(target, &self.arguments(arguments, args)?)?
+                .call_with_operands(target, arguments, args)?
                 .ok_or_else(|| evaluation("expression callback must return a value")),
         }
     }
@@ -1436,7 +1537,7 @@ impl Instance {
     }
 
     pub(crate) fn render_scene(&self) -> Result<Rc<Node>> {
-        self.0.scene.get(|| {
+        self.0.scene.try_get(|| {
             let mut node = self.render_element(&self.definition().root)?;
             self.bind_button_groups(&mut node)?;
             node.set_loaded_fonts(self.0.program.fonts.clone());
@@ -1464,7 +1565,7 @@ impl Instance {
         }
         self.0
             .scene
-            .get(|| self.render_element(template).map(Rc::new))
+            .try_get(|| self.render_element(template).map(Rc::new))
             .map(|node| node.as_ref().clone())
     }
 
@@ -1484,7 +1585,7 @@ impl Instance {
             .entry(element.key.clone())
             .or_default()
             .clone();
-        let items = cache.get(|| {
+        let items = cache.try_get(|| {
             let model = self.record_combo_model(combo)?.model().clone();
             let label = combo.label.clone();
             let value = combo.value.clone();
@@ -1520,12 +1621,7 @@ impl Instance {
         {
             return Ok(None);
         }
-        let Value::Int(duration) = self.evaluate(&spec.duration, &[])? else {
-            return Err(evaluation("invalid animation duration"));
-        };
-        let duration =
-            u64::try_from(duration).map_err(|_| evaluation("invalid animation duration"))?;
-        Ok(Some(Animation::new(duration, spec.delay_ms, spec.easing)))
+        Ok(Some(spec.timing))
     }
 
     pub(crate) fn timer_slot(&self, key: &str) -> Result<&xrack_runtime::TimerSlot> {
@@ -1627,7 +1723,7 @@ impl Instance {
                 return Ok(Node::hidden());
             }
             if let Some(count) = repeat.static_count {
-                let template = self.render_element_body(element, include_children)?;
+                let template = self.render_element_body(element, include_children, None)?;
                 return Ok(xrack_runtime::static_repeat_scene(
                     template,
                     count,
@@ -1635,22 +1731,18 @@ impl Instance {
                 ));
             }
             let children = self.repeat_state(element).render(self, element, 0..4096)?;
-            if children.is_empty() {
-                return Ok(Node::hidden());
-            }
-            let kind = if repeat.positioned {
-                "Rectangle"
-            } else {
-                "VerticalLayout"
-            };
-            let mut node = Node::new(kind, None);
-            node.children = children;
-            return Ok(node);
+            return Ok(xrack_runtime::repeat_scene(children, repeat.positioned));
         }
-        self.render_element_body(element, include_children)
+        self.render_element_body(element, include_children, None)
     }
 
-    fn render_element_body(&self, element: &Element, include_children: bool) -> Result<Node> {
+    fn render_element_body(
+        &self,
+        element: &Element,
+        include_children: bool,
+        deferred_selection: Option<&mut Option<i64>>,
+    ) -> Result<Node> {
+        let include_plan = include_children || deferred_selection.is_some();
         let picker_value = picker::property(element);
         let hidden = element.conditions.iter().try_fold(
             element.static_hidden,
@@ -1683,6 +1775,15 @@ impl Instance {
                 .clone(),
         };
         node.set_owned_id((!element.id.is_empty()).then(|| element.id.clone()));
+        let selection = element
+            .render_selector
+            .map(|index| self.render_selection(index))
+            .transpose()?;
+        if let Some(deferred) = deferred_selection {
+            *deferred = selection
+                .as_ref()
+                .and_then(|selection| selection.slot.get());
+        }
         self.populate_layout_handles(element, &mut node)?;
         match element.visual {
             Visual::Builtin("TouchArea") => {
@@ -1719,42 +1820,31 @@ impl Instance {
             .as_deref()
             .map(|action| self.present_action(action, &mut node))
             .transpose()?;
-        let mut state_values = BTreeMap::new();
-        for (&name, cases) in &element.state_bindings {
-            if let Some(value) = self.state_value(cases)? {
-                state_values.insert(name, scene_value(value));
-            }
-        }
         for binding in &element.bindings {
             let name = binding.name;
-            if state_values.contains_key(name)
-                || picker_value == Some(name)
-                || (node.kind == "Tumbler" && name == "model")
-            {
+            if element.state_bindings.contains_key(name) || element.control(name).is_some() {
                 continue;
             }
-            let member = Member::new(&element.key, name);
-            let initial = || self.evaluate(&binding.expression, &[]);
-            let value = if let Some(input) = self.0.incoming.get(&member) {
-                input.get(initial)
-            } else if let Some(slot) = self.0.controls.get(&member) {
-                slot.get(|| initial().map(Some))?.map_or_else(initial, Ok)
+            if node.kind == "Tumbler" && name == "model" {
+                if let Some(items) = self.tumbler_items(element)? {
+                    node.set_tumbler_items(items);
+                }
+                continue;
+            }
+            let value = self.evaluate(&binding.expression, &[])?;
+            if node.kind == "ComboBox" && name == "model" {
+                let Value::StringModel(model) = value else {
+                    return Err(evaluation("expected a string ComboBox model"));
+                };
+                node.set_string_combo_model(model);
             } else {
-                initial()
-            }?;
-            node.properties.insert(name, scene_value(value));
+                node.properties.insert(name, scene_value(value));
+            }
             if binding.paint_only {
                 node.mark_paint_only(name);
             }
             if let Some(path) = &binding.vector_path {
                 node.set_loaded_vector_path(path.clone());
-            }
-        }
-        node.properties.extend(state_values);
-        for (&name, target) in &element.links {
-            if picker_value != Some(name) {
-                node.properties
-                    .insert(name, scene_value(self.read(target)?));
             }
         }
         for (&name, field) in &element.row_links {
@@ -1776,24 +1866,58 @@ impl Instance {
             if picker_value == Some(name) || node.properties.contains_key(name) {
                 continue;
             }
-            let value = self.control_value(element, name)?;
-            let value = if value.is_none() && !control.omit_default {
-                Some(self.default_control_value(element, name)?)
-            } else {
-                value
-            };
-            if let Some(value) = value {
+            if let Some(value) = self.control_value(element, name)? {
                 node.properties.insert(name, scene_value(value));
             }
-        }
-        if let Some(enabled) = action_enabled {
-            let enabled = enabled && node.boolean("enabled", true);
-            node.properties.insert("enabled", enabled.into());
         }
         if matches!(element.visual, Visual::Builtin("StandardButton")) {
             node.properties
                 .entry("kind")
                 .or_insert(xrack_runtime::StandardButtonKind::Ok.into());
+        }
+        if let Some(combo) = &element.record_combo {
+            self.render_combo(element, combo, &mut node)?;
+        }
+        for (&name, cases) in &element.state_bindings {
+            let selected = self.rendered_state(cases[0].selector)?;
+            let value = match node.action_state_override(name) {
+                Some(value) => Some(value),
+                None if self.caches_action_flag(element, name, cases) => {
+                    self.cached_action_flag(element, name, cases)?
+                }
+                None => match cases.iter().find(|case| case.index == selected) {
+                    Some(case) => Some(self.evaluate(&case.value, &[])?),
+                    None => self.binding_value(element, name)?,
+                },
+            };
+            if let Some(value) = value {
+                node.properties.insert(name, scene_value(value));
+            }
+        }
+        for (&name, specs) in &element.state_timings {
+            let case = self.rendered_state(specs[0].selector)?;
+            let timing = |enter| {
+                specs
+                    .iter()
+                    .find(|spec| spec.index == case && spec.enter == enter)
+                    .map(|spec| self.animation(&spec.animation))
+                    .transpose()
+                    .map(Option::flatten)
+            };
+            node.state_timings
+                .get_or_insert_with(Default::default)
+                .insert(
+                    name,
+                    StateTiming {
+                        case,
+                        enter: timing(true)?,
+                        exit: timing(false)?,
+                    },
+                );
+        }
+        if let Some(enabled) = action_enabled {
+            let enabled = enabled && node.boolean("enabled", true);
+            node.properties.insert("enabled", enabled.into());
         }
         if matches!(element.visual, Visual::Builtin("AnimatedImage")) {
             let state = Rc::downgrade(&self.0);
@@ -1809,36 +1933,10 @@ impl Instance {
                 owner.handle_result(owner.handler(element, "finished", &[]))
             });
         }
-        if matches!(element.visual, Visual::Builtin("Tumbler")) {
-            node.tumbler_items = self.tumbler_items(element)?;
-        }
-        if let Some(combo) = &element.record_combo {
-            self.render_combo(element, combo, &mut node)?;
-        }
         for &(name, ref spec) in &element.animations {
             if let Some(animation) = self.animation(spec)? {
-                node.animations.insert(name, animation);
+                node.set_animation(name, animation);
             }
-        }
-        for (&name, specs) in &element.state_timings {
-            let Value::Int(case) = self.evaluate(&specs[0].selector, &[])? else {
-                return Err(evaluation("invalid state selector"));
-            };
-            let mut timing = StateTiming {
-                case,
-                enter: None,
-                exit: None,
-            };
-            for spec in specs.iter().filter(|spec| spec.index == case) {
-                if spec.enter {
-                    timing.enter = self.animation(&spec.animation)?;
-                } else {
-                    timing.exit = self.animation(&spec.animation)?;
-                }
-            }
-            node.state_timings
-                .get_or_insert_with(Default::default)
-                .insert(name, timing);
         }
         for timer in &element.timers {
             node.timers.extend(self.timer_registration(timer)?);
@@ -1912,7 +2010,7 @@ impl Instance {
         {
             self.populate_calendar_cells(element, template, &mut node)?;
         }
-        if include_children {
+        if include_plan {
             if let Some(grid) = &element.grid_plan {
                 node.set_shared_grid(grid.clone());
             }
@@ -1923,9 +2021,37 @@ impl Instance {
         Ok(node)
     }
 
+    fn render_swipe_pages(&self, element: &Element, node: &mut Node) -> Result<()> {
+        let mut selections = Vec::with_capacity(element.children.len());
+        for page in &element.children {
+            let mut selected = None;
+            node.children
+                .push(self.render_element_body(page, false, Some(&mut selected))?);
+            selections.push(selected);
+        }
+        node.mount_active_swipe_page(|index, node| {
+            let page = &element.children[index];
+            let _selection = page
+                .render_selector
+                .zip(selections[index])
+                .map(|(selector, selected)| self.scoped_selection(selector, selected));
+            self.render_children(page, node)
+        })
+        .transpose()?;
+        Ok(())
+    }
+
     fn render_children(&self, element: &Element, node: &mut Node) -> Result<()> {
         if matches!(element.visual, Visual::Builtin("RangeSlider")) {
             node.add_range_thumbs();
+        }
+        if node.kind == "SwipeView" {
+            return self.render_swipe_pages(element, node);
+        }
+        if matches!(node.kind, "RadioGroup" | "TabBar")
+            && let Some(model) = self.group_option_model(element)?
+        {
+            node.snapshot_group_options(&model);
         }
         let active = match node.kind {
             "StackView" if node.is_visible() => node
@@ -1939,24 +2065,10 @@ impl Instance {
                         .position(|page| page.id.as_ref() == route)
                 }),
             "TabWidget" => usize::try_from(node.int("current-index").unwrap_or(0)).ok(),
-            "SwipeView" => {
-                let available = element
-                    .children
-                    .iter()
-                    .map(|page| {
-                        Ok(
-                            self.binding_value(page, "visible")? != Some(Value::Bool(false))
-                                && self.binding_value(page, "enabled")? != Some(Value::Bool(false)),
-                        )
-                    })
-                    .collect::<Result<Vec<_>>>()?;
-                xrack_runtime::resolve_swipe_index(node.int("current-index"), available)
-                    .filter(|_| node.is_visible())
-            }
             _ => None,
         };
         for (index, child) in element.children.iter().enumerate() {
-            let page = matches!(node.kind, "TabWidget" | "SwipeView" | "StackView");
+            let page = matches!(node.kind, "TabWidget" | "StackView");
             let child_node =
                 self.render_element_with_content(child, !page || Some(index) == active)?;
             if matches!(node.kind, "RadioGroup" | "TabBar") && child.repeat.is_some() {
@@ -1982,6 +2094,7 @@ impl Instance {
         element: &'a Element,
         scene: &Node,
         path: &[usize],
+        mut route: TargetRoute<'_>,
     ) -> Result<Option<(Self, &'a Element)>> {
         if let Some(repeat) = &element.repeat
             && !self.in_row(element)
@@ -1995,16 +2108,103 @@ impl Instance {
             let Some(key) = node.row_key else {
                 return Ok(None);
             };
-            let Some(row) = self.repeat_state(element).row(self, repeat, index, key)? else {
+            let Some(row) =
+                self.repeat_state(element)
+                    .row(self, repeat, index, key, route.follow_row)?
+            else {
                 return Ok(None);
             };
-            return row.locate(program, element, node, tail);
+            return row.locate(program, element, node, tail, route);
+        }
+        if let Some(input) = route.input {
+            let is_instance = matches!(element.visual, Visual::Instance { .. });
+            let mut visible = None;
+            if !input.try_available(|| -> Result<bool> {
+                if path.is_empty()
+                    && scene.is_item_delegate()
+                    && self.row_template().is_some()
+                    && matches!(
+                        input.event(),
+                        xrack_runtime::RoutedEvent::Dispatch("clicked" | "toggled")
+                    )
+                {
+                    return self.item_delegate_available(element);
+                }
+                if scene.input_requires_enabled(path.is_empty())
+                    && !self.visual_flag(element, "enabled", true)?
+                {
+                    return Ok(false);
+                }
+                if !self.element_conditions_met(element)? {
+                    return Ok(false);
+                }
+                visible = if input.root_visibility_overridden() {
+                    Some(true)
+                } else {
+                    self.visual_flag_value(element, "visible")?
+                };
+                if !visible.unwrap_or(true) {
+                    return Ok(false);
+                }
+                if is_instance {
+                    // The instance and its component root share the same scene node.
+                    // The root owns the control state that governs its descendants.
+                    return Ok(true);
+                }
+                if let Some((&index, tail)) = path.split_first()
+                    && (scene.kind != "TabWidget" || !tail.is_empty())
+                {
+                    let active = match scene.kind {
+                        "TabWidget" => usize::try_from(self.current_index(element)?).ok(),
+                        "SwipeView" => xrack_runtime::try_resolve_swipe_index(
+                            Some(self.current_index(element)?),
+                            element
+                                .children
+                                .iter()
+                                .map(|page| self.element_allows_editing(page)),
+                        )?,
+                        "StackView" => self
+                            .stack_snapshot_for(element)?
+                            .current()
+                            .and_then(|route| scene.stack_route_index(route)),
+                        _ => Some(index),
+                    };
+                    if active != Some(index) {
+                        return Ok(false);
+                    }
+                }
+                scene.try_input_scope_available(
+                    path.first().and_then(|&index| scene.child_at(index)),
+                    || {
+                        Ok(input.can_open_drawer(scene, path.is_empty())
+                            || self.control_value(element, "open")? == Some(Value::Bool(true)))
+                    },
+                    || self.visual_flag(element, "checkable", false),
+                    || Ok(self.control_value(element, "checked")? != Some(Value::Bool(false))),
+                    || {
+                        Ok(match self.control_value(element, "open-side")? {
+                            Some(Value::SwipeSide(side)) => side,
+                            _ => xrack_runtime::SwipeSide::Closed,
+                        })
+                    },
+                )
+            })? {
+                return Ok(None);
+            }
+            route.input =
+                Some(input.with_root_visibility_override(visible.is_some() && is_instance));
         }
         if let Visual::Instance { component, .. } = &element.visual {
             let Some(child) = self.children().get(&element.key) else {
                 return Ok(None);
             };
-            return child.locate(program, &program.definition(component)?.root, scene, path);
+            return child.locate(
+                program,
+                &program.definition(component)?.root,
+                scene,
+                path,
+                route,
+            );
         }
         let Some((&index, tail)) = path.split_first() else {
             return Ok(Some((self.clone(), element)));
@@ -2012,46 +2212,50 @@ impl Instance {
         let Some(node) = scene.child_at(index) else {
             return Ok(None);
         };
-        if let Some(list) = scene.list {
+        if scene.list.is_some() {
             let Some((&0, tail)) = tail.split_first() else {
                 return Ok(Some((self.clone(), element)));
             };
-            let (Some(template), Some(index), Some(row_key), Some(child)) = (
-                element.view_template(),
-                list.first_row.checked_add(index),
-                node.row_key,
-                node.child_at(0),
-            ) else {
+            let (Some(template), Some((index, row_key, child))) =
+                (element.view_template(), scene.list_event_row(index))
+            else {
                 return Ok(None);
             };
             let Some(repeat) = &template.repeat else {
                 return Ok(None);
             };
-            let source = if element.tree.is_some() {
+            let state = self.repeat_state(template);
+            let (model, source) = if route.follow_row {
+                (state.row_model(self, repeat)?, Some(index))
+            } else if element.tree.is_some() {
                 let Some(tree) = &scene.tree else {
                     return Ok(None);
                 };
-                let (live, _) = self.tree_projection(element)?;
-                tree.event_source_index(&live, index, row_key)
+                let (live, records) = self.tree_projection(element)?;
+                (
+                    Model::Records(records),
+                    tree.event_source_index(&live, index, row_key),
+                )
             } else {
                 let model = self.view_model(element)?;
-                if (element.visible_field.is_some() || element.table.is_some())
-                    && scene.standard_list_stamp != model.stamp()
-                {
+                let source = match model.positions() {
+                    Some(positions) => {
+                        positions.event_source_index(scene.standard_list_stamp, index)
+                    }
+                    None => model.source_index(index),
+                };
+                let Some(model) = model.source else {
                     return Ok(None);
-                }
-                model.source_index(index)
+                };
+                (model, source)
             };
             let Some(source) = source else {
                 return Ok(None);
             };
-            let Some(row) = self
-                .repeat_state(template)
-                .row(self, repeat, source, row_key)?
-            else {
+            let Some(row) = state.resolved_row(&model, source, row_key, route.follow_row) else {
                 return Ok(None);
             };
-            return row.locate(program, template, child, tail);
+            return row.locate(program, template, child, tail, route);
         }
         let Some(child) = index
             .checked_sub(element.synthetic_child_count())
@@ -2059,15 +2263,7 @@ impl Instance {
         else {
             return Ok(None);
         };
-        self.locate(program, child, node, tail)
-    }
-
-    pub(crate) fn target<'a>(
-        &'a self,
-        scene: &Node,
-        path: &[usize],
-    ) -> Option<(Self, &'a Element)> {
-        self.capture_result(self.try_target(scene, path)).flatten()
+        self.locate(program, child, node, tail, route)
     }
 
     pub(crate) fn try_target<'a>(
@@ -2075,28 +2271,118 @@ impl Instance {
         scene: &Node,
         path: &[usize],
     ) -> Result<Option<(Self, &'a Element)>> {
-        self.locate(&self.0.program, &self.definition().root, scene, path)
+        self.locate(
+            &self.0.program,
+            &self.definition().root,
+            scene,
+            path,
+            TargetRoute {
+                follow_row: false,
+                input: None,
+            },
+        )
     }
 
-    fn typed_input_result(
+    pub(crate) fn input_route_target<'a>(
+        &'a self,
+        scene: &Node,
+        path: &[usize],
+        input: InputRoute<'_>,
+    ) -> Result<Option<(Self, &'a Element)>> {
+        self.locate(
+            &self.0.program,
+            &self.definition().root,
+            scene,
+            path,
+            TargetRoute {
+                follow_row: input.event().follows_row(scene, path),
+                input: Some(input),
+            },
+        )
+    }
+
+    fn route_typed_input(
         &self,
-        owner: &Self,
-        element: &Element,
-        event: &str,
-        value: Value,
-    ) -> xrack_runtime::EventResult {
-        use xrack_runtime::EventResult;
-        let Some(handler) = element.handlers.get(event) else {
-            return EventResult::Reject;
+        scene: &Node,
+        path: &[usize],
+        input: InputRoute<'_>,
+    ) -> Result<bool> {
+        let Some((owner, element)) = self.input_route_target(scene, path, input)? else {
+            return Ok(false);
         };
-        match owner.execute(handler, &[value], None) {
-            Ok(Some(Value::EventResult(result))) => result,
-            Ok(_) => EventResult::Reject,
-            Err(error) => {
-                self.0.error.set(Some(error));
-                EventResult::Reject
-            }
+        if !input.is_current() {
+            return Ok(false);
         }
+        match input.event() {
+            RoutedEvent::Focus(event) => owner.focus_input(element, *event),
+            RoutedEvent::Key(phase, event) => owner.handle_input_result(
+                element,
+                phase.handler(),
+                Value::KeyEvent((*event).clone()),
+            ),
+            RoutedEvent::Wheel(event) => {
+                let name = if matches!(element.visual, Visual::Builtin("TouchArea")) {
+                    "scroll-event"
+                } else {
+                    "wheel"
+                };
+                owner.handle_input_result(element, name, Value::WheelEvent(**event))
+            }
+            RoutedEvent::Pointer(event) => {
+                owner.handler(element, "pointer-event", &[Value::PointerEvent(**event)])
+            }
+            RoutedEvent::Drag(event) => owner.drag_input(element, event),
+            _ => Ok(false),
+        }
+    }
+
+    fn handle_input_result(&self, element: &Element, event: &str, value: Value) -> Result<bool> {
+        let Some(handler) = element.handlers.get(event) else {
+            return Ok(false);
+        };
+        Ok(self.execute(handler, &[value], None)? == Some(Value::EventResult(EventResult::Accept)))
+    }
+
+    fn focus_input(&self, element: &Element, event: FocusEvent) -> Result<bool> {
+        let (name, reason) = match event {
+            FocusEvent::Gained(reason) => ("focus-gained", reason),
+            FocusEvent::Lost(reason) => ("focus-lost", reason),
+            FocusEvent::Within { focused, reason } => {
+                return self.handler(
+                    element,
+                    "focus-within-changed",
+                    &[Value::Bool(focused), Value::FocusReason(reason)],
+                );
+            }
+        };
+        let args = &[Value::FocusReason(reason)];
+        let handled = self.handler(element, name, args)?;
+        Ok(self.handler(element, "focus-changed-event", args)? || handled)
+    }
+
+    fn drag_input(&self, element: &Element, event: &DragEvent) -> Result<bool> {
+        let (name, args) = match event {
+            DragEvent::Started => ("drag-started", vec![]),
+            DragEvent::Finished(action) => ("drag-finished", vec![(*action).into()]),
+            DragEvent::Entered { data, action } => {
+                ("entered", vec![data.clone().into(), (*action).into()])
+            }
+            DragEvent::Dropped { data, action } => {
+                ("dropped", vec![data.clone().into(), (*action).into()])
+            }
+            DragEvent::FilesEntered(paths) => (
+                "files-entered",
+                vec![model_value(Value::StringList(paths.to_vec()))],
+            ),
+            DragEvent::FilesDropped(paths) => (
+                "files-dropped",
+                vec![model_value(Value::StringList(paths.to_vec()))],
+            ),
+            DragEvent::Moved { x, y } => ("position-changed", vec![(*x).into(), (*y).into()]),
+            DragEvent::Exited => ("exited", vec![]),
+        };
+        self.handler(element, name, &args)?;
+        Ok(true)
     }
 
     pub(crate) fn handler(&self, element: &Element, event: &str, args: &[Value]) -> Result<bool> {
@@ -2115,9 +2401,39 @@ impl Instance {
             };
         }
         match self.definition().root.named_dispatch_target(id, event) {
-            Some(element) => self.dispatch_element(element, event, None),
+            Some(element) => self.dispatch_element(element, event, None, None),
             None => Ok(false),
         }
+    }
+
+    pub(crate) fn item_delegate_available(&self, element: &Element) -> Result<bool> {
+        let mut selection = None;
+        let mut flag = |name| -> Result<bool> {
+            if let Some(cases) = element.state_bindings.get(name) {
+                let selector = cases[0].selector;
+                let selected = match selection {
+                    Some((previous, selected)) if previous == selector => selected,
+                    _ => {
+                        let selected = self.choose_state(selector)?;
+                        selection = Some((selector, selected));
+                        selected
+                    }
+                };
+                if let Some(case) = cases.iter().find(|case| case.index == selected) {
+                    return Ok(self.evaluate(&case.value, &[])? == Value::Bool(true));
+                }
+            }
+            Ok(self.binding_value(element, name)? != Some(Value::Bool(false)))
+        };
+        if !flag("enabled")? {
+            return Ok(false);
+        }
+        for condition in &element.conditions {
+            if self.evaluate(condition, &[])? == Value::Bool(false) {
+                return Ok(false);
+            }
+        }
+        flag("visible")
     }
 
     fn dispatch_element(
@@ -2125,31 +2441,65 @@ impl Instance {
         element: &Element,
         event: &str,
         node: Option<&Node>,
+        input: Option<xrack_runtime::InputRoute<'_>>,
     ) -> Result<bool> {
         let Visual::Builtin(kind) = element.visual else {
             return Ok(false);
         };
         if event == "clicked" {
+            if input.is_some() && !self.check_group_member_enabled(element)? {
+                return Ok(false);
+            }
             if matches!(kind, "Button" | "ToolButton" | "RoundButton")
                 && let Some(action) = &element.action
             {
-                return self.activate_action(action);
+                return self.activate_action(element, action, input);
             }
             match kind {
-                "GroupBox" => return self.toggle_group_box(element),
-                _ if xrack_runtime::is_toggle(kind) => return self.dispatch_toggle(element, node),
+                "GroupBox" => return self.toggle_group_box(element, input),
+                _ if xrack_runtime::is_toggle(kind) => {
+                    return self.dispatch_toggle(element, node, input);
+                }
                 _ => {}
             }
         }
         if xrack_runtime::supports_untyped_dispatch(kind, event) {
+            if let Some(input) = input
+                && event == "accepted"
+                && matches!(kind, "TextInput" | "LineEdit")
+                && element.handlers.contains_key(event)
+                && !input.try_available(|| {
+                    let text = self.control_value(element, "text")?;
+                    let text = match &text {
+                        Some(Value::String(text)) => text.as_str(),
+                        _ => "",
+                    };
+                    xrack_runtime::try_text_submission_is_valid(
+                        text,
+                        self.editor_input_type(element)?,
+                        || self.editor_decimal_separator(element),
+                        || self.editor_maximum_length(element),
+                    )
+                })?
+            {
+                return Ok(false);
+            }
             return self.handler(element, event, &[]);
         }
         Ok(false)
     }
 
-    fn dispatch_toggle(&self, element: &Element, node: Option<&Node>) -> Result<bool> {
+    fn dispatch_toggle(
+        &self,
+        element: &Element,
+        node: Option<&Node>,
+        input: Option<xrack_runtime::InputRoute<'_>>,
+    ) -> Result<bool> {
         use xrack_runtime::CheckState;
 
+        if input.is_some_and(|input| !input.is_current()) {
+            return Ok(false);
+        }
         let check_state = element.has_check_state();
         let name = if check_state {
             "check-state"
@@ -2171,6 +2521,9 @@ impl Instance {
                 None => self.binding_value(element, "tristate")? == Some(Value::Bool(true)),
             };
         let state = current.next(tristate);
+        if input.is_some_and(|input| !input.is_current()) {
+            return Ok(false);
+        }
         let value = if check_state {
             Value::CheckState(state)
         } else {
@@ -2178,9 +2531,27 @@ impl Instance {
         };
         let projected = check_state && element.bindings.iter().any(|binding| binding.name == name);
         if !projected {
-            let updated = match node {
-                Some(node) => self.update_control(element, node, name, value)?,
-                None => self.set_control_value(element, name, value)?,
+            let updated = match (row, element.row_links.get(name), input) {
+                (Some(node), Some(field), Some(input)) => self.prepare_row_field_write(
+                    field,
+                    node.properties.get(name),
+                    value,
+                    |owner, view, model, history| {
+                        xrack_runtime::ListModel::contents_stamp(model);
+                        if let Some(tree) = view.filter(|view| view.tree.is_some()) {
+                            owner.tree_projection(tree)?;
+                        }
+                        xrack_runtime::try_prepare_row_toggle(
+                            node,
+                            input,
+                            check_state.then_some(|| {
+                                Ok(self.binding_value(element, "tristate")? == Some(true.into()))
+                            }),
+                            history,
+                        )
+                    },
+                )?,
+                _ => self.set_control_value(element, name, value)?,
             };
             if !updated {
                 return Ok(false);
@@ -2207,15 +2578,15 @@ impl Instance {
         Ok((owner, element))
     }
 
-    fn popup_open(&self, key: &str) -> Result<bool> {
-        let (owner, element) = self.overlay_owner(key)?;
-        Ok(owner.control_value(element, "open")? == Some(Value::Bool(true)))
-    }
-
-    fn set_overlay(&self, key: &str, open: bool) -> Result<bool> {
+    fn set_overlay(
+        &self,
+        key: &str,
+        open: bool,
+        input: Option<xrack_runtime::InputRoute<'_>>,
+    ) -> Result<bool> {
         let (owner, element) = self.overlay_owner(key)?;
         let current = owner.control_value(element, "open")? == Some(Value::Bool(true));
-        if current == open {
+        if current == open || input.is_some_and(|input| !input.is_current()) {
             return Ok(false);
         }
         owner.set_control_value(element, "open", open.into())?;
@@ -2243,20 +2614,26 @@ impl Instance {
                 handle.scroll_position(axis)
             }));
         }
-        let size_binding = match self.binding_value(element, "size")? {
-            Some(Value::Float(size)) => size,
-            _ => ScrollBarRange::DEFAULT_SIZE,
+        let read_size = || -> Result<f64> {
+            Ok(match self.binding_value(element, "size")? {
+                Some(Value::Float(size)) => size,
+                _ => ScrollBarRange::DEFAULT_SIZE,
+            })
         };
-        let position = if size {
-            0.0
+        let value = if size {
+            ScrollBarRange::new(0.0, read_size()?, 0.0).size
         } else {
-            match self.control_value(element, "position")? {
-                Some(Value::Float(position)) => position,
-                _ => 0.0,
-            }
+            ScrollBarRange::try_position_with(
+                || {
+                    Ok(match self.control_value(element, "position")? {
+                        Some(Value::Float(position)) => position,
+                        _ => 0.0,
+                    })
+                },
+                read_size,
+            )?
         };
-        let range = ScrollBarRange::new(position, size_binding, 0.0);
-        Ok(Value::Float(if size { range.size } else { range.position }))
+        Ok(Value::Float(value))
     }
 
     pub(crate) fn binding_value(&self, element: &Element, name: &str) -> Result<Option<Value>> {
@@ -2278,16 +2655,36 @@ impl Instance {
         let member = Member::new(&element.key, name);
         if let Some(input) = self.0.incoming.get(&member) {
             return input
-                .get(|| {
+                .get_result(|| {
                     self.binding_value(element, name)?
                         .map_or_else(|| self.default_control_value(element, name), Ok)
                 })
                 .map(Some);
         }
-        let initial = || self.binding_value(element, name);
         match self.0.controls.get(&member) {
-            Some(slot) => slot.get(initial),
-            None => initial(),
+            Some(slot) => slot.try_get(|| {
+                let value = self.binding_value(element, name)?;
+                if value.is_some()
+                    || element
+                        .control(name)
+                        .is_some_and(|control| control.omit_default)
+                {
+                    return Ok(value);
+                }
+                self.default_control_value(element, name).map(Some)
+            }),
+            None => self.binding_value(element, name),
+        }
+    }
+
+    pub(crate) fn current_index(&self, element: &Element) -> Result<i64> {
+        let name = "current-index";
+        let value = self
+            .control_value(element, name)?
+            .map_or_else(|| self.default_control_value(element, name), Ok)?;
+        match value {
+            Value::Int(index) => Ok(index),
+            _ => Err(evaluation("expected an integer current index")),
         }
     }
 
@@ -2319,17 +2716,18 @@ impl Instance {
         if view.tree.is_some() {
             return owner.select_tree_source(view, source);
         }
-        let Some(index) = owner.view_model(view)?.visual_index(source) else {
+        if view.table.is_some() {
+            return owner.select_table_source(view, source, column);
+        }
+        let Some(index) = xrack_runtime::try_prepare_source_selection(
+            || Ok(owner.view_model(view)?.visual_index(source)),
+            || owner.current_index(view),
+        )?
+        else {
             return Ok(());
         };
-        if view.table.is_some() {
-            return owner.select_table_source(view, index, column);
-        }
-        let value = Value::Int(index as i64);
-        let current = owner
-            .control_value(view, "current-index")?
-            .unwrap_or(Value::Int(-1));
-        if current != value && owner.set_control_value(view, "current-index", value.clone())? {
+        let value = Value::Int(index);
+        if owner.set_control_value(view, "current-index", value.clone())? {
             owner.handler(view, "changed", &[value])?;
         }
         Ok(())
@@ -2366,46 +2764,90 @@ impl Instance {
         let Some(slot) = self.0.controls.get(&member) else {
             return Ok(false);
         };
-        slot.set_if_changed(Ok(Some(value)));
+        slot.set_if_changed(Some(value));
         Ok(true)
     }
 
-    fn combo_select(
+    fn combo_action(
         &self,
         element: &Element,
         node: &Node,
-        index: usize,
-        accept: bool,
+        action: ControlAction,
+        route: xrack_runtime::InputRoute<'_>,
     ) -> Result<bool> {
-        if !xrack_runtime::choice_enabled(node, index) {
+        use xrack_runtime::{ComboInput, combo_model_is_current, try_prepare_combo_input};
+
+        let input = try_prepare_combo_input(
+            node,
+            action,
+            || self.element_allows_editing(element),
+            || self.table_flag(element, "editable", false),
+            || {
+                if let Some(combo) = &element.record_combo {
+                    let model = self.record_combo_model(combo)?;
+                    return Ok(combo_model_is_current(node, model.model()));
+                }
+                match self.binding_value(element, "model")? {
+                    Some(Value::StringModel(model)) => Ok(combo_model_is_current(node, &model)),
+                    None => Ok(true),
+                    _ => Err(evaluation("expected a string ComboBox model")),
+                }
+            },
+        )?;
+        if !route.is_current() {
             return Ok(false);
         }
-        let Some(label) = xrack_runtime::combo_label(node, index) else {
-            return Ok(false);
-        };
-        let label = Value::String(label.into_owned());
-        let by_value = element.selection_property() == "current-value";
-        let chosen = if let Some(combo) = &element.record_combo {
-            let model = self.record_combo_model(combo)?;
-            if !xrack_runtime::combo_model_is_current(node, model.model()) {
-                return Ok(false);
+        match input {
+            Some(ComboInput::Select {
+                selection,
+                editable,
+            }) => self.apply_combo_selection(element, node, selection, editable, false),
+            Some(ComboInput::Accept { text, selection }) => {
+                let draft = Value::String(text);
+                if let Some(selection) = selection {
+                    if !self.apply_combo_selection(element, node, selection, true, true)? {
+                        return Ok(false);
+                    }
+                } else {
+                    let property = element.selection_property();
+                    if property == "current-index" {
+                        self.update_control(element, node, property, Value::Int(-1))?;
+                    } else if element.record_combo.is_none() {
+                        self.update_control(element, node, property, draft.clone())?;
+                    }
+                    if element
+                        .control("edit-text")
+                        .is_some_and(|control| control.omit_default)
+                    {
+                        self.update_control(element, node, "edit-text", draft.clone())?;
+                    }
+                }
+                self.handler(element, "accepted", &[draft])?;
+                Ok(true)
             }
-            let Some(value) = xrack_runtime::combo_value(node, index) else {
-                return Ok(false);
-            };
-            value
+            None => Ok(false),
+        }
+    }
+
+    fn apply_combo_selection(
+        &self,
+        element: &Element,
+        node: &Node,
+        selection: xrack_runtime::ComboSelection,
+        editable: bool,
+        accept: bool,
+    ) -> Result<bool> {
+        let property = element.selection_property();
+        let value = if property == "current-value" {
+            selection.value.clone()
         } else {
-            label.clone()
+            Value::Int(selection.index as i64)
         };
-        let value = if by_value {
-            chosen.clone()
-        } else {
-            Value::Int(index as i64)
-        };
-        self.update_control(element, node, element.selection_property(), value)?;
-        if xrack_runtime::combo_editable(node)
-            && let Some(control) = element.control("edit-text")
-        {
+        if !self.update_control(element, node, property, value)? {
+            return Ok(false);
+        }
+        let label = Value::String(selection.label);
+        if editable && let Some(control) = element.control("edit-text") {
             if control.omit_default {
                 self.0.controls[&Member::new(&element.key, control.name)].reset();
             } else if !accept {
@@ -2416,45 +2858,8 @@ impl Instance {
             self.handler(element, "selected", &[label])?;
         }
         if element.record_combo.is_some() {
-            self.handler(element, "value-selected", &[chosen])?;
+            self.handler(element, "value-selected", &[selection.value])?;
         }
-        Ok(true)
-    }
-
-    fn accept_combo(&self, element: &Element, node: &Node) -> Result<bool> {
-        if !xrack_runtime::combo_editable(node) {
-            return Ok(false);
-        }
-        let draft = xrack_runtime::text_input_value(node).to_owned();
-        let matching = xrack_runtime::combo_index(node)
-            .filter(|&index| {
-                xrack_runtime::choice_enabled(node, index)
-                    && xrack_runtime::combo_text(node) == draft
-            })
-            .or_else(|| xrack_runtime::combo_find_enabled_label(node, 0, |label| label == draft));
-        if let Some(index) = matching {
-            if !self.combo_select(element, node, index, true)? {
-                return Ok(false);
-            }
-        } else if let Some(combo) = &element.record_combo {
-            let model = self.record_combo_model(combo)?;
-            if !xrack_runtime::combo_model_is_current(node, model.model())
-                || xrack_runtime::combo_find_label(node, |label| label == draft).is_some()
-            {
-                return Ok(false);
-            }
-            if element.selection_property() == "current-index" {
-                self.update_control(element, node, "current-index", Value::Int(-1))?;
-            }
-        } else {
-            let value = if element.selection_property() == "current-value" {
-                Value::String(draft.clone())
-            } else {
-                Value::Int(-1)
-            };
-            self.update_control(element, node, element.selection_property(), value)?;
-        }
-        self.handler(element, "accepted", &[Value::String(draft)])?;
         Ok(true)
     }
 
@@ -2554,19 +2959,7 @@ impl Component for Instance {
     }
 
     fn list_rows(&self, path: &[usize], range: std::ops::Range<usize>) -> Vec<Node> {
-        let Some(scene) = self.capture_result(self.try_render()) else {
-            return Vec::new();
-        };
-        let Some((owner, element)) = self.target(&scene, path).filter(|(_, e)| e.is_list_view())
-        else {
-            return Vec::new();
-        };
-        self.capture_result(owner.view_rows(
-            element,
-            range,
-            &xrack_runtime::TableColumnWindow::default(),
-        ))
-        .unwrap_or_default()
+        self.render_shared().list_rows_at(path, range)
     }
 
     fn dispatch(&mut self, id: &str, event: &str) -> bool {
@@ -2574,49 +2967,77 @@ impl Component for Instance {
     }
 
     fn dispatch_at(&mut self, scene: &Node, path: &[usize], event: &str) -> bool {
-        let Some(node) = scene.dispatch_target(path, event) else {
-            return false;
-        };
-        let Some((instance, element)) = self.target(scene, path) else {
-            return false;
-        };
-        self.handle_result(instance.dispatch_element(element, event, Some(node)))
+        xrack_runtime::RoutedEvent::Dispatch(event).deliver_input(self, scene, path)
     }
 
-    fn focus_event_at(
-        &mut self,
-        scene: &Node,
-        path: &[usize],
-        event: xrack_runtime::FocusEvent,
-    ) -> bool {
-        use xrack_runtime::FocusEvent;
-        let node = if event.is_loss() {
-            scene.at_path(path)
-        } else {
-            scene.interactive_at_path(path)
-        };
-        if !node.is_some_and(|node| node.kind == "FocusScope") {
-            return false;
-        }
-        let Some((instance, element)) = self.target(scene, path) else {
-            return false;
-        };
-        self.handle_result((|| {
-            let (name, reason) = match event {
-                FocusEvent::Gained(reason) => ("focus-gained", reason),
-                FocusEvent::Lost(reason) => ("focus-lost", reason),
-                FocusEvent::Within { focused, reason } => {
-                    return instance.handler(
+    fn route_input(&mut self, scene: &Node, path: &[usize], input: InputRoute<'_>) -> bool {
+        match input.event() {
+            RoutedEvent::Dispatch(event) => {
+                let Some((instance, element)) = self
+                    .capture_result(self.input_route_target(scene, path, input))
+                    .flatten()
+                else {
+                    return false;
+                };
+                input.is_current()
+                    && self.handle_result(instance.dispatch_element(
                         element,
-                        "focus-within-changed",
-                        &[Value::Bool(focused), Value::FocusReason(reason)],
-                    );
-                }
-            };
-            let args = &[Value::FocusReason(reason)];
-            let handled = instance.handler(element, name, args)?;
-            Ok(instance.handler(element, "focus-changed-event", args)? || handled)
-        })())
+                        event,
+                        scene.at_path(path),
+                        Some(input),
+                    ))
+            }
+            RoutedEvent::Edit(text) => {
+                let Some(node) = scene.at_path(path) else {
+                    return false;
+                };
+                self.handle_result((|| {
+                    if let Some((instance, element)) =
+                        self.input_route_target(scene, path, input)?
+                    {
+                        if !input
+                            .try_available(|| instance.live_editor_allows(element, node, text))?
+                        {
+                            return Ok(false);
+                        }
+                        return instance.edit_control(element, node, (*text).into());
+                    }
+                    self.edit_picker_hex(scene, path, node, text, input)
+                })())
+            }
+            RoutedEvent::Control(action) => self.route_control(scene, path, *action, input),
+            RoutedEvent::Range(action) => self.route_range(scene, path, *action, input),
+            RoutedEvent::CommitCell { text, .. } => {
+                self.handle_result(self.route_cell_commit(scene, path, text, input))
+            }
+            RoutedEvent::PasteTable(paste) => {
+                self.handle_result(self.route_table_paste(scene, path, *paste, input))
+            }
+            RoutedEvent::ReplayTable { redo } => self.handle_result((|| {
+                let Some(model) = scene.table_edit_history_model(path) else {
+                    return Ok(false);
+                };
+                let Some((owner, view)) = self.input_route_target(scene, path, input)? else {
+                    return Ok(false);
+                };
+                owner.replay_table_from_view(view, model, *redo, input)
+            })()),
+            RoutedEvent::ResizeSplit(_) | RoutedEvent::ResizeSplitSizes(_) => {
+                self.handle_result(self.resize_split(scene, path, input))
+            }
+            RoutedEvent::Focus(_)
+            | RoutedEvent::Key(..)
+            | RoutedEvent::Wheel(_)
+            | RoutedEvent::Pointer(_)
+            | RoutedEvent::Drag(_) => {
+                self.handle_result(self.route_typed_input(scene, path, input))
+            }
+            RoutedEvent::QueryTable(_) => false,
+        }
+    }
+
+    fn focus_event_at(&mut self, scene: &Node, path: &[usize], event: FocusEvent) -> bool {
+        RoutedEvent::Focus(event).deliver_input(self, scene, path)
     }
 
     fn key_event_at(
@@ -2625,23 +3046,10 @@ impl Component for Instance {
         path: &[usize],
         phase: xrack_runtime::KeyPhase,
         event: &xrack_runtime::KeyEvent,
-    ) -> xrack_runtime::EventResult {
-        use xrack_runtime::EventResult;
-        if !scene
-            .interactive_at_path(path)
-            .is_some_and(|node| node.kind == "FocusScope" && node.key_handlers & phase.mask() != 0)
-        {
-            return EventResult::Reject;
-        }
-        let Some((instance, element)) = self.target(scene, path) else {
-            return EventResult::Reject;
-        };
-        self.typed_input_result(
-            &instance,
-            element,
-            phase.handler(),
-            Value::KeyEvent(event.clone()),
-        )
+    ) -> EventResult {
+        RoutedEvent::Key(phase, event)
+            .deliver_input(self, scene, path)
+            .into()
     }
 
     fn pointer_event_at(
@@ -2650,63 +3058,11 @@ impl Component for Instance {
         path: &[usize],
         event: &xrack_runtime::PointerEvent,
     ) -> bool {
-        let node = if event.kind == xrack_runtime::PointerEventKind::Cancel {
-            scene.at_path(path)
-        } else {
-            scene.interactive_at_path(path)
-        };
-        if !node.is_some_and(|node| node.pointer_handle.is_some()) {
-            return false;
-        }
-        let Some((instance, element)) = self.target(scene, path) else {
-            return false;
-        };
-        self.handle_result(instance.handler(
-            element,
-            "pointer-event",
-            &[Value::PointerEvent(*event)],
-        ))
+        RoutedEvent::Pointer(event).deliver_input(self, scene, path)
     }
 
-    fn drag_event_at(
-        &mut self,
-        scene: &Node,
-        path: &[usize],
-        event: &xrack_runtime::DragEvent,
-    ) -> bool {
-        let node = if event.is_terminal() {
-            scene.at_path(path)
-        } else {
-            scene.interactive_at_path(path)
-        };
-        if !node.is_some_and(|node| node.kind == event.target_kind()) {
-            return false;
-        }
-        let Some((instance, element)) = self.target(scene, path) else {
-            return false;
-        };
-        use xrack_runtime::DragEvent;
-        let (name, args) = match event {
-            DragEvent::Started => ("drag-started", vec![]),
-            DragEvent::Finished(action) => ("drag-finished", vec![(*action).into()]),
-            DragEvent::Entered { data, action } => {
-                ("entered", vec![data.clone().into(), (*action).into()])
-            }
-            DragEvent::Dropped { data, action } => {
-                ("dropped", vec![data.clone().into(), (*action).into()])
-            }
-            DragEvent::FilesEntered(paths) => (
-                "files-entered",
-                vec![model_value(Value::StringList(paths.to_vec()))],
-            ),
-            DragEvent::FilesDropped(paths) => (
-                "files-dropped",
-                vec![model_value(Value::StringList(paths.to_vec()))],
-            ),
-            DragEvent::Moved { x, y } => ("position-changed", vec![(*x).into(), (*y).into()]),
-            DragEvent::Exited => ("exited", vec![]),
-        };
-        self.handle_result(instance.handler(element, name, &args).map(|_| true))
+    fn drag_event_at(&mut self, scene: &Node, path: &[usize], event: &DragEvent) -> bool {
+        RoutedEvent::Drag(event).deliver_input(self, scene, path)
     }
 
     fn wheel_event_at(
@@ -2714,27 +3070,14 @@ impl Component for Instance {
         scene: &Node,
         path: &[usize],
         event: &xrack_runtime::WheelEvent,
-    ) -> xrack_runtime::EventResult {
-        use xrack_runtime::EventResult;
-        let Some(node) = scene
-            .interactive_at_path(path)
-            .filter(|node| node.handles_wheel())
-        else {
-            return EventResult::Reject;
-        };
-        let Some((instance, element)) = self.target(scene, path) else {
-            return EventResult::Reject;
-        };
-        let event_name = if node.kind == "TouchArea" {
-            "scroll-event"
-        } else {
-            "wheel"
-        };
-        self.typed_input_result(&instance, element, event_name, Value::WheelEvent(*event))
+    ) -> EventResult {
+        RoutedEvent::Wheel(event)
+            .deliver_input(self, scene, path)
+            .into()
     }
 
     fn resize_split_at(&mut self, scene: &Node, path: &[usize], weights: &[(usize, f32)]) -> bool {
-        self.handle_result(self.resize_split(scene, path, weights, false))
+        xrack_runtime::RoutedEvent::ResizeSplit(weights).deliver_input(self, scene, path)
     }
 
     fn resize_split_sizes_at(
@@ -2743,14 +3086,225 @@ impl Component for Instance {
         path: &[usize],
         sizes: &[(usize, f32)],
     ) -> bool {
-        self.handle_result(self.resize_split(scene, path, sizes, true))
+        xrack_runtime::RoutedEvent::ResizeSplitSizes(sizes).deliver_input(self, scene, path)
     }
 
     fn control_at(&mut self, scene: &Node, path: &[usize], action: ControlAction) -> bool {
-        let Some(node) = scene.control_target(path, action) else {
+        xrack_runtime::RoutedEvent::Control(action).deliver_input(self, scene, path)
+    }
+
+    fn adjust_range_at(&mut self, scene: &Node, path: &[usize], action: RangeAction) -> bool {
+        xrack_runtime::RoutedEvent::Range(action).deliver_input(self, scene, path)
+    }
+
+    fn copy_table_at(&self, scene: &Node, path: &[usize], columns: &[usize]) -> Option<String> {
+        xrack_runtime::TableQuery::Copy(columns)
+            .run(self, scene, path)?
+            .text()
+    }
+
+    fn route_table_query(
+        &self,
+        scene: &Node,
+        path: &[usize],
+        input: InputRoute<'_>,
+    ) -> Option<xrack_runtime::TableQueryResult> {
+        use xrack_runtime::{RoutedEvent, TableQuery, TableQueryResult};
+        let RoutedEvent::QueryTable(query) = *input.event() else {
+            return None;
+        };
+        let node = scene.at_path(path)?;
+        let (owner, element) = self
+            .capture_result(self.input_route_target(scene, path, input))
+            .flatten()?;
+        element.table.as_ref()?;
+        match query {
+            TableQuery::Copy(columns) => self
+                .capture_result(owner.copy_table(element, node, columns, input))
+                .flatten()
+                .map(TableQueryResult::Text),
+            TableQuery::NextEdit(navigation) => self
+                .capture_result(owner.table_edit_target(element, node, navigation, input))
+                .flatten()
+                .map(TableQueryResult::Position),
+        }
+    }
+
+    fn prepare_table_paste(
+        &self,
+        scene: &Node,
+        path: &[usize],
+        row: usize,
+        columns: Vec<usize>,
+    ) -> Option<xrack_runtime::TablePaste> {
+        let stamp = self.table_paste_stamp(scene, path)?;
+        let weak = Rc::downgrade(&self.0);
+        let scene = scene.clone();
+        let path = path.to_vec();
+        Some(Box::new(move |text| {
+            let Some(mut ui) = weak.upgrade().map(Instance) else {
+                return false;
+            };
+            xrack_runtime::RoutedEvent::PasteTable(xrack_runtime::TablePasteInput {
+                stamp,
+                row,
+                columns: &columns,
+                text,
+            })
+            .deliver_input(&mut ui, &scene, &path)
+        }))
+    }
+
+    fn table_paste_stamp(&self, scene: &Node, path: &[usize]) -> Option<(u64, u64)> {
+        self.capture_result(self.capture_table_paste_stamp(scene, path))
+            .flatten()
+    }
+
+    fn replay_table_paste_at(&self, scene: &Node, path: &[usize], redo: bool) -> bool {
+        xrack_runtime::RoutedEvent::ReplayTable { redo }.deliver_input(
+            &mut self.clone(),
+            scene,
+            path,
+        )
+    }
+
+    fn next_table_edit_cell(
+        &self,
+        scene: &Node,
+        path: &[usize],
+        origin: xrack_runtime::TableEditPosition,
+        columns: &[usize],
+        backward: bool,
+    ) -> Option<xrack_runtime::TableEditPosition> {
+        xrack_runtime::TableQuery::NextEdit(xrack_runtime::TableEditNavigation {
+            origin,
+            columns,
+            backward,
+        })
+        .run(self, scene, path)?
+        .position()
+    }
+
+    fn commit_table_cell(
+        &mut self,
+        scene: &Node,
+        path: &[usize],
+        original: &str,
+        text: String,
+    ) -> bool {
+        xrack_runtime::RoutedEvent::CommitCell {
+            original,
+            text: &text,
+        }
+        .deliver_input(self, scene, path)
+    }
+
+    fn edit_at(&mut self, scene: &Node, path: &[usize], text: String) -> bool {
+        xrack_runtime::RoutedEvent::Edit(&text).deliver_input(self, scene, path)
+    }
+}
+
+impl Instance {
+    fn route_cell_commit(
+        &self,
+        scene: &Node,
+        path: &[usize],
+        text: &str,
+        input: InputRoute<'_>,
+    ) -> Result<bool> {
+        let Some(node) = scene.at_path(path) else {
+            return Ok(false);
+        };
+        if let [table_path @ .., slot, 0, column] = path
+            && let Some(table) = scene.at_path(table_path)
+            && table.boolean("__standard-table", false)
+        {
+            let Some((owner, view)) = self.input_route_target(scene, table_path, input)? else {
+                return Ok(false);
+            };
+            return owner.commit_projected_cell(view, table, *slot, *column, input);
+        }
+        let Some((owner, element)) = self.input_route_target(scene, path, input)? else {
+            return Ok(false);
+        };
+        let Some(field) = element.row_links.get("text") else {
+            return Ok(false);
+        };
+        if !input.try_available(|| -> Result<bool> {
+            Ok(!owner.visual_flag(element, "read-only", false)?
+                && owner.visual_flag(element, "editable", true)?)
+        })? {
+            return Ok(false);
+        }
+        owner.prepare_row_field_write(
+            field,
+            node.properties.get("text"),
+            Value::String(text.into()),
+            |_, _, _, history| input.try_prepare(|| Ok(true), || history().map(Some)),
+        )
+    }
+
+    fn route_range(
+        &self,
+        scene: &Node,
+        path: &[usize],
+        action: RangeAction,
+        input: InputRoute<'_>,
+    ) -> bool {
+        let Some(node) = scene.range_target(path) else {
             return false;
         };
-        let Some(target) = self.capture_result(self.try_target(scene, path)) else {
+        self.handle_result((|| {
+            if node.kind == "RangeSlider" {
+                let Some((&handle, parent)) = path.split_last() else {
+                    return Ok(false);
+                };
+                let Some((instance, element)) = self.input_route_target(scene, parent, input)?
+                else {
+                    return Ok(false);
+                };
+                return instance.interval_action(element, node, handle, action, input);
+            }
+            let Some((instance, element)) = self.input_route_target(scene, path, input)? else {
+                return self.picker_child_input(
+                    scene,
+                    path,
+                    node,
+                    picker::Input::Range(action, input),
+                );
+            };
+            match node.kind {
+                "Slider" | "Dial" => instance.range_action(element, node, action, input),
+                "ScrollBar"
+                    if node.scroll_target.is_none() && node.boolean("interactive", true) =>
+                {
+                    instance.scroll_bar_action(element, node, action, input)
+                }
+                _ => Ok(false),
+            }
+        })())
+    }
+
+    fn route_control(
+        &self,
+        scene: &Node,
+        path: &[usize],
+        action: ControlAction,
+        input: InputRoute<'_>,
+    ) -> bool {
+        let Some(node) = scene.at_path(path) else {
+            return false;
+        };
+        let Some(target) = self.capture_result(self.locate(
+            &self.0.program,
+            &self.definition().root,
+            scene,
+            path,
+            TargetRoute {
+                follow_row: false,
+                input: Some(input),
+            },
+        )) else {
             return false;
         };
         let Some((instance, element)) = target else {
@@ -2758,41 +3312,25 @@ impl Component for Instance {
                 scene,
                 path,
                 node,
-                picker::Input::Control(action),
+                picker::Input::Control(action, input),
             ));
         };
+        if !input.is_current() {
+            return false;
+        }
         if picker::property(element).is_some() {
-            return self.handle_result(instance.picker_control(element, node, action));
+            return self.handle_result(instance.picker_control(element, node, action, input));
         }
         if let ControlAction::Calendar(action) = action
             && xrack_runtime::is_calendar_control(node.kind)
         {
-            return self.handle_result((|| {
-                if node.kind == "MonthGrid" {
-                    let current = self.render_scene()?;
-                    let valid = |live: &Node| {
-                        xrack_runtime::CalendarState::from_node(live)
-                            == xrack_runtime::CalendarState::from_node(node)
-                            && live.int("week-start") == node.int("week-start")
-                    };
-                    if let Some(live) = current.interactive_at_path(path) {
-                        if !valid(live) {
-                            return Ok(false);
-                        }
-                    } else if scene.row_key_at(path).is_none()
-                        || !valid(&instance.render_element(element)?)
-                    {
-                        return Ok(false);
-                    }
-                }
-                instance.calendar_action(element, node, action)
-            })());
+            return self.handle_result(instance.calendar_action(element, node, action, input));
         }
         if element.tree.is_some() {
-            return self.handle_result(instance.tree_control(element, node, action));
+            return self.handle_result(instance.tree_control(element, node, input));
         }
         if element.table.is_some() {
-            return self.handle_result(instance.table_control(element, node, action));
+            return self.handle_result(instance.table_control(element, node, action, input));
         }
         if let Some(command) = &element.action {
             let expected = match node.kind {
@@ -2800,7 +3338,8 @@ impl Component for Instance {
                 "Shortcut" => ControlAction::ActivateShortcut,
                 _ => ControlAction::ActivateAction,
             };
-            return action == expected && self.handle_result(instance.activate_action(command));
+            return action == expected
+                && self.handle_result(instance.activate_action(element, command, Some(input)));
         }
         self.handle_result(match action {
             ControlAction::StackBack { revision }
@@ -2814,6 +3353,7 @@ impl Component for Instance {
                     element,
                     Some(revision),
                     xrack_runtime::StackNavigation::Pop,
+                    Some(input),
                 )
             }
             ControlAction::SwipeDelegate(side) if node.kind == "SwipeDelegate" => (|| {
@@ -2823,7 +3363,7 @@ impl Component for Instance {
                 else {
                     return Ok(false);
                 };
-                if !node.accepts_swipe_side(current, side) {
+                if !input.is_current() || !node.accepts_swipe_side(current, side) {
                     return Ok(false);
                 }
                 let next = Value::SwipeSide(side);
@@ -2834,7 +3374,7 @@ impl Component for Instance {
                 Ok(true)
             })(),
             ControlAction::ActivateRadioOption if node.kind == "RadioButton" => {
-                instance.activate_radio_option(element, node)
+                instance.activate_radio_option(element, node, input)
             }
             ControlAction::Select(index)
                 if matches!(
@@ -2842,16 +3382,16 @@ impl Component for Instance {
                     "RadioGroup" | "TabWidget" | "TabBar" | "SwipeView"
                 ) =>
             {
-                instance.select_group(element, node, index)
+                instance.select_group(element, node, index, input)
             }
             ControlAction::Select(index) if node.kind == "PageIndicator" => {
-                instance.select_page_indicator(element, index)
+                instance.select_page_indicator(element, index, input)
             }
             ControlAction::ActivateMenuItem if node.kind == "MenuItem" => {
-                instance.activate_menu_item(element, node)
+                instance.activate_menu_item(element, input)
             }
             ControlAction::Dialog(_) | ControlAction::DialogCommand(_) if node.kind == "Dialog" => {
-                instance.dialog_action(element, action)
+                instance.dialog_action(element, action, input)
             }
             ControlAction::ActivateShortcut | ControlAction::AmbiguousShortcut
                 if node.kind == "Shortcut" =>
@@ -2864,24 +3404,52 @@ impl Component for Instance {
                 instance.handler(element, event, &[]).map(|_| true)
             }
             ControlAction::Select(index) if element.is_list_view() => (|| {
-                let model = instance.view_model(element)?;
-                let value = Value::Int(index as i64);
-                if !xrack_runtime::ListMetrics::has_row_in_model(node, index, model.stamp())
-                    || instance.control_value(element, "current-index")?.as_ref() == Some(&value)
-                    || !instance.update_control(element, node, "current-index", value.clone())?
-                {
+                let selected = xrack_runtime::try_prepare_index_selection(
+                    index,
+                    || instance.element_allows_editing(element),
+                    |_| {
+                        let model = instance.view_model(element)?;
+                        Ok(xrack_runtime::ListMetrics::has_row_in_model(
+                            node,
+                            index,
+                            model.stamp(),
+                        ))
+                    },
+                    || instance.current_index(element),
+                )?;
+                let Some(index) = selected else {
+                    return Ok(false);
+                };
+                if !input.is_current() {
+                    return Ok(false);
+                }
+                let value = Value::Int(index);
+                if !instance.update_control(element, node, "current-index", value.clone())? {
                     return Ok(false);
                 }
                 instance.handler(element, "changed", &[value])?;
                 Ok(true)
             })(),
-            ControlAction::Select(index) if node.kind == "ComboBox" => {
-                instance.combo_select(element, node, index, false)
+            ControlAction::Select(_) | ControlAction::AcceptComboText
+                if node.kind == "ComboBox" =>
+            {
+                instance.combo_action(element, node, action, input)
             }
             ControlAction::DelayButton(checked) if node.kind == "DelayButton" => (|| {
-                let current =
-                    instance.control_value(element, "checked")? == Some(Value::Bool(true));
-                if current == checked
+                let applicable = xrack_runtime::try_delay_button_transition_is_current(
+                    node,
+                    checked,
+                    || instance.element_allows_editing(element),
+                    || {
+                        Ok(match instance.binding_value(element, "delay")? {
+                            Some(Value::Int(delay)) => Some(delay),
+                            _ => None,
+                        })
+                    },
+                    || Ok(instance.control_value(element, "checked")? == Some(Value::Bool(true))),
+                )?;
+                if !input.is_current()
+                    || !applicable
                     || !instance.update_control(element, node, "checked", checked.into())?
                 {
                     return Ok(false);
@@ -2897,225 +3465,169 @@ impl Component for Instance {
                     ("PopupWindow", ControlAction::Popup(_)) | ("Drawer", ControlAction::Drawer(_))
                 ) =>
             {
-                instance.set_overlay(&element.key, open)
+                instance.set_overlay(&element.key, open, Some(input))
             }
-            ControlAction::SubmitSearch if node.kind == "SearchField" => (|| {
-                let text = Value::String(xrack_runtime::text_input_value(node).to_owned());
-                instance.handler(element, "accepted", std::slice::from_ref(&text))?;
-                instance.handler(element, "search-triggered", &[text])?;
-                Ok(true)
-            })(),
-            ControlAction::Select(index) if node.kind == "SearchField" => (|| {
-                let Some(suggestion) = xrack_runtime::search_suggestion(node, index) else {
-                    return Ok(false);
-                };
-                let value = Value::String(suggestion.into());
-                let args = std::slice::from_ref(&value);
-                if suggestion != xrack_runtime::text_input_value(node) {
-                    if !instance.update_control(element, node, "text", value.clone())? {
-                        return Ok(false);
-                    }
-                    instance.handler(element, "edited", args)?;
-                }
-                instance.handler(element, "selected", args)?;
-                instance.handler(element, "search-triggered", args)?;
-                Ok(true)
-            })(),
-            ControlAction::ClearSearch
-                if node.kind == "SearchField"
-                    && !node.boolean("read-only", false)
-                    && !xrack_runtime::text_input_value(node).is_empty() =>
+            ControlAction::SubmitSearch | ControlAction::Select(_) | ControlAction::ClearSearch
+                if node.kind == "SearchField" =>
             {
-                instance.edit_control(element, node, String::new())
-            }
-            ControlAction::AcceptComboText if node.kind == "ComboBox" => {
-                instance.accept_combo(element, node)
+                instance.search_control(element, node, action, input)
             }
             ControlAction::PickTumbler { .. } if node.kind == "Tumbler" => {
-                instance.tumbler_action(element, node, action)
+                instance.tumbler_action(element, node, action, input)
             }
             ControlAction::Spin(action) if xrack_runtime::is_spin_box(node.kind) => {
-                instance.spin_action(element, node, action)
+                instance.spin_action(element, node, action, input)
             }
-            ControlAction::ActivateTextLink(index) if node.kind == "StyledText" => {
-                let Some(link) = node
-                    .styled_text("text")
-                    .and_then(|text| text.links().get(index))
-                else {
-                    return false;
-                };
-                instance.handler(
-                    element,
-                    "link-activated",
-                    &[Value::String(link.href.to_string())],
-                )
-            }
-            _ => Ok(false),
-        })
-    }
-
-    fn adjust_range_at(&mut self, scene: &Node, path: &[usize], action: RangeAction) -> bool {
-        let Some(node) = scene.range_target(path) else {
-            return false;
-        };
-        if node.kind == "RangeSlider" {
-            let Some((&handle, parent)) = path.split_last() else {
-                return false;
-            };
-            let Some((instance, element)) = self.target(scene, parent) else {
-                return false;
-            };
-            return self.handle_result(instance.interval_action(element, node, handle, action));
-        }
-        let Some(target) = self.capture_result(self.try_target(scene, path)) else {
-            return false;
-        };
-        let Some((instance, element)) = target else {
-            return self.handle_result(self.picker_child_input(
-                scene,
-                path,
-                node,
-                picker::Input::Range(action),
-            ));
-        };
-        self.handle_result(match node.kind {
-            "Slider" | "Dial" => instance.range_action(element, node, action),
-            "ScrollBar" if node.scroll_target.is_none() && node.boolean("interactive", true) => {
+            ControlAction::ActivateTextLink(index)
+                if node.kind == "StyledText" && element.handlers.contains_key("link-activated") =>
+            {
                 (|| {
-                    let Some(value) = xrack_runtime::ScrollBarRange::from_node(node).apply(action)
-                    else {
+                    let target = node.try_prepare_text_link(index, input, || {
+                        if let Some(cases) = element.state_bindings.get("text")
+                            && let Some(Value::StyledText(text)) = instance.state_value(cases)?
+                        {
+                            return Ok(text);
+                        }
+                        Ok(match instance.binding_value(element, "text")? {
+                            Some(Value::StyledText(text)) => text,
+                            _ => xrack_runtime::StyledText::default(),
+                        })
+                    })?;
+                    let Some(target) = target else {
                         return Ok(false);
                     };
-                    let value = Value::Float(value);
-                    instance.update_control(element, node, "position", value.clone())?;
-                    instance.handler(element, "changed", &[value])?;
-                    Ok(true)
+                    instance.handler(element, "link-activated", &[target.to_owned().into()])
                 })()
             }
             _ => Ok(false),
         })
     }
 
-    fn copy_table_at(&self, scene: &Node, path: &[usize], columns: &[usize]) -> Option<String> {
-        let node = scene.interactive_at_path(path)?;
-        let (instance, element) = self.target(scene, path)?;
-        element.table.as_ref()?;
-        self.capture_result(instance.copy_table(element, node, columns))
-            .flatten()
+    fn editor_input_type(&self, element: &Element) -> Result<xrack_runtime::InputType> {
+        Ok(match self.binding_value(element, "input-type")? {
+            Some(Value::InputType(mode)) => mode,
+            _ => xrack_runtime::InputType::Text,
+        })
     }
 
-    fn prepare_table_paste(
-        &self,
-        scene: &Node,
-        path: &[usize],
-        row: usize,
-        columns: Vec<usize>,
-    ) -> Option<xrack_runtime::TablePaste> {
-        self.capture_result(self.capture_table_paste(scene, path, row, columns))
-            .flatten()
+    fn editor_decimal_separator(&self, element: &Element) -> Result<char> {
+        Ok(match self.binding_value(element, "decimal-separator")? {
+            Some(Value::String(separator)) if separator == "," => ',',
+            _ => '.',
+        })
     }
 
-    fn replay_table_paste_at(&self, scene: &Node, path: &[usize], redo: bool) -> bool {
-        let Some(node) = scene.interactive_at_path(path) else {
-            return false;
-        };
-        if !node.table_edit_history_enabled() {
-            return false;
+    fn editor_maximum_length(&self, element: &Element) -> Result<Option<i64>> {
+        Ok(match self.binding_value(element, "maximum-length")? {
+            Some(Value::Int(limit)) => Some(limit),
+            _ => None,
+        })
+    }
+
+    fn live_editor_allows(&self, element: &Element, node: &Node, text: &str) -> Result<bool> {
+        if node.kind == "ComboBox" {
+            return self.visual_flag(element, "editable", false);
         }
-        let Some((owner, element)) = self.target(scene, path) else {
-            return false;
-        };
-        self.handle_result(owner.replay_table(element, redo))
-    }
-
-    fn next_table_edit_cell(
-        &self,
-        scene: &Node,
-        path: &[usize],
-        origin: xrack_runtime::TableEditPosition,
-        columns: &[usize],
-        backward: bool,
-    ) -> Option<xrack_runtime::TableEditPosition> {
-        let node = scene.interactive_at_path(path)?;
-        let (owner, element) = self.target(scene, path)?;
-        element.table.as_ref()?;
-        self.capture_result(owner.table_edit_target(element, node, origin, columns, backward))
-            .flatten()
-    }
-
-    fn commit_table_cell(
-        &mut self,
-        scene: &Node,
-        path: &[usize],
-        original: &str,
-        text: String,
-    ) -> bool {
-        let Some(node) = scene
-            .interactive_at_path(path)
-            .filter(|node| xrack_runtime::editable_table_cell(node))
-        else {
-            return false;
-        };
-        if let [table_path @ .., slot, 0, column] = path
-            && let Some(table) = scene.at_path(table_path)
-            && table.boolean("__standard-table", false)
+        if !xrack_runtime::is_text_input(node.kind)
+            || self.visual_flag(element, "read-only", false)?
         {
-            let Some((owner, view)) = self.target(scene, table_path) else {
-                return false;
-            };
-            return self.handle_result(
-                owner.commit_projected_cell(view, table, *slot, *column, original, &text),
-            );
+            return Ok(false);
         }
-        let Some((owner, element)) = self.target(scene, path) else {
-            return false;
+        let mode = if matches!(node.kind, "TextInput" | "LineEdit") {
+            self.editor_input_type(element)?
+        } else {
+            xrack_runtime::InputType::Text
         };
-        if node.text("text") != Some(original) {
-            return false;
-        }
-        self.handle_result(owner.update_control(element, node, "text", Value::String(text)))
+        node.try_allows_text_edit_with(
+            text,
+            mode,
+            || self.editor_decimal_separator(element),
+            || self.editor_maximum_length(element),
+        )
     }
 
-    fn edit_at(&mut self, scene: &Node, path: &[usize], text: String) -> bool {
-        let Some(node) = scene.interactive_at_path(path) else {
-            return false;
-        };
-        if !node.accepts_editor_update(&text) {
-            return false;
+    fn search_control(
+        &self,
+        element: &Element,
+        node: &Node,
+        action: ControlAction,
+        route: xrack_runtime::InputRoute<'_>,
+    ) -> Result<bool> {
+        let input = xrack_runtime::SearchInput::try_from_control(
+            node,
+            action,
+            || self.element_allows_editing(element),
+            || Ok(!self.table_flag(element, "read-only", false)?),
+            || match self.control_value(element, "text")? {
+                Some(Value::String(text)) => Ok(text),
+                None => Ok(String::new()),
+                _ => Err(evaluation("expected search text")),
+            },
+            || match self.binding_value(element, "suggestions-for")? {
+                Some(Value::String(query)) => Ok(Some(query)),
+                None => Ok(None),
+                _ => Err(evaluation("expected a search suggestion query")),
+            },
+            |index| match self.binding_value(element, "suggestions")? {
+                Some(Value::StringModel(model)) => Ok(model.row(index)),
+                Some(Value::StringList(items)) => Ok(items.get(index).cloned()),
+                None => Ok(None),
+                _ => Err(evaluation("expected a search suggestion list")),
+            },
+        )?;
+        if !route.is_current() {
+            return Ok(false);
         }
-        let Some(target) = self.capture_result(self.try_target(scene, path)) else {
-            return false;
-        };
-        let Some((instance, element)) = target else {
-            return self.handle_result(self.picker_child_input(
-                scene,
-                path,
-                node,
-                picker::Input::Edit(text),
-            ));
-        };
-        self.handle_result(instance.edit_control(element, node, text))
+        match input {
+            Some(input) => self.apply_search_input(element, node, input),
+            None => Ok(false),
+        }
     }
-}
 
-impl Instance {
+    fn apply_search_input(
+        &self,
+        element: &Element,
+        node: &Node,
+        input: xrack_runtime::SearchInput,
+    ) -> Result<bool> {
+        use xrack_runtime::SearchUpdate;
+
+        input.try_apply(
+            || self.table_flag(element, "live", false),
+            |update| {
+                let (event, text) = match update {
+                    SearchUpdate::SetText(text) => {
+                        return self.update_control(
+                            element,
+                            node,
+                            "text",
+                            Value::String(text.into()),
+                        );
+                    }
+                    SearchUpdate::Edited(text) => ("edited", text),
+                    SearchUpdate::Accepted(text) => ("accepted", text),
+                    SearchUpdate::Selected(text) => ("selected", text),
+                    SearchUpdate::Triggered(text) => ("search-triggered", text),
+                };
+                self.handler(element, event, &[Value::String(text.into())])?;
+                Ok(true)
+            },
+        )
+    }
+
     fn edit_control(&self, element: &Element, node: &Node, text: String) -> Result<bool> {
+        if node.kind == "SearchField" {
+            return self.apply_search_input(element, node, xrack_runtime::SearchInput::Edit(text));
+        }
         let value = Value::String(text);
         let combo = node.kind == "ComboBox";
         let name = if combo { "edit-text" } else { "text" };
         if !self.update_control(element, node, name, value.clone())? {
             return Ok(false);
         }
-        let typed = combo
-            || node.kind == "SearchField"
-            || xrack_runtime::is_multiline_text_input(node.kind);
+        let typed = combo || xrack_runtime::is_multiline_text_input(node.kind);
         let args = std::slice::from_ref(&value);
         self.handler(element, "edited", if typed { args } else { &[] })?;
-        if node.kind == "SearchField"
-            && self.binding_value(element, "live")? == Some(Value::Bool(true))
-        {
-            self.handler(element, "search-triggered", args)?;
-        }
         Ok(true)
     }
 }
@@ -3225,9 +3737,36 @@ pub(crate) fn model_value(value: Value) -> Value {
     }
 }
 
+/// Match the generated callback ABI, which passes list contents by value.
+pub(super) fn callback_value(value: Value) -> Value {
+    match value {
+        Value::StringModel(model) => Value::StringModel(model.into_snapshot().into()),
+        Value::RecordList(list) => {
+            let (name, rows) = list.into_snapshot();
+            Value::RecordList(RecordList::new(name, rows))
+        }
+        Value::TouchPoints(points) => Value::TouchPoints(points.into_snapshot().into()),
+        value => model_value(value),
+    }
+}
+
+fn callback_parameter(value: &Value) -> Value {
+    // The call site already tracked the live model. A parameter read only
+    // copies the sampled values into the expression's own model.
+    match value {
+        Value::StringModel(model) => Value::StringModel(model.snapshot_untracked().into()),
+        Value::RecordList(list) => Value::RecordList(RecordList::new(
+            list.name(),
+            list.model().snapshot_untracked(),
+        )),
+        Value::TouchPoints(points) => Value::TouchPoints(points.snapshot_untracked().into()),
+        value => model_value(value.clone()),
+    }
+}
+
 pub(crate) fn host_value(value: Value) -> Value {
     match value {
-        Value::StringModel(model) => Value::StringList(model.snapshot()),
+        Value::StringModel(model) => Value::StringList(model.into_snapshot()),
         value => value,
     }
 }
@@ -3239,22 +3778,20 @@ fn scene_value(value: Value) -> Value {
     }
 }
 
-fn binary(program: &Program, operator: Binary, lhs: Value, rhs: Value) -> Result<Value> {
-    use Binary::*;
+fn binary(program: &Program, operator: BinaryOperator, lhs: Value, rhs: Value) -> Result<Value> {
+    use BinaryOperator::*;
     use Value::*;
     if matches!(operator, Equal | NotEqual) {
-        let equal = match (&lhs, &rhs) {
-            (StringModel(a), StringModel(b)) => a.values_eq(b),
-            (TouchPoints(a), TouchPoints(b)) => a.values_eq(b),
+        let equal = match (lhs, rhs) {
+            (StringModel(a), StringModel(b)) => a.values_eq_owned(b),
+            (TouchPoints(a), TouchPoints(b)) => a.values_eq_owned(b),
             (StringModel(model), StringList(items)) | (StringList(items), StringModel(model)) => {
-                model.snapshot() == *items
+                model.into_snapshot() == items
             }
-            (RecordList(a), RecordList(b)) => {
-                program.validate_live_record_list(a)?;
-                program.validate_live_record_list(b)?;
-                a.name() == b.name() && a.model().values_eq(b.model())
-            }
-            _ => lhs.eq_with_image_assets(&rhs),
+            (RecordList(a), RecordList(b)) => a
+                .values_eq_owned(b, &program.record_validator)
+                .map_err(evaluation)?,
+            (lhs, rhs) => lhs.eq_with_image_assets(&rhs),
         };
         return Ok(Bool(equal == (operator == Equal)));
     }
@@ -3288,14 +3825,12 @@ fn binary(program: &Program, operator: Binary, lhs: Value, rhs: Value) -> Result
             Add => Ok(Int(a.wrapping_add(b))),
             Subtract => Ok(Int(a.wrapping_sub(b))),
             Multiply => Ok(Int(a.wrapping_mul(b))),
-            Divide => a
-                .checked_div(b)
+            Divide => xrack_runtime::try_int_divide(a, b)
                 .map(Int)
-                .ok_or_else(|| evaluation("invalid integer division")),
-            Remainder => a
-                .checked_rem(b)
+                .map_err(evaluation),
+            Remainder => xrack_runtime::try_int_remainder(a, b)
                 .map(Int)
-                .ok_or_else(|| evaluation("invalid integer remainder")),
+                .map_err(evaluation),
             _ => numeric!(a, b, Int),
         },
         (Float(a), Float(b)) => numeric!(a, b, Float),
@@ -3309,7 +3844,6 @@ fn binary(program: &Program, operator: Binary, lhs: Value, rhs: Value) -> Result
         (Float(factor), Length(length)) => {
             numeric!(factor, length.0, |v| Length(xrack_runtime::Length(v)))
         }
-        (Percent(x), Percent(y)) => numeric!(x.0, y.0, |v| Percent(xrack_runtime::Percent(v))),
         (Date(a), Date(b)) => ordered(a.cmp(&b)),
         (Time(a), Time(b)) => ordered(a.cmp(&b)),
         (Bool(a), Bool(b)) if operator == And => Ok(Bool(a && b)),

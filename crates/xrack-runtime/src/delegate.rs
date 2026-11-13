@@ -1,5 +1,6 @@
 use crate::{
-    ListModel, Node, Property, RowKey, RowLifetime, TableEditHistory, TableRowPatch, VecModel,
+    ListModel, Node, Property, RowKey, RowLifetime, TableCellEditTarget, TableEditHistory,
+    TableRowPatch, TableRows, VecModel, table_rows::try_prepare_table_write,
 };
 use std::{
     cell::{Cell, RefCell},
@@ -46,6 +47,45 @@ impl<Item: Clone> RowContext<Item> {
         self.0
             .index
             .get(|| unreachable!("delegate index is initialized"))
+    }
+
+    /// Prepare a write through a row input and recheck its source after user code runs.
+    #[doc(hidden)]
+    pub fn try_table_edit_target<M: ListModel + Clone, A, E>(
+        &self,
+        rows: impl Fn() -> Result<Option<TableRows<M>>, E>,
+        prepare: impl FnOnce() -> Result<Option<A>, E>,
+    ) -> Result<Option<(TableCellEditTarget<M>, A)>, E> {
+        self.try_table_edit_target_for_field(rows, |_| Ok(Some(())), prepare)
+    }
+
+    /// Check that the field being written still has the same value after preparation.
+    #[doc(hidden)]
+    pub fn try_table_edit_target_for_field<M: ListModel + Clone, A, E, F: Clone + PartialEq>(
+        &self,
+        rows: impl Fn() -> Result<Option<TableRows<M>>, E>,
+        field: impl Fn(&TableCellEditTarget<M>) -> Result<Option<F>, E>,
+        prepare: impl FnOnce() -> Result<Option<A>, E>,
+    ) -> Result<Option<(TableCellEditTarget<M>, A)>, E> {
+        let result = try_prepare_table_write(
+            || {
+                let Some(rows) = rows()? else {
+                    return Ok(None);
+                };
+                let key = self.0.key;
+                let Some(index) = rows
+                    .source()
+                    .index_of_source_key(key, self.index() as usize)
+                else {
+                    return Ok(None);
+                };
+                let target = TableCellEditTarget { rows, index, key };
+                Ok(field(&target)?.map(|value| (target, value)))
+            },
+            prepare,
+            |(target, value)| (target.edit_key(), value.clone()),
+        )?;
+        Ok(result.map(|((target, _), prepared)| (target, prepared)))
     }
 }
 
@@ -117,15 +157,7 @@ impl<Item: Clone + PartialEq> RowContext<Item> {
         self.write_projected_in(
             model,
             |index, key| {
-                if enabled {
-                    history.commit_cell(model, index, key, update, capture)
-                } else {
-                    let changed = model.update_row_if_key(index, key, update);
-                    if changed {
-                        history.clear();
-                    }
-                    changed
-                }
+                history.commit_cell_if_enabled(model, index, key, enabled, update, capture)
             },
             project,
         )
@@ -161,8 +193,11 @@ struct Delegate<Item, State, Ui> {
 impl<Item: Clone + PartialEq, State, Ui> Delegate<Item, State, Ui> {
     fn sync(&self, index: usize, item: impl FnOnce() -> Item) {
         self.input.0.index.set_if_changed(index as i64);
-        self.synchronize
-            .get(|| self.input.0.item.set_if_changed(item()));
+        self.synchronize.get(|| {
+            // A record can move without notifying its old slot's value readers.
+            self.input.index();
+            self.input.0.item.set_if_changed(item());
+        });
     }
 }
 
@@ -191,6 +226,14 @@ impl<Model: ListModel, State: Default, Ui> ComponentRepeater<Model, State, Ui> {
         self.model.get(|| Rc::new(model()))
     }
 
+    #[doc(hidden)]
+    pub fn try_resolve_model<E>(
+        &self,
+        model: impl FnOnce() -> Result<Model, E>,
+    ) -> Result<Rc<Model>, E> {
+        self.model.try_get(|| model().map(Rc::new))
+    }
+
     pub fn with_model<R>(
         &self,
         model: impl FnOnce() -> Model,
@@ -208,7 +251,7 @@ impl<Model: ListModel, State: Default, Ui> ComponentRepeater<Model, State, Ui> {
         model: impl FnOnce() -> Model,
         range: Range<usize>,
         create: impl Fn(RowContext<Model::Item>) -> Ui,
-        render: impl Fn(&Ui, usize, &dyn Fn() -> Model::Item, &State) -> Node,
+        render: impl Fn(&Ui, usize, &dyn Fn() -> Model::Item, &dyn Fn() -> i64, &State) -> Node,
     ) -> Vec<Node> {
         self.render_rows(
             model,
@@ -224,7 +267,7 @@ impl<Model: ListModel, State: Default, Ui> ComponentRepeater<Model, State, Ui> {
         model: impl FnOnce() -> Model,
         indices: impl IntoIterator<Item = usize>,
         create: impl Fn(RowContext<Model::Item>) -> Ui,
-        render: impl Fn(&Ui, usize, &dyn Fn() -> Model::Item, &State) -> Node,
+        render: impl Fn(&Ui, usize, &dyn Fn() -> Model::Item, &dyn Fn() -> i64, &State) -> Node,
     ) -> Vec<Node> {
         self.render_rows(
             model,
@@ -244,7 +287,7 @@ impl<Model: ListModel, State: Default, Ui> ComponentRepeater<Model, State, Ui> {
         indices: impl IntoIterator<Item = usize>,
         reads_index: bool,
         create: impl Fn(RowContext<Model::Item>) -> Ui,
-        render: impl Fn(&Ui, usize, &dyn Fn() -> Model::Item, &State) -> Node,
+        render: impl Fn(&Ui, usize, &dyn Fn() -> Model::Item, &dyn Fn() -> i64, &State) -> Node,
     ) -> Vec<Node> {
         self.render_rows(
             model,
@@ -261,15 +304,15 @@ impl<Model: ListModel, State: Default, Ui> ComponentRepeater<Model, State, Ui> {
         indices: impl FnOnce(usize) -> I,
         cache_reads_index: Option<bool>,
         create: impl Fn(RowContext<Model::Item>) -> Ui,
-        render: impl Fn(&Ui, usize, &dyn Fn() -> Model::Item, &State) -> Node,
+        render: impl Fn(&Ui, usize, &dyn Fn() -> Model::Item, &dyn Fn() -> i64, &State) -> Node,
     ) -> Vec<Node> {
         self.try_render_rows(
-            model,
+            &self.resolve_model(model),
             indices,
             cache_reads_index,
-            create,
-            |ui, index, item, state| {
-                Ok::<_, std::convert::Infallible>(render(ui, index, item, state))
+            |input| Ok(create(input)),
+            |ui, index, item, row_index, state| {
+                Ok::<_, std::convert::Infallible>(render(ui, index, item, row_index, state))
             },
         )
         .unwrap_or_else(|error| match error {})
@@ -283,7 +326,59 @@ impl<Model: ListModel, State: Default, Ui> ComponentRepeater<Model, State, Ui> {
         indices: impl IntoIterator<Item = usize>,
         cache_reads_index: Option<bool>,
         create: impl Fn(RowContext<Model::Item>) -> Ui,
-        render: impl Fn(&Ui, usize, &dyn Fn() -> Model::Item, &State) -> Result<Node, E>,
+        render: impl Fn(
+            &Ui,
+            usize,
+            &dyn Fn() -> Model::Item,
+            &dyn Fn() -> i64,
+            &State,
+        ) -> Result<Node, E>,
+    ) -> Result<Vec<Node>, E> {
+        self.try_render_rows(
+            &self.resolve_model(model),
+            |count| indices.into_iter().filter(move |&index| index < count),
+            cache_reads_index,
+            |input| Ok(create(input)),
+            render,
+        )
+    }
+
+    /// Materialize rows against the same model used to resolve their indices.
+    #[doc(hidden)]
+    pub fn render_resolved_indices(
+        &self,
+        model: &Model,
+        indices: impl IntoIterator<Item = usize>,
+        cache_reads_index: Option<bool>,
+        create: impl Fn(RowContext<Model::Item>) -> Ui,
+        render: impl Fn(&Ui, usize, &dyn Fn() -> Model::Item, &dyn Fn() -> i64, &State) -> Node,
+    ) -> Vec<Node> {
+        self.try_render_resolved_indices(
+            model,
+            indices,
+            cache_reads_index,
+            |input| Ok(create(input)),
+            |ui, index, item, row_index, state| {
+                Ok::<_, std::convert::Infallible>(render(ui, index, item, row_index, state))
+            },
+        )
+        .unwrap_or_else(|error| match error {})
+    }
+
+    #[doc(hidden)]
+    pub fn try_render_resolved_indices<E>(
+        &self,
+        model: &Model,
+        indices: impl IntoIterator<Item = usize>,
+        cache_reads_index: Option<bool>,
+        create: impl Fn(RowContext<Model::Item>) -> Result<Ui, E>,
+        render: impl Fn(
+            &Ui,
+            usize,
+            &dyn Fn() -> Model::Item,
+            &dyn Fn() -> i64,
+            &State,
+        ) -> Result<Node, E>,
     ) -> Result<Vec<Node>, E> {
         self.try_render_rows(
             model,
@@ -296,13 +391,18 @@ impl<Model: ListModel, State: Default, Ui> ComponentRepeater<Model, State, Ui> {
 
     fn try_render_rows<I: Iterator<Item = usize>, E>(
         &self,
-        model: impl FnOnce() -> Model,
+        model: &Model,
         indices: impl FnOnce(usize) -> I,
         cache_reads_index: Option<bool>,
-        create: impl Fn(RowContext<Model::Item>) -> Ui,
-        render: impl Fn(&Ui, usize, &dyn Fn() -> Model::Item, &State) -> Result<Node, E>,
+        create: impl Fn(RowContext<Model::Item>) -> Result<Ui, E>,
+        render: impl Fn(
+            &Ui,
+            usize,
+            &dyn Fn() -> Model::Item,
+            &dyn Fn() -> i64,
+            &State,
+        ) -> Result<Node, E>,
     ) -> Result<Vec<Node>, E> {
-        let model = self.model.get(|| Rc::new(model()));
         let count = model.row_count();
         let stamp = model.structure_stamp();
         if self.stamp.replace(Some(stamp)) != Some(stamp) {
@@ -316,29 +416,34 @@ impl<Model: ListModel, State: Default, Ui> ComponentRepeater<Model, State, Ui> {
         let nodes = indices(count)
             .map(|index| {
                 let key = model.row_key(index);
-                let row = self
-                    .rows
-                    .borrow_mut()
-                    .entry(key)
-                    .or_insert_with(|| {
+                let row = match self.rows.borrow_mut().entry(key) {
+                    std::collections::btree_map::Entry::Occupied(row) => row.get().clone(),
+                    std::collections::btree_map::Entry::Vacant(row) => {
                         let input = RowContext(Rc::new(Input {
                             key,
                             item: Property::default(),
                             index: Property::default(),
                         }));
                         input.0.index.set_if_changed(index as i64);
-                        Rc::new(Delegate {
+                        row.insert(Rc::new(Delegate {
                             synchronize: Property::default(),
                             lifetime: model.row_lifetime(key),
                             state: State::default(),
-                            ui: create(input.clone()),
+                            ui: create(input.clone())?,
                             input,
-                        })
-                    })
-                    .clone();
+                        }))
+                        .clone()
+                    }
+                };
                 row.sync(index, || model.item(index));
                 let draw = || {
-                    let mut node = render(&row.ui, index, &|| row.input.item(), &row.state)?;
+                    let mut node = render(
+                        &row.ui,
+                        index,
+                        &|| row.input.item(),
+                        &|| row.input.index(),
+                        &row.state,
+                    )?;
                     node.set_row_key(Some(key));
                     Ok(node)
                 };
@@ -371,19 +476,129 @@ impl<Model: ListModel, State: Default, Ui> ComponentRepeater<Model, State, Ui> {
         key: RowKey,
         action: impl FnOnce(&Ui) -> T,
     ) -> Option<T> {
-        let model = self.model.get(|| Rc::new(model()));
-        if index >= model.row_count() || model.row_key(index) != key {
-            return None;
-        }
+        self.with_event_row(model, index, key, false, action)
+    }
+
+    /// A terminal event can reach a retained delegate even after its row moves.
+    #[doc(hidden)]
+    pub fn with_event_row<T>(
+        &self,
+        model: impl FnOnce() -> Model,
+        index: usize,
+        key: RowKey,
+        follow_row: bool,
+        action: impl FnOnce(&Ui) -> T,
+    ) -> Option<T> {
+        self.with_event_row_state(model, index, key, follow_row, |ui, _, _, _| action(ui))
+    }
+
+    #[doc(hidden)]
+    pub fn with_row_state<T>(
+        &self,
+        model: impl FnOnce() -> Model,
+        index: usize,
+        key: RowKey,
+        read: impl FnOnce(&dyn Fn() -> Model::Item, &dyn Fn() -> i64, &State) -> T,
+    ) -> Option<T> {
+        self.with_event_row_state(model, index, key, false, |_, item, index, state| {
+            read(item, index, state)
+        })
+    }
+
+    #[doc(hidden)]
+    pub fn with_event_row_state<T>(
+        &self,
+        model: impl FnOnce() -> Model,
+        index: usize,
+        key: RowKey,
+        follow_row: bool,
+        read: impl FnOnce(&Ui, &dyn Fn() -> Model::Item, &dyn Fn() -> i64, &State) -> T,
+    ) -> Option<T> {
+        let model = self.resolve_model(model);
+        let row = self.event_row(&model, index, key, follow_row)?;
+        Some(read(
+            &row.ui,
+            &|| row.input.item(),
+            &|| row.input.index(),
+            &row.state,
+        ))
+    }
+
+    #[doc(hidden)]
+    pub fn with_resolved_event_row<T>(
+        &self,
+        model: &Model,
+        index: usize,
+        key: RowKey,
+        follow_row: bool,
+        action: impl FnOnce(&Ui) -> T,
+    ) -> Option<T> {
+        self.event_row(model, index, key, follow_row)
+            .map(|row| action(&row.ui))
+    }
+
+    fn event_row(
+        &self,
+        model: &Model,
+        index: usize,
+        key: RowKey,
+        follow_row: bool,
+    ) -> Option<Rc<Delegate<Model::Item, State, Ui>>> {
+        let index = if follow_row {
+            model.index_of_source_key(key, index)?
+        } else {
+            if index >= model.row_count() || model.row_key(index) != key {
+                return None;
+            }
+            index
+        };
         let row = self.rows.borrow().get(&key).cloned()?;
         row.sync(index, || model.item(index));
-        Some(action(&row.ui))
+        Some(row)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn failed_delegate_creation_retries_without_replacing_other_rows() {
+        let model = VecModel::from(vec!["first".to_owned(), "second".to_owned()]);
+        let repeater = ComponentRepeater::<VecModel<String>, (), String>::default();
+        let attempts = RefCell::new(Vec::new());
+        let render = |fail| {
+            repeater.try_render_resolved_indices(
+                &model,
+                0..2,
+                Some(false),
+                |input| {
+                    let index = input.index();
+                    attempts.borrow_mut().push(index);
+                    if fail && index == 1 {
+                        return Err("delegate creation failed");
+                    }
+                    Ok(format!("delegate {index}"))
+                },
+                |ui, _, _, _, _| {
+                    let mut node = Node::new("Text", None);
+                    node.properties.insert("text", ui.clone().into());
+                    Ok(node)
+                },
+            )
+        };
+        assert_eq!(render(true), Err("delegate creation failed"));
+        let first = render(false).unwrap();
+        let second = render(false).unwrap();
+        assert_eq!(*attempts.borrow(), [0, 1, 1]);
+        assert_eq!(first[1].text("text"), Some("delegate 1"));
+        assert!(
+            first
+                .iter()
+                .zip(&second)
+                .all(|(a, b)| a.shares_storage_with(b))
+        );
+    }
 
     #[test]
     fn failed_row_scenes_can_be_retried_without_recreating_delegate_state() {
@@ -397,7 +612,7 @@ mod tests {
                 [0],
                 Some(false),
                 |_| creates.set(creates.get() + 1),
-                |_, _, item, _| {
+                |_, _, item, _, _| {
                     draws.set(draws.get() + 1);
                     if fail {
                         return Err("render error");
@@ -430,7 +645,7 @@ mod tests {
                 range,
                 true,
                 |_| (),
-                |_, index, item, _| {
+                |_, index, item, _, _| {
                     draws.set(draws.get() + 1);
                     let mut node = Node::new("Text", None);
                     node.properties
@@ -474,7 +689,7 @@ mod tests {
             || model.clone(),
             0..2,
             |context| context,
-            |context, _, _, _| {
+            |context, _, _, _, _| {
                 contexts.borrow_mut().push(context.clone());
                 Node::new("LineEdit", None)
             },

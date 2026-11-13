@@ -88,8 +88,23 @@ impl TouchPoints {
     }
 
     #[doc(hidden)]
+    pub fn snapshot_untracked(&self) -> Vec<TouchPoint> {
+        self.0.snapshot_untracked()
+    }
+
+    #[doc(hidden)]
+    pub fn into_snapshot(self) -> Vec<TouchPoint> {
+        self.0.into_snapshot()
+    }
+
+    #[doc(hidden)]
     pub fn values_eq(&self, other: &Self) -> bool {
         self.0.values_eq(&other.0)
+    }
+
+    #[doc(hidden)]
+    pub fn values_eq_owned(self, other: Self) -> bool {
+        self.0.values_eq_owned(other.0)
     }
 }
 
@@ -114,6 +129,10 @@ impl ListModel for TouchPoints {
 
     fn structure_stamp(&self) -> (u64, u64) {
         self.0.structure_stamp()
+    }
+
+    fn contents_stamp(&self) -> (u64, u64) {
+        self.0.contents_stamp()
     }
 
     fn index_of_key(&self, key: RowKey) -> Option<usize> {

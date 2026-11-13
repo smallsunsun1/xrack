@@ -227,29 +227,16 @@ pub enum Type {
 
 impl Type {
     pub fn input_field(&self, field: &str) -> Option<Self> {
-        match (self, field) {
-            (Self::KeyEvent, "key" | "text") => Some(Self::String),
-            (Self::KeyEvent, "repeat") => Some(Self::Bool),
-            (Self::KeyEvent | Self::WheelEvent | Self::PointerEvent, "modifiers") => {
-                Some(Self::KeyModifiers)
-            }
-            (Self::PointerEvent, "x" | "y") => Some(Self::Length),
-            (Self::PointerEvent, "inside" | "is-touch") => Some(Self::Bool),
-            (Self::PointerEvent, "kind") => Some(Self::PointerEventKind),
-            (Self::PointerEvent, "button") => Some(Self::PointerButton),
-            (Self::PointerEvent, "touch-finger-id") => Some(Self::Int),
-            (Self::TouchPoint, "id") => Some(Self::Int),
-            (Self::TouchPoint, "x" | "y" | "start-x" | "start-y") => Some(Self::Length),
-            (Self::TouchPoint, "inside") => Some(Self::Bool),
-            (Self::WheelEvent, "x" | "y" | "delta-x" | "delta-y") => Some(Self::Length),
-            (Self::WheelEvent, "lines-x" | "lines-y") => Some(Self::Float),
-            (Self::WheelEvent, "is-line") => Some(Self::Bool),
-            (Self::KeyModifiers, "control" | "shift" | "alt" | "meta" | "primary") => {
-                Some(Self::Bool)
-            }
+        match self {
+            Self::KeyEvent
+            | Self::KeyModifiers
+            | Self::WheelEvent
+            | Self::PointerEvent
+            | Self::TouchPoint => self.builtin_field(field).map(|(_, ty)| ty),
             _ => None,
         }
     }
+
     /// Interpret a type name from the source grammar, including unresolved records.
     pub fn from_source(spelling: &str) -> Self {
         Self::parse(spelling).unwrap_or_else(|| {

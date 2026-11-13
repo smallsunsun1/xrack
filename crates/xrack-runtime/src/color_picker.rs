@@ -1,6 +1,6 @@
 use crate::{
-    Brush, Color, DialogRole, GradientStop, Length, Node, Orientation, RangeAction, SliderRange,
-    SpinAction, TextVerticalAlignment,
+    Brush, Color, DialogRole, GradientStop, InputRoute, Length, Node, Orientation, RangeAction,
+    SliderRange, SpinAction, TextVerticalAlignment,
     picker::{PickerSession, append_picker_dialog},
     spin_value_after,
 };
@@ -370,16 +370,49 @@ impl ColorPopupState {
         true
     }
 
+    pub fn try_finish_input<E>(
+        &self,
+        dialog: &Node,
+        role: DialogRole,
+        input: InputRoute<'_>,
+        show_alpha: impl FnOnce() -> Result<bool, E>,
+    ) -> Result<Option<Color>, E> {
+        let draft = self.0.try_finish_input(dialog, role, input, |draft| {
+            let show_alpha = show_alpha()?;
+            Ok(Self::can_accept(dialog, show_alpha, &draft).then_some(draft))
+        })?;
+        Ok(draft.map(|draft| draft.color))
+    }
+
+    pub fn finish_input(
+        &self,
+        dialog: &Node,
+        role: DialogRole,
+        input: InputRoute<'_>,
+        show_alpha: impl FnOnce() -> bool,
+    ) -> Option<Color> {
+        self.try_finish_input(dialog, role, input, || {
+            Ok::<_, std::convert::Infallible>(show_alpha())
+        })
+        .unwrap_or_else(|error| match error {})
+    }
+
+    fn can_accept(dialog: &Node, show_alpha: bool, draft: &ColorDraft) -> bool {
+        dialog.boolean("show-alpha", false) == show_alpha && draft.hex_valid(show_alpha)
+    }
+
     pub fn finish_editor(
         &self,
         show_alpha: bool,
         dialog: &Node,
         role: DialogRole,
     ) -> Option<Color> {
-        if role == DialogRole::Accept && !self.0.current(dialog)?.hex_valid(show_alpha) {
+        if role == DialogRole::Accept
+            && !Self::can_accept(dialog, show_alpha, &self.0.current(dialog)?)
+        {
             return None;
         }
-        self.finish(dialog)
+        self.0.finish(dialog, role).map(|draft| draft.color)
     }
 
     pub fn slide(&self, show_alpha: bool, node: &Node, action: RangeAction) -> bool {
@@ -433,7 +466,9 @@ impl ColorPopupState {
     }
 
     pub fn finish(&self, dialog: &Node) -> Option<Color> {
-        self.0.finish(dialog).map(|draft| draft.color)
+        self.0
+            .finish(dialog, DialogRole::Accept)
+            .map(|draft| draft.color)
     }
 }
 

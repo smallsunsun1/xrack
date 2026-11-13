@@ -11,9 +11,10 @@ use std::{
 };
 use xrack_ir::semantic::{day_cell_inputs, is_window, rust_name, split_handle_inputs};
 use xrack_mlir::{
-    AliasGraph, AnimationRef, Module, OperationRef, PropertyEndpoint, RecordDeclRef, RepeatRef,
-    RowSceneCache, StateCaseRef, TranslationRef, ValueRef, VisualCacheGroup, canonical_input,
-    repeat_is_positioned, scene_children, visual_cache_operand,
+    AliasGraph, AnimationRef, BinaryOperator, CallbackForward, ComponentAnalysis, Module,
+    OperationRef, PropertyEndpoint, RecordDeclRef, RepeatRef, RowSceneCache, StateCaseRef,
+    TranslationRef, UnaryOperator, ValueRef, VisualCacheGroup, repeat_is_positioned,
+    scene_children, visual_cache_operand,
 };
 use xrack_resources::visual::{
     ControlDefault, ControlLiteral, action_ref, check_state_binding, check_state_control,
@@ -132,7 +133,7 @@ fn host_ty(t: &Type) -> TokenStream {
 
 fn to_host(value: TokenStream, t: &Type) -> TokenStream {
     if t.list_item().is_some() {
-        quote!((#value).snapshot())
+        quote!((#value).into_snapshot())
     } else {
         value
     }
@@ -146,19 +147,6 @@ fn from_host(value: TokenStream, t: &Type) -> TokenStream {
     } else {
         value
     }
-}
-
-fn color(s: &str) -> u32 {
-    let digits = &s[1..];
-    let mut s = if digits.len() <= 4 {
-        digits.chars().flat_map(|c| [c, c]).collect::<String>()
-    } else {
-        digits.into()
-    };
-    if s.len() == 6 {
-        s.push_str("ff");
-    }
-    u32::from_str_radix(&s, 16).expect("validated color")
 }
 
 fn children<'m, 'n>(
@@ -179,129 +167,61 @@ fn value_type(op: OperationRef<'_>) -> Result<Type, String> {
         .ok_or_else(|| format!("{} has unsupported result type {spelling}", op.name()))
 }
 
-fn literal(value: &str, ty: Type) -> Result<TokenStream, String> {
-    Ok(match ty {
-        Type::Int => {
-            let number = value.parse::<i64>().map_err(|e| e.to_string())?;
-            let number = Literal::i64_suffixed(number);
+fn literal(spelling: &str, ty: Type) -> Result<TokenStream, String> {
+    use xrack_resources::literal::Literal as XrLiteral;
+
+    Ok(match xrack_resources::literal::decode(&ty, spelling)? {
+        XrLiteral::Int(value) => {
+            let number = Literal::i64_suffixed(value);
             quote!(#number)
         }
-        Type::Float | Type::Length | Type::Percent => {
-            let number = xrack_mlir::parse_float_literal(value)
-                .ok_or_else(|| format!("invalid {} literal `{value}`", ty.name()))?;
-            let number = Literal::f64_suffixed(number);
-            if ty == Type::Length {
-                quote!(::xrack_runtime::Length(#number))
-            } else if ty == Type::Percent {
-                quote!(::xrack_runtime::Percent(#number / 100.0))
-            } else {
-                quote!(#number)
-            }
+        XrLiteral::Float(value) => {
+            let number = Literal::f64_suffixed(value);
+            quote!(#number)
         }
-        Type::Bool => {
-            let value = value.parse::<bool>().map_err(|e| e.to_string())?;
-            quote!(#value)
+        XrLiteral::Length(value) => {
+            let number = Literal::f64_suffixed(value.0);
+            quote!(::xrack_runtime::Length(#number))
         }
-        Type::String => {
-            let value: String = serde_json::from_str(value).map_err(|e| e.to_string())?;
-            quote!(::std::string::String::from(#value))
+        XrLiteral::Percent(value) => {
+            let number = Literal::f64_suffixed(value.0);
+            quote!(::xrack_runtime::Percent(#number))
         }
-        Type::Color => {
-            let rgba = Literal::u32_suffixed(color(value));
+        XrLiteral::Bool(value) => quote!(#value),
+        XrLiteral::String(value) => quote!(::std::string::String::from(#value)),
+        XrLiteral::Color(color) => {
+            let rgba = Literal::u32_suffixed(color.0);
             quote!(::xrack_runtime::Color(#rgba))
         }
-        Type::ImageFit
-        | Type::ImageTileMode
-        | Type::ImageHorizontalAlignment
-        | Type::ImageVerticalAlignment
-        | Type::ImageRendering
-        | Type::LayoutAlignment
-        | Type::CrossAxisAlignment
-        | Type::Orientation
-        | Type::FlickDirection
-        | Type::FlickBoundsBehavior
-        | Type::FlickBoundsMovement
-        | Type::FlexboxLayoutDirection
-        | Type::FlexboxLayoutWrap
-        | Type::DialInputMode
-        | Type::ScrollBarPolicy
-        | Type::ScrollSnapMode
-        | Type::ScrollAlignment
-        | Type::TextWrap
-        | Type::TextHorizontalAlignment
-        | Type::TextVerticalAlignment
-        | Type::TextOverflow
-        | Type::InputType
-        | Type::CursorShape
-        | Type::PointerEventKind
-        | Type::PointerButton
-        | Type::ColorScheme
-        | Type::FileDialogMode
-        | Type::MessageLevel
-        | Type::MessageButtons
-        | Type::CheckState
-        | Type::DialogRole
-        | Type::StandardButtonKind
-        | Type::SwipeSide
-        | Type::DragAction
-        | Type::EventResult
-        | Type::FocusReason
-        | Type::DrawerEdge
-        | Type::PopupPlacement
-        | Type::SelectionTarget => {
-            if !ty.enum_variants().contains(&value) {
-                return Err(format!("unknown {} value {value}", ty.name()));
-            }
-            let variant = value
-                .split('-')
-                .map(|word| word[..1].to_ascii_uppercase() + &word[1..])
-                .collect::<String>();
-            let variant = format_ident!("{variant}");
+        XrLiteral::Enum { rust_variant, .. } => {
+            let variant = format_ident!("{rust_variant}");
             let enum_type = self::ty(&ty);
             quote!(#enum_type::#variant)
         }
-        Type::KeyEvent
-        | Type::KeyModifiers
-        | Type::WheelEvent
-        | Type::PointerEvent
-        | Type::TouchPoint
-        | Type::TouchPoints => {
+        XrLiteral::Default(_) => {
             let ty = self::ty(&ty);
             quote!(<#ty as ::core::default::Default>::default())
-        }
-        Type::Brush
-        | Type::GradientStop
-        | Type::Image
-        | Type::Date
-        | Type::Time
-        | Type::Font
-        | Type::StringList
-        | Type::PointerButtons
-        | Type::StyledText
-        | Type::Record(_)
-        | Type::RecordList(_) => {
-            return Err(format!("{} does not have literal syntax", ty.name()));
         }
     })
 }
 
-fn binary_operator(value: &str) -> Result<TokenStream, String> {
-    Ok(match value {
-        "+" => quote!(+),
-        "-" => quote!(-),
-        "*" => quote!(*),
-        "/" => quote!(/),
-        "%" => quote!(%),
-        "==" => quote!(==),
-        "!=" => quote!(!=),
-        "<" => quote!(<),
-        "<=" => quote!(<=),
-        ">" => quote!(>),
-        ">=" => quote!(>=),
-        "&&" => quote!(&&),
-        "||" => quote!(||),
-        _ => return Err(format!("unsupported binary operator {value}")),
-    })
+fn binary_operator(operator: BinaryOperator) -> TokenStream {
+    use BinaryOperator::*;
+    match operator {
+        Add => quote!(+),
+        Subtract => quote!(-),
+        Multiply => quote!(*),
+        Divide => quote!(/),
+        Remainder => quote!(%),
+        Equal => quote!(==),
+        NotEqual => quote!(!=),
+        Less => quote!(<),
+        LessEqual => quote!(<=),
+        Greater => quote!(>),
+        GreaterEqual => quote!(>=),
+        And => quote!(&&),
+        Or => quote!(||),
+    }
 }
 
 fn owner<'m>(op: OperationRef<'m>) -> &'m str {
@@ -354,6 +274,14 @@ fn picker_field(key: &str) -> Ident {
 
 fn table_selection_method(key: &str) -> Ident {
     format_ident!("__table_select_{}", rust_key(key))
+}
+
+fn table_selection_command_method(key: &str) -> Ident {
+    format_ident!("__table_select_command_{}", rust_key(key))
+}
+
+fn table_selection_input_method(key: &str) -> Ident {
+    format_ident!("__table_select_input_{}", rust_key(key))
 }
 
 fn table_selection_snapshot_method(key: &str) -> Ident {
@@ -442,6 +370,14 @@ fn tree_command_method(key: &str) -> Ident {
 
 fn tree_selection_method(key: &str) -> Ident {
     format_ident!("__tree_selection_{}", rust_key(key))
+}
+
+fn tree_input_method(key: &str) -> Ident {
+    format_ident!("__tree_input_{}", rust_key(key))
+}
+
+fn search_method(key: &str, name: &str) -> Ident {
+    format_ident!("__search_{}_{}", name, rust_key(key))
 }
 
 fn visual_field(value: usize) -> Ident {
@@ -550,6 +486,10 @@ fn action_render_method(key: &str) -> Ident {
 
 fn action_activate_method(key: &str) -> Ident {
     format_ident!("__activate_action_{}", rust_key(key))
+}
+
+fn action_state_flag_method(key: &str, flag: &str) -> Ident {
+    format_ident!("__action_state_{}_{}", rust_key(key), rust_name(flag))
 }
 
 fn stack_field(key: &str) -> Ident {
@@ -709,7 +649,7 @@ fn calendar_cells_field(key: &str) -> Ident {
     format_ident!("__calendar_cells_{}", rust_key(key))
 }
 
-fn static_children(op: OperationRef<'_>) -> impl Iterator<Item = (usize, OperationRef<'_>)> {
+fn child_slots(op: OperationRef<'_>) -> impl Iterator<Item = (usize, OperationRef<'_>)> {
     // The first two RangeSlider children are the generated handles.
     let first = if op.attr("kind") == Ok("RangeSlider") {
         xrack_runtime::Node::RANGE_THUMBS
@@ -719,7 +659,10 @@ fn static_children(op: OperationRef<'_>) -> impl Iterator<Item = (usize, Operati
     scene_children(op)
         .enumerate()
         .map(move |(index, child)| (first + index, child))
-        .filter(|(_, child)| children(*child, "xr.repeat").next().is_none())
+}
+
+fn static_children(op: OperationRef<'_>) -> impl Iterator<Item = (usize, OperationRef<'_>)> {
+    child_slots(op).filter(|(_, child)| children(*child, "xr.repeat").next().is_none())
 }
 
 type GroupMembers<'a> = BTreeMap<&'a str, Vec<(Vec<usize>, OperationRef<'a>)>>;
@@ -754,12 +697,12 @@ fn button_group_members(root: OperationRef<'_>) -> GroupMembers<'_> {
 fn row_editor_paths<'a>(
     row: OperationRef<'a>,
     path: &mut Vec<usize>,
-    editors: &mut Vec<(Vec<usize>, OperationRef<'a>)>,
+    editors: &mut Vec<(Vec<usize>, OperationRef<'a>, OperationRef<'a>)>,
 ) {
     for (index, child) in static_children(row) {
         path.push(index);
         if let Some(link) = children(child, "xr.row_link").next() {
-            editors.push((path.clone(), link));
+            editors.push((path.clone(), child, link));
         } else {
             row_editor_paths(child, path, editors);
         }
@@ -805,6 +748,7 @@ struct VisualScope<'a> {
     binding_types: Vec<Type>,
     repeats: BTreeMap<&'a str, RepeatScope<'a>>,
     row_delegates: BTreeMap<&'a str, usize>,
+    row_groups: BTreeSet<&'a str>,
 }
 
 struct RepeatScope<'a> {
@@ -817,6 +761,12 @@ struct RepeatScope<'a> {
 impl RepeatScope<'_> {
     fn index(&self) -> usize {
         self.row.row_index.expect("repeat row index")
+    }
+
+    fn uses_row_identity(&self) -> bool {
+        !self.delegates.is_empty()
+            || !self.row.row_groups.is_empty()
+            || self.row.repeats.values().any(Self::uses_row_identity)
     }
 }
 
@@ -865,11 +815,15 @@ impl<'a> VisualScope<'a> {
     }
 
     fn receiver(&self) -> TokenStream {
+        self.receiver_in(&quote!(self))
+    }
+
+    fn receiver_in(&self, component: &TokenStream) -> TokenStream {
         if let Some(index) = self.row_index {
             let row = row_local(index);
             quote!(#row)
         } else {
-            quote!(self.__state.__visuals)
+            quote!(#component.__state.__visuals)
         }
     }
 
@@ -889,13 +843,17 @@ impl<'a> VisualScope<'a> {
             let rust_type = ty(value_type);
             fields.extend(quote!(#field: ::xrack_runtime::Property<#rust_type>,));
         }
+        for &key in &self.row_groups {
+            let field = control_field(key, "checked");
+            fields.extend(quote!(#field: ::xrack_runtime::Property<::core::primitive::bool>,));
+        }
         for repeat in self.repeats.values() {
             let row = &repeat.row;
             row.declare(component, declarations);
             let field = repeat_field(repeat.index());
             let row_type = row.state_name(component);
             let model_type = ty(&repeat.model);
-            if !repeat.delegates.is_empty() {
+            if repeat.uses_row_identity() {
                 let types = repeat.delegates.iter().map(|(_, delegate)| {
                     let component = ident(delegate.attr("component").expect("verified component"));
                     if repeat.table {
@@ -920,16 +878,13 @@ impl<'a> VisualScope<'a> {
 struct Generator<'a> {
     alias_graphs: &'a BTreeMap<&'a str, AliasGraph<'a>>,
     alias_graph: &'a AliasGraph<'a>,
-    forwarded_inputs: BTreeMap<PropertyEndpoint<'a>, Vec<Ident>>,
     elements: BTreeMap<&'a str, OperationRef<'a>>,
     callback_graphs: &'a BTreeMap<&'a str, AliasGraph<'a>>,
     callback_graph: &'a AliasGraph<'a>,
-    callback_forwards: BTreeMap<PropertyEndpoint<'a>, Vec<(&'a str, OperationRef<'a>)>>,
     instance_handlers: Vec<(OperationRef<'a>, Option<OperationRef<'a>>)>,
     records: &'a BTreeMap<&'a str, Vec<Parameter>>,
     instances: BTreeMap<&'a str, OperationRef<'a>>,
-    persistent_state_selectors: BTreeMap<&'a str, OperationRef<'a>>,
-    visual_state_selectors: BTreeSet<&'a str>,
+    analysis: ComponentAnalysis<'a>,
     element_properties: Vec<(&'a str, OperationRef<'a>)>,
     unlinked_controls: Vec<(&'a str, &'static str, Type)>,
     record_combos: Vec<&'a str>,
@@ -967,6 +922,7 @@ struct Generator<'a> {
 struct TableClipboardArms {
     copies: TokenStream,
     pastes: TokenStream,
+    paste_stamps: TokenStream,
     replays: TokenStream,
     fields: TokenStream,
     defaults: TokenStream,
@@ -979,6 +935,12 @@ struct StandardTableEditor {
     ty: Type,
     enabled: TokenStream,
     kind: Ident,
+}
+
+enum RenderContent {
+    Inline,
+    Active(TokenStream),
+    Deferred(Ident),
 }
 
 impl<'a> Generator<'a> {
@@ -1086,7 +1048,10 @@ impl<'a> Generator<'a> {
                     self.popups.push(op);
                 }
                 for (property, ty) in controlled_properties(op) {
-                    if op.attr("kind") != Ok("Action") && control_link(op, property).is_none() {
+                    if op.attr("kind") != Ok("Action")
+                        && control_link(op, property).is_none()
+                        && !(repeat.is_some() && op.attr("kind") == Ok("GroupBox"))
+                    {
                         self.unlinked_controls.push((key, property, ty));
                     }
                 }
@@ -1098,29 +1063,6 @@ impl<'a> Generator<'a> {
         for child in op.children() {
             match child.name() {
                 "xr.element" | "xr.instance" => self.index(child, repeat)?,
-                "xr.instance_state" if repeat.is_none() => {
-                    let selector = self.operand(child, 0)?;
-                    self.persistent_state_selectors
-                        .insert(selector.attr("owner")?, selector);
-                }
-                "xr.state_set" | "xr.state_timing" => {
-                    let selector = self.operand(child, 0)?;
-                    let owner = selector.attr("owner")?;
-                    self.visual_state_selectors.insert(owner);
-                    if repeat.is_none()
-                        && matches!(
-                            op.attribute("kind"),
-                            Some("TableView" | "StandardTableView")
-                        )
-                        && child.name() == "xr.state_set"
-                        && matches!(
-                            child.attribute("name"),
-                            Some("enabled" | "visible" | "pasteable" | "undoable")
-                        )
-                    {
-                        self.persistent_state_selectors.insert(owner, selector);
-                    }
-                }
                 "xr.focus_target" => {
                     self.focus_targets.insert(child.attr("target")?);
                 }
@@ -1245,6 +1187,12 @@ impl<'a> Generator<'a> {
         scope: &mut VisualScope<'a>,
         next: &mut usize,
     ) -> Result<(), String> {
+        if scope.row_index.is_some()
+            && element.attr("kind") == Ok("GroupBox")
+            && control_link(element, "checked").is_none()
+        {
+            scope.row_groups.insert(element_key(element)?);
+        }
         for binding in indexed_visual_bindings(element) {
             self.index_visual_binding(binding, scope)?;
         }
@@ -1278,7 +1226,16 @@ impl<'a> Generator<'a> {
         binding: OperationRef<'a>,
         scope: &VisualScope<'_>,
     ) -> Result<TokenStream, String> {
-        let value = self.visual_expr(self.operand(binding, 0)?, scope)?;
+        self.visual_value_in(binding, scope, &quote!(self))
+    }
+
+    fn visual_value_in(
+        &self,
+        binding: OperationRef<'a>,
+        scope: &VisualScope<'_>,
+        receiver: &TokenStream,
+    ) -> Result<TokenStream, String> {
+        let value = self.visual_expr_in(self.operand(binding, 0)?, scope, receiver)?;
         let key = self.visual_cache_key(binding);
         let cache = if key.uses_component_scope() {
             &self.visuals
@@ -1287,7 +1244,7 @@ impl<'a> Generator<'a> {
         };
         if let Some(&id) = cache.bindings.get(&key) {
             let field = visual_field(id);
-            let receiver = cache.receiver();
+            let receiver = cache.receiver_in(receiver);
             Ok(quote!(#receiver.#field.get(|| #value)))
         } else {
             Ok(value)
@@ -1305,10 +1262,19 @@ impl<'a> Generator<'a> {
         op: OperationRef<'a>,
         scope: &VisualScope<'_>,
     ) -> Result<TokenStream, String> {
+        self.visual_expr_in(op, scope, &quote!(self))
+    }
+
+    fn visual_expr_in(
+        &self,
+        op: OperationRef<'a>,
+        scope: &VisualScope<'_>,
+        receiver: &TokenStream,
+    ) -> Result<TokenStream, String> {
         self.expr_in(
             op,
             ExpressionContext {
-                receiver: &quote!(self),
+                receiver,
                 repeat_parameters: scope.row_index.is_some(),
                 hoist_repeat_subexpressions: scope.row_index.is_some(),
             },
@@ -1333,7 +1299,7 @@ impl<'a> Generator<'a> {
                 },
             )?;
             let field = visual_field(id);
-            let receiver = self.visuals.receiver();
+            let receiver = self.visuals.receiver_in(context.receiver);
             return Ok(quote!(#receiver.#field.get(|| #value)));
         }
         let receiver = context.receiver;
@@ -1416,8 +1382,12 @@ impl<'a> Generator<'a> {
                 };
                 quote!(::core::primitive::i64::from((#image).size()[#axis]))
             }
-            "xr.get_field"
-            | "xr.date_field"
+            "xr.get_field" => {
+                let record = arg(0)?;
+                let field = ident(value);
+                quote!((#record).#field)
+            }
+            "xr.date_field"
             | "xr.time_field"
             | "xr.font_field"
             | "xr.key_field"
@@ -1425,7 +1395,8 @@ impl<'a> Generator<'a> {
             | "xr.pointer_field"
             | "xr.touch_point_field" => {
                 let record = arg(0)?;
-                let field = ident(value);
+                let field =
+                    ident(xrack_resources::field::BuiltinField::from_operation(op)?.member());
                 quote!((#record).#field)
             }
             "xr.markdown" => {
@@ -1640,16 +1611,16 @@ impl<'a> Generator<'a> {
             "xr.tree_query" => {
                 let snapshot = tree_snapshot_method(owner(op));
                 let key = arg(0)?;
-                match value {
-                    "is-expanded" => quote!(#receiver.#snapshot().is_expanded(#key)),
-                    "depth" => {
-                        quote!(#receiver.#snapshot().depth(#key).map_or(-1i64, |index| index as ::core::primitive::i64))
-                    }
-                    "row-for-key" => {
-                        quote!(#receiver.#snapshot().visible_index(#key).map_or(-1i64, |index| index as ::core::primitive::i64))
-                    }
+                let method = match value {
+                    "is-expanded" => quote!(is_expanded),
+                    "depth" => quote!(query_depth),
+                    "row-for-key" => quote!(query_row),
                     _ => return Err("unknown tree query".into()),
-                }
+                };
+                quote!({
+                    let __xr_key = #key;
+                    #receiver.#snapshot().#method(__xr_key)
+                })
             }
             "xr.view_index" => {
                 let method = view_index_method(owner(op));
@@ -1717,17 +1688,16 @@ impl<'a> Generator<'a> {
             }
             "xr.unary" => {
                 let arg = arg(0)?;
-                match value {
-                    "+" => arg,
-                    "-" if value_type(op)? == Type::Int => {
+                match UnaryOperator::from_operation(op)? {
+                    UnaryOperator::Positive => arg,
+                    UnaryOperator::Negate if value_type(op)? == Type::Int => {
                         quote!(::core::primitive::i64::wrapping_neg(#arg))
                     }
-                    "-" if value_type(op)? == Type::Length => {
+                    UnaryOperator::Negate if value_type(op)? == Type::Length => {
                         quote!(::xrack_runtime::Length(-(#arg).0))
                     }
-                    "-" => quote!((-#arg)),
-                    "!" => quote!((!#arg)),
-                    _ => return Err(format!("unsupported unary operator {value}")),
+                    UnaryOperator::Negate => quote!((-#arg)),
+                    UnaryOperator::Not => quote!((!#arg)),
                 }
             }
             "xr.binary" if value_type(op)? == Type::String => {
@@ -1736,23 +1706,31 @@ impl<'a> Generator<'a> {
             }
             "xr.binary" if value_type(self.operand(op, 0)?)?.list_item().is_some() => {
                 let (left, right) = (arg(0)?, arg(1)?);
-                let equal = quote!((#left).values_eq(&(#right)));
-                match value {
-                    "==" => equal,
-                    "!=" => quote!(!#equal),
+                let equal = quote!((#left).values_eq_owned(#right));
+                match BinaryOperator::from_operation(op)? {
+                    BinaryOperator::Equal => equal,
+                    BinaryOperator::NotEqual => quote!(!#equal),
                     _ => return Err(format!("unsupported list operator {value}")),
                 }
             }
             "xr.binary" if value_type(op)? == Type::Int => {
                 let (left, right) = (arg(0)?, arg(1)?);
-                match value {
-                    "+" => quote!(::core::primitive::i64::wrapping_add(#left, #right)),
-                    "-" => quote!(::core::primitive::i64::wrapping_sub(#left, #right)),
-                    "*" => quote!(::core::primitive::i64::wrapping_mul(#left, #right)),
-                    "/" => quote!(::core::primitive::i64::checked_div(#left, #right)
-                        .expect("invalid integer division")),
-                    "%" => quote!(::core::primitive::i64::checked_rem(#left, #right)
-                        .expect("invalid integer remainder")),
+                match BinaryOperator::from_operation(op)? {
+                    BinaryOperator::Add => {
+                        quote!(::core::primitive::i64::wrapping_add(#left, #right))
+                    }
+                    BinaryOperator::Subtract => {
+                        quote!(::core::primitive::i64::wrapping_sub(#left, #right))
+                    }
+                    BinaryOperator::Multiply => {
+                        quote!(::core::primitive::i64::wrapping_mul(#left, #right))
+                    }
+                    BinaryOperator::Divide => {
+                        quote!(::xrack_runtime::int_divide(#left, #right))
+                    }
+                    BinaryOperator::Remainder => {
+                        quote!(::xrack_runtime::int_remainder(#left, #right))
+                    }
                     _ => return Err(format!("unsupported integer operator {value}")),
                 }
             }
@@ -1767,7 +1745,7 @@ impl<'a> Generator<'a> {
                     })
                 };
                 let (left, right) = (scalar(0)?, scalar(1)?);
-                let operator = binary_operator(value)?;
+                let operator = binary_operator(BinaryOperator::from_operation(op)?);
                 let expression = quote!((#left #operator #right));
                 if value_type(op)? == Type::Length {
                     quote!(::xrack_runtime::Length(#expression))
@@ -1816,8 +1794,14 @@ impl<'a> Generator<'a> {
     }
 
     fn forwarded_input(&self, endpoint: PropertyEndpoint<'a>) -> Option<TokenStream> {
-        let (first, rest) = self.forwarded_inputs.get(&endpoint)?.split_first()?;
-        Some(quote!(__inputs.#first.take() #(.or(__inputs.#rest.take()))*))
+        let forward = self.analysis.property_forwards.get(&[endpoint][..])?;
+        Some(Self::take_forwarded_inputs(&forward.inputs))
+    }
+
+    fn take_forwarded_inputs(names: &[&str]) -> TokenStream {
+        let mut fields = names.iter().map(|name| property_field("root", name));
+        let first = fields.next().expect("a forward has at least one alias");
+        quote!(__inputs.#first.take() #(.or_else(|| __inputs.#fields.take()))*)
     }
 
     fn callback_call(
@@ -1901,7 +1885,7 @@ impl<'a> Generator<'a> {
                         };
                         quote!(::xrack_runtime::StackNavigation::#variant(&(#argument)))
                     };
-                    statements.extend(quote!(let _ = self.#method(None, #action);));
+                    statements.extend(quote!(let _ = self.#method(None, #action, None);));
                 }
                 "xr.timer_command" => {
                     let method = timer_member(statement.attr("owner")?, "command");
@@ -1917,7 +1901,7 @@ impl<'a> Generator<'a> {
                 "xr.popup_command" => {
                     let method = popup_method(statement.attr("owner")?);
                     let open = statement.attr("open")? == "true";
-                    statements.extend(quote!(let _ = self.#method(#open);));
+                    statements.extend(quote!(let _ = self.#method(#open, None);));
                 }
                 "xr.file_dialog_open" | "xr.native_dialog_open" => {
                     let open = native_dialog_member(statement.attr("owner")?, "open");
@@ -2104,7 +2088,11 @@ impl<'a> Generator<'a> {
                     };
                     let from = self.expr(self.operand(statement, 0)?)?;
                     let to = self.expr(self.operand(statement, 1)?)?;
-                    statements.extend(quote!(self.#method(#from, #to);));
+                    if statement.name() == "xr.move_row" {
+                        statements.extend(quote!(self.#method(#from, #to, None);));
+                    } else {
+                        statements.extend(quote!(self.#method(#from, #to);));
+                    }
                 }
                 "xr.table_selection_command" => {
                     let method = table_selection_method(owner(statement));
@@ -2165,7 +2153,9 @@ impl<'a> Generator<'a> {
                 "xr.table_sort_command" => {
                     let method = table_sort_method(owner(statement));
                     match statement.attr("method")? {
-                        "clear-sort" => statements.extend(quote!(let _ = self.#method(None);)),
+                        "clear-sort" => {
+                            statements.extend(quote!(let _ = self.#method(None, None);))
+                        }
                         "sort-by" => {
                             let column = self.expr(self.operand(statement, 0)?)?;
                             let descending = self.expr(self.operand(statement, 1)?)?;
@@ -2174,7 +2164,7 @@ impl<'a> Generator<'a> {
                                     let __xr_column = #column;
                                     let __xr_descending = #descending;
                                     if let Ok(column) = <::core::primitive::usize as ::core::convert::TryFrom<_>>::try_from(__xr_column) {
-                                        let _ = self.#method(Some(::xrack_runtime::TableSort { column, descending: __xr_descending }));
+                                        let _ = self.#method(Some(::xrack_runtime::TableSort { column, descending: __xr_descending }), None);
                                     }
                                 }
                             });
@@ -2268,8 +2258,13 @@ impl<'a> Generator<'a> {
         }
         if self.static_subtree(element) {
             let mut body = TokenStream::new();
-            let name =
-                self.render_element(element, &VisualScope::default(), &mut body, next, None)?;
+            let name = self.render_element(
+                element,
+                &VisualScope::default(),
+                &mut body,
+                next,
+                RenderContent::Inline,
+            )?;
             if let Some(rows) = element.integer_attribute("xr.static_repeat_count") {
                 let positioned = repeat_is_positioned(element);
                 body.extend(quote! {
@@ -2305,7 +2300,17 @@ impl<'a> Generator<'a> {
             let name = format_ident!("__xr_repeat_{}", *next);
             *next += 1;
             let row = self.repeat_row(element, repeat, model, next)?;
-            let render = if repeat_is_positioned(element) {
+            let positioned = repeat_is_positioned(element);
+            if repeat.uses_row_identity() {
+                out.extend(quote! {
+                    let #name = ::xrack_runtime::repeat_scene(
+                        #receiver.#field.render_range(|| #expression, 0..4096, |_| (), #row),
+                        #positioned,
+                    );
+                });
+                return Ok(name);
+            }
+            let render = if positioned {
                 quote!(render_positioned)
             } else {
                 quote!(render)
@@ -2314,36 +2319,8 @@ impl<'a> Generator<'a> {
                 let #name = #receiver.#field.#render(|| #expression, #row);
             });
             Ok(name)
-        } else if let Some(guard) = children(element, "xr.show_if").next() {
-            let close = if element.attribute("kind").and_then(picker_value).is_some() {
-                let popup = picker_field(element_key(element)?);
-                quote!(self.__state.#popup.close();)
-            } else {
-                TokenStream::new()
-            };
-            if self.use_visual_plan && guard.attribute("xr.static_hidden") == Some("true") {
-                let name = format_ident!("__xr_hidden_{}", *next);
-                *next += 1;
-                out.extend(quote! {
-                    let #name = { #close ::xrack_runtime::Node::hidden() };
-                });
-                return Ok(name);
-            }
-            let condition = self.visual_value(guard, scope)?;
-            let mut body = TokenStream::new();
-            let name = self.render_element(element, scope, &mut body, next, None)?;
-            out.extend(quote! {
-                let #name = if #condition {
-                    #body
-                    #name
-                } else {
-                    #close
-                    ::xrack_runtime::Node::hidden()
-                };
-            });
-            Ok(name)
         } else {
-            self.render_element(element, scope, out, next, None)
+            self.render_element(element, scope, out, next, RenderContent::Inline)
         }
     }
 
@@ -2356,16 +2333,22 @@ impl<'a> Generator<'a> {
     ) -> Result<TokenStream, String> {
         let parameters = RepeatRef::from_operation(model)?;
         let item = ident(parameters.item);
+        let row_index = repeat.uses_row_identity().then(|| quote!(__xr_row_index,));
         let index_binding = parameters.index.map(|index| {
             let index = ident(index);
-            quote!(let #index = || __xr_index as ::core::primitive::i64;)
+            if row_index.is_some() {
+                quote!(let #index = __xr_row_index;)
+            } else {
+                quote!(let #index = || __xr_index as ::core::primitive::i64;)
+            }
         });
         let row_local = row_local(repeat.index());
-        let delegate = (!repeat.delegates.is_empty()).then(|| quote!(__xr_delegates,));
-        let track_columns = (repeat.table && repeat.delegates.is_empty())
+        let delegate = repeat.uses_row_identity().then(|| quote!(__xr_delegates,));
+        let track_columns = (repeat.table && !repeat.uses_row_identity())
             .then(|| quote!(__xr_columns_changed.track();));
         let mut body = TokenStream::new();
-        let child = self.render_element(element, &repeat.row, &mut body, next, None)?;
+        let child =
+            self.render_element(element, &repeat.row, &mut body, next, RenderContent::Inline)?;
         if element.attr("kind") == Ok("TableRow") {
             let cells: BTreeSet<_> = repeat
                 .delegates
@@ -2384,7 +2367,7 @@ impl<'a> Generator<'a> {
             }
         }
         Ok(
-            quote!(|#delegate __xr_index, #item, #row_local| { #track_columns #index_binding #body #child }),
+            quote!(|#delegate __xr_index, #item, #row_index #row_local| { #track_columns #index_binding #body #child }),
         )
     }
 
@@ -2410,7 +2393,6 @@ impl<'a> Generator<'a> {
         &self,
         element: OperationRef<'a>,
         row: OperationRef<'a>,
-        repeater: TokenStream,
         model: &TokenStream,
     ) -> Result<TokenStream, String> {
         let role = |name: &str| -> Result<TokenStream, String> {
@@ -2444,7 +2426,7 @@ impl<'a> Generator<'a> {
             )?;
             return Ok(quote! {
                 self.__state.#state.snapshot_projected(
-                    || #repeater.resolve_model(|| #model),
+                    || #model.clone(),
                     |item| (item #key, item #parent),
                     || #root,
                     Some(|item: &#record| item #visible),
@@ -2462,7 +2444,7 @@ impl<'a> Generator<'a> {
             )?;
             return Ok(quote! {
                 self.__state.#state.snapshot_filtered(
-                    || #repeater.resolve_model(|| #model),
+                    || #model.clone(),
                     |item| (item #key, item #parent),
                     || #root,
                     || #query,
@@ -2471,32 +2453,8 @@ impl<'a> Generator<'a> {
             });
         }
         Ok(
-            quote!(self.__state.#state.snapshot_with_root(|| #repeater.resolve_model(|| #model), |item| (item #key, item #parent), || #root)),
+            quote!(self.__state.#state.snapshot_with_root(|| #model.clone(), |item| (item #key, item #parent), || #root)),
         )
-    }
-
-    fn list_arms(
-        &self,
-        element: OperationRef<'a>,
-        path: &mut Vec<usize>,
-        out: &mut TokenStream,
-    ) -> Result<(), String> {
-        if element.name() == "xr.instance" {
-            let field = instance_field(element_key(element)?);
-            out.extend(
-                quote!([#(#path,)* rest @ ..] => self.__state.#field.__list_rows(rest, __range),),
-            );
-        } else if has_virtual_rows(element) {
-            let method = list_rows_method(element_key(element)?);
-            out.extend(quote!([#(#path),*] => self.#method(__range, &::core::default::Default::default()),));
-        } else if children(element, "xr.repeat").next().is_none() {
-            for (index, child) in static_children(element) {
-                path.push(index);
-                self.list_arms(child, path, out)?;
-                path.pop();
-            }
-        }
-        Ok(())
     }
 
     fn list_row_body(&self, element: OperationRef<'a>) -> Result<TokenStream, String> {
@@ -2575,9 +2533,7 @@ impl<'a> Generator<'a> {
             let field = repeat_field(repeat.index());
             let model_expr = self.expr(self.operand(model, 0)?)?;
             let row_expr = self.repeat_row(row, repeat, model, &mut 0)?;
-            let create = if repeat.delegates.is_empty() {
-                TokenStream::new()
-            } else {
+            let create = if !repeat.delegates.is_empty() {
                 let mut instances = TokenStream::new();
                 let locale = self
                     .with_translations
@@ -2592,7 +2548,7 @@ impl<'a> Generator<'a> {
                     let component = delegate.attr("component")?;
                     let name = ident(component);
                     let inputs = format_ident!("__Inputs_{}", rust_name(component));
-                    let table = table_history_configured(element).then_some(element);
+                    let table = (element.attr("kind") == Ok("TableView")).then_some(element);
                     let bindings = self.instance_inputs(*delegate, Some(model), table)?;
                     let instance = quote!(#name::__new(#inputs { #bindings #locale ..::core::default::Default::default() }));
                     if repeat.table {
@@ -2613,6 +2569,10 @@ impl<'a> Generator<'a> {
                     let __parent = ::std::rc::Rc::downgrade(&self.__state);
                     (#instances)
                 },)
+            } else if repeat.uses_row_identity() {
+                quote!(|_| (),)
+            } else {
+                TokenStream::new()
             };
             let cache = self
                 .use_visual_plan
@@ -2620,6 +2580,18 @@ impl<'a> Generator<'a> {
                 .flatten()
                 .filter(|_| !repeat.delegates.is_empty());
             let reads_index = cache == Some(RowSceneCache::Indexed);
+            let render_resolved = |model: TokenStream, indices: TokenStream| {
+                if !repeat.uses_row_identity() {
+                    quote!(repeater.render_resolved_indices(#model, #indices, #row_expr))
+                } else {
+                    let cache = if cache.is_some() {
+                        quote!(Some(#reads_index))
+                    } else {
+                        quote!(None)
+                    };
+                    quote!(repeater.render_resolved_indices(#model, #indices, #cache, #create #row_expr))
+                }
+            };
             let render_indices = |indices: TokenStream| {
                 if cache.is_some() {
                     quote!(repeater.render_cached_rows(|| #model_expr, #indices, #reads_index, #create #row_expr))
@@ -2633,17 +2605,16 @@ impl<'a> Generator<'a> {
                 quote!(repeater.render_range(|| #model_expr, __range, #create #row_expr))
             };
             if element.attr("kind") == Ok("TreeView") {
-                let tree = self.tree_snapshot(
-                    element,
-                    row,
-                    quote!(self.__state.__visuals.#field),
-                    &model_expr,
-                )?;
-                let rows = render_indices(quote!(rows.iter().map(|row| row.model_index)));
+                let tree = self.tree_snapshot(element, row, &quote!(__xr_model))?;
+                let rows = render_resolved(
+                    quote!(&__xr_model),
+                    quote!(rows.iter().map(|row| row.model_index)),
+                );
                 return Ok(quote! {{
                         let repeater = &self.__state.__visuals.#field;
+                        let __xr_model = repeater.resolve_model(|| #model_expr);
                         let tree = #tree;
-                        let rows = tree.rows().get(__range).unwrap_or_default();
+                        let rows = tree.rows_in_range(__range);
                         #rows
                 }});
             }
@@ -2654,13 +2625,14 @@ impl<'a> Generator<'a> {
                     let visible = visible_list_model(element_key(element)?);
                     quote!(&self.#visible())
                 };
-                let track_columns = (repeat.table && repeat.delegates.is_empty()).then(
+                let track_columns = (repeat.table && !repeat.uses_row_identity()).then(
                     || quote!(let __xr_columns_changed = repeater.column_window(__xr_columns);),
                 );
-                let reordered = render_indices(quote!(
-                    __range.filter_map(|row| positions.source_index(row))
-                ));
-                let range = render_range;
+                let reordered = render_resolved(
+                    quote!(rows.source_model()),
+                    quote!(__range.filter_map(|row| positions.source_index(row))),
+                );
+                let range = render_resolved(quote!(rows.source_model()), quote!(__range));
                 return Ok(quote! {{
                         let repeater = &self.__state.__visuals.#field;
                         #track_columns
@@ -2696,7 +2668,7 @@ impl<'a> Generator<'a> {
                     ::core::default::Default::default,
                     |child| {
                         let mut ui = #component { __state: self.__state.#field.__state.clone() };
-                        visit(&mut ui, child, rest)
+                        visit(&mut ui, child, rest, input)
                     },
                 )),
             });
@@ -2705,7 +2677,13 @@ impl<'a> Generator<'a> {
             if editors.is_empty() {
                 return Ok(());
             }
-            let model = self.table_model(element)?;
+            let model = self.editable_table_rows_model(element, &quote!(self))?;
+            let record_history = if table_history_configured(element) {
+                let enabled = table_history_method(element_key(element)?, "enabled");
+                quote!(self.#enabled())
+            } else {
+                quote!(false)
+            };
             let writes = editors.iter().map(|StandardTableEditor { column, field, enabled, kind, ty }| {
                 let field_path: Vec<_> = field.split('.').collect();
                 let field = field_access(field_path.iter().copied());
@@ -2715,12 +2693,28 @@ impl<'a> Generator<'a> {
                         updated #field = next;
                         Some(updated)
                 });
-                let commit = self.table_cell_commit(element, quote!(rows.source()), field_path, ty.clone(), update)?;
+                let commit = self.table_cell_commit(
+                    element, quote!(target.rows.source()), field_path, ty.clone(), update,
+                    Some(quote!(record_history)),
+                )?;
                 Ok(quote! {
-                    #column if #enabled => {
-                        let ::xrack_runtime::Value::#kind(next) = ::xrack_runtime::TableCellEditor::#kind.parse(text)? else {
+                    #column => {
+                        let Some((target, (next, record_history))) = ::xrack_runtime::table_cell_edit_target_if(
+                            view, *slot, || #model, || input.prepare(
+                                || #enabled,
+                                || {
+                                    let ::xrack_runtime::Value::#kind(next) = ::xrack_runtime::TableCellEditor::#kind.parse(text)? else {
+                                        return None;
+                                    };
+                                    Some((next, #record_history))
+                                },
+                            ),
+                        ) else {
                             return Some(false);
                         };
+                        if !input.is_current() { return Some(false); }
+                        let index = target.index;
+                        let key = target.key;
                         #commit
                     },
                 })
@@ -2729,12 +2723,6 @@ impl<'a> Generator<'a> {
                 [#(#path,)* slot, 0, column] => {
                     let ::xrack_runtime::RoutedEvent::CommitCell { original, text } = action else { return Some(false); };
                     let view = scene.at_path(&[#(#path),*])?;
-                    let row = view.children.get(*slot)?;
-                    let key = row.row_key?;
-                    let index = view.list?.first_row.checked_add(*slot)?;
-                    let rows = #model;
-                    if view.standard_list_stamp != Some(rows.positions().stamp()) { return Some(false); }
-                    let index = rows.positions().source_index(index)?;
                     Some(match *column { #writes _ => false })
                 }
             });
@@ -2758,37 +2746,95 @@ impl<'a> Generator<'a> {
                 let model = self.table_model(element)?;
                 quote! {
                     let rows = #model;
-                    if view.standard_list_stamp != Some(rows.positions().stamp()) { return None; }
-                    let index = rows.positions().source_index(index)?;
+                    let index = rows.positions().event_source_index(view.standard_list_stamp, index)?;
                 }
             } else {
                 self.list_source_index(element, &format_ident!("index"))?
             };
             for (delegate_slot, (delegate_path, delegate)) in repeat.delegates.iter().enumerate() {
                 let field = repeat_field(repeat.index());
+                let row_state = row_local(repeat.index());
                 let delegate_slot = Literal::usize_unsuffixed(delegate_slot);
                 let component = ident(delegate.attr("component")?);
                 let model_expr = self.expr(self.operand(model, 0)?)?;
+                let parameters = RepeatRef::from_operation(model)?;
+                let item = ident(parameters.item);
+                let bind_index = parameters.index.map(|index| {
+                    let index = ident(index);
+                    quote!(let #index = __xr_row_index;)
+                });
+                let available = self.row_target_available(
+                    row,
+                    delegate_path,
+                    &repeat.row,
+                    &quote!(__xr_rest.is_empty()),
+                    None,
+                )?;
                 delegates.extend(quote! {
                     [#(#path,)* slot, 0, #(#delegate_path,)* rest @ ..] => Some((|| {
                         let view = scene.at_path(&[#(#path),*])?;
-                        let row = view.children.get(*slot)?;
-                        let index = view.list?.first_row.checked_add(*slot)?;
-                        let key = row.row_key?;
-                        let child = row.children.first()?.at_path(&[#(#delegate_path),*])?;
-                        #model_index
-                        self.__state.__visuals.#field.with_row(|| #model_expr, index, key, |delegates| {
-                            let mut ui = #component { __state: delegates.#delegate_slot.__state.clone() };
-                            visit(&mut ui, child, rest)
-                        })
+                        let (index, key, __xr_row_node) = view.list_event_row(*slot)?;
+                        let __xr_child = __xr_row_node.at_path(&[#(#delegate_path),*])?;
+                        let index = if follow_row { index } else { #model_index index };
+                        let __xr_visit = visit;
+                        let __xr_route = input;
+                        let __xr_rest = rest;
+                        self.__state.__visuals.#field.with_event_row_state(
+                            || #model_expr, index, key, follow_row,
+                            |__xr_delegates, #item, __xr_row_index, #row_state| {
+                                #bind_index
+                                let mut __xr_visibility_overridden = false;
+                                if __xr_route.is_some_and(|__xr_input| !(#available)) {
+                                    return ::core::default::Default::default();
+                                }
+                                let mut __xr_ui = #component { __state: __xr_delegates.#delegate_slot.__state.clone() };
+                                __xr_visit(&mut __xr_ui, __xr_child, __xr_rest, __xr_route.map(|input| {
+                                    input.with_root_visibility_override(__xr_visibility_overridden)
+                                }))
+                            },
+                        )
                     })().unwrap_or_default()),
                 });
             }
             if matches!(element.attr("kind"), Ok("TableView" | "TreeView")) {
+                let record_history = table_history_configured(element);
+                let (resolve_model, table_rows) = if element.attr("kind") == Ok("TableView") {
+                    let rows = self.editable_table_rows_model(element, &quote!(self))?;
+                    (TokenStream::new(), Some(rows))
+                } else {
+                    let model = self.expr(self.operand(model, 0)?)?;
+                    (quote! { #model_index let model = &#model; }, None)
+                };
+                let history = if record_history {
+                    let enabled = table_history_method(element_key(element)?, "enabled");
+                    quote!(self.#enabled())
+                } else {
+                    quote!(false)
+                };
                 let mut editors = Vec::new();
                 row_editor_paths(row, &mut Vec::new(), &mut editors);
+                let mut groups = TokenStream::new();
+                self.repeated_group_targets(row, &repeat.row, &mut Vec::new(), &mut groups)?;
+                let group_route = if groups.is_empty() {
+                    TokenStream::new()
+                } else {
+                    let route = self.with_group_event_row(row, &self.visuals, repeat, &groups)?;
+                    quote! {
+                        if matches!(action, ::xrack_runtime::RoutedEvent::Dispatch("clicked")) {
+                            let __xr_rest = rest;
+                            let __xr_row_node = row;
+                            let handled = (|| {
+                                #model_index
+                                let __xr_source_index = index;
+                                let __xr_row_key = key;
+                                #route.flatten()
+                            })();
+                            if let Some(handled) = handled { return Some(handled); }
+                        }
+                    }
+                };
                 let mut writes = TokenStream::new();
-                for (cell_path, link) in editors {
+                for (cell_path, editor, link) in editors {
                     let operand = self.operand(link, 0)?;
                     let value_type = value_type(operand)?;
                     let prepare = match value_type {
@@ -2799,9 +2845,9 @@ impl<'a> Generator<'a> {
                             let next = *text;
                         },
                         Type::Int => quote! {
-                            let ::xrack_runtime::RoutedEvent::Control(::xrack_runtime::ControlAction::Spin(action)) = action else { return Some(false); };
+                            let ::xrack_runtime::RoutedEvent::Control(::xrack_runtime::ControlAction::Spin(spin)) = action else { return Some(false); };
                             let expected = cell.int("value")?;
-                            let Some(next) = ::xrack_runtime::spin_value_after(cell, *action) else { return Some(false); };
+                            let Some(next) = ::xrack_runtime::spin_value_after(cell, *spin) else { return Some(false); };
                         },
                         Type::Bool => quote! {
                             let ::xrack_runtime::RoutedEvent::Dispatch("clicked") = action else { return Some(false); };
@@ -2845,32 +2891,161 @@ impl<'a> Generator<'a> {
                     } else {
                         quote!(|record| (record == expected).then(|| next.into()))
                     };
+                    let toggle = matches!(value_type, Type::Bool | Type::CheckState);
+                    let check_state = value_type == Type::CheckState;
                     let commit = self.table_cell_commit(
                         element,
                         quote!(model),
                         field_path,
                         value_type,
                         update,
+                        record_history.then(|| quote!(record_history)),
                     )?;
-                    writes.extend(quote!([#(#cell_path),*] => { #prepare #commit },));
-                }
-                if !writes.is_empty() {
-                    let model_expr = if element.attr("kind") == Ok("TableView") {
-                        quote!(rows.source())
+                    let text_editor = matches!(editor.attr("kind"), Ok("TableCell" | "TreeCell"));
+                    let preparation = if text_editor || toggle {
+                        let nodes = Self::row_path(row, &cell_path)?;
+                        let available = self.row_input_available(
+                            &nodes,
+                            &repeat.row,
+                            text_editor,
+                            &quote!(__xr_input),
+                        )?;
+                        let parameters = RepeatRef::from_operation(model)?;
+                        let item = ident(parameters.item);
+                        let bind_index = parameters.index.map(|index| {
+                            let index = ident(index);
+                            quote!(let #index = __xr_row_index;)
+                        });
+                        let field = repeat_field(repeat.index());
+                        let row_state = row_local(repeat.index());
+                        let source = self.expr(self.operand(model, 0)?)?;
+                        let prepare = if toggle {
+                            let tristate = if check_state {
+                                let value = children(editor, "xr.bind")
+                                    .find(|binding| binding.attr("name") == Ok("tristate"))
+                                    .map(|binding| self.visual_value(binding, &repeat.row))
+                                    .transpose()?
+                                    .unwrap_or_else(|| quote!(false));
+                                quote!(::core::option::Option::Some(|| #value))
+                            } else {
+                                quote!(::core::option::Option::<fn() -> bool>::None)
+                            };
+                            quote! {
+                                if !__xr_input.available(|| #available) {
+                                    return ::core::option::Option::None;
+                                }
+                                let __xr_live_source = __xr_repeater.resolve_model(|| #source);
+                                ::xrack_runtime::ListModel::contents_stamp(&*__xr_live_source);
+                                if !__xr_live_row() {
+                                    return ::core::option::Option::None;
+                                }
+                                ::xrack_runtime::prepare_row_toggle(__xr_cell, __xr_input, #tristate, || #history)
+                            }
+                        } else {
+                            quote!(__xr_input.prepare(|| #available, || ::core::option::Option::Some(#history)))
+                        };
+                        let toggle_route = toggle.then(|| {
+                            let live_row = if table_rows.is_none() {
+                                quote! {
+                                    let __xr_row_index = || {
+                                        let index = visual_index;
+                                        #model_index
+                                        ::core::option::Option::Some(index)
+                                    };
+                                    let __xr_live_row = || __xr_row_index() == ::core::option::Option::Some(index);
+                                }
+                            } else {
+                                quote!(let __xr_live_row = || true;)
+                            };
+                            quote! {
+                                let __xr_cell = cell;
+                                #live_row
+                            }
+                        });
+                        Some(quote! {{
+                            let __xr_input = input;
+                            #toggle_route
+                            let __xr_repeater = &self.__state.__visuals.#field;
+                            __xr_repeater.with_row_state(
+                                || #source, index, key,
+                                |#item, __xr_row_index, #row_state| {
+                                    #bind_index
+                                    #prepare
+                                },
+                            ).flatten()
+                        }})
+                    } else if matches!(
+                        editor.attr("kind"),
+                        Ok("SpinBox" | "DoubleSpinBox" | "Slider" | "Dial")
+                    ) {
+                        let nodes = Self::row_path(row, &cell_path)?;
+                        let view_available = if table_rows.is_some() {
+                            quote!(true)
+                        } else {
+                            let receiver = quote!(self);
+                            let projection =
+                                TableProjection::new(ExpressionContext::new(&receiver));
+                            self.element_allows_editing(element, &projection)?
+                        };
+                        let guard = quote! {
+                            if !(#view_available) { return ::core::option::Option::None; }
+                            #model_index
+                        };
+                        Some(self.row_numeric_preparation(
+                            &nodes, model, repeat, operand, &guard, &history,
+                        )?)
                     } else {
-                        let model = self.expr(self.operand(model, 0)?)?;
-                        quote!(&#model)
+                        None
+                    };
+                    let resolve_edit = if let Some(rows) = &table_rows {
+                        let prepared = preparation
+                            .map(|prepare| quote!({ #model_index #prepare }))
+                            .unwrap_or_else(|| quote!(::core::option::Option::Some(#history)));
+                        quote! {
+                            let ::core::option::Option::Some((target, record_history)) =
+                                ::xrack_runtime::table_cell_edit_target_if(
+                                    view, *slot, || #rows, || #prepared,
+                                )
+                            else {
+                                return ::core::option::Option::Some(false);
+                            };
+                            let index = target.index;
+                            let key = target.key;
+                            let model = target.rows.source();
+                        }
+                    } else if let Some(prepare) = preparation {
+                        quote! {
+                            if (|| #prepare)().is_none() {
+                                return ::core::option::Option::Some(false);
+                            }
+                        }
+                    } else {
+                        TokenStream::new()
+                    };
+                    writes.extend(quote!([#(#cell_path),*] => {
+                        #prepare
+                        #resolve_edit
+                        if !input.is_current() { return Some(false); }
+                        #commit
+                    },));
+                }
+                if !writes.is_empty() || !group_route.is_empty() {
+                    let edit = if writes.is_empty() {
+                        quote!(Some(false))
+                    } else {
+                        quote! {
+                            let visual_index = index;
+                            let cell = row.interactive_at_path(rest)?;
+                            #resolve_model
+                            Some(match rest { #writes _ => false })
+                        }
                     };
                     out.extend(quote! {
                         [#(#path,)* slot, 0, rest @ ..] => Some((|| {
                             let view = scene.at_path(&[#(#path),*])?;
-                            let row = view.children.get(*slot)?;
-                            let index = view.list?.first_row.checked_add(*slot)?;
-                            let cell = row.children.first()?.interactive_at_path(rest)?;
-                            let key = row.row_key?;
-                            #model_index
-                            let model = #model_expr;
-                            Some(match rest { #writes _ => false })
+                            let (index, key, row) = view.list_event_row(*slot)?;
+                            #group_route
+                            #edit
                         })().unwrap_or(false)),
                     });
                 }
@@ -2880,35 +3055,140 @@ impl<'a> Generator<'a> {
                 let key = element_key(element)?;
                 let field = split_state_field(key);
                 let update = split_update_method(key);
-                let (event, snapshot, validate) =
-                    if children(element, "xr.split_fill").next().is_some() {
-                        (
-                            quote!(ResizeSplitSizes),
-                            quote!(split_sizes),
-                            quote!(resized_split_sizes),
-                        )
-                    } else {
-                        (
-                            quote!(ResizeSplit),
-                            quote!(split_weights),
-                            quote!(resized_split_weights),
-                        )
-                    };
                 out.extend(quote! {
                     [#(#path),*] => {
-                        let ::xrack_runtime::RoutedEvent::#event(values) = action else { return None; };
-                        let node = scene.interactive_at_path(path)?;
-                        if self.__state.#field.get(|| None).as_deref() != node.#snapshot.as_deref() {
-                            return Some(false);
-                        }
-                        let Some(next) = node.#validate(values) else { return Some(false); };
+                        let node = scene.at_path(path)?;
+                        let current = self.__state.#field.get(|| None);
+                        let Some(next) = node.prepare_split_resize(input, current.as_deref()) else { return Some(false); };
                         Some(self.#update(Some(next)))
                     },
                 });
             }
-            for (index, child) in static_children(element) {
+            for (index, child) in child_slots(element) {
                 path.push(index);
-                self.delegate_event_arms(child, path, out, delegates)?;
+                if children(child, "xr.repeat").next().is_some() {
+                    let slot = format_ident!("__xr_slot_{}", path.len());
+                    let prefix = path.iter().map(|index| quote!(#index)).collect::<Vec<_>>();
+                    self.repeated_group_events(child, &self.visuals, &slot, &prefix, out)?;
+                } else {
+                    self.delegate_event_arms(child, path, out, delegates)?;
+                }
+                path.pop();
+            }
+        }
+        Ok(())
+    }
+
+    fn repeated_group_events(
+        &self,
+        row: OperationRef<'a>,
+        scope: &VisualScope<'_>,
+        slot: &Ident,
+        prefix: &[TokenStream],
+        out: &mut TokenStream,
+    ) -> Result<(), String> {
+        let Some(repeat) = scope.repeats.get(element_key(row)?) else {
+            return Ok(());
+        };
+        if !repeat.uses_row_identity() {
+            return Ok(());
+        }
+        let mut body = TokenStream::new();
+        self.repeated_group_targets(row, &repeat.row, &mut Vec::new(), &mut body)?;
+        if body.is_empty() {
+            return Ok(());
+        }
+        let route = self.with_group_event_row(row, scope, repeat, &body)?;
+        out.extend(quote! {
+            [#(#prefix,)* #slot, __xr_rest @ ..] => Some((|| {
+                if !matches!(action, ::xrack_runtime::RoutedEvent::Dispatch("clicked")) {
+                    return None;
+                }
+                let __xr_container = scene.at_path(&[#(#prefix),*])?;
+                let __xr_source_index = *#slot;
+                let __xr_row_node = __xr_container.child_at(__xr_source_index)?;
+                let __xr_row_key = __xr_row_node.row_key?;
+                #route.flatten()
+            })().unwrap_or(false)),
+        });
+        Ok(())
+    }
+
+    fn with_group_event_row(
+        &self,
+        row: OperationRef<'a>,
+        scope: &VisualScope<'_>,
+        repeat: &RepeatScope<'_>,
+        body: &TokenStream,
+    ) -> Result<TokenStream, String> {
+        let model = children(row, "xr.repeat")
+            .next()
+            .ok_or("missing repeat model")?;
+        let source = self.visual_expr(self.operand(model, 0)?, scope)?;
+        let parameters = RepeatRef::from_operation(model)?;
+        let item = ident(parameters.item);
+        let bind_index = parameters.index.map(|name| {
+            let name = ident(name);
+            quote!(let #name = __xr_row_index;)
+        });
+        let field = repeat_field(repeat.index());
+        let row_state = row_local(repeat.index());
+        let receiver = scope.receiver();
+        Ok(quote! {
+            #receiver.#field.with_row_state(
+                || #source, __xr_source_index, __xr_row_key,
+                |#item, __xr_row_index, #row_state| {
+                    #bind_index
+                    let __xr_input = input;
+                    match __xr_rest { #body _ => None }
+                },
+            )
+        })
+    }
+
+    fn repeated_group_targets(
+        &self,
+        row: OperationRef<'a>,
+        scope: &VisualScope<'_>,
+        path: &mut Vec<usize>,
+        out: &mut TokenStream,
+    ) -> Result<(), String> {
+        let node = *Self::row_path(row, path)?
+            .last()
+            .ok_or("missing repeated node")?;
+        if node.attr("kind") == Ok("GroupBox") {
+            let available = self.row_target_available(row, path, scope, &quote!(true), None)?;
+            let click = self.group_box_toggle(node, scope, &quote!(Some(input)))?;
+            out.extend(quote!([#(#path),*] => Some((#available) && #click),));
+        }
+        for (index, child) in child_slots(node) {
+            if let Some(repeat) = scope.repeats.get(element_key(child)?) {
+                if repeat.uses_row_identity() {
+                    let mut body = TokenStream::new();
+                    self.repeated_group_targets(child, &repeat.row, &mut Vec::new(), &mut body)?;
+                    if !body.is_empty() {
+                        let available = self.row_target_available(
+                            row,
+                            path,
+                            scope,
+                            &quote!(false),
+                            Some(index),
+                        )?;
+                        let route = self.with_group_event_row(child, scope, repeat, &body)?;
+                        out.extend(quote! {
+                            [#(#path,)* #index, __xr_slot, __xr_rest @ ..] => Some((#available) && (|| {
+                                let __xr_container = __xr_row_node.at_path(&[#(#path,)* #index])?;
+                                let __xr_source_index = *__xr_slot;
+                                let __xr_row_node = __xr_container.child_at(__xr_source_index)?;
+                                let __xr_row_key = __xr_row_node.row_key?;
+                                #route.flatten()
+                            })().unwrap_or(false)),
+                        });
+                    }
+                }
+            } else if children(child, "xr.repeat").next().is_none() {
+                path.push(index);
+                self.repeated_group_targets(row, scope, path, out)?;
                 path.pop();
             }
         }
@@ -2926,8 +3206,7 @@ impl<'a> Generator<'a> {
         let model = visible_list_model(element_key(element)?);
         Ok(quote! {
             let __xr_view_rows = self.#model();
-            if view.standard_list_stamp != Some(__xr_view_rows.positions().stamp()) { return None; }
-            let #index = __xr_view_rows.positions().source_index(#index)?;
+            let #index = __xr_view_rows.positions().event_source_index(view.standard_list_stamp, #index)?;
         })
     }
 
@@ -2950,6 +3229,7 @@ impl<'a> Generator<'a> {
             let #parameter = ::xrack_runtime::ListModel::item(&*__xr_model, __xr_index);
             #index
         };
+        let mut tristate_check = TokenStream::new();
         let click = if let Some(action) = action_ref(row) {
             let activate = action_activate_method(action);
             quote! {
@@ -2957,40 +3237,63 @@ impl<'a> Generator<'a> {
                     ::xrack_runtime::RoutedEvent::Control(::xrack_runtime::ControlAction::ActivateAction)) {
                     return Some(false);
                 }
-                Some(self.#activate())
+                Some(self.#activate(|| true, Some(input)))
             }
         } else if let Some(link) = children(row, "xr.row_link").next() {
             let operand = self.operand(link, 0)?;
             let field = field_access(self.record_path(operand)?);
-            let (expected, next, changed) = if link.attr("name")? == "check-state" {
-                let changed = self.typed_event(row, "check-state-changed", &quote!(__xr_next))?;
+            let (expected, next, state) = if link.attr("name")? == "check-state" {
+                let scope = &self.visuals.repeats[element_key(row)?].row;
+                let tristate = children(row, "xr.bind")
+                    .find(|binding| binding.attr("name") == Ok("tristate"))
+                    .map(|binding| self.visual_value(binding, scope))
+                    .transpose()?
+                    .unwrap_or_else(|| quote!(false));
+                tristate_check = quote! {
+                    && (!matches!(action, ::xrack_runtime::RoutedEvent::Dispatch("clicked"))
+                        || ::xrack_runtime::prepare_row_toggle(
+                            node, input, ::core::option::Option::Some(|| #tristate), || false,
+                        ).is_some())
+                };
                 (
                     quote!(node.check_state()),
                     quote!(__xr_expected.next(node.boolean("tristate", false))),
-                    changed,
+                    quote!(__xr_next),
                 )
             } else {
                 (
                     quote!(node.boolean("checked", false)),
                     quote!(!__xr_expected),
-                    TokenStream::new(),
+                    quote!(::xrack_runtime::CheckState::from(__xr_next)),
                 )
             };
+            let has_toggled =
+                children(row, "xr.handler").any(|handler| handler.attr("name") == Ok("toggled"));
             let toggled = self.typed_event_values(row, "toggled", &[])?;
+            let changed = self.typed_event(row, "check-state-changed", &quote!(__xr_state))?;
             quote! {
-                if !matches!(action, ::xrack_runtime::RoutedEvent::Dispatch("clicked")) { return Some(false); }
-                let __xr_expected = #expected;
-                let __xr_next = #next;
-                if !__xr_model.update_row_if_key(__xr_index, __xr_key, |record| {
-                    if record #field != __xr_expected { return None; }
-                    let mut record = record.clone();
-                    record #field = __xr_next;
-                    Some(record)
-                }) { return Some(false); }
+                let __xr_change = match action {
+                    ::xrack_runtime::RoutedEvent::Dispatch("clicked") => {
+                        let __xr_expected = #expected;
+                        let __xr_next = #next;
+                        if !__xr_model.update_row_if_key(__xr_index, __xr_key, |record| {
+                            if record #field != __xr_expected { return ::core::option::Option::None; }
+                            let mut record = record.clone();
+                            record #field = __xr_next;
+                            ::core::option::Option::Some(record)
+                        }) { return ::core::option::Option::Some(false); }
+                        ::core::option::Option::Some(#state)
+                    }
+                    ::xrack_runtime::RoutedEvent::Dispatch("toggled") if #has_toggled =>
+                        ::core::option::Option::None,
+                    _ => return ::core::option::Option::Some(false),
+                };
                 #parameters
                 #toggled
-                #changed
-                Some(true)
+                if let ::core::option::Option::Some(__xr_state) = __xr_change {
+                    #changed
+                }
+                ::core::option::Option::Some(true)
             }
         } else if let Some(handler) =
             children(row, "xr.handler").find(|handler| handler.attr("name") == Ok("clicked"))
@@ -3005,25 +3308,241 @@ impl<'a> Generator<'a> {
         } else {
             return Ok(());
         };
-        let field = repeat_field(self.visuals.repeats[element_key(row)?].index());
+        let repeat_scope = &self.visuals.repeats[element_key(row)?];
+        let field = repeat_field(repeat_scope.index());
+        let row_state = row_local(repeat_scope.index());
+        let available = self.item_delegate_available(row, &repeat_scope.row)?;
+        let live_index = RepeatRef::from_operation(repeat)?.index.map(|name| {
+            let index = ident(name);
+            quote!(let #index = __xr_row_index;)
+        });
         let model = self.expr(self.operand(repeat, 0)?)?;
         let source_index = self.list_source_index(element, &format_ident!("__xr_index"))?;
         out.extend(quote! {
             [#(#path,)* slot, 0] => {
                 let view = scene.interactive_at_path(&[#(#path),*])?;
-                let __xr_index = view.list?.first_row.checked_add(*slot)?;
+                let (__xr_visual_index, __xr_key, _) = view.list_event_row(*slot)?;
+                let __xr_index = __xr_visual_index;
                 #source_index
-                let __xr_key = view.children.get(*slot)?.row_key?;
                 let node = view.interactive_at_path(&[*slot, 0])?;
                 let __xr_model = self.__state.__visuals.#field.resolve_model(|| #model);
                 if __xr_index >= ::xrack_runtime::ListModel::row_count(&*__xr_model)
                     || ::xrack_runtime::ListModel::row_key(&*__xr_model, __xr_index) != __xr_key {
                     return Some(false);
                 }
+                if matches!(action, ::xrack_runtime::RoutedEvent::Dispatch("clicked" | "toggled"))
+                    && ::xrack_runtime::prepare_action_view(|| {
+                        let __xr_source_index = __xr_index;
+                        let __xr_index = __xr_visual_index;
+                        #source_index
+                        if __xr_index != __xr_source_index {
+                            return ::core::option::Option::None;
+                        }
+                        let allowed = self.__state.__visuals.#field.with_row_state(
+                            || #model, __xr_index, __xr_key,
+                            |#parameter, __xr_row_index, #row_state| {
+                                #live_index
+                                (#available) #tristate_check
+                            },
+                        )?;
+                        allowed.then_some(())
+                    }).is_none()
+                {
+                    return ::core::option::Option::Some(false);
+                }
+                if !input.is_current() { return Some(false); }
                 #click
             },
         });
         Ok(())
+    }
+
+    fn item_delegate_available(
+        &self,
+        row: OperationRef<'a>,
+        scope: &VisualScope<'_>,
+    ) -> Result<TokenStream, String> {
+        self.row_input_available(&[row], scope, false, &quote!(input))
+    }
+
+    fn row_path(
+        mut row: OperationRef<'a>,
+        path: &[usize],
+    ) -> Result<Vec<OperationRef<'a>>, String> {
+        let mut nodes = vec![row];
+        for &index in path {
+            row = static_children(row)
+                .find(|(slot, _)| *slot == index)
+                .map(|(_, child)| child)
+                .ok_or("invalid path in a row template")?;
+            nodes.push(row);
+        }
+        Ok(nodes)
+    }
+
+    fn row_target_available(
+        &self,
+        row: OperationRef<'a>,
+        path: &[usize],
+        scope: &VisualScope<'_>,
+        at_target: &TokenStream,
+        child_slot: Option<usize>,
+    ) -> Result<TokenStream, String> {
+        let receiver = quote!(self);
+        let projection = TableProjection::new(ExpressionContext {
+            repeat_parameters: true,
+            ..ExpressionContext::new(&receiver)
+        });
+        let mut checks = Vec::new();
+        for (depth, node) in Self::row_path(row, path)?.into_iter().enumerate() {
+            let visibility = if node.name() == "xr.instance" {
+                let visible = self.row_input_flag(
+                    node,
+                    "visible",
+                    quote!(::core::option::Option::None),
+                    scope,
+                    &projection,
+                    true,
+                )?;
+                quote!({
+                    let visible = #visible;
+                    __xr_visibility_overridden = visible.is_some();
+                    visible.unwrap_or(true)
+                })
+            } else {
+                self.row_input_flag(node, "visible", quote!(true), scope, &projection, false)?
+            };
+            let enabled =
+                self.row_input_flag(node, "enabled", quote!(true), scope, &projection, false)?;
+            let guards = self.row_input_conditions(node, scope)?;
+            let prefix = &path[..depth];
+            let target = depth == path.len();
+            let scope_guard = if node.attr("kind") == Ok("GroupBox")
+                && let Some(next) = path.get(depth).copied().or(child_slot)
+            {
+                let checkable = self.row_input_flag(
+                    node,
+                    "checkable",
+                    quote!(false),
+                    scope,
+                    &projection,
+                    false,
+                )?;
+                let checked = self.control_value_in(node, "checked", Type::Bool, scope)?;
+                quote! {
+                    && __xr_node.input_scope_available(__xr_node.child_at(#next), || false, || #checkable, || #checked, || ::xrack_runtime::SwipeSide::Closed)
+                }
+            } else {
+                TokenStream::new()
+            };
+            checks.push(quote! {
+                __xr_input.available(|| __xr_row_node.at_path(&[#(#prefix),*]).is_some_and(|__xr_node| {
+                    (!__xr_node.input_requires_enabled(#target && (#at_target)) || (#enabled))
+                        && #((#guards) &&)* (#visibility) #scope_guard
+                }))
+            });
+        }
+        let selectors = self.row_input_selectors(&projection)?;
+        Ok(quote!({ #selectors #((#checks) &&)* true }))
+    }
+
+    fn row_input_available(
+        &self,
+        nodes: &[OperationRef<'a>],
+        scope: &VisualScope<'_>,
+        edit_text: bool,
+        input: &TokenStream,
+    ) -> Result<TokenStream, String> {
+        let receiver = quote!(self);
+        let projection = TableProjection::new(ExpressionContext {
+            receiver: &receiver,
+            repeat_parameters: true,
+            hoist_repeat_subexpressions: false,
+        });
+        let flag = |node, name, default| {
+            self.row_input_flag(node, name, default, scope, &projection, false)
+        };
+        let mut checks = Vec::new();
+        for (index, &node) in nodes.iter().enumerate() {
+            let enabled = flag(node, "enabled", quote!(true))?;
+            let visible = flag(node, "visible", quote!(true))?;
+            let guards = self.row_input_conditions(node, scope)?;
+            let group = if index + 1 < nodes.len() && node.attr("kind") == Ok("GroupBox") {
+                let checkable = flag(node, "checkable", quote!(false))?;
+                let checked = self.control_value_in(node, "checked", Type::Bool, scope)?;
+                quote!(&& (!(#checkable) || (#checked)))
+            } else {
+                TokenStream::new()
+            };
+            checks.push(
+                quote!(#input.available(|| (#enabled) && #((#guards) &&)* (#visible) #group)),
+            );
+        }
+        if edit_text {
+            let cell = *nodes.last().expect("a row editor path has a cell");
+            let editable = flag(cell, "editable", quote!(true))?;
+            let read_only = flag(cell, "read-only", quote!(false))?;
+            checks.push(quote!(#input.available(|| !(#read_only) && (#editable))));
+        }
+        let selectors = self.row_input_selectors(&projection)?;
+        Ok(quote!({ #selectors #((#checks) &&)* true }))
+    }
+
+    fn row_input_conditions(
+        &self,
+        node: OperationRef<'a>,
+        scope: &VisualScope<'_>,
+    ) -> Result<Vec<TokenStream>, String> {
+        children(node, "xr.show_if")
+            .map(|guard| self.visual_value(guard, scope))
+            .collect()
+    }
+
+    fn row_input_flag(
+        &self,
+        node: OperationRef<'a>,
+        name: &str,
+        default: TokenStream,
+        scope: &VisualScope<'_>,
+        projection: &TableProjection<'_, 'a>,
+        optional: bool,
+    ) -> Result<TokenStream, String> {
+        let wrap = |value: TokenStream| {
+            if optional {
+                quote!(::core::option::Option::Some(#value))
+            } else {
+                value
+            }
+        };
+        let base = node
+            .children()
+            .find(|binding| {
+                matches!(binding.name(), "xr.bind" | "xr.layout_bind")
+                    && binding.attribute("name") == Some(name)
+            })
+            .map(|binding| self.visual_value(binding, scope).map(wrap))
+            .transpose()?
+            .unwrap_or(default);
+        self.row_state_value_mapped(node, name, base, projection, wrap)
+    }
+
+    fn row_input_selectors(
+        &self,
+        projection: &TableProjection<'_, 'a>,
+    ) -> Result<TokenStream, String> {
+        let mut selectors = TokenStream::new();
+        for (&owner, &selector) in projection.selectors.borrow().iter() {
+            let name = state_selector_name(owner);
+            let cache = format_ident!("{name}_cache");
+            let value = self.state_choice(selector, |condition| {
+                self.expr_in(condition, projection.expression)
+            })?;
+            selectors.extend(quote! {
+                let #cache = ::std::cell::OnceCell::new();
+                let #name = || *#cache.get_or_init(|| #value);
+            });
+        }
+        Ok(selectors)
     }
 
     fn control_value(
@@ -3032,14 +3551,31 @@ impl<'a> Generator<'a> {
         name: &str,
         ty: Type,
     ) -> Result<TokenStream, String> {
+        self.control_value_in(element, name, ty, &self.visuals)
+    }
+
+    fn control_value_in(
+        &self,
+        element: OperationRef<'a>,
+        name: &str,
+        ty: Type,
+        scope: &VisualScope<'_>,
+    ) -> Result<TokenStream, String> {
+        let expr = |op| {
+            if scope.row_index.is_some() {
+                self.visual_expr(op, scope)
+            } else {
+                self.expr(op)
+            }
+        };
         if let Some(link) = control_link(element, name) {
-            return self.expr(self.operand(link, 0)?);
+            return expr(self.operand(link, 0)?);
         }
         let binding = |property| {
             children(element, "xr.bind").find(|binding| binding.attr("name") == Ok(property))
         };
         let initial = if let Some(binding) = binding(name) {
-            self.expr(self.operand(binding, 0)?)?
+            expr(self.operand(binding, 0)?)?
         } else {
             let kind = element.attr("kind")?;
             let default = control_default(kind, name, &ty)
@@ -3051,14 +3587,22 @@ impl<'a> Generator<'a> {
             match default {
                 ControlDefault::Value(value) => fallback(value)?,
                 ControlDefault::Binding(property, value) => match binding(property) {
-                    Some(binding) => self.visual_value(binding, &self.visuals)?,
+                    Some(binding) => self.visual_value(binding, scope)?,
                     None => fallback(value)?,
                 },
-                ControlDefault::Control(property) => self.control_value(element, property, ty)?,
+                ControlDefault::Control(property) => {
+                    self.control_value_in(element, property, ty, scope)?
+                }
             }
         };
-        let field = control_field(element_key(element)?, name);
-        Ok(quote!(self.__state.#field.get(|| #initial)))
+        let key = element_key(element)?;
+        let field = control_field(key, name);
+        let storage = if scope.row_groups.contains(key) {
+            scope.receiver()
+        } else {
+            quote!(self.__state)
+        };
+        Ok(quote!(#storage.#field.get(|| #initial)))
     }
 
     fn set_control(
@@ -3187,23 +3731,22 @@ impl<'a> Generator<'a> {
         path: Vec<&str>,
         ty: Type,
         update: TokenStream,
+        history_enabled: Option<TokenStream>,
     ) -> Result<TokenStream, String> {
         let direct = quote!((#model).update_row_if_key(index, key, #update));
         if !table_history_configured(element) {
             return Ok(direct);
         }
-        let history = table_history_field(element_key(element)?);
-        let enabled = table_history_method(element_key(element)?, "enabled");
+        let key = element_key(element)?;
+        let history = table_history_field(key);
+        let enabled = history_enabled.unwrap_or_else(|| {
+            let method = table_history_method(key, "enabled");
+            quote!(self.#method())
+        });
         let capture = Self::table_edit_capture(BTreeMap::from([(path, ty)]));
-        Ok(quote! {
-            if self.#enabled() {
-                self.__state.#history.commit_cell(#model, index, key, #update, #capture)
-            } else {
-                let changed = #direct;
-                if changed { self.__state.#history.clear(); }
-                changed
-            }
-        })
+        Ok(quote!(self.__state.#history.commit_cell_if_enabled(
+            #model, index, key, #enabled, #update, #capture,
+        )))
     }
 
     fn table_edit_navigation_arms(
@@ -3219,15 +3762,18 @@ impl<'a> Generator<'a> {
             && table_option_configured(element, "edit-on-tab")
             && let Some((guard, projection)) = self.table_edit_navigation_projection(element)?
         {
-            let rows = self.table_model(element)?;
+            let rows = self.table_action_rows_model(
+                element,
+                "edit-on-tab",
+                &quote!(&view.table_column_order),
+            )?;
             out.extend(quote! {
                 [#(#path),*] => {
-                    let view = scene.interactive_at_path(path)?;
-                    if !view.boolean("edit-on-tab", false) { return None; }
+                    let view = scene.at_path(path)?;
                     #guard
-                    let rows = #rows;
-                    if view.standard_list_stamp != Some(rows.positions().stamp()) { return None; }
-                    ::xrack_runtime::next_table_edit_cell(rows, origin, columns, backward, #projection)
+                    ::xrack_runtime::next_table_edit_cell_while_current(
+                        view, navigation, || input.is_current(), || #rows, #projection,
+                    )
                 },
             });
         }
@@ -3244,15 +3790,19 @@ impl<'a> Generator<'a> {
         element: OperationRef<'a>,
     ) -> Result<Option<(TokenStream, TokenStream)>, String> {
         if element.attr("kind") == Ok("StandardTableView") {
+            let editors = self.standard_table_editors(element)?;
+            if editors.is_empty() {
+                return Ok(None);
+            }
+            let columns = editors.iter().map(|editor| editor.column);
+            let flags = editors.iter().map(|editor| {
+                let column = editor.column;
+                let enabled = &editor.enabled;
+                quote!(#column => #enabled,)
+            });
             return Ok(Some((
-                quote! {
-                    let header = view.table_header.as_ref()?;
-                    let editable = |column: ::core::primitive::usize| {
-                        header.columns.get(column).is_some_and(|column| column.boolean("editable", false))
-                    };
-                    if !columns.iter().copied().any(editable) { return None; }
-                },
-                quote!(|_, column, _| editable(column)),
+                quote!(if !columns.iter().any(|column| [#(#columns),*].contains(column)) { return None; }),
+                quote!(|_, column, _, _| match column { #(#flags)* _ => false }),
             )));
         }
         let (row, repeat) = self.list_template(element)?;
@@ -3277,12 +3827,16 @@ impl<'a> Generator<'a> {
             {
                 columns.push(column);
                 let editable = self.row_editable(cell, &projection)?;
-                editors.extend(quote!(#column => #editable,));
+                editors.extend(quote!(#column => row_editable() && (#editable),));
             }
         }
         if columns.is_empty() {
             return Ok(None);
         }
+        let record_type = value_type(self.operand(repeat, 0)?)?
+            .list_item()
+            .ok_or("editable table requires a list model")?;
+        let record_type = ty(&record_type);
         let visible = self.row_shown(row, &projection)?;
         let enabled = self.row_binding_or(row, "enabled", quote!(true), &projection)?;
         Ok(Some((
@@ -3291,12 +3845,15 @@ impl<'a> Generator<'a> {
             },
             self.project_table_rows(
                 &projection,
-                quote!(__xr_index, column, __xr_record),
+                quote!(__xr_index, column, _key, __xr_record: &#record_type),
                 quote! {
                     let #item = || (*__xr_record).clone();
                     #index_binding
                 },
-                quote!((#visible) && (#enabled) && match column { #editors _ => false }),
+                quote!({
+                    let row_editable = || (#visible) && (#enabled);
+                    match column { #editors _ => false }
+                }),
             )?,
         )))
     }
@@ -3311,15 +3868,24 @@ impl<'a> Generator<'a> {
             return Ok(());
         }
         if matches!(element.attr("kind"), Ok("TableView" | "StandardTableView"))
-            && children(element, "xr.bind").any(|binding| binding.attr("name") == Ok("copyable"))
+            && table_option_configured(element, "copyable")
         {
-            let model = self.table_model(element)?;
+            let model = self.table_action_rows_model(
+                element,
+                "copyable",
+                &quote!(&node.table_column_order),
+            )?;
             let projection = if element.attr("kind") == Ok("StandardTableView") {
+                let binding = model_binding(element).ok_or("standard table requires a model")?;
+                let row_type = value_type(self.operand(binding, 0)?)?
+                    .list_item()
+                    .ok_or("standard table requires a record model")?;
+                let row_type = ty(&row_type);
                 let fields = self.standard_table_fields(element)?;
                 let arms = fields.iter().enumerate().map(|(column, field)| {
                     quote!(#column => ::core::option::Option::Some(__xr_row #field.to_string()),)
                 });
-                quote!(|_, column, __xr_row| match column {
+                quote!(|_, column, _, __xr_row: &#row_type| match column {
                     #(#arms)*
                     _ => ::core::option::Option::None,
                 })
@@ -3327,7 +3893,7 @@ impl<'a> Generator<'a> {
                 self.custom_table_projection(element)?
             };
             arms.copies.extend(quote! {
-                [#(#path),*] => ::xrack_runtime::copy_table_text_in_order(#model, node, columns, #projection),
+                [#(#path),*] => ::xrack_runtime::copy_table_text_while_current(node, columns, || input.is_current(), || #model, #projection),
             });
         }
         if table_history_configured(element) {
@@ -3368,18 +3934,20 @@ impl<'a> Generator<'a> {
         let active = table_history_method(key, "enabled");
         let available = table_history_method(key, "available");
         let replay = table_history_method(key, "replay");
+        let replay_from_view = table_history_method(key, "replay_from_view");
         let source = self.view_source_model(element)?;
         let receiver = quote!(self);
         let state = TableProjection::new(ExpressionContext::new(&receiver));
         let flag = |name| self.row_binding_or(element, name, quote!(false), &state);
         let undoable = flag("undoable")?;
         let pasteable = flag("pasteable")?;
+        let editable = self.element_allows_editing(element, &state)?;
         arms.fields
             .extend(quote!(#history: ::xrack_runtime::TableEditHistory<#item>,));
         arms.defaults
             .extend(quote!(#history: ::core::default::Default::default(),));
         arms.replays.extend(quote! {
-            [#(#path),*] => self.#replay(redo),
+            [#(#path),*] => self.#replay_from_view(model, redo, route),
         });
         arms.methods.extend(quote! {
             fn #active(&self) -> ::core::primitive::bool {
@@ -3389,7 +3957,30 @@ impl<'a> Generator<'a> {
                 self.#active() && self.__state.#history.can_replay(&#source, redo)
             }
             fn #replay(&self, redo: ::core::primitive::bool) -> ::core::primitive::bool {
-                self.#active() && self.__state.#history.replay(&#source, redo)
+                let source = ::xrack_runtime::try_prepare_history_replay(
+                    ::core::option::Option::None,
+                    || ::core::result::Result::<_, ::core::convert::Infallible>::Ok(
+                        ::core::option::Option::Some(#source),
+                    ),
+                    || ::core::result::Result::Ok(self.#active()),
+                ).unwrap_or_else(|error| match error {});
+                source.is_some_and(|source| self.__state.#history.replay(&source, redo))
+            }
+
+            fn #replay_from_view(
+                &self,
+                model: ::core::primitive::u64,
+                redo: ::core::primitive::bool,
+                route: ::xrack_runtime::InputRoute<'_>,
+            ) -> ::core::primitive::bool {
+                let source = ::xrack_runtime::try_history_replay_source(
+                    model,
+                    || ::core::result::Result::<_, ::core::convert::Infallible>::Ok(
+                        (#editable).then(|| #source),
+                    ),
+                    || ::core::result::Result::Ok(self.#active()),
+                ).unwrap_or_else(|error| match error {});
+                route.is_current() && source.is_some_and(|source| self.__state.#history.replay(&source, redo))
             }
         });
         if !table_option_configured(element, "pasteable") {
@@ -3400,59 +3991,61 @@ impl<'a> Generator<'a> {
         };
         let method = format_ident!("__xr_table_paste_{}", rust_key(key));
         let model = self.table_rows_model(element)?;
-        let column_order = table_order_field(key);
-        let enabled = self.row_binding_or(element, "enabled", quote!(true), &state)?;
-        let shown = self.row_shown(element, &state)?;
+        let paste_model =
+            self.table_action_rows_model(element, "pasteable", &quote!(column_order))?;
         arms.methods.extend(quote! {
-                fn #method(
-                    &self,
-                    order_stamp: (::core::primitive::u64, ::core::primitive::u64),
-                    column_order: &::xrack_runtime::TableColumnOrder,
-                    input: ::xrack_runtime::TablePasteInput<'_>,
-                ) -> ::core::primitive::bool {
-                    let target = ::xrack_runtime::Property::default();
-                    let read_target = || target.get(|| {
-                        if !(#pasteable && #enabled && #shown)
-                            || self.__state.#column_order.get(::core::default::Default::default) != *column_order
-                        {
-                            return ::core::option::Option::None;
-                        }
-                        let rows = #model;
-                        let matches = rows.positions().stamp() == order_stamp
-                            && rows.source().edit_stamp() == input.stamp;
-                        matches.then_some(rows)
-                    });
-                    let ::core::option::Option::Some(rows) = read_target() else {
-                        return false;
-                    };
-                    self.__state.#history.paste_in_order_if(
-                        &rows, input, || !target.is_dirty() || read_target().is_some(),
-                        #projection, #capture,
-                    ).unwrap_or(false)
-                }
-            });
-        arms.pastes.extend(quote! {
-                [#(#path),*] => {
-                    let rows = #model;
-                    let stamp = rows.source().edit_stamp();
-                    let order_stamp = rows.positions().stamp();
-                    if node.standard_list_stamp != Some(order_stamp) {
+            fn #method(
+                &self,
+                order_stamp: (::core::primitive::u64, ::core::primitive::u64),
+                column_order: &::xrack_runtime::TableColumnOrder,
+                input: ::xrack_runtime::TablePasteInput<'_>,
+                route: ::xrack_runtime::InputRoute<'_>,
+            ) -> ::core::primitive::bool {
+                let target = ::xrack_runtime::Property::default();
+                let read_target = || target.get(|| {
+                    let ::core::option::Option::Some(rows) = #paste_model else {
                         return ::core::option::Option::None;
-                    }
-                    let column_order = node.table_column_order.clone();
-                    let weak = self.as_weak();
-                    ::core::option::Option::Some(::std::boxed::Box::new(move |text| {
-                        let input = ::xrack_runtime::TablePasteInput { stamp, row, columns: &columns, text };
-                        weak.upgrade().is_some_and(|ui| ui.#method(order_stamp, &column_order, input))
-                    }))
+                    };
+                    let matches = rows.positions().stamp() == order_stamp
+                        && rows.source().edit_stamp() == input.stamp;
+                    matches.then_some(rows)
+                });
+                let ::core::option::Option::Some(rows) = read_target() else {
+                    return false;
+                };
+                self.__state.#history.paste_in_order_guarded(
+                    &rows, input,
+                    || route.is_current() && (!target.is_dirty() || read_target().is_some()) && route.is_current(),
+                    #projection, #capture,
+                ).unwrap_or(false)
+            }
+        });
+        arms.paste_stamps.extend(quote! {
+            [#(#path),*] => {
+                let rows = #model;
+                let stamp = rows.source().edit_stamp();
+                let order_stamp = rows.positions().stamp();
+                if node.standard_list_stamp != Some(order_stamp) {
+                    return ::core::option::Option::None;
                 }
-            });
+                ::core::option::Option::Some(stamp)
+            }
+        });
+        arms.pastes.extend(quote! {
+            [#(#path),*] => node.standard_list_stamp.is_some_and(|stamp| {
+                self.#method(stamp, &node.table_column_order, paste, route)
+            }),
+        });
         Ok(())
     }
 
     fn custom_table_projection(&self, element: OperationRef<'a>) -> Result<TokenStream, String> {
         let (row, repeat) = self.list_template(element)?;
         let parameters = RepeatRef::from_operation(repeat)?;
+        let row_type = value_type(self.operand(repeat, 0)?)?
+            .list_item()
+            .unwrap_or(Type::Int);
+        let row_type = ty(&row_type);
         let item = ident(parameters.item);
         let index = parameters.index.unwrap_or_default();
         let index_binding = if index.is_empty() {
@@ -3472,8 +4065,15 @@ impl<'a> Generator<'a> {
         let mut arms = TokenStream::new();
         for (column, cell) in scene_children(row).enumerate() {
             let bindings = || children(cell, "xr.bind");
-            let projected = bindings()
-                .find(|binding| binding.attr("name") == Ok("clipboard-text"))
+            let clipboard = if cell.name() == "xr.instance" {
+                self.analysis
+                    .instances
+                    .get(element_key(cell)?)
+                    .and_then(|bindings| bindings.clipboard_text)
+            } else {
+                bindings().find(|binding| binding.attr("name") == Ok("clipboard-text"))
+            };
+            let projected = clipboard
                 .or_else(|| children(cell, "xr.row_link").next())
                 .or_else(|| {
                     matches!(cell.attr("kind"), Ok("Text" | "TableCell"))
@@ -3508,7 +4108,7 @@ impl<'a> Generator<'a> {
         }
         self.project_table_rows(
             &projection,
-            quote!(__xr_index, __xr_column, __xr_row),
+            quote!(__xr_index, __xr_column, _key, __xr_row: &#row_type),
             quote! {
                 let #item = || (*__xr_row).clone();
                 #index_binding
@@ -3523,16 +4123,35 @@ impl<'a> Generator<'a> {
         )
     }
 
-    fn row_shown(
+    fn row_conditions_met(
         &self,
         element: OperationRef<'a>,
         projection: &TableProjection<'_, 'a>,
     ) -> Result<TokenStream, String> {
         let guards = children(element, "xr.show_if")
-            .map(|guard| self.expr_in(self.operand(guard, 0)?, projection.expression))
+            .map(|guard| self.table_projection_value(guard, projection))
             .collect::<Result<Vec<_>, _>>()?;
+        Ok(quote!(#((#guards) &&)* true))
+    }
+
+    fn row_shown(
+        &self,
+        element: OperationRef<'a>,
+        projection: &TableProjection<'_, 'a>,
+    ) -> Result<TokenStream, String> {
+        let conditions = self.row_conditions_met(element, projection)?;
         let visible = self.row_binding_or(element, "visible", quote!(true), projection)?;
-        Ok(quote!(#((#guards) &&)* (#visible)))
+        Ok(quote!((#conditions) && (#visible)))
+    }
+
+    fn element_allows_editing(
+        &self,
+        element: OperationRef<'a>,
+        projection: &TableProjection<'_, 'a>,
+    ) -> Result<TokenStream, String> {
+        let enabled = self.row_binding_or(element, "enabled", quote!(true), projection)?;
+        let shown = self.row_shown(element, projection)?;
+        Ok(quote!((#enabled) && (#shown)))
     }
 
     fn table_paste_projection(
@@ -3558,7 +4177,7 @@ impl<'a> Generator<'a> {
                 let access = field_access(path.iter().copied());
                 edited_fields.insert(path, ty.clone());
                 writes.extend(quote! {
-                    #column if #enabled => {
+                    #column if (#enabled) && __xr_current_target() => {
                         let ::xrack_runtime::Value::#kind(value) =
                             ::xrack_runtime::TableCellEditor::#kind.parse(text)?
                         else {
@@ -3569,7 +4188,7 @@ impl<'a> Generator<'a> {
                     }
                 });
             }
-            let projection = quote!(|_, column, _, next, text| match column {
+            let projection = quote!(|_, column, _, next, text, __xr_current_target| match column {
                 #writes
                 _ => ::core::option::Option::None,
             });
@@ -3611,7 +4230,7 @@ impl<'a> Generator<'a> {
                     .map(|node| self.row_editable(node, &projection))
                     .collect::<Result<Vec<_>, _>>()?;
                 writes.extend(quote! {
-                    #column if true #(&& (#guards))* => {
+                    #column if true #(&& (#guards) && __xr_current_target())* => {
                         let #text = || __xr_text.to_owned();
                         let __xr_parsed = #value;
                         if !__xr_parsed.accepted {
@@ -3644,10 +4263,20 @@ impl<'a> Generator<'a> {
                     quote!(::xrack_runtime::table_paste_check_state(__xr_text, #tristate)?)
                 }
                 ty @ (Type::Int | Type::Float) => {
-                    let (default_min, default_max, variant) = if ty == Type::Int {
-                        (quote!(0_i64), quote!(100_i64), quote!(Int))
+                    let (default_min, default_max, variant, upper_bound) = if ty == Type::Int {
+                        (
+                            quote!(0_i64),
+                            quote!(100_i64),
+                            quote!(Int),
+                            quote!(::core::primitive::i64::max),
+                        )
                     } else {
-                        (quote!(0.0_f64), quote!(100.0_f64), quote!(Float))
+                        (
+                            quote!(0.0_f64),
+                            quote!(100.0_f64),
+                            quote!(Float),
+                            quote!(::core::primitive::f64::max),
+                        )
                     };
                     let min = self.row_binding_or(cell, "minimum", default_min, &projection)?;
                     let max = self.row_binding_or(cell, "maximum", default_max, &projection)?;
@@ -3657,18 +4286,16 @@ impl<'a> Generator<'a> {
                         else {
                             return ::core::option::Option::None;
                         };
-                        let minimum = #min;
-                        let maximum = (#max).max(minimum);
-                        if !(minimum..=maximum).contains(&value) {
-                            return ::core::option::Option::None;
-                        }
-                        value
+                        ::xrack_runtime::table_paste_number(
+                            ::core::option::Option::Some(value),
+                            &mut *__xr_current_target, || #min, || #max, #upper_bound,
+                        )?
                     })
                 }
                 _ => return Err("unsupported table paste field type".into()),
             };
             writes.extend(quote! {
-                #column if (#allowed) && (#editable) => {
+                #column if (#allowed) && __xr_current_target() && (#editable) && __xr_current_target() => {
                     #field = #value;
                     ::core::option::Option::Some(())
                 }
@@ -3679,13 +4306,20 @@ impl<'a> Generator<'a> {
         }
         let projection = self.project_table_rows(
             &projection,
-            quote!(__xr_index, __xr_column, __xr_current, __xr_next, __xr_text),
+            quote!(
+                __xr_index,
+                __xr_column,
+                __xr_current,
+                __xr_next,
+                __xr_text,
+                __xr_current_target
+            ),
             quote! {
                 let #item = || (*__xr_current).clone();
                 #index_binding
             },
             quote! {
-                if !(#row_shown) || !(#row_enabled) {
+                if !(#row_shown) || !(#row_enabled) || !__xr_current_target() {
                     return ::core::option::Option::None;
                 }
                 match __xr_column { #writes _ => ::core::option::Option::None }
@@ -3831,16 +4465,58 @@ impl<'a> Generator<'a> {
         default: TokenStream,
         projection: &TableProjection<'_, 'a>,
     ) -> Result<TokenStream, String> {
+        if let Some(flag) = self.action_state_flag(element, property)? {
+            let receiver = projection.expression.receiver;
+            return Ok(quote!(#receiver.#flag().unwrap_or(#default)));
+        }
         let base = element
             .children()
             .find(|binding| {
                 matches!(binding.name(), "xr.bind" | "xr.layout_bind")
                     && binding.attr("name") == Ok(property)
             })
-            .map(|binding| self.expr_in(self.operand(binding, 0)?, projection.expression))
+            .map(|binding| self.table_projection_value(binding, projection))
             .transpose()?
             .unwrap_or(default);
         self.row_state_value(element, property, base, projection)
+    }
+
+    fn action_state_flag(
+        &self,
+        element: OperationRef<'a>,
+        flag: &str,
+    ) -> Result<Option<Ident>, String> {
+        if !matches!(flag, "enabled" | "visible") || action_ref(element).is_none() {
+            return Ok(None);
+        }
+        let Some(case) =
+            children(element, "xr.state_set").find(|case| case.attribute("name") == Some(flag))
+        else {
+            return Ok(None);
+        };
+        let selector = self.operand(case, 0)?.attr("owner")?;
+        if self
+            .analysis
+            .persistent_state_selectors
+            .contains_key(selector)
+        {
+            Ok(Some(action_state_flag_method(element_key(element)?, flag)))
+        } else {
+            Ok(None)
+        }
+    }
+
+    fn table_projection_value(
+        &self,
+        binding: OperationRef<'a>,
+        projection: &TableProjection<'_, 'a>,
+    ) -> Result<TokenStream, String> {
+        if projection.expression.repeat_parameters {
+            // Sampled rows supply their own item and index, outside a rendered row's cache.
+            self.expr_in(self.operand(binding, 0)?, projection.expression)
+        } else {
+            self.visual_value_in(binding, &self.visuals, projection.expression.receiver)
+        }
     }
 
     fn row_state_value(
@@ -3849,6 +4525,17 @@ impl<'a> Generator<'a> {
         property: &str,
         base: TokenStream,
         projection: &TableProjection<'_, 'a>,
+    ) -> Result<TokenStream, String> {
+        self.row_state_value_mapped(element, property, base, projection, |value| value)
+    }
+
+    fn row_state_value_mapped(
+        &self,
+        element: OperationRef<'a>,
+        property: &str,
+        base: TokenStream,
+        projection: &TableProjection<'_, 'a>,
+        map: impl Fn(TokenStream) -> TokenStream,
     ) -> Result<TokenStream, String> {
         let cases: Vec<_> = children(element, "xr.state_set")
             .filter(|case| case.attr("name") == Ok(property))
@@ -3859,7 +4546,7 @@ impl<'a> Generator<'a> {
         let selector = self.operand(*first, 0)?;
         let owner = selector.attr("owner")?;
         let name = state_selector_name(owner);
-        let selected = if self.persistent_state_selectors.contains_key(owner) {
+        let selected = if self.analysis.persistent_state_selectors.contains_key(owner) {
             let receiver = projection.expression.receiver;
             quote!(#receiver.#name())
         } else if projection.expression.repeat_parameters {
@@ -3878,7 +4565,7 @@ impl<'a> Generator<'a> {
                 .value
                 .defining_operation()
                 .ok_or("state value has no definition")?;
-            let value = self.expr_in(value, projection.expression)?;
+            let value = map(self.expr_in(value, projection.expression)?);
             arms.extend(quote!(#index => #value,));
         }
         Ok(quote!(match #selected { #arms _ => #base }))
@@ -4001,16 +4688,54 @@ impl<'a> Generator<'a> {
     }
 
     fn table_rows_model(&self, element: OperationRef<'a>) -> Result<TokenStream, String> {
+        self.table_rows_model_in(element, &quote!(self))
+    }
+
+    fn table_rows_model_in(
+        &self,
+        element: OperationRef<'a>,
+        receiver: &TokenStream,
+    ) -> Result<TokenStream, String> {
         if element.attr("kind") == Ok("StandardTableView")
             || children(element, "xr.bind")
                 .any(|binding| binding.attr("name") == Ok("row-visible-field"))
         {
             let rows = table_rows_model_method(element_key(element)?);
-            return Ok(quote!(self.#rows()));
+            return Ok(quote!(#receiver.#rows()));
         }
-        let source = self.view_source_model(element)?;
+        let source = self.repeated_view_source_model(element, receiver)?;
         let order = table_row_order_field(element_key(element)?);
-        Ok(quote!(self.__state.#order.rows(#source)))
+        Ok(quote!(#receiver.__state.#order.rows(#source)))
+    }
+
+    fn editable_table_rows_model(
+        &self,
+        table: OperationRef<'a>,
+        receiver: &TokenStream,
+    ) -> Result<TokenStream, String> {
+        let projection = TableProjection::new(ExpressionContext::new(receiver));
+        let available = self.element_allows_editing(table, &projection)?;
+        let rows = self.table_rows_model_in(table, receiver)?;
+        Ok(quote!((#available).then(|| #rows)))
+    }
+
+    fn table_action_rows_model(
+        &self,
+        table: OperationRef<'a>,
+        flag: &str,
+        column_order: &TokenStream,
+    ) -> Result<TokenStream, String> {
+        let receiver = quote!(self);
+        let projection = TableProjection::new(ExpressionContext::new(&receiver));
+        let enabled = self.row_binding_or(table, flag, quote!(false), &projection)?;
+        let available = self.element_allows_editing(table, &projection)?;
+        let order = table_order_field(element_key(table)?);
+        let rows = self.table_rows_model(table)?;
+        Ok(quote! {
+            ((#enabled) && (#available)
+                && self.__state.#order.get(::core::default::Default::default).eq(#column_order))
+                .then(|| #rows)
+        })
     }
 
     fn view_source_model(&self, element: OperationRef<'a>) -> Result<TokenStream, String> {
@@ -4024,11 +4749,19 @@ impl<'a> Generator<'a> {
                 .unwrap_or_else(|| quote!(<::xrack_runtime::VecModel<::std::string::String> as ::core::default::Default>::default()));
             Ok(quote!(::std::rc::Rc::new(#model)))
         } else {
-            let (row, repeat) = self.list_template(element)?;
-            let repeater = repeat_field(self.visuals.repeats[element_key(row)?].index());
-            let model = self.expr(self.operand(repeat, 0)?)?;
-            Ok(quote!(self.__state.__visuals.#repeater.resolve_model(|| #model)))
+            self.repeated_view_source_model(element, &quote!(self))
         }
+    }
+
+    fn repeated_view_source_model(
+        &self,
+        element: OperationRef<'a>,
+        receiver: &TokenStream,
+    ) -> Result<TokenStream, String> {
+        let (row, repeat) = self.list_template(element)?;
+        let repeater = repeat_field(self.visuals.repeats[element_key(row)?].index());
+        let model = self.expr_in(self.operand(repeat, 0)?, ExpressionContext::new(receiver))?;
+        Ok(quote!(#receiver.__state.__visuals.#repeater.resolve_model(|| #model)))
     }
 
     fn view_index_body(&self, element: OperationRef<'a>) -> Result<TokenStream, String> {
@@ -4064,46 +4797,31 @@ impl<'a> Generator<'a> {
     fn source_selection_body(&self, element: OperationRef<'a>) -> Result<TokenStream, String> {
         let key = element_key(element)?;
         if matches!(element.attr("kind"), Ok("TableView" | "StandardTableView")) {
-            let select = table_selection_method(key);
-            let snapshot = table_selection_snapshot_method(key);
+            let select = table_selection_command_method(key);
             return Ok(quote! {
-                let action = if let Some(column) = column {
-                    let Ok(column) = <::core::primitive::usize as ::core::convert::TryFrom<_>>::try_from(column) else { return; };
-                    ::xrack_runtime::TableSelectionAction::Cell {
-                        row: index, column, operation: ::xrack_runtime::RowSelection::Replace,
+                let column = match column {
+                    Some(column) => {
+                        let Ok(column) = <::core::primitive::usize as ::core::convert::TryFrom<_>>::try_from(column) else { return; };
+                        Some(column)
                     }
-                } else {
-                    let selection = self.#snapshot();
-                    let operation = match selection.target() {
-                        ::xrack_runtime::SelectionTarget::Rows => ::xrack_runtime::RowSelection::Replace,
-                        ::xrack_runtime::SelectionTarget::Cells if selection.multiple() => ::xrack_runtime::RowSelection::Replace,
-                        _ => ::xrack_runtime::RowSelection::Move,
-                    };
-                    ::xrack_runtime::TableSelectionAction::Row { index, operation }
+                    None => None,
                 };
-                self.#select(action);
+                self.#select(::xrack_runtime::TableSelectionCommand::Source { row: source, column });
             });
         }
         if element.attr("kind") == Ok("TreeView") {
-            let snapshot = tree_snapshot_method(key);
             let select = tree_selection_method(key);
-            let multiple = self.binding_value_or(element, "multi-select", quote!(false))?;
-            return Ok(quote! {
-                let tree = self.#snapshot();
-                let Some(item) = tree.visible_index_for_source(source).and_then(|index| tree.rows().get(index))
-                else { return; };
-                let action = ::xrack_runtime::TreeSelectionAction::Row {
-                    key: item.key, row: item.row, operation: ::xrack_runtime::RowSelection::Replace,
-                };
-                self.#select(&tree, #multiple, action);
-            });
+            return Ok(quote!(self.#select(source);));
         }
+        let lookup = view_index_method(key);
         let current = self.control_value(element, "current-index", Type::Int)?;
-        let value = quote!(index as ::core::primitive::i64);
+        let value = quote!(index);
         let set = self.set_control(element, &value)?;
         let changed = self.typed_event(element, "changed", &value)?;
         Ok(quote! {
-            if #current != #value {
+            if let Some(index) = ::xrack_runtime::prepare_source_selection(
+                || self.#lookup(source, true), || #current,
+            ) {
                 #set
                 #changed
             }
@@ -4164,7 +4882,7 @@ impl<'a> Generator<'a> {
                 .ok_or("animation operand has no definition")?;
             self.visual_expr(value, scope)
         };
-        let duration = expression(animation.duration)?;
+        let duration = animation.duration_ms;
         let delay = animation.delay_ms;
         let easing = match animation.curve {
             Some([x1, y1, x2, y2]) => {
@@ -4172,7 +4890,7 @@ impl<'a> Generator<'a> {
             }
             None => quote!(::xrack_runtime::Easing::LINEAR),
         };
-        let timing = quote!(::xrack_runtime::Animation::new(#duration as ::core::primitive::u64, #delay, #easing));
+        let timing = quote!(::xrack_runtime::Animation::new(#duration, #delay, #easing));
         if let Some(enabled) = animation.enabled {
             let enabled = expression(enabled)?;
             Ok(quote!(if #enabled { Some(#timing) } else { None }))
@@ -4197,11 +4915,11 @@ impl<'a> Generator<'a> {
     ) -> Result<(), String> {
         if let Some(selector) = children(element, "xr.state_select").next() {
             let owner = selector.attr("owner")?;
-            if !self.visual_state_selectors.contains(owner) {
+            if !self.analysis.visual_state_selectors.contains(owner) {
                 return Ok(());
             }
             let name = state_selector_name(owner);
-            let value = if self.persistent_state_selectors.contains_key(owner) {
+            let value = if self.analysis.persistent_state_selectors.contains_key(owner) {
                 quote!(self.#name())
             } else {
                 self.state_choice(selector, |condition| self.visual_expr(condition, scope))?
@@ -4245,13 +4963,7 @@ impl<'a> Generator<'a> {
         let action = action_ref(element).is_some();
         for (&key, cases) in overrides {
             let selected = self.state_selector(cases[0])?;
-            let wrap = |value: TokenStream| {
-                if key == "enabled" && action {
-                    quote!(Some(::xrack_runtime::Value::from(#node.boolean("enabled", true) && (#value))))
-                } else {
-                    quote!(Some(::xrack_runtime::Value::from(#value)))
-                }
-            };
+            let wrap = |value: TokenStream| quote!(Some(::xrack_runtime::Value::from(#value)));
             let mut choices = TokenStream::new();
             for &case in cases {
                 let case = StateCaseRef::from_operation(case)?;
@@ -4273,8 +4985,18 @@ impl<'a> Generator<'a> {
                 .map(|binding| self.visual_value(binding, scope).map(wrap))
                 .transpose()?
                 .unwrap_or_else(|| quote!(None));
+            let value = if let Some(flag) = self.action_state_flag(element, key)? {
+                quote!(self.#flag().map(::xrack_runtime::Value::from))
+            } else {
+                quote!(match #selected { #choices _ => #base })
+            };
+            let value = if key == "enabled" && action {
+                quote!(#node.action_state_override(#key).or_else(|| #value))
+            } else {
+                value
+            };
             out.extend(quote! {
-                if let Some(value) = match #selected { #choices _ => #base } {
+                if let Some(value) = #value {
                     #node.properties.insert(#key, value);
                 }
             });
@@ -4311,13 +5033,166 @@ impl<'a> Generator<'a> {
         Ok(())
     }
 
+    fn group_option_model(
+        &self,
+        element: OperationRef<'a>,
+        scope: &VisualScope<'_>,
+    ) -> Result<Option<TokenStream>, String> {
+        let Some(template) = scene_children(element).next() else {
+            return Ok(None);
+        };
+        let Some(model) = children(template, "xr.repeat").next() else {
+            return Ok(None);
+        };
+        if self.empty_repeat(template) || self.static_subtree(template) {
+            return Ok(None);
+        }
+        let repeat = &scope.repeats[element_key(template)?];
+        let field = repeat_field(repeat.index());
+        let receiver = scope.receiver();
+        let source = self.visual_expr(self.operand(model, 0)?, scope)?;
+        Ok(Some(quote!(#receiver.#field.resolve_model(|| #source))))
+    }
+
+    fn live_group_option(
+        &self,
+        option: OperationRef<'a>,
+        scope: &VisualScope<'_>,
+        available: TokenStream,
+        radio: bool,
+    ) -> Result<TokenStream, String> {
+        let label = if radio {
+            self.live_radio_value(option, scope)?
+        } else {
+            quote!(::std::string::String::new())
+        };
+        Ok(quote! {
+            (#available).then(|| if read_label { #label } else { ::std::string::String::new() })
+        })
+    }
+
+    fn live_radio_value(
+        &self,
+        option: OperationRef<'a>,
+        scope: &VisualScope<'_>,
+    ) -> Result<TokenStream, String> {
+        Ok(["value", "text"]
+            .into_iter()
+            .find_map(|name| {
+                children(option, "xr.bind").find(|binding| binding.attr("name") == Ok(name))
+            })
+            .map(|binding| self.visual_value(binding, scope))
+            .transpose()?
+            .unwrap_or_else(|| quote!(::std::string::String::new())))
+    }
+
+    fn group_option_reader(
+        &self,
+        element: OperationRef<'a>,
+        radio: bool,
+    ) -> Result<TokenStream, String> {
+        if let Some(template) = scene_children(element).next()
+            && let Some(model) = children(template, "xr.repeat").next()
+        {
+            if self.empty_repeat(template) || self.static_subtree(template) {
+                return Ok(quote! {
+                    |slot, read_label| ::xrack_runtime::group_item(node, slot).map(|item| {
+                        if read_label { ::xrack_runtime::radio_value(item).to_owned() } else { ::std::string::String::new() }
+                    })
+                });
+            }
+            let repeat = &self.visuals.repeats[element_key(template)?];
+            let field = repeat_field(repeat.index());
+            let row_state = row_local(repeat.index());
+            let parameters = RepeatRef::from_operation(model)?;
+            let item = ident(parameters.item);
+            let bind_index = parameters.index.map(|index| {
+                let index = ident(index);
+                quote!(let #index = __xr_row_index;)
+            });
+            let source = self.expr(self.operand(model, 0)?)?;
+            let available = self.item_delegate_available(template, &repeat.row)?;
+            let option = self.live_group_option(template, &repeat.row, available, radio)?;
+            return Ok(quote! {
+                |slot, read_label| {
+                    let key = node.child_at(slot)?.row_key?;
+                    self.__state.__visuals.#field.with_row_state(
+                        || #source, slot, key,
+                        |#item, __xr_row_index, #row_state| {
+                            #bind_index
+                            #option
+                        },
+                    ).flatten()
+                }
+            });
+        }
+
+        let receiver = quote!(self);
+        let projection = TableProjection::new(ExpressionContext::new(&receiver));
+        let mut options = TokenStream::new();
+        for (slot, child) in static_children(element) {
+            let available = self.element_allows_editing(child, &projection)?;
+            let option = self.live_group_option(child, &self.visuals, available, radio)?;
+            options.extend(quote!(#slot => #option,));
+        }
+        Ok(quote!(|slot, read_label| match slot { #options _ => ::core::option::Option::None }))
+    }
+
     fn render_element(
         &self,
         element: OperationRef<'a>,
         scope: &VisualScope<'_>,
         out: &mut TokenStream,
         next: &mut usize,
-        include_children: Option<TokenStream>,
+        render_content: RenderContent,
+    ) -> Result<Ident, String> {
+        let mut guards = children(element, "xr.show_if").peekable();
+        if guards.peek().is_none() {
+            return self.render_element_body(element, scope, out, next, render_content);
+        }
+        let close = element
+            .attribute("kind")
+            .and_then(picker_value)
+            .map(|_| {
+                let popup = picker_field(element_key(element)?);
+                Ok::<_, String>(quote!(self.__state.#popup.close();))
+            })
+            .transpose()?;
+        if self.use_visual_plan
+            && guards
+                .peek()
+                .and_then(|guard| guard.attribute("xr.static_hidden"))
+                == Some("true")
+        {
+            let name = format_ident!("__xr_hidden_{}", *next);
+            *next += 1;
+            out.extend(quote!(let #name = { #close ::xrack_runtime::Node::hidden() };));
+            return Ok(name);
+        }
+        let guards = guards
+            .map(|guard| self.visual_value(guard, scope))
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut body = TokenStream::new();
+        let name = self.render_element_body(element, scope, &mut body, next, render_content)?;
+        out.extend(quote! {
+            let #name = if #((#guards) &&)* true {
+                #body
+                #name
+            } else {
+                #close
+                ::xrack_runtime::Node::hidden()
+            };
+        });
+        Ok(name)
+    }
+
+    fn render_element_body(
+        &self,
+        element: OperationRef<'a>,
+        scope: &VisualScope<'_>,
+        out: &mut TokenStream,
+        next: &mut usize,
+        render_content: RenderContent,
     ) -> Result<Ident, String> {
         let name = format_ident!("__xr_node_{}", *next);
         *next += 1;
@@ -4498,8 +5373,12 @@ impl<'a> Generator<'a> {
             let value = self.visual_value(binding, scope)?;
             if key == "model" && element.attr("kind") == Ok("Tumbler") {
                 out.extend(quote! {
-                    #name.tumbler_items = Some(::xrack_runtime::TumblerItems::new(#value));
+                    #name.set_tumbler_items(::xrack_runtime::TumblerItems::new(#value));
                 });
+                continue;
+            }
+            if key == "model" && element.attr("kind") == Ok("ComboBox") {
+                out.extend(quote!(#name.set_string_combo_model(#value);));
                 continue;
             }
             out.extend(quote! {
@@ -4551,7 +5430,7 @@ impl<'a> Generator<'a> {
                 });
                 continue;
             }
-            let value = self.control_value(element, property, ty)?;
+            let value = self.control_value_in(element, property, ty, scope)?;
             out.extend(quote! {
                 #name.properties.insert(#property, ::xrack_runtime::Value::from(#value));
             });
@@ -4579,7 +5458,7 @@ impl<'a> Generator<'a> {
             let timing = self.animation_timing(animation, scope)?;
             out.extend(quote! {
                 if let Some(timing) = #timing {
-                    #name.animations.insert(#key, timing);
+                    #name.set_animation(#key, timing);
                 }
             });
         }
@@ -4699,13 +5578,14 @@ impl<'a> Generator<'a> {
             let field = repeat_field(repeat.index());
             let model = self.visual_expr(self.operand(model, 0)?, scope)?;
             if kind == Some("TreeView") {
-                let tree = self.tree_snapshot(element, row, quote!(#receiver.#field), &model)?;
+                let tree = self.tree_snapshot(element, row, &quote!(__xr_tree_model))?;
                 let state = tree_state_field(element_key(element)?);
-                let tree_model = quote!(&*#receiver.#field.resolve_model(|| #model));
+                let tree_model = quote!(&*__xr_tree_model);
                 let projected = self
                     .project_row_heights(element, &name, &tree_model, Some(&quote!(&tree)))?
                     .map(|value| quote!(#name.row_heights = #value;));
                 out.extend(quote! {
+                    let __xr_tree_model = #receiver.#field.resolve_model(|| #model);
                     let tree = #tree;
                     #name.list = Some(::xrack_runtime::ListMetrics { row_count: tree.rows().len(), first_row: 0 });
                     if #name.boolean("multi-select", false) {
@@ -4766,26 +5646,12 @@ impl<'a> Generator<'a> {
                 #name.stack = Some(__xr_stack.clone());
             });
         }
-        if kind == Some("SwipeView") {
-            // Page eligibility is cheap to read even when its body is not rendered.
-            let mut available = Vec::new();
-            for page in scene_children(element) {
-                let flag = |name| -> Result<TokenStream, String> {
-                    Ok(children(page, "xr.bind")
-                        .find(|binding| binding.attr("name") == Ok(name))
-                        .map(|binding| self.visual_value(binding, scope))
-                        .transpose()?
-                        .unwrap_or_else(|| quote!(true)))
-                };
-                let visible = flag("visible")?;
-                let enabled = flag("enabled")?;
-                available.push(quote!((#visible) && (#enabled)));
-            }
-            content.extend(quote! {
-                let __xr_swipe_active =
-                    ::xrack_runtime::resolve_swipe_index(#name.int("current-index"), [#(#available),*]);
-            });
+        if matches!(kind, Some("RadioGroup" | "TabBar"))
+            && let Some(model) = self.group_option_model(element, scope)?
+        {
+            content.extend(quote!(#name.snapshot_group_options(&*#model);));
         }
+        let mut swipe_mounts = TokenStream::new();
         let mut table_cells = TokenStream::new();
         let mut table_columns = 0usize;
         for (index, child) in scene_children(element).enumerate() {
@@ -4806,14 +5672,33 @@ impl<'a> Generator<'a> {
             let child = if kind == Some("TabWidget") {
                 let index = index as i64;
                 let active = quote!(#name.int("current-index").unwrap_or(0) == #index);
-                self.render_element(child, scope, &mut content, next, Some(active))?
+                self.render_element(
+                    child,
+                    scope,
+                    &mut content,
+                    next,
+                    RenderContent::Active(active),
+                )?
             } else if kind == Some("SwipeView") {
-                let active = quote!(#name.is_visible() && __xr_swipe_active == Some(#index));
-                self.render_element(child, scope, &mut content, next, Some(active))?
+                let mount = format_ident!("{name}_mount_{index}");
+                swipe_mounts.extend(quote!(#index => #mount(page),));
+                self.render_element(
+                    child,
+                    scope,
+                    &mut content,
+                    next,
+                    RenderContent::Deferred(mount),
+                )?
             } else if kind == Some("StackView") {
                 let route = child.attr("id")?;
                 let active = quote!(#name.is_visible() && __xr_stack.current() == Some(#route));
-                self.render_element(child, scope, &mut content, next, Some(active))?
+                self.render_element(
+                    child,
+                    scope,
+                    &mut content,
+                    next,
+                    RenderContent::Active(active),
+                )?
             } else {
                 self.render(child, scope, &mut content, next)?
             };
@@ -4822,6 +5707,14 @@ impl<'a> Generator<'a> {
             } else {
                 content.extend(quote!(#name.children.push(#child);));
             }
+        }
+        if !swipe_mounts.is_empty() {
+            content.extend(quote! {
+                let _ = #name.mount_active_swipe_page(|index, page| match index {
+                    #swipe_mounts
+                    _ => ::core::unreachable!(),
+                });
+            });
         }
         if kind == Some("TableRow") {
             content.extend(quote! {
@@ -4854,16 +5747,19 @@ impl<'a> Generator<'a> {
                 }
             });
         }
-        if kind.is_some_and(xrack_runtime::is_window_overlay) {
-            out.extend(quote! { if #name.is_visible() { #content } });
-        } else if let Some(active) = include_children {
-            out.extend(quote! {
+        match render_content {
+            RenderContent::Inline if kind.is_some_and(xrack_runtime::is_window_overlay) => {
+                out.extend(quote! { if #name.is_visible() { #content } });
+            }
+            RenderContent::Inline => out.extend(content),
+            RenderContent::Active(active) => out.extend(quote! {
                 if #active && #name.boolean("visible", true) && #name.boolean("enabled", true) {
                     #content
                 }
-            });
-        } else {
-            out.extend(content);
+            }),
+            RenderContent::Deferred(mount) => out.extend(quote! {
+                let #mount = |#name: &mut ::xrack_runtime::Node| { #content };
+            }),
         }
         if kind == Some("RadioGroup") {
             out.extend(quote! {
@@ -5013,6 +5909,38 @@ impl<'a> Generator<'a> {
         Ok(())
     }
 
+    fn group_box_toggle(
+        &self,
+        element: OperationRef<'a>,
+        scope: &VisualScope<'_>,
+        input: &TokenStream,
+    ) -> Result<TokenStream, String> {
+        let checkable = children(element, "xr.bind")
+            .find(|binding| binding.attr("name") == Ok("checkable"))
+            .map(|binding| self.visual_value(binding, scope))
+            .transpose()?
+            .unwrap_or_else(|| quote!(false));
+        let current = self.control_value_in(element, "checked", Type::Bool, scope)?;
+        let key = element_key(element)?;
+        let update = if scope.row_groups.contains(key) {
+            let field = control_field(key, "checked");
+            let storage = scope.receiver();
+            quote!(#storage.#field.set_if_changed(__xr_checked);)
+        } else {
+            self.set_control(element, &quote!(__xr_checked))?
+        };
+        let toggled = self.typed_event(element, "toggled", &quote!(__xr_checked))?;
+        Ok(quote!({
+            if let Some(__xr_checked) = ::xrack_runtime::prepare_group_box_toggle(#input, || #checkable, || #current) {
+                #update
+                #toggled
+                true
+            } else {
+                false
+            }
+        }))
+    }
+
     fn dispatch_arms(
         &self,
         element: OperationRef<'a>,
@@ -5023,7 +5951,7 @@ impl<'a> Generator<'a> {
         if element.name() == "xr.instance" {
             let field = instance_field(element_key(element)?);
             paths.extend(quote! {
-                [#(#path,)* rest @ ..] => self.__state.#field.__dispatch_path(rest, event),
+                [#(#path,)* rest @ ..] => self.__state.#field.__dispatch_path(rest, event, input),
             });
             return Ok(());
         }
@@ -5040,31 +5968,36 @@ impl<'a> Generator<'a> {
         ) && let Some(action) = action_ref(element)
         {
             let activate = action_activate_method(action);
-            paths.extend(quote!([#(#path),*] => event == "clicked" && self.#activate(),));
+            let receiver = quote!(self);
+            let projection = TableProjection::new(ExpressionContext::new(&receiver));
+            let available = self.element_allows_editing(element, &projection)?;
+            paths.extend(
+                quote!([#(#path),*] => event == "clicked" && self.#activate(|| true, Some(input)),),
+            );
             if !id.is_empty() {
-                local.extend(quote!((#id, "clicked") => self.#activate(),));
+                local.extend(quote!((#id, "clicked") => self.#activate(|| #available, None),));
             }
         } else if element.attr("kind") == Ok("GroupBox") {
-            let checkable = children(element, "xr.bind")
-                .find(|binding| binding.attr("name") == Ok("checkable"))
-                .map(|binding| self.visual_value(binding, &self.visuals))
-                .transpose()?
-                .unwrap_or_else(|| quote!(false));
-            let current = self.control_value(element, "checked", Type::Bool)?;
-            let update = self.set_control(element, &quote!(__xr_checked))?;
-            let toggled = self.typed_event(element, "toggled", &quote!(__xr_checked))?;
-            let click = quote!({
-                if !#checkable { return false; }
-                let __xr_checked = !(#current);
-                #update
-                #toggled
-                true
-            });
-            paths.extend(quote!([#(#path),*] => event == "clicked" && #click,));
+            let routed_click =
+                self.group_box_toggle(element, &self.visuals, &quote!(Some(input)))?;
+            paths.extend(quote!([#(#path),*] => event == "clicked" && #routed_click,));
             if !id.is_empty() {
+                let click = self.group_box_toggle(element, &self.visuals, &quote!(None))?;
                 local.extend(quote!((#id, "clicked") => #click,));
             }
         } else if element.attr("kind").is_ok_and(is_toggle) {
+            let group_guard = if let Some(key) = children(element, "xr.check_group_ref")
+                .next()
+                .and_then(|reference| reference.attribute("group"))
+            {
+                let group = *self.elements.get(key).ok_or("unknown check ButtonGroup")?;
+                let receiver = quote!(self);
+                let projection = TableProjection::new(ExpressionContext::new(&receiver));
+                let enabled = self.row_binding_or(group, "enabled", quote!(true), &projection)?;
+                quote!(if !input.available(|| #enabled) { return false; })
+            } else {
+                TokenStream::new()
+            };
             let projection = check_state_binding(element);
             let (next, value) = if check_state_control(element) {
                 let current = if let Some(binding) = projection {
@@ -5091,23 +6024,45 @@ impl<'a> Generator<'a> {
                 self.set_control(element, &value)?
             };
             let changed = self.typed_event(element, "check-state-changed", &quote!(__xr_state))?;
-            let click = quote!({
-                let __xr_state = #next;
-                #update
-                self.__dispatch_local(#id, "toggled");
-                #changed
-                true
-            });
+            let click = |guard| {
+                quote!({
+                    let __xr_state = #next;
+                    #guard
+                    #update
+                    self.__dispatch_local(#id, "toggled");
+                    #changed
+                    true
+                })
+            };
+            let routed_click = click(quote!(if !input.is_current() {
+                return false;
+            }));
             paths.extend(quote! {
                 [#(#path),*] => {
-                    if event == "clicked" { #click } else { self.__dispatch_local(#id, event) }
+                    if event == "clicked" { #group_guard #routed_click } else { self.__dispatch_local(#id, event) }
                 },
             });
             if !id.is_empty() {
+                let click = click(TokenStream::new());
                 local.extend(quote!((#id, "clicked") => #click,));
             }
         } else if children(element, "xr.handler").any(dispatchable) {
-            paths.extend(quote!([#(#path),*] => self.__dispatch_local(#id, event),));
+            let submission = if matches!(kind, "TextInput" | "LineEdit")
+                && children(element, "xr.handler")
+                    .any(|handler| handler.attr("name") == Ok("accepted"))
+            {
+                let text = self.control_value(element, "text", Type::String)?;
+                let (mode, separator, limit) = self.text_input_constraints(element)?;
+                quote! {
+                    if event == "accepted" && !input.available(|| ::xrack_runtime::text_submission_is_valid(
+                        &#text, #mode, || #separator, || #limit,
+                    )) { return false; }
+                }
+            } else {
+                TokenStream::new()
+            };
+            paths
+                .extend(quote!([#(#path),*] => { #submission self.__dispatch_local(#id, event) },));
         }
         for handler in children(element, "xr.handler").filter(|handler| dispatchable(*handler)) {
             let event = handler.attr("name")?;
@@ -5122,6 +6077,98 @@ impl<'a> Generator<'a> {
         Ok(())
     }
 
+    fn search_methods(&self, element: OperationRef<'a>) -> Result<TokenStream, String> {
+        let key = element_key(element)?;
+        let input = search_method(key, "input");
+        let control = search_method(key, "control");
+        let text = quote!(__xr_text.to_owned());
+        let set = self.set_control(element, &text)?;
+        let edited = self.typed_event(element, "edited", &text)?;
+        let accepted = self.typed_event(element, "accepted", &text)?;
+        let selected = self.typed_event(element, "selected", &text)?;
+        let search = self.typed_event(element, "search-triggered", &text)?;
+        let live = self.binding_value_or(element, "live", quote!(false))?;
+        let receiver = quote!(self);
+        let projection = TableProjection::new(ExpressionContext::new(&receiver));
+        let available = self.element_allows_editing(element, &projection)?;
+        let read_only = self.binding_value_or(element, "read-only", quote!(false))?;
+        let current = self.control_value(element, "text", Type::String)?;
+        let binding =
+            |name| children(element, "xr.bind").find(|binding| binding.attr("name") == Ok(name));
+        let result_query = match binding("suggestions-for") {
+            Some(binding) => {
+                let value = self.visual_value(binding, &self.visuals)?;
+                quote!(::core::option::Option::Some(#value))
+            }
+            None => quote!(::core::option::Option::None),
+        };
+        let suggestion = match binding("suggestions") {
+            Some(binding) => {
+                let model = self.visual_value(binding, &self.visuals)?;
+                quote!((#model).row(index))
+            }
+            None => quote!(::core::option::Option::None),
+        };
+        Ok(quote! {
+            fn #input(&self, input: ::xrack_runtime::SearchInput) -> ::core::primitive::bool {
+                input.apply(|| #live, |update| match update {
+                    ::xrack_runtime::SearchUpdate::SetText(__xr_text) => { #set }
+                    ::xrack_runtime::SearchUpdate::Edited(__xr_text) => { #edited }
+                    ::xrack_runtime::SearchUpdate::Accepted(__xr_text) => { #accepted }
+                    ::xrack_runtime::SearchUpdate::Selected(__xr_text) => { #selected }
+                    ::xrack_runtime::SearchUpdate::Triggered(__xr_text) => { #search }
+                })
+            }
+            fn #control(&self, node: &::xrack_runtime::Node, action: ::xrack_runtime::ControlAction, route: ::xrack_runtime::InputRoute<'_>) -> ::core::primitive::bool {
+                let ::core::option::Option::Some(input) = ::xrack_runtime::SearchInput::from_control(
+                    node, action, || #available, || !(#read_only), || #current, || #result_query, |index| #suggestion,
+                ) else { return false; };
+                route.is_current() && self.#input(input)
+            }
+        })
+    }
+
+    fn text_input_constraints(
+        &self,
+        element: OperationRef<'a>,
+    ) -> Result<(TokenStream, TokenStream, TokenStream), String> {
+        let mode = self.binding_value_or(
+            element,
+            "input-type",
+            quote!(::xrack_runtime::InputType::Text),
+        )?;
+        let separator = self.binding_value_or(
+            element,
+            "decimal-separator",
+            quote!(::std::string::String::new()),
+        )?;
+        let separator = quote!(if (#separator) == "," { ',' } else { '.' });
+        let limit = match children(element, "xr.bind")
+            .find(|binding| binding.attr("name") == Ok("maximum-length"))
+        {
+            Some(binding) => {
+                let value = self.visual_value(binding, &self.visuals)?;
+                quote!(::core::option::Option::Some(#value))
+            }
+            None => quote!(::core::option::Option::None),
+        };
+        Ok((mode, separator, limit))
+    }
+
+    fn live_editor_guard(&self, element: OperationRef<'a>) -> Result<TokenStream, String> {
+        let kind = element.attr("kind")?;
+        let allowed = if kind == "ComboBox" {
+            self.binding_value_or(element, "editable", quote!(false))?
+        } else {
+            let read_only = self.binding_value_or(element, "read-only", quote!(false))?;
+            let (mode, separator, limit) = self.text_input_constraints(element)?;
+            quote!(!(#read_only) && node.allows_text_edit_with(
+                &text, #mode, || #separator, || #limit,
+            ))
+        };
+        Ok(quote!(if !input.available(|| #allowed) { return false; }))
+    }
+
     fn edit_arms(
         &self,
         element: OperationRef<'a>,
@@ -5129,34 +6176,32 @@ impl<'a> Generator<'a> {
         out: &mut TokenStream,
     ) -> Result<(), String> {
         if element.name() == "xr.instance" {
-            let instance = instance_field(element_key(element)?);
-            out.extend(
-                quote!([#(#path,)* rest @ ..] => self.__state.#instance.__edit_path(rest, node, text),),
-            );
             return Ok(());
         }
         if combo_editor(element) {
+            let guard = self.live_editor_guard(element)?;
             let set = self.set_control_property(element, "edit-text", &quote!(text.clone()))?;
             let edited = self.typed_event(element, "edited", &quote!(text))?;
-            out.extend(quote!([#(#path),*] => { #set #edited true },));
+            out.extend(quote!([#(#path),*] => { #guard #set #edited true },));
         } else if element.attr("kind") == Ok("ColorPickerPopup") {
             let popup = picker_field(element_key(element)?);
             let open = self.control_value(element, "open", Type::Bool)?;
             let show_alpha = self.binding_value_or(element, "show-alpha", quote!(false))?;
             out.extend(quote! {
-                [#(#path,)* 0, 0, 1] => (#open) && self.__state.#popup.edit_hex(#show_alpha, node, text),
+                [#(#path,)* 0, 0, 1] => {
+                    if !(#open) { return false; }
+                    let show_alpha = #show_alpha;
+                    input.is_current() && self.__state.#popup.edit_hex(show_alpha, node, text)
+                },
             });
         } else if element.attr("kind") == Ok("SearchField") {
-            let set = self.set_control(element, &quote!(text.clone()))?;
-            let edited = self.typed_event(element, "edited", &quote!(text.clone()))?;
-            let search = self.typed_event(element, "search-triggered", &quote!(text))?;
-            let live = children(element, "xr.bind")
-                .find(|binding| binding.attr("name") == Ok("live"))
-                .map(|binding| self.expr(self.operand(binding, 0)?))
-                .transpose()?
-                .unwrap_or_else(|| quote!(false));
-            out.extend(quote!([#(#path),*] => { #set #edited if #live { #search } true },));
+            let guard = self.live_editor_guard(element)?;
+            let edit = search_method(element_key(element)?, "input");
+            out.extend(
+                quote!([#(#path),*] => { #guard self.#edit(::xrack_runtime::SearchInput::Edit(text)) },),
+            );
         } else if element.attr("kind").is_ok_and(is_multiline_text_input) {
+            let guard = self.live_editor_guard(element)?;
             let has_handler =
                 children(element, "xr.handler").any(|handler| handler.attr("name") == Ok("edited"));
             let value = if has_handler {
@@ -5166,12 +6211,13 @@ impl<'a> Generator<'a> {
             };
             let set = self.set_control(element, &value)?;
             let edited = self.typed_event(element, "edited", &quote!(text))?;
-            out.extend(quote!([#(#path),*] => { #set #edited true },));
+            out.extend(quote!([#(#path),*] => { #guard #set #edited true },));
         } else if text_item(element) {
+            let guard = self.live_editor_guard(element)?;
             let set = self.set_control(element, &quote!(text))?;
             let id = element.attr("id")?;
             out.extend(quote! {
-                [#(#path),*] => { #set self.__dispatch_local(#id, "edited"); true },
+                [#(#path),*] => { #guard #set self.__dispatch_local(#id, "edited"); true },
             });
         }
         for (index, child) in static_children(element) {
@@ -5316,8 +6362,29 @@ impl<'a> Generator<'a> {
         path: &mut Vec<usize>,
         wheel: &mut TokenStream,
         pointer: &mut TokenStream,
+        availability: &mut TokenStream,
     ) -> Result<(), String> {
+        let receiver = quote!(self);
+        let projection = TableProjection::new(ExpressionContext::new(&receiver));
+        let conditions = self.row_conditions_met(element, &projection)?;
         if element.name() == "xr.instance" {
+            let visible = self.row_binding_or(
+                element,
+                "visible",
+                quote!({
+                    inherits_visibility = true;
+                    true
+                }),
+                &projection,
+            )?;
+            availability.extend(quote! {
+                [#(#path),*] => {
+                    let mut inherits_visibility = false;
+                    let shown = (#conditions) && (root_visibility_overridden || (#visible));
+                    child_visibility_overridden = !inherits_visibility;
+                    shown
+                },
+            });
             let instance = instance_field(element_key(element)?);
             wheel.extend(
                 quote!([#(#path,)* rest @ ..] => self.__state.#instance.__wheel_path(rest, event),),
@@ -5328,6 +6395,58 @@ impl<'a> Generator<'a> {
             return Ok(());
         }
         let kind = element.attr("kind")?;
+        let enabled = self.row_binding_or(element, "enabled", quote!(true), &projection)?;
+        let visible = self.row_binding_or(element, "visible", quote!(true), &projection)?;
+        let next = quote!(path.get(depth).and_then(|index| node.child_at(*index)));
+        let closed = quote!(::xrack_runtime::SwipeSide::Closed);
+        let scope = match kind {
+            kind if xrack_runtime::is_window_overlay(kind) || picker_value(kind).is_some() => {
+                let open = self.control_value(element, "open", Type::Bool)?;
+                quote!(&& node.input_scope_available(#next, || input.can_open_drawer(node, depth == path.len()) || (#open), || false, || true, || #closed))
+            }
+            "GroupBox" => {
+                let checkable =
+                    self.row_binding_or(element, "checkable", quote!(false), &projection)?;
+                let checked = self.control_value(element, "checked", Type::Bool)?;
+                quote!(&& node.input_scope_available(#next, || false, || #checkable, || #checked, || #closed))
+            }
+            "SwipeDelegate" => {
+                let side = self.control_value(element, "open-side", Type::SwipeSide)?;
+                quote!(&& node.input_scope_available(#next, || false, || false, || true, || #side))
+            }
+            "TabWidget" => {
+                let index = self.control_value(element, "current-index", Type::Int)?;
+                quote!(&& (depth + 1 >= path.len() || ::core::primitive::usize::try_from(#index).ok() == path.get(depth).copied()))
+            }
+            "SwipeView" => {
+                let index = self.control_value(element, "current-index", Type::Int)?;
+                let mut pages = TokenStream::new();
+                let mut count = 0;
+                for (slot, page) in static_children(element) {
+                    let available = self.element_allows_editing(page, &projection)?;
+                    pages.extend(quote!(#slot => #available,));
+                    count = slot + 1;
+                }
+                quote! {
+                    && (depth == path.len() || ::xrack_runtime::resolve_swipe_index(
+                        ::core::option::Option::Some(#index),
+                        (0..#count).map(|slot| match slot { #pages _ => false }),
+                    ) == path.get(depth).copied())
+                }
+            }
+            "StackView" => {
+                let snapshot = stack_snapshot_method(element_key(element)?);
+                quote! {
+                    && (depth == path.len() || self.#snapshot().current()
+                        .and_then(|route| node.stack_route_index(route)) == path.get(depth).copied())
+                }
+            }
+            _ => TokenStream::new(),
+        };
+        availability.extend(quote! {
+            [#(#path),*] => (!node.input_requires_enabled(depth == path.len()) || (#enabled))
+                && (#conditions) && (root_visibility_overridden || (#visible)) #scope,
+        });
         for handler in children(element, "xr.handler") {
             let returns_result = match (kind, handler.attr("name")?) {
                 ("WheelHandler", "wheel") | ("TouchArea", "scroll-event") => true,
@@ -5353,7 +6472,7 @@ impl<'a> Generator<'a> {
         }
         for (index, child) in static_children(element) {
             path.push(index);
-            self.pointer_input_arms(child, path, wheel, pointer)?;
+            self.pointer_input_arms(child, path, wheel, pointer, availability)?;
             path.pop();
         }
         Ok(())
@@ -5428,6 +6547,143 @@ impl<'a> Generator<'a> {
         Ok(())
     }
 
+    fn control_view_settings(
+        &self,
+        element: OperationRef<'a>,
+        scope: &VisualScope<'_>,
+        properties: &[&str],
+    ) -> Result<Vec<TokenStream>, String> {
+        children(element, "xr.bind")
+            .filter_map(|binding| {
+                let name = binding.attribute("name")?;
+                properties.contains(&name).then_some((name, binding))
+            })
+            .map(|(name, binding)| {
+                let value = self.visual_value(binding, scope)?;
+                Ok(quote! {
+                    #name => ::core::option::Option::Some(::xrack_runtime::Value::from(#value)),
+                })
+            })
+            .collect()
+    }
+
+    fn row_numeric_preparation(
+        &self,
+        nodes: &[OperationRef<'a>],
+        model: OperationRef<'a>,
+        repeat: &RepeatScope<'_>,
+        operand: OperationRef<'a>,
+        guard: &TokenStream,
+        history: &TokenStream,
+    ) -> Result<TokenStream, String> {
+        let editor = *nodes.last().ok_or("missing numeric row editor")?;
+        let available = self.row_input_available(nodes, &repeat.row, false, &quote!(input))?;
+        let parameters = RepeatRef::from_operation(model)?;
+        let item = ident(parameters.item);
+        let index_binding = parameters.index.map(|name| {
+            let index = ident(name);
+            quote!(let #index = __xr_row_index;)
+        });
+        let repeater = repeat_field(repeat.index());
+        let row = row_local(repeat.index());
+        let source = self.expr(self.operand(model, 0)?)?;
+        let kind = editor.attr("kind")?;
+        let range = matches!(kind, "Slider" | "Dial");
+        let properties = if range {
+            xrack_runtime::range_view_properties(kind)
+        } else {
+            xrack_runtime::SPIN_VIEW_PROPERTIES
+        };
+        let settings = self.control_view_settings(editor, &repeat.row, properties)?;
+        let (event, prepare) = if range {
+            (
+                quote!(::xrack_runtime::RoutedEvent::Range(__xr_action)),
+                quote! {
+                    ::xrack_runtime::prepare_range_view(
+                        __xr_node, *__xr_action, __xr_available, __xr_read, || #history,
+                    )
+                },
+            )
+        } else {
+            let value = self.visual_expr(operand, &repeat.row)?;
+            (
+                quote!(::xrack_runtime::RoutedEvent::Control(
+                    ::xrack_runtime::ControlAction::Spin(__xr_action)
+                )),
+                quote! {
+                    ::xrack_runtime::prepare_spin_view(
+                        __xr_node, *__xr_action, __xr_available,
+                        || ::xrack_runtime::Value::from(#value),
+                        __xr_read, || ::core::option::Option::Some(#history),
+                    )
+                },
+            )
+        };
+        Ok(quote! {{
+            let #event = action else {
+                return ::core::option::Option::None;
+            };
+            let __xr_source_index = index;
+            let __xr_repeater = &self.__state.__visuals.#repeater;
+            let __xr_node = cell;
+            let __xr_live_row = || {
+                let index = visual_index;
+                #guard
+                ::core::option::Option::Some(index)
+            };
+            __xr_repeater.with_row_state(
+                || #source, index, key,
+                |#item, __xr_row_index, #row| {
+                    #index_binding
+                    let __xr_available = || {
+                        if __xr_live_row() != ::core::option::Option::Some(__xr_source_index) {
+                            return false;
+                        }
+                        let __xr_live_source = __xr_repeater.resolve_model(|| #source);
+                        ::xrack_runtime::ListModel::contents_stamp(&*__xr_live_source);
+                        #available
+                    };
+                    let __xr_read = |__xr_property: &::core::primitive::str| match __xr_property {
+                        #(#settings)* _ => ::core::option::Option::None,
+                    };
+                    #prepare
+                },
+            ).flatten()
+        }})
+    }
+
+    fn range_view_preparation(
+        &self,
+        element: OperationRef<'a>,
+        values: TokenStream,
+    ) -> Result<TokenStream, String> {
+        let receiver = quote!(self);
+        let projection = TableProjection::new(ExpressionContext::new(&receiver));
+        let available = self.element_allows_editing(element, &projection)?;
+        let settings = self.control_view_settings(
+            element,
+            &self.visuals,
+            xrack_runtime::range_view_properties(element.attr("kind")?),
+        )?;
+        Ok(quote! {
+            ::xrack_runtime::prepare_range_view(
+                node, action, || #available,
+                |name| match name { #(#settings)* _ => ::core::option::Option::None },
+                || #values,
+            )
+        })
+    }
+
+    fn range_with_live_bounds(
+        &self,
+        element: OperationRef<'a>,
+        range: TokenStream,
+    ) -> Result<TokenStream, String> {
+        let minimum = self.binding_value_or(element, "minimum", quote!(0.0_f64))?;
+        let maximum = self.binding_value_or(element, "maximum", quote!(100.0_f64))?;
+        Ok(quote!((#range).with_bounds(#minimum, #maximum)))
+    }
+
     fn range_arms(
         &self,
         element: OperationRef<'a>,
@@ -5435,18 +6691,22 @@ impl<'a> Generator<'a> {
         out: &mut TokenStream,
     ) -> Result<(), String> {
         if element.name() == "xr.instance" {
-            let instance = instance_field(element_key(element)?);
-            out.extend(quote!([#(#path,)* rest @ ..] => self.__state.#instance.__range_path(rest, node, action),));
             return Ok(());
         }
         if matches!(element.attr("kind"), Ok("Slider" | "Dial")) {
             let current = self.control_value(element, "value", Type::Float)?;
+            let prepared = self.range_view_preparation(element, current.clone())?;
+            let live_range = self.range_with_live_bounds(element, quote!(range))?;
             let set = self.set_control(element, &quote!(value))?;
             let changed = self.typed_event(element, "changed", &quote!(value))?;
             let released = self.typed_event(element, "released", &quote!(value))?;
             out.extend(quote! {
                 [#(#path),*] => {
-                    let range = ::xrack_runtime::SliderRange::from_node(node).with_value(#current);
+                    let ::core::option::Option::Some(current) = #prepared else {
+                        return false;
+                    };
+                    if !input.is_current() { return false; }
+                    let range = ::xrack_runtime::SliderRange::from_node(node).with_value(current);
                     if let Some(value) = range.apply(action) {
                         #set
                         #changed
@@ -5454,7 +6714,7 @@ impl<'a> Generator<'a> {
                         return false;
                     }
                     if action.is_release() {
-                        let value = range.with_value(#current).value();
+                        let value = (#live_range).with_value(#current).value();
                         #released
                     }
                     true
@@ -5463,12 +6723,18 @@ impl<'a> Generator<'a> {
         } else if element.attr("kind") == Ok("ScrollBar")
             && children(element, "xr.scroll_target").next().is_none()
         {
+            let position = self.control_value(element, "position", Type::Float)?;
+            let prepared = self.range_view_preparation(element, position)?;
             let set = self.set_control(element, &quote!(value))?;
             let changed = self.typed_event(element, "changed", &quote!(value))?;
             out.extend(quote! {
                 [#(#path),*] => {
                     if !node.boolean("interactive", true) { return false; }
-                    let range = ::xrack_runtime::ScrollBarRange::from_node(node);
+                    let ::core::option::Option::Some(position) = #prepared else {
+                        return false;
+                    };
+                    if !input.is_current() { return false; }
+                    let range = ::xrack_runtime::ScrollBarRange::from_node(node).with_position(position);
                     let Some(value) = range.apply(action) else { return false; };
                     #set
                     #changed
@@ -5481,12 +6747,21 @@ impl<'a> Generator<'a> {
             let show_alpha = self.binding_value_or(element, "show-alpha", quote!(false))?;
             let show_plane = self.binding_value_or(element, "show-color-plane", quote!(false))?;
             out.extend(quote! {
-                [#(#path,)* 0, 5, ..] => (#open) && (#show_plane) && self.__state.#popup.adjust_plane(node, action),
-                [#(#path,)* 0, ..] => (#open) && self.__state.#popup.slide(#show_alpha, node, action),
+                [#(#path,)* 0, 5, ..] => (#open) && (#show_plane) && input.is_current() && self.__state.#popup.adjust_plane(node, action),
+                [#(#path,)* 0, ..] => {
+                    if !(#open) { return false; }
+                    let show_alpha = #show_alpha;
+                    input.is_current() && self.__state.#popup.slide(show_alpha, node, action)
+                },
             });
         } else if element.attr("kind") == Ok("RangeSlider") {
             let lower = self.control_value(element, "lower-value", Type::Float)?;
             let upper = self.control_value(element, "upper-value", Type::Float)?;
+            let prepared = self.range_view_preparation(element, quote!([#lower, #upper]))?;
+            let live_range = self.range_with_live_bounds(
+                element,
+                quote!(::xrack_runtime::SliderRange::from_node(node)),
+            )?;
             let set_lower =
                 self.set_control_property(element, "lower-value", &quote!(next_lower))?;
             let set_upper =
@@ -5496,21 +6771,23 @@ impl<'a> Generator<'a> {
             let released = self.typed_event_values(element, "released", &values)?;
             out.extend(quote! {
                 [#(#path,)* handle @ (0 | 1)] => {
-                    let raw_lower = #lower;
-                    let raw_upper = #upper;
+                    let ::core::option::Option::Some([raw_lower, raw_upper]) = #prepared else {
+                        return false;
+                    };
+                    if !input.is_current() { return false; }
                     let interval = ::xrack_runtime::SliderInterval::from_values(node, raw_lower, raw_upper);
                     if let Some([next_lower, next_upper]) = interval.apply(*handle, action) {
                         if next_lower != raw_lower { #set_lower }
                         if next_upper != raw_upper { #set_upper }
                         let [__xr_lower, __xr_upper] =
-                            ::xrack_runtime::SliderInterval::from_values(node, #lower, #upper).values();
+                            ::xrack_runtime::SliderInterval::from_range(#live_range, #lower, #upper).values();
                         #changed
                     } else if !action.is_release() {
                         return false;
                     }
                     if action.is_release() {
                         let [__xr_lower, __xr_upper] =
-                            ::xrack_runtime::SliderInterval::from_values(node, #lower, #upper).values();
+                            ::xrack_runtime::SliderInterval::from_range(#live_range, #lower, #upper).values();
                         #released
                     }
                     true
@@ -5525,12 +6802,12 @@ impl<'a> Generator<'a> {
         Ok(())
     }
 
-    fn record_combo_actions(
-        &self,
-        element: OperationRef<'a>,
-        binding: OperationRef<'a>,
-    ) -> Result<TokenStream, String> {
-        let (_, _, ty) = self.combo_roles(element, binding)?;
+    fn combo_actions(&self, element: OperationRef<'a>) -> Result<TokenStream, String> {
+        let record = record_combo_binding(element);
+        let ty = match record {
+            Some(binding) => self.combo_roles(element, binding)?.2,
+            None => Type::String,
+        };
         let variant = match ty {
             Type::String => quote!(String),
             Type::Int => quote!(Int),
@@ -5542,19 +6819,23 @@ impl<'a> Generator<'a> {
         };
         let by_value =
             controlled_property(element).is_some_and(|(name, _)| name == "current-value");
-        let selection = if by_value {
+        let chosen = if by_value {
             quote!(__xr_value.clone())
         } else {
-            quote!(__xr_index as ::core::primitive::i64)
+            quote!(index as ::core::primitive::i64)
         };
-        let set = self.set_control(element, &selection)?;
-        let select_value = quote! {
-            if !::xrack_runtime::choice_enabled(node, __xr_index) { return false; }
-            let Some(::xrack_runtime::Value::#variant(__xr_value)) = ::xrack_runtime::combo_value(node, __xr_index) else { return false; };
+        let set = self.set_control(element, &chosen)?;
+        let select = quote! {
+            let ::xrack_runtime::ComboSelection { index, label: __xr_label, value } = selection;
+            let ::xrack_runtime::Value::#variant(__xr_value) = value else { return false; };
             #set
         };
         let selected = self.typed_event(element, "selected", &quote!(__xr_label))?;
-        let value_selected = self.typed_event(element, "value-selected", &quote!(__xr_value))?;
+        let value_selected = if record.is_some() {
+            self.typed_event(element, "value-selected", &quote!(__xr_value))?
+        } else {
+            TokenStream::new()
+        };
         let (select_text, accept) = if combo_editor(element) {
             let field = control_field(element_key(element)?, "edit-text");
             let default = default_combo_edit_text(element);
@@ -5565,50 +6846,60 @@ impl<'a> Generator<'a> {
             };
             let reset = default.then(|| quote!(self.__state.#field.reset();));
             let keep_draft =
-                default.then(|| quote!(self.__state.#field.set_if_changed(__xr_draft.clone());));
-            let clear = if by_value {
-                TokenStream::new()
-            } else {
-                self.set_control(element, &quote!(-1_i64))?
+                default.then(|| quote!(self.__state.#field.set_if_changed(__xr_text.clone());));
+            let clear = match (by_value, record.is_some()) {
+                (false, _) => self.set_control(element, &quote!(-1_i64))?,
+                (true, false) => self.set_control(element, &quote!(__xr_text.clone()))?,
+                (true, true) => TokenStream::new(),
             };
-            let accepted = self.typed_event(element, "accepted", &quote!(__xr_draft))?;
+            let accepted = self.typed_event(element, "accepted", &quote!(__xr_text))?;
             (
-                quote!(if ::xrack_runtime::combo_editable(node) { #select_text }),
+                quote!(if editable { #select_text }),
                 quote! {
-                    if action == ::xrack_runtime::ControlAction::AcceptComboText {
-                        if !::xrack_runtime::combo_editable(node) { return false; }
-                        let __xr_draft = ::xrack_runtime::text_input_value(node).to_owned();
-                        let matching = ::xrack_runtime::combo_index(node)
-                            .filter(|index| ::xrack_runtime::choice_enabled(node, *index) && ::xrack_runtime::combo_text(node) == __xr_draft)
-                            .or_else(|| ::xrack_runtime::combo_find_enabled_label(node, 0, |label| label == __xr_draft));
-                        if let Some(__xr_index) = matching {
-                            #select_value
+                    ::xrack_runtime::ComboInput::Accept { text: __xr_text, selection } => {
+                        if let ::core::option::Option::Some(selection) = selection {
+                            #select
                             #reset
                             #value_selected
                         } else {
-                            if ::xrack_runtime::combo_find_label(node, |label| label == __xr_draft).is_some() { return false; }
                             #clear
                             #keep_draft
                         }
                         #accepted
-                        return true;
                     }
                 },
             )
         } else {
-            (TokenStream::new(), TokenStream::new())
+            (
+                TokenStream::new(),
+                quote!(::xrack_runtime::ComboInput::Accept { .. } => return false,),
+            )
         };
-        let model = self.visual_value(binding, &self.visuals)?;
+        let receiver = quote!(self);
+        let projection = TableProjection::new(ExpressionContext::new(&receiver));
+        let available = self.element_allows_editing(element, &projection)?;
+        let editable = self.binding_value_or(element, "editable", quote!(false))?;
+        let model_current = match model_binding(element) {
+            Some(binding) => {
+                let model = self.visual_value(binding, &self.visuals)?;
+                quote!(::xrack_runtime::combo_model_is_current(node, &#model))
+            }
+            None => quote!(true),
+        };
         Ok(quote! {
-            if !::xrack_runtime::combo_model_is_current(node, &#model) { return false; }
-            #accept
-            let ::xrack_runtime::ControlAction::Select(__xr_index) = action else { return false; };
-            let Some(__xr_label) = ::xrack_runtime::combo_label(node, __xr_index) else { return false; };
-            let __xr_label = __xr_label.into_owned();
-            #select_value
-            #select_text
-            #selected
-            #value_selected
+            let ::core::option::Option::Some(choice) = ::xrack_runtime::prepare_combo_input(
+                node, action, || #available, || #editable, || #model_current,
+            ) else { return false; };
+            if !input.is_current() { return false; }
+            match choice {
+                ::xrack_runtime::ComboInput::Select { selection, editable } => {
+                    #select
+                    #select_text
+                    #selected
+                    #value_selected
+                }
+                #accept
+            }
             true
         })
     }
@@ -5620,8 +6911,6 @@ impl<'a> Generator<'a> {
         out: &mut TokenStream,
     ) -> Result<(), String> {
         if element.name() == "xr.instance" {
-            let instance = instance_field(element_key(element)?);
-            out.extend(quote!([#(#path,)* rest @ ..] => self.__state.#instance.__control_path(rest, node, action),));
             return Ok(());
         }
         match element.attr("kind")? {
@@ -5629,15 +6918,23 @@ impl<'a> Generator<'a> {
                 if children(element, "xr.handler")
                     .any(|handler| handler.attr("name") == Ok("link-activated")) =>
             {
+                let receiver = quote!(self);
+                let projection = TableProjection::new(ExpressionContext::new(&receiver));
+                let text = self.row_binding_or(
+                    element,
+                    "text",
+                    quote!(::xrack_runtime::StyledText::default()),
+                    &projection,
+                )?;
                 let activated = self.typed_event_values(
                     element,
                     "link-activated",
-                    &[quote!(link.href.to_string())],
+                    &[quote!(__xr_href.to_owned())],
                 )?;
                 out.extend(quote! {
                     [#(#path),*] => {
                         let ::xrack_runtime::ControlAction::ActivateTextLink(index) = action else { return false; };
-                        let Some(link) = node.styled_text("text").and_then(|text| text.links().get(index)) else {
+                        let Some(__xr_href) = node.prepare_text_link(index, input, || #text) else {
                             return false;
                         };
                         #activated
@@ -5657,7 +6954,7 @@ impl<'a> Generator<'a> {
                 };
                 out.extend(quote! {
                     [#(#path),*] => action == ::xrack_runtime::ControlAction::#expected
-                        && self.#activate(),
+                        && self.#activate(|| true, Some(input)),
                 });
             }
             "Shortcut" => {
@@ -5676,7 +6973,11 @@ impl<'a> Generator<'a> {
             }
             "MenuItem" => {
                 let checked = self.control_value(element, "checked", Type::Bool)?;
-                let toggle = self.set_control(element, &quote!(!(#checked)))?;
+                let toggle = self.set_control(element, &quote!(__xr_next))?;
+                let receiver = quote!(self);
+                let projection = TableProjection::new(ExpressionContext::new(&receiver));
+                let available = self.element_allows_editing(element, &projection)?;
+                let checkable = self.binding_value_or(element, "checkable", quote!(false))?;
                 let activated = children(element, "xr.handler")
                     .find(|handler| handler.attr("name") == Ok("activated"))
                     .map(|handler| self.statements(handler))
@@ -5685,7 +6986,11 @@ impl<'a> Generator<'a> {
                 out.extend(quote! {
                     [#(#path),*] => {
                         if action != ::xrack_runtime::ControlAction::ActivateMenuItem { return false; }
-                        if node.boolean("checkable", false) { #toggle }
+                        let ::core::option::Option::Some(next) = ::xrack_runtime::prepare_action_activation(
+                            || #available, || #checkable, || #checked,
+                        ) else { return false; };
+                        if !input.is_current() { return false; }
+                        if let ::core::option::Option::Some(__xr_next) = next { #toggle }
                         #activated
                         true
                     },
@@ -5710,7 +7015,7 @@ impl<'a> Generator<'a> {
                 out.extend(quote! {
                     [#(#path),*] => {
                         use ::xrack_runtime::{ControlAction, DialogCommand, DialogRole};
-                        if !#open { return false; }
+                        if !(#open) || !input.is_current() { return false; }
                         match action {
                             ControlAction::Dialog(DialogRole::Accept) => { #close #accepted }
                             ControlAction::Dialog(DialogRole::Reject) => { #close #rejected }
@@ -5732,7 +7037,7 @@ impl<'a> Generator<'a> {
                 out.extend(quote! {
                     [#(#path),*] => {
                         let ::xrack_runtime::ControlAction::Drawer(__xr_open) = action else { return false; };
-                        if #open == __xr_open { return false; }
+                        if #open == __xr_open || !input.is_current() { return false; }
                         #set
                         if __xr_open { #opened } else { #closed }
                         true
@@ -5744,7 +7049,7 @@ impl<'a> Generator<'a> {
                 out.extend(quote! {
                     [#(#path),*] => {
                         let ::xrack_runtime::ControlAction::Popup(open) = action else { return false; };
-                        self.#method(open)
+                        self.#method(open, Some(input))
                     },
                 });
             }
@@ -5756,7 +7061,7 @@ impl<'a> Generator<'a> {
                     [#(#path),*] => {
                         let ::xrack_runtime::ControlAction::SwipeDelegate(__xr_side) = action else { return false; };
                         let current = #current;
-                        if !node.accepts_swipe_side(current, __xr_side) {
+                        if !input.is_current() || !node.accepts_swipe_side(current, __xr_side) {
                             return false;
                         }
                         #set
@@ -5766,30 +7071,38 @@ impl<'a> Generator<'a> {
                 });
             }
             kind @ ("SpinBox" | "DoubleSpinBox") => {
-                let (apply, guard) = if kind == "DoubleSpinBox" {
-                    let current = self.control_value(element, "value", Type::Float)?;
+                let (apply, ty) = if kind == "DoubleSpinBox" {
                     (
                         quote!(::xrack_runtime::decimal_spin_value_after),
-                        quote! {
-                            if let ::xrack_runtime::SpinAction::CommitDecimalIfCurrent { original, .. } = action
-                                && original != ::xrack_runtime::SpinDecimal::new(#current) {
-                                return false;
-                            }
-                        },
+                        Type::Float,
                     )
                 } else {
-                    (
-                        quote!(::xrack_runtime::spin_value_after),
-                        TokenStream::new(),
-                    )
+                    (quote!(::xrack_runtime::spin_value_after), Type::Int)
                 };
+                let current = self.control_value(element, "value", ty)?;
                 let set = self.set_control(element, &quote!(__xr_value))?;
                 let edited = self.typed_event(element, "edited", &quote!(__xr_value))?;
+                let receiver = quote!(self);
+                let projection = TableProjection::new(ExpressionContext::new(&receiver));
+                let available = self.element_allows_editing(element, &projection)?;
+                let settings = self.control_view_settings(
+                    element,
+                    &self.visuals,
+                    xrack_runtime::SPIN_VIEW_PROPERTIES,
+                )?;
                 out.extend(quote! {
                     [#(#path),*] => {
                         let ::xrack_runtime::ControlAction::Spin(action) = action else { return false; };
-                        #guard
                         let Some(__xr_value) = #apply(node, action) else { return false; };
+                        if !::xrack_runtime::spin_view_is_current(
+                            node, action,
+                            || #available,
+                            || ::xrack_runtime::Value::from(#current),
+                            |name| match name { #(#settings)* _ => ::core::option::Option::None },
+                        ) {
+                            return false;
+                        }
+                        if !input.is_current() { return false; }
                         #set
                         #edited
                         true
@@ -5797,126 +7110,65 @@ impl<'a> Generator<'a> {
                 });
             }
             "TreeView" => {
+                let method = tree_input_method(element_key(element)?);
+                out.extend(quote!([#(#path),*] => self.#method(node, input),));
+            }
+            "TableView" | "StandardTableView" => {
                 let key = element_key(element)?;
-                let tree = tree_snapshot_method(key);
-                let state = tree_state_field(key);
-                let select = tree_selection_method(key);
-                let current = self.control_value(element, "current-key", Type::Int)?;
-                let key = quote!(key);
-                let set = self.set_control(element, &key)?;
-                let changed = self.typed_event(element, "changed", &key)?;
-                let expanded_event = self.typed_event(element, "expanded", &key)?;
-                let collapsed_event = self.typed_event(element, "collapsed", &key)?;
+                let field = table_sort_field(key);
+                let sort_table = table_sort_method(key);
+                let widths = table_widths_field(key);
+                let order = table_order_field(key);
+                let move_column = table_move_method(key);
+                let move_row = table_move_row_method(key);
+                let heights = table_row_heights_field(key);
+                let model = self.table_model(element)?;
+                let select = table_selection_input_method(key);
+                let drag_flags = [
+                    "resizable-columns",
+                    "resizable-rows",
+                    "movable-columns",
+                    "movable-rows",
+                ]
+                .into_iter()
+                .map(|name| {
+                    let value = self.binding_value_or(element, name, quote!(false))?;
+                    Ok(quote!(#name => #value,))
+                })
+                .collect::<Result<TokenStream, String>>()?;
+                let resize_columns = table_columns(element)
+                    .enumerate()
+                    .map(|(index, column)| {
+                        let value = self.binding_value_or(column, "resizable", quote!(true))?;
+                        Ok(quote!(#index => #value,))
+                    })
+                    .collect::<Result<TokenStream, String>>()?;
                 out.extend(quote! {
                     [#(#path),*] => {
-                        let Some(snapshot) = &node.tree else { return false; };
-                        let live = self.#tree();
-                        if let ::xrack_runtime::ControlAction::Tree(::xrack_runtime::TreeAction::SetExpanded { key, row, expanded }) = action {
-                            let current = #current;
-                            if !self.__state.#state.set_expanded(&live, key, row, expanded) { return false; }
-                            if expanded {
-                                #expanded_event
-                            } else {
-                                if live.is_descendant(current, key) {
-                                    #set
-                                    #changed
-                                }
-                                #collapsed_event
-                            }
-                            return true;
+                        if matches!(action, ::xrack_runtime::ControlAction::Select(_) | ::xrack_runtime::ControlAction::TableSelection(_)) {
+                            return self.#select(node, action, input);
                         }
-                        let multiple = node.tree_selection.is_some();
-                        let action = match action {
-                            ::xrack_runtime::ControlAction::Select(index) => {
-                                let Some(item) = snapshot.rows().get(index) else { return false; };
-                                ::xrack_runtime::TreeSelectionAction::Row {
-                                    key: item.key, row: item.row, operation: ::xrack_runtime::RowSelection::Replace,
-                                }
-                            }
-                            ::xrack_runtime::ControlAction::Tree(::xrack_runtime::TreeAction::Selection(action)) if multiple => action,
-                            _ => return false,
-                        };
-                        if multiple && !snapshot.same_model(&live) { return false; }
-                        self.#select(&live, multiple, action)
-                    },
-                });
-            }
-            kind @ ("ListView" | "GridView" | "StandardListView" | "TableView"
-            | "StandardTableView") => {
-                let table = matches!(kind, "TableView" | "StandardTableView");
-                let value = quote!(index as ::core::primitive::i64);
-                let selection_guard = if table {
-                    quote! {
-                        if !node.list.is_some_and(|list| index < list.row_count)
-                            || ::xrack_runtime::ListMetrics::selection(node) == Some(#value) { return false; }
-                    }
-                } else {
-                    let stamp = if has_list_visibility(element) {
-                        let model = visible_list_model(element_key(element)?);
-                        quote!(Some(self.#model().positions().stamp()))
-                    } else if kind == "StandardListView" {
-                        if let Some(binding) = model_binding(element) {
-                            let model = self.visual_value(binding, &self.visuals)?;
-                            quote!(Some(::xrack_runtime::ListModel::structure_stamp(&#model)))
-                        } else {
-                            quote!(None)
-                        }
-                    } else {
-                        let (row, repeat) = self.list_template(element)?;
-                        let field = repeat_field(self.visuals.repeats[element_key(row)?].index());
-                        let model = self.expr(self.operand(repeat, 0)?)?;
-                        quote!(Some(self.__state.__visuals.#field.with_model(
-                            || #model,
-                            ::xrack_runtime::ListModel::structure_stamp,
-                        )))
-                    };
-                    let current = self.control_value(element, "current-index", Type::Int)?;
-                    quote! {
-                        if !::xrack_runtime::ListMetrics::has_row_in_model(node, index, #stamp)
-                            || #current == #value { return false; }
-                    }
-                };
-                let set = self.set_control(element, &value)?;
-                let event = self.typed_event(
-                    element,
-                    if table {
-                        "current-row-changed"
-                    } else {
-                        "changed"
-                    },
-                    &value,
-                )?;
-                let header_actions = if table {
-                    let field = table_sort_field(element_key(element)?);
-                    let sort_table = table_sort_method(element_key(element)?);
-                    let widths = table_widths_field(element_key(element)?);
-                    let order = table_order_field(element_key(element)?);
-                    let move_column = table_move_method(element_key(element)?);
-                    let move_row = table_move_row_method(element_key(element)?);
-                    let heights = table_row_heights_field(element_key(element)?);
-                    let model = self.table_model(element)?;
-                    let select_table = table_selection_method(element_key(element)?);
-                    quote! {
+                        if !::xrack_runtime::table_drag_available(
+                            node, input,
+                            |name| match name { #drag_flags _ => false },
+                            |column| match column { #resize_columns _ => false },
+                        ) { return false; }
                         let model = #model;
-                        if node.standard_list_stamp != Some(model.positions().stamp()) { return false; }
+                        if !input.is_current() || node.standard_list_stamp != Some(model.positions().stamp()) { return false; }
                         if let ::xrack_runtime::ControlAction::ResizeRow { row, key, height } = action {
-                            return node.boolean("resizable-rows", false)
-                                && self.__state.#heights.set(model, row, Some(key), ::core::primitive::f64::from(height));
+                            return self.__state.#heights.set(model, row, Some(key), ::core::primitive::f64::from(height));
                         }
                         if let ::xrack_runtime::ControlAction::MoveColumn { from, to } = action {
-                            return node.boolean("movable-columns", false)
-                                && node.table_column_order == self.__state.#order.get(::core::default::Default::default)
+                            return node.table_column_order == self.__state.#order.get(::core::default::Default::default)
                                 && self.#move_column(from as ::core::primitive::i64, to as ::core::primitive::i64);
                         }
                         if let ::xrack_runtime::ControlAction::MoveRow { from, to, row, stamp } = action {
-                            return node.boolean("movable-rows", false)
-                                && model.positions().stamp() == stamp
+                            return model.positions().stamp() == stamp
                                 && from < ::xrack_runtime::ListModel::row_count(model)
                                 && ::xrack_runtime::ListModel::row_key(model, from) == row
-                                && self.#move_row(from as ::core::primitive::i64, to as ::core::primitive::i64);
+                                && self.#move_row(from as ::core::primitive::i64, to as ::core::primitive::i64, Some(input));
                         }
                         if let ::xrack_runtime::ControlAction::ResizeColumn { column, width } = action {
-                            if ::xrack_runtime::resizable_table_column(node, column).is_none() { return false; }
                             let mut widths = self.__state.#widths.get(::std::vec::Vec::new);
                             if widths.get(column) == Some(&Some(width)) { return false; }
                             if widths.len() <= column { widths.resize(column + 1, None); }
@@ -5928,24 +7180,48 @@ impl<'a> Generator<'a> {
                             let Some(header) = node.table_header.as_ref() else { return false; };
                             if header.sort != self.__state.#field.get(|| None) { return false; }
                             let Some(sort) = header.next_sort(index) else { return false; };
-                            return self.#sort_table(Some(sort));
+                            return self.#sort_table(Some(sort), Some(input));
                         }
-                        if node.table_selection.is_some() {
-                            let order = self.__state.#order.get(::core::default::Default::default);
-                            let Some(selection) = ::xrack_runtime::TableSelectionAction::from_control(node, &order, action) else {
-                                return false;
-                            };
-                            return self.#select_table(selection);
-                        }
+                        false
+                    },
+                });
+            }
+            kind @ ("ListView" | "GridView" | "StandardListView") => {
+                let stamp = if has_list_visibility(element) {
+                    let model = visible_list_model(element_key(element)?);
+                    quote!(Some(self.#model().positions().stamp()))
+                } else if kind == "StandardListView" {
+                    if let Some(binding) = model_binding(element) {
+                        let model = self.visual_value(binding, &self.visuals)?;
+                        quote!(Some(::xrack_runtime::ListModel::structure_stamp(&#model)))
+                    } else {
+                        quote!(None)
                     }
                 } else {
-                    TokenStream::new()
+                    let (row, repeat) = self.list_template(element)?;
+                    let field = repeat_field(self.visuals.repeats[element_key(row)?].index());
+                    let model = self.expr(self.operand(repeat, 0)?)?;
+                    quote!(Some(self.__state.__visuals.#field.with_model(
+                        || #model,
+                        ::xrack_runtime::ListModel::structure_stamp,
+                    )))
                 };
+                let current = self.control_value(element, "current-index", Type::Int)?;
+                let receiver = quote!(self);
+                let projection = TableProjection::new(ExpressionContext::new(&receiver));
+                let available = self.element_allows_editing(element, &projection)?;
+                let value = quote!(__xr_index);
+                let set = self.set_control(element, &value)?;
+                let event = self.typed_event(element, "changed", &value)?;
                 out.extend(quote! {
                     [#(#path),*] => {
-                        #header_actions
                         let ::xrack_runtime::ControlAction::Select(index) = action else { return false; };
-                        #selection_guard
+                        let ::core::option::Option::Some(__xr_index) = ::xrack_runtime::prepare_index_selection(
+                            index, || #available,
+                            |_| ::xrack_runtime::ListMetrics::has_row_in_model(node, index, #stamp),
+                            || #current,
+                        ) else { return false; };
+                        if !input.is_current() { return false; }
                         #set
                         #event
                         true
@@ -5960,21 +7236,30 @@ impl<'a> Generator<'a> {
                 let (property, ty) =
                     controlled_property(group).ok_or("missing ButtonGroup selection")?;
                 let current = self.control_value(group, property, ty)?;
-                let enabled = self.binding_value_or(group, "enabled", quote!(true))?;
+                let receiver = quote!(self);
+                let projection = TableProjection::new(ExpressionContext::new(&receiver));
+                let enabled = self.row_binding_or(group, "enabled", quote!(true), &projection)?;
+                let label = self.live_radio_value(element, &self.visuals)?;
+                let selection = if property == "current-value" {
+                    quote!(Value)
+                } else {
+                    quote!(Index)
+                };
                 let next = if property == "current-value" {
                     quote!(__xr_value.clone())
                 } else {
-                    quote!(__xr_member.index as ::core::primitive::i64)
+                    quote!(__xr_index as ::core::primitive::i64)
                 };
                 let set = self.set_control(group, &quote!(__xr_next))?;
                 let selected = self.typed_event(group, "selected", &quote!(__xr_value))?;
                 out.extend(quote! {
                     [#(#path),*] => {
-                        if action != ::xrack_runtime::ControlAction::ActivateRadioOption || !(#enabled) { return false; }
-                        let Some(__xr_member) = node.button_group.as_ref().filter(|member| member.group.key == #key) else { return false; };
-                        let __xr_value = ::xrack_runtime::radio_value(node).to_owned();
+                        if action != ::xrack_runtime::ControlAction::ActivateRadioOption { return false; }
+                        let ::core::option::Option::Some((__xr_index, __xr_value)) = ::xrack_runtime::prepare_radio_selection(
+                            node, #key, input, || #enabled, || #label,
+                            || ::xrack_runtime::ButtonGroupSelection::#selection(#current),
+                        ) else { return false; };
                         let __xr_next = #next;
-                        if (#current) == __xr_next { return false; }
                         #set
                         #selected
                         true
@@ -5983,8 +7268,22 @@ impl<'a> Generator<'a> {
             }
             "RadioGroup" | "TabWidget" | "TabBar" | "SwipeView" => {
                 let radio = element.attr("kind")? == "RadioGroup";
-                let mode = controlled_property(element).map(|(property, _)| property);
-                let value = if mode == Some("current-value") {
+                let model_current = self
+                    .group_option_model(element, &self.visuals)?
+                    .map_or_else(
+                        || quote!(true),
+                        |model| quote!(node.group_options_are_current(&*#model)),
+                    );
+                let (property, ty) =
+                    controlled_property(element).ok_or("missing group selection")?;
+                let current = self.control_value(element, property, ty)?;
+                let selection = if property == "current-value" {
+                    quote!(Value)
+                } else {
+                    quote!(Index)
+                };
+                let read_option = self.group_option_reader(element, radio)?;
+                let value = if property == "current-value" {
                     quote!(__xr_label.clone())
                 } else {
                     quote!(index as ::core::primitive::i64)
@@ -5995,17 +7294,13 @@ impl<'a> Generator<'a> {
                 } else {
                     self.typed_event(element, "changed", &quote!(index as ::core::primitive::i64))?
                 };
-                let label = if radio {
-                    quote!(::xrack_runtime::radio_value(__xr_item).to_owned())
-                } else {
-                    quote!(__xr_item.text("text").unwrap_or("").to_owned())
-                };
                 out.extend(quote! {
                     [#(#path),*] => {
                         let ::xrack_runtime::ControlAction::Select(index) = action else { return false; };
-                        let Some(__xr_item) = ::xrack_runtime::group_item(node, index) else { return false; };
-                        if ::xrack_runtime::group_index(node) == Some(index) { return false; }
-                        let __xr_label = #label;
+                        let ::core::option::Option::Some(__xr_label) = ::xrack_runtime::prepare_group_selection(
+                            node, index, input, || #model_current,
+                            || ::xrack_runtime::ButtonGroupSelection::#selection(#current), #read_option,
+                        ) else { return false; };
                         #set
                         #event
                         true
@@ -6013,45 +7308,33 @@ impl<'a> Generator<'a> {
                 });
             }
             "SearchField" => {
-                let set = self.set_control(element, &quote!(__xr_text.clone()))?;
-                let accepted = self.typed_event(element, "accepted", &quote!(__xr_text.clone()))?;
-                let edited = self.typed_event(element, "edited", &quote!(__xr_text.clone()))?;
-                let selected = self.typed_event(element, "selected", &quote!(__xr_text.clone()))?;
-                let search = self.typed_event(element, "search-triggered", &quote!(__xr_text))?;
-                out.extend(quote! {
-                    [#(#path),*] => {
-                        use ::xrack_runtime::ControlAction;
-                        let current = ::xrack_runtime::text_input_value(node);
-                        let __xr_text = match action {
-                            ControlAction::SubmitSearch => {
-                                let __xr_text = current.to_owned();
-                                #accepted
-                                __xr_text
-                            }
-                            ControlAction::Select(index) => {
-                                let Some(value) = ::xrack_runtime::search_suggestion(node, index) else { return false; };
-                                let __xr_text = value.to_owned();
-                                if value != current { #set #edited }
-                                #selected
-                                __xr_text
-                            }
-                            ControlAction::ClearSearch if !node.boolean("read-only", false) && !current.is_empty() =>
-                                return self.__edit_path(path, node, ::std::string::String::new()),
-                            _ => return false,
-                        };
-                        #search
-                        true
-                    },
-                });
+                let control = search_method(element_key(element)?, "control");
+                out.extend(quote!([#(#path),*] => self.#control(node, action, input),));
             }
             "DelayButton" => {
                 let current = self.control_value(element, "checked", Type::Bool)?;
                 let set = self.set_control(element, &quote!(__xr_checked))?;
                 let activated = self.typed_event_values(element, "activated", &[])?;
+                let receiver = quote!(self);
+                let projection = TableProjection::new(ExpressionContext::new(&receiver));
+                let available = self.element_allows_editing(element, &projection)?;
+                let delay = children(element, "xr.bind")
+                    .find(|binding| binding.attr("name") == Ok("delay"))
+                    .map(|binding| {
+                        let value = self.visual_value(binding, &self.visuals)?;
+                        Ok::<_, String>(quote!(::core::option::Option::Some(#value)))
+                    })
+                    .transpose()?
+                    .unwrap_or_else(|| quote!(::core::option::Option::None));
                 out.extend(quote! {
                     [#(#path),*] => {
                         let ::xrack_runtime::ControlAction::DelayButton(__xr_checked) = action else { return false; };
-                        if #current == __xr_checked { return false; }
+                        if !::xrack_runtime::delay_button_transition_is_current(
+                            node, __xr_checked, || #available, || #delay, || #current,
+                        ) {
+                            return false;
+                        }
+                        if !input.is_current() { return false; }
                         #set
                         if __xr_checked { #activated }
                         true
@@ -6059,29 +7342,31 @@ impl<'a> Generator<'a> {
                 });
             }
             "Tumbler" => {
+                let current = self.control_value(element, "current-index", Type::Int)?;
                 let set = self.set_control(element, &quote!(__xr_index))?;
                 let changed = self.typed_event(element, "changed", &quote!(__xr_index))?;
-                let source_guard = if let Some(binding) =
+                let receiver = quote!(self);
+                let projection = TableProjection::new(ExpressionContext::new(&receiver));
+                let available = self.element_allows_editing(element, &projection)?;
+                let items = if let Some(binding) =
                     children(element, "xr.bind").find(|binding| binding.attr("name") == Ok("model"))
                 {
                     let model = self.visual_value(binding, &self.visuals)?;
                     quote! {
-                        if node.tumbler_items.as_ref() != Some(&::xrack_runtime::TumblerItems::new(#model)) {
-                            return false;
-                        }
+                        ::core::option::Option::Some(::xrack_runtime::TumblerItems::new(#model))
                     }
                 } else {
-                    TokenStream::new()
+                    quote!(::core::option::Option::None)
                 };
+                let count = self.binding_value_or(element, "count", quote!(0))?;
                 out.extend(quote! {
                     [#(#path),*] => {
-                        let ::xrack_runtime::ControlAction::PickTumbler { index, row } = action else { return false; };
-                        #source_guard
-                        let wheel = ::xrack_runtime::Tumbler::from_node(node);
-                        let __xr_index = index as ::core::primitive::i64;
-                        if wheel.row_key(index) != Some(row) || node.int("current-index") == Some(__xr_index) {
+                        let ::core::option::Option::Some(__xr_index) = ::xrack_runtime::Tumbler::prepare_selection(
+                            node, action, || #available, || #items, || #count, || #current,
+                        ) else {
                             return false;
-                        }
+                        };
+                        if !input.is_current() { return false; }
                         #set
                         #changed
                         true
@@ -6095,41 +7380,36 @@ impl<'a> Generator<'a> {
                 let date_changed = self.typed_event(element, "changed", &quote!(__xr_date))?;
                 let month_changed =
                     self.typed_event(element, "month-changed", &quote!(__xr_month))?;
-                let (source_guard, week_start, activated) = if kind == "MonthGrid" {
-                    (
-                        quote! {
-                            let live_scene = ::xrack_runtime::Component::render_shared(self);
-                            let Some(live) = live_scene.interactive_at_path(path) else { return false; };
-                            if ::xrack_runtime::CalendarState::from_node(live) != calendar
-                                || live.int("week-start") != node.int("week-start")
-                            { return false; }
-                        },
-                        quote!(Some(node.int("week-start").unwrap_or(1))),
-                        self.typed_event(element, "activated", &quote!(__xr_activated))?,
-                    )
+                let activated = if kind == "MonthGrid" {
+                    self.typed_event(element, "activated", &quote!(__xr_activated))?
                 } else {
-                    (TokenStream::new(), quote!(None), TokenStream::new())
+                    TokenStream::new()
                 };
+                let minimum = self.binding_value_or(element, "minimum-date", quote!(fallback))?;
+                let maximum = self.binding_value_or(element, "maximum-date", quote!(fallback))?;
+                let date = self.control_value(element, "date", Type::Date)?;
+                let month = self.control_value(element, "display-month", Type::Date)?;
+                let week_start = self.binding_value_or(element, "week-start", quote!(1))?;
                 out.extend(quote! {
                     [#(#path),*] => {
-                        use ::xrack_runtime::CalendarAction;
+                        use ::xrack_runtime::CalendarUpdate;
                         let ::xrack_runtime::ControlAction::Calendar(action) = action else { return false; };
-                        let calendar = ::xrack_runtime::CalendarState::from_node(node);
-                        #source_guard
-                        let Some((__xr_date, __xr_month)) = calendar.apply(action, #week_start) else {
+                        if !::xrack_runtime::calendar_input_is_current(node, input, |name, fallback| match name {
+                            "minimum-date" => #minimum,
+                            "maximum-date" => #maximum,
+                            "date" => #date,
+                            "display-month" => #month,
+                            _ => fallback,
+                        }, || #week_start) || !input.is_current() {
                             return false;
-                        };
-                        let date_changed = __xr_date.is_some_and(|date| node.date("date") != Some(date));
-                        let month_changed = __xr_month != calendar.month;
-                        if let Some(__xr_date) = __xr_date.filter(|_| date_changed) { #set_date }
-                        if month_changed { #set_month }
-                        if let Some(__xr_date) = __xr_date.filter(|_| date_changed) { #date_changed }
-                        if month_changed { #month_changed }
-                        if let CalendarAction::Activate(__xr_activated) = action {
-                            #activated
-                            return true;
                         }
-                        date_changed || month_changed
+                        ::xrack_runtime::apply_calendar_action(node, action, |update| match update {
+                            CalendarUpdate::SetDate(__xr_date) => { #set_date }
+                            CalendarUpdate::SetMonth(__xr_month) => { #set_month }
+                            CalendarUpdate::DateChanged(__xr_date) => { #date_changed }
+                            CalendarUpdate::MonthChanged(__xr_month) => { #month_changed }
+                            CalendarUpdate::Activated(__xr_activated) => { #activated }
+                        })
                     },
                 });
             }
@@ -6141,6 +7421,7 @@ impl<'a> Generator<'a> {
                 out.extend(quote! {
                     [#(#path,)* slot] => {
                         let Some(__xr_time) = (#options).select(#current, *slot, node, action) else { return false; };
+                        if !input.is_current() { return false; }
                         #set
                         #changed
                         true
@@ -6165,22 +7446,30 @@ impl<'a> Generator<'a> {
                     "TimePickerPopup" => {
                         let options = self.time_picker_options(element)?;
                         out.extend(quote! {
-                            [#(#path,)* 0, slot] => (#open) && self.__state.#popup.edit(#options, *slot, node, action),
+                            [#(#path,)* 0, slot] => {
+                                if !(#open) { return false; }
+                                let options = #options;
+                                input.is_current() && self.__state.#popup.edit(options, *slot, node, action)
+                            },
                         });
-                        quote!(self.__state.#popup.finish(node))
+                        quote!(self.__state.#popup.finish_input(node, role, input, || #options))
                     }
                     "DatePickerPopup" => {
                         let bounds = self.date_picker_bounds(element)?;
                         out.extend(quote! {
-                            [#(#path,)* 0] => (#open) && self.__state.#popup.edit(#bounds, node, action),
+                            [#(#path,)* 0] => {
+                                if !(#open) { return false; }
+                                let bounds = #bounds;
+                                input.is_current() && self.__state.#popup.edit(bounds, node, action)
+                            },
                         });
-                        quote!(self.__state.#popup.finish(#bounds, node))
+                        quote!(self.__state.#popup.finish_input(node, role, input, || #bounds))
                     }
                     "FontPickerPopup" => {
                         out.extend(quote! {
-                            [#(#path,)* 0, ..] => (#open) && self.__state.#popup.edit(node, action),
+                            [#(#path,)* 0, ..] => (#open) && input.is_current() && self.__state.#popup.edit(node, action),
                         });
-                        quote!(self.__state.#popup.finish(node))
+                        quote!(self.__state.#popup.finish_with_role(node, role))
                     }
                     _ => {
                         let show_alpha =
@@ -6188,17 +7477,19 @@ impl<'a> Generator<'a> {
                         out.extend(quote! {
                             [#(#path,)* 0, ..] => {
                                 let ::xrack_runtime::ControlAction::Spin(action) = action else { return false; };
-                                (#open) && self.__state.#popup.spin(#show_alpha, node, action)
+                                if !(#open) { return false; }
+                                let show_alpha = #show_alpha;
+                                input.is_current() && self.__state.#popup.spin(show_alpha, node, action)
                             },
                         });
-                        quote!(self.__state.#popup.finish_editor(#show_alpha, node, role))
+                        quote!(self.__state.#popup.finish_input(node, role, input, || #show_alpha))
                     }
                 };
                 out.extend(quote! {
                     [#(#path),*] => {
                         let ::xrack_runtime::ControlAction::Dialog(role) = action else { return false; };
-                        if !(#open) { return false; }
-                        let Some(__xr_value) = #finish else { return false; };
+                        if !(#open) || !input.is_current() { return false; }
+                        let Some(__xr_value) = (#finish) else { return false; };
                         #close
                         match role {
                             ::xrack_runtime::DialogRole::Accept => { #set #accepted }
@@ -6208,96 +7499,27 @@ impl<'a> Generator<'a> {
                     },
                 });
             }
-            "ComboBox" if record_combo_binding(element).is_some() => {
-                let binding = record_combo_binding(element).expect("record combo binding");
-                let body = self.record_combo_actions(element, binding)?;
-                out.extend(quote!([#(#path),*] => { #body },));
-            }
             "ComboBox" => {
-                let mode = controlled_property(element).map(|(property, _)| property);
-                let value = if mode == Some("current-value") {
-                    quote!(__xr_choice.clone())
-                } else {
-                    quote!(index as ::core::primitive::i64)
-                };
-                let set = self.set_control(element, &value)?;
-                let selected =
-                    self.typed_event(element, "selected", &quote!(__xr_choice.clone()))?;
-                let (select_text, accept_text) = if combo_editor(element) {
-                    let default = default_combo_edit_text(element);
-                    let field = control_field(element_key(element)?, "edit-text");
-                    let select_text = if default {
-                        quote!(self.__state.#field.reset();)
-                    } else {
-                        self.set_control_property(
-                            element,
-                            "edit-text",
-                            &quote!(__xr_choice.clone()),
-                        )?
-                    };
-                    let keep_custom_text = if default {
-                        quote! {
-                            if __xr_match.is_some() {
-                                self.__state.#field.reset();
-                            } else {
-                                self.__state.#field.set_if_changed(__xr_text.clone());
-                            }
-                        }
-                    } else {
-                        TokenStream::new()
-                    };
-                    let accepted =
-                        self.typed_event(element, "accepted", &quote!(__xr_text.clone()))?;
-                    let value = if mode == Some("current-value") {
-                        quote!(__xr_text.clone())
-                    } else {
-                        quote!(__xr_match.map_or(-1, |index| index as ::core::primitive::i64))
-                    };
-                    let accept_selection = self.set_control(element, &value)?;
-                    (
-                        quote! { if ::xrack_runtime::combo_editable(node) { #select_text } },
-                        quote! {
-                            if action == ::xrack_runtime::ControlAction::AcceptComboText {
-                                if !::xrack_runtime::combo_editable(node) { return false; }
-                                let __xr_text = ::xrack_runtime::text_input_value(node).to_owned();
-                                let __xr_match = node.strings("model").iter().position(|item| *item == __xr_text);
-                                #accept_selection
-                                #keep_custom_text
-                                #accepted
-                                return true;
-                            }
-                        },
-                    )
-                } else {
-                    (TokenStream::new(), TokenStream::new())
-                };
-                out.extend(quote! {
-                    [#(#path),*] => {
-                        #accept_text
-                        let ::xrack_runtime::ControlAction::Select(index) = action else { return false; };
-                        let Some(__xr_choice) = node.strings("model").get(index) else { return false; };
-                        #set
-                        #select_text
-                        #selected
-                        true
-                    },
-                });
+                let body = self.combo_actions(element)?;
+                out.extend(quote!([#(#path),*] => { #body },));
             }
             "PageIndicator" => {
                 let value = quote!(__xr_index);
                 let set = self.set_control(element, &value)?;
                 let changed = self.typed_event(element, "changed", &value)?;
                 let current = self.control_value(element, "current-index", Type::Int)?;
-                let count = children(element, "xr.bind")
-                    .find(|binding| binding.attr("name") == Ok("count"))
-                    .map(|binding| self.visual_value(binding, &self.visuals))
-                    .transpose()?
-                    .unwrap_or_else(|| quote!(0_i64));
+                let count = self.binding_value_or(element, "count", quote!(0_i64))?;
+                let interactive = self.binding_value_or(element, "interactive", quote!(false))?;
+                let receiver = quote!(self);
+                let projection = TableProjection::new(ExpressionContext::new(&receiver));
+                let available = self.element_allows_editing(element, &projection)?;
                 out.extend(quote! {
                     [#(#path),*] => {
                         let ::xrack_runtime::ControlAction::Select(index) = action else { return false; };
-                        let Ok(__xr_index) = ::core::primitive::i64::try_from(index) else { return false; };
-                        if __xr_index >= #count || __xr_index == #current { return false; }
+                        let ::core::option::Option::Some(__xr_index) = ::xrack_runtime::prepare_index_selection(
+                            index, || (#available) && (#interactive), |index| index < #count, || #current,
+                        ) else { return false; };
+                        if !input.is_current() { return false; }
                         #set
                         #changed
                         true
@@ -6312,7 +7534,7 @@ impl<'a> Generator<'a> {
                         if !node.stack.as_ref().is_some_and(|stack| stack.revision() == revision) {
                             return false;
                         }
-                        self.#method(Some(revision), ::xrack_runtime::StackNavigation::Pop)
+                        self.#method(Some(revision), ::xrack_runtime::StackNavigation::Pop, Some(input))
                     },
                 });
             }
@@ -6330,11 +7552,9 @@ impl<'a> Generator<'a> {
         &self,
         instance: OperationRef<'a>,
         repeat: Option<OperationRef<'a>>,
-        history_table: Option<OperationRef<'a>>,
+        table: Option<OperationRef<'a>>,
     ) -> Result<TokenStream, String> {
         let mut inputs = BTreeMap::new();
-        let mut links = BTreeSet::new();
-        let component = instance.attr("component")?;
         let (context, parameters) = if let Some(repeat) = repeat {
             let repeat = RepeatRef::from_operation(repeat)?;
             let item = ident(repeat.item);
@@ -6347,82 +7567,53 @@ impl<'a> Generator<'a> {
         } else {
             (TokenStream::new(), TokenStream::new())
         };
-        for binding in children(instance, "xr.bind") {
+        let instance_bindings = self.analysis.instances.get(element_key(instance)?);
+        for input in instance_bindings
+            .into_iter()
+            .flat_map(|bindings| &bindings.inputs)
+        {
+            let binding = input.operation;
             let name = binding.attr("name")?;
-            if name == "clipboard-text"
-                && self.elements.values().any(|element| {
-                    element.attr("kind") == Ok("TableRow")
-                        && children(*element, "xr.instance")
-                            .any(|child| child.attribute("key") == instance.attribute("key"))
-                })
-            {
-                continue;
-            }
-            let endpoint = canonical_input(self.alias_graphs, component, name)?;
-            if inputs.contains_key(&endpoint) {
-                return Err(format!(
-                    "instance binds multiple inputs to the same property at {name}"
-                ));
-            }
-            let expression = self.expr_in(
-                self.operand(binding, 0)?,
-                ExpressionContext {
-                    receiver: &quote!(__ui),
-                    repeat_parameters: repeat.is_some(),
-                    hoist_repeat_subexpressions: false,
-                },
-            )?;
-            inputs.insert(
-                endpoint,
-                (
-                    name,
-                    quote! {
-                        ::core::option::Option::Some({
-                            let __weak = __parent.clone();
-                            #context
-                            ::xrack_runtime::InputProperty::bound(move || {
-                                let __ui = Self {
-                                    __state: __weak.upgrade().expect("parent of a bound component"),
-                                };
-                                #parameters
-                                #expression
-                            })
-                        })
+            let value = if binding.name() == "xr.bind" {
+                let expression = self.expr_in(
+                    self.operand(binding, 0)?,
+                    ExpressionContext {
+                        receiver: &quote!(__ui),
+                        repeat_parameters: repeat.is_some(),
+                        hoist_repeat_subexpressions: false,
                     },
-                ),
-            );
-        }
-        for binding in children(instance, "xr.instance_link") {
-            let name = binding.attr("name")?;
-            let endpoint = canonical_input(self.alias_graphs, component, name)?;
-            if inputs.contains_key(&endpoint) {
-                return Err(format!(
-                    "instance binds multiple inputs to the same property at {name}"
-                ));
-            }
-            let link =
-                self.instance_link_input(self.operand(binding, 0)?, repeat, history_table)?;
-            links.insert(endpoint.clone());
-            inputs.insert(
-                endpoint,
-                (name, quote!(::core::option::Option::Some(#link))),
-            );
+                )?;
+                quote! {
+                    ::core::option::Option::Some({
+                        let __weak = __parent.clone();
+                        #context
+                        ::xrack_runtime::InputProperty::bound_optional(move || {
+                            let __ui = Self { __state: __weak.upgrade()? };
+                            __ui.__state.__binding_lifetime.track();
+                            #parameters
+                            ::core::option::Option::Some(#expression)
+                        })
+                    })
+                }
+            } else {
+                let link = self.instance_link_input(self.operand(binding, 0)?, repeat, table)?;
+                quote!(::core::option::Option::Some(#link))
+            };
+            inputs.insert(input.endpoint.clone(), (name, value));
         }
         if repeat.is_none() {
             let key = element_key(instance)?;
-            for &(owner, name) in self.forwarded_inputs.keys() {
-                if owner != key {
+            for (path, forward) in &self.analysis.property_forwards {
+                if path.len() <= 1 || forward.target.0 != key {
                     continue;
                 }
-                let forwarded = self
-                    .forwarded_input((owner, name))
-                    .expect("registered alias input");
-                let endpoint = canonical_input(self.alias_graphs, component, name)?;
-                let input = inputs.remove(&endpoint).map_or_else(
-                    || forwarded.clone(),
-                    |(_, existing)| quote!(#forwarded.or_else(|| #existing)),
-                );
-                inputs.insert(endpoint, (name, input));
+                let forwarded = Self::take_forwarded_inputs(&forward.inputs);
+                let endpoint = &path[1..];
+                let input = match inputs.remove(endpoint) {
+                    Some((_, existing)) => quote!(#forwarded.or_else(|| #existing)),
+                    None => forwarded,
+                };
+                inputs.insert(endpoint.to_vec(), (forward.target.1, input));
             }
         }
         let receiver = quote!(__ui);
@@ -6431,27 +7622,16 @@ impl<'a> Generator<'a> {
             repeat_parameters: repeat.is_some(),
             hoist_repeat_subexpressions: false,
         };
-        let mut state_inputs = BTreeMap::<_, Vec<_>>::new();
-        for binding in children(instance, "xr.instance_state") {
-            state_inputs
-                .entry(binding.attr("name")?)
-                .or_default()
-                .push(binding);
-        }
-        let mut state_endpoints = BTreeSet::new();
-        for (name, cases) in state_inputs {
-            let endpoint = canonical_input(self.alias_graphs, component, name)?;
-            if links.contains(&endpoint) {
-                return Err(format!("state cannot override two-way input `{name}`"));
-            }
-            if !state_endpoints.insert(endpoint.clone()) {
-                return Err(format!(
-                    "states target multiple aliases of the same component input at `{name}`"
-                ));
-            }
+        for input in instance_bindings
+            .into_iter()
+            .flat_map(|bindings| &bindings.state_inputs)
+        {
+            let name = input.name;
+            let endpoint = &input.endpoint;
+            let cases = &input.cases;
             let selector = self.operand(cases[0], 0)?;
             let owner = selector.attr("owner")?;
-            let selected = if self.persistent_state_selectors.contains_key(owner) {
+            let selected = if self.analysis.persistent_state_selectors.contains_key(owner) {
                 let method = state_selector_name(owner);
                 quote!(__ui.#method())
             } else {
@@ -6460,7 +7640,7 @@ impl<'a> Generator<'a> {
                 })?
             };
             let mut choices = TokenStream::new();
-            for case in cases {
+            for &case in cases {
                 let case = StateCaseRef::from_operation(case)?;
                 let index = case.index;
                 let value = case
@@ -6470,12 +7650,12 @@ impl<'a> Generator<'a> {
                 let value = self.expr_in(value, expression_context)?;
                 choices.extend(quote!(#index => ::core::option::Option::Some(#value),));
             }
-            let base = inputs.remove(&endpoint).map_or_else(
+            let base = inputs.remove(endpoint).map_or_else(
                 || quote!(::core::default::Default::default()),
                 |(_, base)| quote!((#base).unwrap_or_default()),
             );
             inputs.insert(
-                endpoint,
+                endpoint.clone(),
                 (
                     name,
                     quote! {
@@ -6485,6 +7665,7 @@ impl<'a> Generator<'a> {
                             #context
                             __base.with_state(move || {
                                 let __ui = Self { __state: __weak.upgrade()? };
+                                __ui.__state.__binding_lifetime.track();
                                 #parameters
                                 match #selected { #choices _ => ::core::option::Option::None }
                             })
@@ -6564,6 +7745,7 @@ impl<'a> Generator<'a> {
             let __handler: ::std::rc::Rc<dyn ::core::ops::Fn(#(#types),*) #returns> =
                 ::std::rc::Rc::new(move |#(#args),*| {
                     if let ::core::option::Option::Some(__state) = __weak.upgrade() {
+                        __state.__binding_lifetime.track();
                         Self { __state }.#method(#context #(#args),*)
                     } else {
                         ::core::default::Default::default()
@@ -6615,26 +7797,19 @@ impl<'a> Generator<'a> {
 
     fn forwarded_callback(
         &self,
-        endpoint: PropertyEndpoint<'a>,
+        forward: &CallbackForward<'a>,
     ) -> Result<Option<TokenStream>, String> {
-        let Some(aliases) = self.callback_forwards.get(&endpoint) else {
-            return Ok(None);
-        };
-        let mut inputs = Vec::new();
-        let mut default = None;
-        for &(owner, callback) in aliases {
-            if owner == "root" {
-                let field = callback_input_field(callback.attr("name")?);
-                inputs.push(quote!(__inputs.#field.take()));
-            }
-            if callback.attribute("implementation") == Some("true") {
-                if default.is_some() {
-                    return Err("multiple alias handlers target the same callback".into());
-                }
-                default = Some(self.callback_handler_value(owner, callback, None)?);
-            }
+        let mut inputs: Vec<_> = forward
+            .inputs
+            .iter()
+            .map(|name| {
+                let field = callback_input_field(name);
+                quote!(__inputs.#field.take())
+            })
+            .collect();
+        if let Some(((owner, _), callback)) = forward.implementation {
+            inputs.push(self.callback_handler_value(owner, callback, None)?);
         }
-        inputs.extend(default);
         let Some((first, rest)) = inputs.split_first() else {
             return Ok(None);
         };
@@ -6647,36 +7822,33 @@ impl<'a> Generator<'a> {
         repeat: Option<OperationRef<'a>>,
     ) -> Result<TokenStream, String> {
         let owner = element_key(instance)?;
-        let component = instance.attr("component")?;
         let mut handlers = BTreeMap::new();
-        for callback in children(instance, "xr.callback") {
+        let instance_bindings = self.analysis.instances.get(owner);
+        for handler in instance_bindings
+            .into_iter()
+            .flat_map(|bindings| &bindings.callbacks)
+        {
+            let callback = handler.operation;
             let name = callback.attr("name")?;
-            let endpoint = canonical_input(self.callback_graphs, component, name)?;
-            if handlers
-                .insert(
-                    endpoint,
-                    (name, self.callback_handler_value(owner, callback, repeat)?),
-                )
-                .is_some()
-            {
-                return Err("multiple instance handlers target the same callback".into());
-            }
+            handlers.insert(
+                handler.endpoint.clone(),
+                (name, self.callback_handler_value(owner, callback, repeat)?),
+            );
         }
         if repeat.is_none() {
-            for &(target, name) in self
-                .callback_forwards
-                .keys()
-                .filter(|(target, _)| *target == owner)
-            {
-                let Some(input) = self.forwarded_callback((target, name))? else {
+            for (path, forward) in &self.analysis.callback_forwards {
+                if path.len() <= 1 || forward.target.0 != owner {
+                    continue;
+                }
+                let Some(input) = self.forwarded_callback(forward)? else {
                     continue;
                 };
-                let endpoint = canonical_input(self.callback_graphs, component, name)?;
-                let input = match handlers.remove(&endpoint) {
+                let endpoint = &path[1..];
+                let input = match handlers.remove(endpoint) {
                     Some((_, previous)) => quote!(#input.or_else(|| #previous)),
                     None => input,
                 };
-                handlers.insert(endpoint, (name, input));
+                handlers.insert(endpoint.to_vec(), (forward.target.1, input));
             }
         }
         Ok(handlers
@@ -6692,7 +7864,7 @@ impl<'a> Generator<'a> {
         &self,
         target: OperationRef<'a>,
         repeat: Option<OperationRef<'a>>,
-        history_table: Option<OperationRef<'a>>,
+        table: Option<OperationRef<'a>>,
     ) -> Result<TokenStream, String> {
         let receiver = quote!(__ui);
         let context = ExpressionContext::new(&receiver);
@@ -6728,15 +7900,37 @@ impl<'a> Generator<'a> {
             } else {
                 (quote!(|row| row.clone()), quote!(|_| __value))
             };
-            let write = if let Some(table) = history_table {
-                let history = table_history_field(element_key(table)?);
-                let enabled = table_history_method(element_key(table)?, "enabled");
-                let mut fields = BTreeMap::new();
-                self.record_paste_leaves(&mut field_path, &value_type(target)?, &mut fields);
-                let patch = Self::table_edit_capture(fields);
-                quote!(__write_row.update_in_with_history(
-                    &#model, &__ui.__state.#history, __ui.#enabled(), #update, #patch,
-                );)
+            let write = if let Some(table) = table {
+                let rows = self.editable_table_rows_model(table, &receiver)?;
+                let (prepare, commit) = if table_history_configured(table) {
+                    let key = element_key(table)?;
+                    let history = table_history_field(key);
+                    let enabled = table_history_method(key, "enabled");
+                    let mut fields = BTreeMap::new();
+                    self.record_paste_leaves(&mut field_path, &value_type(target)?, &mut fields);
+                    let patch = Self::table_edit_capture(fields);
+                    (
+                        quote!(__ui.#enabled()),
+                        quote!(__write_row.update_in_with_history(
+                            target.rows.source(), &__ui.__state.#history, record_history, #update, #patch,
+                        );),
+                    )
+                } else {
+                    (
+                        quote!(false),
+                        quote!(__write_row.update_in(target.rows.source(), #update);),
+                    )
+                };
+                quote! {
+                    let target = __write_row.try_table_edit_target_for_field(
+                        || ::core::result::Result::<_, ::core::convert::Infallible>::Ok(#rows),
+                        |target| ::core::result::Result::Ok(__write_row.read_from(target.rows.source(), #project)),
+                        || ::core::result::Result::Ok(::core::option::Option::Some(#prepare)),
+                    ).unwrap_or_else(|error| match error {});
+                    if let ::core::option::Option::Some((target, record_history)) = target {
+                        #commit
+                    }
+                }
             } else {
                 quote!(__write_row.update_in(&#model, #update);)
             };
@@ -6753,6 +7947,7 @@ impl<'a> Generator<'a> {
             ::xrack_runtime::InputProperty::linked(
                 move || {
                     let __ui = Self { __state: __read_parent.upgrade()? };
+                    __ui.__state.__binding_lifetime.track();
                     #read
                 },
                 move |__value| {
@@ -6790,16 +7985,18 @@ impl<'a> Generator<'a> {
             .declare(&component_key, &mut visual_declarations);
         let visuals = self.visuals.state_name(&component_key);
         let mut fields = quote! {
+            __binding_lifetime: ::xrack_runtime::ComponentLifetime,
             __scene: ::xrack_runtime::Property<::std::rc::Rc<::xrack_runtime::Node>>,
             __visuals: #visuals,
         };
         let mut defaults = quote! {
+            __binding_lifetime: ::core::default::Default::default(),
             __scene: ::core::default::Default::default(),
             __visuals: ::core::default::Default::default(),
         };
         let mut methods = TokenStream::new();
         let mut viewport_initializers = TokenStream::new();
-        for (&owner, &selector) in &self.persistent_state_selectors {
+        for (&owner, &selector) in &self.analysis.persistent_state_selectors {
             let field = state_selector_name(owner);
             let value = self.state_choice(selector, |condition| self.expr(condition))?;
             fields.extend(quote!(#field: ::xrack_runtime::Property<::core::primitive::i64>,));
@@ -6822,6 +8019,9 @@ impl<'a> Generator<'a> {
             defaults.extend(quote!(#handle: ::core::default::Default::default(),));
         }
         for (&key, &element) in &self.elements {
+            if element.attr("kind") == Ok("SearchField") {
+                methods.extend(self.search_methods(element)?);
+            }
             if element.attr("kind") == Ok("ScaleRotateGestureHandler") {
                 let handle = scale_rotate_handle(key);
                 fields.extend(quote!(#handle: ::xrack_runtime::ScaleRotateHandle,));
@@ -6940,7 +8140,7 @@ impl<'a> Generator<'a> {
                     ::xrack_runtime::ScrollBarRange::new(0.0, #size, 0.0).size
                 }
                 fn #position_getter(&self) -> ::core::primitive::f64 {
-                    ::xrack_runtime::ScrollBarRange::new(#position, self.#size_getter(), 0.0).position
+                    ::xrack_runtime::ScrollBarRange::position_with(|| #position, || #size)
                 }
             });
         }
@@ -7108,6 +8308,46 @@ impl<'a> Generator<'a> {
                 fn #trigger(&self, __xr_value: ::std::string::String) { #activated }
             });
         }
+        for (&key, &element) in &self.elements {
+            for name in ["enabled", "visible"] {
+                let Some(method) = self.action_state_flag(element, name)? else {
+                    continue;
+                };
+                let slot = control_field(key, name);
+                let cases: Vec<_> = children(element, "xr.state_set")
+                    .filter(|case| case.attribute("name") == Some(name))
+                    .collect();
+                let selected = self.state_selector(cases[0])?;
+                let mut choices = TokenStream::new();
+                for case in cases {
+                    let case = StateCaseRef::from_operation(case)?;
+                    let index = case.index;
+                    let value = case
+                        .value
+                        .defining_operation()
+                        .ok_or("missing action state value")?;
+                    let value = self.visual_expr(value, &self.visuals)?;
+                    choices.extend(quote!(#index => ::core::option::Option::Some(#value),));
+                }
+                let base = children(element, "xr.bind")
+                    .find(|binding| binding.attribute("name") == Some(name))
+                    .map(|binding| {
+                        self.visual_value(binding, &self.visuals)
+                            .map(|value| quote!(::core::option::Option::Some(#value)))
+                    })
+                    .transpose()?
+                    .unwrap_or_else(|| quote!(::core::option::Option::None));
+                fields.extend(quote! {
+                    #slot: ::xrack_runtime::Property<::core::option::Option<::core::primitive::bool>>,
+                });
+                defaults.extend(quote!(#slot: ::core::default::Default::default(),));
+                methods.extend(quote! {
+                    fn #method(&self) -> ::core::option::Option<::core::primitive::bool> {
+                        self.__state.#slot.get(|| match self.#selected() { #choices _ => #base })
+                    }
+                });
+            }
+        }
         for (&key, &action) in &self.actions {
             let identity = action_key_field(key);
             fields.extend(quote!(#identity: ::xrack_runtime::ActionKey,));
@@ -7138,23 +8378,28 @@ impl<'a> Generator<'a> {
             };
             let default_checkable = exclusive.is_some();
             let checkable = binding("checkable")?.unwrap_or_else(|| quote!(#default_checkable));
-            let (checked, toggle) = if let Some((name, group, value)) = exclusive {
-                let current = action_group_method(name, "current");
-                let select =
-                    self.set_control(group, &quote!(::std::string::String::from(#value)))?;
-                (quote!(__xr_checkable && self.#current() == #value), select)
-            } else {
-                if control_link(action, "checked").is_none() {
-                    let field = control_field(key, "checked");
-                    fields.extend(
-                        quote!(#field: ::xrack_runtime::Property<::core::primitive::bool>,),
-                    );
-                    defaults.extend(quote!(#field: ::core::default::Default::default(),));
-                }
-                let checked = self.control_value(action, "checked", Type::Bool)?;
-                let toggle = self.set_control(action, &quote!(!(#checked)))?;
-                (checked, toggle)
-            };
+            let (checked, activation_checked, toggle) =
+                if let Some((name, group, value)) = exclusive {
+                    let current = action_group_method(name, "current");
+                    let select =
+                        self.set_control(group, &quote!(::std::string::String::from(#value)))?;
+                    (
+                        quote!(__xr_checkable && self.#current() == #value),
+                        quote!(false),
+                        select,
+                    )
+                } else {
+                    if control_link(action, "checked").is_none() {
+                        let field = control_field(key, "checked");
+                        fields.extend(
+                            quote!(#field: ::xrack_runtime::Property<::core::primitive::bool>,),
+                        );
+                        defaults.extend(quote!(#field: ::core::default::Default::default(),));
+                    }
+                    let checked = self.control_value(action, "checked", Type::Bool)?;
+                    let toggle = self.set_control(action, &quote!(__xr_next))?;
+                    (checked.clone(), checked, toggle)
+                };
             let activated = self.typed_event_values(action, "activated", &[])?;
             let group_activated = group.map(|(name, _, value)| {
                 let trigger = action_group_method(name, "activated");
@@ -7168,13 +8413,17 @@ impl<'a> Generator<'a> {
             }
             methods.extend(quote! {
                 fn #render(&self, node: &mut ::xrack_runtime::Node) {
-                    let __xr_checkable = #checkable;
-                    self.__state.#identity.present(node, #enabled, __xr_checkable, #checked);
+                    self.__state.#identity.present_with(
+                        node, || #checkable, || #enabled, |__xr_checkable| #checked,
+                    );
                     #labels
                 }
-                fn #activate(&self) -> bool {
-                    if !(#enabled) { return false; }
-                    if #checkable { #toggle }
+                fn #activate(&self, available: impl FnOnce() -> bool, input: ::core::option::Option<::xrack_runtime::InputRoute<'_>>) -> bool {
+                    let ::core::option::Option::Some(next) = ::xrack_runtime::prepare_action_activation(
+                        || (#enabled) && available(), || #checkable, || #activation_checked,
+                    ) else { return false; };
+                    if input.is_some_and(|input| !input.is_current()) { return false; }
+                    if let ::core::option::Option::Some(__xr_next) = next { #toggle }
                     #activated
                     #group_activated
                     true
@@ -7191,7 +8440,7 @@ impl<'a> Generator<'a> {
             let string =
                 |name| self.binding_value_or(dialog, name, quote!(::std::string::String::new()));
             let title = string("title")?;
-            let (options, handlers) = if dialog.attr("kind") == Ok("FileDialog") {
+            let (options, selection, handlers) = if dialog.attr("kind") == Ok("FileDialog") {
                 let selection = native_dialog_member(key, "selection");
                 fields.extend(quote!(#selection: ::xrack_runtime::FileDialogSelection,));
                 defaults.extend(quote!(#selection: ::core::default::Default::default(),));
@@ -7207,26 +8456,18 @@ impl<'a> Generator<'a> {
                     "name-filters",
                     quote!(::xrack_runtime::VecModel::<::std::string::String>::default()),
                 )?;
-                let accepted = self.typed_event(
-                    dialog,
-                    "accepted",
-                    &quote!(::xrack_runtime::VecModel::from(paths)),
-                )?;
+                let accepted = self.typed_event(dialog, "accepted", &quote!(paths))?;
                 let canceled = self.typed_event_values(dialog, "canceled", &[])?;
                 (
-                    quote!(::xrack_runtime::NativeDialogOptions::File(::xrack_runtime::FileDialogOptions {
-                        mode: #mode,
-                        title: #title,
-                        directory: #directory,
-                        file_name: #file_name,
-                        name_filters: (#name_filters).snapshot(),
-                    })),
+                    quote!(::xrack_runtime::NativeDialogOptions::File(
+                        ::xrack_runtime::FileDialogOptions::read_bindings(
+                            || #mode, || #title, || #directory, || #file_name, || (#name_filters).snapshot(),
+                        ),
+                    )),
+                    quote!(::core::option::Option::Some(&self.__state.#selection)),
                     quote! {
-                        ::xrack_runtime::NativeDialogResult::Files(paths) => {
-                            self.__state.#selection.commit(&paths);
-                            #accepted
-                        }
-                        ::xrack_runtime::NativeDialogResult::Canceled => { #canceled }
+                        NativeDialogEvent::FilesSelected(paths) => { #accepted }
+                        NativeDialogEvent::FileCanceled => { #canceled }
                     },
                 )
             } else {
@@ -7246,22 +8487,16 @@ impl<'a> Generator<'a> {
                 let rejected = self.typed_event_values(dialog, "rejected", &[])?;
                 let finished = self.typed_event(dialog, "finished", &quote!(__xr_button))?;
                 (
-                    quote!(::xrack_runtime::NativeDialogOptions::Message(::xrack_runtime::MessageDialogOptions {
-                        level: #level,
-                        buttons: #buttons,
-                        title: #title,
-                        text: #text,
-                        informative_text: #informative_text,
-                    })),
+                    quote!(::xrack_runtime::NativeDialogOptions::Message(
+                        ::xrack_runtime::MessageDialogOptions::read_bindings(
+                            || #level, || #buttons, || #title, || #text, || #informative_text,
+                        ),
+                    )),
+                    quote!(::core::option::Option::None),
                     quote! {
-                        ::xrack_runtime::NativeDialogResult::Button(__xr_button) => {
-                            if __xr_button.accepts_message() {
-                                #accepted
-                            } else {
-                                #rejected
-                            }
-                            #finished
-                        }
+                        NativeDialogEvent::MessageAccepted => { #accepted }
+                        NativeDialogEvent::MessageRejected => { #rejected }
+                        NativeDialogEvent::MessageFinished(__xr_button) => { #finished }
                     },
                 )
             };
@@ -7270,23 +8505,19 @@ impl<'a> Generator<'a> {
             defaults.extend(quote!(#slot: ::core::default::Default::default(),));
             methods.extend(quote! {
                 fn #open(&self) {
-                    if #enabled {
-                        self.__state.#slot.open(|| #options);
-                    }
+                    self.__state.#slot.open_if(|| #enabled, || #options);
                 }
-                fn #register(&self) -> Option<::xrack_runtime::NativeDialogRegistration> {
+                fn #register(&self) -> ::core::option::Option<::xrack_runtime::NativeDialogRegistration> {
                     let weak = self.as_weak();
                     self.__state.#slot.register(move |id, result| weak.upgrade().is_some_and(|ui| ui.#finish(id, result)))
                 }
                 fn #finish(&self, id: u64, result: ::xrack_runtime::NativeDialogResult) -> bool {
-                    if !self.__state.#slot.finish(id) { return false; }
-                    match result {
+                    use ::xrack_runtime::NativeDialogEvent;
+                    self.__state.#slot.complete(id, result, #selection, |event| match event {
                         #handlers
-                        ::xrack_runtime::NativeDialogResult::Failed(message) => { #failed }
-                        ::xrack_runtime::NativeDialogResult::Abandoned => {}
-                        _ => return false,
-                    }
-                    true
+                        NativeDialogEvent::Failed(message) => { #failed }
+                        _ => {}
+                    })
                 }
             });
         }
@@ -7321,17 +8552,17 @@ impl<'a> Generator<'a> {
             fields.extend(quote!(#slot: ::xrack_runtime::TimerSlot,));
             defaults.extend(quote!(#slot: ::core::default::Default::default(),));
             methods.extend(quote! {
-                fn #configure(&self) -> Option<::xrack_runtime::TimerConfig> {
+                fn #configure(&self) -> ::core::option::Option<::xrack_runtime::TimerConfig> {
                     if !(#running) { return None; }
                     ::xrack_runtime::TimerConfig::new(#interval, #repeat, #immediate)
                 }
-                fn #register(&self) -> Option<::xrack_runtime::TimerRegistration> {
+                fn #register(&self) -> ::core::option::Option<::xrack_runtime::TimerRegistration> {
                     let config = self.#configure()?;
                     let weak = self.as_weak();
                     Some(self.__state.#slot.register(config, move |tick| weak.upgrade().is_some_and(|ui| ui.#trigger(tick))))
                 }
                 fn #trigger(&self, tick: ::xrack_runtime::TimerTick) -> bool {
-                    if self.__state.#slot.revision() != tick.revision || self.#configure() != Some(tick.config) {
+                    if !self.__state.#slot.tick_is_current(&tick, || self.#configure()) {
                         return false;
                     }
                     if tick.completed { #stop }
@@ -7358,8 +8589,8 @@ impl<'a> Generator<'a> {
             let opened = self.typed_event_values(popup, "opened", &[])?;
             let closed = self.typed_event_values(popup, "closed", &[])?;
             methods.extend(quote! {
-                fn #method(&self, __xr_open: bool) -> bool {
-                    if __xr_open == #current { return false; }
+                fn #method(&self, __xr_open: bool, input: ::core::option::Option<::xrack_runtime::InputRoute<'_>>) -> bool {
+                    if __xr_open == #current || input.is_some_and(|input| !input.is_current()) { return false; }
                     #set
                     if __xr_open { #opened } else { #closed }
                     true
@@ -7392,7 +8623,7 @@ impl<'a> Generator<'a> {
             };
             if !id.is_empty() {
                 sort_reads.extend(quote!(#id => self.__state.#field.get(|| None),));
-                sort_writes.extend(quote!(#id => self.#sort_table(sort),));
+                sort_writes.extend(quote!(#id => self.#sort_table(sort, None),));
             }
 
             let widths = table_widths_field(key);
@@ -7403,7 +8634,8 @@ impl<'a> Generator<'a> {
             let move_row = table_move_row_method(key);
             let heights = table_row_heights_field(key);
             let set_height = table_row_height_method(key);
-            let model = self.table_model(table)?;
+            let rows = self.table_rows_model(table)?;
+            let model = quote!(&#rows);
             let source = self.view_source_model(table)?;
             let current_row = self.control_value(table, "current-row", Type::Int)?;
             let set_current_row = self.set_control(table, &quote!(__xr_next))?;
@@ -7411,12 +8643,19 @@ impl<'a> Generator<'a> {
                 self.typed_event(table, "current-row-changed", &quote!(__xr_next))?;
             let selection_snapshot = table_selection_snapshot_method(key);
             let select_table = table_selection_method(key);
+            let select_command = table_selection_command_method(key);
+            let select_input = table_selection_input_method(key);
+            let notify_selection = format_ident!("__table_notify_selection_{}", rust_key(key));
             let target = self.binding_value_or(
                 table,
                 "selection-target",
                 quote!(::xrack_runtime::SelectionTarget::Rows),
             )?;
             let multiple = self.binding_value_or(table, "multi-select", quote!(false))?;
+            let drag_select = self.binding_value_or(table, "drag-select", quote!(false))?;
+            let receiver = quote!(self);
+            let projection = TableProjection::new(ExpressionContext::new(&receiver));
+            let available = self.element_allows_editing(table, &projection)?;
             let selected = self.typed_event(
                 table,
                 "selection-changed",
@@ -7440,16 +8679,46 @@ impl<'a> Generator<'a> {
                         .with_column_order(self.__state.#order.get(::core::default::Default::default))
                 }
                 fn #select_table(&self, action: ::xrack_runtime::TableSelectionAction) -> ::core::primitive::bool {
-                    let model = #model;
-                    let view = self.#selection_snapshot();
-                    let current = <::core::primitive::usize as ::core::convert::TryFrom<_>>::try_from(#current_row).ok();
-                    let Some(change) = self.__state.#selection.apply(model, &view, current, action) else { return false; };
+                    self.#select_command(::xrack_runtime::TableSelectionCommand::Visual(action))
+                }
+                fn #select_command(&self, command: ::xrack_runtime::TableSelectionCommand) -> ::core::primitive::bool {
+                    let Some(change) = self.__state.#selection.apply_command(
+                        command, #column_count, || #rows, || #current_row,
+                        || ::xrack_runtime::TableSelectionOptions {
+                            target: #target,
+                            multiple: #multiple,
+                            order: self.__state.#order.get(::core::default::Default::default),
+                            drag_select: false,
+                        },
+                    ) else { return false; };
+                    self.#notify_selection(change, true)
+                }
+                fn #select_input(
+                    &self, node: &::xrack_runtime::Node, action: ::xrack_runtime::ControlAction, input: ::xrack_runtime::InputRoute<'_>,
+                ) -> ::core::primitive::bool {
+                    let ::core::option::Option::Some(change) = self.__state.#selection.apply_control(
+                        node, input, || #available, || #rows,
+                        || ::xrack_runtime::TableSelectionOptions {
+                            target: #target,
+                            multiple: #multiple,
+                            order: self.__state.#order.get(::core::default::Default::default),
+                            drag_select: matches!(action, ::xrack_runtime::ControlAction::TableSelection(
+                                ::xrack_runtime::TableSelectionAction::DragRange { .. },
+                            )) && (#drag_select),
+                        },
+                        || #current_row,
+                    ) else { return false; };
+                    self.#notify_selection(change, node.table_selection.is_some())
+                }
+                fn #notify_selection(
+                    &self, change: ::xrack_runtime::TableSelectionChange, notify_cell: ::core::primitive::bool,
+                ) -> ::core::primitive::bool {
                     if let Some(index) = change.current {
                         let __xr_next = index as ::core::primitive::i64;
                         #set_current_row
                         #current_row_changed
                     }
-                    if change.current.is_some() || change.column_changed {
+                    if notify_cell && (change.current.is_some() || change.column_changed) {
                         let __xr_column = self.#selection_snapshot().current_column().map_or(-1i64, |column| column as ::core::primitive::i64);
                         #cell_changed
                     }
@@ -7542,39 +8811,9 @@ impl<'a> Generator<'a> {
                     }
                 });
             }
-            let (capture_current, restore_current, move_guard) = if auto_sort {
-                (
-                    quote! {
-                        let __xr_cursor = if #auto_sort_enabled {
-                            let model = #model;
-                            let index = <::core::primitive::usize as ::core::convert::TryFrom<_>>::try_from(#current_row).ok();
-                            index.filter(|index| *index < ::xrack_runtime::ListModel::row_count(model))
-                                .map(|index| ::xrack_runtime::ListModel::row_key(model, index))
-                        } else { None };
-                    },
-                    quote! {
-                        if let Some(key) = __xr_cursor
-                            && let Some(index) = ::xrack_runtime::ListModel::index_of_key(#model, key)
-                            && index as ::core::primitive::i64 != #current_row
-                        {
-                            let __xr_next = index as ::core::primitive::i64;
-                            #set_current_row
-                            #current_row_changed
-                        }
-                    },
-                    quote! {
-                        if #auto_sort_enabled && self.__state.#field.get(|| None).is_some() { return false; }
-                    },
-                )
-            } else {
-                (TokenStream::new(), TokenStream::new(), TokenStream::new())
-            };
-            let row_positions = if projected {
-                quote!((#model).positions().clone())
-            } else {
-                quote!(self.__state.#row_order.positions(&*__xr_source))
-            };
-
+            let move_guard = auto_sort.then(|| quote! {
+                if #auto_sort_enabled && self.__state.#field.get(|| None).is_some() { return false; }
+            });
             let row_moved = self.typed_event_values(
                 table,
                 "row-moved",
@@ -7608,15 +8847,16 @@ impl<'a> Generator<'a> {
             defaults.extend(quote!(#heights: ::core::default::Default::default(),));
             defaults.extend(quote!(#row_order: ::core::default::Default::default(),));
             methods.extend(quote! {
-                fn #sort_table(&self, sort: ::core::option::Option<::xrack_runtime::TableSort>) -> ::core::primitive::bool {
-                    if self.__state.#field.get(|| None) == sort { return false; }
-                    if let Some(candidate) = sort {
-                        let allowed = match candidate.column { #sortable _ => false };
-                        if !allowed { return false; }
+                fn #sort_table(&self, sort: ::core::option::Option<::xrack_runtime::TableSort>, input: ::core::option::Option<::xrack_runtime::InputRoute<'_>>) -> ::core::primitive::bool {
+                    let Some(__xr_cursor) = self.__state.#row_order.sort_rows(
+                        &self.__state.#field, sort, input,
+                        |column| match column { #sortable _ => false },
+                        || #auto_sort_enabled, || #rows, || #current_row,
+                    ) else { return false; };
+                    if let Some(__xr_next) = __xr_cursor.map(|index| index as ::core::primitive::i64) {
+                        #set_current_row
+                        #current_row_changed
                     }
-                    #capture_current
-                    self.__state.#field.set(sort);
-                    #restore_current
                     if let Some(__xr_sort) = sort {
                         if __xr_sort.descending { #descending } else { #ascending }
                     }
@@ -7639,23 +8879,12 @@ impl<'a> Generator<'a> {
                     #moved
                     true
                 }
-                fn #move_row(&self, from: ::core::primitive::i64, to: ::core::primitive::i64) -> ::core::primitive::bool {
+                fn #move_row(&self, from: ::core::primitive::i64, to: ::core::primitive::i64, input: ::core::option::Option<::xrack_runtime::InputRoute<'_>>) -> ::core::primitive::bool {
                     #move_guard
-                    let (Ok(__xr_from), Ok(__xr_to)) = (
-                        <::core::primitive::usize as ::core::convert::TryFrom<_>>::try_from(from),
-                        <::core::primitive::usize as ::core::convert::TryFrom<_>>::try_from(to),
+                    let Some((__xr_row, __xr_cursor)) = self.__state.#row_order.move_visible_row(
+                        from, to, input, || #rows, || #current_row,
                     ) else { return false; };
-                    let __xr_source = #source;
-                    let __xr_before = #row_positions;
-                    let __xr_current = #current_row;
-                    let __xr_current_source = <::core::primitive::usize as ::core::convert::TryFrom<_>>::try_from(__xr_current)
-                        .ok().and_then(|index| __xr_before.source_index(index));
-                    let Some(__xr_row) = self.__state.#row_order.move_row(&*__xr_source, __xr_from, __xr_to)
-                    else { return false; };
-                    let __xr_after = #row_positions;
-                    if let Some(__xr_next) = __xr_current_source.and_then(|index| __xr_after.visual_index(index))
-                        .map(|index| index as ::core::primitive::i64).filter(|index| *index != __xr_current)
-                    {
+                    if let Some(__xr_next) = __xr_cursor.map(|index| index as ::core::primitive::i64) {
                         #set_current_row
                         #current_row_changed
                     }
@@ -7780,16 +9009,17 @@ impl<'a> Generator<'a> {
             let (row, repeat) = self.list_template(element)?;
             let repeater = repeat_field(self.visuals.repeats[element_key(row)?].index());
             let model = self.expr(self.operand(repeat, 0)?)?;
-            let tree = self.tree_snapshot(
-                element,
-                row,
-                quote!(self.__state.__visuals.#repeater),
-                &model,
-            )?;
+            let tree = self.tree_snapshot(element, row, &quote!(__xr_model))?;
             let snapshot = tree_snapshot_method(key);
             let command = tree_command_method(key);
             let select = tree_selection_method(key);
+            let input = tree_input_method(key);
+            let notify_selection = format_ident!("__tree_notify_selection_{}", rust_key(key));
             let current = self.control_value(element, "current-key", Type::Int)?;
+            let receiver = quote!(self);
+            let projection = TableProjection::new(ExpressionContext::new(&receiver));
+            let available = self.element_allows_editing(element, &projection)?;
+            let multiple = self.binding_value_or(element, "multi-select", quote!(false))?;
             let set = self.set_control(element, &quote!(key))?;
             let changed = self.typed_event(element, "changed", &quote!(key))?;
             let expanded = self.typed_event(element, "expanded", &quote!(__xr_change.key))?;
@@ -7803,34 +9033,40 @@ impl<'a> Generator<'a> {
             defaults.extend(quote!(#field: ::core::default::Default::default(),));
             methods.extend(quote! {
                 fn #snapshot(&self) -> ::std::sync::Arc<::xrack_runtime::TreeSnapshot> {
+                    let __xr_model = self.__state.__visuals.#repeater.resolve_model(|| #model);
                     #tree
                 }
-                fn #select(
-                    &self,
-                    live: &::xrack_runtime::TreeSnapshot,
-                    multiple: bool,
-                    action: ::xrack_runtime::TreeSelectionAction,
-                ) -> bool {
-                    let current = #current;
-                    if multiple {
-                        let Some(change) = self.__state.#field.select(live, current, action) else { return false; };
-                        if let Some(key) = change.current { #set #changed }
-                        if let Some(count) = change.selected_count { #selected }
-                        return change.current.is_some() || change.selected_count.is_some();
+                fn #select(&self, source: ::core::primitive::usize) -> bool {
+                    let ::core::option::Option::Some(change) = self.__state.#field.select_source(
+                        source, || self.#snapshot(), || #multiple, || #current,
+                    ) else { return false; };
+                    self.#notify_selection(change)
+                }
+                fn #input(&self, node: &::xrack_runtime::Node, input: ::xrack_runtime::InputRoute<'_>) -> bool {
+                    match self.__state.#field.apply_control(
+                        node, input, || #available, || #multiple, || self.#snapshot(), || #current,
+                    ) {
+                        ::core::option::Option::Some(::xrack_runtime::TreeControlChange::Selection(change)) => {
+                            self.#notify_selection(change)
+                        }
+                        ::core::option::Option::Some(::xrack_runtime::TreeControlChange::Expansion { change: __xr_change, current }) => {
+                            if let ::core::option::Option::Some(key) = current { #set #changed }
+                            if __xr_change.expanded { #expanded } else { #collapsed }
+                            true
+                        }
+                        ::core::option::Option::None => false,
                     }
-                    let ::xrack_runtime::TreeSelectionAction::Row { key, row, .. } = action else { return false; };
-                    if current == key
-                        || !live.visible_index(key).and_then(|index| live.rows().get(index)).is_some_and(|item| item.row == row)
-                    { return false; }
-                    #set
-                    #changed
-                    true
+                }
+                fn #notify_selection(&self, change: ::xrack_runtime::TreeSelectionChange) -> bool {
+                    if let ::core::option::Option::Some(key) = change.current { #set #changed }
+                    if let ::core::option::Option::Some(count) = change.selected_count { #selected }
+                    change.current.is_some() || change.selected_count.is_some()
                 }
                 fn #command(&self, command: ::xrack_runtime::TreeCommand) -> bool {
-                    let live = self.#snapshot();
-                    let Some(__xr_change) = self.__state.#field.command(&live, command) else { return false; };
-                    let current = #current;
-                    if let Some(key) = self.#snapshot().nearest_visible_ancestor(current).filter(|key| *key != current) {
+                    let Some((__xr_change, current)) = self.__state.#field.apply_command(
+                        command, || self.#snapshot(), || #current,
+                    ) else { return false; };
+                    if let Some(key) = current {
                         #set
                         #changed
                     }
@@ -7851,7 +9087,7 @@ impl<'a> Generator<'a> {
         }
         if !tree_reads.is_empty() {
             methods.extend(quote! {
-                pub fn tree_snapshot(&self, id: &str) -> Option<::std::sync::Arc<::xrack_runtime::TreeSnapshot>> {
+                pub fn tree_snapshot(&self, id: &str) -> ::core::option::Option<::std::sync::Arc<::xrack_runtime::TreeSnapshot>> {
                     match id { #tree_reads _ => None }
                 }
                 pub fn command_tree(&mut self, id: &str, command: ::xrack_runtime::TreeCommand) -> bool {
@@ -7939,11 +9175,13 @@ impl<'a> Generator<'a> {
                 fn #snapshot(&self) -> ::std::sync::Arc<::xrack_runtime::StackSnapshot> {
                     self.__state.#field.snapshot(&[#(#routes),*], || #initial)
                 }
-                fn #navigate(&self, expected: Option<::core::primitive::u64>, action: ::xrack_runtime::StackNavigation<'_>) -> bool {
+                fn #navigate(&self, expected: ::core::option::Option<::core::primitive::u64>, action: ::xrack_runtime::StackNavigation<'_>, input: ::core::option::Option<::xrack_runtime::InputRoute<'_>>) -> bool {
                     self.__state.#field.navigate_guarded(
                         &[#(#routes),*], || #initial, expected, action,
                         |__xr_route, __xr_destination, __xr_removing| {
-                            match __xr_route { #guards _ => true }
+                            if input.is_some_and(|input| !input.is_current()) { return false; }
+                            let allowed = match __xr_route { #guards _ => true };
+                            allowed && input.is_none_or(|input| input.is_current())
                         },
                         |__xr_change| { #lifecycle #changed },
                     )
@@ -7957,12 +9195,12 @@ impl<'a> Generator<'a> {
             };
             if !id.is_empty() {
                 stack_reads.extend(quote!(#id => Some(self.#snapshot()),));
-                stack_writes.extend(quote!(#id => self.#navigate(None, action),));
+                stack_writes.extend(quote!(#id => self.#navigate(None, action, None),));
             }
         }
         if !stack_reads.is_empty() {
             methods.extend(quote! {
-                pub fn stack_snapshot(&self, id: &str) -> Option<::std::sync::Arc<::xrack_runtime::StackSnapshot>> {
+                pub fn stack_snapshot(&self, id: &str) -> ::core::option::Option<::std::sync::Arc<::xrack_runtime::StackSnapshot>> {
                     match id { #stack_reads _ => None }
                 }
                 pub fn navigate_stack(&mut self, id: &str, action: ::xrack_runtime::StackNavigation<'_>) -> bool {
@@ -8021,8 +9259,11 @@ impl<'a> Generator<'a> {
                         .map(|index| format_ident!("__xr_arg_{index}"))
                         .collect();
                     quote!({
-                        let callback = ::core::cell::RefCell::new(callback);
-                        move |#(#arguments),*| (callback.borrow_mut())(#(#arguments),*)
+                        let callback = ::xrack_runtime::EffectfulCallback::new(callback);
+                        move |#(#arguments),*| {
+                            callback.try_call(|handler| handler(#(#arguments),*))
+                                .unwrap_or_else(|error| ::core::panic!("{}", error))
+                        }
                     })
                 };
                 input_fields.extend(quote!(#input_field: ::core::option::Option<#handle>,));
@@ -8053,7 +9294,13 @@ impl<'a> Generator<'a> {
                     self.callable_method("set_cb", &quote!(self), target, name, &quote!(callback)),
                 )
             } else {
-                let forwarded = self.forwarded_callback((owner, name))?;
+                let forwarded = self
+                    .analysis
+                    .callback_forwards
+                    .get(&[(owner, name)][..])
+                    .map(|forward| self.forwarded_callback(forward))
+                    .transpose()?
+                    .flatten();
                 let incoming = match (owner == "root", forwarded) {
                     (true, Some(forwarded)) => {
                         quote!(__inputs.#input_field.take().or_else(|| #forwarded))
@@ -8109,7 +9356,7 @@ impl<'a> Generator<'a> {
                         if #visible { self.__state.#child.__state.__window.request_close(); }
                     }
 
-                    fn #register(&self) -> Option<::xrack_runtime::SecondaryWindowRegistration> {
+                    fn #register(&self) -> ::core::option::Option<::xrack_runtime::SecondaryWindowRegistration> {
                         if !(#visible) { return None; }
                         let child = self.__state.#child.as_weak();
                         let owner = self.as_weak();
@@ -8124,7 +9371,7 @@ impl<'a> Generator<'a> {
             fields.extend(quote!(__secondary_windows: ::xrack_runtime::Property<::std::rc::Rc<[::xrack_runtime::SecondaryWindowRegistration]>>,));
             defaults.extend(quote!(__secondary_windows: ::core::default::Default::default(),));
             quote! {
-                fn secondary_windows(&self) -> Option<::std::rc::Rc<[::xrack_runtime::SecondaryWindowRegistration]>> {
+                fn secondary_windows(&self) -> ::core::option::Option<::std::rc::Rc<[::xrack_runtime::SecondaryWindowRegistration]>> {
                     Some(self.__state.__secondary_windows.get(|| {
                         let mut windows = ::std::vec::Vec::new();
                         #registrations
@@ -8199,11 +9446,16 @@ impl<'a> Generator<'a> {
         self.key_arms(root, &mut Vec::new(), &mut keys)?;
         let mut wheels = TokenStream::new();
         let mut pointers = TokenStream::new();
-        self.pointer_input_arms(root, &mut Vec::new(), &mut wheels, &mut pointers)?;
+        let mut input_availability = TokenStream::new();
+        self.pointer_input_arms(
+            root,
+            &mut Vec::new(),
+            &mut wheels,
+            &mut pointers,
+            &mut input_availability,
+        )?;
         let mut drag = TokenStream::new();
         self.drag_arms(root, &mut Vec::new(), &mut drag)?;
-        let mut lists = TokenStream::new();
-        self.list_arms(root, &mut Vec::new(), &mut lists)?;
         for (&key, &view) in &self.elements {
             if !has_virtual_rows(view) {
                 continue;
@@ -8212,11 +9464,6 @@ impl<'a> Generator<'a> {
             let index_body = self.view_index_body(view)?;
             let select = source_selection_method(key);
             let selection_body = self.source_selection_body(view)?;
-            let map_source = if view.attr("kind") == Ok("TreeView") {
-                TokenStream::new()
-            } else {
-                quote!(let Some(index) = self.#lookup(source, true) else { return; };)
-            };
             methods.extend(quote! {
                 fn #lookup(
                     &self, index: ::core::primitive::usize, from_source: ::core::primitive::bool,
@@ -8227,7 +9474,6 @@ impl<'a> Generator<'a> {
                 fn #select(&self, source: ::core::primitive::i64, column: ::core::option::Option<::core::primitive::i64>) {
                     let Ok(source) = <::core::primitive::usize as ::core::convert::TryFrom<_>>::try_from(source)
                     else { return; };
-                    #map_source
                     #selection_body
                 }
             });
@@ -8285,6 +9531,7 @@ impl<'a> Generator<'a> {
         let TableClipboardArms {
             copies,
             pastes,
+            paste_stamps,
             replays,
             fields: history_fields,
             defaults: history_defaults,
@@ -8360,43 +9607,43 @@ impl<'a> Generator<'a> {
                     #node
                 }
 
-                fn __list_rows(
-                    &self,
-                    __path: &[::core::primitive::usize],
-                    __range: ::core::ops::Range<::core::primitive::usize>,
-                ) -> ::std::vec::Vec<::xrack_runtime::Node> {
-                    match __path {
-                        #lists
-                        _ => ::std::vec::Vec::new(),
-                    }
-                }
-
                 fn __copy_table_path(
                     &self,
                     path: &[::core::primitive::usize],
                     node: &::xrack_runtime::Node,
                     columns: &[::core::primitive::usize],
+                    input: ::xrack_runtime::InputRoute<'_>,
                 ) -> ::core::option::Option<::std::string::String> {
                     match path { #copies _ => ::core::option::Option::None }
                 }
 
                 fn __next_table_edit_cell(
                     &self, scene: &::xrack_runtime::Node, path: &[::core::primitive::usize],
-                    origin: ::xrack_runtime::TableEditPosition, columns: &[::core::primitive::usize],
-                    backward: ::core::primitive::bool,
+                    navigation: ::xrack_runtime::TableEditNavigation<'_>, input: ::xrack_runtime::InputRoute<'_>,
                 ) -> ::core::option::Option<::xrack_runtime::TableEditPosition> {
+                    let columns = navigation.columns;
                     match path { #edit_navigation _ => ::core::option::Option::None }
                 }
 
-                fn __prepare_table_paste(
+                fn __table_paste_stamp(
                     &self, path: &[::core::primitive::usize],
                     node: &::xrack_runtime::Node,
-                    row: ::core::primitive::usize, columns: ::std::vec::Vec<::core::primitive::usize>,
-                ) -> ::core::option::Option<::xrack_runtime::TablePaste> {
-                    match path { #pastes _ => ::core::option::Option::None }
+                ) -> ::core::option::Option<(::core::primitive::u64, ::core::primitive::u64)> {
+                    match path { #paste_stamps _ => ::core::option::Option::None }
                 }
 
-                fn __replay_table_edit(&self, path: &[::core::primitive::usize], redo: ::core::primitive::bool) -> ::core::primitive::bool {
+                fn __apply_table_paste(
+                    &self, path: &[::core::primitive::usize], node: &::xrack_runtime::Node,
+                    paste: ::xrack_runtime::TablePasteInput<'_>, route: ::xrack_runtime::InputRoute<'_>,
+                ) -> ::core::primitive::bool {
+                    match path { #pastes _ => false }
+                }
+
+                fn __replay_table_edit(
+                    &self, path: &[::core::primitive::usize],
+                    model: ::core::primitive::u64, redo: ::core::primitive::bool,
+                    route: ::xrack_runtime::InputRoute<'_>,
+                ) -> ::core::primitive::bool {
                     match path { #replays _ => false }
                 }
 
@@ -8404,23 +9651,88 @@ impl<'a> Generator<'a> {
                     &self,
                     scene: &::xrack_runtime::Node,
                     path: &[::core::primitive::usize],
-                    visit: impl FnOnce(&mut dyn ::xrack_runtime::Component, &::xrack_runtime::Node, &[::core::primitive::usize]) -> R,
+                    follow_row: ::core::primitive::bool,
+                    input: ::core::option::Option<::xrack_runtime::InputRoute<'_>>,
+                    visit: impl FnOnce(&mut dyn ::xrack_runtime::Component, &::xrack_runtime::Node, &[::core::primitive::usize], ::core::option::Option<::xrack_runtime::InputRoute<'_>>) -> R,
                 ) -> ::core::option::Option<R> {
                     match path { #delegates _ => None }
                 }
 
-                fn __route_delegate(
+                fn __dispatch_delegate_event(
                     &self,
                     scene: &::xrack_runtime::Node,
                     path: &[::core::primitive::usize],
                     action: &::xrack_runtime::RoutedEvent<'_>,
+                    input: ::xrack_runtime::InputRoute<'_>,
                 ) -> ::core::option::Option<::core::primitive::bool> {
-                    if let Some(result) = self.__with_delegate(scene, path, |ui, child, rest| action.apply(ui, child, rest)) {
-                        return Some(result);
-                    }
                     match path {
                         #delegate_events
                         _ => None,
+                    }
+                }
+
+                fn __input_path_available(
+                    &self,
+                    scene: &::xrack_runtime::Node,
+                    path: &[::core::primitive::usize],
+                    input: ::xrack_runtime::InputRoute<'_>,
+                ) -> ::core::option::Option<::core::primitive::bool> {
+                    let mut child_visibility_overridden = false;
+                    if input.checks_availability() {
+                        let mut node = scene;
+                        for depth in 0..=path.len() {
+                            let root_visibility_overridden = depth == 0 && input.root_visibility_overridden();
+                            if !input.available(|| match &path[..depth] { #input_availability _ => true }) {
+                                return ::core::option::Option::None;
+                            }
+                            if let ::core::option::Option::Some(&index) = path.get(depth) {
+                                node = node.child_at(index)?;
+                            }
+                        }
+                    }
+                    ::core::option::Option::Some(child_visibility_overridden)
+                }
+
+                fn __route_input(
+                    &self, scene: &::xrack_runtime::Node, path: &[::core::primitive::usize],
+                    input: ::xrack_runtime::InputRoute<'_>,
+                ) -> ::core::primitive::bool {
+                    let ::core::option::Option::Some(child_visibility_overridden) = self.__input_path_available(scene, path, input) else {
+                        return false;
+                    };
+                    let event = input.event();
+                    let follow_row = event.follows_row(scene, path);
+                    let child_input = input.with_root_visibility_override(child_visibility_overridden);
+                    if let ::core::option::Option::Some(result) = self.__with_delegate(scene, path, follow_row, Some(child_input), |ui, child, rest, input| {
+                        ui.route_input(child, rest, input.expect("routed input"))
+                    }) {
+                        return result;
+                    }
+                    if !input.is_current() { return false; }
+                    use ::xrack_runtime::{EventResult, RoutedEvent};
+                    match event {
+                        RoutedEvent::Dispatch(name) => self.__dispatch_delegate_event(scene, path, event, input)
+                            .unwrap_or_else(|| self.__dispatch_path(path, name, input)),
+                        RoutedEvent::Edit(text) => scene.at_path(path).is_some_and(|node| self.__edit_path(path, node, (*text).into(), input)),
+                        RoutedEvent::PasteTable(paste) => scene.at_path(path).is_some_and(|node| {
+                            self.__apply_table_paste(path, node, *paste, input)
+                        }),
+                        RoutedEvent::ReplayTable { redo } => scene.table_edit_history_model(path).is_some_and(|model| {
+                            self.__replay_table_edit(path, model, *redo, input)
+                        }),
+                        RoutedEvent::Control(action) => self.__dispatch_delegate_event(scene, path, event, input)
+                            .unwrap_or_else(|| scene.at_path(path).is_some_and(|node| self.__control_path(path, node, *action, input))),
+                        RoutedEvent::Range(action) => self.__dispatch_delegate_event(scene, path, event, input)
+                            .unwrap_or_else(|| scene.range_target(path).is_some_and(|node| self.__range_path(path, node, *action, input))),
+                        RoutedEvent::ResizeSplit(_) | RoutedEvent::ResizeSplitSizes(_) | RoutedEvent::CommitCell { .. } => {
+                            self.__dispatch_delegate_event(scene, path, event, input).unwrap_or(false)
+                        }
+                        RoutedEvent::Focus(event) => self.__focus_path(path, *event),
+                        RoutedEvent::Key(phase, event) => self.__key_path(path, *phase, event) == EventResult::Accept,
+                        RoutedEvent::Wheel(event) => self.__wheel_path(path, event) == EventResult::Accept,
+                        RoutedEvent::Pointer(event) => self.__pointer_path(path, event),
+                        RoutedEvent::Drag(event) => self.__drag_path(path, event),
+                        RoutedEvent::QueryTable(_) => false,
                     }
                 }
 
@@ -8451,6 +9763,7 @@ impl<'a> Generator<'a> {
                     &self,
                     path: &[::core::primitive::usize],
                     event: &::core::primitive::str,
+                    input: ::xrack_runtime::InputRoute<'_>,
                 ) -> ::core::primitive::bool {
                     match path {
                         #path_dispatch
@@ -8463,6 +9776,7 @@ impl<'a> Generator<'a> {
                     path: &[::core::primitive::usize],
                     node: &::xrack_runtime::Node,
                     action: ::xrack_runtime::ControlAction,
+                    input: ::xrack_runtime::InputRoute<'_>,
                 ) -> ::core::primitive::bool {
                     match path {
                         #controls
@@ -8490,14 +9804,14 @@ impl<'a> Generator<'a> {
                     match path { #drag _ => false }
                 }
 
-                fn __range_path(&self, path: &[::core::primitive::usize], node: &::xrack_runtime::Node, action: ::xrack_runtime::RangeAction) -> ::core::primitive::bool {
+                fn __range_path(&self, path: &[::core::primitive::usize], node: &::xrack_runtime::Node, action: ::xrack_runtime::RangeAction, input: ::xrack_runtime::InputRoute<'_>) -> ::core::primitive::bool {
                     match path {
                         #ranges
                         _ => false,
                     }
                 }
 
-                fn __edit_path(&self, path: &[::core::primitive::usize], node: &::xrack_runtime::Node, text: ::std::string::String) -> ::core::primitive::bool {
+                fn __edit_path(&self, path: &[::core::primitive::usize], node: &::xrack_runtime::Node, text: ::std::string::String, input: ::xrack_runtime::InputRoute<'_>) -> ::core::primitive::bool {
                     match path {
                         #edits
                         _ => false,
@@ -8538,17 +9852,35 @@ impl<'a> Generator<'a> {
                     path: &[::core::primitive::usize],
                     rows: ::core::ops::Range<::core::primitive::usize>,
                 ) -> ::std::vec::Vec<::xrack_runtime::Node> {
-                    self.__list_rows(path, rows)
+                    self.__render_shared().list_rows_at(path, rows)
                 }
 
                 fn copy_table_at(
                     &self, scene: &::xrack_runtime::Node, path: &[::core::primitive::usize],
                     columns: &[::core::primitive::usize],
                 ) -> ::core::option::Option<::std::string::String> {
-                    let node = scene.interactive_at_path(path)?;
-                    if !node.boolean("copyable", false) { return ::core::option::Option::None; }
-                    self.__with_delegate(scene, path, |ui, child, rest| ui.copy_table_at(child, rest, columns))
-                        .unwrap_or_else(|| self.__copy_table_path(path, node, columns))
+                    ::xrack_runtime::TableQuery::Copy(columns).run(self, scene, path)?.text()
+                }
+
+                fn route_table_query(
+                    &self, scene: &::xrack_runtime::Node, path: &[::core::primitive::usize],
+                    input: ::xrack_runtime::InputRoute<'_>,
+                ) -> ::core::option::Option<::xrack_runtime::TableQueryResult> {
+                    use ::xrack_runtime::{RoutedEvent, TableQuery, TableQueryResult};
+                    let RoutedEvent::QueryTable(query) = *input.event() else { return ::core::option::Option::None; };
+                    let overridden = self.__input_path_available(scene, path, input)?;
+                    let child_input = input.with_root_visibility_override(overridden);
+                    if let ::core::option::Option::Some(result) = self.__with_delegate(scene, path, false, Some(child_input), |ui, child, rest, input| {
+                        ui.route_table_query(child, rest, input.expect("routed table query"))
+                    }) {
+                        return result;
+                    }
+                    match query {
+                        TableQuery::Copy(columns) => self.__copy_table_path(path, scene.at_path(path)?, columns, input)
+                            .map(TableQueryResult::Text),
+                        TableQuery::NextEdit(navigation) => self.__next_table_edit_cell(scene, path, navigation, input)
+                            .map(TableQueryResult::Position),
+                    }
                 }
 
                 fn next_table_edit_cell(
@@ -8556,35 +9888,35 @@ impl<'a> Generator<'a> {
                     origin: ::xrack_runtime::TableEditPosition, columns: &[::core::primitive::usize],
                     backward: ::core::primitive::bool,
                 ) -> ::core::option::Option<::xrack_runtime::TableEditPosition> {
-                    self.__with_delegate(scene, path, |ui, child, rest| ui.next_table_edit_cell(child, rest, origin, columns, backward))
-                        .unwrap_or_else(|| self.__next_table_edit_cell(scene, path, origin, columns, backward))
+                    ::xrack_runtime::TableQuery::NextEdit(::xrack_runtime::TableEditNavigation { origin, columns, backward })
+                        .run(self, scene, path)?.position()
                 }
 
                 fn prepare_table_paste(
                     &self, scene: &::xrack_runtime::Node, path: &[::core::primitive::usize],
                     row: ::core::primitive::usize, columns: ::std::vec::Vec<::core::primitive::usize>,
                 ) -> ::core::option::Option<::xrack_runtime::TablePaste> {
+                    let stamp = <Self as ::xrack_runtime::Component>::table_paste_stamp(self, scene, path)?;
+                    let weak = self.as_weak();
+                    let snapshot = scene.clone();
+                    let path = path.to_vec();
+                    Some(::std::boxed::Box::new(move |text| {
+                        let input = ::xrack_runtime::TablePasteInput { stamp, row, columns: &columns, text };
+                        weak.upgrade().is_some_and(|mut ui| {
+                            ::xrack_runtime::RoutedEvent::PasteTable(input).deliver_input(&mut ui, &snapshot, &path)
+                        })
+                    }))
+                }
+
+                fn table_paste_stamp(
+                    &self, scene: &::xrack_runtime::Node, path: &[::core::primitive::usize],
+                ) -> ::core::option::Option<(::core::primitive::u64, ::core::primitive::u64)> {
                     let node = scene.interactive_at_path(path)?;
                     if !node.boolean("pasteable", false) {
                         return ::core::option::Option::None;
                     }
-                    match self.__with_delegate(scene, path, |ui, child, rest| {
-                        ui.prepare_table_paste(child, rest, row, columns.clone())
-                    }) {
-                        Some(result) => {
-                            let apply = result?;
-                            let weak = self.as_weak();
-                            let snapshot = scene.clone();
-                            let path = path.to_vec();
-                            Some(::std::boxed::Box::new(move |text| {
-                                weak.upgrade().is_some_and(|ui| {
-                                    ui.__with_delegate(&snapshot, &path, |_, _, _| true) == Some(true)
-                                        && apply(text)
-                                })
-                            }))
-                        }
-                        None => self.__prepare_table_paste(path, node, row, columns),
-                    }
+                    self.__with_delegate(scene, path, false, None, |ui, child, rest, _| ui.table_paste_stamp(child, rest))
+                        .unwrap_or_else(|| self.__table_paste_stamp(path, node))
                 }
 
                 fn replay_table_paste_at(
@@ -8596,9 +9928,8 @@ impl<'a> Generator<'a> {
                 fn replay_table_edit_at(
                     &self, scene: &::xrack_runtime::Node, path: &[::core::primitive::usize], redo: ::core::primitive::bool,
                 ) -> ::core::primitive::bool {
-                    scene.interactive_at_path(path).is_some_and(::xrack_runtime::Node::table_edit_history_enabled)
-                        && self.__with_delegate(scene, path, |ui, child, rest| ui.replay_table_edit_at(child, rest, redo))
-                            .unwrap_or_else(|| self.__replay_table_edit(path, redo))
+                    let mut ui = Self { __state: self.__state.clone() };
+                    ::xrack_runtime::RoutedEvent::ReplayTable { redo }.deliver_input(&mut ui, scene, path)
                 }
 
                 fn dispatch(
@@ -8615,13 +9946,7 @@ impl<'a> Generator<'a> {
                     path: &[::core::primitive::usize],
                     action: ::xrack_runtime::RangeAction,
                 ) -> ::core::primitive::bool {
-                    let ::core::option::Option::Some(node) = scene.range_target(path) else {
-                        return false;
-                    };
-                    if let Some(result) = self.__route_delegate(scene, path, &::xrack_runtime::RoutedEvent::Range(action)) {
-                        return result;
-                    }
-                    self.__range_path(path, node, action)
+                    ::xrack_runtime::RoutedEvent::Range(action).deliver_input(self, scene, path)
                 }
 
                 fn control_at(
@@ -8630,17 +9955,15 @@ impl<'a> Generator<'a> {
                     path: &[::core::primitive::usize],
                     action: ::xrack_runtime::ControlAction,
                 ) -> ::core::primitive::bool {
-                    scene.control_target(path, action).is_some_and(|node| {
-                        self.__route_delegate(scene, path, &::xrack_runtime::RoutedEvent::Control(action))
-                            .unwrap_or_else(|| self.__control_path(path, node, action))
-                    })
+                    ::xrack_runtime::RoutedEvent::Control(action).deliver_input(self, scene, path)
+                }
+
+                fn route_input(&mut self, scene: &::xrack_runtime::Node, path: &[::core::primitive::usize], input: ::xrack_runtime::InputRoute<'_>) -> ::core::primitive::bool {
+                    self.__route_input(scene, path, input)
                 }
 
                 fn focus_event_at(&mut self, scene: &::xrack_runtime::Node, path: &[::core::primitive::usize], event: ::xrack_runtime::FocusEvent) -> ::core::primitive::bool {
-                    let target = if event.is_loss() { scene.at_path(path) } else { scene.interactive_at_path(path) };
-                    target.is_some_and(|node| node.kind == "FocusScope") && self
-                        .__route_delegate(scene, path, &::xrack_runtime::RoutedEvent::Focus(event))
-                        .unwrap_or_else(|| self.__focus_path(path, event))
+                    ::xrack_runtime::RoutedEvent::Focus(event).deliver_input(self, scene, path)
                 }
 
                 fn key_event_at(
@@ -8650,51 +9973,25 @@ impl<'a> Generator<'a> {
                     phase: ::xrack_runtime::KeyPhase,
                     event: &::xrack_runtime::KeyEvent,
                 ) -> ::xrack_runtime::EventResult {
-                    if !scene.interactive_at_path(path).is_some_and(|node| {
-                        node.kind == "FocusScope" && node.key_handlers & phase.mask() != 0
-                    }) {
-                        return ::xrack_runtime::EventResult::Reject;
-                    }
-                    if let Some(accepted) = self.__route_delegate(scene, path, &::xrack_runtime::RoutedEvent::Key(phase, event)) {
-                        if accepted { ::xrack_runtime::EventResult::Accept } else { ::xrack_runtime::EventResult::Reject }
-                    } else {
-                        self.__key_path(path, phase, event)
-                    }
+                    ::xrack_runtime::RoutedEvent::Key(phase, event).deliver_input(self, scene, path).into()
                 }
 
                 fn wheel_event_at(
                     &mut self, scene: &::xrack_runtime::Node, path: &[::core::primitive::usize],
                     event: &::xrack_runtime::WheelEvent,
                 ) -> ::xrack_runtime::EventResult {
-                    use ::xrack_runtime::EventResult;
-                    if !scene.interactive_at_path(path).is_some_and(|node| node.handles_wheel() && node.boolean("enabled", true)) {
-                        return EventResult::Reject;
-                    }
-                    if let Some(accepted) = self.__route_delegate(scene, path, &::xrack_runtime::RoutedEvent::Wheel(event)) {
-                        return if accepted { EventResult::Accept } else { EventResult::Reject };
-                    }
-                    self.__wheel_path(path, event)
+                    ::xrack_runtime::RoutedEvent::Wheel(event).deliver_input(self, scene, path).into()
                 }
 
                 fn pointer_event_at(
                     &mut self, scene: &::xrack_runtime::Node, path: &[::core::primitive::usize],
                     event: &::xrack_runtime::PointerEvent,
                 ) -> ::core::primitive::bool {
-                    let node = if event.kind == ::xrack_runtime::PointerEventKind::Cancel {
-                        scene.at_path(path)
-                    } else {
-                        scene.interactive_at_path(path)
-                    };
-                    node.is_some_and(|node| node.pointer_handle.is_some())
-                        && self.__route_delegate(scene, path, &::xrack_runtime::RoutedEvent::Pointer(event))
-                            .unwrap_or_else(|| self.__pointer_path(path, event))
+                    ::xrack_runtime::RoutedEvent::Pointer(event).deliver_input(self, scene, path)
                 }
 
                 fn drag_event_at(&mut self, scene: &::xrack_runtime::Node, path: &[::core::primitive::usize], event: &::xrack_runtime::DragEvent) -> ::core::primitive::bool {
-                    let target = if event.is_terminal() { scene.at_path(path) } else { scene.interactive_at_path(path) };
-                    target.is_some_and(|node| node.kind == event.target_kind()) && self
-                        .__route_delegate(scene, path, &::xrack_runtime::RoutedEvent::Drag(event))
-                        .unwrap_or_else(|| self.__drag_path(path, event))
+                    ::xrack_runtime::RoutedEvent::Drag(event).deliver_input(self, scene, path)
                 }
 
                 fn resize_split_at(
@@ -8703,9 +10000,7 @@ impl<'a> Generator<'a> {
                     path: &[::core::primitive::usize],
                     weights: &[(::core::primitive::usize, ::core::primitive::f32)],
                 ) -> ::core::primitive::bool {
-                    scene.interactive_at_path(path).is_some_and(|node| {
-                        node.kind == "SplitView" && self.__route_delegate(scene, path, &::xrack_runtime::RoutedEvent::ResizeSplit(weights)).unwrap_or(false)
-                    })
+                    ::xrack_runtime::RoutedEvent::ResizeSplit(weights).deliver_input(self, scene, path)
                 }
 
                 fn resize_split_sizes_at(
@@ -8714,9 +10009,7 @@ impl<'a> Generator<'a> {
                     path: &[::core::primitive::usize],
                     sizes: &[(::core::primitive::usize, ::core::primitive::f32)],
                 ) -> ::core::primitive::bool {
-                    scene.interactive_at_path(path).is_some_and(|node| {
-                        node.kind == "SplitView" && self.__route_delegate(scene, path, &::xrack_runtime::RoutedEvent::ResizeSplitSizes(sizes)).unwrap_or(false)
-                    })
+                    ::xrack_runtime::RoutedEvent::ResizeSplitSizes(sizes).deliver_input(self, scene, path)
                 }
 
                 fn edit_at(
@@ -8725,12 +10018,7 @@ impl<'a> Generator<'a> {
                     path: &[::core::primitive::usize],
                     text: ::std::string::String,
                 ) -> ::core::primitive::bool {
-                    let Some(node) = scene.interactive_at_path(path) else { return false; };
-                    if !node.accepts_editor_update(&text) {
-                        return false;
-                    }
-                    self.__route_delegate(scene, path, &::xrack_runtime::RoutedEvent::Edit(&text))
-                        .unwrap_or_else(|| self.__edit_path(path, node, text))
+                    ::xrack_runtime::RoutedEvent::Edit(&text).deliver_input(self, scene, path)
                 }
 
                 fn commit_table_cell(
@@ -8740,11 +10028,7 @@ impl<'a> Generator<'a> {
                     original: &::core::primitive::str,
                     text: ::std::string::String,
                 ) -> ::core::primitive::bool {
-                    scene.interactive_at_path(path).is_some_and(|node| {
-                        ::xrack_runtime::editable_table_cell(node) && self.__route_delegate(
-                            scene, path, &::xrack_runtime::RoutedEvent::CommitCell { original, text: &text },
-                        ).unwrap_or(false)
-                    })
+                    ::xrack_runtime::RoutedEvent::CommitCell { original, text: &text }.deliver_input(self, scene, path)
                 }
 
                 fn dispatch_at(
@@ -8753,9 +10037,7 @@ impl<'a> Generator<'a> {
                     path: &[::core::primitive::usize],
                     event: &::core::primitive::str,
                 ) -> ::core::primitive::bool {
-                    scene.dispatch_target(path, event).is_some()
-                        && self.__route_delegate(scene, path, &::xrack_runtime::RoutedEvent::Dispatch(event))
-                        .unwrap_or_else(|| self.__dispatch_path(path, event))
+                    ::xrack_runtime::RoutedEvent::Dispatch(event).deliver_input(self, scene, path)
                 }
             }
         })
@@ -8956,16 +10238,18 @@ pub fn generate_with_translations(
         let mut generator = Generator {
             alias_graphs: &alias_graphs,
             alias_graph,
-            forwarded_inputs: BTreeMap::new(),
             elements: BTreeMap::new(),
             callback_graphs: &callback_graphs,
             callback_graph,
-            callback_forwards: BTreeMap::new(),
             instance_handlers: Vec::new(),
             records: &records,
             instances: BTreeMap::new(),
-            persistent_state_selectors: BTreeMap::new(),
-            visual_state_selectors: BTreeSet::new(),
+            analysis: ComponentAnalysis::from_component(
+                op,
+                &alias_graphs,
+                &callback_graphs,
+                module.has_visual_cache_plan(),
+            )?,
             element_properties: Vec::new(),
             unlinked_controls: Vec::new(),
             record_combos: Vec::new(),
@@ -8999,42 +10283,6 @@ pub fn generate_with_translations(
             with_translations: translations.is_some(),
         };
         generator.index(op, None)?;
-        let mut alias_defaults = BTreeSet::new();
-        for (owner, callback) in generator.declared_callbacks(op) {
-            if callback.attribute("alias_owner").is_some()
-                && (owner == "root" || callback.attribute("implementation") == Some("true"))
-            {
-                let endpoint =
-                    callback_graph.resolve(&callback_graphs, (owner, callback.attr("name")?))?;
-                if callback.attribute("implementation") == Some("true") {
-                    let mut destination = vec![endpoint];
-                    if let Some(child) = callback_graph.instance(endpoint.0) {
-                        destination[0].1 = "";
-                        destination.extend(canonical_input(&callback_graphs, child, endpoint.1)?);
-                    }
-                    if !alias_defaults.insert(destination) {
-                        return Err("multiple alias handlers target the same callback".into());
-                    }
-                }
-                generator
-                    .callback_forwards
-                    .entry(endpoint)
-                    .or_default()
-                    .push((owner, callback));
-            }
-        }
-        for property in children(op, "xr.property").filter(|property| {
-            property.attribute("alias") == Some("true")
-                && matches!(property.attribute("visibility"), Some("in" | "in-out"))
-        }) {
-            let name = property.attr("name")?;
-            let target = alias_graph.resolve(&alias_graphs, ("root", name))?;
-            generator
-                .forwarded_inputs
-                .entry(target)
-                .or_default()
-                .push(property_field("root", name));
-        }
         if let Some(root) = children(op, "xr.element").next() {
             let mut visuals = VisualScope::default();
             generator.index_visual_bindings(root, &mut visuals, &mut 0)?;

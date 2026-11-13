@@ -56,8 +56,9 @@ impl Instance {
     }
 
     fn trigger_timer(&self, timer: &Element, tick: TimerTick) -> Result<bool> {
-        if self.timer_slot(&timer.key)?.revision() != tick.revision
-            || self.timer_config(timer)? != Some(tick.config)
+        if !self
+            .timer_slot(&timer.key)?
+            .try_tick_is_current(&tick, || self.timer_config(timer))?
         {
             return Ok(false);
         }

@@ -1,4 +1,4 @@
-use crate::{CheckState, Node};
+use crate::{CheckState, InputRoute, Node};
 use std::{borrow::Cow, rc::Rc};
 
 /// The compiler's declaration-order option slots for one nonvisual group.
@@ -64,6 +64,63 @@ impl ButtonGroupMembership {
 pub enum ButtonGroupSelection {
     Index(i64),
     Value(String),
+}
+
+impl ButtonGroupSelection {
+    pub(crate) fn matches(&self, index: usize, value: &str) -> bool {
+        match self {
+            Self::Index(current) => usize::try_from(*current).ok() == Some(index),
+            Self::Value(current) => current == value,
+        }
+    }
+}
+
+/// Recheck a distributed radio option without evaluating other members.
+#[doc(hidden)]
+pub fn try_prepare_radio_selection<E>(
+    node: &Node,
+    group: &str,
+    input: InputRoute<'_>,
+    enabled: impl FnOnce() -> Result<bool, E>,
+    value: impl FnOnce() -> Result<String, E>,
+    current: impl FnOnce() -> Result<ButtonGroupSelection, E>,
+) -> Result<Option<(usize, String)>, E> {
+    let Some(member) = node
+        .button_group
+        .as_ref()
+        .filter(|member| member.group.exclusive && member.group.key == group)
+    else {
+        return Ok(None);
+    };
+    if !input.try_available(enabled)? {
+        return Ok(None);
+    }
+    let value = value()?;
+    if !input.is_current() || value != radio_value(node) {
+        return Ok(None);
+    }
+    let unchanged = current()?.matches(member.index, &value);
+    Ok((!unchanged && input.is_current()).then_some((member.index, value)))
+}
+
+#[doc(hidden)]
+pub fn prepare_radio_selection(
+    node: &Node,
+    group: &str,
+    input: InputRoute<'_>,
+    enabled: impl FnOnce() -> bool,
+    value: impl FnOnce() -> String,
+    current: impl FnOnce() -> ButtonGroupSelection,
+) -> Option<(usize, String)> {
+    try_prepare_radio_selection(
+        node,
+        group,
+        input,
+        || Ok::<_, std::convert::Infallible>(enabled()),
+        || Ok(value()),
+        || Ok(current()),
+    )
+    .unwrap_or_else(|error| match error {})
 }
 
 pub fn radio_value(node: &Node) -> &str {

@@ -21,7 +21,13 @@ impl PartialEq for ImageAsset {
         match (self, other) {
             (Self::Embedded(left), Self::Embedded(right)) => left == right,
             (Self::Loaded(left), Self::Loaded(right)) => left == right,
-            (Self::Animated(left), Self::Animated(right)) => Rc::ptr_eq(left, right),
+            (Self::Animated(left), Self::Animated(right)) => {
+                Rc::ptr_eq(left, right) || left == right
+            }
+            (Self::Embedded(Image::Animated(embedded)), Self::Animated(loaded))
+            | (Self::Animated(loaded), Self::Embedded(Image::Animated(embedded))) => {
+                embedded.matches_loaded(loaded)
+            }
             (Self::Loaded(_), Self::Embedded(_)) | (Self::Embedded(_), Self::Loaded(_)) => {
                 let (Some(left), Some(right)) = (self.pixels(), other.pixels()) else {
                     return false;
@@ -79,6 +85,10 @@ impl LoadedImage {
             edges: None,
         }
     }
+
+    pub(crate) fn bytes(&self) -> &[u8] {
+        &self.source.bytes
+    }
 }
 
 impl PartialEq for LoadedImage {
@@ -104,7 +114,7 @@ impl fmt::Debug for LoadedImage {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct LoadedAnimation {
     pub(crate) size: [u32; 2],
     pub(crate) frames: Vec<(u32, LoadedImage)>,
@@ -208,7 +218,7 @@ impl ImageAsset {
             Self::Loaded(image) => (
                 ImageIdentity::Loaded(image.source.id),
                 image.source.format,
-                image.source.bytes.as_slice(),
+                image.bytes(),
                 image.source.size,
                 image.edges,
             ),

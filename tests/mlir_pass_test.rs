@@ -1862,3 +1862,85 @@ fn table_history_reads_observe_replay_in_the_same_callback() {
         ]
     );
 }
+
+#[test]
+fn parsed_operator_signatures_match_xr_expression_types() {
+    let module = |operator: &str, lhs: (&str, &str), rhs: Option<(&str, &str)>, result: &str| {
+        let (left_type, left_value) = lhs;
+        let (right, operation) = if let Some((right_type, right_value)) = rhs {
+            (
+                format!(
+                    r#"%right = "xr.literal"() {{value = "{right_value}"}} : () -> !xr.{right_type}"#
+                ),
+                format!(
+                    r#""xr.binary"(%left, %right) {{value = "{operator}"}} : (!xr.{left_type}, !xr.{right_type}) -> !xr.{result}"#
+                ),
+            )
+        } else {
+            (
+                String::new(),
+                format!(
+                    r#""xr.unary"(%left) {{value = "{operator}"}} : (!xr.{left_type}) -> !xr.{result}"#
+                ),
+            )
+        };
+        format!(
+            r#"module {{
+              "xr.component"() ({{
+                %left = "xr.literal"() {{value = "{left_value}"}} : () -> !xr.{left_type}
+                {right}
+                %value = {operation}
+                "xr.property"(%value) {{name = "result", visibility = "out"}} : (!xr.{result}) -> ()
+                "xr.element"() ({{ "xr.end"() : () -> () }}) {{id = "root", key = "root", kind = "Window"}} : () -> ()
+                "xr.end"() : () -> ()
+              }}) {{sym_name = "Probe", exported = "true"}} : () -> ()
+            }}"#,
+        )
+    };
+    let int = ("int", "8");
+    let float = ("float", "2.5");
+    let length = ("length", "12");
+    let percent = ("percent", "15");
+    let boolean = ("bool", "true");
+    let string = ("string", r#"\22hello\22"#);
+    for (operator, left, right, result) in [
+        ("+", int, None, "int"),
+        ("-", length, None, "length"),
+        ("!", boolean, None, "bool"),
+        ("==", percent, Some(percent), "bool"),
+        ("<", length, Some(length), "bool"),
+        ("/", length, Some(length), "float"),
+        ("/", length, Some(float), "length"),
+        ("*", float, Some(length), "length"),
+        ("%", int, Some(int), "int"),
+        ("&&", boolean, Some(boolean), "bool"),
+        ("+", string, Some(string), "string"),
+    ] {
+        let parsed = Module::parse(&module(operator, left, right, result)).unwrap();
+        codegen::generate(&parsed).unwrap();
+        codegen::generate(&parsed.optimize().unwrap()).unwrap();
+    }
+    for (operator, left, right, result) in [
+        ("!", int, None, "int"),
+        ("-", percent, None, "percent"),
+        ("?", boolean, None, "bool"),
+        ("+", percent, Some(percent), "percent"),
+        ("<", percent, Some(percent), "bool"),
+        ("==", int, Some(float), "bool"),
+        ("/", length, Some(length), "length"),
+        ("+", float, Some(length), "length"),
+        ("/", float, Some(length), "length"),
+        ("%", float, Some(float), "float"),
+        ("+", int, Some(int), "bool"),
+        ("-", string, Some(string), "string"),
+        ("||", boolean, Some(boolean), "int"),
+        ("??", int, Some(int), "int"),
+    ] {
+        let source = module(operator, left, right, result);
+        let error = Module::parse(&source).expect_err(&source);
+        assert!(
+            error.contains("invalid operand or result type for operator"),
+            "{error}"
+        );
+    }
+}

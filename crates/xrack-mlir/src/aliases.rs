@@ -23,6 +23,20 @@ impl<'a> AliasGraph<'a> {
         self.instances.get(owner).copied()
     }
 
+    /// Expand a resolved endpoint through its child components to its storage slot.
+    pub(crate) fn storage_path(
+        &self,
+        graphs: &BTreeMap<&'a str, AliasGraph<'a>>,
+        target: PropertyEndpoint<'a>,
+    ) -> Result<Vec<PropertyEndpoint<'a>>, String> {
+        let Some(child) = self.instance(target.0) else {
+            return Ok(vec![target]);
+        };
+        let mut path = vec![(target.0, "")];
+        path.extend(canonical_input(graphs, child, target.1)?);
+        Ok(path)
+    }
+
     pub fn index(&mut self, op: OperationRef<'a>, callbacks: bool) -> Result<(), String> {
         let key = match op.name() {
             "xr.component" => "root",

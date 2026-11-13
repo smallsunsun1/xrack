@@ -1,8 +1,8 @@
 use crate::{Element, Error, Instance, Result, Visual};
 use std::rc::Rc;
 use xrack_runtime::{
-    FileDialogOptions, FileDialogSelection, MessageDialogOptions, NativeDialogOptions,
-    NativeDialogRegistration, NativeDialogResult, NativeDialogSlot, Value, VecModel,
+    FileDialogOptions, FileDialogSelection, MessageDialogOptions, NativeDialogEvent,
+    NativeDialogOptions, NativeDialogRegistration, NativeDialogResult, NativeDialogSlot, Value,
 };
 
 #[derive(Default)]
@@ -49,13 +49,10 @@ impl Instance {
 
     pub(crate) fn open_native_dialog(&self, key: &str) -> Result<()> {
         let (owner, element) = self.element_owner(key)?;
-        if owner.binding_value(element, "enabled")? == Some(Value::Bool(false)) {
-            return Ok(());
-        }
-        owner
-            .native_dialog(key)?
-            .slot
-            .try_open(|| owner.native_dialog_options(element))
+        owner.native_dialog(key)?.slot.try_open_if(
+            || Ok(owner.binding_value(element, "enabled")? != Some(Value::Bool(false))),
+            || owner.native_dialog_options(element),
+        )
     }
 
     fn native_dialog_options(&self, element: &Element) -> Result<NativeDialogOptions> {
@@ -74,33 +71,31 @@ impl Instance {
             };
         }
 
-        let title = option!("title", String);
         if matches!(element.visual, Visual::Builtin("FileDialog")) {
-            let name_filters = match self.binding_value(element, "name-filters")? {
-                Some(Value::StringModel(model)) => model.snapshot(),
-                Some(Value::StringList(filters)) => filters,
-                None => Vec::new(),
-                _ => {
-                    return Err(Error::Evaluation(
+            FileDialogOptions::try_read_bindings(
+                || Ok(option!("mode", FileDialogMode)),
+                || Ok(option!("title", String)),
+                || Ok(option!("directory", String)),
+                || Ok(option!("file-name", String)),
+                || match self.binding_value(element, "name-filters")? {
+                    Some(Value::StringModel(model)) => Ok(model.snapshot()),
+                    Some(Value::StringList(filters)) => Ok(filters),
+                    None => Ok(Vec::new()),
+                    _ => Err(Error::Evaluation(
                         "invalid native dialog name filters".into(),
-                    ));
-                }
-            };
-            Ok(NativeDialogOptions::File(FileDialogOptions {
-                mode: option!("mode", FileDialogMode),
-                title,
-                directory: option!("directory", String),
-                file_name: option!("file-name", String),
-                name_filters,
-            }))
+                    )),
+                },
+            )
+            .map(NativeDialogOptions::File)
         } else {
-            Ok(NativeDialogOptions::Message(MessageDialogOptions {
-                level: option!("level", MessageLevel),
-                buttons: option!("buttons", MessageButtons),
-                title,
-                text: option!("text", String),
-                informative_text: option!("informative-text", String),
-            }))
+            MessageDialogOptions::try_read_bindings(
+                || Ok(option!("level", MessageLevel)),
+                || Ok(option!("buttons", MessageButtons)),
+                || Ok(option!("title", String)),
+                || Ok(option!("text", String)),
+                || Ok(option!("informative-text", String)),
+            )
+            .map(NativeDialogOptions::Message)
         }
     }
 
@@ -129,37 +124,25 @@ impl Instance {
         result: NativeDialogResult,
     ) -> Result<bool> {
         let state = self.native_dialog(&element.key)?;
-        if !state.slot.finish(id) {
-            return Ok(false);
-        }
         let is_file = matches!(element.visual, Visual::Builtin("FileDialog"));
-        match result {
-            NativeDialogResult::Files(paths) if is_file => {
-                state.selection.commit(&paths);
-                self.handler(
-                    element,
-                    "accepted",
-                    &[Value::StringModel(VecModel::from(paths))],
-                )?;
-            }
-            NativeDialogResult::Canceled if is_file => {
-                self.handler(element, "canceled", &[])?;
-            }
-            NativeDialogResult::Button(button) if !is_file => {
-                let event = if button.accepts_message() {
-                    "accepted"
-                } else {
-                    "rejected"
+        state
+            .slot
+            .try_complete(id, result, is_file.then_some(&state.selection), |event| {
+                match event {
+                    NativeDialogEvent::FilesSelected(paths) => {
+                        self.handler(element, "accepted", &[Value::StringModel(paths)])?
+                    }
+                    NativeDialogEvent::FileCanceled => self.handler(element, "canceled", &[])?,
+                    NativeDialogEvent::MessageAccepted => self.handler(element, "accepted", &[])?,
+                    NativeDialogEvent::MessageRejected => self.handler(element, "rejected", &[])?,
+                    NativeDialogEvent::MessageFinished(button) => {
+                        self.handler(element, "finished", &[Value::StandardButtonKind(button)])?
+                    }
+                    NativeDialogEvent::Failed(message) => {
+                        self.handler(element, "failed", &[Value::String(message)])?
+                    }
                 };
-                self.handler(element, event, &[])?;
-                self.handler(element, "finished", &[Value::StandardButtonKind(button)])?;
-            }
-            NativeDialogResult::Failed(message) => {
-                self.handler(element, "failed", &[Value::String(message)])?;
-            }
-            NativeDialogResult::Abandoned => {}
-            _ => return Ok(false),
-        }
-        Ok(true)
+                Ok(())
+            })
     }
 }

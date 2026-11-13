@@ -244,6 +244,27 @@ impl<T: Clone + PartialEq> TableEditHistory<T> {
         changed
     }
 
+    /// Apply the edit and discard stale history when recording is disabled.
+    #[doc(hidden)]
+    pub fn commit_cell_if_enabled(
+        &self,
+        model: &VecModel<T>,
+        index: usize,
+        key: RowKey,
+        enabled: bool,
+        update: impl FnOnce(&T) -> Option<T>,
+        capture: impl Fn(&T, &T, &mut TableRowPatch<T>),
+    ) -> bool {
+        if enabled {
+            return self.commit_cell(model, index, key, update, capture);
+        }
+        let changed = model.update_row_if_key(index, key, update);
+        if changed {
+            self.clear();
+        }
+        changed
+    }
+
     pub fn paste(
         &self,
         model: &VecModel<T>,
@@ -256,7 +277,7 @@ impl<T: Clone + PartialEq> TableEditHistory<T> {
             input,
             Some,
             || Ok(true),
-            |row, column, before, after, text| {
+            |row, column, before, after, text, _| {
                 Ok::<_, std::convert::Infallible>(assign(row, column, before, after, text))
             },
             capture,
@@ -301,7 +322,55 @@ impl<T: Clone + PartialEq> TableEditHistory<T> {
         model: &TableRows<VecModel<T>>,
         input: TablePasteInput<'_>,
         still_current: impl FnMut() -> Result<bool, E>,
-        assign: impl FnMut(usize, usize, &T, &mut T, &str) -> Result<Option<()>, E>,
+        mut assign: impl FnMut(usize, usize, &T, &mut T, &str) -> Result<Option<()>, E>,
+        capture: impl Fn(&T, &T, &mut TableRowPatch<T>),
+    ) -> Result<Option<bool>, E> {
+        self.try_paste_in_order_guarded(
+            model,
+            input,
+            still_current,
+            |row, column, before, after, text, _| assign(row, column, before, after, text),
+            capture,
+        )
+    }
+
+    #[doc(hidden)]
+    pub fn paste_in_order_guarded(
+        &self,
+        model: &TableRows<VecModel<T>>,
+        input: TablePasteInput<'_>,
+        mut still_current: impl FnMut() -> bool,
+        mut assign: impl FnMut(usize, usize, &T, &mut T, &str, &mut dyn FnMut() -> bool) -> Option<()>,
+        capture: impl Fn(&T, &T, &mut TableRowPatch<T>),
+    ) -> Option<bool> {
+        self.try_paste_in_order_guarded(
+            model,
+            input,
+            || Ok::<_, std::convert::Infallible>(still_current()),
+            |row, column, before, after, text, current| {
+                Ok(assign(row, column, before, after, text, &mut || {
+                    current().unwrap_or_else(|error| match error {})
+                }))
+            },
+            capture,
+        )
+        .unwrap_or_else(|error| match error {})
+    }
+
+    #[doc(hidden)]
+    pub fn try_paste_in_order_guarded<E>(
+        &self,
+        model: &TableRows<VecModel<T>>,
+        input: TablePasteInput<'_>,
+        still_current: impl FnMut() -> Result<bool, E>,
+        assign: impl FnMut(
+            usize,
+            usize,
+            &T,
+            &mut T,
+            &str,
+            &mut dyn FnMut() -> Result<bool, E>,
+        ) -> Result<Option<()>, E>,
         capture: impl Fn(&T, &T, &mut TableRowPatch<T>),
     ) -> Result<Option<bool>, E> {
         self.try_paste_mapped(
@@ -320,7 +389,14 @@ impl<T: Clone + PartialEq> TableEditHistory<T> {
         input: TablePasteInput<'_>,
         source_index: impl Fn(usize) -> Option<usize>,
         still_current: impl FnMut() -> Result<bool, E>,
-        assign: impl FnMut(usize, usize, &T, &mut T, &str) -> Result<Option<()>, E>,
+        assign: impl FnMut(
+            usize,
+            usize,
+            &T,
+            &mut T,
+            &str,
+            &mut dyn FnMut() -> Result<bool, E>,
+        ) -> Result<Option<()>, E>,
         capture: impl Fn(&T, &T, &mut TableRowPatch<T>),
     ) -> Result<Option<bool>, E> {
         let mut batch = Some(Batch::new());

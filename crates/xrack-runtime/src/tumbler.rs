@@ -11,6 +11,13 @@ impl TumblerItems {
     }
 }
 
+impl Node {
+    #[doc(hidden)]
+    pub fn set_tumbler_items(&mut self, items: TumblerItems) {
+        self.tumbler_items = Some(items);
+    }
+}
+
 impl fmt::Debug for TumblerItems {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("TumblerItems").finish_non_exhaustive()
@@ -29,7 +36,7 @@ impl<'a> Tumbler<'a> {
     pub fn from_node(node: &'a Node) -> Self {
         let items = node.tumbler_items.as_ref();
         let count = items.map_or_else(
-            || node.int("count").unwrap_or(0).clamp(0, MAX_ROWS as i64) as usize,
+            || node.int("count").unwrap_or(0).row_count(),
             |items| items.0.len().min(MAX_ROWS),
         );
         let visible = node.int("visible-item-count").unwrap_or(5).clamp(1, 15) as usize | 1;
@@ -114,5 +121,53 @@ impl<'a> Tumbler<'a> {
             index,
             row: self.row_key(index)?,
         })
+    }
+
+    /// Resolve a row from an input scene against the control's current bindings.
+    #[doc(hidden)]
+    pub fn try_prepare_selection<E>(
+        node: &'a Node,
+        action: ControlAction,
+        available: impl FnOnce() -> Result<bool, E>,
+        items: impl FnOnce() -> Result<Option<TumblerItems>, E>,
+        count: impl FnOnce() -> Result<i64, E>,
+        current: impl FnOnce() -> Result<i64, E>,
+    ) -> Result<Option<i64>, E> {
+        let ControlAction::PickTumbler { index, row } = action else {
+            return Ok(None);
+        };
+        crate::try_prepare_index_selection(
+            index,
+            available,
+            |_| {
+                if items()? != node.tumbler_items {
+                    return Ok(false);
+                }
+                let wheel = Self::from_node(node);
+                Ok(wheel.row_key(index) == Some(row)
+                    && (wheel.items.is_some() || index < count()?.row_count()))
+            },
+            current,
+        )
+    }
+
+    #[doc(hidden)]
+    pub fn prepare_selection(
+        node: &'a Node,
+        action: ControlAction,
+        available: impl FnOnce() -> bool,
+        items: impl FnOnce() -> Option<TumblerItems>,
+        count: impl FnOnce() -> i64,
+        current: impl FnOnce() -> i64,
+    ) -> Option<i64> {
+        Self::try_prepare_selection(
+            node,
+            action,
+            || Ok::<_, std::convert::Infallible>(available()),
+            || Ok(items()),
+            || Ok(count()),
+            || Ok(current()),
+        )
+        .unwrap_or_else(|error| match error {})
     }
 }

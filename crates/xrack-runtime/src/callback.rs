@@ -40,3 +40,28 @@ impl<T: Clone> CallbackSlot<T> {
         self.callback.borrow().clone()
     }
 }
+
+/// A host handler that may mutate its captured state during a call.
+pub struct EffectfulCallback<T>(RefCell<T>);
+
+#[derive(Debug, thiserror::Error)]
+#[error("effectful host callback is already running")]
+pub struct CallbackAlreadyRunning;
+
+impl<T> EffectfulCallback<T> {
+    pub fn new(callback: T) -> Self {
+        Self(RefCell::new(callback))
+    }
+
+    /// Guard this handler, leaving its slot free to install a replacement.
+    pub fn try_call<R>(
+        &self,
+        invoke: impl FnOnce(&mut T) -> R,
+    ) -> Result<R, CallbackAlreadyRunning> {
+        let mut callback = self
+            .0
+            .try_borrow_mut()
+            .map_err(|_| CallbackAlreadyRunning)?;
+        Ok(invoke(&mut callback))
+    }
+}

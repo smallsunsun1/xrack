@@ -5,6 +5,7 @@
 pub const CODEGEN_ABI_VERSION: u32 = 1;
 
 mod animation;
+mod arithmetic;
 mod button_group;
 mod calendar;
 mod callback;
@@ -53,16 +54,21 @@ mod viewport;
 mod window_status;
 pub use animation::{Animation, Easing, SceneTransition, StateTiming};
 #[doc(hidden)]
+pub use arithmetic::{int_divide, int_remainder, try_int_divide, try_int_remainder};
+#[doc(hidden)]
 pub use button_group::{
     ButtonGroup, ButtonGroupMembership, ButtonGroupSelection, RadioMembership, bind_button_group,
-    bind_check_group, bind_dynamic_button_group, radio_value, summarize_checks,
-    try_summarize_checks,
+    bind_check_group, bind_dynamic_button_group, prepare_radio_selection, radio_value,
+    summarize_checks, try_prepare_radio_selection, try_summarize_checks,
 };
 pub use calendar::{CalendarAction, CalendarState, Date, is_calendar_control};
 #[doc(hidden)]
-pub use calendar::{CalendarCell, CalendarCells, DateBounds, DatePopupState};
+pub use calendar::{
+    CalendarCell, CalendarCells, CalendarUpdate, DateBounds, DatePopupState, apply_calendar_action,
+    calendar_input_is_current, try_apply_calendar_action, try_calendar_input_is_current,
+};
 #[doc(hidden)]
-pub use callback::CallbackSlot;
+pub use callback::{CallbackAlreadyRunning, CallbackSlot, EffectfulCallback};
 #[doc(hidden)]
 pub use child_window::{SecondaryWindowRegistration, SecondaryWindowSlot};
 #[doc(hidden)]
@@ -73,7 +79,12 @@ pub use combo::{
     combo_text,
 };
 #[doc(hidden)]
-pub use combo::{ComboItems, ComboModel, combo_model_is_current, combo_value};
+pub use combo::{
+    ComboInput, ComboItems, ComboModel, ComboSelection, ComboSubmission, combo_model_is_current,
+    combo_submission, combo_value, prepare_combo_input, try_prepare_combo_input,
+};
+#[doc(hidden)]
+pub use controls::try_resolve_swipe_index;
 pub use controls::{
     ActionKey, ControlAction, DialogCommand, DialogRole, PopupPlacement, SpinAction, SpinRange,
     StandardButtonKind, SwipeSide, TableColumnOrder, TableHeader, TableSort, button_text,
@@ -81,6 +92,20 @@ pub use controls::{
     is_modal_overlay, is_pane, is_spin_box, is_window_overlay, page_indicator_count,
     page_indicator_index, resizable_table_column, resolve_swipe_index, search_suggestion,
     search_suggestions, spin_editable, spin_text, spin_value_after, text_input_value,
+};
+#[doc(hidden)]
+pub use controls::{
+    SPIN_VIEW_PROPERTIES, prepare_spin_view, spin_view_is_current, try_prepare_spin_view,
+    try_spin_view_is_current,
+};
+#[doc(hidden)]
+pub use controls::{
+    delay_button_transition_is_current, group_selection_item, prepare_action_activation,
+    prepare_action_view, prepare_group_box_toggle, prepare_group_selection,
+    prepare_index_selection, prepare_row_toggle, prepare_source_selection, table_drag_available,
+    try_delay_button_transition_is_current, try_prepare_action_activation, try_prepare_action_view,
+    try_prepare_group_box_toggle, try_prepare_group_selection, try_prepare_index_selection,
+    try_prepare_row_toggle, try_prepare_source_selection, try_table_drag_available,
 };
 #[doc(hidden)]
 pub use delegate::{ComponentRepeater, RowContext};
@@ -109,7 +134,7 @@ pub use list::{
     ListModel, ListRowLocator, ListRowRenderer, RowLifetime, TableCellEditor, TableColumnWindow,
     project_standard_table_rows, standard_list_rows, standard_list_rows_in_view,
     standard_table_rows, standard_table_rows_in_order, standard_table_rows_with_editors_in_order,
-    standard_table_rows_with_header,
+    standard_table_rows_with_header, try_project_standard_table_rows,
 };
 pub use localization::LocaleContext;
 #[doc(hidden)]
@@ -121,20 +146,26 @@ pub use native_dialog::{
 };
 #[doc(hidden)]
 pub use native_dialog::{
-    NativeDialogOptions, NativeDialogPresentation, NativeDialogQueue, NativeDialogRegistration,
-    NativeDialogResult, NativeDialogSlot,
+    NativeDialogEvent, NativeDialogOptions, NativeDialogPresentation, NativeDialogQueue,
+    NativeDialogRegistration, NativeDialogResult, NativeDialogSlot,
 };
 pub use pointer::{
     PointerButton, PointerButtons, PointerEvent, PointerEventKind, PointerHandle, TouchPoint,
     TouchPoints,
 };
+#[doc(hidden)]
+pub use property::ComponentLifetime;
 pub use property::{ChangeSignal, InputProperty, Property};
 pub use range::{
     DialInputMode, IndicatorState, RangeAction, ScrollBarRange, ScrollSnapMode, SliderInterval,
     SliderRange, indicator_state, progress_value,
 };
 #[doc(hidden)]
-pub use repeat::{Repeater, static_repeat_scene};
+pub use range::{
+    RANGE_VIEW_PROPERTIES, prepare_range_view, range_view_properties, try_prepare_range_view,
+};
+#[doc(hidden)]
+pub use repeat::{Repeater, repeat_scene, static_repeat_scene};
 #[doc(hidden)]
 pub use row_heights::{RowHeightOverrides, RowHeightProjection, RowHeights};
 pub use scale_rotate::{ScaleRotateHandle, ScaleRotateSample};
@@ -157,20 +188,32 @@ pub use swipe_gesture::{SwipeHandle, SwipeSample};
 #[doc(hidden)]
 pub use table_clipboard::{
     TablePaste, TablePasteInput, paste_table_text, table_paste_bool, table_paste_check_state,
+    table_paste_number, try_table_paste_number,
 };
 #[doc(hidden)]
 pub use table_history::{TableEditHistory, TablePasteHistory, TableRowPatch};
 pub use table_rows::{
-    TableEditPosition, TableRowOrder, TableRowPositions, TableRows, next_table_edit_cell,
-    try_next_table_edit_cell,
+    TableCellEditTarget, TableEditPosition, TableRowOrder, TableRowPositions, TableRows,
+    next_table_edit_cell, next_table_edit_cell_in_view, next_table_edit_cell_in_view_if,
+    next_table_edit_cell_while_current, table_cell_edit_target, table_cell_edit_target_if,
+    try_history_replay_source, try_next_table_edit_cell, try_next_table_edit_cell_in_view,
+    try_next_table_edit_cell_while_current, try_prepare_history_replay, try_table_cell_edit_target,
 };
 pub use table_selection::{
     RowSelection, SelectionTarget, TableSelection, TableSelectionAction, TableSelectionSnapshot,
 };
+#[doc(hidden)]
+pub use table_selection::{TableSelectionChange, TableSelectionCommand, TableSelectionOptions};
 pub use table_selection::{
-    copy_table_text, copy_table_text_in_order, try_copy_table_text_in_order,
+    copy_table_text, copy_table_text_in_order, copy_table_text_in_view, copy_table_text_in_view_if,
+    copy_table_text_while_current, try_copy_table_text_in_order, try_copy_table_text_in_view,
+    try_copy_table_text_while_current,
 };
 pub use text_input::InputType;
+#[doc(hidden)]
+pub use text_input::{
+    SearchInput, SearchUpdate, text_submission_is_valid, try_text_submission_is_valid,
+};
 pub use time_picker::Time;
 #[doc(hidden)]
 pub use time_picker::{TimePickerOptions, TimePopupState};
@@ -178,9 +221,9 @@ pub use time_picker::{TimePickerOptions, TimePopupState};
 pub use timer::{
     TimerCommand, TimerConfig, TimerDelivery, TimerQueue, TimerRegistration, TimerSlot, TimerTick,
 };
-#[doc(hidden)]
-pub use tree::TreeExpansionChange;
 pub use tree::{TreeAction, TreeCommand, TreeItem, TreeSelectionAction, TreeSnapshot, TreeState};
+#[doc(hidden)]
+pub use tree::{TreeControlChange, TreeExpansionChange, TreeSelectionChange};
 pub use tumbler::{Tumbler, TumblerItems};
 pub use viewport::{
     ScrollAction, ScrollAlignment, ScrollContext, ScrollRequest, ScrollRequests, ViewportHandle,
@@ -258,7 +301,7 @@ pub trait Component {
         None
     }
 
-    /// Render the requested model rows of a virtual view in a base scene.
+    /// Render the requested model rows of a virtual view in the current base scene.
     fn list_rows(&self, _path: &[usize], _rows: std::ops::Range<usize>) -> Vec<Node> {
         Vec::new()
     }
@@ -281,6 +324,26 @@ pub trait Component {
     }
 
     #[doc(hidden)]
+    fn route_table_query(
+        &self,
+        scene: &Node,
+        path: &[usize],
+        input: InputRoute<'_>,
+    ) -> Option<TableQueryResult> {
+        let RoutedEvent::QueryTable(query) = *input.event() else {
+            return None;
+        };
+        match query {
+            TableQuery::Copy(columns) => self
+                .copy_table_at(scene, path, columns)
+                .map(TableQueryResult::Text),
+            TableQuery::NextEdit(query) => self
+                .next_table_edit_cell(scene, path, query.origin, query.columns, query.backward)
+                .map(TableQueryResult::Position),
+        }
+    }
+
+    #[doc(hidden)]
     fn prepare_table_paste(
         &self,
         _scene: &Node,
@@ -288,6 +351,11 @@ pub trait Component {
         _row: usize,
         _columns: Vec<usize>,
     ) -> Option<TablePaste> {
+        None
+    }
+
+    #[doc(hidden)]
+    fn table_paste_stamp(&self, _scene: &Node, _path: &[usize]) -> Option<(u64, u64)> {
         None
     }
 
@@ -364,6 +432,11 @@ pub trait Component {
         false
     }
 
+    #[doc(hidden)]
+    fn route_input(&mut self, scene: &Node, path: &[usize], input: InputRoute<'_>) -> bool {
+        input.event().apply(self, scene, path)
+    }
+
     fn resize_split_at(
         &mut self,
         _scene: &Node,
@@ -392,6 +465,10 @@ pub trait Component {
 }
 
 impl<T: Component + ?Sized> Component for Box<T> {
+    fn route_input(&mut self, scene: &Node, path: &[usize], input: InputRoute<'_>) -> bool {
+        (**self).route_input(scene, path, input)
+    }
+
     fn render(&self) -> Node {
         (**self).render()
     }
@@ -457,6 +534,15 @@ impl<T: Component + ?Sized> Component for Box<T> {
         (**self).copy_table_at(scene, path, columns)
     }
 
+    fn route_table_query(
+        &self,
+        scene: &Node,
+        path: &[usize],
+        input: InputRoute<'_>,
+    ) -> Option<TableQueryResult> {
+        (**self).route_table_query(scene, path, input)
+    }
+
     fn prepare_table_paste(
         &self,
         scene: &Node,
@@ -465,6 +551,10 @@ impl<T: Component + ?Sized> Component for Box<T> {
         columns: Vec<usize>,
     ) -> Option<TablePaste> {
         (**self).prepare_table_paste(scene, path, row, columns)
+    }
+
+    fn table_paste_stamp(&self, scene: &Node, path: &[usize]) -> Option<(u64, u64)> {
+        (**self).table_paste_stamp(scene, path)
     }
 
     fn replay_table_paste_at(&self, scene: &Node, path: &[usize], redo: bool) -> bool {
@@ -527,10 +617,65 @@ impl<T: Component + ?Sized> Component for Box<T> {
 }
 
 #[doc(hidden)]
+#[derive(Clone, Copy)]
+pub struct TableEditNavigation<'a> {
+    pub origin: TableEditPosition,
+    pub columns: &'a [usize],
+    pub backward: bool,
+}
+
+#[doc(hidden)]
+#[derive(Clone, Copy)]
+pub enum TableQuery<'a> {
+    Copy(&'a [usize]),
+    NextEdit(TableEditNavigation<'a>),
+}
+
+impl TableQuery<'_> {
+    pub fn run(
+        self,
+        ui: &(impl Component + ?Sized),
+        scene: &Node,
+        path: &[usize],
+    ) -> Option<TableQueryResult> {
+        RoutedEvent::QueryTable(self)
+            .with_input(scene, path, |input| {
+                ui.route_table_query(scene, path, input)
+            })
+            .flatten()
+    }
+}
+
+#[doc(hidden)]
+pub enum TableQueryResult {
+    Text(String),
+    Position(TableEditPosition),
+}
+
+impl TableQueryResult {
+    pub fn text(self) -> Option<String> {
+        match self {
+            Self::Text(text) => Some(text),
+            Self::Position(_) => None,
+        }
+    }
+
+    pub fn position(self) -> Option<TableEditPosition> {
+        match self {
+            Self::Position(position) => Some(position),
+            Self::Text(_) => None,
+        }
+    }
+}
+
+#[doc(hidden)]
 pub enum RoutedEvent<'a> {
     Dispatch(&'a str),
     Edit(&'a str),
     CommitCell { original: &'a str, text: &'a str },
+    PasteTable(TablePasteInput<'a>),
+    ReplayTable { redo: bool },
+    QueryTable(TableQuery<'a>),
     Range(RangeAction),
     Control(ControlAction),
     Drag(&'a DragEvent),
@@ -542,7 +687,184 @@ pub enum RoutedEvent<'a> {
     ResizeSplitSizes(&'a [(usize, f32)]),
 }
 
+/// Carries one availability check through all component instances on an input path.
+#[doc(hidden)]
+#[derive(Clone, Copy)]
+pub struct InputRoute<'a> {
+    event: &'a RoutedEvent<'a>,
+    reads: Option<&'a property::ReadWatch>,
+    root_visibility_overridden: bool,
+}
+
+impl<'a> InputRoute<'a> {
+    pub fn event(self) -> &'a RoutedEvent<'a> {
+        self.event
+    }
+
+    pub fn checks_availability(self) -> bool {
+        self.reads.is_some()
+    }
+
+    pub fn root_visibility_overridden(self) -> bool {
+        self.root_visibility_overridden
+    }
+
+    pub fn with_root_visibility_override(mut self, overridden: bool) -> Self {
+        self.root_visibility_overridden = overridden;
+        self
+    }
+
+    pub fn is_current(self) -> bool {
+        self.reads.is_none_or(|reads| !reads.changed())
+    }
+
+    pub fn can_open_drawer(self, node: &Node, is_target: bool) -> bool {
+        is_target
+            && node.kind == "Drawer"
+            && matches!(
+                self.event,
+                RoutedEvent::Control(ControlAction::Drawer(true))
+            )
+    }
+
+    pub fn try_available<E>(self, available: impl FnOnce() -> Result<bool, E>) -> Result<bool, E> {
+        match self.reads {
+            Some(reads) => Ok(!reads.changed() && available()? && !reads.changed()),
+            None => Ok(true),
+        }
+    }
+
+    pub fn available(self, available: impl FnOnce() -> bool) -> bool {
+        self.try_available(|| Ok::<_, std::convert::Infallible>(available()))
+            .unwrap_or_else(|error| match error {})
+    }
+
+    /// Only run preparation after availability checks pass and discard its result if input changes.
+    pub fn try_prepare<T, E>(
+        self,
+        available: impl FnOnce() -> Result<bool, E>,
+        prepare: impl FnOnce() -> Result<Option<T>, E>,
+    ) -> Result<Option<T>, E> {
+        if !self.try_available(available)? {
+            return Ok(None);
+        }
+        Ok(prepare()?.filter(|_| self.is_current()))
+    }
+
+    pub fn prepare<T>(
+        self,
+        available: impl FnOnce() -> bool,
+        prepare: impl FnOnce() -> Option<T>,
+    ) -> Option<T> {
+        self.try_prepare(
+            || Ok::<_, std::convert::Infallible>(available()),
+            || Ok(prepare()),
+        )
+        .unwrap_or_else(|error| match error {})
+    }
+}
+
 impl RoutedEvent<'_> {
+    fn is_input_cleanup(&self) -> bool {
+        match self {
+            Self::Focus(event) => event.is_loss(),
+            Self::Pointer(event) => event.kind == PointerEventKind::Cancel,
+            Self::Drag(event) => event.is_terminal(),
+            _ => false,
+        }
+    }
+
+    /// Cleanup events can follow an existing delegate to a new position.
+    pub fn follows_row(&self, scene: &Node, path: &[usize]) -> bool {
+        match self {
+            Self::Dispatch(event) => scene
+                .at_path(path)
+                .is_some_and(|node| node.terminal_dispatch(event)),
+            _ => self.is_input_cleanup(),
+        }
+    }
+
+    /// Resolve input against the scene that produced it.
+    pub fn input_target<'a>(&self, scene: &'a Node, path: &[usize]) -> Option<&'a Node> {
+        let target = || {
+            if self.is_input_cleanup() {
+                scene.at_path(path)
+            } else {
+                scene.interactive_at_path(path)
+            }
+        };
+        match self {
+            Self::Dispatch(event) => scene.dispatch_target(path, event),
+            Self::Control(action) => scene.control_target(path, *action),
+            Self::Range(_) => scene.range_target(path),
+            Self::CommitCell { original, .. } => scene.table_cell_commit_target(path, original),
+            Self::PasteTable(_) => scene
+                .interactive_at_path(path)
+                .filter(|node| node.kind == "TableView" && node.boolean("pasteable", false)),
+            Self::ReplayTable { .. } => {
+                scene.table_edit_history_model(path)?;
+                scene.at_path(path)
+            }
+            Self::QueryTable(query) => scene.interactive_at_path(path).filter(|node| {
+                node.kind == "TableView"
+                    && node.boolean(
+                        match query {
+                            TableQuery::Copy(_) => "copyable",
+                            TableQuery::NextEdit(_) => "edit-on-tab",
+                        },
+                        false,
+                    )
+            }),
+            Self::ResizeSplit(_) | Self::ResizeSplitSizes(_) => scene
+                .interactive_at_path(path)
+                .filter(|node| node.kind == "SplitView"),
+            Self::Edit(text) => scene
+                .interactive_at_path(path)
+                .filter(|node| node.accepts_editor_update(text)),
+            Self::Focus(event) => scene.focus_event_target(path, *event),
+            Self::Key(phase, _) => scene.key_event_target(path, *phase),
+            Self::Wheel(_) => scene
+                .interactive_at_path(path)
+                .filter(|node| node.handles_wheel()),
+            Self::Pointer(_) => target().filter(|node| node.pointer_handle.is_some()),
+            Self::Drag(event) => target().filter(|node| node.kind == event.target_kind()),
+        }
+    }
+
+    pub fn with_input<T>(
+        &self,
+        scene: &Node,
+        path: &[usize],
+        route: impl FnOnce(InputRoute<'_>) -> T,
+    ) -> Option<T> {
+        self.input_target(scene, path)?;
+        let input = InputRoute {
+            event: self,
+            reads: None,
+            root_visibility_overridden: false,
+        };
+        if self.follows_row(scene, path) {
+            Some(route(input))
+        } else {
+            Some(property::watch_reads(|reads| {
+                route(InputRoute {
+                    reads: Some(reads),
+                    ..input
+                })
+            }))
+        }
+    }
+
+    pub fn deliver_input(
+        &self,
+        ui: &mut (impl Component + ?Sized),
+        scene: &Node,
+        path: &[usize],
+    ) -> bool {
+        self.with_input(scene, path, |input| ui.route_input(scene, path, input))
+            .unwrap_or(false)
+    }
+
     pub fn apply(&self, ui: &mut (impl Component + ?Sized), scene: &Node, path: &[usize]) -> bool {
         match self {
             Self::Dispatch(event) => ui.dispatch_at(scene, path, event),
@@ -550,6 +872,9 @@ impl RoutedEvent<'_> {
             Self::CommitCell { original, text } => {
                 ui.commit_table_cell(scene, path, original, (*text).into())
             }
+            Self::PasteTable(_) => false,
+            Self::ReplayTable { redo } => ui.replay_table_edit_at(scene, path, *redo),
+            Self::QueryTable(_) => false,
             Self::Range(action) => ui.adjust_range_at(scene, path, *action),
             Self::Control(action) => ui.control_at(scene, path, *action),
             Self::Drag(event) => ui.drag_event_at(scene, path, event),
@@ -573,6 +898,36 @@ pub struct Percent(pub f64);
 
 #[derive(Clone, Copy, Debug, Default, Hash, PartialEq, Eq)]
 pub struct Color(pub u32);
+
+impl Color {
+    /// Decode the RGB and RGBA spellings accepted by the XR dialect.
+    #[doc(hidden)]
+    pub fn parse_hex_literal(spelling: &str) -> Option<Self> {
+        let digits = spelling.strip_prefix('#')?;
+        if !matches!(digits.len(), 3 | 4 | 6 | 8)
+            || !digits.bytes().all(|digit| digit.is_ascii_hexdigit())
+        {
+            return None;
+        }
+        let value = u32::from_str_radix(digits, 16).ok()?;
+        let rgba = match digits.len() {
+            3 | 4 => {
+                let expanded = (0..digits.len()).rev().fold(0, |rgba, index| {
+                    let digit = (value >> (index * 4)) & 0xf;
+                    (rgba << 8) | (digit * 17)
+                });
+                if digits.len() == 3 {
+                    (expanded << 8) | 0xff
+                } else {
+                    expanded
+                }
+            }
+            6 => (value << 8) | 0xff,
+            _ => value,
+        };
+        Some(Self(rgba))
+    }
+}
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum ColorScheme {
@@ -1066,7 +1421,7 @@ value_from!(Vec<String>, StringList);
 
 impl From<VecModel<String>> for Value {
     fn from(model: VecModel<String>) -> Self {
-        Self::StringList(model.snapshot())
+        Self::StringList(model.into_snapshot())
     }
 }
 value_from!(Length, Length);
@@ -1405,6 +1760,15 @@ impl Node {
         self.boolean("undoable", false) || self.boolean("pasteable", false)
     }
 
+    #[doc(hidden)]
+    pub fn table_edit_history_model(&self, path: &[usize]) -> Option<u64> {
+        let table = self.interactive_at_path(path)?;
+        if !table.table_edit_history_enabled() {
+            return None;
+        }
+        table.standard_list_stamp.map(|(model, _)| model)
+    }
+
     pub fn calendar_cells(&self) -> Option<&[Node]> {
         self.children
             .last()
@@ -1418,17 +1782,22 @@ impl Node {
 
     #[doc(hidden)]
     pub fn enables_children(&self) -> bool {
-        is_drag_area(self.kind)
-            || matches!(
-                self.kind,
-                "WindowMoveArea"
-                    | "ScaleRotateGestureHandler"
-                    | "SwipeGestureHandler"
-                    | "WheelHandler"
-                    | "HoverHandler"
-                    | "TouchArea"
-            )
-            || self.boolean("enabled", true)
+        !self.input_requires_enabled(false) || self.boolean("enabled", true)
+    }
+
+    #[doc(hidden)]
+    pub fn input_requires_enabled(&self, is_target: bool) -> bool {
+        is_target
+            || !(is_drag_area(self.kind)
+                || matches!(
+                    self.kind,
+                    "WindowMoveArea"
+                        | "ScaleRotateGestureHandler"
+                        | "SwipeGestureHandler"
+                        | "WheelHandler"
+                        | "HoverHandler"
+                        | "TouchArea"
+                ))
     }
     pub fn check_state(&self) -> CheckState {
         match self.properties.get("check-state") {
@@ -1791,6 +2160,37 @@ impl Node {
         }
     }
 
+    /// Resolve a link only while the displayed document matches the live binding.
+    #[doc(hidden)]
+    pub fn try_prepare_text_link<E>(
+        &self,
+        index: usize,
+        input: InputRoute<'_>,
+        live: impl FnOnce() -> Result<StyledText, E>,
+    ) -> Result<Option<&str>, E> {
+        let Some(document) = self.styled_text("text") else {
+            return Ok(None);
+        };
+        let Some(link) = document.links().get(index) else {
+            return Ok(None);
+        };
+        input.try_prepare(
+            || Ok(true),
+            || Ok((live()? == *document).then_some(link.href.as_ref())),
+        )
+    }
+
+    #[doc(hidden)]
+    pub fn prepare_text_link(
+        &self,
+        index: usize,
+        input: InputRoute<'_>,
+        live: impl FnOnce() -> StyledText,
+    ) -> Option<&str> {
+        self.try_prepare_text_link(index, input, || Ok::<_, std::convert::Infallible>(live()))
+            .unwrap_or_else(|error| match error {})
+    }
+
     pub fn strings(&self, name: &str) -> &[String] {
         match self.properties.get(name) {
             Some(Value::StringList(values)) => values,
@@ -1942,7 +2342,11 @@ impl Node {
     }
 
     pub fn stack_page_index(&self) -> Option<usize> {
-        let page = self.stack.as_ref()?.current()?;
+        self.stack_route_index(self.stack.as_ref()?.current()?)
+    }
+
+    #[doc(hidden)]
+    pub fn stack_route_index(&self, page: &str) -> Option<usize> {
         self.children
             .iter()
             .position(|node| node.text("__stack-route").or_else(|| node.element_id()) == Some(page))
@@ -2028,41 +2432,133 @@ impl Node {
         Some(node)
     }
 
+    /// Check the state that controls which descendants may receive input.
+    #[doc(hidden)]
+    pub fn try_input_scope_available<E>(
+        &self,
+        child: Option<&Self>,
+        open: impl FnOnce() -> Result<bool, E>,
+        checkable: impl FnOnce() -> Result<bool, E>,
+        checked: impl FnOnce() -> Result<bool, E>,
+        swipe_side: impl FnOnce() -> Result<SwipeSide, E>,
+    ) -> Result<bool, E> {
+        if is_window_overlay(self.kind) && !open()? {
+            return Ok(false);
+        }
+        let Some(child) = child else {
+            return Ok(true);
+        };
+        if self.kind == "GroupBox" && checkable()? && !checked()? {
+            return Ok(false);
+        }
+        if self.kind == "SwipeDelegate" && matches!(child.kind, "SwipeLeft" | "SwipeRight") {
+            return Ok(swipe_side()?.panel() == Some(child.kind));
+        }
+        Ok(true)
+    }
+
+    #[doc(hidden)]
+    pub fn input_scope_available(
+        &self,
+        child: Option<&Self>,
+        open: impl FnOnce() -> bool,
+        checkable: impl FnOnce() -> bool,
+        checked: impl FnOnce() -> bool,
+        swipe_side: impl FnOnce() -> SwipeSide,
+    ) -> bool {
+        self.try_input_scope_available(
+            child,
+            || Ok::<_, std::convert::Infallible>(open()),
+            || Ok(checkable()),
+            || Ok(checked()),
+            || Ok(swipe_side()),
+        )
+        .unwrap_or_else(|error| match error {})
+    }
+
+    fn scene_input_scope_available(&self, child: Option<&Self>) -> bool {
+        self.input_scope_available(
+            child,
+            || self.boolean("open", false),
+            || self.group_checkable(),
+            || self.boolean("checked", true),
+            || self.swipe_side(),
+        )
+    }
+
     pub fn interactive_at_path(&self, path: &[usize]) -> Option<&Self> {
         let mut node = self;
-        for index in path {
-            if !node.is_visible() || !node.enables_children() || !node.group_content_enabled() {
+        for (depth, index) in path.iter().enumerate() {
+            if !node.boolean("visible", true) || !node.enables_children() {
                 return None;
             }
             let child = node.child_at(*index)?;
-            if node.kind == "SwipeDelegate"
-                && matches!(child.kind, "SwipeLeft" | "SwipeRight")
-                && node.swipe_side().panel() != Some(child.kind)
-            {
+            if !node.scene_input_scope_available(Some(child)) {
                 return None;
+            }
+            let has_page_content = depth + 1 < path.len() || node.kind != "TabWidget";
+            if has_page_content {
+                let active = match node.kind {
+                    "TabWidget" | "SwipeView" => group_index(node),
+                    "StackView" => node.stack_page_index(),
+                    _ => Some(*index),
+                };
+                if active != Some(*index) {
+                    return None;
+                }
             }
             node = child;
         }
-        (node.is_visible() && node.boolean("enabled", true)).then_some(node)
+        (node.boolean("visible", true)
+            && node.boolean("enabled", true)
+            && node.scene_input_scope_available(None))
+        .then_some(node)
+    }
+
+    /// Resolve the editable cell that displayed the draft's original text.
+    #[doc(hidden)]
+    pub fn table_cell_commit_target(&self, path: &[usize], original: &str) -> Option<&Self> {
+        self.interactive_at_path(path).filter(|node| {
+            editable_table_cell(node) && node.text("text").unwrap_or_default() == original
+        })
     }
 
     /// Resolve a scene target for an event without an explicit payload.
     #[doc(hidden)]
     pub fn dispatch_target(&self, path: &[usize], event: &str) -> Option<&Self> {
         let node = self.at_path(path)?;
-        let terminal = matches!(
-            (node.kind, event),
-            ("ScaleRotateGestureHandler", "ended" | "cancelled")
-                | ("SwipeGestureHandler", "swiped" | "cancelled")
-                | ("HoverHandler", "exited")
-        );
-        let target = if terminal {
+        let target = if node.terminal_dispatch(event) {
             node
         } else {
             self.interactive_at_path(path)?
         };
         (event != "accepted" || !is_text_input(target.kind) || target.accepts_text_submission())
             .then_some(target)
+    }
+
+    fn terminal_dispatch(&self, event: &str) -> bool {
+        matches!(
+            (self.kind, event),
+            ("ScaleRotateGestureHandler", "ended" | "cancelled")
+                | ("SwipeGestureHandler", "swiped" | "cancelled")
+                | ("HoverHandler", "exited")
+        )
+    }
+
+    #[doc(hidden)]
+    pub fn focus_event_target(&self, path: &[usize], event: FocusEvent) -> Option<&Self> {
+        let node = if event.is_loss() {
+            self.at_path(path)
+        } else {
+            self.interactive_at_path(path)
+        };
+        node.filter(|node| node.kind == "FocusScope")
+    }
+
+    #[doc(hidden)]
+    pub fn key_event_target(&self, path: &[usize], phase: KeyPhase) -> Option<&Self> {
+        self.interactive_at_path(path)
+            .filter(|node| node.kind == "FocusScope" && node.key_handlers & phase.mask() != 0)
     }
 
     pub fn group_checkable(&self) -> bool {

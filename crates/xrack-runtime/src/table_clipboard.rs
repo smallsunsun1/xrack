@@ -96,7 +96,7 @@ pub fn paste_table_text<T: Clone + PartialEq>(
         input,
         Some,
         || Ok(true),
-        |row, column, before, after, text| {
+        |row, column, before, after, text, _| {
             Ok::<_, std::convert::Infallible>(assign(row, column, before, after, text))
         },
         |_, _, _| {},
@@ -110,7 +110,14 @@ pub(crate) fn try_stage_table_text<T: Clone + PartialEq, E>(
     input: TablePasteInput<'_>,
     source_index: impl Fn(usize) -> Option<usize>,
     mut still_current: impl FnMut() -> Result<bool, E>,
-    mut assign: impl FnMut(usize, usize, &T, &mut T, &str) -> Result<Option<()>, E>,
+    mut assign: impl FnMut(
+        usize,
+        usize,
+        &T,
+        &mut T,
+        &str,
+        &mut dyn FnMut() -> Result<bool, E>,
+    ) -> Result<Option<()>, E>,
     mut capture: impl FnMut(usize, &T, &T),
 ) -> Result<Option<Vec<(usize, T)>>, E> {
     crate::property::watch_reads(|reads| {
@@ -147,7 +154,15 @@ pub(crate) fn try_stage_table_text<T: Clone + PartialEq, E>(
             };
             let mut next = current.clone();
             for (&column, value) in columns.iter().zip(row) {
-                if assign(index, column, &current, &mut next, value)?.is_none()
+                if assign(
+                    index,
+                    column,
+                    &current,
+                    &mut next,
+                    value,
+                    &mut current_target,
+                )?
+                .is_none()
                     || !current_target()?
                 {
                     return Ok(None);
@@ -161,6 +176,50 @@ pub(crate) fn try_stage_table_text<T: Clone + PartialEq, E>(
         }
         Ok(Some(staged))
     })
+}
+
+/// Validate parsed numeric text before reading live bounds, stopping if the
+/// paste target changes during either read.
+#[doc(hidden)]
+pub fn try_table_paste_number<T: PartialOrd, E>(
+    parsed: Option<T>,
+    mut current: impl FnMut() -> Result<bool, E>,
+    minimum: impl FnOnce() -> Result<T, E>,
+    maximum: impl FnOnce() -> Result<T, E>,
+    upper_bound: impl FnOnce(T, T) -> T,
+) -> Result<Option<T>, E> {
+    let Some(value) = parsed else { return Ok(None) };
+    if !current()? {
+        return Ok(None);
+    }
+    let minimum = minimum()?;
+    if !current()? {
+        return Ok(None);
+    }
+    let maximum = maximum()?;
+    if !current()? {
+        return Ok(None);
+    }
+    let above_minimum = minimum <= value;
+    Ok((above_minimum && value <= upper_bound(maximum, minimum)).then_some(value))
+}
+
+#[doc(hidden)]
+pub fn table_paste_number<T: PartialOrd>(
+    parsed: Option<T>,
+    mut current: impl FnMut() -> bool,
+    minimum: impl FnOnce() -> T,
+    maximum: impl FnOnce() -> T,
+    upper_bound: impl FnOnce(T, T) -> T,
+) -> Option<T> {
+    try_table_paste_number(
+        parsed,
+        || Ok::<_, std::convert::Infallible>(current()),
+        || Ok(minimum()),
+        || Ok(maximum()),
+        upper_bound,
+    )
+    .unwrap_or_else(|error| match error {})
 }
 
 #[doc(hidden)]

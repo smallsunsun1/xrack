@@ -1,6 +1,6 @@
 use crate::{Element, Error, Instance, Member, Result, Visual};
 use std::{collections::BTreeMap, rc::Rc};
-use xrack_runtime::{ButtonGroupSelection, CheckState, Node, Value};
+use xrack_runtime::{ButtonGroupSelection, CheckState, ListModel, Node, Value};
 
 pub(crate) struct Membership {
     pub(crate) key: String,
@@ -57,7 +57,27 @@ impl Instance {
     }
 
     fn group_enabled(&self, group: &Element) -> Result<bool> {
-        Ok(self.binding_value(group, "enabled")? != Some(Value::Bool(false)))
+        self.visual_flag(group, "enabled", true)
+    }
+
+    pub(crate) fn check_group_member_enabled(&self, member: &Element) -> Result<bool> {
+        let Some(membership) = member
+            .button_group
+            .as_ref()
+            .filter(|group| group.check_property.is_some())
+        else {
+            return Ok(true);
+        };
+        let (owner, group) = self.element_owner(&membership.key)?;
+        owner.group_enabled(group)
+    }
+
+    fn group_selection(&self, group: &Element) -> Result<ButtonGroupSelection> {
+        match self.group_control(group, group.selection_property())? {
+            Value::Int(index) => Ok(ButtonGroupSelection::Index(index)),
+            Value::String(value) => Ok(ButtonGroupSelection::Value(value)),
+            _ => Err(Error::Evaluation("invalid button group selection".into())),
+        }
     }
 
     pub(crate) fn bind_button_groups(&self, scene: &mut Node) -> Result<()> {
@@ -74,15 +94,7 @@ impl Instance {
             let selection = if group.non_exclusive {
                 None
             } else {
-                Some(
-                    match self.group_control(group, group.selection_property())? {
-                        Value::Int(index) => ButtonGroupSelection::Index(index),
-                        Value::String(value) => ButtonGroupSelection::Value(value),
-                        _ => {
-                            return Err(Error::Evaluation("invalid button group selection".into()));
-                        }
-                    },
-                )
+                Some(self.group_selection(group)?)
             };
             xrack_runtime::bind_dynamic_button_group(
                 scene,
@@ -133,7 +145,7 @@ impl Instance {
             .entry(key.to_owned())
             .or_default()
             .clone();
-        property.get(|| {
+        property.try_get(|| {
             xrack_runtime::try_summarize_checks(owner.check_members(key).map(
                 |(element, property)| match owner.group_control(element, property)? {
                     Value::CheckState(state) => Ok(state),
@@ -162,34 +174,57 @@ impl Instance {
         Ok(())
     }
 
-    pub(crate) fn activate_radio_option(&self, element: &Element, node: &Node) -> Result<bool> {
-        let Some(group) = &element.button_group else {
+    pub(crate) fn activate_radio_option(
+        &self,
+        element: &Element,
+        node: &Node,
+        input: xrack_runtime::InputRoute<'_>,
+    ) -> Result<bool> {
+        let Some(membership) = &element.button_group else {
             return Ok(false);
         };
-        let Some(member) = node
-            .button_group
-            .as_ref()
-            .filter(|member| member.group.key == group.key)
+        let (owner, group) = self.element_owner(&membership.key)?;
+        let Some((index, label)) = xrack_runtime::try_prepare_radio_selection(
+            node,
+            &membership.key,
+            input,
+            || owner.group_enabled(group),
+            || self.live_radio_value(element),
+            || owner.group_selection(group),
+        )?
         else {
             return Ok(false);
         };
-        let (owner, group) = self.element_owner(&group.key)?;
-        if !owner.group_enabled(group)? {
-            return Ok(false);
-        }
         let property = group.selection_property();
-        let label = xrack_runtime::radio_value(node).to_owned();
         let next = if property == "current-value" {
             Value::String(label.clone())
         } else {
-            Value::Int(member.index as i64)
+            Value::Int(index as i64)
         };
-        if owner.group_control(group, property)? == next {
+        if !owner.set_control_value(group, property, next)? {
             return Ok(false);
         }
-        owner.set_control_value(group, property, next)?;
         owner.handler(group, "selected", &[Value::String(label)])?;
         Ok(true)
+    }
+
+    pub(crate) fn group_option_model(
+        &self,
+        element: &Element,
+    ) -> Result<Option<crate::repeat::Model>> {
+        let Some(template) = element.children.first() else {
+            return Ok(None);
+        };
+        let Some(repeat) = template
+            .repeat
+            .as_ref()
+            .filter(|repeat| !repeat.empty && repeat.static_count.is_none())
+        else {
+            return Ok(None);
+        };
+        self.repeat_state(template)
+            .row_model(self, repeat)
+            .map(Some)
     }
 
     pub(crate) fn select_group(
@@ -197,15 +232,64 @@ impl Instance {
         element: &Element,
         node: &Node,
         index: usize,
+        input: xrack_runtime::InputRoute<'_>,
     ) -> Result<bool> {
-        let Some(item) = xrack_runtime::group_item(node, index) else {
+        let property = element.selection_property();
+        let model = std::cell::OnceCell::new();
+        let Some(label) = xrack_runtime::try_prepare_group_selection(
+            node,
+            index,
+            input,
+            || {
+                let source = self.group_option_model(element)?;
+                let current = source
+                    .as_ref()
+                    .is_none_or(|source| node.group_options_are_current(source));
+                let _ = model.set(source);
+                Ok::<_, Error>(current)
+            },
+            || self.group_selection(element),
+            |index, label| {
+                if let Some(source) = model.get().and_then(Option::as_ref) {
+                    let Some(key) = node.child_at(index).and_then(|item| item.row_key) else {
+                        return Ok(None);
+                    };
+                    if index >= source.row_count() || source.row_key(index) != key {
+                        return Ok(None);
+                    }
+                    let template = &element.children[0];
+                    let repeat = template.repeat.as_ref().expect("repeated group option");
+                    let Some(row) = self
+                        .repeat_state(template)
+                        .row(self, repeat, index, key, false)?
+                    else {
+                        return Ok(None);
+                    };
+                    return row.live_group_option(template, label);
+                }
+                if element
+                    .children
+                    .first()
+                    .is_some_and(|child| child.repeat.is_some())
+                {
+                    return Ok(xrack_runtime::group_item(node, index).map(|item| {
+                        if label {
+                            xrack_runtime::radio_value(item).into()
+                        } else {
+                            String::new()
+                        }
+                    }));
+                }
+                let Some(option) = element.children.get(index) else {
+                    return Ok(None);
+                };
+                self.live_group_option(option, label)
+            },
+        )?
+        else {
             return Ok(false);
         };
-        if xrack_runtime::group_index(node) == Some(index) {
-            return Ok(false);
-        }
-        let property = element.selection_property();
-        let label = Value::String(xrack_runtime::radio_value(item).into());
+        let label = Value::String(label);
         let index = Value::Int(index as i64);
         self.set_control_value(
             element,
@@ -224,20 +308,54 @@ impl Instance {
         Ok(true)
     }
 
-    pub(crate) fn select_page_indicator(&self, element: &Element, index: usize) -> Result<bool> {
-        let Ok(index) = i64::try_from(index) else {
+    fn live_group_option(&self, element: &Element, label: bool) -> Result<Option<String>> {
+        if !self.item_delegate_available(element)? {
+            return Ok(None);
+        }
+        if label {
+            return self.live_radio_value(element).map(Some);
+        }
+        Ok(Some(String::new()))
+    }
+
+    fn live_radio_value(&self, element: &Element) -> Result<String> {
+        for name in ["value", "text"] {
+            if let Some(Value::String(value)) = self.binding_value(element, name)? {
+                return Ok(value);
+            }
+        }
+        Ok(String::new())
+    }
+
+    pub(crate) fn select_page_indicator(
+        &self,
+        element: &Element,
+        index: usize,
+        input: xrack_runtime::InputRoute<'_>,
+    ) -> Result<bool> {
+        let selected = xrack_runtime::try_prepare_index_selection(
+            index,
+            || {
+                Ok(self.element_allows_editing(element)?
+                    && self.table_flag(element, "interactive", false)?)
+            },
+            |index| {
+                Ok(
+                    matches!(self.binding_value(element, "count")?, Some(Value::Int(count)) if index < count),
+                )
+            },
+            || self.current_index(element),
+        )?;
+        let Some(index) = selected else {
             return Ok(false);
         };
-        let count = self
-            .binding_value(element, "count")?
-            .unwrap_or(Value::Int(0));
-        let value = Value::Int(index);
-        if !matches!(count, Value::Int(count) if index < count)
-            || self.group_control(element, "current-index")? == value
-        {
+        if !input.is_current() {
             return Ok(false);
         }
-        self.set_control_value(element, "current-index", value.clone())?;
+        let value = Value::Int(index);
+        if !self.set_control_value(element, "current-index", value.clone())? {
+            return Ok(false);
+        }
         self.handler(element, "changed", &[value])?;
         Ok(true)
     }
