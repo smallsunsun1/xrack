@@ -69,7 +69,19 @@ def native_inputs(bazel, options, bin_dir, host, directory):
              for name in ("native-libraries.txt", "system-libraries.txt")]
     for source in libraries:
         compressed = directory / (source.name + ".xz")
-        with source.open("rb") as input_file, lzma.open(compressed, "wb", preset=6) as output:
+        # The combined COFF archive exceeds the registry limit with the
+        # default preset even though its compiler executable fits.
+        preset = 9 | lzma.PRESET_EXTREME if windows else 6
+        if windows and source.name == archive_name:
+            stripped = directory / archive_name
+            subprocess.run(
+                (bazel, "run", *options, "@llvm-project//llvm:llvm-strip", "--",
+                 "--strip-unneeded", "-o", stripped, source),
+                cwd=ROOT,
+                check=True,
+            )
+            source = stripped
+        with source.open("rb") as input_file, lzma.open(compressed, "wb", preset=preset) as output:
             shutil.copyfileobj(input_file, output)
         files.append((compressed, "mlir/" + compressed.name))
     files.append((bin_dir / "mlir/c_bindings_out_dir/c_bindings.rs", "mlir/c_bindings.rs"))
