@@ -1631,9 +1631,40 @@ pub enum LoweredMember<'a> {
     EndElement,
 }
 
+/// A source reference resolved by the same rules that lower the UI.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SymbolReference {
+    pub usage: Span,
+    pub spelling: String,
+    /// Index of the referenced identifier in a dotted name.
+    pub segment: usize,
+    pub declaration: Span,
+    pub name: String,
+}
+
+type SymbolReferences = std::rc::Rc<std::cell::RefCell<Vec<SymbolReference>>>;
+
+pub fn resolve_symbols(
+    doc: &ast::Document,
+) -> std::result::Result<Vec<SymbolReference>, Vec<Diagnostic>> {
+    let references = SymbolReferences::default();
+    analyze_components(doc, Some(references.clone()), |_, _| {})?;
+    Ok(std::rc::Rc::try_unwrap(references)
+        .expect("analysis scopes released")
+        .into_inner())
+}
+
 /// Hand off each component only after its names, types and bindings are valid.
 pub fn for_each_component(
     doc: &ast::Document,
+    emit: impl FnMut(&ast::Component, Vec<LoweredMember<'_>>),
+) -> std::result::Result<(), Vec<Diagnostic>> {
+    analyze_components(doc, None, emit)
+}
+
+fn analyze_components(
+    doc: &ast::Document,
+    references: Option<SymbolReferences>,
     mut emit: impl FnMut(&ast::Component, Vec<LoweredMember<'_>>),
 ) -> std::result::Result<(), Vec<Diagnostic>> {
     if !doc.imports.is_empty() {
@@ -1648,12 +1679,48 @@ pub fn for_each_component(
         .iter()
         .map(|c| (c.name.as_str(), c))
         .collect();
+    if let Some(references) = &references {
+        for record in &doc.records {
+            for field in &record.fields {
+                if let Type::Record(name) = &field.ty
+                    && let Some(target) = records.get(name.as_ref())
+                {
+                    references.borrow_mut().push(SymbolReference {
+                        usage: field.type_span,
+                        spelling: String::new(),
+                        segment: 0,
+                        declaration: target.span,
+                        name: target.name.clone(),
+                    });
+                }
+            }
+        }
+        for component in &doc.components {
+            if let Some(base) = definitions.get(component.base.as_str()) {
+                references.borrow_mut().push(SymbolReference {
+                    usage: component.base_span,
+                    spelling: String::new(),
+                    segment: 0,
+                    declaration: base.span,
+                    name: base.name.clone(),
+                });
+            }
+        }
+    }
     let mut inherited = BTreeMap::new();
     let mut active = BTreeSet::new();
     let components = doc
         .components
         .iter()
-        .map(|c| inherit(c, &definitions, &mut inherited, &mut active))
+        .map(|c| {
+            inherit(
+                c,
+                &definitions,
+                &mut inherited,
+                &mut active,
+                references.as_ref(),
+            )
+        })
         .collect::<Result<Vec<_>>>()
         .map_err(|error| vec![error])?;
     let mut names = BTreeSet::new();
@@ -1678,6 +1745,7 @@ pub fn for_each_component(
         let mut scope = Scope {
             records: records.clone(),
             component_name: &c.name,
+            references: references.clone(),
             ..Scope::default()
         };
         match scope.register(&definitions, &c.members, &c.base, "root", None, c.span) {
@@ -1803,6 +1871,7 @@ fn inherit<'a>(
     definitions: &BTreeMap<&str, &'a ast::Component>,
     expanded: &mut BTreeMap<&'a str, ast::Component>,
     active: &mut BTreeSet<&'a str>,
+    references: Option<&SymbolReferences>,
 ) -> Result<ast::Component> {
     if is_builtin(&component.base) {
         return Ok(component.clone());
@@ -1822,10 +1891,10 @@ fn inherit<'a>(
     let base = definitions
         .get(component.base.as_str())
         .ok_or_else(|| Diagnostic {
-            span: component.span,
+            span: component.base_span,
             message: format!("unknown base element or component `{}`", component.base),
         })?;
-    let base = inherit(base, definitions, expanded, active)?;
+    let base = inherit(base, definitions, expanded, active, references)?;
     let mut result = component.clone();
     result.base = base.base;
     result.members = base.members;
@@ -1852,6 +1921,15 @@ fn inherit<'a>(
                             binding.span,
                             format!("cannot override inherited property `{}`", binding.name),
                         );
+                    }
+                    if let Some(references) = references {
+                        references.borrow_mut().push(SymbolReference {
+                            usage: binding.span,
+                            spelling: binding.name.clone(),
+                            segment: 0,
+                            declaration: property.span,
+                            name: property.name.clone(),
+                        });
                     }
                     property.value = Some(binding.value.clone());
                     continue;
@@ -1902,6 +1980,7 @@ enum RowTemplate {
 struct Scope<'a> {
     owners: BTreeMap<String, Owner<'a>>,
     parameters: BTreeMap<String, Type>,
+    parameter_sites: BTreeMap<String, Span>,
     effects_allowed: bool,
     writable_row: Option<String>,
     row_template: Option<RowTemplate>,
@@ -1911,6 +1990,7 @@ struct Scope<'a> {
     component_name: &'a str,
     callback_catalog: Option<std::rc::Rc<CallbackCatalog>>,
     action_groups: std::rc::Rc<ActionGroups>,
+    references: Option<SymbolReferences>,
 }
 
 #[derive(Default)]
@@ -2119,6 +2199,11 @@ impl CallbackResolver<'_, '_> {
                 if receiver.instance && !receiver.callbacks.contains_key(target_name) {
                     return fail(declaration.span, format!("unknown callback `{reference}`"));
                 }
+                if let Some(endpoint) = receiver.callbacks.get(target_name)
+                    && let Some(span) = declaration.alias_span
+                {
+                    scope.member_reference(span, reference, target, endpoint.span, target_name);
+                }
                 let (target_component, target_owner) = if receiver.instance {
                     (receiver.kind.as_str(), "root")
                 } else {
@@ -2186,6 +2271,9 @@ impl CallbackResolver<'_, '_> {
                     return_type: event_return_type(&element.kind, name),
                     pure: false,
                     alias: None,
+                    alias_span: None,
+                    parameter_type_spans: vec![],
+                    result_type_span: None,
                 },
                 target: None,
                 builtin: true,
@@ -2204,6 +2292,19 @@ fn key(e: &ast::Element, parent: &str, index: usize) -> String {
         Some(id) => id.clone(),
         None => format!("__{parent}_{index}"),
     }
+}
+
+fn check_element_type(
+    definitions: &BTreeMap<&str, &ast::Component>,
+    element: &ast::Element,
+) -> Result<()> {
+    if !is_builtin(&element.ty) && !definitions.contains_key(element.ty.as_str()) {
+        return fail(
+            element.type_span,
+            format!("unknown element or component `{}`", element.ty),
+        );
+    }
+    Ok(())
 }
 
 fn contains_element<'a>(
@@ -2406,6 +2507,55 @@ fn validate_swipe_delegate(members: &[Member], span: Span) -> Result<()> {
 }
 
 impl<'a> Scope<'a> {
+    fn reference(
+        &self,
+        usage: Span,
+        spelling: &str,
+        segment: usize,
+        declaration: Span,
+        name: &str,
+    ) {
+        if let Some(references) = &self.references {
+            references.borrow_mut().push(SymbolReference {
+                usage,
+                spelling: spelling.into(),
+                segment,
+                declaration,
+                name: name.into(),
+            });
+        }
+    }
+
+    fn member_reference(
+        &self,
+        usage: Span,
+        spelling: &str,
+        owner: &str,
+        declaration: Span,
+        name: &str,
+    ) {
+        if let Some((receiver, _)) = spelling.split_once('.') {
+            if !matches!(receiver, "root" | "self") {
+                self.reference(usage, spelling, 0, self.owners[owner].span, receiver);
+            }
+            self.reference(usage, spelling, 1, declaration, name);
+        } else {
+            self.reference(usage, spelling, 0, declaration, name);
+        }
+    }
+
+    fn record_handler_parameters(&mut self, handler: &ast::Handler) {
+        if self.references.is_some() {
+            self.parameter_sites.extend(
+                handler
+                    .parameters
+                    .iter()
+                    .cloned()
+                    .zip(handler.parameter_spans.iter().copied()),
+            );
+        }
+    }
+
     fn callback_info(&self, owner: &str, name: &str) -> Option<&ResolvedCallback> {
         let element = self.owners.get(owner)?;
         let (component, owner) = if element.instance {
@@ -2428,6 +2578,14 @@ impl<'a> Scope<'a> {
             .filter_map(move |((component, key, _), resolved)| {
                 (component == self.component_name && key == owner).then_some(resolved)
             })
+    }
+
+    fn record_type_reference(&self, ty: &Type, usage: Span) {
+        if let Type::Record(name) | Type::RecordList(name) = ty
+            && let Some(record) = self.records.get(name.as_ref())
+        {
+            self.reference(usage, "", 0, record.span, &record.name);
+        }
     }
 
     fn checked_type(&self, ty: &Type, span: Span) -> Result<()> {
@@ -2487,6 +2645,7 @@ impl<'a> Scope<'a> {
         for p in property_members.iter().filter_map(as_property) {
             check_name(&p.name, p.span)?;
             self.checked_type(&p.ty, p.span)?;
+            self.record_type_reference(&p.ty, p.type_span);
             if !names.insert(rust_name(&p.name)) || builtin_property(kind, &p.name).is_some() {
                 return fail(
                     p.span,
@@ -2504,7 +2663,10 @@ impl<'a> Scope<'a> {
         }) {
             check_name(&callback.name, callback.span)?;
             let mut parameters = BTreeSet::new();
-            for parameter in &callback.parameters {
+            for (index, parameter) in callback.parameters.iter().enumerate() {
+                if let Some(span) = callback.parameter_type_spans.get(index) {
+                    self.record_type_reference(&parameter.ty, *span);
+                }
                 self.checked_type(&parameter.ty, callback.span)?;
                 if !parameter.name.is_empty() {
                     check_name(&parameter.name, callback.span)?;
@@ -2518,6 +2680,9 @@ impl<'a> Scope<'a> {
             }
             if let Some(ty) = &callback.return_type {
                 self.checked_type(ty, callback.span)?;
+                if let Some(span) = callback.result_type_span {
+                    self.record_type_reference(ty, span);
+                }
             }
             if builtin_property(kind, &callback.name).is_some()
                 || builtin_event(kind, &callback.name)
@@ -2722,6 +2887,10 @@ impl<'a> Scope<'a> {
                             );
                         };
                         check_name(id, e.span)?;
+                        check_element_type(definitions, e)?;
+                        if let Some(definition) = definitions.get(e.ty.as_str()) {
+                            self.reference(e.type_span, "", 0, definition.span, &definition.name);
+                        }
                         self.register(definitions, &e.members, &e.ty, id, Some(owner), e.span)?;
                         continue;
                     }
@@ -2937,6 +3106,10 @@ impl<'a> Scope<'a> {
                         check_name(id, e.span)?;
                     }
                     let child = key(e, owner, index);
+                    check_element_type(definitions, e)?;
+                    if let Some(definition) = definitions.get(e.ty.as_str()) {
+                        self.reference(e.type_span, "", 0, definition.span, &definition.name);
+                    }
                     self.register(definitions, &e.members, &e.ty, &child, Some(owner), e.span)?;
                     self.owners
                         .get_mut(&child)
@@ -3028,6 +3201,7 @@ impl<'a> Scope<'a> {
                 format!("property `{reference}` is read-only in this scope"),
             );
         }
+        self.member_reference(span, reference, owner, p.span, &p.name);
         Ok((
             ir::PropertyRef {
                 owner: owner.into(),
@@ -3475,6 +3649,9 @@ impl<'a> Scope<'a> {
                 span,
                 message: format!("unknown callback `{reference}`"),
             })?;
+        if let Some(declaration) = self.owners[owner].callbacks.get(name) {
+            self.member_reference(span, reference, owner, declaration.span, name);
+        }
         if !callback.pure && !self.effects_allowed {
             return fail(
                 span,
@@ -4544,8 +4721,18 @@ fn lower_callable(
         has_handler: handler.is_some(),
     };
     if let Some(handler) = handler {
+        if !info.builtin {
+            scope.reference(
+                handler.span,
+                &handler.name,
+                0,
+                definition.span,
+                &definition.name,
+            );
+        }
         let mut handler_scope = scope.clone();
         handler_scope.effects_allowed = !callback.pure;
+        handler_scope.record_handler_parameters(handler);
         handler_scope.parameters.extend(
             callback
                 .parameters
@@ -5052,6 +5239,16 @@ fn element<'a>(
             _ => None,
         };
         template.parameters.insert(repeat.item.clone(), item_type);
+        if template.references.is_some() {
+            template
+                .parameter_sites
+                .insert(repeat.item.clone(), repeat.item_span);
+            if let Some(index) = &repeat.index {
+                template
+                    .parameter_sites
+                    .insert(index.clone(), repeat.index_span);
+            }
+        }
         if let Some(index) = &repeat.index {
             template.parameters.insert(index.clone(), Type::Int);
         }
@@ -5570,6 +5767,7 @@ fn element<'a>(
                                 span: b.span,
                                 message: format!("two-way binding requires an in-out component property `{kind}.{}`", b.name),
                             })?;
+                        scope.reference(b.span, &b.name, 0, declaration.span, &b.name);
                         let ExprKind::Reference(reference) = &b.value.kind else {
                             return fail(b.span, "two-way binding requires a property reference");
                         };
@@ -5745,7 +5943,7 @@ fn element<'a>(
                         }));
                         continue;
                     }
-                    let (target, ty) = scope.property(owner, reference, true, b.span)?;
+                    let (target, ty) = scope.property(owner, reference, true, b.value.span)?;
                     if viewport_offset
                         && viewport_target.replace(target.clone()).as_ref() == Some(&target)
                     {
@@ -5896,6 +6094,9 @@ fn element<'a>(
                 } else if instance {
                     let (_, ty) =
                         scope.property(owner, &format!("self.{}", b.name), true, b.span)?;
+                    if let Some(declaration) = scope.owners[owner].properties.get(b.name.as_str()) {
+                        scope.reference(b.span, &b.name, 0, declaration.span, &b.name);
+                    }
                     ty
                 } else {
                     builtin_property(source_kind, &b.name).ok_or_else(|| Diagnostic {
@@ -6093,7 +6294,9 @@ fn element<'a>(
                 handler_scope.effects_allowed = true;
                 if !virtual_delegate {
                     handler_scope.parameters.clear();
+                    handler_scope.parameter_sites.clear();
                 }
+                handler_scope.record_handler_parameters(h);
                 handler_scope.parameters.extend(
                     parameters
                         .iter()
@@ -6236,6 +6439,7 @@ fn state_target<'a>(
                 format!("state requires a public writable component input `{reference}`"),
             );
         }
+        scope.member_reference(span, reference, target, input.span, property);
         return Ok((target, property, input.ty.clone(), true));
     }
     let Some(ty) = state_property(kind, property) else {
@@ -7539,6 +7743,15 @@ fn expression(e: &ast::Expr, scope: &Scope<'_>, owner: &str) -> Result<ir::Expr>
                     .map(|field| (field.name.as_str(), field.ty.clone()))
                     .collect()
             };
+            if let Some(record) = scope.records.get(name.as_str()) {
+                scope.reference(span, "", 0, record.span, &record.name);
+                for value in fields {
+                    if let Some(field) = record.fields.iter().find(|field| field.name == value.name)
+                    {
+                        scope.reference(value.span, &value.name, 0, field.span, &field.name);
+                    }
+                }
+            }
             let mut values = BTreeMap::new();
             for field in fields {
                 if values.insert(field.name.as_str(), &field.value).is_some() {
@@ -7721,15 +7934,16 @@ fn expression(e: &ast::Expr, scope: &Scope<'_>, owner: &str) -> Result<ir::Expr>
                     let Type::Record(name) = &record.ty else {
                         unreachable!()
                     };
-                    let ty = scope.records[name.as_ref()]
+                    let definition = scope.records[name.as_ref()]
                         .fields
                         .iter()
                         .find(|definition| definition.name == field)
-                        .map(|definition| definition.ty.clone())
                         .ok_or_else(|| Diagnostic {
                             span,
                             message: format!("record `{name}` has no field `{field}`"),
                         })?;
+                    scope.reference(span, s, s.split('.').count() - 1, definition.span, field);
+                    let ty = definition.ty.clone();
                     return Ok(ir::Expr {
                         value: field.into(),
                         ..ir::Expr::operation("get_field", ty, vec![record], span)
@@ -7739,6 +7953,9 @@ fn expression(e: &ast::Expr, scope: &Scope<'_>, owner: &str) -> Result<ir::Expr>
             if !s.contains('.')
                 && let Some(ty) = scope.parameters.get(s)
             {
+                if let Some(declaration) = scope.parameter_sites.get(s) {
+                    scope.reference(span, s, 0, *declaration, s);
+                }
                 return Ok(ir::Expr {
                     op: "param".into(),
                     value: s.clone(),

@@ -2,7 +2,6 @@
 mod action;
 mod calendar;
 mod evaluate;
-mod focus;
 mod gesture;
 mod group;
 mod host;
@@ -256,7 +255,7 @@ enum Expression {
     ImagePlaybackRead(Member),
     GeometryRead(String, Option<xrack_runtime::GeometryMetric>),
     ViewportRead(String, viewport::Metric),
-    ViewIndex(String, Expr, bool),
+    ViewIndex(String, Expr, xrack_runtime::ViewIndex),
     TreeQuery(String, tree::Query, Expr),
     SplitSave(String),
     StackRead(String, stack::Read, Option<Expr>),
@@ -300,22 +299,21 @@ enum Expression {
 enum Statement {
     Assign(Member, Expr),
     Call(Member, Vec<Expr>),
-    Scroll(String, viewport::Command, Vec<Expr>),
+    Scroll(String, xrack_runtime::ScrollCommandMethod, Vec<Expr>),
     SelectSource(String, Expr, Option<Expr>),
     Table(String, table::Command, Vec<Expr>),
-    Focus(String, focus::Command, Vec<Expr>),
-    Tree(String, tree::Command, Expr, Option<Expr>),
+    Focus(String, xrack_runtime::FocusCommandMethod, Option<[Expr; 2]>),
+    Tree(String, xrack_runtime::TreeCommandMethod, Expr, Option<Expr>),
     SplitRestore(String, Expr),
     SwipeCancel(String),
     SetCheckGroup(String, Expr),
-    StackNavigate(String, stack::Command, Option<Expr>),
+    StackNavigate(String, xrack_runtime::StackNavigationMethod, Option<Expr>),
     Timer(String, xrack_runtime::TimerCommand),
     Popup(String, bool),
     NativeDialogOpen(String),
     WindowClose,
-    SecondaryWindow(String, secondary_window::Command),
-    WindowCommand(xrack_runtime::WindowCommand),
-    WindowFullScreen(Expr),
+    SecondaryWindow(String, xrack_runtime::SecondaryWindowCommand),
+    WindowCommand(xrack_runtime::WindowCommandMethod, Option<Expr>),
     Return(Expr),
 }
 
@@ -520,7 +518,7 @@ pub struct Instance(Rc<evaluate::State>);
 impl Instance {
     /// Capture this instance in a callback without keeping the component alive.
     pub fn as_weak(&self) -> xrack_runtime::WeakComponent<Self> {
-        xrack_runtime::WeakComponent::new(&self.0, Self)
+        xrack_runtime::WeakComponent::new(&self.0, &self.0.binding_lifetime, Self)
     }
 
     pub fn properties(&self) -> impl Iterator<Item = (&str, ValueType, bool)> {

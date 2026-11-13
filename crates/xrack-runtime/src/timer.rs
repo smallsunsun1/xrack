@@ -15,6 +15,17 @@ pub enum TimerCommand {
     Restart,
 }
 
+impl TimerCommand {
+    pub fn parse(name: &str) -> Option<Self> {
+        Some(match name {
+            "start" => Self::Start,
+            "stop" => Self::Stop,
+            "restart" => Self::Restart,
+            _ => return None,
+        })
+    }
+}
+
 #[doc(hidden)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TimerConfig {
@@ -30,6 +41,33 @@ impl TimerConfig {
             repeat,
             triggered_on_start,
         })
+    }
+
+    pub fn try_read<E>(
+        running: impl FnOnce() -> Result<bool, E>,
+        interval: impl FnOnce() -> Result<i64, E>,
+        repeat: impl FnOnce() -> Result<bool, E>,
+        immediate: impl FnOnce() -> Result<bool, E>,
+    ) -> Result<Option<Self>, E> {
+        if !running()? {
+            return Ok(None);
+        }
+        Ok(Self::new(interval()?, repeat()?, immediate()?))
+    }
+
+    pub fn read(
+        running: impl FnOnce() -> bool,
+        interval: impl FnOnce() -> i64,
+        repeat: impl FnOnce() -> bool,
+        immediate: impl FnOnce() -> bool,
+    ) -> Option<Self> {
+        Self::try_read(
+            || Ok::<_, std::convert::Infallible>(running()),
+            || Ok(interval()),
+            || Ok(repeat()),
+            || Ok(immediate()),
+        )
+        .unwrap_or_else(|error| match error {})
     }
 }
 
@@ -55,6 +93,39 @@ impl Default for TimerSlot {
 }
 
 impl TimerSlot {
+    pub fn try_command<E>(
+        &self,
+        command: TimerCommand,
+        running: impl FnOnce() -> Result<bool, E>,
+        set_running: impl FnOnce(bool) -> Result<(), E>,
+    ) -> Result<(), E> {
+        match command {
+            TimerCommand::Start if running()? => Ok(()),
+            TimerCommand::Start | TimerCommand::Restart => {
+                self.restart();
+                set_running(true)
+            }
+            TimerCommand::Stop => set_running(false),
+        }
+    }
+
+    pub fn command(
+        &self,
+        command: TimerCommand,
+        running: impl FnOnce() -> bool,
+        set_running: impl FnOnce(bool),
+    ) {
+        self.try_command(
+            command,
+            || Ok::<_, std::convert::Infallible>(running()),
+            |value| {
+                set_running(value);
+                Ok(())
+            },
+        )
+        .unwrap_or_else(|error| match error {})
+    }
+
     pub fn revision(&self) -> u64 {
         self.revision.get(|| 0)
     }
@@ -87,6 +158,45 @@ impl TimerSlot {
     ) -> bool {
         self.try_tick_is_current(tick, || Ok::<_, std::convert::Infallible>(config()))
             .unwrap_or_else(|error| match error {})
+    }
+
+    pub fn try_deliver<E>(
+        &self,
+        tick: &TimerTick,
+        config: impl FnOnce() -> Result<Option<TimerConfig>, E>,
+        stop: impl FnOnce() -> Result<(), E>,
+        triggered: impl FnOnce() -> Result<(), E>,
+    ) -> Result<bool, E> {
+        if !self.try_tick_is_current(tick, config)? {
+            return Ok(false);
+        }
+        if tick.completed {
+            stop()?;
+        }
+        triggered()?;
+        Ok(true)
+    }
+
+    pub fn deliver(
+        &self,
+        tick: &TimerTick,
+        config: impl FnOnce() -> Option<TimerConfig>,
+        stop: impl FnOnce(),
+        triggered: impl FnOnce(),
+    ) -> bool {
+        self.try_deliver(
+            tick,
+            || Ok::<_, std::convert::Infallible>(config()),
+            || {
+                stop();
+                Ok(())
+            },
+            || {
+                triggered();
+                Ok(())
+            },
+        )
+        .unwrap_or_else(|error| match error {})
     }
 
     pub fn register(

@@ -587,7 +587,7 @@ fn native_window_status_and_commands_have_verified_types_and_scope() {
         compiled
             .rust
             .to_string()
-            .contains("WindowCommand :: SetFullScreen")
+            .contains("WindowCommandMethod :: SetFullScreen")
     );
     for (from, to, expected) in [
         (
@@ -712,7 +712,7 @@ fn viewport_metrics_and_scroll_commands_are_typed_and_verified() {
         compiled
             .rust
             .to_string()
-            .contains("ScrollAction :: ToIndex")
+            .contains("ScrollCommandMethod :: Index")
     );
     for (from, to, diagnostic) in [
         (
@@ -805,9 +805,9 @@ fn source_scroll_commands_capture_row_keys_and_require_virtual_view_owners() {
     "#;
     let output = compile(source, "source-scroll.xr").unwrap();
     let rust = output.rust.to_string();
-    assert!(rust.contains("ScrollAction :: ToRowKey"));
-    assert!(rust.contains("ScrollAction :: ToCellAtRowKey"));
-    assert!(rust.contains("ListModel :: row_key"));
+    assert!(rust.contains("ScrollCommandMethod :: SourceIndex"));
+    assert!(rust.contains("ScrollCommandMethod :: SourceCell"));
+    assert_eq!(rust.matches("ListModel :: key_at").count(), 2);
     let invalid = source.replace("list := ListView", "list := ScrollView");
     let error = compile(&invalid, "source-scroll.xr").err().unwrap();
     assert!(
@@ -1039,8 +1039,8 @@ fn table_cell_positioning_has_typed_axes_and_a_table_owner() {
     let compiled = compile(source, "table-position.xr").unwrap();
     assert_eq!(compiled.mlir.matches("\"xr.scroll_command\"").count(), 3);
     let rust = compiled.rust.to_string();
-    assert!(rust.contains("ScrollAction :: ToCell"));
-    assert!(rust.contains("ScrollAction :: ToColumn"));
+    assert!(rust.contains("ScrollCommandMethod :: Cell"));
+    assert!(rust.contains("ScrollCommandMethod :: Column"));
     for (from, to, diagnostic) in [
         ("9000, 0, end, center", "9000, 0, end", "takes 4 arguments"),
         (
@@ -1506,7 +1506,7 @@ fn editor_commands_keep_order_and_verify_operands_and_purity() {
         compiled
             .rust
             .to_string()
-            .contains("TextCommand :: SetSelection")
+            .contains("FocusCommandMethod :: SetSelection")
     );
 
     let invalid = source.replace(
@@ -2371,7 +2371,12 @@ fn focus_scope_commands_and_initial_targets_are_checked_in_both_stages() {
     let compiled = compile(source, "focus.xr").unwrap();
     assert!(compiled.mlir.contains("\"xr.focus_target\""));
     assert!(compiled.mlir.contains("\"xr.focus_command\""));
-    assert!(compiled.rust.to_string().contains("FocusAction :: Focus"));
+    assert!(
+        compiled
+            .rust
+            .to_string()
+            .contains("FocusCommandMethod :: Focus")
+    );
     let raw = lower(source, "focus.xr");
     let invalid = raw.replace("target = \"query\"", "target = \"outside\"");
     assert!(
@@ -7414,7 +7419,7 @@ fn table_edit_requests_check_types_purity_and_receiver() {
         output
             .rust
             .to_string()
-            .contains("FocusAction :: EditTableCell")
+            .contains("FocusCommandMethod :: EditTableCell")
     );
     for (from, to, expected) in [
         ("edit-cell(0, 0)", "edit-cell(0, true)", "type mismatch"),

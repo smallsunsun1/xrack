@@ -88,6 +88,68 @@ impl TableSelectionAction {
     }
 }
 
+/// Selection commands with signed positions from XR dialect operands.
+#[derive(Clone, Copy, Debug)]
+#[doc(hidden)]
+pub enum TableSelectionMethod {
+    SelectAll,
+    ClearSelection,
+    SelectRow,
+    SelectColumn,
+    SelectCell,
+    MoveCell,
+    ToggleCell,
+    SelectRange,
+}
+
+impl TableSelectionMethod {
+    pub fn parse(name: &str) -> Option<Self> {
+        Some(match name {
+            "select-all" => Self::SelectAll,
+            "clear-selection" => Self::ClearSelection,
+            "select-row" => Self::SelectRow,
+            "select-column" => Self::SelectColumn,
+            "select-cell" => Self::SelectCell,
+            "set-current-cell" => Self::MoveCell,
+            "toggle-cell" => Self::ToggleCell,
+            "select-range" => Self::SelectRange,
+            _ => return None,
+        })
+    }
+
+    pub fn action(self, args: &[i64]) -> Option<TableSelectionAction> {
+        use TableSelectionAction as Action;
+        let index = |value| usize::try_from(value).ok();
+        Some(match (self, args) {
+            (Self::SelectAll, []) => Action::All,
+            (Self::ClearSelection, []) => Action::Clear,
+            (Self::SelectRow, [row]) => Action::Row {
+                index: index(*row)?,
+                operation: RowSelection::Replace,
+            },
+            (Self::SelectColumn, [column]) => Action::Column {
+                column: index(*column)?,
+                operation: RowSelection::Replace,
+            },
+            (Self::SelectCell | Self::MoveCell | Self::ToggleCell, [row, column]) => Action::Cell {
+                row: index(*row)?,
+                column: index(*column)?,
+                operation: match self {
+                    Self::MoveCell => RowSelection::Move,
+                    Self::ToggleCell => RowSelection::Toggle,
+                    _ => RowSelection::Replace,
+                },
+            },
+            (Self::SelectRange, [row, column, end_row, end_column]) => Action::DragRange {
+                anchor: (index(*row)?, index(*column)?),
+                end: (index(*end_row)?, index(*end_column)?),
+                additive: false,
+            },
+            _ => return None,
+        })
+    }
+}
+
 type RowKeys = Arc<BTreeSet<RowKey>>;
 type ColumnCells = BTreeMap<usize, RowKeys>;
 
@@ -677,6 +739,43 @@ pub struct TableSelectionChange {
 }
 
 #[doc(hidden)]
+pub enum TableSelectionEvent {
+    CurrentRowChanged(usize),
+    CurrentCellChanged,
+    SelectionChanged(usize),
+}
+
+impl TableSelectionChange {
+    /// Publish the cursor before resolving the cell notification. The row
+    /// handler can change bindings that the cell handler will read.
+    pub fn try_notify<E>(
+        self,
+        notify_cell: bool,
+        mut notify: impl FnMut(TableSelectionEvent) -> Result<(), E>,
+    ) -> Result<bool, E> {
+        if let Some(row) = self.current {
+            notify(TableSelectionEvent::CurrentRowChanged(row))?;
+        }
+        let cursor_changed = self.current.is_some() || self.column_changed;
+        if notify_cell && cursor_changed {
+            notify(TableSelectionEvent::CurrentCellChanged)?;
+        }
+        if let Some(count) = self.selected_count {
+            notify(TableSelectionEvent::SelectionChanged(count))?;
+        }
+        Ok(cursor_changed || self.selected_count.is_some())
+    }
+
+    pub fn notify(self, notify_cell: bool, mut notify: impl FnMut(TableSelectionEvent)) -> bool {
+        self.try_notify(notify_cell, |event| {
+            notify(event);
+            Ok::<_, std::convert::Infallible>(())
+        })
+        .unwrap_or_else(|error| match error {})
+    }
+}
+
+#[doc(hidden)]
 pub struct TableSelectionOptions {
     pub target: SelectionTarget,
     pub multiple: bool,
@@ -890,6 +989,64 @@ impl TableSelection {
             selected: state.selected(model, current),
             drag_range: state.drag_range.clone(),
         }
+    }
+
+    /// Read the live cursor and selection bindings in the same order for both backends.
+    #[doc(hidden)]
+    pub fn try_snapshot_with<E>(
+        &self,
+        model: &impl ListModel,
+        column_count: usize,
+        current: impl FnOnce() -> Result<i64, E>,
+        target: impl FnOnce() -> Result<SelectionTarget, E>,
+        multiple: impl FnOnce() -> Result<bool, E>,
+        order: impl FnOnce() -> TableColumnOrder,
+    ) -> Result<TableSelectionSnapshot, E> {
+        let current = usize::try_from(current()?).ok();
+        Ok(self
+            .snapshot(model, current, target()?, column_count, multiple()?)
+            .with_column_order(order()))
+    }
+
+    #[doc(hidden)]
+    pub fn snapshot_with(
+        &self,
+        model: &impl ListModel,
+        column_count: usize,
+        current: impl FnOnce() -> i64,
+        target: impl FnOnce() -> SelectionTarget,
+        multiple: impl FnOnce() -> bool,
+        order: impl FnOnce() -> TableColumnOrder,
+    ) -> TableSelectionSnapshot {
+        self.try_snapshot_with(
+            model,
+            column_count,
+            || Ok::<_, std::convert::Infallible>(current()),
+            || Ok(target()),
+            || Ok(multiple()),
+            order,
+        )
+        .unwrap_or_else(|error| match error {})
+    }
+
+    /// Build the rendered selection from the same row projection and bindings as the scene.
+    #[doc(hidden)]
+    pub fn populate_scene(&self, table: &mut Node, model: &impl ListModel) {
+        let current = table
+            .int("current-row")
+            .and_then(|row| usize::try_from(row).ok());
+        let target = table.selection_target();
+        let columns = table
+            .table_header
+            .as_ref()
+            .map_or(0, |header| header.columns.len());
+        let multiple = table.boolean("multi-select", false);
+        let snapshot = self
+            .snapshot(model, current, target, columns, multiple)
+            .with_column_order(table.table_column_order.clone());
+        table.table_selection =
+            (multiple || target != SelectionTarget::Rows || self.has_explicit_selection())
+                .then(|| Box::new(snapshot));
     }
 
     /// Apply a scene's selection only while its row order and selection mode still apply.

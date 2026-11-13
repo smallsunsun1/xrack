@@ -523,6 +523,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3ded4057c258ba199e2d26386d3af3780957ecaee6c4ef4041c6b4b8b97c0b06"
 
 [[package]]
+name = "block-buffer"
+version = "0.12.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d2f6c7dbe95a6ed67ad9f18e57daf93a2f034c524b99fd2b76d18fdfeb6660aa"
+dependencies = [
+ "hybrid-array",
+]
+
+[[package]]
 name = "block2"
 version = "0.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -749,6 +758,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "const-oid"
+version = "0.10.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "be95d4a884358a21a199689323c29e9256b4a1b315e22f183d155422041d3a9a"
+
+[[package]]
 name = "core-foundation"
 version = "0.9.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -798,6 +813,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "cpufeatures"
+version = "0.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5ca28b0ae3115b884660db4118d803791fd6756b6e88f39c0f3f7859060d7566"
+dependencies = [
+ "libc",
+]
+
+[[package]]
 name = "crc32fast"
 version = "1.5.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -819,6 +843,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "460fbee9c2c2f33933d720630a6a0bac33ba7053db5344fac858d4b8952d77d5"
 
 [[package]]
+name = "crypto-common"
+version = "0.2.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ce6e4c961d6cd6c9a86db418387425e8bdeaf05b3c8bc1411e6dca4c252f1453"
+dependencies = [
+ "hybrid-array",
+]
+
+[[package]]
 name = "cursor-icon"
 version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -829,6 +862,17 @@ name = "data-url"
 version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "be1e0bca6c3637f992fc1cc7cbc52a78c1ef6db076dbf1059c4323d6a2048376"
+
+[[package]]
+name = "digest"
+version = "0.11.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f1dd6dbb5841937940781866fa1281a1ff7bd3bf827091440879f9994983d5c2"
+dependencies = [
+ "block-buffer",
+ "const-oid",
+ "crypto-common",
+]
 
 [[package]]
 name = "dispatch"
@@ -1340,6 +1384,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7f24254aa9a54b5c858eaee2f5bccdb46aaf0e486a595ed5fd8f86ba55232a70"
 
 [[package]]
+name = "hybrid-array"
+version = "0.4.15"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "27f864f10dfb56725ce5ce5472bc52252c8f93a4ab86327122cebf62c5f59a17"
+dependencies = [
+ "typenum",
+]
+
+[[package]]
 name = "imagesize"
 version = "0.15.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1570,6 +1623,15 @@ name = "lru"
 version = "0.19.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4a9f71e3591c7ec44d3e563e87bf14ddc2bada8519dca046e5b0e560cd004e2d"
+
+[[package]]
+name = "lzma-rust2"
+version = "0.25.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ef1d73c59a56771343712b22ea5615092c612c16ba291c0979e3105dfeec4890"
+dependencies = [
+ "sha2",
+]
 
 [[package]]
 name = "memchr"
@@ -2679,6 +2741,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "sha2"
+version = "0.11.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "47d7069beb7d6ac7b9acd1039986e73443f24234f41074da099d6f994ac9ad19"
+dependencies = [
+ "cfg-if",
+ "cpufeatures",
+ "digest",
+]
+
+[[package]]
 name = "shlex"
 version = "2.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3094,6 +3167,12 @@ name = "typed-arena"
 version = "2.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6af6ae20167a9ece4bcb41af5b80f8a1f1df981f6391189ce00fd257af04126a"
+
+[[package]]
+name = "typenum"
+version = "1.20.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b6f5e870be6c3b371b77fe0ee0bafb859fa4964b4404c27de1d380043c4dda20"
 
 [[package]]
 name = "uds_windows"
@@ -3935,9 +4014,10 @@ checksum = "b9cc00251562a284751c9973bace760d86c0276c471b4be569fe6b068ee97a56"
 
 [[package]]
 name = "xrack"
-version = "0.2.0"
+version = "0.5.0"
 dependencies = [
  "xrack-assets",
+ "xrack-interpreter",
  "xrack-layout",
  "xrack-platform-winit",
  "xrack-renderer-femtovg",
@@ -3946,7 +4026,7 @@ dependencies = [
 
 [[package]]
 name = "xrack-assets"
-version = "0.2.0"
+version = "0.5.0"
 dependencies = [
  "png",
  "resvg",
@@ -3956,7 +4036,7 @@ dependencies = [
 
 [[package]]
 name = "xrack-build"
-version = "0.2.0"
+version = "0.5.0"
 dependencies = [
  "flate2",
  "xrackc-bin-aarch64-apple-darwin",
@@ -3968,7 +4048,7 @@ dependencies = [
 
 [[package]]
 name = "xrack-codegen"
-version = "0.2.0"
+version = "0.5.0"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -3982,7 +4062,7 @@ dependencies = [
 
 [[package]]
 name = "xrack-compiler"
-version = "0.2.0"
+version = "0.5.0"
 dependencies = [
  "clap",
  "proc-macro2",
@@ -3998,9 +4078,8 @@ dependencies = [
 
 [[package]]
 name = "xrack-interpreter"
-version = "0.2.0"
+version = "0.5.0"
 dependencies = [
- "serde_json",
  "thiserror 2.0.21",
  "xrack-mlir",
  "xrack-parser",
@@ -4011,16 +4090,17 @@ dependencies = [
 
 [[package]]
 name = "xrack-ir"
-version = "0.2.0"
+version = "0.5.0"
 dependencies = [
  "serde",
  "serde_json",
+ "xrack-parser",
  "xrack-syntax",
 ]
 
 [[package]]
 name = "xrack-layout"
-version = "0.2.0"
+version = "0.5.0"
 dependencies = [
  "unicode-bidi",
  "unicode-segmentation",
@@ -4029,25 +4109,67 @@ dependencies = [
 
 [[package]]
 name = "xrack-lsp"
-version = "0.2.0"
+version = "0.5.0"
 dependencies = [
+ "serde",
  "serde_json",
+ "tempfile",
  "xrack-ir",
  "xrack-parser",
 ]
 
 [[package]]
 name = "xrack-mlir"
-version = "0.2.0"
+version = "0.5.0"
 dependencies = [
  "serde_json",
  "xrack-ir",
+ "xrack-mlir-bin-aarch64-apple-darwin",
+ "xrack-mlir-bin-aarch64-pc-windows-msvc",
+ "xrack-mlir-bin-aarch64-unknown-linux-gnu",
+ "xrack-mlir-bin-x86_64-pc-windows-msvc",
+ "xrack-mlir-bin-x86_64-unknown-linux-gnu",
  "xrack-syntax",
 ]
 
 [[package]]
+name = "xrack-mlir-bin-aarch64-apple-darwin"
+version = "0.5.0"
+dependencies = [
+ "lzma-rust2",
+]
+
+[[package]]
+name = "xrack-mlir-bin-aarch64-pc-windows-msvc"
+version = "0.5.0"
+dependencies = [
+ "lzma-rust2",
+]
+
+[[package]]
+name = "xrack-mlir-bin-aarch64-unknown-linux-gnu"
+version = "0.5.0"
+dependencies = [
+ "lzma-rust2",
+]
+
+[[package]]
+name = "xrack-mlir-bin-x86_64-pc-windows-msvc"
+version = "0.5.0"
+dependencies = [
+ "lzma-rust2",
+]
+
+[[package]]
+name = "xrack-mlir-bin-x86_64-unknown-linux-gnu"
+version = "0.5.0"
+dependencies = [
+ "lzma-rust2",
+]
+
+[[package]]
 name = "xrack-parser"
-version = "0.2.0"
+version = "0.5.0"
 dependencies = [
  "antlr4rust",
  "serde_json",
@@ -4056,7 +4178,7 @@ dependencies = [
 
 [[package]]
 name = "xrack-platform-winit"
-version = "0.2.0"
+version = "0.5.0"
 dependencies = [
  "accesskit",
  "accesskit_winit",
@@ -4081,7 +4203,7 @@ dependencies = [
 
 [[package]]
 name = "xrack-preview"
-version = "0.2.0"
+version = "0.5.0"
 dependencies = [
  "pollster",
  "serde",
@@ -4096,7 +4218,7 @@ dependencies = [
 
 [[package]]
 name = "xrack-renderer-femtovg"
-version = "0.2.0"
+version = "0.5.0"
 dependencies = [
  "femtovg",
  "fontdb",
@@ -4112,7 +4234,7 @@ dependencies = [
 
 [[package]]
 name = "xrack-resources"
-version = "0.2.0"
+version = "0.5.0"
 dependencies = [
  "fluent-syntax",
  "gif",
@@ -4133,7 +4255,7 @@ dependencies = [
 
 [[package]]
 name = "xrack-runtime"
-version = "0.2.0"
+version = "0.5.0"
 dependencies = [
  "fluent-bundle",
  "fluent-langneg",
@@ -4145,30 +4267,30 @@ dependencies = [
 
 [[package]]
 name = "xrack-syntax"
-version = "0.2.0"
+version = "0.5.0"
 dependencies = [
  "serde",
 ]
 
 [[package]]
 name = "xrackc-bin-aarch64-apple-darwin"
-version = "0.2.0"
+version = "0.5.0"
 
 [[package]]
 name = "xrackc-bin-aarch64-pc-windows-msvc"
-version = "0.2.0"
+version = "0.5.0"
 
 [[package]]
 name = "xrackc-bin-aarch64-unknown-linux-gnu"
-version = "0.2.0"
+version = "0.5.0"
 
 [[package]]
 name = "xrackc-bin-x86_64-pc-windows-msvc"
-version = "0.2.0"
+version = "0.5.0"
 
 [[package]]
 name = "xrackc-bin-x86_64-unknown-linux-gnu"
-version = "0.2.0"
+version = "0.5.0"
 
 [[package]]
 name = "zbus"

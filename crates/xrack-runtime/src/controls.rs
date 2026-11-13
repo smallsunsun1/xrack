@@ -1,4 +1,6 @@
-use crate::{DecimalSpinRange, InputRoute, ListModel, Node, RoutedEvent, SpinDecimal, Value};
+use crate::{
+    DecimalSpinRange, InputRoute, ListModel, Node, Property, RoutedEvent, SpinDecimal, Value,
+};
 use std::sync::{
     Arc,
     atomic::{AtomicU64, Ordering},
@@ -350,6 +352,46 @@ pub fn is_window_overlay(kind: &str) -> bool {
 }
 
 #[doc(hidden)]
+pub fn try_set_overlay_open<E>(
+    open: bool,
+    input: Option<InputRoute<'_>>,
+    current: impl FnOnce() -> Result<bool, E>,
+    set_open: impl FnOnce(bool) -> Result<(), E>,
+    notify: impl FnOnce(bool) -> Result<(), E>,
+) -> Result<bool, E> {
+    if current()? == open || input.is_some_and(|input| !input.is_current()) {
+        return Ok(false);
+    }
+    set_open(open)?;
+    notify(open)?;
+    Ok(true)
+}
+
+#[doc(hidden)]
+pub fn set_overlay_open(
+    open: bool,
+    input: Option<InputRoute<'_>>,
+    current: impl FnOnce() -> bool,
+    set_open: impl FnOnce(bool),
+    notify: impl FnOnce(bool),
+) -> bool {
+    try_set_overlay_open(
+        open,
+        input,
+        || Ok::<_, std::convert::Infallible>(current()),
+        |open| {
+            set_open(open);
+            Ok(())
+        },
+        |open| {
+            notify(open);
+            Ok(())
+        },
+    )
+    .unwrap_or_else(|error| match error {})
+}
+
+#[doc(hidden)]
 pub fn is_pane(kind: &str) -> bool {
     matches!(kind, "Pane" | "ControlFrame")
 }
@@ -368,6 +410,16 @@ pub enum PopupPlacement {
 pub struct TableSort {
     pub column: usize,
     pub descending: bool,
+}
+
+impl TableSort {
+    #[doc(hidden)]
+    pub fn from_index(column: i64, descending: bool) -> Option<Self> {
+        Some(Self {
+            column: usize::try_from(column).ok()?,
+            descending,
+        })
+    }
 }
 
 /// Visual positions map to the declaration indices used by cells and model actions.
@@ -443,6 +495,20 @@ pub fn resizable_table_column(table: &Node, column: usize) -> Option<&Node> {
         .then_some(definition)
 }
 
+#[doc(hidden)]
+pub fn resize_table_column(widths: &Property<Vec<Option<u32>>>, column: usize, width: u32) -> bool {
+    let mut next = widths.get(Vec::new);
+    if next.get(column) == Some(&Some(width)) {
+        return false;
+    }
+    if next.len() <= column {
+        next.resize(column + 1, None);
+    }
+    next[column] = Some(width);
+    widths.set(next);
+    true
+}
+
 /// Validate a drag against both the originating scene and the current bindings.
 #[doc(hidden)]
 pub fn try_table_drag_available<E>(
@@ -460,7 +526,12 @@ pub fn try_table_drag_available<E>(
         }
         RoutedEvent::Control(ControlAction::ResizeRow { .. }) => ("resizable-rows", None),
         RoutedEvent::Control(ControlAction::MoveColumn { .. }) => ("movable-columns", None),
-        RoutedEvent::Control(ControlAction::MoveRow { .. }) => ("movable-rows", None),
+        RoutedEvent::Control(ControlAction::MoveRow { stamp, .. }) => {
+            if table.standard_list_stamp != Some(stamp) {
+                return Ok(false);
+            }
+            ("movable-rows", None)
+        }
         _ => return Ok(true),
     };
     if !table.boolean(property, false) {
@@ -500,6 +571,37 @@ impl TableHeader {
                 .is_some_and(|sort| sort.column == column && !sort.descending),
         })
     }
+
+    /// Resolve a click using the sort indicator the user actually saw.
+    #[doc(hidden)]
+    pub fn next_sort_if_current(
+        &self,
+        column: usize,
+        current: Option<TableSort>,
+    ) -> Option<TableSort> {
+        if self.sort != current {
+            return None;
+        }
+        self.next_sort(column)
+    }
+}
+
+impl Node {
+    /// A column move uses visual positions from the originating scene.
+    #[doc(hidden)]
+    pub fn table_column_move_is_current(
+        &self,
+        from: usize,
+        to: usize,
+        current: &TableColumnOrder,
+    ) -> bool {
+        self.table_column_order == *current
+            && from != to
+            && self
+                .table_header
+                .as_ref()
+                .is_some_and(|header| from < header.columns.len() && to < header.columns.len())
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -533,6 +635,78 @@ pub enum DialogCommand {
     Reset,
     Help,
     Discard,
+}
+
+#[doc(hidden)]
+pub enum DialogEvent {
+    Accepted,
+    Rejected,
+    Applied,
+    Reset,
+    HelpRequested,
+    Discarded,
+}
+
+impl DialogEvent {
+    pub fn handler(&self) -> &'static str {
+        match self {
+            Self::Accepted => "accepted",
+            Self::Rejected => "rejected",
+            Self::Applied => "applied",
+            Self::Reset => "reset",
+            Self::HelpRequested => "help-requested",
+            Self::Discarded => "discarded",
+        }
+    }
+
+    pub fn try_deliver<E>(
+        action: ControlAction,
+        input: InputRoute<'_>,
+        open: impl FnOnce() -> Result<bool, E>,
+        close: impl FnOnce() -> Result<(), E>,
+        notify: impl FnOnce(Self) -> Result<(), E>,
+    ) -> Result<bool, E> {
+        if !open()? || !input.is_current() {
+            return Ok(false);
+        }
+        let event = match action {
+            ControlAction::Dialog(DialogRole::Accept) => Self::Accepted,
+            ControlAction::Dialog(DialogRole::Reject) => Self::Rejected,
+            ControlAction::DialogCommand(DialogCommand::Apply) => Self::Applied,
+            ControlAction::DialogCommand(DialogCommand::Reset) => Self::Reset,
+            ControlAction::DialogCommand(DialogCommand::Help) => Self::HelpRequested,
+            ControlAction::DialogCommand(DialogCommand::Discard) => Self::Discarded,
+            _ => return Ok(false),
+        };
+        if matches!(event, Self::Accepted | Self::Rejected | Self::Discarded) {
+            close()?;
+        }
+        notify(event)?;
+        Ok(true)
+    }
+
+    pub fn deliver(
+        action: ControlAction,
+        input: InputRoute<'_>,
+        open: impl FnOnce() -> bool,
+        close: impl FnOnce(),
+        notify: impl FnOnce(Self),
+    ) -> bool {
+        Self::try_deliver(
+            action,
+            input,
+            || Ok::<_, std::convert::Infallible>(open()),
+            || {
+                close();
+                Ok(())
+            },
+            |event| {
+                notify(event);
+                Ok(())
+            },
+        )
+        .unwrap_or_else(|error| match error {})
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

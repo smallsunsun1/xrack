@@ -1,23 +1,9 @@
 use crate::{Element, Error, Instance, Result};
 use std::{collections::BTreeMap, rc::Rc};
-use xrack_runtime::{Component, Property, SecondaryWindowRegistration, SecondaryWindowSlot, Value};
-
-#[derive(Clone, Copy)]
-pub(crate) enum Command {
-    Visible(bool),
-    Close,
-}
-
-impl Command {
-    pub(crate) fn parse(command: &str) -> Option<Self> {
-        Some(match command {
-            "show" => Self::Visible(true),
-            "hide" => Self::Visible(false),
-            "close" => Self::Close,
-            _ => return None,
-        })
-    }
-}
+use xrack_runtime::{
+    Component, Property, SecondaryWindowCommand, SecondaryWindowRegistration, SecondaryWindowSlot,
+    Value,
+};
 
 pub(crate) struct State {
     slots: BTreeMap<String, SecondaryWindowSlot>,
@@ -52,22 +38,28 @@ impl Instance {
             .ok_or_else(|| Error::Evaluation(format!("missing window instance for {}", window.key)))
     }
 
-    pub(crate) fn secondary_window_command(&self, target: &str, command: Command) -> Result<()> {
+    pub(crate) fn secondary_window_command(
+        &self,
+        target: &str,
+        command: SecondaryWindowCommand,
+    ) -> Result<()> {
         let (owner, window) = self.element_owner(target)?;
-        match command {
-            Command::Visible(visible) => {
-                owner.set_control_value(window, "visible", visible.into())?;
-            }
-            Command::Close if owner.secondary_window_visible(window)? => {
+        command.try_apply(
+            || owner.secondary_window_visible(window),
+            |visible| {
+                owner
+                    .set_control_value(window, "visible", visible.into())
+                    .map(|_| ())
+            },
+            || {
                 owner
                     .secondary_window_child(window)?
                     .0
                     .window
                     .request_close();
-            }
-            Command::Close => {}
-        }
-        Ok(())
+                Ok(())
+            },
+        )
     }
 
     pub(crate) fn secondary_window_registrations(
@@ -96,8 +88,8 @@ impl Instance {
                         move || {
                             if let Some(owner) = owner.upgrade() {
                                 let owner = Instance(owner);
-                                if let Err(error) =
-                                    owner.secondary_window_command(&key, Command::Visible(false))
+                                if let Err(error) = owner
+                                    .secondary_window_command(&key, SecondaryWindowCommand::Hide)
                                 {
                                     owner.0.error.set(Some(error));
                                 }

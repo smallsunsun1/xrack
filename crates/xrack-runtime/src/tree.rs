@@ -30,6 +30,46 @@ pub enum TreeCommand {
     ExpandTo(i64),
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[doc(hidden)]
+pub enum TreeCommandMethod {
+    Expand,
+    Collapse,
+    ToggleExpanded,
+    ExpandRecursively,
+    CollapseRecursively,
+    ExpandTo,
+}
+
+impl TreeCommandMethod {
+    pub fn parse(name: &str) -> Option<Self> {
+        Some(match name {
+            "expand" => Self::Expand,
+            "collapse" => Self::Collapse,
+            "toggle-expanded" => Self::ToggleExpanded,
+            "expand-recursively" => Self::ExpandRecursively,
+            "collapse-recursively" => Self::CollapseRecursively,
+            "expand-to" => Self::ExpandTo,
+            _ => return None,
+        })
+    }
+
+    pub fn requires_depth(self) -> bool {
+        self == Self::ExpandRecursively
+    }
+
+    pub fn action(self, key: i64, depth: Option<i64>) -> Option<TreeCommand> {
+        Some(match self {
+            Self::Expand => TreeCommand::Expand(key),
+            Self::Collapse => TreeCommand::Collapse(key),
+            Self::ToggleExpanded => TreeCommand::ToggleExpanded(key),
+            Self::ExpandRecursively => TreeCommand::ExpandRecursively { key, depth: depth? },
+            Self::CollapseRecursively => TreeCommand::CollapseRecursively(key),
+            Self::ExpandTo => TreeCommand::ExpandTo(key),
+        })
+    }
+}
+
 #[doc(hidden)]
 pub struct TreeExpansionChange {
     pub key: i64,
@@ -60,6 +100,55 @@ pub enum TreeControlChange {
         change: TreeExpansionChange,
         current: Option<i64>,
     },
+}
+
+#[doc(hidden)]
+pub enum TreeControlEvent {
+    CurrentKeyChanged(i64),
+    SelectionChanged(usize),
+    Expanded(i64),
+    Collapsed(i64),
+}
+
+impl TreeControlChange {
+    /// Publish the cursor before handlers for selection and expansion read it.
+    pub fn try_notify<E>(
+        self,
+        mut notify: impl FnMut(TreeControlEvent) -> Result<(), E>,
+    ) -> Result<bool, E> {
+        let (current, event) = match self {
+            Self::Selection(change) => (
+                change.current,
+                change
+                    .selected_count
+                    .map(TreeControlEvent::SelectionChanged),
+            ),
+            Self::Expansion { change, current } => (
+                current,
+                Some(if change.expanded {
+                    TreeControlEvent::Expanded(change.key)
+                } else {
+                    TreeControlEvent::Collapsed(change.key)
+                }),
+            ),
+        };
+        if let Some(key) = current {
+            notify(TreeControlEvent::CurrentKeyChanged(key))?;
+        }
+        if let Some(event) = event {
+            notify(event)?;
+            return Ok(true);
+        }
+        Ok(current.is_some())
+    }
+
+    pub fn notify(self, mut notify: impl FnMut(TreeControlEvent)) -> bool {
+        self.try_notify(|event| {
+            notify(event);
+            Ok::<_, std::convert::Infallible>(())
+        })
+        .unwrap_or_else(|error| match error {})
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -312,6 +401,14 @@ impl TreeSnapshot {
 
     pub fn visible_index_for_source(&self, source: usize) -> Option<usize> {
         self.visible_index(self.entry_for_source(source)?.key)
+    }
+
+    #[doc(hidden)]
+    pub fn view_index(&self, index: usize, direction: crate::ViewIndex) -> Option<usize> {
+        match direction {
+            crate::ViewIndex::FromSource => self.visible_index_for_source(index),
+            crate::ViewIndex::ToSource => self.rows().get(index).map(|row| row.model_index),
+        }
     }
 
     /// Resolve a rendered row only if it still appears in the live tree.

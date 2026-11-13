@@ -21,6 +21,58 @@ pub enum StackNavigation<'a> {
     ResetTo(&'a [String]),
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[doc(hidden)]
+pub enum StackNavigationMethod {
+    Push,
+    Pop,
+    Replace,
+    PopTo,
+    Reset,
+    PushPages,
+    ResetTo,
+}
+
+#[doc(hidden)]
+pub enum StackNavigationArgument<'a> {
+    None,
+    Route(&'a str),
+    Path(&'a [String]),
+}
+
+impl StackNavigationMethod {
+    pub fn parse(name: &str) -> Option<Self> {
+        Some(match name {
+            "push" => Self::Push,
+            "pop" => Self::Pop,
+            "replace" => Self::Replace,
+            "pop-to" => Self::PopTo,
+            "reset" => Self::Reset,
+            "push-pages" => Self::PushPages,
+            "reset-to" => Self::ResetTo,
+            _ => return None,
+        })
+    }
+
+    pub fn uses_path(self) -> bool {
+        matches!(self, Self::PushPages | Self::ResetTo)
+    }
+
+    pub fn action(self, argument: StackNavigationArgument<'_>) -> Option<StackNavigation<'_>> {
+        use StackNavigationArgument::{Path, Route};
+        Some(match (self, argument) {
+            (Self::Push, Route(route)) => StackNavigation::Push(route),
+            (Self::Pop, StackNavigationArgument::None) => StackNavigation::Pop,
+            (Self::Replace, Route(route)) => StackNavigation::Replace(route),
+            (Self::PopTo, Route(route)) => StackNavigation::PopTo(route),
+            (Self::Reset, Route(route)) => StackNavigation::Reset(route),
+            (Self::PushPages, Path(path)) => StackNavigation::PushPages(path),
+            (Self::ResetTo, Path(path)) => StackNavigation::ResetTo(path),
+            _ => return None,
+        })
+    }
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub struct StackSnapshot {
     routes: Vec<Cow<'static, str>>,
@@ -65,6 +117,14 @@ pub struct StackChange<'a> {
     pub after: &'a StackSnapshot,
 }
 
+#[doc(hidden)]
+pub enum StackEvent<'a> {
+    Deactivated(&'a str),
+    Removed(&'a str),
+    Activated(&'a str),
+    Changed { current: &'a str, depth: i64 },
+}
+
 impl StackChange<'_> {
     pub fn deactivated(&self) -> Option<&str> {
         self.before
@@ -85,6 +145,33 @@ impl StackChange<'_> {
             .map(Cow::as_ref)
             .rev()
             .filter(|route| self.after.index_of(route).is_none())
+    }
+
+    pub fn try_notify<E>(
+        &self,
+        mut notify: impl FnMut(StackEvent<'_>) -> Result<(), E>,
+    ) -> Result<(), E> {
+        if let Some(route) = self.deactivated() {
+            notify(StackEvent::Deactivated(route))?;
+        }
+        for route in self.removed() {
+            notify(StackEvent::Removed(route))?;
+        }
+        if let Some(route) = self.activated() {
+            notify(StackEvent::Activated(route))?;
+        }
+        notify(StackEvent::Changed {
+            current: self.after.current().unwrap_or(""),
+            depth: self.after.depth() as i64,
+        })
+    }
+
+    pub fn notify(&self, mut notify: impl FnMut(StackEvent<'_>)) {
+        self.try_notify(|event| {
+            notify(event);
+            Ok::<_, std::convert::Infallible>(())
+        })
+        .unwrap_or_else(|error| match error {})
     }
 }
 

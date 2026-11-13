@@ -66,15 +66,10 @@ fn native_cursor_resolution_prefers_resize_then_explicit_shapes_then_text() {
     split.add_split_handles();
     outer.children.push(split);
     scene.children.push(outer);
-    let mut app = Application::new(
-        View(Rc::new(scene)),
-        LocalExecutor::new(|| {}),
-        Inbox::<()>::new(|| {}),
-        |_: &mut View, _| {},
-    );
+    let mut app = Application::new(View(Rc::new(scene)), LocalExecutor::new(|| {}));
     let size = Size::new(280.0, 160.0);
     let mut measure = Measure;
-    let sync = |app: &mut Application<View, (), _>, measure: &mut Measure, point: Point| {
+    let sync = |app: &mut Application<View>, measure: &mut Measure, point: Point| {
         let frame = Rc::new(layout(&app.scene, size, measure));
         app.input.pointer_move(&app.scene, &frame, point);
         app.hover_pointer = Some(PhysicalPosition::new(
@@ -177,12 +172,7 @@ fn a_denied_control_publishes_guard_side_effects_without_claiming_navigation_suc
             false
         }
     }
-    let mut app = Application::new(
-        View::default(),
-        LocalExecutor::new(|| {}),
-        Inbox::<()>::new(|| {}),
-        |_: &mut View, _| {},
-    );
+    let mut app = Application::new(View::default(), LocalExecutor::new(|| {}));
     assert!(!app.base_scene.boolean("prompt", false));
     app.apply_control(ControlInput {
         path: vec![],
@@ -222,12 +212,7 @@ fn a_deferred_focus_command_is_consumed_with_an_unchanged_scene() {
     target.properties.insert("width", Length(100.0).into());
     target.properties.insert("height", Length(48.0).into());
     scene.children.push(target);
-    let mut app = Application::new(
-        View(Rc::new(scene)),
-        LocalExecutor::new(|| {}),
-        Inbox::<()>::new(|| {}),
-        |_: &mut View, _| {},
-    );
+    let mut app = Application::new(View(Rc::new(scene)), LocalExecutor::new(|| {}));
     app.layout = Some(Rc::new(layout(
         &app.scene,
         Size::new(200.0, 100.0),
@@ -275,12 +260,7 @@ fn a_deferred_scroll_command_is_consumed_with_an_unchanged_scene() {
     scene
         .properties
         .insert("content-height", Length(320.0).into());
-    let mut app = Application::new(
-        View(Rc::new(scene)),
-        LocalExecutor::new(|| {}),
-        Inbox::<()>::new(|| {}),
-        |_: &mut View, _| {},
-    );
+    let mut app = Application::new(View(Rc::new(scene)), LocalExecutor::new(|| {}));
     app.layout = Some(Rc::new(layout(
         &app.scene,
         Size::new(160.0, 100.0),
@@ -529,12 +509,7 @@ fn accessibility_scrolls_the_requested_container_without_moving_its_parent() {
             false
         }
     }
-    let mut app = Application::new(
-        View,
-        LocalExecutor::new(|| {}),
-        Inbox::<()>::new(|| {}),
-        |_: &mut View, _| {},
-    );
+    let mut app = Application::new(View, LocalExecutor::new(|| {}));
     let viewport = Size::new(220.0, 120.0);
     let frame = Rc::new(layout(&app.scene, viewport, &mut Measure));
     app.layout = Some(frame.clone());
@@ -663,13 +638,8 @@ fn accessibility_resizes_the_addressed_splitter_and_rejects_an_old_neighbor() {
         }
     }
 
-    let mut app = Application::new(
-        View::default(),
-        LocalExecutor::new(|| {}),
-        Inbox::<()>::new(|| {}),
-        |_: &mut View, _| {},
-    );
-    let frame = |app: &mut Application<View, (), _>| {
+    let mut app = Application::new(View::default(), LocalExecutor::new(|| {}));
+    let frame = |app: &mut Application<View>| {
         app.scene = Rc::new(app.component.render());
         let layout = Rc::new(layout(&app.scene, Size::new(320.0, 140.0), &mut Measure));
         app.layout = Some(layout.clone());
@@ -851,12 +821,7 @@ fn accessibility_dispatches_clicks_and_edits_and_rejects_a_stale_path() {
             true
         }
     }
-    let mut app = Application::new(
-        View::default(),
-        LocalExecutor::new(|| {}),
-        Inbox::<()>::new(|| {}),
-        |_: &mut View, _| {},
-    );
+    let mut app = Application::new(View::default(), LocalExecutor::new(|| {}));
     let viewport = Size::new(220.0, 120.0);
     let frame = Rc::new(layout(&app.scene, viewport, &mut Measure));
     app.layout = Some(frame.clone());
@@ -984,12 +949,7 @@ fn native_touch_keeps_range_capture_until_its_own_contact_ends() {
         }
     }
 
-    let mut app = Application::new(
-        View::default(),
-        LocalExecutor::new(|| {}),
-        Inbox::<()>::new(|| {}),
-        |_: &mut View, _| {},
-    );
+    let mut app = Application::new(View::default(), LocalExecutor::new(|| {}));
     let layout = Rc::new(layout(&app.scene, Size::new(180.0, 150.0), &mut Measure));
     let geometry = ColorPlaneGeometry::new(layout.at_path(&[0]).unwrap().bounds);
     let slider = SliderGeometry::new(
@@ -1088,12 +1048,7 @@ fn native_split_drag_uses_one_touch_contact_and_cancels_without_a_tap() {
         }
     }
 
-    let mut app = Application::new(
-        View::default(),
-        LocalExecutor::new(|| {}),
-        Inbox::<()>::new(|| {}),
-        |_: &mut View, _| {},
-    );
+    let mut app = Application::new(View::default(), LocalExecutor::new(|| {}));
     let layout = Rc::new(layout(&app.scene, Size::new(180.0, 100.0), &mut Measure));
     let handle = layout.at_path(&[0, 2]).unwrap().bounds;
     app.layout = Some(layout);
@@ -1161,12 +1116,7 @@ fn native_touch_adapter_activates_taps_and_keeps_pans_out_of_click_dispatch() {
             Size::new(12.0, 16.0)
         }
     }
-    let mut app = Application::new(
-        View::default(),
-        LocalExecutor::new(|| {}),
-        Inbox::<()>::new(|| {}),
-        |_: &mut View, _| {},
-    );
+    let mut app = Application::new(View::default(), LocalExecutor::new(|| {}));
     let viewport = Size::new(180.0, 120.0);
     app.layout = Some(Rc::new(layout_with_input(
         &app.scene,
@@ -1277,12 +1227,7 @@ fn native_pointer_delivers_release_clicks_double_click_and_pan_cancel_in_order()
         }
     }
 
-    let mut app = Application::new(
-        View::default(),
-        LocalExecutor::new(|| {}),
-        Inbox::<()>::new(|| {}),
-        |_: &mut View, _| {},
-    );
+    let mut app = Application::new(View::default(), LocalExecutor::new(|| {}));
     app.layout = Some(Rc::new(layout_with_input(
         &app.scene,
         Size::new(180.0, 120.0),
@@ -1555,8 +1500,6 @@ fn native_swipe_routes_mouse_touch_scroll_and_callback_cancellation() {
             cancel_on_move: false,
         },
         LocalExecutor::new(|| {}),
-        Inbox::<()>::new(|| {}),
-        |_: &mut View, _| {},
     );
     let viewport = Size::new(180.0, 140.0);
     app.layout = Some(Rc::new(layout_with_input(
@@ -1725,8 +1668,6 @@ fn native_multi_touch_keeps_contact_ids_and_releases_each_contact_independently(
             clicks: 0,
         },
         LocalExecutor::new(|| {}),
-        Inbox::<()>::new(|| {}),
-        |_: &mut View, _| {},
     );
     app.layout = Some(Rc::new(layout(
         &app.scene,
@@ -1878,8 +1819,6 @@ fn native_scale_rotate_arbitrates_touch_and_combines_trackpad_channels() {
             taps: 0,
         },
         LocalExecutor::new(|| {}),
-        Inbox::<()>::new(|| {}),
-        |_: &mut View, _| {},
     );
     let viewport = Size::new(280.0, 220.0);
     app.layout = Some(Rc::new(layout(&app.scene, viewport, &mut Measure)));
@@ -2031,12 +1970,7 @@ fn native_wheel_preserves_another_spin_draft_and_active_ime_composition() {
         spin.properties.insert("value", 10_i64.into());
         scene.children.push(spin);
     }
-    let mut app = Application::new(
-        View(scene),
-        LocalExecutor::new(|| {}),
-        Inbox::<()>::new(|| {}),
-        |_: &mut View, _| {},
-    );
+    let mut app = Application::new(View(scene), LocalExecutor::new(|| {}));
     let frame = Rc::new(layout(&app.scene, Size::new(250.0, 100.0), &mut Measure));
     app.layout = Some(frame.clone());
     let target = app
@@ -2107,12 +2041,7 @@ fn native_scroll_bar_touch_release_snaps_and_cancellation_keeps_the_dragged_posi
     bar.properties.insert("step-size", 0.25_f64.into());
     let mut window = Node::new("Window", None);
     window.children.extend([view, bar]);
-    let mut app = Application::new(
-        View(window),
-        LocalExecutor::new(|| {}),
-        Inbox::<()>::new(|| {}),
-        |_: &mut View, _| {},
-    );
+    let mut app = Application::new(View(window), LocalExecutor::new(|| {}));
     let viewport = Size::new(160.0, 120.0);
     let now = Instant::now();
     let device = DeviceId::dummy();
@@ -2224,8 +2153,6 @@ fn touch_table_drag_commits_only_the_owned_contact(reorder: bool) {
             actions: Vec::new(),
         },
         LocalExecutor::new(|| {}),
-        Inbox::<()>::new(|| {}),
-        |_: &mut View, _| {},
     );
     let frame = layout(&app.scene, Size::new(200.0, 130.0), &mut Measure);
     let table = &frame.children[0];
@@ -2348,12 +2275,7 @@ fn touch_drag_claims_one_contact_and_dispatches_drop_or_cancel() {
             Size::default()
         }
     }
-    let mut app = Application::new(
-        View::default(),
-        LocalExecutor::new(|| {}),
-        Inbox::<()>::new(|| {}),
-        |_: &mut View, _| {},
-    );
+    let mut app = Application::new(View::default(), LocalExecutor::new(|| {}));
     app.layout = Some(Rc::new(layout(
         &app.scene,
         Size::new(200.0, 100.0),
@@ -2422,12 +2344,7 @@ fn clipboard_reply_commits_only_for_the_current_selection() {
             true
         }
     }
-    let mut app = Application::new(
-        Editor("初始".into()),
-        LocalExecutor::new(|| {}),
-        Inbox::<()>::new(|| {}),
-        |_: &mut Editor, _| {},
-    );
+    let mut app = Application::new(Editor("初始".into()), LocalExecutor::new(|| {}));
     app.input.focused = Some(Target::from_node(vec![], &app.scene, true, None));
     app.input.sync_editor(&app.scene);
     app.input
@@ -2526,12 +2443,7 @@ fn vetoed_close_refreshes_the_scene_and_consumes_synchronous_retries() {
         }
     }
 
-    let mut app = Application::new(
-        Editor::default(),
-        LocalExecutor::new(|| {}),
-        Inbox::new(|| {}),
-        |_: &mut Editor, _: ()| {},
-    );
+    let mut app = Application::new(Editor::default(), LocalExecutor::new(|| {}));
     assert!(!app.request_close());
     assert_eq!(app.base_scene.int("requests"), Some(1));
     assert!(!app.take_close_request());
@@ -2542,38 +2454,23 @@ fn vetoed_close_refreshes_the_scene_and_consumes_synchronous_retries() {
 }
 
 #[test]
-fn closing_one_window_cancels_its_tasks_and_mailbox_without_affecting_another() {
-    let make = || {
+fn closing_one_window_cancels_its_tasks_without_affecting_another() {
+    let make = |delta| {
         let (notify, events) = mpsc::channel();
-        let task_notify = notify.clone();
         let tasks = LocalExecutor::new(move || {
-            let _ = task_notify.send(UserEvent::PollTasks);
+            let _ = notify.send(UserEvent::PollTasks);
         });
-        let inbox = Inbox::new(move || {
-            let _ = notify.send(UserEvent::ApplyMessages);
-        });
-        let sender = inbox.sender();
-        let window = Application::new(TestUi::default(), tasks, inbox, |ui: &mut TestUi, delta| {
-            let value = ui.value.clone();
-            spawn_local(async move {
-                value.set(value.get() + delta);
-            })
-            .unwrap();
-        });
-        (window, sender, events)
+        let window = Application::new(TestUi::default(), tasks.clone());
+        let value = window.component.value.clone();
+        {
+            let _scope = tasks.enter();
+            spawn_local(async move { value.set(value.get() + delta) }).unwrap();
+        }
+        (window, events)
     };
-    let (mut first, first_sender, first_events) = make();
-    let (mut second, second_sender, second_events) = make();
-    first_sender.try_send(10).unwrap();
-    second_sender.try_send(20).unwrap();
-    first.user_event(first_events.recv_timeout(Duration::from_secs(1)).unwrap());
-    second.user_event(second_events.recv_timeout(Duration::from_secs(1)).unwrap());
-
+    let (mut first, first_events) = make(10);
+    let (mut second, second_events) = make(20);
     first.close();
-    assert!(matches!(
-        first_sender.try_send(5),
-        Err(std::sync::mpsc::TrySendError::Disconnected(5))
-    ));
     first.user_event(first_events.recv_timeout(Duration::from_secs(1)).unwrap());
     second.user_event(second_events.recv_timeout(Duration::from_secs(1)).unwrap());
     assert_eq!(first.component.value.get(), 0);
@@ -2585,50 +2482,35 @@ fn closing_one_window_cancels_its_tasks_and_mailbox_without_affecting_another() 
 }
 
 #[test]
-fn tokio_result_wakes_local_ui_task_and_mailbox() {
+fn tokio_result_wakes_local_ui_task() {
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
         .enable_time()
         .build()
         .unwrap();
     let (notify, events) = mpsc::channel();
-    let notify_tasks = notify.clone();
-    let executor = LocalExecutor::new(move || notify_tasks.send(UserEvent::PollTasks).unwrap());
+    let executor = LocalExecutor::new(move || notify.send(UserEvent::PollTasks).unwrap());
     let _scope = executor.enter();
-    let inbox = Inbox::new(move || notify.send(UserEvent::ApplyMessages).unwrap());
-    let sender = inbox.sender();
-    let mut app = Application::new(
-        TestUi::default(),
-        executor,
-        inbox,
-        |ui: &mut TestUi, value| {
-            ui.value.set(ui.value.get() + value);
-        },
-    );
+    let mut app = Application::new(TestUi::default(), executor);
     let (start, wait) = tokio::sync::oneshot::channel();
     let job = runtime.spawn(async move {
         wait.await.unwrap();
         tokio::time::sleep(Duration::from_millis(5)).await;
-        sender.try_send(40).unwrap();
-        2
+        42
     });
     let value = app.component.value.clone();
     let ui_thread = thread::current().id();
-    drop(
-        spawn_local(async move {
-            let delta = job.await.unwrap();
-            assert_eq!(thread::current().id(), ui_thread);
-            value.set(value.get() + delta);
-        })
-        .unwrap(),
-    );
+    spawn_local(async move {
+        let delta = job.await.unwrap();
+        assert_eq!(thread::current().id(), ui_thread);
+        value.set(value.get() + delta);
+    })
+    .unwrap();
 
     app.process_user_event(events.recv_timeout(Duration::from_secs(5)).unwrap());
     assert_eq!(app.base_scene.int("value"), Some(0));
     start.send(()).unwrap();
-    for _ in 0..2 {
-        app.process_user_event(events.recv_timeout(Duration::from_secs(5)).unwrap());
-    }
+    app.process_user_event(events.recv_timeout(Duration::from_secs(5)).unwrap());
     assert_eq!(app.base_scene.int("value"), Some(42));
 }
 
@@ -2716,12 +2598,7 @@ fn window_timer_schedule_tracks_the_active_component_layout() {
             Size::default()
         }
     }
-    let mut app = Application::new(
-        TestUi::default(),
-        LocalExecutor::new(|| {}),
-        Inbox::<()>::new(|| {}),
-        |_, _| {},
-    );
+    let mut app = Application::new(TestUi::default(), LocalExecutor::new(|| {}));
     let slot = TimerSlot::default();
     let start = Instant::now();
     let at = |millis| start + Duration::from_millis(millis);
@@ -2913,12 +2790,7 @@ fn local_future_resumes_on_ui_after_worker_wake_and_refreshes_scene() {
     let (notify, events) = mpsc::channel();
     let executor = LocalExecutor::new(move || notify.send(UserEvent::PollTasks).unwrap());
     let _scope = executor.enter();
-    let mut app = Application::new(
-        TestUi::default(),
-        executor,
-        Inbox::<()>::new(|| {}),
-        |_: &mut TestUi, _| {},
-    );
+    let mut app = Application::new(TestUi::default(), executor);
     let value = app.component.value.clone();
     let ready = Arc::new(AtomicBool::new(false));
     let is_ready = ready.clone();
@@ -3012,44 +2884,6 @@ fn aborted_and_closed_tasks_drop_on_the_ui_thread() {
 }
 
 #[test]
-fn mailbox_bounds_backlog_and_refreshes_once_per_batch() {
-    use mpsc::TrySendError;
-    let (notify, events) = mpsc::channel();
-    let inbox = Inbox::new(move || notify.send(UserEvent::ApplyMessages).unwrap());
-    let sender = inbox.sender();
-    let worker = sender.clone();
-    let ui_thread = thread::current().id();
-    let mut app = Application::new(
-        TestUi::default(),
-        LocalExecutor::new(|| {}),
-        inbox,
-        move |ui: &mut TestUi, message| {
-            assert_eq!(thread::current().id(), ui_thread);
-            assert_eq!(message, ui.value.get() + 1);
-            ui.value.set(message);
-        },
-    );
-    thread::spawn(move || {
-        for value in 1..=256 {
-            worker.try_send(value).unwrap();
-        }
-        assert_eq!(worker.try_send(257), Err(TrySendError::Full(257)));
-    })
-    .join()
-    .unwrap();
-    for batch in 1..=4 {
-        let event = events.try_recv().unwrap();
-        assert!(events.try_recv().is_err());
-        app.process_user_event(event);
-        assert_eq!(app.base_scene.int("value"), Some(batch as i64 * 64));
-        assert_eq!(app.component.renders.get(), batch + 1);
-    }
-    assert!(events.try_recv().is_err());
-    app.close_async();
-    assert_eq!(sender.try_send(257), Err(TrySendError::Disconnected(257)));
-}
-
-#[test]
 fn image_playback_wakes_the_window_only_at_visible_frame_boundaries() {
     use xrack_layout::{TextMeasurer, layout};
     use xrack_runtime::{Image, ImageAnimation, ImageAnimationFrame, ImagePlaybackSlot};
@@ -3102,12 +2936,10 @@ fn image_playback_wakes_the_window_only_at_visible_frame_boundaries() {
             x: 0.0,
         },
         LocalExecutor::new(|| {}),
-        Inbox::<()>::new(|| {}),
-        |_, _| {},
     );
     let start = Instant::now();
     let at = |ms| start + Duration::from_millis(ms);
-    let place = |app: &mut Application<View, (), _>| {
+    let place = |app: &mut Application<View>| {
         app.scene = app.component.render_shared();
         app.layout = Some(Rc::new(layout(
             &app.scene,

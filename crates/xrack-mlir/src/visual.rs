@@ -254,6 +254,21 @@ impl<'m> ComponentAnalysis<'m> {
         }
         let action_presentation = element.children().any(|op| op.name() == "xr.action_ref");
         for op in element.children() {
+            if !repeated
+                && op.name() == "xr.state_select"
+                && op.result(0).is_some_and(|value| {
+                    value.uses().any(|(user, index)| {
+                        index != 0
+                            || !matches!(
+                                user.name(),
+                                "xr.state_set" | "xr.instance_state" | "xr.state_timing"
+                            )
+                    })
+                })
+            {
+                self.persistent_state_selectors
+                    .insert(op.attr("owner")?, op);
+            }
             let visual = matches!(op.name(), "xr.state_set" | "xr.state_timing");
             let persistent = !repeated
                 && (op.name() == "xr.instance_state"

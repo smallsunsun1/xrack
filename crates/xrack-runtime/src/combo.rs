@@ -313,6 +313,105 @@ pub enum ComboInput {
     },
 }
 
+#[derive(Clone, Copy)]
+#[doc(hidden)]
+pub enum ComboEditor {
+    None,
+    Default,
+    Explicit,
+}
+
+#[doc(hidden)]
+pub enum ComboUpdate<'a> {
+    Select(&'a ComboSelection),
+    ClearIndex,
+    SetFreeText(&'a str),
+    SetEditText(&'a str),
+    ResetEditText,
+    Selected(&'a str),
+    ValueSelected(&'a Value),
+    Accepted(&'a str),
+}
+
+impl ComboInput {
+    /// Commit selection and edit text before publishing callbacks.
+    pub fn try_apply<E>(
+        self,
+        editor: ComboEditor,
+        by_value: bool,
+        records: bool,
+        mut update: impl FnMut(ComboUpdate<'_>) -> Result<bool, E>,
+    ) -> Result<bool, E> {
+        use ComboUpdate::*;
+
+        match self {
+            Self::Select {
+                selection,
+                editable,
+            } => {
+                if !update(Select(&selection))? {
+                    return Ok(false);
+                }
+                if editable {
+                    match editor {
+                        ComboEditor::None => {}
+                        ComboEditor::Default => {
+                            update(ResetEditText)?;
+                        }
+                        ComboEditor::Explicit => {
+                            update(SetEditText(&selection.label))?;
+                        }
+                    }
+                }
+                update(Selected(&selection.label))?;
+                if records {
+                    update(ValueSelected(&selection.value))?;
+                }
+            }
+            Self::Accept { text, selection } => {
+                if matches!(editor, ComboEditor::None) {
+                    return Ok(false);
+                }
+                if let Some(selection) = selection {
+                    if !update(Select(&selection))? {
+                        return Ok(false);
+                    }
+                    if matches!(editor, ComboEditor::Default) {
+                        update(ResetEditText)?;
+                    }
+                    if records {
+                        update(ValueSelected(&selection.value))?;
+                    }
+                } else {
+                    if !by_value {
+                        update(ClearIndex)?;
+                    } else if !records {
+                        update(SetFreeText(&text))?;
+                    }
+                    if matches!(editor, ComboEditor::Default) {
+                        update(SetEditText(&text))?;
+                    }
+                }
+                update(Accepted(&text))?;
+            }
+        }
+        Ok(true)
+    }
+
+    pub fn apply(
+        self,
+        editor: ComboEditor,
+        by_value: bool,
+        records: bool,
+        mut update: impl FnMut(ComboUpdate<'_>) -> bool,
+    ) -> bool {
+        self.try_apply(editor, by_value, records, |event| {
+            Ok::<_, std::convert::Infallible>(update(event))
+        })
+        .unwrap_or_else(|error| match error {})
+    }
+}
+
 fn combo_selection(node: &Node, index: usize) -> Option<ComboSelection> {
     if !choice_enabled(node, index) {
         return None;

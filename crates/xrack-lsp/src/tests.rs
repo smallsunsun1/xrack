@@ -40,10 +40,7 @@ fn edit_buffer_updates_diagnostics_and_outline_over_stdio() {
     }
 
     let mut output = Vec::new();
-    assert_eq!(
-        serve(&mut input.as_slice(), &mut output).unwrap(),
-        ExitCode::SUCCESS
-    );
+    assert_eq!(serve_bytes(&input, &mut output).unwrap(), ExitCode::SUCCESS);
     let mut output = output.as_slice();
     let mut messages = Vec::new();
     while let Some(message) = protocol::read_message(&mut output).unwrap() {
@@ -89,8 +86,8 @@ fn edit_buffer_updates_diagnostics_and_outline_over_stdio() {
 
 #[test]
 fn incomplete_source_and_imports_follow_the_frontend_boundaries() {
-    let incomplete = analysis::analyze(URI, "component Demo inherits Window {\n");
-    assert_eq!(incomplete.diagnostics[0]["code"], "syntax");
+    let incomplete = analysis::analyze(URI, "component Demo inherits Window {\n", None);
+    assert_eq!(incomplete.diagnostics[URI][0]["code"], "syntax");
     assert!(incomplete.symbols.is_empty());
 
     let imported = analysis::analyze(
@@ -99,8 +96,9 @@ fn incomplete_source_and_imports_follow_the_frontend_boundaries() {
             "import { Card } from \"widgets.xr\";\n",
             "export /* 中文 */ component\nDemo inherits Card {}",
         ),
+        None,
     );
-    assert!(imported.diagnostics.is_empty());
+    assert_eq!(imported.diagnostics[URI][0]["code"], "semantic");
     assert_eq!(imported.symbols[0]["name"], "Demo");
     assert_eq!(
         imported.symbols[0]["location"]["range"],
@@ -698,4 +696,1047 @@ fn semantic_tokens_report_context_and_utf16_deltas() {
     }
     assert_eq!(tokens.iter().filter(|token| token.0 == "people").count(), 1);
     assert_eq!(tokens.iter().filter(|token| token.0 == "Window").count(), 1);
+}
+
+pub(crate) fn workspace_fixture(name: &str) -> std::path::PathBuf {
+    let root = std::env::var_os("TEST_TMPDIR")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir)
+        .join(format!("xrack-lsp-{}-{name}", std::process::id()));
+    std::fs::create_dir_all(&root).unwrap();
+    root.canonicalize().unwrap()
+}
+
+fn serve_bytes(input: &[u8], output: &mut impl io::Write) -> io::Result<ExitCode> {
+    let (events, receiver) = mpsc::channel();
+    server_events::read_input(input, events.clone());
+    serve(receiver, events, output)
+}
+
+fn exchange(messages: Vec<Value>) -> Vec<Value> {
+    let mut input = Vec::new();
+    for message in messages {
+        protocol::write_message(&mut input, &message).unwrap();
+    }
+    let mut output = Vec::new();
+    serve_bytes(&input, &mut output).unwrap();
+    let mut output = output.as_slice();
+    std::iter::from_fn(|| protocol::read_message(&mut output).unwrap()).collect()
+}
+
+fn request_document_symbols(id: i32, uri: &str) -> Value {
+    json!({"jsonrpc":"2.0","id":id,"method":"textDocument/documentSymbol","params":{"textDocument":{"uri":uri}}})
+}
+
+#[test]
+fn diagnostics_follow_transitive_unsaved_imports_and_fall_back_to_disk() {
+    let root = workspace_fixture("diagnostics");
+    let workspace = completion::Workspace::new(&fixture_uri("app.xr"), std::iter::empty()).unwrap();
+    let app_uri = workspace.uri(&root.join("app.xr")).unwrap();
+    let bridge_uri = workspace.uri(&root.join("bridge.xr")).unwrap();
+    let leaf = root.join("leaf.xr");
+    let leaf_uri = workspace.uri(&leaf).unwrap();
+    let app = "import { Bridge } from \"bridge.xr\";\ncomponent App inherits Window { Bridge { value: 1; } }";
+    let bridge = "import { Leaf } from \"leaf.xr\";\nexport component Bridge inherits Leaf {}";
+    let good = "export component Leaf inherits Rectangle { in property <int> value; }";
+    let different_type = "export component Leaf inherits Rectangle { in property <string> value; }";
+    let semantic_error = "export component Leaf inherits Rectangle {\n  Text { text: \"中🙂\" + missing; }\n  in property <int> value;\n}";
+    let syntax_error = "export component Leaf inherits Rectangle {";
+    std::fs::write(root.join("bridge.xr"), bridge).unwrap();
+    std::fs::write(&leaf, good).unwrap();
+    let open = |uri: &str, text: &str| json!({"jsonrpc":"2.0", "method":"textDocument/didOpen", "params":{"textDocument":{"uri":uri,"version":1,"text":text}}});
+    let change = |version, text| json!({"jsonrpc":"2.0", "method":"textDocument/didChange", "params":{"textDocument":{"uri":leaf_uri,"version":version}, "contentChanges":[{"text":text}]}});
+    let diagnostics = exchange(vec![
+        json!({"jsonrpc":"2.0","id":1,"method":"initialize"}),
+        open(&app_uri, app),
+        open(&leaf_uri, different_type),
+        change(2, semantic_error),
+        request_document_symbols(10, &leaf_uri),
+        change(3, syntax_error),
+        json!({"jsonrpc":"2.0", "method":"textDocument/didClose", "params":{"textDocument":{"uri":leaf_uri}}}),
+        open(&bridge_uri, bridge),
+    ]);
+    let reports = |uri: &str| {
+        diagnostics
+            .iter()
+            .filter(|message| {
+                message["method"] == "textDocument/publishDiagnostics"
+                    && message["params"]["uri"] == uri
+            })
+            .map(|message| &message["params"])
+            .collect::<Vec<_>>()
+    };
+    let app_reports = reports(&app_uri);
+    assert_eq!(app_reports.len(), 5, "{app_reports:?}");
+    assert_eq!(app_reports[0]["diagnostics"], json!([]));
+    let mismatch = &app_reports[1]["diagnostics"][0];
+    assert_eq!(mismatch["range"]["start"]["line"], 1);
+    assert!(
+        mismatch["message"]
+            .as_str()
+            .unwrap()
+            .contains("type mismatch")
+    );
+    for report in &app_reports[2..4] {
+        let error = &report["diagnostics"][0];
+        assert_eq!(report["version"], 1);
+        assert_eq!(error["range"]["start"]["line"], 0);
+        assert_eq!(error["relatedInformation"][0]["location"]["uri"], leaf_uri);
+    }
+    assert_eq!(app_reports[4]["diagnostics"], json!([]));
+    let leaf_reports = reports(&leaf_uri);
+    let error = &leaf_reports[1]["diagnostics"][0];
+    assert_eq!(error["code"], "semantic");
+    assert_eq!(error["range"]["start"]["line"], 1);
+    assert_eq!(
+        error["range"]["start"]["character"],
+        "  Text { text: \"中🙂\" + ".encode_utf16().count()
+    );
+    assert_eq!(leaf_reports[2]["diagnostics"][0]["code"], "syntax");
+    assert_eq!(leaf_reports[3]["diagnostics"], json!([]));
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn a_new_unsaved_import_satisfies_a_previously_missing_dependency() {
+    let root = workspace_fixture("new-import");
+    let workspace = completion::Workspace::new(&fixture_uri("app.xr"), std::iter::empty()).unwrap();
+    let app = workspace.uri(&root.join("app.xr")).unwrap();
+    let dependency = workspace.uri(&root.join("new.xr")).unwrap();
+    let open = |uri: &str, text: &str| json!({"jsonrpc":"2.0", "method":"textDocument/didOpen", "params":{"textDocument":{"uri":uri,"version":1,"text":text}}});
+    let messages = exchange(vec![
+        json!({"jsonrpc":"2.0","id":1,"method":"initialize"}),
+        open(
+            &app,
+            "import { NewItem } from \"new.xr\"; component App inherits Window { NewItem {} }",
+        ),
+        open(
+            &dependency,
+            "export component NewItem inherits Rectangle {}",
+        ),
+    ]);
+    let reports: Vec<_> = messages
+        .iter()
+        .filter(|message| message["params"]["uri"] == app)
+        .collect();
+    assert_eq!(reports.len(), 2);
+    assert!(
+        reports[0]["params"]["diagnostics"][0]["message"]
+            .as_str()
+            .unwrap()
+            .contains("could not open")
+    );
+    assert_eq!(reports[1]["params"]["diagnostics"], json!([]));
+    assert!(!root.join("new.xr").exists());
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn watched_import_creation_and_deletion_refresh_open_dependents() {
+    let root = workspace_fixture("watched-import");
+    let workspace = completion::Workspace::new(&fixture_uri("app.xr"), std::iter::empty()).unwrap();
+    let app = workspace.uri(&root.join("app.xr")).unwrap();
+    let dependency = root.join("item.xr");
+    let mut documents = BTreeMap::from([(
+        app.clone(),
+        Document {
+            version: 1,
+            text: "import { Item } from \"item.xr\"; component App inherits Window { Item {} }"
+                .into(),
+            analysis: analysis::Analysis::default(),
+        },
+    )]);
+    let mut published = BTreeMap::new();
+    let mut output = Vec::new();
+    refresh_analysis(
+        &mut output,
+        &mut documents,
+        &mut published,
+        Some(&app),
+        BTreeSet::new(),
+    )
+    .unwrap();
+    assert!(
+        published[&app]["diagnostics"][0]["message"]
+            .as_str()
+            .unwrap()
+            .contains("could not open")
+    );
+    std::fs::write(&dependency, "export component Item inherits Rectangle {}").unwrap();
+    let changed = BTreeSet::from([normalize_source_path(&dependency)]);
+    refresh_analysis(
+        &mut output,
+        &mut documents,
+        &mut published,
+        None,
+        changed.clone(),
+    )
+    .unwrap();
+    assert_eq!(published[&app]["diagnostics"], json!([]));
+    std::fs::remove_file(dependency).unwrap();
+    refresh_analysis(&mut output, &mut documents, &mut published, None, changed).unwrap();
+    assert!(
+        published[&app]["diagnostics"][0]["message"]
+            .as_str()
+            .unwrap()
+            .contains("could not open")
+    );
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn references_and_rename_use_declaration_identity_across_workspace_files() {
+    let root = workspace_fixture("rename");
+    let workspace = completion::Workspace::new(&fixture_uri("app.xr"), std::iter::empty()).unwrap();
+    let root_uri = workspace.uri(&root).unwrap();
+    let widget = workspace.uri(&root.join("widget.xr")).unwrap();
+    let app = workspace.uri(&root.join("app.xr")).unwrap();
+    let unopened = workspace.uri(&root.join("unopened.xr")).unwrap();
+    let declaration = "export component Card inherits Rectangle { in property <int> count; }";
+    let client = "import { Card as Tile } from \"widget.xr\";\ncomponent App inherits Window {\n tile := Tile { count: 3; }\n Text { text: \"🙂\" + tile.count; }\n}";
+    std::fs::write(
+        root.join("widget.xr"),
+        "export component Saved inherits Rectangle {}",
+    )
+    .unwrap();
+    std::fs::write(root.join("unopened.xr"), "import { Card } from \"widget.xr\"; component Another inherits Window { Card { count: 9; } }").unwrap();
+    let request = |id, method: &str, uri: &str, text: &str, marker: &str, name: &str| {
+        let offset = text.find(marker).unwrap() + marker.len() - 1;
+        let (line, character) = analysis::Source::new(text).coordinates(offset);
+        json!({"jsonrpc":"2.0","id":id,"method":method,"params":{"textDocument":{"uri":uri},"position":{"line":line,"character":character},"newName":name,"context":{"includeDeclaration":false}}})
+    };
+    let open = |uri: &str, text: &str| json!({"jsonrpc":"2.0", "method":"textDocument/didOpen", "params":{"textDocument":{"uri":uri,"version":1,"text":text}}});
+    let messages = exchange(vec![
+        json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"rootUri":root_uri}}),
+        open(&widget, declaration),
+        open(&app, client),
+        request(2, "textDocument/references", &app, client, "tile.count", ""),
+        request(
+            3,
+            "textDocument/rename",
+            &app,
+            client,
+            "tile.count",
+            "quantity",
+        ),
+        request(
+            4,
+            "textDocument/rename",
+            &widget,
+            declaration,
+            "Card",
+            "PanelCard",
+        ),
+        request(
+            5,
+            "textDocument/rename",
+            &app,
+            client,
+            "as Tile",
+            "PanelTile",
+        ),
+        request(
+            6,
+            "textDocument/prepareRename",
+            &app,
+            client,
+            "tile.count",
+            "",
+        ),
+        request(7, "textDocument/rename", &app, client, "tile.count", "tile"),
+    ]);
+    let response = |id| messages.iter().find(|message| message["id"] == id).unwrap();
+    assert_eq!(response(2)["result"].as_array().unwrap().len(), 3);
+    let edits = |id, uri: &str| {
+        response(id)["result"]["changes"][uri]
+            .as_array()
+            .map_or(0, Vec::len)
+    };
+    assert_eq!(
+        [edits(3, &app), edits(3, &widget), edits(3, &unopened)],
+        [2, 1, 1]
+    );
+    assert_eq!(
+        [edits(4, &app), edits(4, &widget), edits(4, &unopened)],
+        [1, 1, 2]
+    );
+    assert_eq!(
+        [edits(5, &app), edits(5, &widget), edits(5, &unopened)],
+        [2, 0, 0]
+    );
+    assert_eq!(response(6)["result"]["placeholder"], "count");
+    // The instance ID and a property on that instance occupy different scopes.
+    assert_eq!(
+        [edits(7, &app), edits(7, &widget), edits(7, &unopened)],
+        [2, 1, 1]
+    );
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn reference_requests_observe_preceding_buffer_updates_over_stdio() {
+    let uri = "untitled:counter.xr";
+    let first =
+        "component App inherits Window { property <int> count; Text { text: \"\" + root.count; } }";
+    let second = first.replace("count", "total");
+    let request = |id, text: &str, spelling: &str| {
+        let offset = text.rfind(spelling).unwrap();
+        let (line, character) = analysis::Source::new(text).coordinates(offset);
+        json!({"jsonrpc":"2.0","id":id,"method":"textDocument/references","params":{
+            "textDocument":{"uri":uri}, "position":{"line":line,"character":character},
+            "context":{"includeDeclaration":true}
+        }})
+    };
+    let messages = exchange(vec![
+        json!({"jsonrpc":"2.0","id":1,"method":"initialize"}),
+        json!({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":uri,"version":1,"text":first}}}),
+        request(2, first, "count"),
+        json!({"jsonrpc":"2.0","method":"textDocument/didChange","params":{"textDocument":{"uri":uri,"version":2},"contentChanges":[{"text":format!("\n{second}")} ]}}),
+        request(3, &format!("\n{second}"), "total"),
+    ]);
+    for (id, line) in [(2, 0), (3, 1)] {
+        let response = messages.iter().find(|message| message["id"] == id).unwrap();
+        let references = response["result"].as_array().unwrap();
+        assert_eq!(references.len(), 2);
+        assert!(
+            references.iter().all(
+                |location| location["uri"] == uri && location["range"]["start"]["line"] == line
+            )
+        );
+    }
+}
+
+#[test]
+fn definition_and_rename_use_inherited_private_members_and_fall_back_during_edits() {
+    let root = workspace_fixture("semantic-navigation");
+    let workspace = completion::Workspace::new(&fixture_uri("app.xr"), std::iter::empty()).unwrap();
+    let base_path = root.join("base.xr");
+    let base_uri = workspace.uri(&base_path).unwrap();
+    let app_uri = workspace.uri(&root.join("app.xr")).unwrap();
+    let base = "export component Base inherits Window { property <int> hidden-count: 1; }";
+    std::fs::write(&base_path, base).unwrap();
+    let app = "import { Base } from \"base.xr\"; component App inherits Base { Text { text: \"🙂\" + root.hidden-count; } }";
+    let incomplete = app.replace("root.hidden-count", "root");
+    let open = json!({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":app_uri,"version":1,"text":app}}});
+    let request = |id, method: &str, text: &str, marker: &str| {
+        let (line, character) =
+            analysis::Source::new(text).coordinates(text.rfind(marker).unwrap());
+        json!({"jsonrpc":"2.0","id":id,"method":method,"params":{"textDocument":{"uri":app_uri},
+            "position":{"line":line,"character":character},"newName":"private-total"}})
+    };
+    let messages = exchange(vec![
+        json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"rootUri":workspace.uri(&root)}}),
+        open,
+        request(2, "textDocument/definition", app, "hidden-count"),
+        request(3, "textDocument/rename", app, "hidden-count"),
+        json!({"jsonrpc":"2.0","method":"textDocument/didChange","params":{
+            "textDocument":{"uri":app_uri,"version":2},"contentChanges":[{"text":incomplete.trim_end_matches('}')}]
+        }}),
+        request(4, "textDocument/definition", &incomplete, "Base"),
+    ]);
+    let response = |id| messages.iter().find(|message| message["id"] == id).unwrap();
+    assert_eq!(
+        response(2)["result"],
+        location_at(
+            &base_uri,
+            &base.replace("hidden-count", "|hidden-count"),
+            "hidden-count"
+        )
+    );
+    let edits = &response(3)["result"]["changes"];
+    assert_eq!(edits[&base_uri].as_array().unwrap().len(), 1);
+    assert_eq!(edits[&app_uri].as_array().unwrap().len(), 1);
+    assert_eq!(response(4)["result"]["uri"], base_uri);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn workspace_search_and_auto_import_use_indexed_exports_and_unsaved_names() {
+    let root = workspace_fixture("auto-import");
+    let workspace = completion::Workspace::new(&fixture_uri("app.xr"), std::iter::empty()).unwrap();
+    let widgets = root.join("widgets.xr");
+    let widget_uri = workspace.uri(&widgets).unwrap();
+    let app_uri = workspace.uri(&root.join("app.xr")).unwrap();
+    let typed_uri = workspace.uri(&root.join("nested/typed.xr")).unwrap();
+    std::fs::write(&widgets, "export component OldCard inherits Rectangle {}").unwrap();
+    std::fs::write(
+        root.join("cycle.xr"),
+        "import { App } from \"app.xr\"; export component CardCycle inherits App {}",
+    )
+    .unwrap();
+    let app = "// keep this comment\r\nexport component App inherits Window {\r\n  Car\r\n}";
+    let typed = "component Typed inherits Window { property <Card> value; }";
+    let typed_position = analysis::Source::new(typed).coordinates(typed.find("Card").unwrap() + 4);
+    let (line, character) = analysis::Source::new(app).coordinates(app.find("Car").unwrap() + 3);
+    let open = |uri: &str, text: &str| json!({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":uri,"version":1,"text":text}}});
+    let messages = exchange(vec![
+        json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"rootUri":workspace.uri(&root)}}),
+        open(
+            &widget_uri,
+            "export component CardView inherits Rectangle {} component CardPrivate inherits Rectangle {} export struct CardData { count: int }",
+        ),
+        open(&app_uri, app),
+        open(&typed_uri, typed),
+        json!({"jsonrpc":"2.0","id":2,"method":"workspace/symbol","params":{"query":"cardv"}}),
+        json!({"jsonrpc":"2.0","id":3,"method":"textDocument/completion","params":{"textDocument":{"uri":app_uri},"position":{"line":line,"character":character}}}),
+        json!({"jsonrpc":"2.0","id":4,"method":"textDocument/completion","params":{"textDocument":{"uri":typed_uri},"position":{"line":typed_position.0,"character":typed_position.1}}}),
+    ]);
+    let response = |id| messages.iter().find(|message| message["id"] == id).unwrap();
+    let symbols = response(2)["result"].as_array().unwrap();
+    assert_eq!(symbols.len(), 1);
+    assert_eq!(symbols[0]["name"], "CardView");
+    assert_eq!(symbols[0]["location"]["uri"], widget_uri);
+    let items = response(3)["result"].as_array().unwrap();
+    let auto_imports: Vec<_> = items
+        .iter()
+        .filter(|item| item.get("additionalTextEdits").is_some())
+        .collect();
+    assert_eq!(auto_imports.len(), 1, "{items:?}");
+    let candidate = auto_imports[0];
+    assert_eq!(candidate["label"], "CardView");
+    let edit = &candidate["additionalTextEdits"][0];
+    assert_eq!(edit["range"]["start"], json!({"line":1,"character":0}));
+    assert_eq!(
+        edit["newText"],
+        "import { CardView } from \"widgets.xr\";\r\n"
+    );
+    let records: Vec<_> = response(4)["result"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|item| item.get("additionalTextEdits").is_some())
+        .collect();
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0]["label"], "CardData");
+    assert_eq!(
+        records[0]["additionalTextEdits"][0]["newText"],
+        "import { CardData } from \"../widgets.xr\";\n"
+    );
+    let edited = app
+        .replace(
+            "export component",
+            &format!("{}export component", edit["newText"].as_str().unwrap()),
+        )
+        .replace("Car\r\n", "CardView {}\r\n");
+    let entry = xrack_parser::parse(&edited).unwrap();
+    let buffers = BTreeMap::from([(widgets, "export component CardView inherits Rectangle {}")]);
+    let document = xrack_ir::modules::resolve_document(
+        entry,
+        &root.join("app.xr"),
+        None,
+        &buffers,
+        &mut BTreeMap::new(),
+        None,
+    )
+    .unwrap();
+    assert!(xrack_ir::semantic::resolve_symbols(&document).is_ok());
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn rename_allows_equal_names_in_independent_component_and_handler_scopes() {
+    let source = r#"component One inherits Window {
+        property <int> count: 1;
+        callback first(int) -> int;
+        first(value) => { value + root.count }
+        callback second(int) -> int;
+        second(total) => { total }
+    }
+    component Two inherits Window {
+        property <int> total: 2;
+        Text { text: "" + root.total; }
+    }"#;
+    let request = |id, marker: &str, new_name: &str| {
+        let offset = source.find(marker).unwrap();
+        let (line, character) = analysis::Source::new(source).coordinates(offset);
+        json!({"jsonrpc":"2.0","id":id,"method":"textDocument/rename","params":{
+            "textDocument":{"uri":URI},"position":{"line":line,"character":character},"newName":new_name
+        }})
+    };
+    let messages = exchange(vec![
+        json!({"jsonrpc":"2.0","id":1,"method":"initialize"}),
+        json!({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{
+            "textDocument":{"uri":URI,"version":1,"text":source}
+        }}),
+        request(2, "count: 1", "total"),
+        request(3, "value +", "total"),
+    ]);
+    let edits = |id| {
+        let response = messages.iter().find(|message| message["id"] == id).unwrap();
+        response["result"]["changes"][URI]
+            .as_array()
+            .unwrap_or_else(|| panic!("{response}"))
+    };
+    assert_eq!(edits(2).len(), 2);
+    assert_eq!(edits(3).len(), 2);
+    assert!(
+        edits(2)
+            .iter()
+            .chain(edits(3))
+            .all(|edit| edit["range"]["start"]["line"].as_u64().unwrap() < 7)
+    );
+}
+
+#[test]
+fn rename_rejects_duplicate_declarations_and_capture_in_both_directions() {
+    let source = r#"component App inherits Window {
+        property <int> count: 1;
+        property <int> total: 2;
+        callback calculate(int) -> int;
+        calculate(shadow) => { count + shadow + total }
+        Rectangle {
+            property <int> local: 3;
+            Text { text: "" + total; }
+        }
+    }"#;
+    let request = |id, marker: &str, new_name: &str| {
+        let offset = source.find(marker).unwrap();
+        let (line, character) = analysis::Source::new(source).coordinates(offset);
+        json!({"jsonrpc":"2.0","id":id,"method":"textDocument/rename","params":{
+            "textDocument":{"uri":URI},"position":{"line":line,"character":character},"newName":new_name
+        }})
+    };
+    let messages = exchange(vec![
+        json!({"jsonrpc":"2.0","id":1,"method":"initialize"}),
+        json!({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{
+            "textDocument":{"uri":URI,"version":1,"text":source}
+        }}),
+        request(2, "count: 1", "total"),
+        request(3, "count: 1", "shadow"),
+        request(4, "shadow +", "total"),
+        request(5, "local: 3", "total"),
+        request(6, "local: 3", "count"),
+    ]);
+    let response = |id| messages.iter().find(|message| message["id"] == id).unwrap();
+    for id in 2..=5 {
+        assert_eq!(response(id)["error"]["code"], -32602, "{}", response(id));
+    }
+    assert_eq!(
+        response(6)["result"]["changes"][URI]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
+#[test]
+fn rename_checks_scopes_in_incomplete_buffers() {
+    let source = r#"component App inherits Window {
+        property <int> count;
+        property <int> total;
+        Text { text: "" + root.count;
+    "#;
+    let (line, character) =
+        analysis::Source::new(source).coordinates(source.find("count").unwrap());
+    let messages = exchange(vec![
+        json!({"jsonrpc":"2.0","id":1,"method":"initialize"}),
+        json!({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{
+            "textDocument":{"uri":URI,"version":1,"text":source}
+        }}),
+        json!({"jsonrpc":"2.0","id":2,"method":"textDocument/rename","params":{
+            "textDocument":{"uri":URI},"position":{"line":line,"character":character},"newName":"total"
+        }}),
+        json!({"jsonrpc":"2.0","id":3,"method":"textDocument/rename","params":{
+            "textDocument":{"uri":URI},"position":{"line":line,"character":character},"newName":"amount"
+        }}),
+    ]);
+    let response = |id| messages.iter().find(|message| message["id"] == id).unwrap();
+    assert_eq!(response(2)["error"]["code"], -32602);
+    assert_eq!(
+        response(3)["result"]["changes"][URI]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+}
+
+#[test]
+fn rename_rejects_conflicts_in_unedited_transitive_importers() {
+    let root = workspace_fixture("rename-importer-conflict");
+    let workspace = completion::Workspace::new(URI, std::iter::empty()).unwrap();
+    let base = root.join("base.xr");
+    let base_uri = workspace.uri(&base).unwrap();
+    let source = "export component Base inherits Window { property <int> count: 1; }";
+    std::fs::write(&base, source).unwrap();
+    std::fs::write(
+        root.join("bridge.xr"),
+        "import { Base } from \"base.xr\"; export component Bridge inherits Base {}",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("app.xr"),
+        "import { Bridge } from \"bridge.xr\"; component App inherits Bridge { property <int> total: 2; }",
+    ).unwrap();
+    let (line, character) =
+        analysis::Source::new(source).coordinates(source.find("count").unwrap());
+    let rename = |id, name| {
+        json!({"jsonrpc":"2.0","id":id,"method":"textDocument/rename","params":{
+            "textDocument":{"uri":base_uri},"position":{"line":line,"character":character},"newName":name
+        }})
+    };
+    let messages = exchange(vec![
+        json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"rootUri":workspace.uri(&root)}}),
+        json!({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{
+            "textDocument":{"uri":base_uri,"version":1,"text":source}
+        }}),
+        rename(2, "total"),
+        rename(3, "amount"),
+    ]);
+    let response = |id| messages.iter().find(|message| message["id"] == id).unwrap();
+    assert_eq!(response(2)["error"]["code"], -32602);
+    let changes = response(3)["result"]["changes"].as_object().unwrap();
+    assert_eq!(changes.len(), 1);
+    assert_eq!(changes[&base_uri].as_array().unwrap().len(), 1);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn signature_help_tracks_nested_calls_and_imported_unsaved_callbacks() {
+    let root = workspace_fixture("signature-help");
+    let workspace = completion::Workspace::new(URI, std::iter::empty()).unwrap();
+    let library = workspace.uri(&root.join("math.xr")).unwrap();
+    let implementation = workspace.uri(&root.join("implementation.xr")).unwrap();
+    let app = workspace.uri(&root.join("app.xr")).unwrap();
+    let marked = r#"import { Math as Helper } from "math.xr";
+component App inherits Window {
+    math := Helper {}
+    pure callback convert(input: int, scale: int) -> int;
+    pure callback local <=> root.convert;
+    property <int> first: math.sum(root.local(1, /*inner*/2), /*outer*/3);
+    property <int> second: math.sum(4, /*incomplete*/
+}"#;
+    let hint = |id, marker: &str| {
+        let offset = marked.find(marker).unwrap() + marker.len();
+        let (line, character) = analysis::Source::new(marked).coordinates(offset);
+        json!({"jsonrpc":"2.0","id":id,"method":"textDocument/signatureHelp","params":{
+            "textDocument":{"uri":app},"position":{"line":line,"character":character}
+        }})
+    };
+    let open = |uri: &str, text: &str| {
+        json!({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{
+            "textDocument":{"uri":uri,"version":1,"text":text}
+        }})
+    };
+    let messages = exchange(vec![
+        json!({"jsonrpc":"2.0","id":1,"method":"initialize"}),
+        open(
+            &implementation,
+            "export component Implementation inherits Rectangle { pure callback add(left: int, right: int) -> int; }",
+        ),
+        open(
+            &library,
+            "import { Implementation } from \"implementation.xr\"; export component Math inherits Rectangle { service := Implementation {} pure callback sum <=> service.add; }",
+        ),
+        open(&app, marked),
+        hint(2, "/*inner*/"),
+        hint(3, "/*outer*/"),
+        hint(4, "/*incomplete*/"),
+        hint(5, "convert("),
+    ]);
+    let response = |id| &messages.iter().find(|message| message["id"] == id).unwrap()["result"];
+    assert_eq!(
+        response(1)["capabilities"]["signatureHelpProvider"]["triggerCharacters"],
+        json!(["(", ","])
+    );
+    assert_eq!(
+        response(2)["signatures"][0]["label"],
+        "local(input: int, scale: int) -> int"
+    );
+    for id in 3..=4 {
+        assert_eq!(
+            response(id)["signatures"][0]["label"],
+            "sum(left: int, right: int) -> int"
+        );
+        assert_eq!(
+            response(id)["signatures"][0]["parameters"][1]["label"],
+            "right: int"
+        );
+    }
+    for id in 2..=4 {
+        assert_eq!(response(id)["activeParameter"], 1);
+    }
+    assert!(response(5).is_null());
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn import_paths_expose_document_links_and_definition_targets() {
+    let root = workspace_fixture("import-links");
+    let workspace = completion::Workspace::new(URI, std::iter::empty()).unwrap();
+    let library = workspace.uri(&root.join("ui 部件.xr")).unwrap();
+    let font_path = root.join("body.ttf");
+    std::fs::write(&font_path, []).unwrap();
+    let font = workspace.uri(&font_path).unwrap();
+    let app = workspace.uri(&root.join("app.xr")).unwrap();
+    let source = concat!(
+        "/*🙂*/ import { Card } from \"ui 部件.xr\";\r\n",
+        "import \"body.ttf\";\r\n",
+        "import { Missing } from \"missing.xr\";\r\n",
+        "component App inherits Window { title: \"ui 部件.xr\"; }",
+    );
+    let start = source.find("ui 部件.xr").unwrap();
+    let coords = analysis::Source::new(source);
+    let (line, character) = coords.coordinates(start + 1);
+    let open = |uri: &str, text: &str| {
+        json!({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{
+            "textDocument":{"uri":uri,"version":1,"text":text}
+        }})
+    };
+    let messages = exchange(vec![
+        json!({"jsonrpc":"2.0","id":1,"method":"initialize"}),
+        open(&library, "export component Card inherits Rectangle {}"),
+        open(&app, source),
+        json!({"jsonrpc":"2.0","id":2,"method":"textDocument/documentLink","params":{"textDocument":{"uri":app}}}),
+        json!({"jsonrpc":"2.0","id":3,"method":"textDocument/definition","params":{
+            "textDocument":{"uri":app},"position":{"line":line,"character":character}
+        }}),
+    ]);
+    let response = |id| &messages.iter().find(|message| message["id"] == id).unwrap()["result"];
+    let links = response(2).as_array().unwrap();
+    assert_eq!(links.len(), 2);
+    assert_eq!(links[0]["target"], library);
+    assert_eq!(links[1]["target"], font);
+    assert_eq!(
+        links[0]["range"],
+        coords.range(start, start + "ui 部件.xr".len())
+    );
+    assert_eq!(response(3)["uri"], library);
+    assert_eq!(
+        response(3)["range"]["start"],
+        json!({"line":0,"character":0})
+    );
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn missing_component_diagnostic_offers_a_versioned_quick_fix() {
+    let root = workspace_fixture("import-quick-fix");
+    let workspace = completion::Workspace::new(URI, std::iter::empty()).unwrap();
+    let app = workspace.uri(&root.join("app.xr")).unwrap();
+    let widget = root.join("widgets.xr");
+    let widget_uri = workspace.uri(&widget).unwrap();
+    std::fs::write(&widget, "export component SavedName inherits Rectangle {}").unwrap();
+    std::fs::write(
+        root.join("private.xr"),
+        "component Card inherits Rectangle {}",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("cycle.xr"),
+        "import { App } from \"app.xr\"; export component Card inherits App {}",
+    )
+    .unwrap();
+    let source = "// Comment\r\nexport component App inherits Window { card := Card {} }";
+    let open = |uri: &str, text: &str| {
+        json!({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{
+            "textDocument":{"uri":uri,"version":1,"text":text}
+        }})
+    };
+    let initial = json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"rootUri":workspace.uri(&root)}});
+    let library_text = "export component Card inherits Rectangle {}";
+    let notifications = vec![initial, open(&widget_uri, library_text), open(&app, source)];
+    let messages = exchange(notifications.clone());
+    let diagnostic = messages
+        .iter()
+        .find(|message| message["params"]["uri"] == app)
+        .unwrap()["params"]["diagnostics"][0]
+        .clone();
+    let start = source.rfind("Card").unwrap();
+    assert_eq!(
+        diagnostic["range"],
+        analysis::Source::new(source).range(start, start + 4)
+    );
+    assert_eq!(diagnostic["data"]["missingComponent"], "Card");
+    let action = |id, kind: &str| {
+        json!({"jsonrpc":"2.0","id":id,"method":"textDocument/codeAction","params":{
+            "textDocument":{"uri":app},"range":diagnostic["range"],"context":{"diagnostics":[diagnostic],"only":[kind]}
+        }})
+    };
+    let mut requests = notifications;
+    requests.extend([
+        action(2, "quickfix"),
+        action(3, "refactor"),
+        json!({"jsonrpc":"2.0","method":"textDocument/didChange","params":{
+            "textDocument":{"uri":app,"version":2},"contentChanges":[{"text":source.replace("Card", "Rectangle")}]
+        }}),
+        action(4, "quickfix"),
+    ]);
+    let messages = exchange(requests);
+    let response = |id| &messages.iter().find(|message| message["id"] == id).unwrap()["result"];
+    let fixes = response(2).as_array().unwrap();
+    assert_eq!(fixes.len(), 1, "{fixes:?}");
+    assert_eq!(fixes[0]["title"], "Import Card from widgets.xr");
+    let edit = &fixes[0]["edit"]["documentChanges"][0];
+    assert_eq!(edit["textDocument"], json!({"uri":app,"version":1}));
+    assert_eq!(
+        edit["edits"][0]["newText"],
+        "import { Card } from \"widgets.xr\";\r\n"
+    );
+    assert_eq!(response(3), &json!([]));
+    assert_eq!(response(4), &json!([]));
+    let updated = source.replace(
+        "export component",
+        &format!(
+            "{}export component",
+            edit["edits"][0]["newText"].as_str().unwrap()
+        ),
+    );
+    let updated_workspace =
+        completion::Workspace::new(&app, [(&*widget_uri, library_text)].into_iter()).unwrap();
+    assert!(
+        analysis::analyze(&app, &updated, Some(&updated_workspace))
+            .diagnostics
+            .is_empty()
+    );
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn document_formatting_preserves_comments_strings_and_utf16_ranges() {
+    let source = concat!(
+        "\u{feff}// file 🙂\r\n",
+        "import{Card as Tile}from\"widgets.xr\"; // keep\r\n",
+        "/* block\r\n  keep 🙂 */\r\n",
+        "component Demo inherits Window{property < int > count:2;\r\n",
+        "Tile{width:5 px;text:\"中🙂 // /* literal */\";}\r\n",
+        "if count<3:Button{clicked()=>{root.count+=-1;}}\r\n",
+        "} // end 🙂",
+    );
+    let expected = concat!(
+        "\u{feff}// file 🙂\r\n",
+        "import { Card as Tile } from \"widgets.xr\"; // keep\r\n",
+        "/* block\r\n  keep 🙂 */\r\n",
+        "component Demo inherits Window {\r\n",
+        "  property <int> count: 2;\r\n",
+        "  Tile {\r\n",
+        "    width: 5px;\r\n",
+        "    text: \"中🙂 // /* literal */\";\r\n",
+        "  }\r\n",
+        "  if count < 3: Button {\r\n",
+        "    clicked() => {\r\n",
+        "      root.count += -1;\r\n",
+        "    }\r\n",
+        "  }\r\n",
+        "} // end 🙂\r\n",
+    );
+    let open = |uri: &str, text: &str| {
+        json!({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{
+            "textDocument":{"uri":uri,"version":1,"text":text}
+        }})
+    };
+    let request = |id, uri: &str| {
+        json!({"jsonrpc":"2.0","id":id,"method":"textDocument/formatting","params":{
+            "textDocument":{"uri":uri},"options":{"tabSize":2,"insertSpaces":true}
+        }})
+    };
+    let messages = exchange(vec![
+        json!({"jsonrpc":"2.0","id":1,"method":"initialize"}),
+        open(URI, source),
+        request(2, URI),
+        open("untitled:formatted.xr", expected),
+        request(3, "untitled:formatted.xr"),
+        open(
+            "untitled:incomplete.xr",
+            "component Demo inherits Window { Text { text: \"missing",
+        ),
+        request(4, "untitled:incomplete.xr"),
+    ]);
+    let response = |id| &messages.iter().find(|message| message["id"] == id).unwrap()["result"];
+    assert_eq!(
+        response(1)["capabilities"]["documentFormattingProvider"],
+        true
+    );
+    let edits = response(2).as_array().unwrap();
+    assert_eq!(edits.len(), 1, "{response:?}", response = response(2));
+    assert_eq!(edits[0]["newText"], expected);
+    assert_eq!(
+        edits[0]["range"]["end"],
+        json!({"line":7,"character":"} // end 🙂".encode_utf16().count()})
+    );
+    assert_eq!(response(3), &json!([]));
+    assert_eq!(response(4), &json!([]));
+}
+
+#[test]
+fn formatting_keeps_xrack_grammar_and_honors_indentation_options() {
+    let source = r#"struct Entry{label:string, count:int}
+component Demo inherits Window{
+property<[Entry]> rows:[Entry{label:"a",count:1}];
+property<float> ratio:root.count%2+1.5e-2;
+property<brush> ink:@linear-gradient(-90 deg,#111 0%,#fff);
+for row[i] in root.rows:Text{text: i>0?row.label:"🙂";}
+states[active when true:{width:20 px;in{animate width{duration:2 ms;}}}]
+}"#;
+    let options = json!({"tabSize":8,"insertSpaces":false,"insertFinalNewline":false});
+    let edits = formatting::edits(source, &options);
+    let formatted = edits[0]["newText"]
+        .as_str()
+        .unwrap_or_else(|| panic!("{edits}"));
+    assert!(
+        formatted.contains("\n\tlabel: string,\n\tcount: int\n}"),
+        "{formatted}"
+    );
+    assert!(
+        formatted.contains("\n\tproperty <[Entry]> rows: [Entry { label: \"a\", count: 1 }];"),
+        "{formatted}"
+    );
+    assert!(formatted.contains("root.count % 2 + 1.5e-2"), "{formatted}");
+    assert!(
+        formatted.contains("@linear-gradient(-90deg, #111 0%, #fff)"),
+        "{formatted}"
+    );
+    assert!(
+        formatted
+            .contains("for row[i] in root.rows: Text {\n\t\ttext: i > 0 ? row.label : \"🙂\";"),
+        "{formatted}"
+    );
+    assert!(
+        formatted.contains("\n\tstates [\n\t\tactive when true: {"),
+        "{formatted}"
+    );
+    assert!(!formatted.ends_with('\n'));
+    assert_eq!(formatting::edits(formatted, &options), json!([]));
+}
+
+#[test]
+fn index_progress_waits_for_client_ack_and_reports_completion() {
+    let root = workspace_fixture("index-progress");
+    let workspace = completion::Workspace::new(URI, std::iter::empty()).unwrap();
+    std::fs::write(
+        root.join("card.xr"),
+        "export component Card inherits Rectangle {}",
+    )
+    .unwrap();
+    let initialize = json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{
+        "rootUri":workspace.uri(&root),"capabilities":{"window":{"workDoneProgress":true}}
+    }});
+    let initialized = json!({"jsonrpc":"2.0","method":"initialized","params":{}});
+    let search =
+        json!({"jsonrpc":"2.0","id":2,"method":"workspace/symbol","params":{"query":"Card"}});
+    let messages = exchange(vec![
+        initialize.clone(),
+        initialized.clone(),
+        json!({"jsonrpc":"2.0","id":"xrack-index-0","result":null}),
+        search.clone(),
+    ]);
+    let create = messages
+        .iter()
+        .position(|message| message["method"] == "window/workDoneProgress/create")
+        .unwrap();
+    assert_eq!(messages[create]["params"]["token"], "xrack-index-0");
+    let reports: Vec<_> = messages
+        .iter()
+        .enumerate()
+        .filter(|(_, message)| message["method"] == "$/progress")
+        .collect();
+    assert!(
+        reports.iter().all(|(position, message)| *position > create
+            && message["params"]["token"] == "xrack-index-0")
+    );
+    assert_eq!(
+        reports.first().unwrap().1["params"]["value"]["kind"],
+        "begin"
+    );
+    assert!(
+        reports
+            .iter()
+            .any(|(_, message)| message["params"]["value"]["percentage"] == 100)
+    );
+    assert_eq!(reports.last().unwrap().1["params"]["value"]["kind"], "end");
+    assert_eq!(
+        messages.iter().find(|message| message["id"] == 2).unwrap()["result"][0]["name"],
+        "Card"
+    );
+
+    let rejected = exchange(vec![
+        initialize,
+        initialized,
+        json!({"jsonrpc":"2.0","id":"xrack-index-0","error":{"code":-32601,"message":"unsupported"}}),
+        search,
+    ]);
+    assert!(
+        !rejected
+            .iter()
+            .any(|message| message["method"] == "$/progress")
+    );
+    assert_eq!(
+        rejected.iter().find(|message| message["id"] == 2).unwrap()["result"][0]["name"],
+        "Card"
+    );
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn cancelling_an_index_request_returns_one_error_and_keeps_the_session_usable() {
+    let uri = "untitled:cancel.xr";
+    let text = "component Demo inherits Window { property <int> count; Text { text: \"\" + root.count; } }";
+    let (line, character) = analysis::Source::new(text).coordinates(text.rfind("count").unwrap());
+    let reference = |id| {
+        json!({"jsonrpc":"2.0","id":id,"method":"textDocument/references","params":{
+            "textDocument":{"uri":uri},"position":{"line":line,"character":character},"context":{"includeDeclaration":true}
+        }})
+    };
+    let messages = exchange(vec![
+        json!({"jsonrpc":"2.0","id":1,"method":"initialize"}),
+        json!({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{
+            "textDocument":{"uri":uri,"version":1,"text":text}
+        }}),
+        reference("cancel-me"),
+        json!({"jsonrpc":"2.0","method":"$/cancelRequest","params":{"id":"cancel-me"}}),
+        reference("keep-me"),
+    ]);
+    let cancelled: Vec<_> = messages
+        .iter()
+        .filter(|message| message["id"] == "cancel-me")
+        .collect();
+    assert_eq!(cancelled.len(), 1);
+    assert_eq!(cancelled[0]["error"]["code"], -32800);
+    let completed = messages
+        .iter()
+        .find(|message| message["id"] == "keep-me")
+        .unwrap();
+    assert_eq!(completed["result"].as_array().unwrap().len(), 2);
+}
+
+#[test]
+fn consecutive_edits_publish_the_latest_version_before_an_index_query() {
+    let uri = "untitled:edit-burst.xr";
+    let first = "component Demo inherits Window { property <int> count; Text { text: \"\" + root.count; } }";
+    let final_text = format!("\n{}", first.replace("count", "total"));
+    let (line, character) =
+        analysis::Source::new(&final_text).coordinates(final_text.rfind("total").unwrap());
+    let change = |version, text: &str| {
+        json!({"jsonrpc":"2.0","method":"textDocument/didChange","params":{
+            "textDocument":{"uri":uri,"version":version},"contentChanges":[{"text":text}]
+        }})
+    };
+    let messages = exchange(vec![
+        json!({"jsonrpc":"2.0","id":1,"method":"initialize"}),
+        json!({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{
+            "textDocument":{"uri":uri,"version":1,"text":first}
+        }}),
+        change(2, "component Demo inherits Window {"),
+        change(3, &final_text),
+        change(2, first),
+        json!({"jsonrpc":"2.0","id":2,"method":"textDocument/references","params":{
+            "textDocument":{"uri":uri},"position":{"line":line,"character":character},"context":{"includeDeclaration":true}
+        }}),
+    ]);
+    let versions: Vec<_> = messages
+        .iter()
+        .filter(|message| message["method"] == "textDocument/publishDiagnostics")
+        .map(|message| message["params"]["version"].as_i64().unwrap())
+        .collect();
+    assert_eq!(versions, [1, 3]);
+    let references = &messages.iter().find(|message| message["id"] == 2).unwrap()["result"];
+    assert_eq!(references.as_array().unwrap().len(), 2);
+    assert!(
+        references
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|item| item["range"]["start"]["line"] == 1)
+    );
 }

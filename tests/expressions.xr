@@ -254,6 +254,16 @@ export component StateOrderParity inherits Window {
     states [ active when root.condition(root.mode): { target.text: "Selected"; } ]
 }
 
+export component InputStatePredicateParity inherits Window {
+    pure callback locked() -> bool;
+    out property <int> clicks: 0;
+    target := Button {
+        text: "Run";
+        states [ disabled when root.locked(): { enabled: false; } ]
+        clicked => { root.clicks += 1; }
+    }
+}
+
 export component StatefulSwipeParity inherits Window {
     in-out property <bool> hide-first: false;
     in-out property <bool> disable-second: false;
@@ -410,6 +420,91 @@ export component ScrollReadOrderParity inherits Window {
     pure callback read-metric(int) -> float;
     bar := ScrollBar { position: root.read-metric(1); size: root.read-metric(2); }
     indicator := ScrollIndicator { position: root.read-metric(3); size: root.read-metric(4); }
+}
+
+export component OverlayTransitionParity inherits Window {
+    in-out property <bool> popup-open: false;
+    in-out property <bool> drawer-open: false;
+    in-out property <bool> dialog-open: true;
+    out property <string> events: "";
+    callback show-popup();
+    show-popup => { popup.show(); popup.show(); }
+
+    anchor := Button {
+        popup := PopupWindow {
+            open <=> root.popup-open;
+            opened => { root.events += "popup-open:" + root.popup-open + ";"; }
+            closed => { root.events += "popup-close:" + root.popup-open + ";"; }
+        }
+    }
+    drawer := Drawer {
+        open <=> root.drawer-open;
+        opened => { root.events += "drawer-open:" + root.drawer-open + ";"; }
+        closed => { root.events += "drawer-close:" + root.drawer-open + ";"; }
+    }
+    dialog := Dialog {
+        open <=> root.dialog-open;
+        applied => { root.events += "apply:" + root.dialog-open + ";"; }
+        accepted => { root.events += "accept:" + root.dialog-open + ";"; }
+    }
+}
+
+export component StackPathCommandParity inherits Window {
+    out property <string> events: "";
+    pure callback path(int) -> [string];
+    path(tag) => { ["detail", "review"] }
+    callback append-path();
+    callback replace-path();
+    append-path => { pages.push-pages(root.path(1)); }
+    replace-path => { pages.reset-to(root.path(2)); }
+
+    pages := StackView {
+        changed(page, depth) => { root.events += page + ":" + depth + ";"; }
+        home := StackPage {
+            activated => { root.events += "+home;"; }
+            deactivated => { root.events += "-home;"; }
+        }
+        detail := StackPage {
+            removed => { root.events += "remove-detail;"; }
+        }
+        review := StackPage {
+            activated => { root.events += "+review;"; }
+            deactivated => { root.events += "-review;"; }
+            removed => { root.events += "remove-review;"; }
+        }
+    }
+}
+
+export component ScrollCommandParity inherits Window {
+    pure callback offset(int) -> length;
+    offset(tag) => { 0px }
+    callback issue();
+    issue => {
+        view.cancel-flick();
+        view.scroll-to(root.offset(1), root.offset(2));
+        view.return-to-bounds();
+        table.position-view-at-row(1, beginning);
+        table.position-view-at-column(0, end);
+        table.position-view-at-cell(1, 0, center, contain);
+    }
+    view := Flickable {}
+    table := TableView {
+        TableColumn {}
+        for item in 2 : TableRow { Text {} }
+    }
+}
+
+export component FocusCommandOrderParity inherits Window {
+    pure callback offset(int) -> int;
+    offset(tag) => { tag }
+    callback select-range();
+    select-range => {
+        entry.focus();
+        entry.set-selection-offsets(root.offset(1), root.offset(2));
+        entry.clear-focus();
+    }
+
+    entry := LineEdit { text: "XRack"; }
 }
 
 component FocusRowContent inherits Rectangle {
@@ -704,6 +799,25 @@ export component TableDelegateInputParity inherits Window {
     }
 }
 
+export component TableRowStatePredicateParity inherits Window {
+    width: 320px; height: 200px;
+    out property <string> events: "";
+    pure callback row-locked(int) -> bool;
+    row-locked(index) => { false }
+    TableView {
+        TableColumn { title: "Name"; }
+        for label[index] in ["A", "B"] : TableRow {
+            Pane {
+                states [ locked when root.row-locked(index): { enabled: false; visible: false; } ]
+                FocusRowContent {
+                    label: label;
+                    seen(value) => { root.events += value + ";"; }
+                }
+            }
+        }
+    }
+}
+
 component NestedFocusRows inherits Rectangle {
     in property <[string]> labels;
     callback seen(string);
@@ -882,6 +996,25 @@ export component ComboTextParity inherits Window {
     }
 }
 
+export struct ComboCommitOption { label: string, code: int }
+
+export component ComboCommitParity inherits Window {
+    in-out property <int> current: 1;
+    in-out property <string> draft: "";
+    out property <string> events: "";
+    combo := ComboBox {
+        model: [ComboCommitOption { label: "A", code: 1 }, ComboCommitOption { label: "B", code: 2 }];
+        text-role: "label";
+        value-role: "code";
+        editable: true;
+        current-value <=> root.current;
+        edit-text <=> root.draft;
+        selected(label) => { root.events += "select:" + label + ":" + root.current + ":" + root.draft + ";"; }
+        value-selected(code) => { root.events += "value:" + code + ":" + root.current + ":" + root.draft + ";"; }
+        accepted(text) => { root.events += "accept:" + text + ":" + root.current + ":" + root.draft + ";"; }
+    }
+}
+
 export component SearchInputParity inherits Window {
     in-out property <string> query: "a";
     in-out property <[string]> suggestions: ["alpha"];
@@ -1031,6 +1164,21 @@ export component GridPlans inherits Window {
     }
 }
 
+component PlannedGridInstance inherits GridLayout {
+    Rectangle { min-width: 20px; min-height: 15px; z: 2; }
+    Rectangle { min-width: 30px; min-height: 15px; z: 1; }
+}
+
+export component InstanceScenePlans inherits Window {
+    in-out property <bool> wide: false;
+    out property <bool> mounted: grid.layout-ready;
+    grid := PlannedGridInstance {
+        width: 100px;
+        height: 60px;
+        states [ expanded when root.wide: { width: 150px; } ]
+    }
+}
+
 export component ModelBindings inherits Window {
     in-out property <[string]> records: ["first", "second"];
     pure callback mirror([string]) -> [string];
@@ -1095,6 +1243,28 @@ export component RetainedWindowParent inherits Window {
             messages => { ["parent"] }
             ping => { root.shared = "pinged"; }
         }
+    }
+}
+
+export component WindowCommandParity inherits Window {
+    pure callback initial-visible() -> bool;
+    initial-visible => { false }
+    pure callback full-screen-argument() -> bool;
+    full-screen-argument => { true }
+    in-out property <bool> shown: root.initial-visible();
+    callback hide-child();
+    hide-child => { child.hide(); }
+    callback close-child();
+    close-child => { child.close(); }
+    callback window-commands();
+    window-commands => {
+        root.maximize();
+        root.set-full-screen(root.full-screen-argument());
+        root.restore();
+    }
+    child := SecondaryWindow {
+        visible <=> root.shown;
+        RetainedWindowChild {}
     }
 }
 
@@ -1382,6 +1552,8 @@ export component TreeInputParity inherits Window {
     out property <int> queried-depth: branches.depth(root.query-key(1));
     out property <int> queried-row: branches.row-for-key(root.query-key(2));
     out property <bool> queried-expanded: branches.is-expanded(root.query-key(3));
+    out property <int> queried-view-index: branches.view-index-for-source(root.query-key(4));
+    out property <int> queried-source-index: branches.source-index-for-view(root.query-key(5));
     in-out property <[TreeInputParityRow]> records: [
         TreeInputParityRow { id: 1, parent: -1, label: "One" },
         TreeInputParityRow { id: 2, parent: -1, label: "Two" },
@@ -1402,8 +1574,16 @@ export component TreeInputParity inherits Window {
     callback select-source(int);
     callback expand-root();
     callback collapse-root();
+    callback expand-subtree();
+    callback collapse-all();
+    callback reveal-child();
+    callback toggle-root();
     expand-root => { branches.expand(1); }
     collapse-root => { branches.collapse(1); }
+    expand-subtree => { branches.expand-recursively(root.query-key(6), root.query-key(7)); }
+    collapse-all => { branches.collapse-recursively(); }
+    reveal-child => { branches.expand-to(11); }
+    toggle-root => { branches.toggle-expanded(1); }
     select-source(source) => { branches.select-source-index(source); }
     read-key => { -1 }
 
@@ -1950,6 +2130,7 @@ export component StatefulPasteParity inherits Window {
 
 export component TimerRevisionParity inherits Window {
     out property <int> ticks: 0;
+    out property <bool> running-at-tick: false;
     in-out property <bool> running: true;
     callback restart();
     pure callback interval() -> int;
@@ -1958,8 +2139,21 @@ export component TimerRevisionParity inherits Window {
     timer := Timer {
         running <=> root.running;
         interval: root.interval();
-        triggered => { root.ticks += 1; }
+        triggered => { root.running-at-tick = root.running; root.ticks += 1; }
     }
+}
+
+export component TimerCommandReadParity inherits Window {
+    in-out property <bool> running: root.initial-running();
+    pure callback initial-running() -> bool;
+    initial-running => { true }
+    callback start();
+    start => { timer.start(); }
+    callback stop();
+    stop => { timer.stop(); }
+    callback restart();
+    restart => { timer.restart(); }
+    timer := Timer { running <=> root.running; }
 }
 
 export component AnimatedImageStateParity inherits Window {
@@ -1972,6 +2166,15 @@ export component AnimatedImageStateParity inherits Window {
         loops: 1;
         states [ playing-image when root.show-animation: { source: root.animation; } ]
         finished => { root.completions += 1; }
+    }
+    empty-handler := AnimatedImage {
+        source: root.animation;
+        loops: 1;
+        finished => {}
+    }
+    no-handler := AnimatedImage {
+        source: root.animation;
+        loops: 1;
     }
 }
 
@@ -1987,29 +2190,46 @@ export component TableMoveOrderParity inherits Window {
     pure callback automatic() -> bool;
     pure callback source() -> [TableMoveOrderRow];
     pure callback selected() -> int;
+    pure callback selection-mode() -> SelectionTarget;
+    pure callback column-title() -> string;
     pure callback filter(string) -> string;
+    pure callback selection-position(int) -> int;
     callback select-cell(int, int);
+    callback select-range(int, int);
     callback select-source(int);
     callback sort();
     callback sort-reverse();
     callback clear-sort();
     callback move-row(int, int);
+    callback set-height(int, length);
+    callback reveal-source-cell(int, int);
     automatic => { true }
     source => { root.rows }
     selected => { root.current }
+    selection-mode => { SelectionTarget.cells }
+    column-title => { "Name" }
     filter(query) => { query }
+    selection-position(position) => { position }
     select-cell(row, column) => { table.select-cell(row, column); }
+    select-range(first, last) => {
+        table.select-range(root.selection-position(first), 0, root.selection-position(last), 0);
+    }
     select-source(row) => { table.select-source-index(row); }
     sort => { table.sort-by(0, false); }
     sort-reverse => { table.sort-by(0, true); }
     clear-sort => { table.clear-sort(); }
     move-row(from, to) => { table.move-row(from, to); }
+    set-height(row, height) => { table.set-row-height(row, height); }
+    reveal-source-cell(row, column) => {
+        table.position-view-at-source-cell(root.selection-position(row), root.selection-position(column), contain, beginning);
+    }
     table := StandardTableView {
         model: root.source();
         auto-sort: root.automatic();
         current-row: root.selected();
-        selection-target: cells;
+        selection-target: root.selection-mode();
         multi-select: true;
+        movable-rows: true;
         filter-field: "name";
         filter-text: root.filter(root.query);
         current-cell-changed(row, column) => { root.events += "cell:" + row + "/" + column + ";"; }
@@ -2019,7 +2239,25 @@ export component TableMoveOrderParity inherits Window {
             root.events += "move:" + row + "/" + from + "/" + to + ";";
         }
         sort-descending(column) => { root.events += "descending:" + column + ";"; }
-        TableColumn { title: "Name"; field: "name"; }
+        TableColumn { title: root.column-title(); field: "name"; }
+    }
+}
+
+export component TableRowNotificationParity inherits Window {
+    out property <int> revision: 0;
+    out property <string> events: "";
+    pure callback selection-mode(int) -> SelectionTarget;
+    selection-mode(revision) => { SelectionTarget.cells }
+    table := TableView {
+        selection-target: root.selection-mode(root.revision);
+        multi-select: true;
+        current-row-changed(row) => {
+            root.revision += 1;
+            root.events += "row:" + row + ";";
+        }
+        selection-changed(count) => { root.events += "count:" + count + ";"; }
+        TableColumn { title: "Value"; }
+        for label in ["one", "two"] : TableRow { TableCell { text: label; } }
     }
 }
 

@@ -7,17 +7,23 @@ rust_binary(
         "src/catalog.rs",
         "src/completion.rs",
         "src/completion/imports.rs",
+        "src/completion/index_cache.rs",
         "src/completion/symbols.rs",
+        "src/completion/workspace_index.rs",
         "src/editor_tokens.rs",
+        "src/formatting.rs",
         "src/main.rs",
         "src/protocol.rs",
+        "src/server_events.rs",
         "src/tests.rs",
     ],
     edition = "2024",
     deps = [
         "//crates/xrack-ir:xrack_ir",
         "//crates/xrack-parser:xrack_parser",
+        "@crates//:serde",
         "@crates//:serde_json",
+        "@crates//:tempfile",
     ],
 )
 

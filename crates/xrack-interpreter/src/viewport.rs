@@ -1,6 +1,7 @@
 use crate::*;
 use xrack_runtime::{
-    GeometryHandle, GeometryMetric, Length, Orientation, Property, ScrollAction, ViewportHandle,
+    GeometryHandle, GeometryMetric, Length, Orientation, Property, ScrollCommandMethod,
+    ViewportHandle,
 };
 
 #[derive(Clone)]
@@ -61,34 +62,6 @@ impl Metric {
             Self::HorizontalOvershoot => handle.horizontal_overshoot().into(),
             Self::VerticalOvershoot => handle.vertical_overshoot().into(),
         }
-    }
-}
-
-#[derive(Clone, Copy)]
-pub(crate) enum Command {
-    To,
-    Index,
-    Column,
-    Cell,
-    SourceIndex,
-    SourceCell,
-    CancelFlick,
-    ReturnToBounds,
-}
-
-impl Command {
-    pub(crate) fn parse(name: &str) -> Option<Self> {
-        Some(match name {
-            "scroll-to" => Self::To,
-            "position-view-at-index" | "position-view-at-row" => Self::Index,
-            "position-view-at-column" => Self::Column,
-            "position-view-at-cell" => Self::Cell,
-            "position-view-at-source-index" => Self::SourceIndex,
-            "position-view-at-source-cell" => Self::SourceCell,
-            "cancel-flick" => Self::CancelFlick,
-            "return-to-bounds" => Self::ReturnToBounds,
-            _ => return None,
-        })
     }
 }
 
@@ -199,11 +172,10 @@ impl Instance {
 
     pub(crate) fn populate_layout_handles(&self, element: &Element, node: &mut Node) -> Result<()> {
         if let Some(handle) = self.0.layout.geometry.get(&element.key) {
-            let field = match element.visual {
-                Visual::Builtin(_) => &mut node.geometry_handle,
-                Visual::Instance { .. } => &mut node.instance_geometry_handle,
-            };
-            *field = Some(handle.clone());
+            match element.visual {
+                Visual::Builtin(_) => node.geometry_handle = Some(handle.clone()),
+                Visual::Instance { .. } => node.set_instance_geometry_handle(handle.clone()),
+            }
         }
         if let Some(handle) = self.0.layout.viewports.get(&element.key) {
             node.viewport_handle = Some(handle.clone());
@@ -217,74 +189,15 @@ impl Instance {
     pub(crate) fn scroll_command(
         &self,
         target: &str,
-        command: Command,
-        args: &[Value],
+        method: ScrollCommandMethod,
+        operands: &[Value],
     ) -> Result<()> {
-        use Command::*;
-        use Value::{Int, Length, ScrollAlignment};
-        let action = match (command, args) {
-            (CancelFlick, []) => ScrollAction::CancelFlick,
-            (ReturnToBounds, []) => ScrollAction::ReturnToBounds,
-            (To, [Length(x), Length(y)]) => ScrollAction::To { x: *x, y: *y },
-            (Index, [Int(index), ScrollAlignment(alignment)]) => ScrollAction::ToIndex {
-                index: *index,
-                alignment: *alignment,
-            },
-            (Column, [Int(column), ScrollAlignment(alignment)]) => ScrollAction::ToColumn {
-                column: *column,
-                alignment: *alignment,
-            },
-            (
-                Cell,
-                [
-                    Int(row),
-                    Int(column),
-                    ScrollAlignment(horizontal),
-                    ScrollAlignment(vertical),
-                ],
-            ) => ScrollAction::ToCell {
-                row: *row,
-                column: *column,
-                horizontal: *horizontal,
-                vertical: *vertical,
-            },
-            (SourceIndex | SourceCell, [Int(index), ..]) => {
-                let Ok(source_index) = usize::try_from(*index) else {
-                    return Ok(());
-                };
-                let Some(key) = self.source_key(target, source_index)? else {
-                    return Ok(());
-                };
-                match (command, &args[1..]) {
-                    (SourceIndex, [ScrollAlignment(alignment)]) => ScrollAction::ToRowKey {
-                        key,
-                        source_index,
-                        alignment: *alignment,
-                    },
-                    (
-                        SourceCell,
-                        [
-                            Int(column),
-                            ScrollAlignment(horizontal),
-                            ScrollAlignment(vertical),
-                        ],
-                    ) => ScrollAction::ToCellAtRowKey {
-                        key,
-                        source_index,
-                        column: *column,
-                        horizontal: *horizontal,
-                        vertical: *vertical,
-                    },
-                    _ => {
-                        return Err(Error::Invalid(
-                            "invalid source scroll command operands".into(),
-                        ));
-                    }
-                }
-            }
-            _ => return Err(Error::Invalid("invalid scroll command operands".into())),
-        };
-        self.viewport(target)?.request(action);
+        let command = method
+            .command(operands)
+            .ok_or_else(|| Error::Invalid("invalid scroll command operands".into()))?;
+        if let Some(action) = command.try_resolve(|index| self.source_key(target, index))? {
+            self.viewport(target)?.request(action);
+        }
         Ok(())
     }
 }

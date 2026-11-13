@@ -7,7 +7,6 @@ mod desktop;
 mod file_drop;
 mod frame;
 mod local_task;
-mod messages;
 mod native_dialog;
 mod queue;
 mod scale_rotate;
@@ -32,8 +31,6 @@ use desktop::{DesktopGraphics, HostedWindow, WindowEvents};
 use frame::FrameCache;
 use local_task::LocalExecutor;
 pub use local_task::{LocalTask, SpawnLocalError, TaskCancelled, spawn_local};
-use messages::Inbox;
-pub use messages::UiSender;
 use std::{
     borrow::Cow,
     cell::{Cell, RefCell},
@@ -71,6 +68,7 @@ use xrack_runtime::{
     SpinDecimal, TablePaste, TextCommand, TimerQueue, combo_editable, decimal_separator,
     is_calendar_control, is_multiline_text_input, is_spin_box, spin_editable, text_input_value,
 };
+pub use xrack_runtime::{EventLoopError, invoke_from_event_loop};
 
 struct WindowState {
     surface: wgpu::Surface<'static>,
@@ -272,7 +270,6 @@ impl WindowState {
 
 pub(crate) enum UserEvent {
     PollTasks,
-    ApplyMessages,
     Clipboard(ClipboardReply),
     NativeDialogFinished {
         id: u64,
@@ -369,7 +366,7 @@ impl PointerClick {
     }
 }
 
-struct Application<C, M, R> {
+struct Application<C> {
     component: C,
     base_scene: Rc<Node>,
     scene: Rc<Node>,
@@ -399,15 +396,13 @@ struct Application<C, M, R> {
     state: Option<WindowState>,
     error: Option<String>,
     tasks: Rc<LocalExecutor>,
-    inbox: Inbox<M>,
-    reduce: R,
     clipboard: Option<Rc<RefCell<ClipboardPort>>>,
     pending_clipboard: Option<(u64, ClipboardContext)>,
     events: Option<WindowEvents>,
 }
 
-impl<C: Component, M, R: FnMut(&mut C, M)> Application<C, M, R> {
-    fn new(component: C, tasks: Rc<LocalExecutor>, inbox: Inbox<M>, reduce: R) -> Self {
+impl<C: Component> Application<C> {
+    fn new(component: C, tasks: Rc<LocalExecutor>) -> Self {
         let scene = component.render_shared();
         Self {
             component,
@@ -439,8 +434,6 @@ impl<C: Component, M, R: FnMut(&mut C, M)> Application<C, M, R> {
             state: None,
             error: None,
             tasks,
-            inbox,
-            reduce,
             clipboard: None,
             pending_clipboard: None,
             events: None,
@@ -450,14 +443,6 @@ impl<C: Component, M, R: FnMut(&mut C, M)> Application<C, M, R> {
     fn process_user_event(&mut self, event: UserEvent) {
         let processed = match event {
             UserEvent::PollTasks => self.tasks.poll_ready(),
-            UserEvent::ApplyMessages => {
-                let messages = self.inbox.take_batch();
-                let processed = !messages.is_empty();
-                for message in messages {
-                    (self.reduce)(&mut self.component, message);
-                }
-                processed
-            }
             UserEvent::Clipboard(reply) => {
                 self.finish_clipboard(reply);
                 false
@@ -1016,7 +1001,6 @@ impl<C: Component, M, R: FnMut(&mut C, M)> Application<C, M, R> {
     }
 
     fn close_async(&self) {
-        self.inbox.close();
         self.tasks.close();
     }
 
@@ -4292,7 +4276,14 @@ impl<C: Component, M, R: FnMut(&mut C, M)> Application<C, M, R> {
     }
 }
 
-impl<C: Component, M, R: FnMut(&mut C, M)> HostedWindow for Application<C, M, R> {
+impl<C: Component> HostedWindow for Application<C> {
+    fn refresh_after_desktop_update(&mut self) {
+        let _scope = self.tasks.enter();
+        let _focus = self.focus_requests.enter();
+        let _scroll = self.scroll_requests.enter();
+        self.refresh_after_update(false);
+    }
+
     fn user_event(&mut self, event: UserEvent) {
         let _scope = self.tasks.enter();
         let _focus = self.focus_requests.enter();
@@ -4582,7 +4573,7 @@ impl<C: Component, M, R: FnMut(&mut C, M)> HostedWindow for Application<C, M, R>
     }
 }
 
-impl<C: Component, M, R: FnMut(&mut C, M)> Application<C, M, R> {
+impl<C: Component> Application<C> {
     fn handle_window_event(&mut self, event: WindowEvent) {
         let Some(state) = self.state.as_mut() else {
             return;
@@ -5030,19 +5021,5 @@ impl<C: Component, M, R: FnMut(&mut C, M)> Application<C, M, R> {
 
 /// Open a native window and run a generated component on the main thread.
 pub fn run<C: Component + 'static>(component: C) -> Result<(), String> {
-    run_with_messages(component, |_, _: UiSender<()>| |_: &mut C, _: ()| {})
-}
-
-/// Configure a component with a mailbox, then run its reducer on the UI thread.
-/// The setup closure can also start local tasks before the first window event.
-pub fn run_with_messages<C, M, R>(
-    component: C,
-    setup: impl FnOnce(&mut C, UiSender<M>) -> R,
-) -> Result<(), String>
-where
-    C: Component + 'static,
-    M: Send + 'static,
-    R: FnMut(&mut C, M),
-{
-    desktop::run_window(component, setup)
+    desktop::run_window(component)
 }

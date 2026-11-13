@@ -45,6 +45,73 @@ pub enum TextCommand {
     Paste,
 }
 
+/// Commands lowered from XR focus and editor methods.
+#[doc(hidden)]
+#[derive(Clone, Copy, Debug)]
+pub enum FocusCommandMethod {
+    Focus,
+    Clear,
+    SelectAll,
+    ClearSelection,
+    SetSelection,
+    Undo,
+    Redo,
+    Cut,
+    Copy,
+    Paste,
+    EditTableCell,
+    CancelTableEdit,
+}
+
+impl FocusCommandMethod {
+    pub fn parse(name: &str) -> Option<Self> {
+        Some(match name {
+            "focus" => Self::Focus,
+            "clear" => Self::Clear,
+            "select-all" => Self::SelectAll,
+            "clear-selection" => Self::ClearSelection,
+            "set-selection-offsets" => Self::SetSelection,
+            "undo" => Self::Undo,
+            "redo" => Self::Redo,
+            "cut" => Self::Cut,
+            "copy" => Self::Copy,
+            "paste" => Self::Paste,
+            "edit-cell" => Self::EditTableCell,
+            "cancel-edit" => Self::CancelTableEdit,
+            _ => return None,
+        })
+    }
+
+    pub fn action(self, operands: &[i64]) -> Option<FocusAction> {
+        let text = match (self, operands) {
+            (Self::Focus, []) => return Some(FocusAction::Focus),
+            (Self::Clear, []) => return Some(FocusAction::Clear),
+            (Self::SelectAll, []) => TextCommand::SelectAll,
+            (Self::ClearSelection, []) => TextCommand::ClearSelection,
+            (Self::SetSelection, &[anchor, focus]) => TextCommand::SetSelection { anchor, focus },
+            (Self::Undo, []) => TextCommand::Undo,
+            (Self::Redo, []) => TextCommand::Redo,
+            (Self::Cut, []) => TextCommand::Cut,
+            (Self::Copy, []) => TextCommand::Copy,
+            (Self::Paste, []) => TextCommand::Paste,
+            (Self::EditTableCell, &[row, column]) => {
+                return Some(FocusAction::EditTableCell { row, column });
+            }
+            (Self::CancelTableEdit, []) => return Some(FocusAction::CancelTableEdit),
+            _ => return None,
+        };
+        Some(FocusAction::Text(text))
+    }
+}
+
+#[doc(hidden)]
+pub fn is_focus_handler(name: &str) -> bool {
+    matches!(
+        name,
+        "focus-gained" | "focus-lost" | "focus-changed-event" | "focus-within-changed"
+    )
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum FocusReason {
     #[default]

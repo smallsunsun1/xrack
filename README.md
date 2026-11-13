@@ -65,8 +65,8 @@ Cargo workspace 为依赖管理和可选 Rust 静态检查提供支持。`.cargo
 ```sh
 bazel build //grammar:generate_rust //mlir:c_bindings_out_dir
 export XRACK_ANTLR_DIR="$(pwd)/bazel-bin/grammar/generated/rust"
-export OUT_DIR="$(pwd)/bazel-bin/mlir/c_bindings_out_dir"
-cargo check --workspace --locked
+export XRACK_MLIR_BINDINGS="$(pwd)/bazel-bin/mlir/c_bindings_out_dir"
+cargo check --workspace --exclude 'xrack-mlir-bin-*' --locked
 ```
 
 Rust 格式检查和 Clippy 使用 Bazel 的 Rust 工具链。Clippy 检查手写 Rust，并将 correctness 类诊断作为构建错误。生成的 UI 代码通过编译器测试验证。
@@ -80,7 +80,7 @@ bazel build --config=lint //... //tests:gpu_test
 
 ## 在 Cargo 项目中使用 XRack
 
-以下接入方式适用于 XRack `0.2.0`。`xrack` 提供组件、模型、桌面宿主及布局、渲染和资源模块，`xrack-build` 在 Cargo 的构建阶段编译 `.xr`。
+以下接入方式适用于 XRack `0.5.0`。`xrack` 提供组件、模型、桌面宿主及布局、渲染和资源模块，`xrack-build` 在 Cargo 的构建阶段编译 `.xr`。
 
 使用 Rust 1.99.1 或更新版本新建应用。
 
@@ -94,10 +94,10 @@ mkdir ui
 
 ```toml
 [dependencies]
-xrack = "=0.2.0"
+xrack = "=0.5.0"
 
 [build-dependencies]
-xrack-build = "=0.2.0"
+xrack-build = "=0.5.0"
 ```
 
 将界面保存为 `ui/app.xr`。
@@ -152,18 +152,40 @@ python3 tools/test_cargo_consumer.py .tools/dist aarch64-apple-darwin
 
 将最后一个参数换成 `rustc -vV` 输出的宿主三元组。该命令在独立的临时目录构建示例。
 
+### 从 Cargo 加载 MLIR
+
+启用 `xrack` 的 `interpreter` feature 后，可以在应用运行时加载 `xrackc --emit mlir` 生成的 `.mlir` 文件。
+
+```toml
+[dependencies]
+xrack = { version = "<发布版本>", features = ["interpreter"] }
+```
+
+```rust
+use xrack::interpreter::load_mlir_file;
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let program = load_mlir_file("counter.mlir")?;
+    let ui = program.create("Counter")?;
+    xrack::run(ui)?;
+    Ok(())
+}
+```
+
+发布包按目标平台选择 Bazel 预编译的 MLIR 静态库。应用构建需要 Rust 和平台常规链接工具，不需要安装 LLVM、Bazel 或 ANTLR。资源路径相对于 `.mlir` 文件解析。可通过 `python3 tools/test_cargo_consumer.py .tools/dist <宿主三元组> --interpreter` 验证发布产物。
+
 ### 准备发布包
 
-`python3 tools/package_xrackc.py` 用 Bazel 构建当前宿主平台的 `xrackc`，在 `.tools/dist/` 生成压缩包和 SHA-256 校验文件。解包后将 `XRACKC` 指向其中的可执行文件。压缩包包含编译器及其依赖的许可证。
+`python3 tools/package_xrackc.py` 用 Bazel 构建当前宿主平台的 `xrackc` 和原生 MLIR 静态库，在 `.tools/dist/` 生成压缩包和 SHA-256 校验文件。压缩包也携带生成的 Rust 绑定、ANTLR 解析器源码和许可证。编译器和 MLIR 的 Cargo 包暂存模板分别在 `bundles/compiler` 和 `bundles/mlir`。
 
 ```sh
 cargo package --locked -p xrack-runtime -p xrack-assets -p xrack-layout \
-  -p xrack-renderer-femtovg -p xrack-platform-winit -p xrack
+  -p xrack-renderer-femtovg -p xrack-platform-winit
 ```
 
 Cargo 会验证打包后的源码，并在发布时按依赖顺序上传这些 crate。Cargo 版桌面宿主使用上游 AccessKit，Bazel 版带有 macOS 三态复选框无障碍值修补。
 
-手动运行 [Release XRack](.github/workflows/release-crates.yml) 并输入 workspace 版本号，可以预检运行时和门面包。正式发布时，给 `main` 上已合并的提交推送与 workspace 版本一致的 tag，例如 `v0.2.0`。发布流程跑各平台 CI，并从五份 Bazel 归档生成宿主编译器 crate。归档的 SHA-256、二进制和许可证会随编译器包验证。Cargo 先发布五个宿主编译器包，再发布运行时、`xrack` 和 `xrack-build`。同一 tag 的 GitHub Release 也提供独立的 `xrackc` 归档和校验文件。
+手动运行 [Release XRack](.github/workflows/release-crates.yml) 并输入 workspace 版本号，可以预检运行时包。正式发布时，给 `main` 上已合并的提交推送与 workspace 版本一致的 tag。发布流程跑各平台 CI，并从五份 Bazel 归档生成宿主编译器包、目标平台 MLIR 包和解析器包。发布顺序为运行时和语法基础包、Bazel 产物对应的包，再到 `xrack-interpreter`、`xrack` 和 `xrack-build` 等上层包。GitHub Release 提供归档及校验文件。
 
 在 GitHub 的 `crates-io` 环境配置 `CARGO_REGISTRY_TOKEN` secret，并允许发布 tag 使用该环境。首次发布使用允许发布新 crate 的 token。上传中断后，可从同一次 workflow 重试，脚本会校验已发布的版本及对应的源码提交。升版本时同步 workspace 版本、内部 crate 依赖、宿主包版本、Bazel 目标版本和 Cargo 消费示例。
 
@@ -171,7 +193,7 @@ Cargo 会验证打包后的源码，并在发布时按依赖顺序上传这些 c
 
 ### GitHub Actions
 
-[CI](.github/workflows/ci.yml) 在 macOS arm64、Linux x64 与 arm64、Windows x64 与 arm64 上测试 Cargo 桌面依赖栈与 Bazel 编译器。每个平台把编译器归档暂存为宿主 crate，再用 Cargo 运行仓库外的门面示例。成功的任务上传对应的编译器归档和校验文件，Linux x64 任务额外上传通过 Cargo 验证的运行时和门面包。真实 GPU 测试使用本地显式目标 `//tests:gpu_test`。
+[CI](.github/workflows/ci.yml) 在 macOS arm64、Linux x64 与 arm64、Windows x64 与 arm64 上测试 Cargo 桌面依赖栈与 Bazel 编译器。每个平台用暂存的发布产物运行仓库外的 AOT 和 MLIR 解释器示例，再上传归档与校验文件。Linux x64 任务额外上传通过 Cargo 验证的运行时包。真实 GPU 测试使用本地显式目标 `//tests:gpu_test`。
 
 编译器任务通过 `setup-bazel` 缓存 Bazelisk、依赖下载和编译产物。缓存按操作系统和架构隔离。依赖下载缓存跟踪 Bazel 版本、`MODULE.bazel` 和 `Cargo.lock`，编译产物缓存额外跟踪 Bazel 构建规则。Windows 编译器任务从仓库的 Actions variables 读取上述两个 Microsoft 许可变量。
 
@@ -444,7 +466,7 @@ Markdown 链接用 `[文案](目标)` 声明，默认显示下划线并可配置
 
 `SearchField` 支持 `text` 双向绑定，搜索图标提交查询，清空图标和选中候选都可撤销。候选由应用通过 `suggestions` 提供，类型为 `[string]`。可用 `suggestions-for` 标记生成这批结果的查询，只有标记与当前输入一致时才显示。方向键高亮候选，Enter 选中高亮项或提交当前查询，Escape 收起候选。候选变化使旧的高亮失效。
 
-`accepted(string)` 报告显式提交的查询，`selected(string)` 报告选中的候选。两种操作都触发 `search-triggered(string)`。`live: true;` 也会在输入变化时触发它。`bazel run //examples/async_demo:async_demo` 演示用 Tokio 查询并通过 `UiSender` 返回候选，示例单独维护一批候选和虚拟化的结果列表。
+`accepted(string)` 报告显式提交的查询，`selected(string)` 报告选中的候选。两种操作都触发 `search-triggered(string)`。`live: true;` 也会在输入变化时触发它。`bazel run //examples/async_demo:async_demo` 演示用 Tokio 查询并在 UI 线程写回候选，示例单独维护一批候选和虚拟化的结果列表。
 
 `RadioGroup` 接收静态 `RadioButton`，也可以用一个 `for` 生成所有选项。通过组的 `current-index` 或 `current-value` 双向绑定选择，按钮的选中状态由组推导。组支持横竖排列、方向键导航和 `selected(string)`。
 
@@ -712,7 +734,7 @@ setter 和 DSL 赋值覆盖绑定并解除订阅，`reset_*()` 恢复默认绑�
 
 行组件也可嵌套 `TableView`、`StandardTableView` 和 `TreeView`。表格的横纵滚动、选区和编辑历史，以及树的展开状态，都随所属行实例保留。Tab 编辑、复制、粘贴和撤销沿同一条组件路径找到内层表格。异步粘贴完成时会再次校验外层行和目标模型。运行 `bazel run //examples/list:list -- --nested-data` 查看共享记录的表格和目录树。
 
-Rust 可用 `model_<property>()` 取得列表属性的共享模型，用 `bind_model_<property>(model)` 接入已有的 `VecModel<T>`。`set_row`、`push`、`insert` 和 `remove` 分别通知行数据和结构变化。`get_<property>()`、`set_<property>(Vec<T>)` 和 Rust 回调使用 `Vec<T>` 快照。模型属于 UI 线程，后台任务可以通过 `UiSender` 把行索引和值交给消息处理器。winit 会复用没有受变化影响的视口场景与布局。
+Rust 可用 `model_<property>()` 取得列表属性的共享模型，用 `bind_model_<property>(model)` 接入已有的 `VecModel<T>`。`set_row`、`push`、`insert` 和 `remove` 分别通知行数据和结构变化。`get_<property>()`、`set_<property>(Vec<T>)` 和 Rust 回调使用 `Vec<T>` 快照。模型属于 UI 线程，后台任务可以通过组件弱句柄的 `upgrade_in_event_loop` 在 UI 线程更新指定行。winit 会复用没有受变化影响的视口场景与布局。
 
 ```rust
 let model = xrack_runtime::VecModel::from(vec!["首行".into(), "第二行".into()]);
@@ -777,11 +799,11 @@ macOS 上，`DropArea { accept-files: true; }` 也可接收 Finder 或其他应�
 
 ## 异步 Rust
 
-`xrack_platform_winit::spawn_local` 在运行 XRack 的 UI 线程上轮询 `Future + 'static`，支持捕获 `Rc` 等 `!Send` 状态。可以从 `run_with_messages` 的 setup、UI 回调或其他本地任务启动。任务返回 `LocalTask<T>`，可 `.await` 结果或调用 `abort()`，丢弃句柄会让任务继续运行。窗口事件循环退出时会取消未完成的本地任务。生成组件的 `as_weak()` 可用于在 `.await` 后重新取得组件。
+- `xrack::invoke_from_event_loop(move || { … })` 可以从任意线程投递一次 `Send + 'static` 闭包。桌面事件循环在 UI 线程执行它。投递成功表示入队，队列满或事件循环关闭时返回错误。
+- `ui.as_weak().upgrade_in_event_loop(move |ui| { … })` 适合更新指定组件。弱句柄可发送到后台，组件本身仍留在 UI 线程。如果执行时组件已销毁，闭包会跳过。
+- `xrack::spawn_local(async move { … })` 在 UI 线程轮询 Future，支持捕获 `Rc` 等 `!Send` 状态。可以在 UI 回调、投递到事件循环的闭包或其他本地任务中调用。返回的 `LocalTask<T>` 可以等待或用 `abort()` 取消，丢弃句柄会让任务继续运行。从窗口回调启动的本地任务会在该窗口关闭时取消。
 
-`run_with_messages(component, setup)` 把 `UiSender<M>` 交给 setup，setup 返回 `FnMut(&mut Component, M)` 消息处理器。工作线程或应用自己的异步运行时可调用 `try_send`。队列满或关闭时会把消息随错误返回。事件循环每批处理最多 64 条消息，再统一刷新场景和布局。默认队列容量是 256，组件状态和 GPU 绘制留在 UI 线程。
-
-`bazel run //examples/async_demo:async_demo` 使用一个由应用持有的多线程 Tokio runtime 运行计时和后台搜索。UI 本地 Future 等待 Tokio 计时任务的 `JoinHandle`，完成后在 UI 线程更新组件。搜索通过 `UiSender` 提交列表和逐行更新，用请求 ID 丢弃过期结果。应用可以按自己的 I/O 需求启用 Tokio 的驱动。
+先注册组件的 `on_*` 回调，再通过普通的 `run(ui)` 或 `Desktop::open(ui)` 启动界面。`bazel run //examples/async_demo:async_demo` 使用多线程 Tokio runtime 运行后台搜索，再用 `spawn_local` 等待 Tokio 的 `JoinHandle`。请求完成后，UI Future 核对请求 ID，再更新结果列表、候选和单行数据。也可以在后台拿到结果后直接调用弱句柄的 `upgrade_in_event_loop`。网络请求由应用的 Tokio runtime 驱动。
 
 ## 多窗口
 
@@ -791,7 +813,7 @@ macOS 上，`DropArea { accept-files: true; }` 也可接收 Finder 或其他应�
 
 回调可以调用 `root.minimize()`、`root.maximize()`、`root.restore()`、`root.toggle-maximized()`、`root.set-full-screen(bool)` 和 `root.toggle-full-screen()`。`restore()` 请求恢复普通窗口。窗口的 `window-active`、`minimized`、`maximized` 和 `full-screen` 是只读的响应式状态，由宿主从原生窗口采样。`minimized-known` 表示当前后端能否报告最小化，例如 Wayland 上该值为 `false`。同一批切换请求按发出顺序解析，退出全屏后需要调整最大化状态时，宿主会等待退出确认。自定义标题栏可用这些属性更新按钮文字和无障碍名称。
 
-`xrack_platform_winit::run_desktop` 在同一个 winit 事件循环中运行多个顶层组件。通过 `Desktop::open` 可在启动时或任意窗口的 UI 回调中创建新窗口。`open_with_messages` 为每个窗口提供独立的 `UiSender` 和 reducer。`DesktopWindow::close` 关闭指定窗口。所有窗口关闭、所有托盘图标隐藏或移除后，事件循环退出。
+`xrack_platform_winit::run_desktop` 在同一个 winit 事件循环中运行多个顶层组件。通过 `Desktop::open` 可在启动时或任意窗口的 UI 回调中创建新窗口。`DesktopWindow::close` 关闭指定窗口。所有窗口关闭、所有托盘图标隐藏或移除后，事件循环退出。
 
 顶层 `.xr` `Window` 可实现 `close-requested() => { … }`，返回 `true` 允许关闭，返回 `false` 保留窗口。标题栏、Rust 的 `DesktopWindow::close()` 和 `.xr` 的 `root.close()` 都经过这个处理器。`root.close()` 在当前回调结束后提交关闭请求。处理器可先拒绝，再打开 `MessageDialog`，由确认回调清除未保存标记并重新请求关闭。运行 `bazel run //examples/form:form -- --close-guard` 体验。
 

@@ -1,10 +1,10 @@
 use crate::system_tray::{self, TrayActivation, TrayHost};
-use crate::{Application, ClipboardPort, Inbox, LocalExecutor, UiSender, UserEvent};
+use crate::{Application, ClipboardPort, LocalExecutor, UserEvent, queue::EventQueue};
 use std::{
     cell::{Cell, RefCell},
     collections::{BTreeMap, HashMap},
     rc::{Rc, Weak},
-    sync::Arc,
+    sync::{Arc, mpsc::TrySendError},
     time::Instant,
 };
 use winit::{
@@ -14,12 +14,19 @@ use winit::{
     window::{Window, WindowId},
 };
 use xrack_renderer_femtovg::{RenderDevice, Renderer};
-use xrack_runtime::{Component, LocaleContext, LocaleId, SecondaryWindowRegistration};
+use xrack_runtime::{
+    Component, EventLoopError, EventLoopRegistration, LocaleContext, LocaleId,
+    SecondaryWindowRegistration,
+};
 
 type WindowKey = u64;
+type UiCallback = Box<dyn FnOnce() + Send>;
+const CALLBACK_CAPACITY: usize = 256;
 
 pub(crate) enum DesktopEvent {
     Commands,
+    InvokeCallbacks,
+    PollTasks,
     Window(WindowKey, UserEvent),
     Tray(WindowKey, TrayEvent),
 }
@@ -181,6 +188,7 @@ pub(crate) trait HostedWindow {
     fn take_close_request(&mut self) -> bool;
     fn tick(&mut self, now: Instant);
     fn refresh_deadline(&mut self, now: Instant) -> Option<Instant>;
+    fn refresh_after_desktop_update(&mut self);
     fn user_event(&mut self, event: UserEvent);
     fn window_event(&mut self, id: WindowId, event: WindowEvent);
     fn take_error(&mut self) -> Option<String>;
@@ -263,7 +271,17 @@ impl Desktop {
     }
 
     pub fn open<C: Component + 'static>(&self, component: C) -> Result<DesktopWindow, String> {
-        self.open_with_messages(component, |_, _: UiSender<()>| |_: &mut C, _: ()| {})
+        let commands = self.0.upgrade().ok_or("the XRack desktop is closed")?;
+        component.set_locale_context(commands.locale.clone());
+        let key = commands.key();
+        commands.enqueue(Command::Open(
+            key,
+            Box::new(move |events, clipboard| Box::new(make_window(component, events, clipboard))),
+        ))?;
+        Ok(DesktopWindow {
+            desktop: self.clone(),
+            key,
+        })
     }
 
     /// Register a windowless SystemTrayIcon component with the desktop.
@@ -290,32 +308,6 @@ impl Desktop {
             TrayHost::new(Box::new(component), events)?,
         ))?;
         Ok(DesktopTray {
-            desktop: self.clone(),
-            key,
-        })
-    }
-
-    /// Register a window and initialize its typed mailbox on the UI thread.
-    pub fn open_with_messages<C, M, R>(
-        &self,
-        component: C,
-        setup: impl FnOnce(&mut C, UiSender<M>) -> R + 'static,
-    ) -> Result<DesktopWindow, String>
-    where
-        C: Component + 'static,
-        M: Send + 'static,
-        R: FnMut(&mut C, M) + 'static,
-    {
-        let commands = self.0.upgrade().ok_or("the XRack desktop is closed")?;
-        component.set_locale_context(commands.locale.clone());
-        let key = commands.key();
-        commands.enqueue(Command::Open(
-            key,
-            Box::new(move |events, clipboard| {
-                Box::new(make_window(component, setup, events, clipboard))
-            }),
-        ))?;
-        Ok(DesktopWindow {
             desktop: self.clone(),
             key,
         })
@@ -357,37 +349,28 @@ impl DesktopWindow {
     }
 }
 
-fn make_window<C, M, R>(
-    mut component: C,
-    setup: impl FnOnce(&mut C, UiSender<M>) -> R,
+fn make_window<C: Component>(
+    component: C,
     events: WindowEvents,
     clipboard: SharedClipboard,
-) -> Application<C, M, R>
-where
-    C: Component,
-    M: Send + 'static,
-    R: FnMut(&mut C, M),
-{
+) -> Application<C> {
     let task_events = events.clone();
     let tasks = LocalExecutor::new(move || {
         task_events.post(UserEvent::PollTasks);
     });
-    let inbox_events = events.clone();
-    let inbox = Inbox::new(move || {
-        inbox_events.post(UserEvent::ApplyMessages);
-    });
     let _scope = tasks.enter();
-    let reduce = setup(&mut component, inbox.sender());
-    let mut app = Application::new(component, tasks, inbox, reduce);
+    let mut app = Application::new(component, tasks.clone());
     app.events = Some(events);
     app.clipboard = Some(clipboard);
     app
 }
 
-struct DesktopRuntime<'a> {
+struct DesktopRuntime {
+    callbacks: Arc<EventQueue<UiCallback>>,
+    tasks: Rc<LocalExecutor>,
     commands: Rc<Commands>,
     clipboard: SharedClipboard,
-    windows: BTreeMap<WindowKey, Box<dyn HostedWindow + 'a>>,
+    windows: BTreeMap<WindowKey, Box<dyn HostedWindow>>,
     trays: BTreeMap<WindowKey, TrayHost>,
     owned: BTreeMap<WindowKey, OwnedWindow>,
     native: HashMap<WindowId, WindowKey>,
@@ -401,9 +384,19 @@ struct OwnedWindow {
     registration: SecondaryWindowRegistration,
 }
 
-impl<'a> DesktopRuntime<'a> {
+impl DesktopRuntime {
     fn new(proxy: EventLoopProxy<DesktopEvent>) -> Self {
+        let callback_events = proxy.clone();
+        let callbacks = Arc::new(EventQueue::new(CALLBACK_CAPACITY, move || {
+            let _ = callback_events.send_event(DesktopEvent::InvokeCallbacks);
+        }));
+        let task_events = proxy.clone();
+        let tasks = LocalExecutor::new(move || {
+            let _ = task_events.send_event(DesktopEvent::PollTasks);
+        });
         Self {
+            callbacks,
+            tasks,
             commands: Rc::new(Commands {
                 locale: LocaleContext::default(),
                 next: Cell::new(0),
@@ -420,6 +413,35 @@ impl<'a> DesktopRuntime<'a> {
             graphics: None,
             resumed: false,
             error: None,
+        }
+    }
+
+    fn register_event_loop(&self) -> Result<EventLoopRegistration, String> {
+        let callbacks = self.callbacks.clone();
+        EventLoopRegistration::new(move |callback| {
+            callbacks.try_push(callback).map_err(|error| match error {
+                TrySendError::Full(_) => EventLoopError::QueueFull,
+                TrySendError::Disconnected(_) => EventLoopError::NotRunning,
+            })
+        })
+        .map_err(|error| error.to_string())
+    }
+
+    fn invoke_callbacks(&mut self) {
+        let _scope = self.tasks.enter();
+        let callbacks = self.callbacks.take_batch();
+        if callbacks.is_empty() {
+            return;
+        }
+        for callback in callbacks {
+            callback();
+        }
+        self.refresh_windows();
+    }
+
+    fn refresh_windows(&mut self) {
+        for window in self.windows.values_mut() {
+            window.refresh_after_desktop_update();
         }
     }
 
@@ -595,12 +617,8 @@ impl<'a> DesktopRuntime<'a> {
                 continue;
             };
             let key = self.commands.key();
-            let mut window = make_window(
-                component,
-                |_, _: UiSender<()>| |_, _: ()| {},
-                self.commands.events(key),
-                self.clipboard.clone(),
-            );
+            let mut window =
+                make_window(component, self.commands.events(key), self.clipboard.clone());
             let closing = window.take_close_request();
             self.windows.insert(key, Box::new(window));
             self.owned.insert(
@@ -618,7 +636,7 @@ impl<'a> DesktopRuntime<'a> {
     }
 }
 
-impl ApplicationHandler<DesktopEvent> for DesktopRuntime<'_> {
+impl ApplicationHandler<DesktopEvent> for DesktopRuntime {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         self.resumed = true;
         self.apply_commands(event_loop);
@@ -636,6 +654,8 @@ impl ApplicationHandler<DesktopEvent> for DesktopRuntime<'_> {
     }
 
     fn exiting(&mut self, _: &ActiveEventLoop) {
+        self.callbacks.close();
+        self.tasks.close();
         self.commands.closed.set(true);
         self.commands.pending.take();
         self.trays.clear();
@@ -648,6 +668,17 @@ impl ApplicationHandler<DesktopEvent> for DesktopRuntime<'_> {
         let (key, event) = match event {
             DesktopEvent::Commands => {
                 self.apply_commands(event_loop);
+                return;
+            }
+            DesktopEvent::InvokeCallbacks => {
+                self.invoke_callbacks();
+                return;
+            }
+            DesktopEvent::PollTasks => {
+                let _scope = self.tasks.enter();
+                if self.tasks.poll_ready() {
+                    self.refresh_windows();
+                }
                 return;
             }
             DesktopEvent::Window(key, event) => (key, event),
@@ -760,28 +791,24 @@ fn event_loop() -> Result<EventLoop<DesktopEvent>, String> {
 pub fn run_desktop(setup: impl FnOnce(&Desktop) -> Result<(), String>) -> Result<(), String> {
     let event_loop = event_loop()?;
     let mut desktop = DesktopRuntime::new(event_loop.create_proxy());
-    setup(&Desktop(Rc::downgrade(&desktop.commands)))?;
+    let _registration = desktop.register_event_loop()?;
+    {
+        let _scope = desktop.tasks.enter();
+        setup(&Desktop(Rc::downgrade(&desktop.commands)))?;
+    }
     event_loop
         .run_app(&mut desktop)
         .map_err(|error| error.to_string())?;
-    desktop.error.map_or(Ok(()), Err)
+    desktop.error.take().map_or(Ok(()), Err)
 }
 
-pub(crate) fn run_window<C, M, R>(
-    component: C,
-    setup: impl FnOnce(&mut C, UiSender<M>) -> R,
-) -> Result<(), String>
-where
-    C: Component + 'static,
-    M: Send + 'static,
-    R: FnMut(&mut C, M),
-{
+pub(crate) fn run_window<C: Component + 'static>(component: C) -> Result<(), String> {
     let event_loop = event_loop()?;
     let mut desktop = DesktopRuntime::new(event_loop.create_proxy());
+    let _registration = desktop.register_event_loop()?;
     let key = desktop.commands.key();
     let window = make_window(
         component,
-        setup,
         desktop.commands.events(key),
         desktop.clipboard.clone(),
     );
@@ -789,5 +816,12 @@ where
     event_loop
         .run_app(&mut desktop)
         .map_err(|error| error.to_string())?;
-    desktop.error.map_or(Ok(()), Err)
+    desktop.error.take().map_or(Ok(()), Err)
+}
+
+impl Drop for DesktopRuntime {
+    fn drop(&mut self) {
+        self.callbacks.close();
+        self.tasks.close();
+    }
 }

@@ -62,7 +62,7 @@ jobs:
         run: >-
           cargo package --locked
           -p xrack-runtime -p xrack-assets -p xrack-layout
-          -p xrack-renderer-femtovg -p xrack-platform-winit -p xrack
+          -p xrack-renderer-femtovg -p xrack-platform-winit
       - name: Upload Cargo packages
         if: matrix.os == 'ubuntu-24.04'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
@@ -78,6 +78,7 @@ jobs:
     timeout-minutes: 240
     env:
       CARGO_BAZEL_ISOLATED: "false"
+      PACKAGE_VSIX: ${{ inputs.package-vsix || (github.event_name == 'push' && github.ref == 'refs/heads/main') }}
     strategy:
       fail-fast: false
       matrix:
@@ -155,7 +156,14 @@ jobs:
       - name: Package xrackc
         run: python tools/package_xrackc.py
       - name: Run the standalone Cargo consumer with the bundled compiler
+        env:
+          CARGO_TARGET_DIR: ${{ github.workspace }}/.tools/cargo-consumer
         run: python tools/test_cargo_consumer.py .tools/dist ${{ matrix.target }}
+      - name: Load MLIR from a standalone Cargo consumer
+        if: hashFiles('bundles/mlir/build.rs') != ''
+        env:
+          CARGO_TARGET_DIR: ${{ github.workspace }}/.tools/cargo-consumer
+        run: python tools/test_cargo_consumer.py .tools/dist ${{ matrix.target }} --interpreter
       - name: Upload xrackc archive and checksum
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
@@ -167,22 +175,22 @@ jobs:
           if-no-files-found: error
           compression-level: 0
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        if: inputs.package-vsix
+        if: env.PACKAGE_VSIX == 'true'
         with:
           node-version: '22'
           package-manager-cache: false
       - name: Test the VS Code preview queue
-        if: inputs.package-vsix
+        if: env.PACKAGE_VSIX == 'true'
         run: node --test crates/xrack-lsp/vscode/preview-queue.test.js
       - name: Package and smoke-test the native VSIX
-        if: inputs.package-vsix
+        if: env.PACKAGE_VSIX == 'true'
         run: >-
           python tools/package_vscode.py package
           --host ${{ matrix.target }}
           --archives .tools/dist
           --output .tools/vsix
       - name: Upload the native VSIX
-        if: inputs.package-vsix
+        if: env.PACKAGE_VSIX == 'true'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: vscode-vsix-${{ matrix.target }}

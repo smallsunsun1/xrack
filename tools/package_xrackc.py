@@ -9,6 +9,8 @@ import subprocess
 import tarfile
 import tempfile
 
+import mlir_bundles
+
 
 ROOT = Path(__file__).resolve().parents[1]
 BAZEL_OPTIONS = (
@@ -81,7 +83,11 @@ def main():
     bazel = Path(bazel).absolute()
     host = next(line.removeprefix("host: ") for line in output("rustc", "-vV").splitlines()
                 if line.startswith("host: "))
-    subprocess.run((bazel, "build", *BAZEL_OPTIONS, "//:xrackc"), cwd=ROOT, check=True)
+    subprocess.run(
+        (bazel, "build", *BAZEL_OPTIONS, "//:xrackc", *mlir_bundles.TARGETS),
+        cwd=ROOT,
+        check=True,
+    )
     bin_dir = Path(output(bazel, "info", *BAZEL_OPTIONS, "bazel-bin"))
     external = Path(output(bazel, "info", *BAZEL_OPTIONS, "output_base")) / "external"
     exe = "xrackc.exe" if "windows" in host else "xrackc"
@@ -103,11 +109,16 @@ def main():
         (external / "zstd+" / "LICENSE", "licenses/zstd.txt"),
         (rust_docs / "COPYRIGHT-library.html", "licenses/rust-library.html"),
     ]
+    if "darwin" not in host:
+        for runtime in ("libcxx", "libcxxabi", "libunwind", "compiler-rt"):
+            files.append((llvm / runtime / "LICENSE.TXT", f"licenses/{runtime}.txt"))
     files.extend((path, f"licenses/rust/{path.name}") for path in sorted((rust_docs / "licenses").iterdir()))
     files.extend(cargo_licenses(host))
     archive = dist / f"{name}.tar.gz"
     with tempfile.TemporaryDirectory(dir=dist) as staging:
-        temporary_archive = Path(staging) / archive.name
+        staging = Path(staging)
+        files.extend(mlir_bundles.native_inputs(bazel, BAZEL_OPTIONS, bin_dir, host, staging))
+        temporary_archive = staging / archive.name
         with tarfile.open(temporary_archive, "w:gz", dereference=True) as bundle:
             for source, relative in files:
                 bundle.add(source, arcname=f"{name}/{relative}", recursive=False)

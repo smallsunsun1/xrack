@@ -1516,6 +1516,49 @@ fn interpreted_grid_and_z_plans_match_compiled_and_dynamic_layouts() {
 }
 
 #[test]
+fn component_instances_keep_child_grid_and_paint_plans_with_layout_overrides() {
+    use xrack_layout::{Size, layout};
+
+    let preview = xrack_compiler::prepare_preview(
+        include_str!("expressions.xr"),
+        "expressions.xr",
+        Default::default(),
+    )
+    .unwrap();
+    let ui = Program::from_module(&preview.module)
+        .unwrap()
+        .create("InstanceScenePlans")
+        .unwrap();
+    let mut generated = expressions_ui::InstanceScenePlans::new();
+    for (wide, width) in [(false, 100.0), (true, 150.0)] {
+        ui.set("wide", wide.into()).unwrap();
+        generated.set_wide(wide);
+        let interpreted = ui.try_render().unwrap();
+        let compiled = generated.render_shared();
+        assert_same_scene(&interpreted, &compiled);
+        let a = interpreted.find("grid").unwrap();
+        let b = compiled.find("grid").unwrap();
+        for grid in [a, b] {
+            assert_eq!(grid.length("width"), Some(width));
+            assert!(grid.instance_geometry_handle.is_some());
+            assert_eq!(
+                grid.static_grid()
+                    .expect("instance lost its grid plan")
+                    .len(),
+                2
+            );
+            assert_eq!(grid.static_paint_order(), Some(&[1, 0][..]));
+        }
+        assert_eq!(a.static_grid(), b.static_grid());
+        let viewport = Size::new(200.0, 100.0);
+        assert_eq!(
+            layout(&interpreted, viewport, &mut FixedText),
+            layout(&compiled, viewport, &mut FixedText),
+        );
+    }
+}
+
+#[test]
 fn interpreted_static_scenes_and_gradients_share_only_immutable_storage() {
     use std::sync::Arc;
     use xrack_runtime::Brush;
@@ -2737,6 +2780,48 @@ fn disabled_actions_skip_stateful_button_enabled_bindings() {
 }
 
 #[test]
+fn visual_input_rechecks_nonpersistent_state_predicates() {
+    use std::{cell::Cell, rc::Rc};
+
+    let preview = xrack_compiler::prepare_preview(
+        include_str!("expressions.xr"),
+        "expressions.xr",
+        Default::default(),
+    )
+    .unwrap();
+    let mut actual = Program::from_module(&preview.module)
+        .unwrap()
+        .create("InputStatePredicateParity")
+        .unwrap();
+    let mut generated = expressions_ui::InputStatePredicateParity::new();
+    let locked = Rc::new(Cell::new(false));
+    actual
+        .on("locked", {
+            let locked = locked.clone();
+            Rc::new(move |_| Ok(Some(locked.get().into())))
+        })
+        .unwrap();
+    generated.on_locked({
+        let locked = locked.clone();
+        move || locked.get()
+    });
+    let actual_scene = actual.render_shared();
+    let generated_scene = generated.render_shared();
+
+    for value in [true, false, true] {
+        locked.set(value);
+        assert_eq!(
+            generated.dispatch_at(&generated_scene, &[0], "clicked"),
+            !value
+        );
+        assert_eq!(actual.dispatch_at(&actual_scene, &[0], "clicked"), !value);
+    }
+    assert_eq!(actual.get("clicks"), Ok(1_i64.into()));
+    assert_eq!(generated.get_clicks(), 1);
+    assert_eq!(actual.take_error(), None);
+}
+
+#[test]
 fn visual_state_predicates_run_at_the_declaration_on_each_scene_rebuild() {
     use std::{
         cell::{Cell, RefCell},
@@ -2980,6 +3065,38 @@ fn combo_text_accepts_the_first_string_match_and_keeps_the_submitted_draft() {
     assert_eq!(interpreted.get("selections"), Ok(1_i64.into()));
     assert_same_scene(&interpreted.render(), &compiled.render());
     assert_eq!(interpreted.take_error(), None);
+}
+
+#[test]
+fn combo_callbacks_observe_selection_and_explicit_edit_text_in_order() {
+    use xrack_runtime::ControlAction::{AcceptComboText, Select};
+
+    let preview = xrack_compiler::prepare_preview(
+        include_str!("expressions.xr"),
+        "expressions.xr",
+        Default::default(),
+    )
+    .unwrap();
+    let mut actual = Program::from_module(&preview.module)
+        .unwrap()
+        .create("ComboCommitParity")
+        .unwrap();
+    let mut generated = expressions_ui::ComboCommitParity::new();
+    let path = [0];
+    for ui in [&mut actual as &mut dyn Component, &mut generated] {
+        assert!(ui.control_at(&ui.render_shared(), &path, Select(1)));
+        assert!(ui.edit_at(&ui.render_shared(), &path, "A".into()));
+        assert!(ui.control_at(&ui.render_shared(), &path, AcceptComboText));
+        assert!(ui.edit_at(&ui.render_shared(), &path, "free".into()));
+        assert!(ui.control_at(&ui.render_shared(), &path, AcceptComboText));
+    }
+    let events = "select:B:2:B;value:2:2:B;value:1:1:A;accept:A:1:A;accept:free:1:free;";
+    assert_eq!(actual.get("events"), Ok(events.to_owned().into()));
+    assert_eq!(generated.get_events(), events);
+    assert_eq!(actual.get("current"), Ok(1_i64.into()));
+    assert_eq!(generated.get_current(), 1);
+    assert_same_scene(&actual.render(), &generated.render());
+    assert_eq!(actual.take_error(), None);
 }
 
 #[test]
@@ -3263,6 +3380,27 @@ fn standalone_mlir_loads_fonts_and_reactive_translations_like_generated_ui() {
             .eq(embedded.iter().copied())
     );
 
+    let font_ir = std::fs::read_to_string(&font_file).unwrap();
+    for id in ["", "main-window"] {
+        let edited = font_ir.replace("id = \"root\"", &format!("id = \"{id}\""));
+        assert_ne!(edited, font_ir);
+        let module = xrack_compiler::mlir::process(&edited).unwrap();
+        let (program, _) =
+            Program::from_module_with_file_resources(&module, &font_file, None).unwrap();
+        let scene = program.create("BundledFontsDemo").unwrap().render_shared();
+        assert_eq!(scene.element_id(), (!id.is_empty()).then_some(id));
+        assert_eq!(scene.loaded_fonts.as_ref().unwrap().sources().len(), 1);
+
+        let filename = font_file.to_str().unwrap();
+        let rust = xrack_compiler::generate_rust(&module, filename, None)
+            .unwrap()
+            .to_string();
+        assert!(
+            rust.contains("set_embedded_fonts (& __XR_FONTS)"),
+            "missing font attachment for root ID {id:?}"
+        );
+    }
+
     let locale_file = standalone_fixture(
         "examples/tray/tray.xr",
         "locale",
@@ -3495,6 +3633,17 @@ fn animated_image_state_source_controls_playback_and_completion() {
     let mut generated = expressions_ui::AnimatedImageStateParity::new();
     actual.set("animation", animation).unwrap();
     generated.set_animation(generated_animation);
+    let end = Instant::now() + Duration::from_secs(1);
+    for ui in [&actual as &dyn Component, &generated] {
+        let scene = ui.render_shared();
+        for id in ["empty-handler", "no-handler"] {
+            let mut queue = ImagePlaybackQueue::default();
+            let playback = scene.find(id).unwrap().image_playback.as_ref().unwrap();
+            queue.sync(end - Duration::from_secs(1), [(playback, true)]);
+            assert!(queue.advance(end));
+            assert!(!queue.next_finished().unwrap().finish(), "{id}");
+        }
+    }
     let mut actual_queue = ImagePlaybackQueue::default();
     let mut generated_queue = ImagePlaybackQueue::default();
     let now = Instant::now();
@@ -3540,6 +3689,111 @@ fn animated_image_state_source_controls_playback_and_completion() {
     assert!(actual_queue.deadline().is_none());
     assert!(generated_queue.deadline().is_none());
     assert_eq!(actual.take_error(), None);
+}
+
+#[test]
+fn standalone_mlir_routes_anonymous_handlers_by_scene_path() {
+    let source = r#"
+        export component App inherits Window {
+            out property <string> events: "";
+            first := Button { clicked => { root.events += "first;"; } }
+            second := Button { clicked => { root.events += "second;"; } }
+            toggle := CheckBox { toggled => { root.events += "toggle;"; } }
+            left := LineEdit { edited => { root.events += "left;"; } }
+            right := LineEdit {
+                edited => { root.events += "right;"; }
+                accepted => { root.events += "accept;"; }
+            }
+            collision := LineEdit { text: "reserved"; }
+        }
+    "#;
+    let raw =
+        xrack_compiler::mlir::lower(&xrack_compiler::parse(source).unwrap(), "events.xr").unwrap();
+    let anonymous = ["first", "second", "toggle", "left", "right"]
+        .into_iter()
+        .fold(raw, |text, id| {
+            text.replace(&format!("id = \"{id}\", key = \"{id}\""), "id = \"\"")
+        });
+    let anonymous = anonymous.replace("key = \"collision\"", "key = \"__xr_anon_0\"");
+    let module = xrack_compiler::mlir::process(&anonymous).unwrap();
+    let mut ui = Program::from_module(&module)
+        .unwrap()
+        .create("App")
+        .unwrap();
+    assert!(ui.dispatch("", "clicked"));
+    assert!(ui.dispatch_at(&ui.render_shared(), &[1], "clicked"));
+    assert!(ui.dispatch_at(&ui.render_shared(), &[2], "clicked"));
+    assert!(ui.edit_at(&ui.render_shared(), &[4], "draft".into()));
+    let scene = ui.render_shared();
+    assert_eq!(scene.at_path(&[3]).unwrap().text("text"), Some(""));
+    assert_eq!(scene.at_path(&[4]).unwrap().text("text"), Some("draft"));
+    assert_eq!(scene.at_path(&[5]).unwrap().text("text"), Some("reserved"));
+    assert!(!ui.dispatch_at(&ui.render_shared(), &[3], "accepted"));
+    assert!(ui.dispatch_at(&ui.render_shared(), &[4], "accepted"));
+    assert_eq!(
+        ui.get("events"),
+        Ok("first;second;toggle;right;accept;".to_owned().into())
+    );
+
+    let rust = xrack_compiler::codegen::generate(&module)
+        .unwrap()
+        .to_string();
+    for (slot, event) in [
+        (0, "clicked"),
+        (1, "clicked"),
+        (2, "toggled"),
+        (3, "edited"),
+        (4, "edited"),
+        (4, "accepted"),
+    ] {
+        assert!(
+            rust.contains(&format!("([{}usize] , \"{event}\") =>", slot)),
+            "missing {event} handler for scene slot {slot}"
+        );
+    }
+}
+
+#[test]
+fn standalone_mlir_state_selector_can_supply_a_binding_value() {
+    let raw = r#"
+        module {
+          "xr.component"() <{exported = "true", sym_name = "App"}> ({
+            %true = "xr.literal"() <{value = "true"}> : () -> !xr.bool
+            "xr.property"(%true) <{name = "active", visibility = "in-out"}> : (!xr.bool) -> ()
+            "xr.element"() <{id = "root", kind = "Window"}> ({
+              "xr.element"() <{id = "", kind = "Text"}> ({
+                %active = "xr.read"() <{owner = "root", value = "active"}> : () -> !xr.bool
+                %base = "xr.literal"() <{value = "\22inactive\22"}> : () -> !xr.string
+                %text = "xr.literal"() <{value = "\22active\22"}> : () -> !xr.string
+                %selected = "xr.state_select"(%active) <{names = ["active"], owner = ""}> : (!xr.bool) -> !xr.int
+                "xr.bind"(%base) <{name = "text"}> : (!xr.string) -> ()
+                "xr.state_set"(%selected, %text) <{case_index = 0 : i64, name = "text"}> : (!xr.int, !xr.string) -> ()
+                "xr.bind"(%selected) <{name = "font-weight"}> : (!xr.int) -> ()
+                "xr.end"() : () -> ()
+              }) : () -> ()
+              "xr.end"() : () -> ()
+            }) : () -> ()
+            "xr.end"() : () -> ()
+          }) : () -> ()
+        }
+    "#;
+    use xrack_compiler::mlir::{Module, process};
+    let optimized = process(raw).unwrap();
+    let roundtrip = Module::parse(&optimized.to_mlir()).unwrap();
+    for module in [Module::parse(raw).unwrap(), optimized, roundtrip] {
+        let ui = Program::from_module(&module)
+            .unwrap()
+            .create("App")
+            .unwrap();
+        for (active, text, weight) in [(true, "active", 0), (false, "inactive", -1)] {
+            ui.set("active", active.into()).unwrap();
+            let scene = ui.try_render().unwrap();
+            let panel = scene.at_path(&[0]).unwrap();
+            assert_eq!(panel.text("text"), Some(text));
+            assert_eq!(panel.int("font-weight"), Some(weight));
+        }
+        xrack_compiler::codegen::generate(&module).unwrap();
+    }
 }
 
 #[test]
@@ -4383,6 +4637,190 @@ fn filtered_list_delegates_keep_source_index_height_and_state() {
             67.0
         );
     }
+}
+
+#[test]
+fn direct_scroll_commands_preserve_operand_and_queue_order() {
+    use std::{cell::RefCell, rc::Rc};
+    use xrack_runtime::{Length, ScrollAction, ScrollAlignment, ScrollRequests};
+
+    let preview = xrack_compiler::prepare_preview(
+        include_str!("expressions.xr"),
+        "expressions.xr",
+        Default::default(),
+    )
+    .unwrap();
+    let actual = Program::from_module(&preview.module)
+        .unwrap()
+        .create("ScrollCommandParity")
+        .unwrap();
+    let mut compiled = expressions_ui::ScrollCommandParity::new();
+    let actual_reads = Rc::new(RefCell::new(Vec::new()));
+    let compiled_reads = Rc::new(RefCell::new(Vec::new()));
+    let offset = |reads: &RefCell<Vec<i64>>, tag| {
+        reads.borrow_mut().push(tag);
+        Length(tag as f64 * 10.0)
+    };
+    actual
+        .on("offset", {
+            let reads = actual_reads.clone();
+            Rc::new(move |args| {
+                let [Value::Int(tag)] = args else {
+                    unreachable!()
+                };
+                Ok(Some(offset(&reads, *tag).into()))
+            })
+        })
+        .unwrap();
+    compiled.on_offset({
+        let reads = compiled_reads.clone();
+        move |tag| offset(&reads, tag)
+    });
+
+    let queue = ScrollRequests::default();
+    let _context = queue.enter();
+    actual.invoke("issue", &[]).unwrap();
+    let interpreted = queue.drain();
+    compiled.invoke_issue();
+    let generated = queue.drain();
+    let expected = [
+        ScrollAction::CancelFlick,
+        ScrollAction::To {
+            x: Length(10.0),
+            y: Length(20.0),
+        },
+        ScrollAction::ReturnToBounds,
+        ScrollAction::ToIndex {
+            index: 1,
+            alignment: ScrollAlignment::Beginning,
+        },
+        ScrollAction::ToColumn {
+            column: 0,
+            alignment: ScrollAlignment::End,
+        },
+        ScrollAction::ToCell {
+            row: 1,
+            column: 0,
+            horizontal: ScrollAlignment::Center,
+            vertical: ScrollAlignment::Contain,
+        },
+    ];
+    for (commands, scene) in [
+        (interpreted, actual.render_shared()),
+        (generated, compiled.render_shared()),
+    ] {
+        assert_eq!(commands.len(), expected.len());
+        for (index, (command, action)) in commands.iter().zip(expected).enumerate() {
+            assert_eq!(command.action, action);
+            assert_eq!(
+                Some(&command.target),
+                scene.children[usize::from(index >= 3)]
+                    .viewport_handle
+                    .as_ref()
+            );
+        }
+    }
+    assert_eq!(actual_reads.take(), [1, 2]);
+    assert_eq!(compiled_reads.take(), [1, 2]);
+    assert_eq!(actual.take_error(), None);
+}
+
+#[test]
+fn source_cell_scroll_rejects_negative_positions_before_resolving_rows() {
+    use std::{
+        cell::{Cell, RefCell},
+        rc::Rc,
+    };
+    use xrack_runtime::{ScrollAction, ScrollAlignment, ScrollRequests};
+
+    let preview = xrack_compiler::prepare_preview(
+        include_str!("expressions.xr"),
+        "expressions.xr",
+        Default::default(),
+    )
+    .unwrap();
+    let interpreted = Program::from_module(&preview.module)
+        .unwrap()
+        .create("TableMoveOrderParity")
+        .unwrap();
+    let mut generated = expressions_ui::TableMoveOrderParity::new();
+    let interpreted_model = interpreted.record_model("rows").unwrap();
+    let compiled_model = generated.model_rows();
+    let reads = [Rc::new(Cell::new(0)), Rc::new(Cell::new(0))];
+    let args = [
+        Rc::new(RefCell::new(Vec::new())),
+        Rc::new(RefCell::new(Vec::new())),
+    ];
+    interpreted
+        .on("source", {
+            let reads = reads[0].clone();
+            let rows = interpreted_model.clone();
+            Rc::new(move |_| {
+                reads.set(reads.get() + 1);
+                Ok(Some(Value::RecordList(rows.clone())))
+            })
+        })
+        .unwrap();
+    generated.on_source({
+        let reads = reads[1].clone();
+        move || {
+            reads.set(reads.get() + 1);
+            compiled_model.snapshot()
+        }
+    });
+    interpreted
+        .on("selection-position", {
+            let args = args[0].clone();
+            Rc::new(move |values| {
+                let [Value::Int(index)] = values else {
+                    unreachable!()
+                };
+                args.borrow_mut().push(*index);
+                Ok(Some((*index).into()))
+            })
+        })
+        .unwrap();
+    generated.on_selection_position({
+        let args = args[1].clone();
+        move |index| {
+            args.borrow_mut().push(index);
+            index
+        }
+    });
+
+    let requests = ScrollRequests::default();
+    let _context = requests.enter();
+    for (row, column) in [(-1_i64, 0_i64), (0, -1)] {
+        interpreted
+            .invoke("reveal-source-cell", &[row.into(), column.into()])
+            .unwrap();
+        generated.invoke_reveal_source_cell(row, column);
+        assert!(requests.is_empty());
+        for args in &args {
+            assert_eq!(args.take(), [row, column]);
+        }
+        assert_eq!(reads.each_ref().map(|reads| reads.get()), [0, 0]);
+    }
+
+    interpreted
+        .invoke("reveal-source-cell", &[1_i64.into(), 0_i64.into()])
+        .unwrap();
+    generated.invoke_reveal_source_cell(1, 0);
+    let actions = requests.drain();
+    assert_eq!(actions.len(), 2);
+    for request in actions {
+        assert!(matches!(
+            request.action,
+            ScrollAction::ToCellAtRowKey {
+                source_index: 1,
+                column: 0,
+                horizontal: ScrollAlignment::Contain,
+                vertical: ScrollAlignment::Beginning,
+                ..
+            }
+        ));
+    }
+    assert_eq!(reads.each_ref().map(|reads| reads.get()), [1, 1]);
 }
 
 #[test]
@@ -8602,6 +9040,86 @@ fn tree_input_fixture() -> (Instance, expressions_ui::TreeInputParity) {
 }
 
 #[test]
+fn tree_dsl_commands_share_argument_order_and_expansion_results() {
+    use expressions_ui::TreeInputParity;
+    use std::{cell::RefCell, rc::Rc};
+
+    let (actual, mut compiled) = tree_input_fixture();
+    let actual_calls = Rc::new(RefCell::new(Vec::new()));
+    let compiled_calls = Rc::new(RefCell::new(Vec::new()));
+    actual
+        .on("query-key", {
+            let calls = actual_calls.clone();
+            Rc::new(move |args| {
+                let [Value::Int(tag)] = args else {
+                    unreachable!()
+                };
+                calls.borrow_mut().push(*tag);
+                Ok(Some(1_i64.into()))
+            })
+        })
+        .unwrap();
+    compiled.on_query_key({
+        let calls = compiled_calls.clone();
+        move |tag| {
+            calls.borrow_mut().push(tag);
+            1
+        }
+    });
+
+    for (name, invoke, expanded, expansions, collapses) in [
+        (
+            "expand-subtree",
+            TreeInputParity::invoke_expand_subtree as fn(&mut TreeInputParity),
+            true,
+            1,
+            0,
+        ),
+        (
+            "collapse-all",
+            TreeInputParity::invoke_collapse_all,
+            false,
+            1,
+            1,
+        ),
+        (
+            "reveal-child",
+            TreeInputParity::invoke_reveal_child,
+            true,
+            2,
+            1,
+        ),
+        (
+            "reveal-child",
+            TreeInputParity::invoke_reveal_child,
+            true,
+            2,
+            1,
+        ),
+        (
+            "toggle-root",
+            TreeInputParity::invoke_toggle_root,
+            false,
+            2,
+            2,
+        ),
+    ] {
+        actual.invoke(name, &[]).unwrap();
+        invoke(&mut compiled);
+        let keys: &[i64] = if expanded { &[1, 11, 2, 3] } else { &[1, 2, 3] };
+        assert_eq!(tree_keys(&actual.render(), &[0]), keys, "{name}");
+        assert_eq!(tree_keys(&compiled.render(), &[0]), keys, "{name}");
+        assert_eq!(actual.get("expansions"), Ok(Value::Int(expansions)));
+        assert_eq!(actual.get("collapses"), Ok(Value::Int(collapses)));
+        assert_eq!(compiled.get_expansions(), expansions);
+        assert_eq!(compiled.get_collapses(), collapses);
+    }
+    assert_eq!(*actual_calls.borrow(), [6, 7]);
+    assert_eq!(*compiled_calls.borrow(), [6, 7]);
+    assert_eq!(actual.take_error(), None);
+}
+
+#[test]
 fn tree_input_tracks_row_identity_and_rejects_an_outdated_range() {
     use xrack_runtime::{
         ControlAction, RecordValue, RowSelection, TreeAction, TreeSelectionAction,
@@ -8668,6 +9186,87 @@ fn tree_input_tracks_row_identity_and_rejects_an_outdated_range() {
     assert_eq!(actual.get("selected-count"), Ok(3_i64.into()));
     assert_eq!(expected.get_selected_count(), 3);
     assert_eq!(actual.take_error(), None);
+}
+
+#[test]
+fn tree_view_index_queries_sample_the_index_before_the_projection() {
+    use std::{cell::RefCell, rc::Rc};
+
+    for (property, read, input, expected, trace) in [
+        (
+            "queried-view-index",
+            expressions_ui::TreeInputParity::get_queried_view_index
+                as fn(&expressions_ui::TreeInputParity) -> i64,
+            3,
+            0,
+            &["index", "root"][..],
+        ),
+        (
+            "queried-view-index",
+            expressions_ui::TreeInputParity::get_queried_view_index,
+            -1,
+            -1,
+            &["index"][..],
+        ),
+        (
+            "queried-source-index",
+            expressions_ui::TreeInputParity::get_queried_source_index,
+            0,
+            3,
+            &["index", "root"][..],
+        ),
+        (
+            "queried-source-index",
+            expressions_ui::TreeInputParity::get_queried_source_index,
+            12,
+            -1,
+            &["index", "root"][..],
+        ),
+    ] {
+        let (interpreted, mut compiled) = tree_input_fixture();
+        let actual_calls = Rc::new(RefCell::new(Vec::new()));
+        let compiled_calls = Rc::new(RefCell::new(Vec::new()));
+        interpreted
+            .on("query-key", {
+                let calls = actual_calls.clone();
+                Rc::new(move |_| {
+                    calls.borrow_mut().push("index");
+                    Ok(Some(input.into()))
+                })
+            })
+            .unwrap();
+        compiled.on_query_key({
+            let calls = compiled_calls.clone();
+            move |_| {
+                calls.borrow_mut().push("index");
+                input
+            }
+        });
+        let root = |calls: &RefCell<Vec<&str>>| {
+            let mut calls = calls.borrow_mut();
+            let key = if calls.last() == Some(&"index") {
+                1_i64
+            } else {
+                -1
+            };
+            calls.push("root");
+            key
+        };
+        interpreted
+            .on("query-root", {
+                let calls = actual_calls.clone();
+                Rc::new(move |_| Ok(Some(root(&calls).into())))
+            })
+            .unwrap();
+        compiled.on_query_root({
+            let calls = compiled_calls.clone();
+            move || root(&calls)
+        });
+        assert_eq!(interpreted.get(property), Ok(expected.into()));
+        assert_eq!(read(&compiled), expected);
+        assert_eq!(actual_calls.borrow().as_slice(), trace);
+        assert_eq!(compiled_calls.borrow().as_slice(), trace);
+    }
 }
 
 #[test]
@@ -9742,6 +10341,58 @@ fn timer_restart_during_config_evaluation_rejects_the_old_tick() {
     assert_eq!(generated.get_ticks(), 1);
     assert_eq!(actual.get("running"), Ok(false.into()));
     assert!(!generated.get_running());
+    assert_eq!(actual.get("running-at-tick"), Ok(false.into()));
+    assert!(!generated.get_running_at_tick());
+    assert_eq!(actual.take_error(), None);
+}
+
+#[test]
+fn timer_start_only_samples_running_when_it_needs_to() {
+    use std::{cell::Cell, rc::Rc};
+
+    let preview = xrack_compiler::prepare_preview(
+        include_str!("expressions.xr"),
+        "expressions.xr",
+        Default::default(),
+    )
+    .unwrap();
+    let actual = Program::from_module(&preview.module)
+        .unwrap()
+        .create("TimerCommandReadParity")
+        .unwrap();
+    let mut generated = expressions_ui::TimerCommandReadParity::new();
+    let actual_reads = Rc::new(Cell::new(0));
+    let generated_reads = Rc::new(Cell::new(0));
+    let read = |reads: &Cell<i32>| {
+        reads.set(reads.get() + 1);
+        true
+    };
+    actual
+        .on("initial-running", {
+            let reads = actual_reads.clone();
+            Rc::new(move |_| Ok(Some(read(&reads).into())))
+        })
+        .unwrap();
+    generated.on_initial_running({
+        let reads = generated_reads.clone();
+        move || read(&reads)
+    });
+
+    actual.invoke("restart", &[]).unwrap();
+    generated.invoke_restart();
+    assert_eq!((actual_reads.get(), generated_reads.get()), (0, 0));
+    actual.reset("running").unwrap();
+    generated.reset_running();
+    actual.invoke("stop", &[]).unwrap();
+    generated.invoke_stop();
+    assert_eq!((actual_reads.get(), generated_reads.get()), (0, 0));
+    actual.reset("running").unwrap();
+    generated.reset_running();
+    actual.invoke("start", &[]).unwrap();
+    generated.invoke_start();
+    assert_eq!((actual_reads.get(), generated_reads.get()), (1, 1));
+    assert_eq!(actual.get("running"), Ok(true.into()));
+    assert!(generated.get_running());
     assert_eq!(actual.take_error(), None);
 }
 
@@ -10227,6 +10878,84 @@ fn table_delegate_input_rechecks_live_row_ancestors() {
 }
 
 #[test]
+fn repeated_input_samples_each_state_predicate_once_per_route() {
+    use std::{
+        cell::{Cell, RefCell},
+        rc::Rc,
+    };
+    use xrack_layout::{Interaction, Size};
+    use xrack_runtime::{EventResult, KeyEvent, KeyPhase};
+
+    let preview = xrack_compiler::prepare_preview(
+        include_str!("expressions.xr"),
+        "expressions.xr",
+        Default::default(),
+    )
+    .unwrap();
+    let mut actual = Program::from_module(&preview.module)
+        .unwrap()
+        .create("TableRowStatePredicateParity")
+        .unwrap();
+    let mut compiled = expressions_ui::TableRowStatePredicateParity::new();
+    let locked = Rc::new(Cell::new(false));
+    let actual_reads = Rc::new(RefCell::new(Vec::new()));
+    let compiled_reads = Rc::new(RefCell::new(Vec::new()));
+    actual
+        .on("row-locked", {
+            let locked = locked.clone();
+            let reads = actual_reads.clone();
+            Rc::new(move |args| {
+                let [Value::Int(row)] = args else {
+                    unreachable!()
+                };
+                reads.borrow_mut().push(*row);
+                Ok(Some(locked.get().into()))
+            })
+        })
+        .unwrap();
+    compiled.on_row_locked({
+        let locked = locked.clone();
+        let reads = compiled_reads.clone();
+        move |row| {
+            reads.borrow_mut().push(row);
+            locked.get()
+        }
+    });
+    let interaction = Interaction::default();
+    let size = Size::new(320.0, 200.0);
+    let (actual_scene, _) = prepare_list(&actual, &interaction, size);
+    let (compiled_scene, _) = prepare_list(&compiled, &interaction, size);
+    actual_reads.take();
+    compiled_reads.take();
+
+    let path = [0, 0, 0, 0, 0, 0];
+    let key = KeyEvent {
+        key: "x".into(),
+        ..Default::default()
+    };
+    for (value, expected) in [
+        (true, EventResult::Reject),
+        (false, EventResult::Accept),
+        (true, EventResult::Reject),
+    ] {
+        locked.set(value);
+        assert_eq!(
+            compiled.key_event_at(&compiled_scene, &path, KeyPhase::Pressed, &key),
+            expected
+        );
+        assert_eq!(
+            actual.key_event_at(&actual_scene, &path, KeyPhase::Pressed, &key),
+            expected
+        );
+        assert_eq!(compiled_reads.take(), [0]);
+        assert_eq!(actual_reads.take(), [0]);
+    }
+    assert_eq!(compiled.get_events(), "key A;");
+    assert_eq!(actual.get("events"), Ok("key A;".to_owned().into()));
+    assert_eq!(actual.take_error(), None);
+}
+
+#[test]
 fn ordinary_repeated_group_boxes_toggle_by_row_identity() {
     let preview = xrack_compiler::prepare_preview(
         include_str!("expressions.xr"),
@@ -10427,6 +11156,74 @@ fn nested_terminal_events_follow_both_rows_after_reordering() {
     generated.set_labels(replacement);
     assert!(!actual.focus_event_at(&actual_scene, &scope, loss));
     assert!(!generated.focus_event_at(&generated_scene, &scope, loss));
+    assert_eq!(actual.take_error(), None);
+}
+
+#[test]
+fn focus_commands_queue_operands_in_source_order() {
+    use std::{cell::RefCell, rc::Rc};
+    use xrack_runtime::{FocusAction, FocusRequests, TextCommand};
+
+    let preview = xrack_compiler::prepare_preview(
+        include_str!("expressions.xr"),
+        "expressions.xr",
+        Default::default(),
+    )
+    .unwrap();
+    let actual = Program::from_module(&preview.module)
+        .unwrap()
+        .create("FocusCommandOrderParity")
+        .unwrap();
+    let mut generated = expressions_ui::FocusCommandOrderParity::new();
+    let actual_calls = Rc::new(RefCell::new(Vec::new()));
+    let generated_calls = Rc::new(RefCell::new(Vec::new()));
+    actual
+        .on("offset", {
+            let calls = actual_calls.clone();
+            Rc::new(move |args| {
+                let [Value::Int(tag)] = args else {
+                    unreachable!()
+                };
+                calls.borrow_mut().push(*tag);
+                Ok(Some((tag + 1).into()))
+            })
+        })
+        .unwrap();
+    generated.on_offset({
+        let calls = generated_calls.clone();
+        move |tag| {
+            calls.borrow_mut().push(tag);
+            tag + 1
+        }
+    });
+
+    let queue = FocusRequests::default();
+    let _context = queue.enter();
+    actual.invoke("select-range", &[]).unwrap();
+    let interpreted = queue.drain();
+    generated.invoke_select_range();
+    let compiled = queue.drain();
+    let actions = [
+        FocusAction::Focus,
+        FocusAction::Text(TextCommand::SetSelection {
+            anchor: 2,
+            focus: 3,
+        }),
+        FocusAction::Clear,
+    ];
+    for (commands, scene) in [
+        (interpreted, actual.render_shared()),
+        (compiled, generated.render_shared()),
+    ] {
+        let target = scene.children[0].focus_handle.as_ref().unwrap();
+        assert_eq!(commands.len(), actions.len());
+        for (request, action) in commands.iter().zip(actions) {
+            assert_eq!(&request.target, target);
+            assert_eq!(request.action, action);
+        }
+    }
+    assert_eq!(*actual_calls.borrow(), [1, 2]);
+    assert_eq!(*generated_calls.borrow(), [1, 2]);
     assert_eq!(actual.take_error(), None);
 }
 
@@ -11057,6 +11854,47 @@ fn shortcut_chords_repeat_conflict_and_modal_scope_match_compiled_mode() {
     ));
     assert_eq!(actual.get("dialog-open").unwrap(), Value::Bool(false));
     assert_same_scene(&actual.render(), &expected.render());
+    assert_eq!(actual.take_error(), None);
+}
+
+#[test]
+fn overlay_handlers_observe_committed_open_state_in_both_backends() {
+    use xrack_runtime::{ControlAction, DialogCommand, DialogRole};
+
+    let preview = xrack_compiler::prepare_preview(
+        include_str!("expressions.xr"),
+        "expressions.xr",
+        Default::default(),
+    )
+    .unwrap();
+    let mut actual = Program::from_module(&preview.module)
+        .unwrap()
+        .create("OverlayTransitionParity")
+        .unwrap();
+    let mut generated = expressions_ui::OverlayTransitionParity::new();
+    actual.invoke("show-popup", &[]).unwrap();
+    generated.invoke_show_popup();
+
+    for ui in [&mut actual as &mut dyn Component, &mut generated] {
+        let popup = ui.render_shared();
+        assert!(ui.control_at(&popup, &[0, 0], ControlAction::Popup(false)));
+        assert!(!ui.control_at(&popup, &[0, 0], ControlAction::Popup(false)));
+        let drawer = ui.render_shared();
+        assert!(ui.control_at(&drawer, &[1], ControlAction::Drawer(true)));
+        assert!(!ui.control_at(&drawer, &[1], ControlAction::Drawer(true)));
+        assert!(ui.control_at(&ui.render_shared(), &[1], ControlAction::Drawer(false)));
+        let dialog = ui.render_shared();
+        assert!(ui.control_at(
+            &dialog,
+            &[2],
+            ControlAction::DialogCommand(DialogCommand::Apply)
+        ));
+        assert!(ui.control_at(&dialog, &[2], ControlAction::Dialog(DialogRole::Accept)));
+        assert!(!ui.control_at(&dialog, &[2], ControlAction::Dialog(DialogRole::Accept)));
+    }
+    let events = "popup-open:true;popup-close:false;drawer-open:true;drawer-close:false;apply:true;accept:false;";
+    assert_eq!(actual.get("events"), Ok(events.to_owned().into()));
+    assert_eq!(generated.get_events(), events);
     assert_eq!(actual.take_error(), None);
 }
 
@@ -11743,6 +12581,81 @@ fn window_status_reactivity_and_command_order_match_compiled_mode() {
     );
     assert!(actual.take_window_close_request() && expected.take_window_close_request());
     assert!(!actual.has_window_commands() && !expected.has_window_commands());
+    assert_eq!(actual.take_error(), None);
+}
+
+#[test]
+fn window_commands_sample_only_their_required_bindings() {
+    use std::{cell::Cell, rc::Rc};
+    use xrack_runtime::WindowCommand;
+
+    let preview = xrack_compiler::prepare_preview(
+        include_str!("expressions.xr"),
+        "expressions.xr",
+        Default::default(),
+    )
+    .unwrap();
+    let mut actual = Program::from_module(&preview.module)
+        .unwrap()
+        .create("WindowCommandParity")
+        .unwrap();
+    let mut generated = expressions_ui::WindowCommandParity::new();
+    let actual_reads = Rc::new(Cell::new(0));
+    let generated_reads = Rc::new(Cell::new(0));
+    let read = |reads: &Cell<i32>| {
+        reads.set(reads.get() + 1);
+        true
+    };
+    for callback in ["initial-visible", "full-screen-argument"] {
+        let reads = actual_reads.clone();
+        actual
+            .on(callback, Rc::new(move |_| Ok(Some(read(&reads).into()))))
+            .unwrap();
+    }
+    generated.on_initial_visible({
+        let reads = generated_reads.clone();
+        move || read(&reads)
+    });
+    generated.on_full_screen_argument({
+        let reads = generated_reads.clone();
+        move || read(&reads)
+    });
+
+    actual.invoke("hide-child", &[]).unwrap();
+    generated.invoke_hide_child();
+    assert_eq!((actual_reads.get(), generated_reads.get()), (0, 0));
+    actual.invoke("close-child", &[]).unwrap();
+    generated.invoke_close_child();
+    assert!(actual.secondary_windows().unwrap().is_empty());
+    assert!(generated.secondary_windows().unwrap().is_empty());
+    assert_eq!((actual_reads.get(), generated_reads.get()), (0, 0));
+    actual.reset("shown").unwrap();
+    generated.reset_shown();
+    actual.invoke("close-child", &[]).unwrap();
+    generated.invoke_close_child();
+    assert_eq!((actual_reads.get(), generated_reads.get()), (1, 1));
+    for registrations in [
+        actual.secondary_windows().unwrap(),
+        generated.secondary_windows().unwrap(),
+    ] {
+        assert_eq!(registrations.len(), 1);
+        assert!(
+            registrations[0]
+                .mount()
+                .unwrap()
+                .take_window_close_request()
+        );
+    }
+    actual.invoke("window-commands", &[]).unwrap();
+    generated.invoke_window_commands();
+    let expected = [
+        WindowCommand::Maximize,
+        WindowCommand::SetFullScreen(true),
+        WindowCommand::Restore,
+    ];
+    assert_eq!(actual.take_window_commands(), expected);
+    assert_eq!(generated.take_window_commands(), expected);
+    assert_eq!((actual_reads.get(), generated_reads.get()), (2, 2));
     assert_eq!(actual.take_error(), None);
 }
 
@@ -14692,6 +15605,68 @@ fn stack_commands_keep_page_state_and_reject_stale_back_requests() {
 }
 
 #[test]
+fn stack_path_commands_sample_once_and_notify_in_lifecycle_order() {
+    use std::{cell::RefCell, rc::Rc};
+
+    let preview = xrack_compiler::prepare_preview(
+        include_str!("expressions.xr"),
+        "expressions.xr",
+        Default::default(),
+    )
+    .unwrap();
+    let actual = Program::from_module(&preview.module)
+        .unwrap()
+        .create("StackPathCommandParity")
+        .unwrap();
+    let mut compiled = expressions_ui::StackPathCommandParity::new();
+    let actual_reads = Rc::new(RefCell::new(Vec::new()));
+    let compiled_reads = Rc::new(RefCell::new(Vec::new()));
+    let path = |reads: &RefCell<Vec<i64>>, tag| {
+        reads.borrow_mut().push(tag);
+        match tag {
+            1 => vec!["detail".to_owned(), "review".to_owned()],
+            _ => vec!["home".to_owned()],
+        }
+    };
+    actual
+        .on("path", {
+            let reads = actual_reads.clone();
+            Rc::new(move |args| {
+                let [Value::Int(tag)] = args else {
+                    unreachable!()
+                };
+                Ok(Some(Value::StringList(path(&reads, *tag))))
+            })
+        })
+        .unwrap();
+    compiled.on_path({
+        let reads = compiled_reads.clone();
+        move |tag| path(&reads, tag)
+    });
+    actual.invoke("append-path", &[]).unwrap();
+    compiled.invoke_append_path();
+    assert_eq!(
+        actual.stack_snapshot("pages").unwrap().routes(),
+        ["home", "detail", "review"]
+    );
+    assert_eq!(
+        compiled.stack_snapshot("pages").unwrap().routes(),
+        ["home", "detail", "review"]
+    );
+
+    actual.invoke("replace-path", &[]).unwrap();
+    compiled.invoke_replace_path();
+    assert_eq!(actual.stack_snapshot("pages").unwrap().routes(), ["home"]);
+    assert_eq!(compiled.stack_snapshot("pages").unwrap().routes(), ["home"]);
+    let events = "-home;+review;review:3;-review;remove-review;remove-detail;+home;home:1;";
+    assert_eq!(actual.get("events"), Ok(events.to_owned().into()));
+    assert_eq!(compiled.get_events(), events);
+    assert_eq!(actual_reads.take(), [1, 2]);
+    assert_eq!(compiled_reads.take(), [1, 2]);
+    assert_eq!(actual.take_error(), None);
+}
+
+#[test]
 fn stack_guards_share_alias_callbacks_and_lifecycle_order() {
     use navigation_ui::StackGuardDemo;
     use std::{cell::RefCell, rc::Rc};
@@ -16929,6 +17904,155 @@ fn table_header_reorder_and_row_edge_scroll_preserve_the_same_records_in_both_mo
 }
 
 #[test]
+fn table_row_drag_rejects_a_mismatched_origin_before_reading_live_rows() {
+    use std::{cell::Cell, rc::Rc};
+    use xrack_runtime::ControlAction;
+
+    let preview = xrack_compiler::prepare_preview(
+        include_str!("expressions.xr"),
+        "expressions.xr",
+        Default::default(),
+    )
+    .unwrap();
+    let mut interpreted = Program::from_module(&preview.module)
+        .unwrap()
+        .create("TableMoveOrderParity")
+        .unwrap();
+    let mut generated = expressions_ui::TableMoveOrderParity::new();
+    let scenes = [interpreted.render_shared(), generated.render_shared()];
+    let keys = scenes.each_ref().map(|scene| {
+        scene.children[0]
+            .list_row_renderer
+            .as_ref()
+            .unwrap()
+            .render(0..1)[0]
+            .row_key
+            .unwrap()
+    });
+    let rows = interpreted.get("rows").unwrap();
+    let actual_reads = Rc::new(Cell::new(0));
+    let expected_reads = Rc::new(Cell::new(0));
+    interpreted
+        .on("source", {
+            let reads = actual_reads.clone();
+            Rc::new(move |_| {
+                reads.set(reads.get() + 1);
+                Ok(Some(rows.clone()))
+            })
+        })
+        .unwrap();
+    generated.on_source({
+        let rows = generated.get_rows();
+        let reads = expected_reads.clone();
+        move || {
+            reads.set(reads.get() + 1);
+            rows.clone()
+        }
+    });
+
+    for (ui, scene, row) in [
+        (&mut interpreted as &mut dyn Component, &scenes[0], keys[0]),
+        (&mut generated, &scenes[1], keys[1]),
+    ] {
+        let table = &scene.children[0];
+        assert!(table.boolean("movable-rows", false));
+        let (model, revision) = table.standard_list_stamp.unwrap();
+        assert!(!ui.control_at(
+            scene,
+            &[0],
+            ControlAction::MoveRow {
+                from: 0,
+                to: 1,
+                row,
+                stamp: (model, revision.wrapping_add(1)),
+            },
+        ));
+    }
+    assert_eq!([actual_reads.get(), expected_reads.get()], [0, 0]);
+    for (ui, scene, row) in [
+        (&mut interpreted as &mut dyn Component, &scenes[0], keys[0]),
+        (&mut generated, &scenes[1], keys[1]),
+    ] {
+        let table = &scene.children[0];
+        assert!(!ui.control_at(
+            scene,
+            &[0],
+            ControlAction::MoveRow {
+                from: 0,
+                to: 1,
+                row,
+                stamp: table.standard_list_stamp.unwrap(),
+            },
+        ));
+    }
+    assert_eq!([actual_reads.get(), expected_reads.get()], [1, 1]);
+    assert_eq!(interpreted.get("moves"), Ok(0_i64.into()));
+    assert_eq!(generated.get_moves(), 0);
+}
+
+#[test]
+fn negative_table_height_index_does_not_read_the_model() {
+    use std::{cell::Cell, rc::Rc};
+    use xrack_runtime::Length;
+
+    let preview = xrack_compiler::prepare_preview(
+        include_str!("expressions.xr"),
+        "expressions.xr",
+        Default::default(),
+    )
+    .unwrap();
+    let interpreted = Program::from_module(&preview.module)
+        .unwrap()
+        .create("TableMoveOrderParity")
+        .unwrap();
+    let mut generated = expressions_ui::TableMoveOrderParity::new();
+    let actual_reads = Rc::new(Cell::new(0));
+    let expected_reads = Rc::new(Cell::new(0));
+    interpreted
+        .on("source", {
+            let rows = interpreted.get("rows").unwrap();
+            let reads = actual_reads.clone();
+            Rc::new(move |_| {
+                reads.set(reads.get() + 1);
+                Ok(Some(rows.clone()))
+            })
+        })
+        .unwrap();
+    generated.on_source({
+        let rows = generated.get_rows();
+        let reads = expected_reads.clone();
+        move || {
+            reads.set(reads.get() + 1);
+            rows.clone()
+        }
+    });
+
+    for (row, height) in [(-1_i64, 50.0), (0, f64::INFINITY), (0, f64::NAN)] {
+        interpreted
+            .invoke("set-height", &[row.into(), Length(height).into()])
+            .unwrap();
+        generated.invoke_set_height(row, Length(height));
+    }
+    assert_eq!([actual_reads.get(), expected_reads.get()], [0, 0]);
+
+    for height in [50.0, -1.0] {
+        interpreted
+            .invoke("set-height", &[0_i64.into(), Length(height).into()])
+            .unwrap();
+        generated.invoke_set_height(0, Length(height));
+        let actual = interpreted.try_render().unwrap();
+        let expected = generated.render_shared();
+        for scene in [&*actual, &*expected] {
+            let height_override = scene.children[0]
+                .row_heights
+                .as_ref()
+                .map(|rows| rows.height(0));
+            assert_eq!(height_override, (height >= 0.0).then_some(height as f32));
+        }
+    }
+}
+
+#[test]
 fn table_row_move_checks_sort_and_indices_before_reading_the_model() {
     use std::{
         cell::{Cell, RefCell},
@@ -17331,6 +18455,58 @@ fn standard_table_samples_editors_only_for_materialized_columns() {
 }
 
 #[test]
+fn stale_table_sort_click_does_not_read_the_row_model() {
+    use std::{cell::Cell, rc::Rc};
+    use xrack_runtime::{ControlAction, TableSort};
+
+    let preview = xrack_compiler::prepare_preview(
+        include_str!("expressions.xr"),
+        "expressions.xr",
+        Default::default(),
+    )
+    .unwrap();
+    let mut interpreted = Program::from_module(&preview.module)
+        .unwrap()
+        .create("TableMoveOrderParity")
+        .unwrap();
+    let mut generated = expressions_ui::TableMoveOrderParity::new();
+    let scenes = [interpreted.render_shared(), generated.render_shared()];
+    let sort = Some(TableSort {
+        column: 0,
+        descending: true,
+    });
+    assert_eq!(interpreted.set_table_sort("table", sort), Ok(true));
+    assert!(generated.set_table_sort("table", sort));
+
+    let actual_reads = Rc::new(Cell::new(0));
+    let expected_reads = Rc::new(Cell::new(0));
+    interpreted
+        .on("source", {
+            let rows = interpreted.get("rows").unwrap();
+            let reads = actual_reads.clone();
+            Rc::new(move |_| {
+                reads.set(reads.get() + 1);
+                Ok(Some(rows.clone()))
+            })
+        })
+        .unwrap();
+    generated.on_source({
+        let rows = generated.get_rows();
+        let reads = expected_reads.clone();
+        move || {
+            reads.set(reads.get() + 1);
+            rows.clone()
+        }
+    });
+
+    assert!(!interpreted.control_at(&scenes[0], &[0], ControlAction::SortColumn(0)));
+    assert!(!generated.control_at(&scenes[1], &[0], ControlAction::SortColumn(0)));
+    assert_eq!([actual_reads.get(), expected_reads.get()], [0, 0]);
+    assert_eq!(interpreted.table_sort("table"), Ok(sort));
+    assert_eq!(generated.table_sort("table"), sort);
+}
+
+#[test]
 fn table_drag_commits_check_live_resize_and_reorder_permissions() {
     use xrack_runtime::ControlAction;
 
@@ -17407,6 +18583,26 @@ fn table_drag_commits_check_live_resize_and_reorder_permissions() {
     for case in [1, 2, 3, 4] {
         assert!(interpreted.control_at(&scenes[0], &path, cases[0][case]));
         assert!(generated.control_at(&scenes[1], &path, cases[1][case]));
+    }
+    for (ui, old) in [
+        (&mut interpreted as &mut dyn Component, &scenes[0]),
+        (&mut generated, &scenes[1]),
+    ] {
+        let move_column = ControlAction::MoveColumn { from: 0, to: 1 };
+        assert!(!ui.control_at(old, &path, move_column));
+        let current = ui.render_shared();
+        assert_eq!(
+            current.children[0].table_column_order.as_slice(2),
+            Some(&[1, 0][..])
+        );
+        assert!(!ui.control_at(
+            &current,
+            &path,
+            ControlAction::ResizeColumn {
+                column: 0,
+                width: 180
+            }
+        ));
     }
     let actual = interpreted.render();
     let expected = generated.render();
@@ -17923,6 +19119,226 @@ fn record_combo_rejects_stale_projected_rows_but_ignores_unrelated_edits() {
     assert!(!actual.control_at(&actual.render_shared(), &path, Select(4)));
     assert!(!generated.control_at(&generated.render_shared(), &path, Select(4)));
     assert_eq!(actual.take_error(), None);
+}
+
+#[test]
+fn host_table_snapshot_reads_cursor_before_selection_mode() {
+    use std::{cell::RefCell, rc::Rc};
+    use xrack_runtime::SelectionTarget;
+
+    let preview = xrack_compiler::prepare_preview(
+        include_str!("expressions.xr"),
+        "expressions.xr",
+        Default::default(),
+    )
+    .unwrap();
+    let interpreted = Program::from_module(&preview.module)
+        .unwrap()
+        .create("TableMoveOrderParity")
+        .unwrap();
+    let mut generated = expressions_ui::TableMoveOrderParity::new();
+    let actual_calls = Rc::new(RefCell::new(Vec::new()));
+    let expected_calls = Rc::new(RefCell::new(Vec::new()));
+
+    interpreted
+        .on("selected", {
+            let calls = actual_calls.clone();
+            Rc::new(move |_| {
+                calls.borrow_mut().push("cursor");
+                Ok(Some(0_i64.into()))
+            })
+        })
+        .unwrap();
+    interpreted
+        .on("selection-mode", {
+            let calls = actual_calls.clone();
+            Rc::new(move |_| {
+                calls.borrow_mut().push("mode");
+                Ok(Some(SelectionTarget::Cells.into()))
+            })
+        })
+        .unwrap();
+    generated.on_selected({
+        let calls = expected_calls.clone();
+        move || {
+            calls.borrow_mut().push("cursor");
+            0
+        }
+    });
+    generated.on_selection_mode({
+        let calls = expected_calls.clone();
+        move || {
+            calls.borrow_mut().push("mode");
+            SelectionTarget::Cells
+        }
+    });
+
+    let actual = interpreted.table_selection("table").unwrap();
+    let expected = generated.table_selection("table").unwrap();
+    assert_eq!(*expected_calls.borrow(), ["cursor", "mode"]);
+    assert_eq!(*actual_calls.borrow(), ["cursor", "mode"]);
+    assert_eq!(actual.target(), expected.target());
+    assert_eq!(actual.current_column(), expected.current_column());
+    assert_eq!(actual.len(), expected.len());
+}
+
+#[test]
+fn rendered_table_selection_uses_the_scene_model_and_mode() {
+    use std::rc::Rc;
+    use xrack_runtime::SelectionTarget;
+
+    let preview = xrack_compiler::prepare_preview(
+        include_str!("expressions.xr"),
+        "expressions.xr",
+        Default::default(),
+    )
+    .unwrap();
+    let interpreted = Program::from_module(&preview.module)
+        .unwrap()
+        .create("TableMoveOrderParity")
+        .unwrap();
+    let mut generated = expressions_ui::TableMoveOrderParity::new();
+    interpreted
+        .on("column-title", {
+            let weak = interpreted.as_weak();
+            Rc::new(move |_| {
+                let ui = weak.upgrade().unwrap();
+                ui.set("query", "two".to_owned().into()).unwrap();
+                ui.on(
+                    "selection-mode",
+                    Rc::new(|_| Ok(Some(SelectionTarget::Rows.into()))),
+                )
+                .unwrap();
+                Ok(Some("Name".to_owned().into()))
+            })
+        })
+        .unwrap();
+    generated.on_column_title({
+        let weak = generated.as_weak();
+        move || {
+            let mut ui = weak.upgrade().unwrap();
+            ui.set_query("two".into());
+            ui.on_selection_mode(|| SelectionTarget::Rows);
+            "Name".into()
+        }
+    });
+
+    for ui in [&interpreted as &dyn Component, &generated] {
+        let scene = ui.render_shared();
+        let table = scene.find("table").unwrap();
+        assert_eq!(table.list.unwrap().row_count, 2);
+        let selection = table.table_selection.as_ref().unwrap();
+        assert_eq!(Some(selection.structure_stamp()), table.standard_list_stamp);
+        assert_eq!(selection.target(), table.selection_target());
+        assert_eq!(selection.target(), SelectionTarget::Cells);
+
+        let updated = ui.render_shared();
+        let table = updated.find("table").unwrap();
+        assert_eq!(table.list.unwrap().row_count, 1);
+        assert_eq!(
+            table.table_selection.as_ref().unwrap().target(),
+            SelectionTarget::Rows
+        );
+    }
+    assert_eq!(interpreted.take_error(), None);
+}
+
+#[test]
+fn table_selection_without_cell_handler_does_not_resample_bindings() {
+    use std::{cell::Cell, rc::Rc};
+    use xrack_runtime::{RowSelection, SelectionTarget, TableSelectionAction};
+
+    let preview = xrack_compiler::prepare_preview(
+        include_str!("expressions.xr"),
+        "expressions.xr",
+        Default::default(),
+    )
+    .unwrap();
+    let mut interpreted = Program::from_module(&preview.module)
+        .unwrap()
+        .create("TableRowNotificationParity")
+        .unwrap();
+    let mut generated = expressions_ui::TableRowNotificationParity::new();
+    let actual_reads = Rc::new(Cell::new(0));
+    let expected_reads = Rc::new(Cell::new(0));
+    interpreted
+        .on("selection-mode", {
+            let reads = actual_reads.clone();
+            Rc::new(move |_| {
+                reads.set(reads.get() + 1);
+                Ok(Some(SelectionTarget::Cells.into()))
+            })
+        })
+        .unwrap();
+    generated.on_selection_mode({
+        let reads = expected_reads.clone();
+        move |_| {
+            reads.set(reads.get() + 1);
+            SelectionTarget::Cells
+        }
+    });
+
+    let action = TableSelectionAction::Cell {
+        row: 1,
+        column: 0,
+        operation: RowSelection::Replace,
+    };
+    assert!(interpreted.select_table("table", action).unwrap());
+    assert!(generated.select_table("table", action));
+    assert_eq!([actual_reads.get(), expected_reads.get()], [1, 1]);
+    assert_eq!(interpreted.get("revision"), Ok(1_i64.into()));
+    assert_eq!(generated.get_events(), "row:1;count:1;");
+    assert_eq!(interpreted.get("events"), Ok(generated.get_events().into()));
+}
+
+#[test]
+fn table_range_command_evaluates_operands_before_rejecting_an_invalid_index() {
+    use std::{cell::RefCell, rc::Rc};
+
+    let preview = xrack_compiler::prepare_preview(
+        include_str!("expressions.xr"),
+        "expressions.xr",
+        Default::default(),
+    )
+    .unwrap();
+    let interpreted = Program::from_module(&preview.module)
+        .unwrap()
+        .create("TableMoveOrderParity")
+        .unwrap();
+    let mut generated = expressions_ui::TableMoveOrderParity::new();
+    let actual_reads = Rc::new(RefCell::new(Vec::new()));
+    let expected_reads = Rc::new(RefCell::new(Vec::new()));
+    interpreted
+        .on("selection-position", {
+            let reads = actual_reads.clone();
+            Rc::new(move |args| {
+                let [Value::Int(position)] = args else {
+                    unreachable!()
+                };
+                reads.borrow_mut().push(*position);
+                Ok(Some((*position).into()))
+            })
+        })
+        .unwrap();
+    generated.on_selection_position({
+        let reads = expected_reads.clone();
+        move |position| {
+            reads.borrow_mut().push(position);
+            position
+        }
+    });
+
+    for (first, count) in [(-1_i64, 0), (0, 2)] {
+        interpreted
+            .invoke("select-range", &[first.into(), 1_i64.into()])
+            .unwrap();
+        generated.invoke_select_range(first, 1);
+        assert_eq!(actual_reads.take(), [first, 1]);
+        assert_eq!(expected_reads.take(), [first, 1]);
+        assert_eq!(interpreted.table_selection("table").unwrap().len(), count);
+        assert_eq!(generated.table_selection("table").unwrap().len(), count);
+    }
+    assert_eq!(interpreted.get("events"), Ok(generated.get_events().into()));
 }
 
 #[test]

@@ -72,6 +72,32 @@ select:focus-visible, summary:focus-visible {
 }
 select:disabled { opacity: .65; }
 
+.view-controls { display: flex; align-items: center; gap: 4px; }
+.view-controls button, .restore-window {
+    min-height: 26px;
+    padding: 2px 7px;
+    border: 1px solid var(--vscode-button-border, var(--border));
+    border-radius: 4px;
+    background: var(--vscode-button-secondaryBackground, var(--panel));
+    color: var(--vscode-button-secondaryForeground, var(--vscode-foreground));
+    font: inherit;
+    font-size: 11px;
+    cursor: pointer;
+}
+.view-controls button:hover, .restore-window:hover {
+    background: var(--vscode-button-secondaryHoverBackground, var(--panel));
+}
+.view-controls button[aria-pressed="true"] {
+    border-color: var(--vscode-focusBorder);
+    background: var(--vscode-button-background);
+    color: var(--vscode-button-foreground);
+}
+.view-controls button:focus-visible, .restore-window:focus-visible {
+    outline: 1px solid var(--vscode-focusBorder);
+    outline-offset: 2px;
+}
+#zoom-actual { min-width: 43px; font-variant-numeric: tabular-nums; }
+
 .status {
     min-height: 24px;
     gap: 6px;
@@ -119,15 +145,16 @@ select:disabled { opacity: .65; }
 
 .canvas {
     grid-row: 3;
+    position: relative;
     display: grid;
     place-items: center;
-    align-content: safe center;
     min-width: 0;
     min-height: 0;
     padding: clamp(12px, 4vw, 36px);
     background-image: radial-gradient(color-mix(in srgb, var(--muted) 20%, transparent) 1px, transparent 1px);
     background-size: 18px 18px;
-    overflow: auto;
+    overflow: clip;
+    touch-action: none;
 }
 
 .waiting {
@@ -142,13 +169,20 @@ select:disabled { opacity: .65; }
 .waiting p { margin: 0; color: var(--muted); font-size: 11px; line-height: 1.5; }
 
 #snapshot {
+    position: absolute;
+    top: 50%;
+    left: 50%;
     touch-action: none;
     display: block;
-    max-width: 100%;
-    height: auto;
+    max-width: none;
+    max-height: none;
+    user-select: none;
     outline: 1px solid var(--border);
     box-shadow: 0 5px 20px var(--vscode-widget-shadow, transparent);
 }
+
+.canvas.pan-mode, .canvas.pan-mode #snapshot { cursor: grab; }
+.canvas.panning, .canvas.panning #snapshot { cursor: grabbing; }
 
 .statusbar {
     grid-row: 4;

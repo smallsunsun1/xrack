@@ -1,4 +1,4 @@
-use crate::{Length, Orientation, Property};
+use crate::{Length, ListModel, Orientation, Property, RowKey, Value};
 use std::{
     cell::{Cell, OnceCell, RefCell},
     fmt,
@@ -53,6 +53,175 @@ pub enum ScrollAction {
         horizontal: ScrollAlignment,
         vertical: ScrollAlignment,
     },
+}
+
+/// Method names used by the XR viewport operations.
+#[derive(Clone, Copy, Debug)]
+#[doc(hidden)]
+pub enum ScrollCommandMethod {
+    To,
+    Index,
+    Column,
+    Cell,
+    SourceIndex,
+    SourceCell,
+    CancelFlick,
+    ReturnToBounds,
+}
+
+impl ScrollCommandMethod {
+    pub fn parse(name: &str) -> Option<Self> {
+        Some(match name {
+            "scroll-to" => Self::To,
+            "position-view-at-index" | "position-view-at-row" => Self::Index,
+            "position-view-at-column" => Self::Column,
+            "position-view-at-cell" => Self::Cell,
+            "position-view-at-source-index" => Self::SourceIndex,
+            "position-view-at-source-cell" => Self::SourceCell,
+            "cancel-flick" => Self::CancelFlick,
+            "return-to-bounds" => Self::ReturnToBounds,
+            _ => return None,
+        })
+    }
+
+    pub fn uses_source_row(self) -> bool {
+        matches!(self, Self::SourceIndex | Self::SourceCell)
+    }
+
+    pub fn command(self, operands: &[Value]) -> Option<ScrollCommand> {
+        use Value::{Int, Length, ScrollAlignment};
+        let action = match (self, operands) {
+            (Self::CancelFlick, []) => ScrollAction::CancelFlick,
+            (Self::ReturnToBounds, []) => ScrollAction::ReturnToBounds,
+            (Self::To, &[Length(x), Length(y)]) => ScrollAction::To { x, y },
+            (Self::Index, &[Int(index), ScrollAlignment(alignment)]) => {
+                ScrollAction::ToIndex { index, alignment }
+            }
+            (Self::Column, &[Int(column), ScrollAlignment(alignment)]) => {
+                ScrollAction::ToColumn { column, alignment }
+            }
+            (
+                Self::Cell,
+                &[
+                    Int(row),
+                    Int(column),
+                    ScrollAlignment(horizontal),
+                    ScrollAlignment(vertical),
+                ],
+            ) => ScrollAction::ToCell {
+                row,
+                column,
+                horizontal,
+                vertical,
+            },
+            (Self::SourceIndex, &[Int(row), ScrollAlignment(alignment)]) => {
+                return Some(ScrollCommand::Source(row, SourceScroll::Row(alignment)));
+            }
+            (
+                Self::SourceCell,
+                &[
+                    Int(row),
+                    Int(column),
+                    ScrollAlignment(horizontal),
+                    ScrollAlignment(vertical),
+                ],
+            ) => {
+                return Some(ScrollCommand::Source(
+                    row,
+                    SourceScroll::Cell {
+                        column,
+                        horizontal,
+                        vertical,
+                    },
+                ));
+            }
+            _ => return None,
+        };
+        Some(ScrollCommand::Direct(action))
+    }
+}
+
+#[doc(hidden)]
+pub enum ScrollCommand {
+    Direct(ScrollAction),
+    Source(i64, SourceScroll),
+}
+
+impl ScrollCommand {
+    pub fn try_resolve<E>(
+        self,
+        key_at: impl FnOnce(usize) -> Result<Option<RowKey>, E>,
+    ) -> Result<Option<ScrollAction>, E> {
+        match self {
+            Self::Direct(action) => Ok(Some(action)),
+            Self::Source(row, command) => command.try_resolve(row, key_at),
+        }
+    }
+
+    pub fn resolve(self, key_at: impl FnOnce(usize) -> Option<RowKey>) -> Option<ScrollAction> {
+        self.try_resolve(|index| Ok::<_, std::convert::Infallible>(key_at(index)))
+            .unwrap_or_else(|error| match error {})
+    }
+}
+
+/// Source positions are converted to stable row keys when the command is queued.
+#[derive(Clone, Copy)]
+#[doc(hidden)]
+pub enum SourceScroll {
+    Row(ScrollAlignment),
+    Cell {
+        column: i64,
+        horizontal: ScrollAlignment,
+        vertical: ScrollAlignment,
+    },
+}
+
+impl SourceScroll {
+    pub fn try_resolve<E>(
+        self,
+        row: i64,
+        key_at: impl FnOnce(usize) -> Result<Option<RowKey>, E>,
+    ) -> Result<Option<ScrollAction>, E> {
+        let Ok(source_index) = usize::try_from(row) else {
+            return Ok(None);
+        };
+        if matches!(self, Self::Cell { column, .. } if usize::try_from(column).is_err()) {
+            return Ok(None);
+        }
+        let Some(key) = key_at(source_index)? else {
+            return Ok(None);
+        };
+        Ok(Some(match self {
+            Self::Row(alignment) => ScrollAction::ToRowKey {
+                key,
+                source_index,
+                alignment,
+            },
+            Self::Cell {
+                column,
+                horizontal,
+                vertical,
+            } => ScrollAction::ToCellAtRowKey {
+                key,
+                source_index,
+                column,
+                horizontal,
+                vertical,
+            },
+        }))
+    }
+
+    pub fn resolve<M: ListModel>(
+        self,
+        row: i64,
+        model: impl FnOnce() -> Rc<M>,
+    ) -> Option<ScrollAction> {
+        self.try_resolve(row, |index| {
+            let model = model();
+            Ok::<_, std::convert::Infallible>(model.key_at(index))
+        })
+        .unwrap_or_else(|error| match error {})
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

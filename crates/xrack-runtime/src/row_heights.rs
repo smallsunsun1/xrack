@@ -329,6 +329,32 @@ pub struct RowHeightOverrides {
 }
 
 impl RowHeightOverrides {
+    /// Resolve rows only after a programmatic resize has valid arguments.
+    pub fn try_set_row<M: ListModel, E>(
+        &self,
+        index: i64,
+        height: Length,
+        rows: impl FnOnce() -> Result<M, E>,
+    ) -> Result<bool, E> {
+        let Ok(index) = usize::try_from(index) else {
+            return Ok(false);
+        };
+        if !height.0.is_finite() {
+            return Ok(false);
+        }
+        Ok(self.set(&rows()?, index, None, height.0))
+    }
+
+    pub fn set_row<M: ListModel>(
+        &self,
+        index: i64,
+        height: Length,
+        rows: impl FnOnce() -> M,
+    ) -> bool {
+        self.try_set_row(index, height, || Ok::<_, std::convert::Infallible>(rows()))
+            .unwrap_or_else(|error| match error {})
+    }
+
     pub fn set(
         &self,
         model: &impl ListModel,

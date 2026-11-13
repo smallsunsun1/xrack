@@ -17,6 +17,44 @@ pub struct RowKey {
     pub(crate) scope: u64,
 }
 
+/// Direction of an index lookup between the source model and a displayed view.
+#[derive(Clone, Copy, Debug)]
+#[doc(hidden)]
+pub enum ViewIndex {
+    FromSource,
+    ToSource,
+}
+
+impl ViewIndex {
+    pub fn parse(name: &str) -> Option<Self> {
+        match name {
+            "view-index-for-source" => Some(Self::FromSource),
+            "source-index-for-view" => Some(Self::ToSource),
+            _ => None,
+        }
+    }
+
+    pub fn try_query<E>(
+        self,
+        index: i64,
+        lookup: impl FnOnce(usize, Self) -> Result<Option<usize>, E>,
+    ) -> Result<i64, E> {
+        let Ok(index) = usize::try_from(index) else {
+            return Ok(-1);
+        };
+        Ok(lookup(index, self)?
+            .and_then(|index| i64::try_from(index).ok())
+            .unwrap_or(-1))
+    }
+
+    pub fn query(self, index: i64, lookup: impl FnOnce(usize, Self) -> Option<usize>) -> i64 {
+        self.try_query(index, |index, direction| {
+            Ok::<_, std::convert::Infallible>(lookup(index, direction))
+        })
+        .unwrap_or_else(|error| match error {})
+    }
+}
+
 impl RowKey {
     pub(crate) fn in_view(self, scope: u64) -> Self {
         Self { scope, ..self }
@@ -281,7 +319,7 @@ impl<M: ListModel> RowPositions for M {
     }
 
     fn key_at(&self, index: usize) -> Option<RowKey> {
-        (index < self.row_count()).then(|| self.row_key(index))
+        ListModel::key_at(self, index)
     }
 
     fn first_position(&self, candidates: &[(RowKey, usize)]) -> Option<(usize, usize)> {
@@ -582,6 +620,10 @@ pub trait ListModel {
     fn row_count(&self) -> usize;
     fn item(&self, row: usize) -> Self::Item;
     fn row_key(&self, row: usize) -> RowKey;
+    #[doc(hidden)]
+    fn key_at(&self, index: usize) -> Option<RowKey> {
+        (index < self.row_count()).then(|| self.row_key(index))
+    }
     fn visit_items(&self, mut visit: impl FnMut(usize, RowKey, &Self::Item)) {
         for index in 0..self.row_count() {
             visit(index, self.row_key(index), &self.item(index));

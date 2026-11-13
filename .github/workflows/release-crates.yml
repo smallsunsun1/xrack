@@ -31,6 +31,7 @@ jobs:
     outputs:
       commit: ${{ steps.source.outputs.commit }}
       tag: ${{ steps.source.outputs.tag }}
+      marketplace: ${{ steps.source.outputs.marketplace }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -44,7 +45,7 @@ jobs:
           commit=$(git rev-parse HEAD)
           tag="v${XRACK_RELEASE_VERSION#v}"
           if [[ ! "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]]; then
-            echo "::error::Expected a version tag such as v0.2.0."
+            echo "::error::Expected a version tag such as v0.5.0."
             exit 1
           fi
           if [[ "$PUBLISH" == true ]]; then
@@ -62,7 +63,12 @@ jobs:
               exit 1
             fi
           fi
-          printf 'commit=%s\ntag=%s\n' "$commit" "$tag" >> "$GITHUB_OUTPUT"
+          marketplace=false
+          if [[ "$GITHUB_EVENT_NAME" == push && "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            python3 tools/package_vscode.py check-tag "$tag"
+            marketplace=true
+          fi
+          printf 'commit=%s\ntag=%s\nmarketplace=%s\n' "$commit" "$tag" "$marketplace" >> "$GITHUB_OUTPUT"
       - name: Install Linux desktop build dependencies
         run: bash tools/install_ci_linux_deps.sh
       - name: Verify crate release
@@ -78,6 +84,7 @@ jobs:
     uses: ./.github/workflows/ci.yml
     with:
       source-sha: ${{ needs.verify.outputs.commit }}
+      package-vsix: ${{ needs.verify.outputs.marketplace == 'true' }}
 
   publish:
     if: github.event_name == 'push' || inputs.publish
@@ -117,3 +124,36 @@ jobs:
             gh release create "$RELEASE_TAG" "${files[@]}" --repo "$GITHUB_REPOSITORY" \
               --verify-tag --generate-notes "${options[@]}"
           fi
+
+  publish-vscode:
+    if: needs.verify.outputs.marketplace == 'true'
+    needs: [verify, build]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    environment: vscode-marketplace
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ needs.verify.outputs.commit }}
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '22'
+          package-manager-cache: false
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          pattern: vscode-vsix-*
+          merge-multiple: true
+          path: .tools/vsix-release
+      - name: Verify all five VSIX files and publish with OIDC
+        shell: bash
+        run: |
+          retry=()
+          if (( GITHUB_RUN_ATTEMPT > 1 )); then
+            retry=(--skip-duplicate)
+          fi
+          python3 tools/package_vscode.py publish "$GITHUB_REF_NAME" \
+            --packages .tools/vsix-release "${retry[@]}"

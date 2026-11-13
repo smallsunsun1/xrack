@@ -22,13 +22,63 @@ pub enum WindowCommand {
 }
 
 #[doc(hidden)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WindowCommandMethod {
+    Minimize,
+    Maximize,
+    Restore,
+    ToggleMaximized,
+    SetFullScreen,
+    ToggleFullScreen,
+}
+
+impl WindowCommandMethod {
+    pub fn parse(name: &str) -> Option<Self> {
+        Some(match name {
+            "minimize" => Self::Minimize,
+            "maximize" => Self::Maximize,
+            "restore" => Self::Restore,
+            "toggle-maximized" => Self::ToggleMaximized,
+            "set-full-screen" => Self::SetFullScreen,
+            "toggle-full-screen" => Self::ToggleFullScreen,
+            _ => return None,
+        })
+    }
+
+    pub fn action(self, enabled: Option<bool>) -> Option<WindowCommand> {
+        Some(match (self, enabled) {
+            (Self::Minimize, None) => WindowCommand::Minimize,
+            (Self::Maximize, None) => WindowCommand::Maximize,
+            (Self::Restore, None) => WindowCommand::Restore,
+            (Self::ToggleMaximized, None) => WindowCommand::ToggleMaximized,
+            (Self::SetFullScreen, Some(enabled)) => WindowCommand::SetFullScreen(enabled),
+            (Self::ToggleFullScreen, None) => WindowCommand::ToggleFullScreen,
+            _ => return None,
+        })
+    }
+}
+
+#[doc(hidden)]
+#[derive(Clone, Copy, Debug)]
 pub enum WindowMetric {
     Active,
     Minimized,
     MinimizedKnown,
     Maximized,
     FullScreen,
+}
+
+impl WindowMetric {
+    pub fn parse(name: &str) -> Option<Self> {
+        Some(match name {
+            "window-active" => Self::Active,
+            "minimized" => Self::Minimized,
+            "minimized-known" => Self::MinimizedKnown,
+            "maximized" => Self::Maximized,
+            "full-screen" => Self::FullScreen,
+            _ => return None,
+        })
+    }
 }
 
 #[doc(hidden)]

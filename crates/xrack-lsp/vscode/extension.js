@@ -36,11 +36,21 @@ function serverCommand(context) {
 async function activate(context) {
     registerPreview(context);
     const command = serverCommand(context);
+    const watcher = vscode.workspace.createFileSystemWatcher('**/*.xr');
+    context.subscriptions.push(watcher);
     client = new LanguageClient(
         'xrack',
         'XRack',
         { command, transport: TransportKind.stdio },
-        { documentSelector: [{ language: 'xrack' }] },
+        {
+            documentSelector: [{ language: 'xrack' }],
+            synchronize: { fileEvents: watcher },
+            initializationOptions: {
+                indexCacheUri: context.storageUri?.scheme === 'file'
+                    ? vscode.Uri.joinPath(context.storageUri, 'index').toString()
+                    : undefined,
+            },
+        },
     );
     try {
         await client.start();

@@ -221,11 +221,14 @@ impl ChangeSignal {
 /// A dependency on the lifetime of a component that owns a weak binding.
 #[doc(hidden)]
 #[derive(Default)]
-pub struct ComponentLifetime(OnceCell<ChangeSignal>);
+pub struct ComponentLifetime {
+    signal: OnceCell<ChangeSignal>,
+    pub(crate) weak: crate::event_loop::WeakRegistration,
+}
 
 impl ComponentLifetime {
     pub fn track(&self) {
-        self.0.get_or_init(ChangeSignal::default).track();
+        self.signal.get_or_init(ChangeSignal::default).track();
     }
 }
 

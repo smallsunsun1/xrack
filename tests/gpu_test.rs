@@ -770,6 +770,102 @@ fn focus_observation_repaints_the_active_scope_and_clears_on_window_blur() {
 }
 
 #[test]
+fn preview_window_commands_update_bindings_and_restore_a_minimized_window() {
+    use xrack_renderer_femtovg::preview::PreviewScene;
+    use xrack_runtime::{Component, WindowCommand, WindowLifecycle, WindowMetric, WindowStatus};
+
+    #[derive(Clone, Default)]
+    struct WindowProbe(std::rc::Rc<WindowLifecycle>);
+
+    impl Component for WindowProbe {
+        fn render(&self) -> Node {
+            let mut window = Node::new("Window", None);
+            window.properties.insert("width", Length(160.0).into());
+            window.properties.insert("height", Length(100.0).into());
+            window
+        }
+
+        fn take_window_commands(&mut self) -> Vec<WindowCommand> {
+            self.0.take_commands()
+        }
+
+        fn dispatch(&mut self, _: &str, _: &str) -> bool {
+            false
+        }
+
+        fn publish_window_status(&self, status: WindowStatus) {
+            self.0.publish(status);
+        }
+    }
+
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))
+    .unwrap();
+    let ui = WindowProbe::default();
+    let mut preview = PreviewScene::new(Box::new(ui.clone()));
+    assert!(ui.0.get(WindowMetric::MinimizedKnown));
+    ui.0.request(WindowCommand::Maximize);
+    preview.render_animated(&mut renderer).unwrap();
+    assert!(ui.0.get(WindowMetric::Maximized));
+    preview.set_window_active(false);
+    assert!(!ui.0.get(WindowMetric::Active));
+    assert!(ui.0.get(WindowMetric::Maximized));
+    preview.set_window_active(true);
+    ui.0.request(WindowCommand::Minimize);
+    preview.render_animated(&mut renderer).unwrap();
+    assert!(ui.0.get(WindowMetric::Minimized));
+    assert!(!ui.0.get(WindowMetric::Active));
+    preview.request_window_restore();
+    preview.render_animated(&mut renderer).unwrap();
+    assert!(!ui.0.get(WindowMetric::Minimized));
+    assert!(!ui.0.get(WindowMetric::Maximized));
+    assert!(ui.0.get(WindowMetric::Active));
+    ui.0.request(WindowCommand::Maximize);
+    ui.0.request(WindowCommand::Restore);
+    preview.render_animated(&mut renderer).unwrap();
+    assert!(!ui.0.get(WindowMetric::Maximized));
+}
+
+#[test]
+fn preview_renders_at_display_density_and_keeps_logical_hit_testing() {
+    use xrack_renderer_femtovg::preview::PreviewScene;
+
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))
+    .unwrap();
+    let ui = Counter::new();
+    let mut preview = PreviewScene::new(Box::new(ui.as_weak().upgrade().unwrap()));
+    let pixel_size = |png: &[u8]| {
+        assert_eq!(&png[12..16], b"IHDR");
+        [
+            u32::from_be_bytes(png[16..20].try_into().unwrap()),
+            u32::from_be_bytes(png[20..24].try_into().unwrap()),
+        ]
+    };
+    assert_eq!(
+        pixel_size(preview.render_scaled(&mut renderer, 2.0).unwrap()),
+        [640, 360]
+    );
+    assert_eq!(preview.logical_size(), [320, 180]);
+    let layout = renderer.layout(&ui.render(), Size::new(320.0, 180.0));
+    let button = layout.children[0].children[2].bounds;
+    preview.click(Point {
+        x: button.x + button.width * 0.5,
+        y: button.y + button.height * 0.5,
+    });
+    assert_eq!(ui.get_count(), 1);
+    assert_eq!(
+        pixel_size(preview.render_scaled(&mut renderer, 1.5).unwrap()),
+        [480, 270]
+    );
+    assert_eq!(preview.logical_size(), [320, 180]);
+}
+
+#[test]
 fn preview_keyboard_capture_and_clipboard_results_share_the_focused_editor() {
     use layout_ui::ScopedKeysDemo;
     use xrack_renderer_femtovg::preview::PreviewScene;

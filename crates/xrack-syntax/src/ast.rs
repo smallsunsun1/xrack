@@ -5,6 +5,9 @@ use std::borrow::Cow;
 pub struct Span {
     pub line: usize,
     pub column: usize,
+    /// One-based index into the source table when resolving an editor document.
+    #[serde(skip)]
+    pub source: usize,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -48,6 +51,8 @@ pub struct RecordDef {
 pub struct RecordField {
     pub name: String,
     pub ty: Type,
+    #[serde(skip)]
+    pub type_span: Span,
     pub span: Span,
 }
 
@@ -82,6 +87,8 @@ pub struct ImportName {
 pub struct Component {
     pub name: String,
     pub base: String,
+    #[serde(skip)]
+    pub base_span: Span,
     pub exported: bool,
     pub members: Vec<Member>,
     pub span: Span,
@@ -583,6 +590,8 @@ impl<'de> Deserialize<'de> for Type {
 pub struct Property {
     pub name: String,
     pub ty: Type,
+    #[serde(skip)]
+    pub type_span: Span,
     pub visibility: String,
     pub value: Option<Expr>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -594,6 +603,10 @@ pub struct Property {
 pub struct Callback {
     pub name: String,
     pub parameters: Vec<Parameter>,
+    #[serde(skip)]
+    pub parameter_type_spans: Vec<Span>,
+    #[serde(skip)]
+    pub result_type_span: Option<Span>,
     pub span: Span,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub return_type: Option<Type>,
@@ -601,6 +614,8 @@ pub struct Callback {
     pub pure: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub alias: Option<String>,
+    #[serde(skip)]
+    pub alias_span: Option<Span>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -622,6 +637,8 @@ pub struct Binding {
 pub struct Handler {
     pub name: String,
     pub parameters: Vec<String>,
+    #[serde(skip)]
+    pub parameter_spans: Vec<Span>,
     pub statements: Vec<Statement>,
     pub span: Span,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -654,6 +671,8 @@ pub struct Call {
 pub struct Element {
     pub id: Option<String>,
     pub ty: String,
+    #[serde(skip)]
+    pub type_span: Span,
     pub members: Vec<Member>,
     pub span: Span,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -667,6 +686,10 @@ pub struct Repeat {
     pub item: String,
     pub index: Option<String>,
     pub model: Expr,
+    #[serde(skip)]
+    pub item_span: Span,
+    #[serde(skip)]
+    pub index_span: Span,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -725,6 +748,8 @@ pub enum ExprKind {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RecordValue {
     pub name: String,
+    #[serde(skip)]
+    pub span: Span,
     pub value: Expr,
 }
 

@@ -5,14 +5,13 @@ rust_library(
     srcs = glob(["src/*.rs"]),
     crate_root = "src/lib.rs",
     edition = "2024",
-    version = "0.2.0",
+    version = "0.5.0",
     visibility = ["//visibility:public"],
     deps = [
         "//crates/xrack-mlir:xrack_mlir",
         "//crates/xrack-resources:xrack_resources",
         "//crates/xrack-runtime:xrack_runtime",
         "//crates/xrack-syntax:xrack_syntax",
-        "@crates//:serde_json",
         "@crates//:thiserror",
     ],
 )

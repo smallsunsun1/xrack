@@ -1,16 +1,29 @@
 load("@rules_rust//rust:defs.bzl", "rust_library")
 
+_RUNTIME_DEPS = [
+    "//crates/xrack-assets:xrack_assets",
+    "//crates/xrack-layout:xrack_layout",
+    "//crates/xrack-platform-winit:xrack_platform_winit",
+    "//crates/xrack-renderer-femtovg:xrack_renderer_femtovg",
+    "//crates/xrack-runtime:xrack_runtime",
+]
+
 rust_library(
     name = "xrack",
     srcs = ["src/lib.rs"],
     edition = "2024",
-    version = "0.2.0",
+    version = "0.5.0",
     visibility = ["//visibility:public"],
-    deps = [
-        "//crates/xrack-assets:xrack_assets",
-        "//crates/xrack-layout:xrack_layout",
-        "//crates/xrack-platform-winit:xrack_platform_winit",
-        "//crates/xrack-renderer-femtovg:xrack_renderer_femtovg",
-        "//crates/xrack-runtime:xrack_runtime",
-    ],
+    deps = _RUNTIME_DEPS,
+)
+
+rust_library(
+    name = "xrack_with_interpreter",
+    srcs = ["src/lib.rs"],
+    crate_features = ["interpreter"],
+    crate_name = "xrack",
+    edition = "2024",
+    version = "0.5.0",
+    visibility = ["//visibility:public"],
+    deps = _RUNTIME_DEPS + ["//crates/xrack-interpreter:xrack_interpreter"],
 )

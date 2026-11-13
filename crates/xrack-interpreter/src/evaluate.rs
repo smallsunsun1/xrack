@@ -13,7 +13,7 @@ use xrack_runtime::{
 };
 
 pub(crate) struct State {
-    binding_lifetime: ComponentLifetime,
+    pub(crate) binding_lifetime: ComponentLifetime,
     program: Program,
     name: String,
     row: Option<RowScope>,
@@ -72,6 +72,7 @@ impl Drop for RenderedSelection<'_> {
 struct TargetRoute<'a> {
     follow_row: bool,
     input: Option<xrack_runtime::InputRoute<'a>>,
+    row_selectors: Option<&'a RefCell<BTreeMap<usize, i64>>>,
 }
 
 type BoundInput = InputProperty<Result<Value>>;
@@ -805,14 +806,17 @@ impl Instance {
             .try_get(|| self.choose_state(index))
     }
 
-    // Match the compiler's local selection for this render, even if a binding mutates a predicate input.
-    fn render_selection(&self, index: usize) -> Result<RenderedSelection<'_>> {
-        let selected = if self.definition().selectors[index].persistent {
-            self.read_state(index)?
+    fn select_state(&self, index: usize) -> Result<i64> {
+        if self.definition().selectors[index].persistent {
+            self.read_state(index)
         } else {
-            self.choose_state(index)?
-        };
-        Ok(self.scoped_selection(index, selected))
+            self.choose_state(index)
+        }
+    }
+
+    // Keep the selection stable for this render, even if a binding mutates a predicate input.
+    fn render_selection(&self, index: usize) -> Result<RenderedSelection<'_>> {
+        Ok(self.scoped_selection(index, self.select_state(index)?))
     }
 
     fn scoped_selection(&self, index: usize, selected: i64) -> RenderedSelection<'_> {
@@ -827,14 +831,29 @@ impl Instance {
         self.0.selectors[index]
             .rendered
             .get()
-            .map_or_else(|| self.read_state(index), Ok)
+            .map_or_else(|| self.select_state(index), Ok)
     }
 
     pub(crate) fn state_value(&self, cases: &[StateCase]) -> Result<Option<Value>> {
+        self.state_value_with(cases, |selector| {
+            if self.0.row.as_ref().is_some_and(|row| row.sampled) {
+                // Table projections share a selector across the cells sampled for one row.
+                self.read_state(selector)
+            } else {
+                self.select_state(selector)
+            }
+        })
+    }
+
+    fn state_value_with(
+        &self,
+        cases: &[StateCase],
+        select: impl FnOnce(usize) -> Result<i64>,
+    ) -> Result<Option<Value>> {
         let Some(first) = cases.first() else {
             return Ok(None);
         };
-        let selected = self.read_state(first.selector)?;
+        let selected = select(first.selector)?;
         cases
             .iter()
             .find(|case| case.index == selected)
@@ -1128,7 +1147,14 @@ impl Instance {
                     self.table_command(target, *command, &self.arguments(operands, args)?)?;
                 }
                 Statement::Focus(target, command, operands) => {
-                    let action = command.action(&self.arguments(operands, args)?)?;
+                    let action = match operands {
+                        Some([first, second]) => command.action(&[
+                            self.int_argument(first, args)?,
+                            self.int_argument(second, args)?,
+                        ]),
+                        None => command.action(&[]),
+                    }
+                    .ok_or_else(|| evaluation("invalid focus command arguments"))?;
                     self.focus_handle(target)?.request(action);
                 }
                 Statement::Tree(target, command, key, depth) => {
@@ -1137,7 +1163,10 @@ impl Instance {
                         .as_ref()
                         .map(|depth| self.int_argument(depth, args))
                         .transpose()?;
-                    self.tree_command(target, command.action(key, depth)?)?;
+                    let action = command
+                        .action(key, depth)
+                        .ok_or_else(|| Error::Invalid("tree command missing depth".into()))?;
+                    self.tree_command(target, action)?;
                 }
                 Statement::Timer(target, command) => self.timer_command(target, *command)?,
                 Statement::StackNavigate(target, command, argument) => {
@@ -1168,14 +1197,18 @@ impl Instance {
                 Statement::SecondaryWindow(target, command) => {
                     self.secondary_window_command(target, *command)?;
                 }
-                Statement::WindowCommand(command) => self.0.window.request(*command),
-                Statement::WindowFullScreen(enabled) => {
-                    let Value::Bool(enabled) = self.evaluate(enabled, args)? else {
-                        return Err(evaluation("expected a boolean full-screen argument"));
-                    };
-                    self.0
-                        .window
-                        .request(xrack_runtime::WindowCommand::SetFullScreen(enabled));
+                Statement::WindowCommand(method, enabled) => {
+                    let enabled = enabled
+                        .as_ref()
+                        .map(|expr| match self.evaluate(expr, args)? {
+                            Value::Bool(value) => Ok(value),
+                            _ => Err(evaluation("expected a boolean full-screen argument")),
+                        })
+                        .transpose()?;
+                    let command = method
+                        .action(enabled)
+                        .ok_or_else(|| evaluation("invalid window command arguments"))?;
+                    self.0.window.request(command);
                 }
                 Statement::Return(expression) => {
                     fallback = Some(expression);
@@ -1264,12 +1297,13 @@ impl Instance {
             TreeQuery(target, query, key) => {
                 self.tree_query(target, *query, self.int_argument(key, args)?)
             }
-            ViewIndex(target, index, from_source) => {
+            ViewIndex(target, index, direction) => {
                 let index = self.int_argument(index, args)?;
-                Ok(Value::Int(
-                    self.view_index(target, index, *from_source)?
-                        .map_or(-1, |index| index as i64),
-                ))
+                direction
+                    .try_query(index, |index, direction| {
+                        self.view_index(target, index, direction)
+                    })
+                    .map(Value::Int)
             }
             TableRead(member) => self.table_read(member),
             ScrollControlRead(member) => self.scroll_control_read(member),
@@ -1395,7 +1429,7 @@ impl Instance {
                     build()
                 }
             }
-            StateSelect(index) => self.read_state(*index).map(Value::Int),
+            StateSelect(index) => self.select_state(*index).map(Value::Int),
             Translate { id, arguments } => {
                 use xrack_runtime::TranslationValue;
                 let catalog = self
@@ -1743,6 +1777,7 @@ impl Instance {
         deferred_selection: Option<&mut Option<i64>>,
     ) -> Result<Node> {
         let include_plan = include_children || deferred_selection.is_some();
+        let is_instance = matches!(element.visual, Visual::Instance { .. });
         let picker_value = picker::property(element);
         let hidden = element.conditions.iter().try_fold(
             element.static_hidden,
@@ -1832,7 +1867,9 @@ impl Instance {
                 continue;
             }
             let value = self.evaluate(&binding.expression, &[])?;
-            if node.kind == "ComboBox" && name == "model" {
+            if is_instance {
+                node.set_instance_layout_property(name, scene_value(value));
+            } else if node.kind == "ComboBox" && name == "model" {
                 let Value::StringModel(model) = value else {
                     return Err(evaluation("expected a string ComboBox model"));
                 };
@@ -1891,7 +1928,11 @@ impl Instance {
                 },
             };
             if let Some(value) = value {
-                node.properties.insert(name, scene_value(value));
+                if is_instance {
+                    node.set_instance_layout_property(name, scene_value(value));
+                } else {
+                    node.properties.insert(name, scene_value(value));
+                }
             }
         }
         for (&name, specs) in &element.state_timings {
@@ -1904,16 +1945,17 @@ impl Instance {
                     .transpose()
                     .map(Option::flatten)
             };
-            node.state_timings
-                .get_or_insert_with(Default::default)
-                .insert(
-                    name,
-                    StateTiming {
-                        case,
-                        enter: timing(true)?,
-                        exit: timing(false)?,
-                    },
-                );
+            node.set_state_timing(
+                name,
+                StateTiming {
+                    case,
+                    enter: timing(true)?,
+                    exit: timing(false)?,
+                },
+            );
+        }
+        if is_instance {
+            return Ok(node);
         }
         if let Some(enabled) = action_enabled {
             let enabled = enabled && node.boolean("enabled", true);
@@ -1930,7 +1972,10 @@ impl Instance {
                 let Some(element) = owner.definition().root.find_key(&key) else {
                     return false;
                 };
-                owner.handle_result(owner.handler(element, "finished", &[]))
+                element.handlers.get("finished").is_some_and(|handler| {
+                    !handler.body.is_empty()
+                        && owner.handle_result(owner.execute(handler, &[], None).map(|_| true))
+                })
             });
         }
         for &(name, ref spec) in &element.animations {
@@ -2114,11 +2159,37 @@ impl Instance {
             else {
                 return Ok(None);
             };
-            return row.locate(program, element, node, tail, route);
+            let row_selectors = RefCell::default();
+            return row.locate(
+                program,
+                element,
+                node,
+                tail,
+                TargetRoute {
+                    row_selectors: Some(&row_selectors),
+                    ..route
+                },
+            );
         }
         if let Some(input) = route.input {
             let is_instance = matches!(element.visual, Visual::Instance { .. });
             let mut visible = None;
+            let flag = |name| {
+                self.visual_flag_value_with(element, name, |cases| {
+                    self.state_value_with(cases, |selector| {
+                        let Some(cache) = route.row_selectors else {
+                            return self.select_state(selector);
+                        };
+                        let cached = cache.borrow().get(&selector).copied();
+                        if let Some(value) = cached {
+                            return Ok(value);
+                        }
+                        let value = self.select_state(selector)?;
+                        cache.borrow_mut().insert(selector, value);
+                        Ok(value)
+                    })
+                })
+            };
             if !input.try_available(|| -> Result<bool> {
                 if path.is_empty()
                     && scene.is_item_delegate()
@@ -2130,8 +2201,7 @@ impl Instance {
                 {
                     return self.item_delegate_available(element);
                 }
-                if scene.input_requires_enabled(path.is_empty())
-                    && !self.visual_flag(element, "enabled", true)?
+                if scene.input_requires_enabled(path.is_empty()) && flag("enabled")? == Some(false)
                 {
                     return Ok(false);
                 }
@@ -2141,7 +2211,7 @@ impl Instance {
                 visible = if input.root_visibility_overridden() {
                     Some(true)
                 } else {
-                    self.visual_flag_value(element, "visible")?
+                    flag("visible")?
                 };
                 if !visible.unwrap_or(true) {
                     return Ok(false);
@@ -2179,7 +2249,7 @@ impl Instance {
                         Ok(input.can_open_drawer(scene, path.is_empty())
                             || self.control_value(element, "open")? == Some(Value::Bool(true)))
                     },
-                    || self.visual_flag(element, "checkable", false),
+                    || Ok(flag("checkable")?.unwrap_or(false)),
                     || Ok(self.control_value(element, "checked")? != Some(Value::Bool(false))),
                     || {
                         Ok(match self.control_value(element, "open-side")? {
@@ -2203,7 +2273,10 @@ impl Instance {
                 &program.definition(component)?.root,
                 scene,
                 path,
-                route,
+                TargetRoute {
+                    row_selectors: None,
+                    ..route
+                },
             );
         }
         let Some((&index, tail)) = path.split_first() else {
@@ -2255,7 +2328,17 @@ impl Instance {
             let Some(row) = state.resolved_row(&model, source, row_key, route.follow_row) else {
                 return Ok(None);
             };
-            return row.locate(program, template, child, tail, route);
+            let row_selectors = RefCell::default();
+            return row.locate(
+                program,
+                template,
+                child,
+                tail,
+                TargetRoute {
+                    row_selectors: Some(&row_selectors),
+                    ..route
+                },
+            );
         }
         let Some(child) = index
             .checked_sub(element.synthetic_child_count())
@@ -2279,6 +2362,7 @@ impl Instance {
             TargetRoute {
                 follow_row: false,
                 input: None,
+                row_selectors: None,
             },
         )
     }
@@ -2297,6 +2381,7 @@ impl Instance {
             TargetRoute {
                 follow_row: input.event().follows_row(scene, path),
                 input: Some(input),
+                row_selectors: None,
             },
         )
     }
@@ -2585,13 +2670,21 @@ impl Instance {
         input: Option<xrack_runtime::InputRoute<'_>>,
     ) -> Result<bool> {
         let (owner, element) = self.overlay_owner(key)?;
-        let current = owner.control_value(element, "open")? == Some(Value::Bool(true));
-        if current == open || input.is_some_and(|input| !input.is_current()) {
-            return Ok(false);
-        }
-        owner.set_control_value(element, "open", open.into())?;
-        owner.handler(element, if open { "opened" } else { "closed" }, &[])?;
-        Ok(true)
+        xrack_runtime::try_set_overlay_open(
+            open,
+            input,
+            || Ok(owner.control_value(element, "open")? == Some(Value::Bool(true))),
+            |open| {
+                owner
+                    .set_control_value(element, "open", open.into())
+                    .map(|_| ())
+            },
+            |open| {
+                owner
+                    .handler(element, if open { "opened" } else { "closed" }, &[])
+                    .map(|_| ())
+            },
+        )
     }
 
     fn scroll_control_read(&self, member: &Member) -> Result<Value> {
@@ -2775,7 +2868,9 @@ impl Instance {
         action: ControlAction,
         route: xrack_runtime::InputRoute<'_>,
     ) -> Result<bool> {
-        use xrack_runtime::{ComboInput, combo_model_is_current, try_prepare_combo_input};
+        use xrack_runtime::{
+            ComboEditor, ComboUpdate, combo_model_is_current, try_prepare_combo_input,
+        };
 
         let input = try_prepare_combo_input(
             node,
@@ -2797,70 +2892,55 @@ impl Instance {
         if !route.is_current() {
             return Ok(false);
         }
-        match input {
-            Some(ComboInput::Select {
-                selection,
-                editable,
-            }) => self.apply_combo_selection(element, node, selection, editable, false),
-            Some(ComboInput::Accept { text, selection }) => {
-                let draft = Value::String(text);
-                if let Some(selection) = selection {
-                    if !self.apply_combo_selection(element, node, selection, true, true)? {
-                        return Ok(false);
-                    }
-                } else {
-                    let property = element.selection_property();
-                    if property == "current-index" {
-                        self.update_control(element, node, property, Value::Int(-1))?;
-                    } else if element.record_combo.is_none() {
-                        self.update_control(element, node, property, draft.clone())?;
-                    }
-                    if element
-                        .control("edit-text")
-                        .is_some_and(|control| control.omit_default)
-                    {
-                        self.update_control(element, node, "edit-text", draft.clone())?;
-                    }
-                }
-                self.handler(element, "accepted", &[draft])?;
-                Ok(true)
-            }
-            None => Ok(false),
-        }
-    }
-
-    fn apply_combo_selection(
-        &self,
-        element: &Element,
-        node: &Node,
-        selection: xrack_runtime::ComboSelection,
-        editable: bool,
-        accept: bool,
-    ) -> Result<bool> {
-        let property = element.selection_property();
-        let value = if property == "current-value" {
-            selection.value.clone()
-        } else {
-            Value::Int(selection.index as i64)
-        };
-        if !self.update_control(element, node, property, value)? {
+        let Some(input) = input else {
             return Ok(false);
-        }
-        let label = Value::String(selection.label);
-        if editable && let Some(control) = element.control("edit-text") {
-            if control.omit_default {
-                self.0.controls[&Member::new(&element.key, control.name)].reset();
-            } else if !accept {
-                self.update_control(element, node, "edit-text", label.clone())?;
+        };
+        let property = element.selection_property();
+        let by_value = property == "current-value";
+        let editor = match element.control("edit-text") {
+            None => ComboEditor::None,
+            Some(control) if control.omit_default => ComboEditor::Default,
+            Some(_) => ComboEditor::Explicit,
+        };
+        input.try_apply(editor, by_value, element.record_combo.is_some(), |update| {
+            match update {
+                ComboUpdate::Select(selection) => {
+                    let value = if by_value {
+                        selection.value.clone()
+                    } else {
+                        Value::Int(selection.index as i64)
+                    };
+                    return self.update_control(element, node, property, value);
+                }
+                ComboUpdate::ClearIndex => {
+                    self.update_control(element, node, property, Value::Int(-1))?;
+                }
+                ComboUpdate::SetFreeText(text) => {
+                    self.update_control(element, node, property, Value::String(text.to_owned()))?;
+                }
+                ComboUpdate::SetEditText(text) => {
+                    self.update_control(
+                        element,
+                        node,
+                        "edit-text",
+                        Value::String(text.to_owned()),
+                    )?;
+                }
+                ComboUpdate::ResetEditText => {
+                    self.0.controls[&Member::new(&element.key, "edit-text")].reset();
+                }
+                ComboUpdate::Selected(label) => {
+                    self.handler(element, "selected", &[Value::String(label.to_owned())])?;
+                }
+                ComboUpdate::ValueSelected(value) => {
+                    self.handler(element, "value-selected", std::slice::from_ref(value))?;
+                }
+                ComboUpdate::Accepted(text) => {
+                    self.handler(element, "accepted", &[Value::String(text.to_owned())])?;
+                }
             }
-        }
-        if !accept {
-            self.handler(element, "selected", &[label])?;
-        }
-        if element.record_combo.is_some() {
-            self.handler(element, "value-selected", &[selection.value])?;
-        }
-        Ok(true)
+            Ok(true)
+        })
     }
 
     /// Retain errors for component methods that cannot return a Result.
@@ -3303,6 +3383,7 @@ impl Instance {
             TargetRoute {
                 follow_row: false,
                 input: Some(input),
+                row_selectors: None,
             },
         )) else {
             return false;

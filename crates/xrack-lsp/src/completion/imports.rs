@@ -1,5 +1,8 @@
+use crate::analysis::Source;
 use crate::completion::{CLASS, Index, Member, Role, STRUCT};
 use crate::editor_tokens::{self, Token, name};
+use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
 use std::{
     borrow::Cow,
     collections::{BTreeMap, BTreeSet},
@@ -8,9 +11,13 @@ use std::{
     path::{Path, PathBuf},
 };
 
+pub(super) use xrack_ir::modules::normalize_source_path as normalize;
+
 pub(crate) struct Workspace<'a> {
-    pub(super) entry: PathBuf,
+    pub(crate) entry: PathBuf,
     open: BTreeMap<PathBuf, (&'a str, &'a str)>,
+    indexed_modules: Option<&'a BTreeMap<PathBuf, Module>>,
+    edited_modules: Option<&'a BTreeMap<PathBuf, Module>>,
 }
 
 impl<'a> Workspace<'a> {
@@ -20,7 +27,39 @@ impl<'a> Workspace<'a> {
             open: open
                 .filter_map(|(uri, text)| Some((normalize(&file_path(uri)?), (uri, text))))
                 .collect(),
+            indexed_modules: None,
+            edited_modules: None,
         })
+    }
+
+    pub(crate) fn buffers(&self) -> BTreeMap<PathBuf, &'a str> {
+        self.open
+            .iter()
+            .map(|(path, &(_, text))| (path.clone(), text))
+            .collect()
+    }
+
+    pub(super) fn indexed(entry: &Path, modules: &'a BTreeMap<PathBuf, Module>) -> Self {
+        Self {
+            entry: entry.to_owned(),
+            open: BTreeMap::new(),
+            indexed_modules: Some(modules),
+            edited_modules: None,
+        }
+    }
+
+    pub(super) fn with_edits(mut self, modules: &'a BTreeMap<PathBuf, Module>) -> Self {
+        self.edited_modules = Some(modules);
+        self
+    }
+
+    pub(super) fn for_entry(&self, path: &Path) -> Self {
+        Self {
+            entry: path.to_owned(),
+            open: self.open.clone(),
+            indexed_modules: self.indexed_modules,
+            edited_modules: self.edited_modules,
+        }
     }
 
     pub(super) fn imported_members(&self, tokens: &[Token<'_>]) -> BTreeMap<String, Vec<Member>> {
@@ -87,14 +126,14 @@ impl<'a> Workspace<'a> {
         }))
     }
 
-    pub(super) fn load(&self, path: &Path) -> Option<Cow<'_, str>> {
+    pub(crate) fn load(&self, path: &Path) -> Option<Cow<'_, str>> {
         if let Some(&(_, text)) = self.open.get(path) {
             return Some(Cow::Borrowed(text));
         }
         fs::read_to_string(path).ok().map(Cow::Owned)
     }
 
-    pub(super) fn uri(&self, path: &Path) -> Option<String> {
+    pub(crate) fn uri(&self, path: &Path) -> Option<String> {
         if let Some(&(uri, _)) = self.open.get(path) {
             return Some(uri.into());
         }
@@ -128,10 +167,19 @@ impl<'a> Workspace<'a> {
     }
 
     pub(super) fn module<'m>(
-        &self,
+        &'m self,
         path: &Path,
         modules: &'m mut BTreeMap<PathBuf, Module>,
     ) -> &'m Module {
+        if let Some(module) = self.edited_modules.and_then(|modules| modules.get(path)) {
+            return module;
+        }
+        if let Some(indexed) = self.indexed_modules {
+            if let Some(module) = indexed.get(path) {
+                return module;
+            }
+            return modules.entry(path.to_owned()).or_default();
+        }
         let canonical = normalize(path);
         modules.entry(canonical.clone()).or_insert_with(|| {
             self.load(&canonical)
@@ -182,19 +230,21 @@ impl<'a> Workspace<'a> {
     }
 }
 
-#[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub(super) struct Target {
     pub(super) file: PathBuf,
+    pub(super) input: PathBuf,
     pub(super) name: String,
 }
 
-#[derive(Default)]
+#[derive(Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub(super) struct Module {
     pub(super) components: BTreeMap<String, Component>,
     pub(super) records: BTreeMap<String, Record>,
     pub(super) imports: BTreeMap<String, Target>,
 }
 
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(super) struct Component {
     base: String,
     pub(super) exported: bool,
@@ -202,6 +252,7 @@ pub(super) struct Component {
     members: Vec<Member>,
 }
 
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(super) struct Record {
     pub(super) exported: bool,
     pub(super) range: Range<usize>,
@@ -209,10 +260,24 @@ pub(super) struct Record {
 }
 
 impl Module {
-    fn new(path: &Path, text: &str) -> Self {
-        let tokens = editor_tokens::scan(text);
+    pub(super) fn symbols(&self) -> impl Iterator<Item = (&str, u32, &Range<usize>, bool)> {
+        self.components
+            .iter()
+            .map(|(name, item)| (name.as_str(), CLASS, &item.range, item.exported))
+            .chain(
+                self.records
+                    .iter()
+                    .map(|(name, item)| (name.as_str(), STRUCT, &item.range, item.exported)),
+            )
+    }
+
+    pub(super) fn new(path: &Path, text: &str) -> Self {
+        Self::from_tokens(path, &editor_tokens::scan(text), text.len())
+    }
+
+    pub(super) fn from_tokens(path: &Path, tokens: &[Token<'_>], end: usize) -> Self {
         let code: Vec<_> = tokens.iter().filter(|t| t.code()).collect();
-        let index = Index::new(&code, text.len());
+        let index = Index::new(&code, end);
         let mut components = BTreeMap::new();
         let mut records = BTreeMap::new();
         let canonical = normalize(path);
@@ -267,7 +332,7 @@ impl Module {
         Self {
             components,
             records,
-            imports: import_targets(path, &tokens),
+            imports: import_targets(path, tokens),
         }
     }
 }
@@ -276,9 +341,10 @@ pub(super) fn import_targets(path: &Path, tokens: &[Token<'_>]) -> BTreeMap<Stri
     let code: Vec<_> = tokens.iter().filter(|t| t.code() || t.quoted()).collect();
     let mut imports = BTreeMap::new();
     for clause in named_imports(&code) {
-        let Some(file) = module_path(path, clause.source.text) else {
+        let Some(input) = import_input(path, clause.source.text) else {
             continue;
         };
+        let file = normalize(&input);
         for binding in clause.names.split(|t| t.text == ",") {
             let (original, alias) = match binding {
                 [original] => (original.text, original.text),
@@ -288,6 +354,7 @@ pub(super) fn import_targets(path: &Path, tokens: &[Token<'_>]) -> BTreeMap<Stri
             if name(original) && name(alias) {
                 imports.entry(alias.into()).or_insert_with(|| Target {
                     file: file.clone(),
+                    input: input.clone(),
                     name: original.into(),
                 });
             }
@@ -302,46 +369,68 @@ pub(super) struct ImportClause<'a, 'source> {
     pub(super) source: &'a Token<'source>,
 }
 
+enum Preamble<'a, 'source> {
+    Named(ImportClause<'a, 'source>),
+    Font(&'a Token<'source>),
+    Translations,
+}
+
+fn preamble<'a, 'source>(
+    code: &'a [&'a Token<'source>],
+) -> impl Iterator<Item = Preamble<'a, 'source>> {
+    let mut rest = code;
+    std::iter::from_fn(move || {
+        let [keyword, open, tail @ ..] = rest else {
+            return None;
+        };
+        if matches!(keyword.text, "import" | "translations")
+            && open.quoted()
+            && tail.first().is_some_and(|token| token.text == ";")
+        {
+            rest = &tail[1..];
+            return Some(if keyword.text == "import" {
+                Preamble::Font(open)
+            } else {
+                Preamble::Translations
+            });
+        }
+        if keyword.text != "import" || open.text != "{" {
+            return None;
+        }
+        let close = tail.iter().position(|token| token.text == "}")?;
+        let [from, source, next @ ..] = &tail[close + 1..] else {
+            return None;
+        };
+        if from.text != "from" || !source.quoted() {
+            return None;
+        }
+        rest = if next.first().is_some_and(|token| token.text == ";") {
+            &next[1..]
+        } else {
+            &[]
+        };
+        Some(Preamble::Named(ImportClause {
+            body: open.range.end..tail[close].range.start,
+            names: &tail[..close],
+            source,
+        }))
+    })
+}
+
 pub(super) fn named_imports<'a, 'source>(
     code: &'a [&'a Token<'source>],
 ) -> impl Iterator<Item = ImportClause<'a, 'source>> {
-    let mut rest = code;
-    // Imports precede declarations, and a font import may occur between named imports.
-    std::iter::from_fn(move || {
-        while let [keyword, open, tail @ ..] = rest {
-            if keyword.text != "import" {
-                break;
-            }
-            if open.quoted() && tail.first().is_some_and(|t| t.text == ";") {
-                rest = &tail[1..];
-                continue;
-            }
-            if open.text != "{" {
-                break;
-            }
-            let close = tail.iter().position(|t| t.text == "}")?;
-            let [from, source, next @ ..] = &tail[close + 1..] else {
-                break;
-            };
-            if from.text != "from" || !source.quoted() {
-                break;
-            }
-            rest = if next.first().is_some_and(|t| t.text == ";") {
-                &next[1..]
-            } else {
-                &[]
-            };
-            return Some(ImportClause {
-                body: open.range.end..tail[close].range.start,
-                names: &tail[..close],
-                source,
-            });
-        }
-        None
+    preamble(code).filter_map(|item| match item {
+        Preamble::Named(clause) => Some(clause),
+        _ => None,
     })
 }
 
 pub(super) fn module_path(path: &Path, source: &str) -> Option<PathBuf> {
+    import_input(path, source).map(|input| normalize(&input))
+}
+
+fn import_input(path: &Path, source: &str) -> Option<PathBuf> {
     let relative: PathBuf = serde_json::from_str(source).ok()?;
     if relative.is_absolute() || relative.extension().is_none_or(|ext| ext != "xr") {
         return None;
@@ -349,7 +438,64 @@ pub(super) fn module_path(path: &Path, source: &str) -> Option<PathBuf> {
     Some(path.parent()?.join(relative))
 }
 
-fn file_path(uri: &str) -> Option<PathBuf> {
+fn source_links(text: &str, workspace: &Workspace<'_>) -> Vec<(Range<usize>, String)> {
+    let tokens = editor_tokens::scan(text);
+    let code: Vec<_> = tokens
+        .iter()
+        .filter(|token| token.code() || token.quoted())
+        .collect();
+    preamble(&code)
+        .filter_map(|item| {
+            let (token, path) = match item {
+                Preamble::Named(clause) => (
+                    clause.source,
+                    module_path(&workspace.entry, clause.source.text)?,
+                ),
+                Preamble::Font(token) => {
+                    let path: PathBuf = serde_json::from_str(token.text).ok()?;
+                    if path.is_absolute() {
+                        return None;
+                    }
+                    (token, normalize(&workspace.entry.parent()?.join(path)))
+                }
+                Preamble::Translations => return None,
+            };
+            // An unsaved buffer can be a valid import before the file exists on disk.
+            if !workspace.open.contains_key(&path) && !path.is_file() {
+                return None;
+            }
+            let uri = workspace.uri(&path)?;
+            Some((token.range.start + 1..token.range.end - 1, uri))
+        })
+        .collect()
+}
+
+pub(crate) fn document_links(text: &str, workspace: &Workspace<'_>) -> Value {
+    let source = Source::new(text);
+    json!(
+        source_links(text, workspace)
+            .into_iter()
+            .map(|(range, target)| {
+                json!({"range": source.range(range.start, range.end), "target": target})
+            })
+            .collect::<Vec<_>>()
+    )
+}
+
+pub(crate) fn import_definition(
+    text: &str,
+    position: (usize, usize),
+    workspace: &Workspace<'_>,
+) -> Option<Value> {
+    let cursor = Source::new(text).offset_at(position.0, position.1)?;
+    let (_, target) = source_links(text, workspace)
+        .into_iter()
+        .find(|(range, _)| range.start.saturating_sub(1) <= cursor && cursor <= range.end)?;
+    let start = json!({"line": 0, "character": 0});
+    Some(json!({"uri": target, "range": {"start": start, "end": start}}))
+}
+
+pub(crate) fn file_path(uri: &str) -> Option<PathBuf> {
     let encoded = uri.strip_prefix("file://")?;
     let encoded = encoded
         .strip_prefix("localhost")
@@ -385,17 +531,4 @@ fn file_path(uri: &str) -> Option<PathBuf> {
     };
     let path = Path::new(&path);
     path.is_absolute().then(|| path.to_owned())
-}
-
-pub(super) fn normalize(path: &Path) -> PathBuf {
-    if let Ok(file) = path.canonicalize() {
-        return file;
-    }
-    // An open editor can supply a new file that is not on disk yet.
-    if let Some((parent, file)) = path.parent().zip(path.file_name())
-        && let Ok(parent) = parent.canonicalize()
-    {
-        return parent.join(file);
-    }
-    path.to_owned()
 }

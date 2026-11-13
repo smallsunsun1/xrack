@@ -1,6 +1,9 @@
 use crate::{Element, Error, Instance, Result};
 use std::sync::Arc;
-use xrack_runtime::{StackNavigation, StackSnapshot, Value};
+use xrack_runtime::{
+    StackEvent, StackNavigation, StackNavigationArgument, StackNavigationMethod, StackSnapshot,
+    Value,
+};
 
 #[derive(Clone, Copy)]
 pub(crate) enum Read {
@@ -39,32 +42,6 @@ impl Read {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Command {
-    Push,
-    Pop,
-    Replace,
-    PopTo,
-    Reset,
-    PushPages,
-    ResetTo,
-}
-
-impl Command {
-    pub(crate) fn parse(method: &str) -> Option<Self> {
-        Some(match method {
-            "push" => Self::Push,
-            "pop" => Self::Pop,
-            "replace" => Self::Replace,
-            "pop-to" => Self::PopTo,
-            "reset" => Self::Reset,
-            "push-pages" => Self::PushPages,
-            "reset-to" => Self::ResetTo,
-            _ => return None,
-        })
-    }
-}
-
 fn routes(view: &Element) -> Result<&[String]> {
     view.stack_routes
         .as_deref()
@@ -99,24 +76,17 @@ impl Instance {
     pub(crate) fn navigate_stack_command(
         &self,
         id: &str,
-        command: Command,
+        method: StackNavigationMethod,
         argument: Option<Value>,
     ) -> Result<bool> {
         let (owner, view) = self.element_owner(id)?;
         let path;
-        let action = match (command, argument.as_ref()) {
-            (Command::Push, Some(Value::String(route))) => StackNavigation::Push(route),
-            (Command::Pop, None) => StackNavigation::Pop,
-            (Command::Replace, Some(Value::String(route))) => StackNavigation::Replace(route),
-            (Command::PopTo, Some(Value::String(route))) => StackNavigation::PopTo(route),
-            (Command::Reset, Some(Value::String(route))) => StackNavigation::Reset(route),
-            (Command::PushPages | Command::ResetTo, Some(Value::StringModel(model))) => {
+        let argument = match argument.as_ref() {
+            None => StackNavigationArgument::None,
+            Some(Value::String(route)) => StackNavigationArgument::Route(route),
+            Some(Value::StringModel(model)) => {
                 path = model.snapshot();
-                if command == Command::PushPages {
-                    StackNavigation::PushPages(&path)
-                } else {
-                    StackNavigation::ResetTo(&path)
-                }
+                StackNavigationArgument::Path(&path)
             }
             _ => {
                 return Err(Error::Evaluation(
@@ -124,6 +94,9 @@ impl Instance {
                 ));
             }
         };
+        let action = method
+            .action(argument)
+            .ok_or_else(|| Error::Evaluation("invalid stack navigation arguments".into()))?;
         owner.navigate_stack_view(view, None, action, None)
     }
 
@@ -152,7 +125,7 @@ impl Instance {
                     return Ok(false);
                 }
                 let Some(handler) = page(route).handlers.get("leave-requested") else {
-                    return Ok(true);
+                    return Ok(input.is_none_or(|input| input.is_current()));
                 };
                 let arguments = [Value::String(destination.into()), Value::Bool(removing)];
                 match self.execute(handler, &arguments, None)? {
@@ -165,25 +138,21 @@ impl Instance {
                 }
             },
             |change| {
-                if let Some(route) = change.deactivated() {
-                    self.handler(page(route), "deactivated", &[])?;
-                }
-                for route in change.removed() {
-                    self.handler(page(route), "removed", &[])?;
-                }
-                if let Some(route) = change.activated() {
-                    self.handler(page(route), "activated", &[])?;
-                }
-                let current = change.after.current().unwrap_or("");
-                self.handler(
-                    view,
-                    "changed",
-                    &[
-                        Value::String(current.into()),
-                        Value::Int(change.after.depth() as i64),
-                    ],
-                )?;
-                Ok(())
+                change.try_notify(|event| {
+                    match event {
+                        StackEvent::Deactivated(route) => {
+                            self.handler(page(route), "deactivated", &[])
+                        }
+                        StackEvent::Removed(route) => self.handler(page(route), "removed", &[]),
+                        StackEvent::Activated(route) => self.handler(page(route), "activated", &[]),
+                        StackEvent::Changed { current, depth } => self.handler(
+                            view,
+                            "changed",
+                            &[Value::String(current.into()), Value::Int(depth)],
+                        ),
+                    }
+                    .map(|_| ())
+                })
             },
         )
     }

@@ -9,6 +9,10 @@
     "editor.defaultFormatter": "rust-lang.rust-analyzer",
     "editor.formatOnSave": true
   },
+  "[xrack]": {
+    "editor.defaultFormatter": "xrack.xrack",
+    "editor.formatOnSave": true
+  },
   "files.exclude": {
     "**/bazel-*": true,
     "**/.tools": true

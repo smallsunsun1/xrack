@@ -191,6 +191,13 @@ function page(webview, media, filename) {
     <div class="controls">
         <label class="component" for="component">Component <select id="component" disabled></select></label>
         <label class="component" id="window-picker" for="window" hidden>Window <select id="window"></select></label>
+        <div class="view-controls" id="view-controls" role="group" aria-label="Preview view" hidden>
+            <button type="button" id="pan-mode" aria-pressed="false" title="Pan by dragging (or Alt + drag)">Pan</button>
+            <button type="button" id="zoom-out" aria-label="Zoom out" title="Zoom out (Alt + wheel)">−</button>
+            <button type="button" id="zoom-actual" aria-label="Reset to actual size" title="Reset to actual size">100%</button>
+            <button type="button" id="zoom-in" aria-label="Zoom in" title="Zoom in (Alt + wheel)">+</button>
+            <button type="button" id="zoom-fit" title="Fit preview to panel">Fit</button>
+        </div>
         <span class="status" id="status" data-phase="busy" role="status">Starting preview…</span>
     </div>
 </header>
@@ -198,12 +205,13 @@ function page(webview, media, filename) {
     <summary>Preview diagnostics</summary>
     <pre id="error"></pre>
 </details>
-<main class="canvas" aria-label="Component preview">
+<main class="canvas" id="canvas" aria-label="Component preview">
     <div class="waiting" id="waiting">
         <strong>Waiting for the first frame</strong>
         <p>The rendered component appears here once loading completes.</p>
     </div>
     <img id="snapshot" alt="XRack component preview" draggable="false" hidden>
+    <button type="button" id="restore-window" class="restore-window" hidden>Restore preview window</button>
     <textarea id="editor" class="preview-editor" aria-label="XRack preview keyboard input" tabindex="-1"></textarea>
 </main>
 <footer class="statusbar">
@@ -222,6 +230,12 @@ const waiting = document.getElementById('waiting');
 const dimensions = document.getElementById('dimensions');
 const image = document.getElementById('snapshot');
 const editor = document.getElementById('editor');
+const canvas = document.getElementById('canvas');
+const viewControls = document.getElementById('view-controls');
+const panMode = document.getElementById('pan-mode');
+const zoomActual = document.getElementById('zoom-actual');
+const restoreWindow = document.getElementById('restore-window');
+restoreWindow.addEventListener('click', () => vscode.postMessage({ type: 'restore_window' }));
 const edit = (action, text, select) => vscode.postMessage({ type: 'edit', action, text, select });
 let nextComposition = 0;
 let composition;
@@ -308,21 +322,136 @@ let controlNavigationEnabled = false;
 let splitNavigationEnabled = false;
 let menuOpen = false;
 let imeArea;
+let logicalWidth;
+let logicalHeight;
 const drags = new Map();
 let skipClick = false;
+let zoom = 1;
+let offsetX = 0;
+let offsetY = 0;
+let fit = true;
+let pan;
+let densityTimer;
+let reportedDensity;
+
+function reportDensity(type) {
+    const density = Math.min(4, Math.max(1, (window.devicePixelRatio || 1) * zoom));
+    if (density === reportedDensity && type !== 'ready') return;
+    reportedDensity = density;
+    vscode.postMessage({ type, scale: density });
+}
+
+function layoutPreview() {
+    if (!logicalWidth || !logicalHeight) return;
+    if (fit) {
+        const style = getComputedStyle(canvas);
+        const paddingX = parseFloat(style.paddingLeft) + parseFloat(style.paddingRight);
+        const paddingY = parseFloat(style.paddingTop) + parseFloat(style.paddingBottom);
+        zoom = Math.max(0.05, Math.min(1,
+            (canvas.clientWidth - paddingX) / logicalWidth,
+            (canvas.clientHeight - paddingY) / logicalHeight,
+        ));
+    }
+    image.style.width = (logicalWidth * zoom) + 'px';
+    image.style.height = (logicalHeight * zoom) + 'px';
+    image.style.transform = 'translate(calc(-50% + ' + offsetX + 'px), calc(-50% + ' + offsetY + 'px))';
+    zoomActual.textContent = Math.round(zoom * 100) + '%';
+    positionEditor();
+}
+
+function updateZoom(value, anchor) {
+    const next = Math.max(0.05, Math.min(4, value));
+    if (anchor) {
+        const bounds = canvas.getBoundingClientRect();
+        const x = anchor.clientX - bounds.left - bounds.width / 2;
+        const y = anchor.clientY - bounds.top - bounds.height / 2;
+        offsetX = x + (offsetX - x) * next / zoom;
+        offsetY = y + (offsetY - y) * next / zoom;
+    } else {
+        offsetX = 0;
+        offsetY = 0;
+    }
+    zoom = next;
+    fit = false;
+    layoutPreview();
+    clearTimeout(densityTimer);
+    densityTimer = setTimeout(() => {
+        densityTimer = undefined;
+        reportDensity('scale');
+    }, 100);
+}
+
+panMode.addEventListener('click', () => {
+    const enabled = canvas.classList.toggle('pan-mode');
+    panMode.setAttribute('aria-pressed', String(enabled));
+    if (enabled && dynamic && !drags.size) vscode.postMessage({ type: 'leave' });
+});
+document.getElementById('zoom-out').addEventListener('click', () => updateZoom(zoom / 1.25, canvasCenter()));
+document.getElementById('zoom-in').addEventListener('click', () => updateZoom(zoom * 1.25, canvasCenter()));
+zoomActual.addEventListener('click', () => updateZoom(1));
+document.getElementById('zoom-fit').addEventListener('click', () => {
+    fit = true;
+    offsetX = 0;
+    offsetY = 0;
+    layoutPreview();
+    reportDensity('scale');
+});
+function canvasCenter() {
+    const bounds = canvas.getBoundingClientRect();
+    return { clientX: bounds.left + bounds.width / 2, clientY: bounds.top + bounds.height / 2 };
+}
+new ResizeObserver(() => {
+    layoutPreview();
+    reportDensity('scale');
+}).observe(canvas);
+
+canvas.addEventListener('pointerdown', event => {
+    if (event.button !== 0 || !event.isPrimary || pan || drags.size || image.hidden
+        || (!event.altKey && !canvas.classList.contains('pan-mode') && event.target === image)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    skipClick = true;
+    fit = false;
+    pan = { id: event.pointerId, x: event.clientX - offsetX, y: event.clientY - offsetY };
+    canvas.setPointerCapture(event.pointerId);
+    canvas.classList.add('panning');
+    if (dynamic) vscode.postMessage({ type: 'leave' });
+}, true);
+canvas.addEventListener('pointermove', event => {
+    if (pan?.id !== event.pointerId) return;
+    offsetX = event.clientX - pan.x;
+    offsetY = event.clientY - pan.y;
+    layoutPreview();
+});
+function endPan(event) {
+    if (pan?.id !== event.pointerId) return;
+    pan = undefined;
+    canvas.classList.remove('panning');
+}
+canvas.addEventListener('pointerup', endPan);
+canvas.addEventListener('pointercancel', endPan);
+canvas.addEventListener('lostpointercapture', endPan);
+canvas.addEventListener('wheel', event => {
+    if (image.hidden || pan || drags.size
+        || !(event.altKey || (event.ctrlKey && canvas.classList.contains('pan-mode')))) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const unit = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? canvas.clientHeight : 1;
+    updateZoom(zoom * Math.exp(-event.deltaY * unit / 450), event);
+}, { capture: true, passive: false });
 
 function positionEditor() {
     const bounds = image.getBoundingClientRect();
-    if (!imeArea || !image.naturalWidth || !image.naturalHeight) {
+    if (!imeArea || !logicalWidth || !logicalHeight) {
         editor.style.left = '';
         editor.style.top = '';
         editor.style.height = '';
         return;
     }
     const [x, y, height] = imeArea;
-    editor.style.left = (bounds.left + x * bounds.width / image.naturalWidth) + 'px';
-    editor.style.top = (bounds.top + y * bounds.height / image.naturalHeight) + 'px';
-    editor.style.height = Math.max(1, height * bounds.height / image.naturalHeight) + 'px';
+    editor.style.left = (bounds.left + x * bounds.width / logicalWidth) + 'px';
+    editor.style.top = (bounds.top + y * bounds.height / logicalHeight) + 'px';
+    editor.style.height = Math.max(1, height * bounds.height / logicalHeight) + 'px';
 }
 window.addEventListener('resize', positionEditor);
 window.addEventListener('scroll', positionEditor, true);
@@ -331,8 +460,8 @@ function imagePoint(event) {
     const bounds = image.getBoundingClientRect();
     if (!bounds.width || !bounds.height) return;
     return {
-        x: (event.clientX - bounds.left) * image.naturalWidth / bounds.width,
-        y: (event.clientY - bounds.top) * image.naturalHeight / bounds.height,
+        x: (event.clientX - bounds.left) * logicalWidth / bounds.width,
+        y: (event.clientY - bounds.top) * logicalHeight / bounds.height,
     };
 }
 
@@ -385,7 +514,8 @@ function trackPointer(drag, event) {
 image.addEventListener('pointermove', event => {
     const drag = drags.get(event.pointerId);
     if (!drag) {
-        if (!dynamic || frame === undefined || event.pointerType === 'touch') return;
+        if (!dynamic || frame === undefined || event.pointerType === 'touch'
+            || canvas.classList.contains('pan-mode')) return;
         const point = imagePoint(event);
         if (point) vscode.postMessage({ type: 'hover', frame, ...point });
         return;
@@ -419,8 +549,8 @@ image.addEventListener('wheel', event => {
     const bounds = image.getBoundingClientRect();
     if (!bounds.width || !bounds.height) return;
     event.preventDefault();
-    const scaleX = image.naturalWidth / bounds.width;
-    const scaleY = image.naturalHeight / bounds.height;
+    const scaleX = logicalWidth / bounds.width;
+    const scaleY = logicalHeight / bounds.height;
     const unit = event.deltaMode === 1 ? 28 : 1;
     vscode.postMessage({
         type: 'wheel', frame, shift: event.shiftKey, control: event.ctrlKey,
@@ -428,8 +558,8 @@ image.addEventListener('wheel', event => {
         lines: event.deltaMode === 1 ? [event.deltaX, event.deltaY] : undefined,
         x: (event.clientX - bounds.left) * scaleX,
         y: (event.clientY - bounds.top) * scaleY,
-        dx: event.deltaX * (event.deltaMode === 2 ? image.naturalWidth : scaleX * unit),
-        dy: event.deltaY * (event.deltaMode === 2 ? image.naturalHeight : scaleY * unit),
+        dx: event.deltaX * (event.deltaMode === 2 ? logicalWidth : scaleX * unit),
+        dy: event.deltaY * (event.deltaMode === 2 ? logicalHeight : scaleY * unit),
     });
 }, { passive: false });
 image.addEventListener('contextmenu', event => {
@@ -437,14 +567,10 @@ image.addEventListener('contextmenu', event => {
 });
 image.addEventListener('click', event => {
     if (skipClick || frame === undefined || event.button !== 0) return;
-    const bounds = image.getBoundingClientRect();
-    if (!bounds.width || !bounds.height) return;
+    const point = imagePoint(event);
+    if (!point) return;
     editor.focus({ preventScroll: true });
-    vscode.postMessage({
-        type: 'click', frame,
-        x: (event.clientX - bounds.left) * image.naturalWidth / bounds.width,
-        y: (event.clientY - bounds.top) * image.naturalHeight / bounds.height,
-    });
+    vscode.postMessage({ type: 'click', frame, ...point });
 });
 window.addEventListener('message', ({data}) => {
     if ('status' in data) {
@@ -477,6 +603,9 @@ window.addEventListener('message', ({data}) => {
     }
     if (data.windowClosed) {
         cancelComposition();
+        if (pan && canvas.hasPointerCapture(pan.id)) canvas.releasePointerCapture(pan.id);
+        pan = undefined;
+        canvas.classList.remove('panning');
         imeArea = undefined;
         positionEditor();
         windowPicker.hidden = true;
@@ -484,6 +613,10 @@ window.addEventListener('message', ({data}) => {
         frame = undefined;
         dynamic = false;
         image.hidden = true;
+        restoreWindow.hidden = true;
+        viewControls.hidden = true;
+        logicalWidth = undefined;
+        logicalHeight = undefined;
         waiting.textContent = 'Preview window closed';
         waiting.hidden = false;
         dimensions.textContent = 'No frame';
@@ -491,6 +624,7 @@ window.addEventListener('message', ({data}) => {
     if (data.image) {
         const source = 'data:image/png;base64,' + data.image;
         const show = () => {
+            [logicalWidth, logicalHeight] = data.size ?? [image.naturalWidth, image.naturalHeight];
             frame = data.frame;
             dynamic = Boolean(data.dynamic);
             treeNavigationEnabled = Boolean(data.treeNavigationEnabled);
@@ -498,11 +632,19 @@ window.addEventListener('message', ({data}) => {
             splitNavigationEnabled = Boolean(data.splitNavigationEnabled);
             menuOpen = Boolean(data.menuOpen);
             image.dataset.cursor = data.cursor ?? "auto";
-            image.hidden = false;
+            const minimized = Boolean(data.windowMinimized);
+            image.hidden = minimized;
+            restoreWindow.hidden = !minimized;
+            viewControls.hidden = minimized;
             waiting.hidden = true;
-            imeArea = data.imeArea;
-            positionEditor();
-            dimensions.textContent = image.naturalWidth + ' × ' + image.naturalHeight + ' px';
+            imeArea = minimized ? undefined : data.imeArea;
+            if (minimized) {
+                cancelComposition();
+                editor.blur();
+            }
+            layoutPreview();
+            if (!densityTimer) reportDensity('scale');
+            dimensions.textContent = logicalWidth + ' × ' + logicalHeight + ' px';
         };
         if (image.src === source && image.complete && image.naturalWidth) {
             show();
@@ -513,7 +655,14 @@ window.addEventListener('message', ({data}) => {
         }
     }
 });
-vscode.postMessage({ type: 'ready' });
+function watchPixelRatio(type) {
+    const scale = window.devicePixelRatio || 1;
+    reportDensity(type);
+    window.matchMedia('(resolution: ' + scale + 'dppx)').addEventListener(
+        'change', () => watchPixelRatio('scale'), { once: true },
+    );
+}
+watchPixelRatio('ready');
 </script></body></html>`;
 }
 
@@ -555,8 +704,11 @@ function registerPreview(context) {
         let disposed = false;
         let frame = 0;
         let ready = false;
+        let scale = 1;
         const showFrame = (image, metadata = {}) => {
-            void panel.webview.postMessage({ ...metadata, image, dynamic: session?.dynamic, frame: ++frame });
+            void panel.webview.postMessage({
+                ...metadata, image, size: session?.size, dynamic: session?.dynamic, frame: ++frame,
+            });
         };
         const queue = new PreviewQueue(async isCurrent => {
             const post = payload => {
@@ -579,9 +731,10 @@ function registerPreview(context) {
                         interpreter = new PreviewProcess(executable, undefined, cwd);
                     }
                     const renderer = interpreter;
+                    const requestedScale = scale;
                     const reply = await renderer.request({
                         type: 'load', filename: document.uri.fsPath, text: document.getText(),
-                        buffers, component,
+                        buffers, component, scale: requestedScale,
                     });
                     if (!isCurrent()) return;
                     if (!reply.unsupported) {
@@ -594,12 +747,14 @@ function registerPreview(context) {
                         pointerSessions.clear();
                         const active = session = {
                             renderer, image: reply.image, component, dynamic: true, cwd, window: reply.window ?? null,
+                            size: reply.size, scale: requestedScale, windowMinimized: reply.window_minimized,
                         };
                         showFrame(reply.image, {
                             status: 'Live preview', phase: 'live',
                             components: reply.components, component,
                             windows: reply.windows, window: reply.window,
                             imeArea: reply.ime_area,
+                            windowMinimized: reply.window_minimized,
                         });
                         const activated = await activation;
                         if (activated.error) throw new Error(activated.error);
@@ -630,7 +785,7 @@ function registerPreview(context) {
                 if (session?.rust === rust && session.config === config && session.renderer.alive) {
                     const previous = session;
                     if (previous.component !== selected) {
-                        previous.image = await previous.renderer.frame('select\t' + selected);
+                        Object.assign(previous, await previous.renderer.frame('select\t' + selected));
                         previous.component = selected;
                     }
                     if (isCurrent()) showFrame(previous.image, {
@@ -652,14 +807,15 @@ function registerPreview(context) {
                     return;
                 }
                 post({ status: 'Rendering preview…', phase: 'busy' });
-                const renderer = new PreviewProcess(program, selected, cwd);
+                const requestedScale = scale;
+                const renderer = new PreviewProcess(program, selected, cwd, requestedScale);
                 starting = renderer;
                 try {
-                    const image = await renderer.frame();
+                    const rendered = await renderer.frame();
                     if (!isCurrent()) return;
                     if (session?.renderer !== interpreter) void session?.renderer.stop();
-                    session = { renderer, image, rust, config, component: selected };
-                    showFrame(image, { status: 'Live preview', phase: 'live', components, component: selected });
+                    session = { renderer, ...rendered, scale: requestedScale, rust, config, component: selected };
+                    showFrame(rendered.image, { status: 'Live preview', phase: 'live', components, component: selected });
                 } finally {
                     starting = undefined;
                     if (session?.renderer !== renderer) void renderer.stop();
@@ -701,9 +857,28 @@ function registerPreview(context) {
             post({ status: 'Preview window closed', phase: 'waiting', windowClosed: true });
         }
         let pendingUpdate;
+        let updatingScale = false;
         let fileDropSequence = 0;
         let compositionSession;
         const pointerSessions = new Map();
+        function updateScale() {
+            if (disposed || updatingScale || session?.closed) return;
+            updatingScale = true;
+            let pending;
+            if (queue.busy) {
+                pending = queue.running;
+            } else if (session?.size && session.scale !== scale) {
+                pending = interact({ type: 'scale', scale });
+            }
+            if (pending) {
+                void pending.finally(() => {
+                    updatingScale = false;
+                    updateScale();
+                });
+            } else {
+                updatingScale = false;
+            }
+        }
         function interact(message) {
             const pointer = message.type === 'pointer';
             const composing = message.type === 'composition';
@@ -713,11 +888,13 @@ function registerPreview(context) {
                 || message.type === 'native_dialog_result';
             if ((!ending && queue.busy) || !session || session.closed) return;
             const active = session;
+            if (active.windowMinimized && !ending
+                && !['restore_window', 'select_window', 'frame', 'scale'].includes(message.type)) return;
             const inputWindow = active.window;
             if (['click', 'wheel', 'context_menu', 'hover', 'file_drop'].includes(message.type) && (message.frame !== frame
                 || !Number.isFinite(message.x) || !Number.isFinite(message.y)
                 || message.x < 0 || message.y < 0 || message.x >= 2048 || message.y >= 2048)) return;
-            if (message.type !== 'click' && !active.dynamic) return;
+            if (!['click', 'scale'].includes(message.type) && !active.dynamic) return;
             if (composing) {
                 if (message.phase === 'start') compositionSession = { active, inputWindow, id: message.id };
                 else if (compositionSession?.active !== active || compositionSession.inputWindow !== inputWindow
@@ -762,14 +939,16 @@ function registerPreview(context) {
             } else if (pointer || composing || message.type === 'leave' || message.type === 'select_window') {
                 pendingUpdate = undefined;
             }
-            interactions = interactions.then(async () => {
+            return interactions = interactions.then(async () => {
                 if (move) {
                     message = move.message;
                     if (pendingUpdate === move) pendingUpdate = undefined;
                 }
                 if (disposed || session !== active || active.closed) return;
+                if (active.windowMinimized && !ending
+                    && !['restore_window', 'select_window', 'frame', 'scale'].includes(message.type)) return;
                 if (active.window !== inputWindow
-                    && !['select_window', 'frame', 'native_dialog_result'].includes(message.type)) return;
+                    && !['select_window', 'frame', 'scale', 'native_dialog_result'].includes(message.type)) return;
                 if (queue.busy && !ending) {
                     if (message.type === 'frame') scheduleAnimation(active, 16);
                     return;
@@ -807,6 +986,7 @@ function registerPreview(context) {
                         }
                         if (!reply.image) return;
                         active.image = reply.image;
+                        active.size = reply.size;
                         active.treeNavigationEnabled = reply.tree_navigation_enabled;
                         active.controlNavigationEnabled = reply.control_navigation_enabled;
                         active.splitNavigationEnabled = reply.split_navigation_enabled;
@@ -815,10 +995,15 @@ function registerPreview(context) {
                         active.imeArea = reply.ime_area;
                         active.windows = reply.windows;
                         active.window = reply.window ?? null;
+                        active.windowMinimized = reply.window_minimized;
                         if (session === active && !disposed) scheduleAnimation(active, reply.next_frame_ms);
                     } else {
-                        active.image = await active.renderer.frame(`click\t${message.x}\t${message.y}`);
+                        const command = message.type === 'scale'
+                            ? `scale\t${message.scale}`
+                            : `click\t${message.x}\t${message.y}`;
+                        Object.assign(active, await active.renderer.frame(command));
                     }
+                    if (message.type === 'scale') active.scale = message.scale;
                     if (!disposed && session === active) {
                         showFrame(active.image, {
                             treeNavigationEnabled: active.treeNavigationEnabled,
@@ -829,6 +1014,7 @@ function registerPreview(context) {
                             imeArea: active.imeArea,
                             windows: active.windows,
                             window: active.window,
+                            windowMinimized: active.windowMinimized,
                         });
                     }
                 } catch (error) {
@@ -854,12 +1040,16 @@ function registerPreview(context) {
             watcher.onDidDelete(onDiskChange),
             panel.webview.onDidReceiveMessage(message => {
                 if (message.type === 'ready') {
+                    if (Number.isFinite(message.scale)) scale = Math.min(4, Math.max(1, message.scale));
                     ready = true;
                     queue.refresh(0);
+                } else if (message.type === 'scale' && Number.isFinite(message.scale)) {
+                    scale = Math.min(4, Math.max(1, message.scale));
+                    updateScale();
                 } else if (message.type === 'select' && typeof message.component === 'string') {
                     component = message.component;
                     queue.refresh(0);
-                } else if (['click', 'wheel', 'edit', 'composition', 'escape', 'pointer', 'delay_key', 'key', 'context_menu', 'hover', 'leave', 'select_window', 'file_drop'].includes(message.type)) {
+                } else if (['click', 'wheel', 'edit', 'composition', 'escape', 'pointer', 'delay_key', 'key', 'context_menu', 'hover', 'leave', 'select_window', 'restore_window', 'file_drop'].includes(message.type)) {
                     interact(message);
                 }
             }),

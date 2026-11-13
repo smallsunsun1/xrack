@@ -1,13 +1,14 @@
 //! ANTLR Rust contexts mapped directly into the owned XRack syntax tree.
 use crate::generated::{xracklexer::XrackLexer, xrackparser::*};
 use antlr4rust::{
-    InputStream,
+    InputStream, TokenSource,
     common_token_stream::CommonTokenStream,
     error_listener::ErrorListener,
     errors::ANTLRError,
     parser::Parser,
     parser_rule_context::ParserRuleContext,
     recognizer::Recognizer,
+    tid::TidExt,
     token::Token,
     token_factory::TokenFactory,
     tree::{ParseTree, Tree},
@@ -32,6 +33,7 @@ impl<'input, R: Recognizer<'input>> ErrorListener<'input, R> for Errors {
             span: Span {
                 line: line as usize,
                 column: (column + 1) as usize,
+                source: 0,
             },
             message: message.to_owned(),
         });
@@ -40,7 +42,10 @@ impl<'input, R: Recognizer<'input>> ErrorListener<'input, R> for Errors {
 
 pub fn parse(source: &str) -> Result<Document, Vec<Diagnostic>> {
     // A UTF-8 BOM does not count towards source columns.
-    let source = source.strip_prefix('\u{feff}').unwrap_or(source);
+    parse_tree(source.strip_prefix('\u{feff}').unwrap_or(source)).map(|tree| document(&tree))
+}
+
+fn parse_tree(source: &str) -> Result<Rc<DocumentContextAll<'_>>, Vec<Diagnostic>> {
     let errors = Errors::default();
     let mut lexer = XrackLexer::new(InputStream::new(source));
     lexer.remove_error_listeners();
@@ -54,14 +59,112 @@ pub fn parse(source: &str) -> Result<Document, Vec<Diagnostic>> {
     if !diagnostics.is_empty() {
         return Err(diagnostics);
     }
-    let tree = tree.map_err(|error| {
+    tree.map_err(|error| {
         vec![Diagnostic {
-            span: Span { line: 1, column: 1 },
+            span: Span {
+                line: 1,
+                column: 1,
+                source: 0,
+            },
             message: error.to_string(),
         }]
-    })?;
-    // A recovered tree may lack required children. Only map a clean parse.
-    Ok(document(&tree))
+    })
+}
+
+/// Whitespace hints keyed by the original UTF-8 offset of each grammar token.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct FormatToken {
+    pub offset: usize,
+    pub byte_len: usize,
+    pub block: bool,
+    pub attach_before: bool,
+    pub attach_after: bool,
+    pub space_before: bool,
+}
+
+/// Classify tokens whose spacing depends on their grammar context.
+#[allow(non_upper_case_globals)] // ANTLR uses the grammar rule names for these constants.
+pub fn format_tokens(source: &str) -> Result<Vec<FormatToken>, Vec<Diagnostic>> {
+    let body = source.strip_prefix('\u{feff}').unwrap_or(source);
+    let bom = source.len() - body.len();
+    let tree = parse_tree(body)?;
+    let mut result = Vec::new();
+    let mut pending = vec![(tree as Rc<dyn XrackParserContext<'_>>, usize::MAX)];
+    while let Some((node, parent)) = pending.pop() {
+        let rule = node.get_rule_index();
+        if let Some(leaf) =
+            node.downcast_ref::<antlr4rust::tree::TerminalNode<'_, XrackParserContextType>>()
+        {
+            let token = &leaf.symbol;
+            if token.get_token_type() == Xrack_EOF {
+                continue;
+            }
+            let spelling = token.get_text();
+            let block = match spelling {
+                "{" | "}" => matches!(
+                    parent,
+                    RULE_component
+                        | RULE_recordDecl
+                        | RULE_element
+                        | RULE_handler
+                        | RULE_stateDecl
+                        | RULE_stateTransition
+                        | RULE_animationBody
+                ),
+                "[" | "]" => parent == RULE_stateBlock,
+                _ => false,
+            };
+            let angle = parent == RULE_property && matches!(spelling, "<" | ">");
+            let attach_before = (angle && spelling == ">")
+                || (spelling == "("
+                    && matches!(
+                        parent,
+                        RULE_callback
+                            | RULE_handler
+                            | RULE_call
+                            | RULE_imageUrl
+                            | RULE_imageSlice
+                            | RULE_markdown
+                            | RULE_translation
+                            | RULE_gradient
+                    ))
+                || (matches!(spelling, "px" | "%")
+                    && matches!(parent, RULE_primary | RULE_gradientStop))
+                || (spelling == "deg" && parent == RULE_gradientAngle)
+                || (spelling == "[" && parent == RULE_repeatClause);
+            let attach_after = (angle && spelling == "<")
+                || (matches!(spelling, "-" | "+" | "!")
+                    && matches!(parent, RULE_unary | RULE_gradientAngle));
+            result.push(FormatToken {
+                offset: bom + token.get_start() as usize,
+                byte_len: spelling.len(),
+                block,
+                attach_before,
+                attach_after,
+                space_before: spelling == ":" && parent == RULE_conditional,
+            });
+        } else {
+            let children: Vec<_> = node.get_children().collect();
+            pending.extend(children.into_iter().rev().map(|child| (child, rule)));
+        }
+    }
+    Ok(result)
+}
+
+/// Compare the grammar token spellings after rewriting whitespace.
+pub fn same_tokens(source: &str, expected: impl Iterator<Item = impl AsRef<str>>) -> bool {
+    let source = source.strip_prefix('\u{feff}').unwrap_or(source);
+    let errors = Errors::default();
+    let mut lexer = XrackLexer::new(InputStream::new(source));
+    lexer.remove_error_listeners();
+    lexer.add_error_listener(Box::new(errors.clone()));
+    for spelling in expected {
+        let token = lexer.next_token();
+        if token.get_token_type() == Xrack_EOF || token.get_text() != spelling.as_ref() {
+            return false;
+        }
+    }
+    lexer.next_token().get_token_type() == Xrack_EOF && errors.0.borrow().is_empty()
 }
 
 fn span<'input>(ctx: &impl ParserRuleContext<'input>) -> Span {
@@ -69,7 +172,13 @@ fn span<'input>(ctx: &impl ParserRuleContext<'input>) -> Span {
     Span {
         line: token.get_line() as usize,
         column: (token.get_column() + 1) as usize,
+        source: 0,
     }
+}
+
+fn type_span(ctx: &TypeNameContextAll<'_>) -> Span {
+    // For a record list the type reference starts after the opening bracket.
+    ctx.identifier().as_deref().map_or_else(|| span(ctx), span)
 }
 
 fn child_text<'input>(ctx: &impl ParserRuleContext<'input>, index: usize) -> String {
@@ -130,6 +239,7 @@ fn document(ctx: &DocumentContextAll<'_>) -> Document {
                     .map(|field| RecordField {
                         name: field.identifier().expect("field name").get_text(),
                         ty: Type::from_source(&field.typeName().expect("field type").get_text()),
+                        type_span: type_span(&field.typeName().expect("field type")),
                         span: span(&**field),
                     })
                     .collect(),
@@ -142,6 +252,7 @@ fn document(ctx: &DocumentContextAll<'_>) -> Document {
             .map(|component| Component {
                 name: component.identifier(0).expect("component name").get_text(),
                 base: component.identifier(1).expect("component base").get_text(),
+                base_span: span(&*component.identifier(1).expect("component base")),
                 exported: starts_with(&**component, "export"),
                 members: members(component.member_all()),
                 span: span(&**component),
@@ -263,6 +374,7 @@ fn member(ctx: &MemberContextAll<'_>) -> Member {
         Member::Property(Property {
             name: property.identifier().expect("property name").get_text(),
             ty: Type::from_source(&property.typeName().expect("property type").get_text()),
+            type_span: type_span(&property.typeName().expect("property type")),
             visibility: property
                 .visibility()
                 .map_or_else(|| "private".into(), |v| v.get_text()),
@@ -288,12 +400,19 @@ fn member(ctx: &MemberContextAll<'_>) -> Member {
                     ),
                 })
                 .collect(),
+            parameter_type_spans: callback
+                .parameter_all()
+                .iter()
+                .map(|param| type_span(&param.typeName().expect("parameter type")))
+                .collect(),
+            result_type_span: callback.typeName().as_deref().map(type_span),
             span: span(&*callback),
             return_type: callback
                 .typeName()
                 .map(|ty| Type::from_source(&ty.get_text())),
             pure: starts_with(&*callback, "pure"),
             alias: callback.reference().map(|reference| reference.get_text()),
+            alias_span: callback.reference().as_deref().map(span),
         })
     } else if let Some(binding) = ctx.binding() {
         let reference = binding.reference();
@@ -316,6 +435,12 @@ fn member(ctx: &MemberContextAll<'_>) -> Member {
                 .skip(1)
                 .map(|id| id.get_text())
                 .collect(),
+            parameter_spans: handler
+                .identifier_all()
+                .iter()
+                .skip(1)
+                .map(|id| span(&**id))
+                .collect(),
             statements: handler
                 .statement_all()
                 .iter()
@@ -334,6 +459,11 @@ fn member(ctx: &MemberContextAll<'_>) -> Member {
             None => (None, first),
         };
         Member::Element(Element {
+            type_span: span(
+                &*element
+                    .identifier(usize::from(id.is_some()))
+                    .expect("element type"),
+            ),
             id,
             ty,
             members: members(element.member_all()),
@@ -345,6 +475,10 @@ fn member(ctx: &MemberContextAll<'_>) -> Member {
                 item: repeat.identifier(0).expect("repeat item").get_text(),
                 index: repeat.identifier(1).map(|id| id.get_text()),
                 model: expression(&repeat.expression().expect("repeat model")),
+                item_span: span(&*repeat.identifier(0).expect("repeat item")),
+                index_span: repeat
+                    .identifier(1)
+                    .map_or_else(Span::default, |id| span(&*id)),
             }),
         })
     } else if let Some(block) = ctx.stateBlock() {
@@ -497,6 +631,7 @@ fn primary_expr(ctx: &PrimaryContextAll<'_>) -> Expr {
                 .recordValue_all()
                 .iter()
                 .map(|argument| RecordValue {
+                    span: span(&**argument),
                     name: argument.identifier().expect("argument name").get_text(),
                     value: expression(&argument.expression().expect("argument value")),
                 })
@@ -517,6 +652,7 @@ fn primary_expr(ctx: &PrimaryContextAll<'_>) -> Expr {
                 .recordValue_all()
                 .iter()
                 .map(|value| RecordValue {
+                    span: span(&**value),
                     name: value.identifier().expect("record field").get_text(),
                     value: expression(&value.expression().expect("record field value")),
                 })

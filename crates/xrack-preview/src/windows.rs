@@ -32,8 +32,7 @@ pub(crate) struct Windows {
 
 impl Windows {
     pub(crate) fn new(component: Box<dyn Component>) -> Self {
-        let mut root = PreviewScene::new(component);
-        root.set_window_active(true);
+        let root = PreviewScene::new(component);
         Self {
             root,
             children: BTreeMap::new(),
@@ -78,7 +77,11 @@ impl Windows {
             .map_or(&self.root, |id| &self.children[&id].scene)
     }
 
-    pub(crate) fn render(&mut self, renderer: &mut Renderer) -> Result<Vec<u8>, String> {
+    pub(crate) fn render(
+        &mut self,
+        renderer: &mut Renderer,
+        scale: f32,
+    ) -> Result<Vec<u8>, String> {
         // Closing a child can invalidate its parent's scene and registration list.
         for _ in 0..8 {
             if !self.advance_windows(renderer) {
@@ -98,7 +101,10 @@ impl Windows {
         if self.closed() {
             return Ok(Vec::new());
         }
-        Ok(self.selected_mut().draw_prepared(renderer)?.to_vec())
+        Ok(self
+            .selected_mut()
+            .draw_prepared_scaled(renderer, scale)?
+            .to_vec())
     }
 
     fn advance_windows(&mut self, renderer: &mut Renderer) -> bool {

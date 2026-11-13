@@ -65,8 +65,11 @@ def check_tag(tag, extension):
     version = extension["version"]
     if not re.fullmatch(r"(0|[1-9][0-9]*)(\.(0|[1-9][0-9]*)){2}", version):
         raise ValueError(f"expected a stable VS Code extension version, got {version!r}")
-    if tag != f"vscode-v{version}":
-        raise ValueError(f"expected vscode-v{version} for this extension, got {tag!r}")
+    cargo_version = workspace_version()
+    if version != cargo_version:
+        raise ValueError(f"extension version {version!r} differs from Cargo version {cargo_version!r}")
+    if tag != f"v{version}":
+        raise ValueError(f"expected v{version} for this release, got {tag!r}")
 
 
 def vsix_name(extension, target):

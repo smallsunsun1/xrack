@@ -1,6 +1,6 @@
 use super::*;
 use tokio::{sync::mpsc, time::timeout};
-use xrack_runtime::ImageFormat;
+use xrack_runtime::{Image, ImageFormat};
 use zbus::Connection;
 
 const SVG: Image = Image::Embedded {
@@ -17,13 +17,13 @@ fn command(label: &str, checked: bool, enabled: bool) -> TrayMenuItem {
         label: label.into(),
         enabled,
         checked: Some(checked),
-        icon: SVG,
+        icon: SVG.into(),
     }
 }
 
 #[test]
 fn sni_pixmap_encodes_straight_argb_in_network_order() {
-    let (width, height, pixels) = pixmap(SVG, 4).unwrap();
+    let (width, height, pixels) = pixmap(&SVG.into(), 4).unwrap();
     assert_eq!((width, height), (4, 4));
     assert_eq!(&pixels[..16], &[0; 16]);
     assert_eq!(&pixels[16..20], &[128, 255, 0, 0]);
@@ -110,7 +110,7 @@ async fn panel_round_trip() {
     let initial = Snapshot {
         title: "XRack".into(),
         tooltip: "Running".into(),
-        pixmaps: Arc::new(vec![pixmap(SVG, 4).unwrap()]),
+        pixmaps: Arc::new(vec![pixmap(&SVG.into(), 4).unwrap()]),
         menu: Arc::new(menu),
     };
     let (updates, receiver) = watch::channel(initial.clone());

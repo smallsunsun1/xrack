@@ -1,8 +1,37 @@
 //! Resolve property and callback storage shared by the two XR dialect backends.
-use crate::OperationRef;
+use crate::{Module, OperationRef};
 use std::collections::{BTreeMap, BTreeSet};
 
 pub type PropertyEndpoint<'a> = (&'a str, &'a str);
+
+#[derive(Default)]
+pub struct AliasGraphs<'a> {
+    pub properties: BTreeMap<&'a str, AliasGraph<'a>>,
+    pub callbacks: BTreeMap<&'a str, AliasGraph<'a>>,
+}
+
+impl<'a> AliasGraphs<'a> {
+    /// Index property and callback endpoints once for all components in a module.
+    pub fn from_module(module: &'a Module) -> Result<Self, String> {
+        let mut aliases = Self::default();
+        for op in module.operations().filter(|op| op.name() == "xr.component") {
+            let name = op.attr("sym_name")?;
+            for (graphs, callbacks) in [
+                (&mut aliases.properties, false),
+                (&mut aliases.callbacks, true),
+            ] {
+                let mut graph = AliasGraph::default();
+                graph.index(op, callbacks).map_err(|error| {
+                    let span = op.span();
+                    let source = op.source_file().unwrap_or("<MLIR>");
+                    format!("{source}:{}:{}: {error}", span.line, span.column)
+                })?;
+                graphs.insert(name, graph);
+            }
+        }
+        Ok(aliases)
+    }
+}
 
 #[derive(Default)]
 pub struct AliasGraph<'a> {

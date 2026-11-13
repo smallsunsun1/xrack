@@ -14,6 +14,7 @@ from urllib.error import HTTPError
 from urllib.request import urlopen
 
 import compiler_bundles as bundles
+import mlir_bundles
 
 ROOT = bundles.ROOT
 CRATES = (
@@ -22,9 +23,15 @@ CRATES = (
     "xrack-layout",
     "xrack-renderer-femtovg",
     "xrack-platform-winit",
+    "xrack-syntax",
+    "xrack-ir",
+    "xrack-mlir",
+    "xrack-resources",
+    "xrack-interpreter",
     "xrack",
     "xrack-build",
 )
+BOOTSTRAP_CRATES = CRATES[:6]
 
 
 def output(*args):
@@ -85,19 +92,42 @@ def pending_crates(version, commit):
 
 def pending_bundles(workspace, archives, version, commit):
     pending = []
-    for host in bundles.hosts():
-        name = bundles.crate_name(host)
-        provenance = bundles.install_bundle(workspace, archives, version, host, commit)
+
+    def add(name, identity):
         published = published_version(name, version)
         if published is None:
             pending.append(name)
-        else:
-            recorded = published_metadata(name, version, published["cksum"], "release.json") or {}
-            # Rebuilding the outer tarball can change its timestamp and checksum.
-            identity = ("version", "host", "source_commit", "compiler_sha256")
-            if published["yanked"] or any(recorded.get(key) != provenance[key] for key in identity):
-                raise RuntimeError(f"{name} {version} already exists with a different release state")
-            print(f"{name} {version} already published from {commit[:7]}", flush=True)
+            return
+        recorded = published_metadata(name, version, published["cksum"], "release.json") or {}
+        if published["yanked"] or any(recorded.get(key) != value for key, value in identity.items()):
+            raise RuntimeError(f"{name} {version} already exists with a different release state")
+        print(f"{name} {version} already published from {commit[:7]}", flush=True)
+
+    for host in bundles.hosts():
+        provenance = bundles.install_bundle(workspace, archives, version, host, commit)
+        add(bundles.crate_name(host), {
+            key: provenance[key] for key in ("version", "host", "source_commit", "compiler_sha256")
+        })
+        archive, _ = bundles.verified_archive(archives, version, host)
+        native = {
+            "version": version, "host": host, "source_commit": commit,
+            "artifacts": mlir_bundles.stage_bundle(workspace, archive, host),
+        }
+        (workspace / "bundles/mlir" / host / "release.json").write_text(
+            json.dumps(native, sort_keys=True) + "\n"
+        )
+        add(f"xrack-mlir-bin-{host}", native)
+
+    parser = workspace / "crates/xrack-parser"
+    identity = {
+        "version": version, "source_commit": commit,
+        "generated": {
+            file.name: hashlib.sha256(file.read_bytes()).hexdigest()
+            for file in sorted((parser / "generated").iterdir())
+        },
+    }
+    (parser / "release.json").write_text(json.dumps(identity, sort_keys=True) + "\n")
+    add("xrack-parser", identity)
     return pending
 
 
@@ -128,7 +158,7 @@ def main():
         if args.archives is None:
             # Before the compiler build, verify the packages that have no host payload dependency.
             cargo(ROOT, stage / "build", ["publish", "--dry-run"], [
-                name for name in pending if name != "xrack-build"
+                name for name in pending if name in BOOTSTRAP_CRATES
             ])
             return
         workspace = stage / "workspace"
@@ -146,10 +176,14 @@ def main():
             return
         if (payloads or pending) and not os.environ.get("CARGO_REGISTRY_TOKEN"):
             parser.error("configure CARGO_REGISTRY_TOKEN in the crates-io environment")
+        cargo(ROOT, stage / "bootstrap", ["publish", "--no-verify"], [
+            name for name in pending if name in BOOTSTRAP_CRATES
+        ])
         cargo(workspace, stage / "bundles", ["publish", "--no-verify", "--allow-dirty"], payloads)
-        # Source crates are packaged from the clean tag. Their normalized Cargo
-        # manifests resolve the real host packages just uploaded to crates.io.
-        cargo(ROOT, stage / "source", ["publish", "--no-verify"], pending)
+        # Source crates are packaged from the clean tag and resolve published payloads.
+        cargo(ROOT, stage / "source", ["publish", "--no-verify"], [
+            name for name in pending if name not in BOOTSTRAP_CRATES
+        ])
 
 
 if __name__ == "__main__":

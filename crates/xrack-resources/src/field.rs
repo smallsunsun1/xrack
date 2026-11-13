@@ -11,19 +11,15 @@ pub struct BuiltinField {
 impl BuiltinField {
     pub fn from_operation(op: OperationRef<'_>) -> Result<Self, String> {
         let input = op.operand(0).ok_or("missing built-in field operand")?;
-        let input_type = input.type_name();
-        let owner = input_type
-            .strip_prefix("!xr.")
-            .and_then(Type::parse)
-            .ok_or_else(|| format!("unknown built-in field operand type {input_type}"))?;
+        let owner = input
+            .xr_type()
+            .map_err(|error| format!("unknown {error} for built-in field operand"))?;
         let name = op.attr("value")?;
         let (operation, ty) = owner
             .builtin_field(name)
             .ok_or_else(|| format!("{} has no field `{name}`", owner.name()))?;
         let result = op.result(0).ok_or("missing built-in field result")?;
-        if op.name().strip_prefix("xr.") != Some(operation)
-            || result.type_name().strip_prefix("!xr.") != Some(ty.name().as_ref())
-        {
+        if op.name().strip_prefix("xr.") != Some(operation) || result.xr_type()? != ty {
             return Err(format!(
                 "incorrect operation or result type for field `{name}`"
             ));

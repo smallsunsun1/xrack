@@ -1,19 +1,27 @@
+use crate::completion::Workspace;
 use serde_json::{Value, json};
+use std::{
+    borrow::Cow,
+    collections::BTreeMap,
+    path::{Path, PathBuf},
+};
+use xrack_ir::modules::{ModuleError, normalize_source_path, resolve_document};
 use xrack_parser::ast::{Diagnostic, Span};
 
 #[derive(Default)]
 pub(crate) struct Analysis {
-    pub(crate) diagnostics: Vec<Value>,
+    pub(crate) diagnostics: BTreeMap<String, Vec<Value>>,
     pub(crate) symbols: Vec<Value>,
+    pub(crate) inputs: BTreeMap<PathBuf, Span>,
 }
 
-pub(crate) fn analyze(uri: &str, text: &str) -> Analysis {
+pub(crate) fn analyze(uri: &str, text: &str, workspace: Option<&Workspace<'_>>) -> Analysis {
     let source = Source::new(text);
     let document = match xrack_parser::parse(text) {
         Ok(document) => document,
         Err(errors) => {
             return Analysis {
-                diagnostics: source.diagnostics(errors, "syntax"),
+                diagnostics: BTreeMap::from([(uri.into(), source.diagnostics(errors, "syntax"))]),
                 ..Analysis::default()
             };
         }
@@ -39,33 +47,167 @@ pub(crate) fn analyze(uri: &str, text: &str) -> Analysis {
         })
         .collect();
 
-    let mut diagnostics = Vec::new();
-    // The compiler's semantic entry point expects imports to have been resolved first.
-    if document.imports.is_empty()
-        && let Err(errors) = xrack_ir::semantic::for_each_component(&document, |_, _| {})
-    {
-        diagnostics = source.diagnostics(errors, "semantic");
-    }
-    Analysis {
-        diagnostics,
+    let mut analysis = Analysis {
         symbols,
+        ..Analysis::default()
+    };
+    let mut files = Vec::new();
+    let first_import = document.imports.first().map(|import| import.span);
+    let document = if let Some(workspace) = workspace {
+        match resolve_document(
+            document,
+            &workspace.entry,
+            None,
+            &workspace.buffers(),
+            &mut analysis.inputs,
+            Some(&mut files),
+        ) {
+            Ok(document) => document,
+            Err(ModuleError::Diagnostics {
+                filename,
+                diagnostics,
+                syntax,
+            }) => {
+                let file = normalize_source_path(Path::new(&filename));
+                let import = analysis.inputs.get(&file).copied();
+                for error in diagnostics {
+                    analysis.report(
+                        uri,
+                        &source,
+                        workspace,
+                        &file,
+                        error,
+                        if syntax { "syntax" } else { "semantic" },
+                        import,
+                    );
+                }
+                return analysis;
+            }
+            Err(ModuleError::Io {
+                path,
+                source: error,
+            }) => {
+                analysis.report(
+                    uri,
+                    &source,
+                    workspace,
+                    &path,
+                    Diagnostic {
+                        span: first_import.unwrap_or_default(),
+                        message: error.to_string(),
+                    },
+                    "semantic",
+                    first_import,
+                );
+                return analysis;
+            }
+        }
+    } else if first_import.is_none() {
+        document
+    } else {
+        analysis.diagnostics.insert(
+            uri.into(),
+            source.diagnostics(
+                vec![Diagnostic {
+                    span: first_import.unwrap_or_default(),
+                    message: "save the document to resolve relative imports".into(),
+                }],
+                "semantic",
+            ),
+        );
+        return analysis;
+    };
+    if let Err(errors) = xrack_ir::semantic::for_each_component(&document, |_, _| {}) {
+        for error in errors {
+            if let Some((workspace, file)) =
+                workspace.zip(error.span.source.checked_sub(1).and_then(|i| files.get(i)))
+            {
+                let import = analysis.inputs.get(file).copied();
+                analysis.report(uri, &source, workspace, file, error, "semantic", import);
+            } else {
+                analysis
+                    .diagnostics
+                    .entry(uri.into())
+                    .or_default()
+                    .push(source.diagnostic(error, "semantic"));
+            }
+        }
+    }
+    analysis
+}
+
+impl Analysis {
+    #[allow(clippy::too_many_arguments)]
+    fn report(
+        &mut self,
+        uri: &str,
+        source: &Source<'_>,
+        workspace: &Workspace<'_>,
+        file: &Path,
+        error: Diagnostic,
+        phase: &str,
+        import: Option<Span>,
+    ) {
+        let file = normalize_source_path(file);
+        if file == normalize_source_path(&workspace.entry) {
+            self.diagnostics
+                .entry(uri.into())
+                .or_default()
+                .push(source.diagnostic(error, phase));
+        } else if let Some((target, text)) = workspace.uri(&file).zip(workspace.load(&file)) {
+            let message = error.message.clone();
+            let diagnostic = Source::new(&text).diagnostic(error, phase);
+            if let Some(span) = import {
+                let mut dependent = source.diagnostic(
+                    Diagnostic {
+                        span,
+                        message: format!(
+                            "{}: {message}",
+                            file.file_name().unwrap_or_default().to_string_lossy()
+                        ),
+                    },
+                    "import",
+                );
+                dependent["relatedInformation"] = json!([{
+                    "location": { "uri": target, "range": diagnostic["range"] }, "message": message,
+                }]);
+                self.diagnostics
+                    .entry(uri.into())
+                    .or_default()
+                    .push(dependent);
+            }
+            self.diagnostics.entry(target).or_default().push(diagnostic);
+        }
     }
 }
 
 pub(crate) struct Source<'a> {
     text: &'a str,
-    lines: Vec<usize>,
+    lines: Cow<'a, [usize]>,
 }
 
 impl<'a> Source<'a> {
     pub(crate) fn new(text: &'a str) -> Self {
-        let lines = std::iter::once(0)
-            .chain(text.match_indices('\n').map(|(offset, _)| offset + 1))
-            .collect();
-        Self { text, lines }
+        Self {
+            text,
+            lines: Cow::Owned(Self::line_starts(text)),
+        }
     }
 
-    fn offset(&self, span: Span) -> usize {
+    pub(crate) fn line_starts(text: &str) -> Vec<usize> {
+        std::iter::once(0)
+            .chain(text.match_indices('\n').map(|(offset, _)| offset + 1))
+            .collect()
+    }
+
+    pub(crate) fn with_lines(text: &'a str, lines: &'a [usize]) -> Self {
+        Self {
+            text,
+            lines: Cow::Borrowed(lines),
+        }
+    }
+
+    pub(crate) fn offset(&self, span: Span) -> usize {
         let line = span.line.saturating_sub(1).min(self.lines.len() - 1);
         let mut start = self.lines[line];
         let end = self.lines.get(line + 1).copied().unwrap_or(self.text.len());
@@ -85,7 +227,10 @@ impl<'a> Source<'a> {
         let line = self.lines.partition_point(|&start| start <= offset) - 1;
         (
             line,
-            self.text[self.lines[line]..offset].encode_utf16().count(),
+            self.text[self.lines[line]..offset]
+                .trim_end_matches('\r')
+                .encode_utf16()
+                .count(),
         )
     }
 
@@ -115,31 +260,40 @@ impl<'a> Source<'a> {
     fn diagnostics(&self, errors: Vec<Diagnostic>, phase: &str) -> Vec<Value> {
         errors
             .into_iter()
-            .map(|error| {
-                let start = self.offset(error.span);
-                let rest = &self.text[start..];
-                // The compiler supplies a start point. Highlight the identifier or one character.
-                let word = rest
-                    .bytes()
-                    .take_while(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-'))
-                    .count();
-                let width = if word > 0 {
-                    word
-                } else {
-                    rest.chars()
-                        .next()
-                        .filter(|c| !matches!(c, '\r' | '\n'))
-                        .map_or(0, char::len_utf8)
-                };
-                json!({
-                    "range": self.range(start, start + width),
-                    "severity": 1,
-                    "source": "xrack",
-                    "code": phase,
-                    "message": error.message,
-                })
-            })
+            .map(|error| self.diagnostic(error, phase))
             .collect()
+    }
+
+    fn diagnostic(&self, error: Diagnostic, phase: &str) -> Value {
+        let start = self.offset(error.span);
+        let rest = &self.text[start..];
+        // The compiler supplies a start point. Highlight the identifier or one character.
+        let word = rest
+            .bytes()
+            .take_while(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-'))
+            .count();
+        let width = if word > 0 {
+            word
+        } else {
+            rest.chars()
+                .next()
+                .filter(|c| !matches!(c, '\r' | '\n'))
+                .map_or(0, char::len_utf8)
+        };
+        let mut diagnostic = json!({
+            "range": self.range(start, start + width),
+            "severity": 1,
+            "source": "xrack",
+            "code": phase,
+            "message": error.message,
+        });
+        if phase == "semantic"
+            && let Some(name) = missing_component(&error.message)
+            && self.text.get(start..start + width) == Some(name)
+        {
+            diagnostic["data"] = json!({"missingComponent": name});
+        }
+        diagnostic
     }
 
     fn name_offset(&self, declaration: usize, exported: bool) -> usize {
@@ -150,6 +304,22 @@ impl<'a> Source<'a> {
         let name = skip_trivia(header.strip_prefix("component").unwrap_or(header));
         self.text.len() - name.len()
     }
+}
+
+fn missing_component(message: &str) -> Option<&str> {
+    message
+        .strip_prefix("unknown element or component `")
+        .and_then(|name| name.strip_suffix('`'))
+        .or_else(|| {
+            message
+                .strip_prefix("unknown base element or component `")
+                .and_then(|name| name.strip_suffix('`'))
+        })
+        .or_else(|| {
+            message
+                .strip_prefix("component or element `")
+                .and_then(|name| name.strip_suffix("` is not in scope"))
+        })
 }
 
 fn skip_trivia(mut text: &str) -> &str {

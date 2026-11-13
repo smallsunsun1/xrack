@@ -1,51 +1,11 @@
 use crate::{repeat::Model, *};
 use std::sync::Arc;
-use xrack_runtime::{
-    RecordValue, TreeCommand, TreeControlChange, TreeSelectionChange, TreeSnapshot,
-};
+use xrack_runtime::{RecordValue, TreeCommand, TreeControlChange, TreeControlEvent, TreeSnapshot};
 
 pub(crate) struct Definition {
     pub(crate) key: Rc<[String]>,
     pub(crate) parent: Rc<[String]>,
     pub(crate) filter_field: Option<Rc<[String]>>,
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Command {
-    Expand,
-    Collapse,
-    Toggle,
-    ExpandRecursively,
-    CollapseRecursively,
-    ExpandTo,
-}
-
-impl Command {
-    pub(crate) fn parse(name: &str) -> Option<Self> {
-        Some(match name {
-            "expand" => Self::Expand,
-            "collapse" => Self::Collapse,
-            "toggle-expanded" => Self::Toggle,
-            "expand-recursively" => Self::ExpandRecursively,
-            "collapse-recursively" => Self::CollapseRecursively,
-            "expand-to" => Self::ExpandTo,
-            _ => return None,
-        })
-    }
-
-    pub(crate) fn action(self, key: i64, depth: Option<i64>) -> Result<TreeCommand> {
-        Ok(match self {
-            Self::Expand => TreeCommand::Expand(key),
-            Self::Collapse => TreeCommand::Collapse(key),
-            Self::Toggle => TreeCommand::ToggleExpanded(key),
-            Self::ExpandRecursively => TreeCommand::ExpandRecursively {
-                key,
-                depth: depth.ok_or_else(|| Error::Invalid("tree command missing depth".into()))?,
-            },
-            Self::CollapseRecursively => TreeCommand::CollapseRecursively(key),
-            Self::ExpandTo => TreeCommand::ExpandTo(key),
-        })
-    }
 }
 
 #[derive(Clone, Copy)]
@@ -166,16 +126,7 @@ impl Instance {
         else {
             return Ok(false);
         };
-        if let Some(key) = current {
-            owner.update_tree_key(view, key)?;
-        }
-        let event = if change.expanded {
-            "expanded"
-        } else {
-            "collapsed"
-        };
-        owner.handler(view, event, &[Value::Int(change.key)])?;
-        Ok(true)
+        owner.notify_tree_change(view, TreeControlChange::Expansion { change, current })
     }
 
     fn current_tree_key(&self, view: &Element) -> Result<i64> {
@@ -185,20 +136,20 @@ impl Instance {
         })
     }
 
-    fn update_tree_key(&self, view: &Element, key: i64) -> Result<()> {
-        self.set_control_value(view, "current-key", Value::Int(key))?;
-        self.handler(view, "changed", &[Value::Int(key)])?;
-        Ok(())
-    }
-
-    fn notify_tree_selection(&self, view: &Element, change: TreeSelectionChange) -> Result<bool> {
-        if let Some(key) = change.current {
-            self.update_tree_key(view, key)?;
-        }
-        if let Some(count) = change.selected_count {
-            self.handler(view, "selection-changed", &[Value::Int(count as i64)])?;
-        }
-        Ok(change.current.is_some() || change.selected_count.is_some())
+    fn notify_tree_change(&self, view: &Element, change: TreeControlChange) -> Result<bool> {
+        change.try_notify(|event| {
+            let (name, argument) = match event {
+                TreeControlEvent::CurrentKeyChanged(key) => {
+                    self.set_control_value(view, "current-key", Value::Int(key))?;
+                    ("changed", key)
+                }
+                TreeControlEvent::SelectionChanged(count) => ("selection-changed", count as i64),
+                TreeControlEvent::Expanded(key) => ("expanded", key),
+                TreeControlEvent::Collapsed(key) => ("collapsed", key),
+            };
+            self.handler(view, name, &[Value::Int(argument)])
+                .map(|_| ())
+        })
     }
 
     pub(crate) fn select_tree_source(&self, view: &Element, source: usize) -> Result<()> {
@@ -209,7 +160,7 @@ impl Instance {
             || self.table_flag(view, "multi-select", false),
             || self.current_tree_key(view),
         )? {
-            self.notify_tree_selection(view, change)?;
+            self.notify_tree_change(view, TreeControlChange::Selection(change))?;
         }
         Ok(())
     }
@@ -221,27 +172,16 @@ impl Instance {
         input: xrack_runtime::InputRoute<'_>,
     ) -> Result<bool> {
         let state = self.repeat_state(view);
-        match state.tree_state().try_apply_control(
+        let change = state.tree_state().try_apply_control(
             node,
             input,
             || self.element_allows_editing(view),
             || self.table_flag(view, "multi-select", false),
             || self.tree_projection(view).map(|(live, _)| live),
             || self.current_tree_key(view),
-        )? {
-            Some(TreeControlChange::Selection(change)) => self.notify_tree_selection(view, change),
-            Some(TreeControlChange::Expansion { change, current }) => {
-                if let Some(key) = current {
-                    self.update_tree_key(view, key)?;
-                }
-                let event = if change.expanded {
-                    "expanded"
-                } else {
-                    "collapsed"
-                };
-                self.handler(view, event, &[Value::Int(change.key)])?;
-                Ok(true)
-            }
+        )?;
+        match change {
+            Some(change) => self.notify_tree_change(view, change),
             None => Ok(false),
         }
     }

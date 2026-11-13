@@ -2,7 +2,7 @@
 
 /// Compatibility level expected by the Rust code emitted by xrackc.
 #[doc(hidden)]
-pub const CODEGEN_ABI_VERSION: u32 = 1;
+pub const CODEGEN_ABI_VERSION: u32 = 2;
 
 mod animation;
 mod arithmetic;
@@ -16,6 +16,10 @@ mod controls;
 mod delegate;
 mod double_spin;
 mod drag;
+mod event_loop;
+#[doc(hidden)]
+pub use event_loop::EventLoopRegistration;
+pub use event_loop::{EventLoopError, WeakComponent, invoke_from_event_loop};
 mod focus;
 mod font_picker;
 mod geometry;
@@ -70,7 +74,7 @@ pub use calendar::{
 #[doc(hidden)]
 pub use callback::{CallbackAlreadyRunning, CallbackSlot, EffectfulCallback};
 #[doc(hidden)]
-pub use child_window::{SecondaryWindowRegistration, SecondaryWindowSlot};
+pub use child_window::{SecondaryWindowCommand, SecondaryWindowRegistration, SecondaryWindowSlot};
 #[doc(hidden)]
 pub use color_picker::ColorPopupState;
 pub use combo::{
@@ -80,11 +84,10 @@ pub use combo::{
 };
 #[doc(hidden)]
 pub use combo::{
-    ComboInput, ComboItems, ComboModel, ComboSelection, ComboSubmission, combo_model_is_current,
-    combo_submission, combo_value, prepare_combo_input, try_prepare_combo_input,
+    ComboEditor, ComboInput, ComboItems, ComboModel, ComboSelection, ComboSubmission, ComboUpdate,
+    combo_model_is_current, combo_submission, combo_value, prepare_combo_input,
+    try_prepare_combo_input,
 };
-#[doc(hidden)]
-pub use controls::try_resolve_swipe_index;
 pub use controls::{
     ActionKey, ControlAction, DialogCommand, DialogRole, PopupPlacement, SpinAction, SpinRange,
     StandardButtonKind, SwipeSide, TableColumnOrder, TableHeader, TableSort, button_text,
@@ -94,6 +97,8 @@ pub use controls::{
     search_suggestions, spin_editable, spin_text, spin_value_after, text_input_value,
 };
 #[doc(hidden)]
+pub use controls::{DialogEvent, set_overlay_open, try_resolve_swipe_index, try_set_overlay_open};
+#[doc(hidden)]
 pub use controls::{
     SPIN_VIEW_PROPERTIES, prepare_spin_view, spin_view_is_current, try_prepare_spin_view,
     try_spin_view_is_current,
@@ -102,10 +107,11 @@ pub use controls::{
 pub use controls::{
     delay_button_transition_is_current, group_selection_item, prepare_action_activation,
     prepare_action_view, prepare_group_box_toggle, prepare_group_selection,
-    prepare_index_selection, prepare_row_toggle, prepare_source_selection, table_drag_available,
-    try_delay_button_transition_is_current, try_prepare_action_activation, try_prepare_action_view,
-    try_prepare_group_box_toggle, try_prepare_group_selection, try_prepare_index_selection,
-    try_prepare_row_toggle, try_prepare_source_selection, try_table_drag_available,
+    prepare_index_selection, prepare_row_toggle, prepare_source_selection, resize_table_column,
+    table_drag_available, try_delay_button_transition_is_current, try_prepare_action_activation,
+    try_prepare_action_view, try_prepare_group_box_toggle, try_prepare_group_selection,
+    try_prepare_index_selection, try_prepare_row_toggle, try_prepare_source_selection,
+    try_table_drag_available,
 };
 #[doc(hidden)]
 pub use delegate::{ComponentRepeater, RowContext};
@@ -117,6 +123,8 @@ pub use focus::{
     FocusAction, FocusContext, FocusEvent, FocusHandle, FocusReason, FocusRequest, FocusRequests,
     TextCommand,
 };
+#[doc(hidden)]
+pub use focus::{FocusCommandMethod, is_focus_handler};
 pub use font_picker::Font;
 #[doc(hidden)]
 pub use font_picker::{FontPopupState, is_font_family_choice, set_font_family_choices};
@@ -128,6 +136,8 @@ pub use image_animation::{ImageAnimation, ImageAnimationFrame};
 pub use image_animation::{ImagePlaybackQueue, ImagePlaybackRegistration, ImagePlaybackSlot};
 pub use image_asset::{ImageAsset, ImageIdentity, ImagePixels, LoadedAnimation, LoadedImage};
 pub use keyboard::{EventResult, KeyEvent, KeyModifiers, KeyPhase, WheelEvent};
+#[doc(hidden)]
+pub use list::ViewIndex;
 pub use list::{ListMetrics, RowKey};
 #[doc(hidden)]
 pub use list::{
@@ -180,7 +190,7 @@ pub use split::{
     encode_split_sizes, encode_split_state,
 };
 #[doc(hidden)]
-pub use stack::StackChange;
+pub use stack::{StackChange, StackEvent, StackNavigationArgument, StackNavigationMethod};
 pub use stack::{StackNavigation, StackSnapshot, StackState};
 use std::{collections::BTreeMap, rc::Rc, sync::Arc};
 pub use styled_text::{StyledLink, StyledRun, StyledText, StyledTextError, TextStyle};
@@ -203,7 +213,10 @@ pub use table_selection::{
     RowSelection, SelectionTarget, TableSelection, TableSelectionAction, TableSelectionSnapshot,
 };
 #[doc(hidden)]
-pub use table_selection::{TableSelectionChange, TableSelectionCommand, TableSelectionOptions};
+pub use table_selection::{
+    TableSelectionChange, TableSelectionCommand, TableSelectionEvent, TableSelectionMethod,
+    TableSelectionOptions,
+};
 pub use table_selection::{
     copy_table_text, copy_table_text_in_order, copy_table_text_in_view, copy_table_text_in_view_if,
     copy_table_text_while_current, try_copy_table_text_in_order, try_copy_table_text_in_view,
@@ -223,36 +236,20 @@ pub use timer::{
 };
 pub use tree::{TreeAction, TreeCommand, TreeItem, TreeSelectionAction, TreeSnapshot, TreeState};
 #[doc(hidden)]
-pub use tree::{TreeControlChange, TreeExpansionChange, TreeSelectionChange};
+pub use tree::{
+    TreeCommandMethod, TreeControlChange, TreeControlEvent, TreeExpansionChange,
+    TreeSelectionChange,
+};
 pub use tumbler::{Tumbler, TumblerItems};
 pub use viewport::{
     ScrollAction, ScrollAlignment, ScrollContext, ScrollRequest, ScrollRequests, ViewportHandle,
     ViewportMotion,
 };
+#[doc(hidden)]
+pub use viewport::{ScrollCommand, ScrollCommandMethod, SourceScroll};
 pub use window_status::{WindowCommand, WindowStatus};
 #[doc(hidden)]
-pub use window_status::{WindowLifecycle, WindowMetric, WindowStatusBinding};
-
-/// A UI-thread handle that can be captured by callbacks without keeping a component alive.
-pub struct WeakComponent<C>(Rc<dyn Fn() -> Option<C>>);
-
-impl<C> Clone for WeakComponent<C> {
-    fn clone(&self) -> Self {
-        Self(self.0.clone())
-    }
-}
-
-impl<C: 'static> WeakComponent<C> {
-    #[doc(hidden)]
-    pub fn new<S: 'static>(state: &Rc<S>, wrap: fn(Rc<S>) -> C) -> Self {
-        let state = Rc::downgrade(state);
-        Self(Rc::new(move || state.upgrade().map(wrap)))
-    }
-
-    pub fn upgrade(&self) -> Option<C> {
-        (self.0)()
-    }
-}
+pub use window_status::{WindowCommandMethod, WindowLifecycle, WindowMetric, WindowStatusBinding};
 
 /// The backend-independent interface implemented by generated UI components.
 pub trait Component {
@@ -1983,6 +1980,11 @@ impl Node {
     }
 
     #[doc(hidden)]
+    pub fn set_embedded_fonts(&mut self, fonts: &'static EmbeddedFonts) {
+        self.data_mut().fonts = Some(fonts);
+    }
+
+    #[doc(hidden)]
     pub fn set_row_key(&mut self, key: Option<RowKey>) {
         if self.row_key != key {
             self.data_mut().row_key = key;
@@ -2098,6 +2100,25 @@ impl Node {
         let data = self.data_mut();
         data.id = None;
         data.owned_id = id;
+    }
+
+    #[doc(hidden)]
+    pub fn set_static_id(&mut self, id: Option<&'static str>) {
+        let data = self.data_mut();
+        data.id = id;
+        data.owned_id = None;
+    }
+
+    #[doc(hidden)]
+    pub fn set_instance_geometry_handle(&mut self, handle: GeometryHandle) {
+        self.data_mut().instance_geometry_handle = Some(handle);
+    }
+
+    /// Set the instance's placement in its parent without invalidating the
+    /// plans for the component's own children.
+    #[doc(hidden)]
+    pub fn set_instance_layout_property(&mut self, name: &'static str, value: Value) {
+        self.data_mut().properties.insert(name, value);
     }
 
     pub fn find(&self, id: &str) -> Option<&Node> {

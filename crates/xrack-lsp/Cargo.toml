@@ -7,6 +7,8 @@ rust-version.workspace = true
 publish = false
 
 [dependencies]
+serde.workspace = true
+tempfile = "3.27"
 serde_json.workspace = true
 xrack-ir.workspace = true
 xrack-parser.workspace = true

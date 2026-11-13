@@ -28,7 +28,7 @@
 - 手写模块使用 Rust 的常规模块路径。库 crate 在 `src/lib.rs` 用 `mod` 声明顶层模块，子模块由父模块声明。同 crate 内用 `crate::...` 引用，跨 crate 接口由 `lib.rs` 用 `pub mod` 或 `pub use` 导出。禁止用 `#[path]` 或 `include!` 引入手写模块。
 - 例如，`xrack-platform-winit/src/lib.rs` 声明 `mod accessibility_text;`，`accessibility.rs` 用 `crate::accessibility_text` 访问所需符号。移动或新增模块时，检查 Bazel 的 `srcs` 是否覆盖新路径，尤其是只匹配 `src/*.rs` 的规则。
 - 库 crate 的单元测试可由 `#[cfg(test)] mod tests;` 接入。独立的 Bazel 集成测试通过 `rust_test` 的 `deps` 声明跨 crate 依赖，测试内部的共享模块按 `tests/ui_driver.rs` 的方式用 `mod` 声明并加入 `srcs`。
-- Bazel 主构建通过 `//grammar:xrack_antlr_rust` 和 `//mlir:xrack_mlir_bindings` 两个 `rust_library` 目标依赖生成代码。Cargo 静态检查可用 `include!` 从 `XRACK_ANTLR_DIR` 和 `OUT_DIR` 读取同一份 Bazel 生成的源码，应用也可用 `include!` 接入 `xrackc` 生成的 Rust。
+- Bazel 主构建通过 `//grammar:xrack_antlr_rust` 和 `//mlir:xrack_mlir_bindings` 两个 `rust_library` 目标依赖生成代码。Cargo 静态检查使用 `XRACK_ANTLR_DIR` 和 `XRACK_MLIR_BINDINGS` 指向 Bazel 生成的源码。启用发布版 `xrack` 的 `interpreter` feature 时，由 Cargo 选择 `bundles/mlir` 对应的原生产物包。
 - 编译器 CLI 参数沿用 `clap` derive，编译错误沿用 `thiserror`。解析和语义诊断保留源码位置。
 - 编译链为 `.xr → ANTLR 解析树 → Rust AST → 语义分析 → xr MLIR → 优化 pass → Rust TokenStream`。`xr` 方言承载 UI IR。操作和类型在 `mlir/Xrack.td` 定义，通过 TableGen 生成的 builder 构造原生模块。`xrack-codegen` 通过 MLIR C API 读取优化后的操作和 SSA 值，用 `quote!` 生成 `proc_macro2::TokenStream`，由 `xrackc` 输出 Rust 源码。
 - 生成的 Rust 对标准库和运行时类型使用绝对路径，例如 `::core::option::Option` 和 `::xrack_runtime::Node`。DSL 可以声明 `Option`、`String` 等同名组件。`//tests:expressions_test` 覆盖这类命名。
@@ -42,7 +42,7 @@
 - `xrack-layout` 使用逻辑像素计算布局、裁剪和命中测试。绘制、输入和无障碍应消费同一份准备好的场景及布局。FemtoVG 通过 wgpu 绘制，窗口、DPI 和原生事件由 winit 宿主管理。
 - 原生平台能力在 `xrack-platform-winit` 中按平台编译。把共享状态和事件路由留在宿主层，并区分交叉类型检查和目标系统上的实际交互验证。
 - 属性更新沿用运行时的依赖追踪和惰性失效机制。改动绑定或模型时，覆盖条件依赖切换、未受影响的属性继续命中缓存，以及列表插删和重排后行状态按标识保留等适用场景。
-- 组件状态和窗口绘制留在 UI 线程。`spawn_local` 用于需要访问组件的本地 Future。异步 I/O 可交给应用持有的 Tokio runtime，阻塞工作放到工作线程或 Tokio 的 `spawn_blocking`，再通过 `UiSender` 把结果发回 UI 线程。
+- 组件状态和窗口绘制留在 UI 线程。`spawn_local` 用于需要访问组件的本地 Future。异步 I/O 可交给应用持有的 Tokio runtime，阻塞工作放到工作线程或 Tokio 的 `spawn_blocking`，再通过 `invoke_from_event_loop` 或组件弱句柄的 `upgrade_in_event_loop` 把结果发回 UI 线程，也可以在 `spawn_local` 中等待 Tokio 任务句柄。
 - 根据改动添加回归用例，覆盖适用的键盘、鼠标、焦点、禁用状态和双向绑定路径。优先通过 `tests/ui_driver.rs` 驱动生成的组件，用 GPU 测试覆盖依赖真实绘制的行为。
 
 ## 验证与编辑器

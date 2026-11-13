@@ -93,6 +93,7 @@ enum Request {
         #[serde(default)]
         buffers: BTreeMap<PathBuf, String>,
         component: Option<String>,
+        scale: Option<f32>,
     },
     LoadMlir {
         filename: PathBuf,
@@ -100,6 +101,10 @@ enum Request {
     },
     Activate,
     Frame,
+    RestoreWindow,
+    Scale {
+        scale: f32,
+    },
     SelectWindow {
         window: Option<u64>,
     },
@@ -222,6 +227,8 @@ struct Reply {
     error: Option<String>,
     unsupported: bool,
     image_length: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    size: Option<[u32; 2]>,
     next_frame_ms: Option<u64>,
     table_tab_enabled: bool,
     tree_navigation_enabled: bool,
@@ -237,6 +244,8 @@ struct Reply {
     native_dialog: Option<dialog::Panel>,
     #[serde(skip_serializing_if = "is_false")]
     window_closed: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    window_minimized: Option<bool>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     windows: Vec<windows::Description>,
     window: Option<u64>,
@@ -272,6 +281,7 @@ struct Host {
     active: Option<(Instance, Windows)>,
     pending: Option<(Instance, Windows)>,
     renderer: Option<Renderer>,
+    scale: Option<f32>,
     check: bool,
 }
 
@@ -319,8 +329,8 @@ impl Host {
             .or_else(|| components.first().cloned())
             .ok_or_else(|| failure("this file has no component to preview"))?;
         let instance = program.create(&selected).map_err(PreviewError::from)?;
-        instance.try_render().map_err(PreviewError::from)?;
         let mut windows = Windows::new(Box::new(instance.clone()));
+        instance.try_render().map_err(PreviewError::from)?;
         let png = if self.check {
             Vec::new()
         } else {
@@ -336,7 +346,7 @@ impl Host {
                 );
             }
             windows
-                .render(self.renderer.as_mut().unwrap())
+                .render(self.renderer.as_mut().unwrap(), self.scale.unwrap_or(1.0))
                 .map_err(failure)?
         };
         if let Some(error) = instance.take_error() {
@@ -349,6 +359,8 @@ impl Host {
             next_frame_ms: next_frame_ms(&windows),
             windows: windows.descriptions(),
             window: windows.selection(),
+            window_minimized: windows.selected().window_status().minimized,
+            size: (!png.is_empty()).then(|| windows.selected().logical_size()),
             ime_area: ime_area(windows.selected()),
             ..Reply::default()
         };
@@ -418,7 +430,9 @@ impl Host {
             .as_mut()
             .ok_or_else(|| failure("no preview renderer is active"))?;
         instance.try_render().map_err(PreviewError::from)?;
-        let png = windows.render(renderer).map_err(failure)?;
+        let png = windows
+            .render(renderer, self.scale.unwrap_or(1.0))
+            .map_err(failure)?;
         if let Some(error) = instance.take_error() {
             return Err(error.into());
         }
@@ -433,9 +447,11 @@ impl Host {
                 clipboard,
                 native_dialog,
                 window_closed: windows.closed(),
+                window_minimized: scene.window_status().minimized,
                 next_frame_ms: next_frame_ms(windows),
                 windows: windows.descriptions(),
                 window: windows.selection(),
+                size: (!png.is_empty()).then(|| scene.logical_size()),
                 table_tab_enabled: scene.table_tab_enabled(),
                 tree_navigation_enabled: scene.tree_navigation_enabled(),
                 control_navigation_enabled: scene.control_navigation_enabled(),
@@ -457,7 +473,13 @@ impl Host {
                 text,
                 buffers,
                 component,
-            } => self.load(&filename, &text, buffers, component),
+                scale,
+            } => {
+                if let Some(scale) = scale {
+                    self.scale = Some(scale);
+                }
+                self.load(&filename, &text, buffers, component)
+            }
             Request::LoadMlir {
                 filename,
                 component,
@@ -484,6 +506,11 @@ impl Host {
                 Ok((reply, Vec::new()))
             }
             Request::Frame => self.render_active(true),
+            Request::RestoreWindow => self.interact(PreviewScene::request_window_restore),
+            Request::Scale { scale } => {
+                self.scale = Some(scale);
+                self.render_active(true)
+            }
             Request::SelectWindow { window } => {
                 let changed = self.active_windows()?.select(window);
                 self.render_active(changed)

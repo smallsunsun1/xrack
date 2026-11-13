@@ -96,6 +96,7 @@ pub(crate) struct RowScope {
     pub item: String,
     pub index: Option<String>,
     pub context: RowContext<Value>,
+    pub sampled: bool,
 }
 
 #[derive(Default)]
@@ -184,6 +185,7 @@ impl RepeatState {
                         item: repeat.item.clone(),
                         index: repeat.index.clone(),
                         context,
+                        sampled: false,
                     },
                 )
             },
@@ -400,26 +402,18 @@ impl Instance {
     pub(crate) fn view_index(
         &self,
         target: &str,
-        index: i64,
-        from_source: bool,
+        index: usize,
+        direction: xrack_runtime::ViewIndex,
     ) -> Result<Option<usize>> {
-        let Ok(index) = usize::try_from(index) else {
-            return Ok(None);
-        };
         let (owner, view) = self.element_owner(target)?;
         if view.tree.is_some() {
             let (tree, _) = owner.tree_projection(view)?;
-            return Ok(if from_source {
-                tree.visible_index_for_source(index)
-            } else {
-                tree.rows().get(index).map(|row| row.model_index)
-            });
+            return Ok(tree.view_index(index, direction));
         }
         let model = owner.view_model(view)?;
-        Ok(if from_source {
-            model.visual_index(index)
-        } else {
-            model.source_index(index)
+        Ok(match model.positions() {
+            Some(positions) => positions.view_index(index, direction),
+            None => (index < model.row_count()).then_some(index),
         })
     }
 
@@ -429,7 +423,7 @@ impl Instance {
             return Ok(None);
         };
         let model = owner.repeat_state(element).model(&owner, expression)?;
-        Ok((row < model.row_count()).then(|| model.row_key(row)))
+        Ok(ListModel::key_at(&model, row))
     }
 
     pub(crate) fn render_view(&self, view: &Element, node: &mut Node) -> Result<()> {

@@ -4,27 +4,9 @@ use tokio::{
     runtime::{Builder, Handle},
     time::sleep,
 };
-use xrack_platform_winit::{UiSender, run_with_messages, spawn_local};
+use xrack_platform_winit::{run, spawn_local};
 
-enum Message {
-    Search(String),
-    Loaded {
-        request: u64,
-        query: String,
-        rows: Vec<String>,
-    },
-    UpdateRow {
-        request: u64,
-        index: usize,
-        text: String,
-    },
-}
-
-fn setup(
-    ui: &mut AsyncDemo,
-    sender: UiSender<Message>,
-    runtime: Handle,
-) -> impl FnMut(&mut AsyncDemo, Message) + use<> {
+fn setup(ui: &mut AsyncDemo, runtime: Handle) {
     let weak = ui.as_weak();
     let generation = Rc::new(Cell::new(0_u64));
     let timer_runtime = runtime.clone();
@@ -60,71 +42,72 @@ fn setup(
         );
     });
 
-    let intent = sender.clone();
+    let weak = ui.as_weak();
+    let current_request = Rc::new(Cell::new(0_u64));
     ui.on_search(move |query| {
-        if let Err(error) = intent.try_send(Message::Search(query)) {
-            eprintln!("could not start search: {error}");
-        }
-    });
+        let Some(mut ui) = weak.upgrade() else {
+            return;
+        };
+        let request = current_request.get() + 1;
+        current_request.set(request);
+        ui.set_loading(true);
 
-    ui.invoke_start_local();
-    ui.invoke_search(ui.get_query());
-    let mut current_request = 0;
-    move |ui, message| match message {
-        Message::Search(query) => {
-            current_request += 1;
-            let request = current_request;
-            let sender = sender.clone();
-            ui.set_loading(true);
-            runtime.spawn(async move {
-                sleep(Duration::from_millis(350)).await;
-                let rows = (1..=12)
-                    .map(|index| format!("{query} · 结果 {index}"))
-                    .collect();
-                if let Err(error) = sender.try_send(Message::Loaded {
-                    request,
-                    query: query.clone(),
-                    rows,
-                }) {
-                    eprintln!("could not deliver search results: {error}");
+        let weak = weak.clone();
+        let current_request = current_request.clone();
+        let background = runtime.clone();
+        let search_query = query.clone();
+        let job = runtime.spawn(async move {
+            sleep(Duration::from_millis(350)).await;
+            (1..=12)
+                .map(|index| format!("{search_query} · 结果 {index}"))
+                .collect::<Vec<_>>()
+        });
+
+        if let Err(error) = spawn_local(async move {
+            let result = job.await;
+            {
+                let Some(mut ui) = weak.upgrade() else {
+                    return;
+                };
+                if request != current_request.get() {
                     return;
                 }
-                sleep(Duration::from_millis(700)).await;
-                if let Err(error) = sender.try_send(Message::UpdateRow {
-                    request,
-                    index: 1,
-                    text: format!("{query} · 结果 2 已更新"),
-                }) {
-                    eprintln!("could not deliver row update: {error}");
+                ui.set_loading(false);
+                if query != ui.get_query() {
+                    return;
                 }
-            });
-        }
-        Message::Loaded {
-            request,
-            query,
-            rows,
-        } if request == current_request && query == ui.get_query() => {
-            println!(
-                "search {request} committed {} results on the UI thread",
-                rows.len()
-            );
-            ui.set_suggestions(rows.iter().take(8).cloned().collect());
-            ui.set_results(rows);
-            ui.set_result_query(query);
-            ui.set_loading(false);
-        }
-        Message::UpdateRow {
-            request,
-            index,
-            text,
-        } if request == current_request => {
-            if ui.model_results().set_row(index, text.clone()) {
-                ui.model_suggestions().set_row(index, text);
-                println!("search {request} updated row {index} on the UI thread");
+                match result {
+                    Ok(rows) => {
+                        ui.set_suggestions(rows.iter().take(8).cloned().collect());
+                        ui.set_results(rows);
+                        ui.set_result_query(query.clone());
+                    }
+                    Err(error) => {
+                        eprintln!("could not finish search: {error}");
+                        return;
+                    }
+                }
             }
+
+            let detail = background.spawn(async move {
+                sleep(Duration::from_millis(700)).await;
+                format!("{query} · 结果 2 已更新")
+            });
+            let Ok(text) = detail.await else {
+                return;
+            };
+            if request == current_request.get()
+                && let Some(ui) = weak.upgrade()
+                && ui.get_result_query() == ui.get_query()
+                && ui.model_results().set_row(1, text.clone())
+            {
+                ui.model_suggestions().set_row(1, text);
+            }
+        }) {
+            ui.set_loading(false);
+            eprintln!("{error}");
         }
-        Message::Loaded { .. } | Message::UpdateRow { .. } => {}
-    }
+    });
 }
 
 fn main() -> ExitCode {
@@ -135,10 +118,9 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let handle = runtime.handle().clone();
-    match run_with_messages(AsyncDemo::new(), move |ui, sender| {
-        setup(ui, sender, handle)
-    }) {
+    let mut ui = AsyncDemo::new();
+    setup(&mut ui, runtime.handle().clone());
+    match run(ui) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("{error}");

@@ -4,9 +4,9 @@ use crate::{
 };
 use std::{cmp::Ordering, ops::Range};
 use xrack_runtime::{
-    ControlAction, ListMetrics, ListModel, Property, RecordValue, RowHeightOverrides, RowSelection,
-    SelectionTarget, TableCellEditor, TableColumnOrder, TableColumnWindow, TableHeader, TableRows,
-    TableSelection, TableSelectionAction, TableSelectionChange, TableSelectionCommand,
+    ControlAction, ListMetrics, Property, RecordValue, RowHeightOverrides, SelectionTarget,
+    TableCellEditor, TableColumnOrder, TableColumnWindow, TableHeader, TableRows, TableSelection,
+    TableSelectionAction, TableSelectionChange, TableSelectionCommand, TableSelectionMethod,
     TableSelectionOptions, TableSelectionSnapshot, TableSort, VecModel,
 };
 
@@ -42,14 +42,7 @@ pub(crate) enum Command {
     MoveColumn,
     Sort,
     ClearSort,
-    SelectAll,
-    ClearSelection,
-    SelectRow,
-    SelectColumn,
-    SelectCell,
-    MoveCell,
-    ToggleCell,
-    SelectRange,
+    Select(TableSelectionMethod),
 }
 
 impl Command {
@@ -62,15 +55,7 @@ impl Command {
             "xr.move_column" => Self::MoveColumn,
             "sort-by" => Self::Sort,
             "clear-sort" => Self::ClearSort,
-            "select-all" => Self::SelectAll,
-            "clear-selection" => Self::ClearSelection,
-            "select-row" => Self::SelectRow,
-            "select-column" => Self::SelectColumn,
-            "select-cell" => Self::SelectCell,
-            "set-current-cell" => Self::MoveCell,
-            "toggle-cell" => Self::ToggleCell,
-            "select-range" => Self::SelectRange,
-            _ => return None,
+            _ => Self::Select(TableSelectionMethod::parse(method)?),
         })
     }
 }
@@ -241,13 +226,7 @@ impl Instance {
             ListMetrics::row_height(node),
             node.row_heights.take(),
         );
-        let snapshot = self.table_snapshot(view, &rows, state.table_state())?;
-        if snapshot.multiple()
-            || snapshot.target() != SelectionTarget::Rows
-            || state.table_state().selection.has_explicit_selection()
-        {
-            node.table_selection = Some(Box::new(snapshot));
-        }
+        state.table_state().selection.populate_scene(node, &rows);
         Ok(())
     }
 
@@ -359,17 +338,14 @@ impl Instance {
         model: &TableRows<Model>,
         state: &State,
     ) -> Result<TableSelectionSnapshot> {
-        let target = self.table_selection_target(view)?;
-        Ok(state
-            .selection
-            .snapshot(
-                model,
-                index(self.current_row(view)?),
-                target,
-                view.table_columns().count(),
-                self.table_flag(view, "multi-select", false)?,
-            )
-            .with_column_order(state.columns.get(Default::default)))
+        state.selection.try_snapshot_with(
+            model,
+            view.table_columns().count(),
+            || self.current_row(view),
+            || self.table_selection_target(view),
+            || self.table_flag(view, "multi-select", false),
+            || state.column_order(),
+        )
     }
 
     fn apply_table_selection(
@@ -406,24 +382,27 @@ impl Instance {
         change: TableSelectionChange,
         notify_cell: bool,
     ) -> Result<bool> {
-        if let Some(current) = change.current {
-            self.update_current_row(view, current)?;
-        }
-        if notify_cell && (change.current.is_some() || change.column_changed) {
-            let column = self
-                .table_snapshot(view, &self.view_model(view)?.table_rows()?, state)?
-                .current_column()
-                .map_or(-1, |column| column as i64);
-            self.handler(
-                view,
-                "current-cell-changed",
-                &[Value::Int(self.current_row(view)?), Value::Int(column)],
-            )?;
-        }
-        if let Some(count) = change.selected_count {
-            self.handler(view, "selection-changed", &[Value::Int(count as i64)])?;
-        }
-        Ok(change.current.is_some() || change.column_changed || change.selected_count.is_some())
+        use xrack_runtime::TableSelectionEvent;
+
+        let notify_cell = notify_cell && view.handlers.contains_key("current-cell-changed");
+        change.try_notify(notify_cell, |event| match event {
+            TableSelectionEvent::CurrentRowChanged(row) => self.update_current_row(view, row),
+            TableSelectionEvent::CurrentCellChanged => {
+                let column = self
+                    .table_snapshot(view, &self.view_model(view)?.table_rows()?, state)?
+                    .current_column()
+                    .map_or(-1, |column| column as i64);
+                self.handler(
+                    view,
+                    "current-cell-changed",
+                    &[Value::Int(self.current_row(view)?), Value::Int(column)],
+                )
+                .map(|_| ())
+            }
+            TableSelectionEvent::SelectionChanged(count) => self
+                .handler(view, "selection-changed", &[Value::Int(count as i64)])
+                .map(|_| ()),
+        })
     }
 
     pub(crate) fn select_table_source(
@@ -569,22 +548,18 @@ impl Instance {
     ) -> Result<()> {
         let (owner, view) = self.element_owner(target)?;
         use Command::*;
-        use TableSelectionAction as Action;
         use Value::Int;
-        let index = |value: i64| usize::try_from(value).unwrap_or(usize::MAX);
-        let action = match (command, args) {
+        match (command, args) {
             (Undo | Redo, []) => {
                 owner.replay_table(view, matches!(command, Redo))?;
                 return Ok(());
             }
             (SetHeight, [Int(row), Value::Length(height)]) => {
-                let rows = owner.view_model(view)?.table_rows()?;
-                owner.repeat_state(view).table_state().heights.set(
-                    &rows,
-                    index(*row),
-                    None,
-                    height.0,
-                );
+                owner.repeat_state(view).table_state().heights.try_set_row(
+                    *row,
+                    *height,
+                    || owner.view_model(view)?.table_rows(),
+                )?;
                 return Ok(());
             }
             (MoveRow, [Int(from), Int(to)]) => {
@@ -592,59 +567,35 @@ impl Instance {
                 return Ok(());
             }
             (MoveColumn, [Int(from), Int(to)]) => {
-                owner.move_table_column(view, index(*from), index(*to))?;
+                if let (Some(from), Some(to)) = (index(*from), index(*to)) {
+                    owner.move_table_column(view, from, to)?;
+                }
                 return Ok(());
             }
             (Sort, [Int(column), Value::Bool(descending)]) => {
-                owner.sort_table(
-                    view,
-                    Some(TableSort {
-                        column: index(*column),
-                        descending: *descending,
-                    }),
-                    None,
-                )?;
+                if let Some(sort) = TableSort::from_index(*column, *descending) {
+                    owner.sort_table(view, Some(sort), None)?;
+                }
                 return Ok(());
             }
             (ClearSort, []) => {
                 owner.sort_table(view, None, None)?;
                 return Ok(());
             }
-            (SelectAll, []) => Action::All,
-            (ClearSelection, []) => Action::Clear,
-            (SelectRow, [Int(row)]) => Action::Row {
-                index: index(*row),
-                operation: RowSelection::Replace,
-            },
-            (SelectColumn, [Int(column)]) => Action::Column {
-                column: index(*column),
-                operation: RowSelection::Replace,
-            },
-            (SelectCell | MoveCell | ToggleCell, [Int(row), Int(column)]) => Action::Cell {
-                row: index(*row),
-                column: index(*column),
-                operation: match command {
-                    MoveCell => RowSelection::Move,
-                    ToggleCell => RowSelection::Toggle,
-                    _ => RowSelection::Replace,
-                },
-            },
-            (SelectRange, [Int(row), Int(column), Int(end_row), Int(end_column)]) => {
-                Action::DragRange {
-                    anchor: (index(*row), index(*column)),
-                    end: (index(*end_row), index(*end_column)),
-                    additive: false,
+            (Select(method), args) => {
+                let indices = args
+                    .iter()
+                    .map(|arg| match arg {
+                        Int(value) => Ok(*value),
+                        _ => Err(Error::Invalid("invalid table selection operand".into())),
+                    })
+                    .collect::<Result<Vec<_>>>()?;
+                if let Some(action) = method.action(&indices) {
+                    owner.apply_table_selection(view, TableSelectionCommand::Visual(action))?;
                 }
             }
             _ => return Err(Error::Invalid("invalid table command operands".into())),
-        };
-        if args
-            .iter()
-            .any(|arg| matches!(arg, Int(value) if *value < 0))
-        {
-            return Ok(());
         }
-        owner.apply_table_selection(view, TableSelectionCommand::Visual(action))?;
         Ok(())
     }
 
@@ -786,56 +737,41 @@ impl Instance {
         )? {
             return Ok(false);
         }
+        if let ControlAction::MoveRow { from, to, .. } = action {
+            return self.move_table_row(view, from as i64, to as i64, Some(input));
+        }
+        let state = state.table_state();
+        let sort = match action {
+            ControlAction::SortColumn(column) => {
+                let Some(sort) = node.table_header.as_ref().and_then(|header| {
+                    header.next_sort_if_current(column, state.sort.get(|| None))
+                }) else {
+                    return Ok(false);
+                };
+                Some(sort)
+            }
+            ControlAction::MoveColumn { from, to }
+                if !node.table_column_move_is_current(from, to, &state.column_order()) =>
+            {
+                return Ok(false);
+            }
+            _ => None,
+        };
         let model = self.view_model(view)?;
         if !input.is_current() || node.standard_list_stamp != model.stamp() {
             return Ok(false);
         }
         match action {
-            ControlAction::ResizeRow { row, key, height } => Ok(state.table_state().heights.set(
-                &model.table_rows()?,
-                row,
-                Some(key),
-                f64::from(height),
-            )),
-            ControlAction::ResizeColumn { column, width } => {
-                let mut widths = state.table_state().widths.get(Vec::new);
-                if widths.get(column) == Some(&Some(width)) {
-                    return Ok(false);
-                }
-                widths.resize(widths.len().max(column + 1), None);
-                widths[column] = Some(width);
-                state.table_state().widths.set(widths);
-                Ok(true)
+            ControlAction::ResizeRow { row, key, height } => {
+                Ok(state
+                    .heights
+                    .set(&model.table_rows()?, row, Some(key), f64::from(height)))
             }
-            ControlAction::MoveColumn { from, to }
-                if node.table_column_order == state.table_state().columns.get(Default::default) =>
-            {
-                self.move_table_column(view, from, to)
-            }
-            ControlAction::MoveRow {
-                from,
-                to,
-                row,
-                stamp,
-            } if model.stamp() == Some(stamp) => {
-                let rows = model.table_rows()?;
-                if from >= rows.row_count() || rows.row_key(from) != row {
-                    return Ok(false);
-                }
-                self.move_table_row(view, from as i64, to as i64, Some(input))
-            }
-            ControlAction::SortColumn(column) => {
-                let Some(header) = &node.table_header else {
-                    return Ok(false);
-                };
-                if header.sort != state.table_state().sort.get(|| None) {
-                    return Ok(false);
-                }
-                let Some(sort) = header.next_sort(column) else {
-                    return Ok(false);
-                };
-                self.sort_table(view, Some(sort), Some(input))
-            }
+            ControlAction::ResizeColumn { column, width } => Ok(
+                xrack_runtime::resize_table_column(&state.widths, column, width),
+            ),
+            ControlAction::MoveColumn { from, to } => self.move_table_column(view, from, to),
+            ControlAction::SortColumn(_) => self.sort_table(view, sort, Some(input)),
             _ => Ok(false),
         }
     }

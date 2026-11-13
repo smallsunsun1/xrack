@@ -3,7 +3,7 @@ use std::{
     cell::{Cell, OnceCell},
     rc::Rc,
 };
-use xrack_platform_winit::{Desktop, DesktopWindow, UiSender, run_desktop, spawn_local};
+use xrack_platform_winit::{Desktop, DesktopWindow, run_desktop};
 use xrack_runtime::VecModel;
 
 fn open_counter(
@@ -34,15 +34,15 @@ fn open_counter(
             let _ = window.close();
         }
     });
-    let window = desktop.open_with_messages(counter, |ui, sender: UiSender<i64>| {
-        ui.on_add_later(move || {
-            let sender = sender.clone();
-            let _ = spawn_local(async move {
-                let _ = sender.try_send(10);
-            });
-        });
-        |ui, delta| ui.set_count(ui.get_count() + delta)
-    })?;
+    let weak = counter.as_weak();
+    counter.on_add_later(move || {
+        if let Err(error) = weak.upgrade_in_event_loop(|mut ui| {
+            ui.set_count(ui.get_count() + 10);
+        }) {
+            eprintln!("{error}");
+        }
+    });
+    let window = desktop.open(counter)?;
     assert!(owner.set(window).is_ok());
     Ok(())
 }

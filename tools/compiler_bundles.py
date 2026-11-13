@@ -12,7 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def hosts():
-    return sorted(path.parent.name for path in (ROOT / "compiler-bundles").glob("*/Cargo.toml"))
+    return sorted(path.parent.name for path in (ROOT / "bundles/compiler").glob("*/Cargo.toml"))
 
 
 def crate_name(host):
@@ -28,7 +28,7 @@ def stage_workspace(destination):
     destination.mkdir()
     for name in ("Cargo.toml", "Cargo.lock", "README.md", "LICENSE-APACHE", "LICENSE-MIT"):
         shutil.copyfile(ROOT / name, destination / name)
-    for name in ("crates", "compiler-bundles"):
+    for name in ("crates", "bundles"):
         shutil.copytree(ROOT / name, destination / name)
 
 
@@ -59,9 +59,22 @@ def archive_members(bundle, archive):
         yield path.relative_to(stem), entry
 
 
+def extract_compiler(archive, destination):
+    executable = "xrackc.exe" if "windows" in archive.name else "xrackc"
+    with tarfile.open(archive, "r:gz") as bundle:
+        for relative, entry in archive_members(bundle, archive):
+            if relative == PurePosixPath(executable):
+                output = destination / executable
+                with bundle.extractfile(entry) as source, output.open("xb") as target:
+                    shutil.copyfileobj(source, target)
+                output.chmod(0o755)
+                return output
+    raise ValueError(f"{archive}: missing {executable}")
+
+
 def install_bundle(workspace, archives, version, host, source_commit):
     archive, digest = verified_archive(archives, version, host)
-    package = workspace / "compiler-bundles" / host
+    package = workspace / "bundles/compiler" / host
     executable = "xrackc.exe" if "windows" in host else "xrackc"
     compiler_digest = hashlib.sha256()
     found = False

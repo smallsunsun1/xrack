@@ -1,11 +1,12 @@
 use crate::ffi;
 use std::{
+    collections::BTreeSet,
     ffi::c_void,
     fmt,
     hash::{Hash, Hasher},
     marker::PhantomData,
 };
-use xrack_syntax::ast::Span;
+use xrack_syntax::ast::{Parameter, Span, Type};
 
 struct Context(ffi::MlirContext);
 
@@ -80,13 +81,67 @@ impl Module {
             }
             Ok(raw)
         })?;
-        let module = Self {
+        let mut module = Self {
             raw,
             context,
             visual_cache_plan: false,
         };
         module.verify()?;
+        module.assign_anonymous_element_keys();
         Ok(module)
+    }
+
+    fn assign_anonymous_element_keys(&mut self) {
+        fn collect<'m>(
+            parent: OperationRef<'m>,
+            used: &mut BTreeSet<String>,
+            anonymous: &mut Vec<(OperationRef<'m>, bool)>,
+        ) {
+            for op in parent.children() {
+                if !matches!(op.name(), "xr.element" | "xr.instance") {
+                    continue;
+                }
+                let key = op.attribute("key").or_else(|| op.attribute("id"));
+                if let Some(key) = key.filter(|key| !key.is_empty()) {
+                    used.insert(key.to_owned());
+                } else {
+                    anonymous.push((op, parent.name() == "xr.component"));
+                }
+                collect(op, used, anonymous);
+            }
+        }
+
+        for component in self.operations().filter(|op| op.name() == "xr.component") {
+            let mut used = BTreeSet::from(["root".to_owned()]);
+            let mut anonymous = Vec::new();
+            collect(component, &mut used, &mut anonymous);
+            let mut candidates = (0..).map(|index| format!("__xr_anon_{index}"));
+            for (op, is_root) in anonymous {
+                let key = if is_root {
+                    "root".into()
+                } else {
+                    candidates
+                        .find(|candidate| !used.contains(candidate))
+                        .expect("unbounded keys")
+                };
+                let selector = op
+                    .children()
+                    .find(|child| child.name() == "xr.state_select");
+                // The key and the local selector's owner are verified together.
+                // Both attributes belong to the module and are updated before it is shared.
+                unsafe {
+                    let value = ffi::mlirStringAttrGet(self.context.0, string_ref(&key));
+                    ffi::mlirOperationSetInherentAttributeByName(op.raw, string_ref("key"), value);
+                    if let Some(selector) = selector {
+                        ffi::mlirOperationSetInherentAttributeByName(
+                            selector.raw,
+                            string_ref("owner"),
+                            value,
+                        );
+                    }
+                }
+            }
+        }
     }
 
     /// Verify the ODS operations and XR's module-wide constraints.
@@ -293,6 +348,11 @@ impl<'m> OperationRef<'m> {
             .ok_or_else(|| format!("{} missing or invalid `{name}`", self.name()))
     }
 
+    /// Decode the signature stored by an XR callback or event handler.
+    pub fn parameters(self) -> Result<Vec<Parameter>, String> {
+        serde_json::from_str(self.attr("parameters")?).map_err(|error| error.to_string())
+    }
+
     pub fn string_array_attribute(self, name: &str) -> Option<Vec<&'m str>> {
         // The array and its strings are immutable and owned by the module context.
         let attr = unsafe { ffi::mlirOperationGetAttributeByName(self.raw, string_ref(name)) };
@@ -398,10 +458,15 @@ impl<'m> OperationRef<'m> {
                 return Span {
                     line: ffi::mlirLocationFileLineColRangeGetStartLine(location) as usize,
                     column: ffi::mlirLocationFileLineColRangeGetStartColumn(location) as usize,
+                    source: 0,
                 };
             }
         }
-        Span { line: 1, column: 1 }
+        Span {
+            line: 1,
+            column: 1,
+            source: 0,
+        }
     }
 
     pub fn source_file(self) -> Option<&'m str> {
@@ -436,6 +501,24 @@ impl Hash for ValueRef<'_> {
 }
 
 impl<'m> ValueRef<'m> {
+    pub(crate) fn uses(self) -> impl Iterator<Item = (OperationRef<'m>, usize)> {
+        // Uses are borrowed from the module. Its operation graph cannot be mutated
+        // while these handles are available.
+        let first = unsafe { ffi::mlirValueGetFirstUse(self.raw) };
+        std::iter::successors((!first.ptr.is_null()).then_some(first), |usage| {
+            let next = unsafe { ffi::mlirOpOperandGetNextUse(*usage) };
+            (!next.ptr.is_null()).then_some(next)
+        })
+        .map(|usage| unsafe {
+            let owner = ffi::mlirOpOperandGetOwner(usage);
+            let index = ffi::mlirOpOperandGetOperandNumber(usage) as usize;
+            (
+                OperationRef::from_raw(owner).expect("use has an owner"),
+                index,
+            )
+        })
+    }
+
     pub fn defining_operation(self) -> Option<OperationRef<'m>> {
         // Block arguments are values too, but have no defining operation.
         if !unsafe { ffi::mlirValueIsAOpResult(self.raw) } {
@@ -455,6 +538,13 @@ impl<'m> ValueRef<'m> {
             )
         };
         String::from_utf8_lossy(&output).into_owned()
+    }
+
+    pub fn xr_type(self) -> Result<Type, String> {
+        let name = self.type_name();
+        name.strip_prefix("!xr.")
+            .and_then(Type::parse)
+            .ok_or_else(|| format!("XR value type {name}"))
     }
 }
 

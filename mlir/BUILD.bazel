@@ -1,4 +1,5 @@
 load("@rules_cc//cc:cc_library.bzl", "cc_library")
+load("@rules_cc//cc:cc_static_library.bzl", "cc_static_library")
 load("@llvm-project//mlir:tblgen.bzl", "gentbl_cc_library")
 load("@rules_rust//rust:defs.bzl", "rust_library")
 load("@rules_rust_bindgen//:defs.bzl", "rust_bindgen", "rust_bindgen_toolchain")
@@ -133,6 +134,35 @@ rust_bindgen(
     }),
     header = "c_api.h",
     merge_cc_lib_objects_into_rlib = False,
+)
+
+cc_static_library(
+    name = "xrack_mlir_native",
+    deps = [":xrack_c_api"],
+    tags = ["manual"],
+)
+
+filegroup(
+    name = "xrack_mlir_native_linkdeps",
+    srcs = [":xrack_mlir_native"],
+    output_group = "linkdeps",
+    tags = ["manual"],
+)
+
+filegroup(
+    name = "xrack_mlir_native_linkopts",
+    srcs = [":xrack_mlir_native"],
+    output_group = "linkopts",
+    tags = ["manual"],
+)
+
+filegroup(
+    name = "xrack_mlir_cpp_runtime",
+    srcs = ["@llvm//runtimes/cxxstdlib:static_runtime_lib"] + select({
+        "@platforms//os:linux": ["@llvm//runtimes/compiler-rt:clang_rt.builtins.static"],
+        "//conditions:default": [],
+    }),
+    tags = ["manual"],
 )
 
 rust_generated_source(

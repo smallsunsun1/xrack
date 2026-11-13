@@ -67,6 +67,14 @@ impl Node {
             self.animations.insert(property, timing);
         }
     }
+
+    #[doc(hidden)]
+    pub fn set_state_timing(&mut self, property: &'static str, timing: StateTiming) {
+        self.data_mut()
+            .state_timings
+            .get_or_insert_with(Default::default)
+            .insert(property, timing);
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]

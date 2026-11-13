@@ -1,0 +1,15 @@
+[package]
+name = "xrack-mlir-bin-aarch64-apple-darwin"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+description = "Prebuilt XRack MLIR native library for aarch64-apple-darwin"
+publish = false
+
+[lib]
+path = "../stub.rs"
+
+[build-dependencies]
+lzma-rust2 = { version = "0.25", default-features = false, features = ["std", "xz"] }

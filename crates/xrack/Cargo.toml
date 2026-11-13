@@ -13,3 +13,7 @@ xrack-platform-winit.workspace = true
 xrack-layout.workspace = true
 xrack-renderer-femtovg.workspace = true
 xrack-assets.workspace = true
+xrack-interpreter = { path = "../xrack-interpreter", version = "=0.5.0", optional = true, features = ["bundled"] }
+
+[features]
+interpreter = ["dep:xrack-interpreter"]

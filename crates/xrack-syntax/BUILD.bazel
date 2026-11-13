@@ -8,7 +8,7 @@ rust_library(
     crate_name = "xrack_syntax",
     crate_root = "src/lib.rs",
     edition = "2024",
-    version = "0.2.0",
+    version = "0.5.0",
     visibility = ["//visibility:public"],
     deps = [] + all_crate_deps(normal = True),
 )

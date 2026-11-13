@@ -2,10 +2,10 @@ const { spawn } = require('node:child_process');
 const files = require('node:fs/promises');
 
 class PreviewProcess {
-    constructor(program, component, cwd) {
+    constructor(program, component, cwd, scale = 1) {
         this.program = program;
         this.temporary = component !== undefined;
-        this.child = spawn(program, this.temporary ? [component] : [], { cwd, windowsHide: true });
+        this.child = spawn(program, this.temporary ? [component, String(scale)] : [], { cwd, windowsHide: true });
         this.stderr = '';
         this.remaining = Buffer.alloc(0);
         this.stdout = this.child.stdout[Symbol.asyncIterator]();
@@ -43,7 +43,9 @@ class PreviewProcess {
         return this.exchange(command, async () => {
             const length = (await this.read(4)).readUInt32BE();
             if (!length || length > 32 * 1024 * 1024) throw new Error('Invalid preview frame length');
-            return (await this.read(length)).toString('base64');
+            const image = (await this.read(length)).toString('base64');
+            const size = await this.read(8);
+            return { image, size: [size.readUInt32BE(0), size.readUInt32BE(4)] };
         });
     }
 

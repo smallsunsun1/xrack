@@ -10,7 +10,7 @@ use crate::{
 use serde_json::{Value, json};
 use std::{
     cell::RefCell,
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     ops::Range,
     path::{Path, PathBuf},
 };
@@ -45,15 +45,16 @@ pub(crate) fn legend() -> Value {
 }
 
 #[derive(Clone, PartialEq, Eq)]
-struct Site {
-    range: Range<usize>,
-    file: Option<PathBuf>,
+pub(super) struct Site {
+    pub(super) range: Range<usize>,
+    pub(super) file: Option<PathBuf>,
 }
 
 #[derive(Clone)]
 struct Symbol {
     kind: Kind,
     site: Option<Site>,
+    alias_site: Option<Site>,
     ty: Option<Type>,
     type_file: Option<PathBuf>,
     modifiers: u32,
@@ -64,6 +65,7 @@ impl Symbol {
         Self {
             kind,
             site: None,
+            alias_site: None,
             ty,
             type_file: None,
             modifiers: BUILTIN,
@@ -74,10 +76,19 @@ impl Symbol {
         Self {
             kind,
             site: Some(Site { range, file }),
+            alias_site: None,
             ty: None,
             type_file: None,
             modifiers: 0,
         }
+    }
+
+    fn refactor_site(&self, token: &Token<'_>) -> Option<&Site> {
+        // `root` and `self` can navigate to a declaration but are keywords.
+        if matches!(token.text, "root" | "self") {
+            return None;
+        }
+        self.alias_site.as_ref().or(self.site.as_ref())
     }
 
     fn member(member: &Member, parameter: bool) -> Self {
@@ -92,6 +103,97 @@ impl Symbol {
         symbol.type_file = member.type_file.clone();
         symbol
     }
+}
+
+pub(crate) fn signature_help(
+    text: &str,
+    position: (usize, usize),
+    workspace: Option<&Workspace<'_>>,
+) -> Value {
+    let source = Source::new(text);
+    let Some(cursor) = source.offset_at(position.0, position.1) else {
+        return Value::Null;
+    };
+    let tokens = editor_tokens::scan(text);
+    if tokens.iter().any(|token| token.blocks_completion(cursor)) {
+        return Value::Null;
+    }
+    let symbols = Symbols::new(&tokens, text.len(), workspace);
+    let mut frames = Vec::new();
+    for (index, token) in symbols
+        .code
+        .iter()
+        .enumerate()
+        .take_while(|(_, token)| token.range.end <= cursor)
+    {
+        match token.text {
+            "(" | "[" | "{" => frames.push((index, token.text, 0)),
+            ")" | "]" | "}" => {
+                let matching = match token.text {
+                    ")" => "(",
+                    "]" => "[",
+                    _ => "{",
+                };
+                if let Some(open) = frames
+                    .iter()
+                    .rposition(|(_, delimiter, _)| *delimiter == matching)
+                {
+                    frames.truncate(open);
+                }
+            }
+            "," => {
+                if let Some((_, "(", active)) = frames.last_mut() {
+                    *active += 1;
+                }
+            }
+            _ => {}
+        }
+    }
+    for (open, delimiter, active) in frames.into_iter().rev() {
+        if delimiter != "(" || open == 0 {
+            continue;
+        }
+        let callee = open - 1;
+        // Parentheses in declarations and handler heads are not calls.
+        if symbols.text(callee.saturating_sub(1)) == "callback"
+            || symbols
+                .index
+                .scopes
+                .iter()
+                .any(|scope| matches!(scope.role, Role::Handler) && scope.header.contains(&open))
+        {
+            return Value::Null;
+        }
+        let Some(symbol) = symbols
+            .at(callee)
+            .filter(|symbol| matches!(symbol.kind, Kind::Function))
+        else {
+            continue;
+        };
+        let Some(member) = symbols.callback_declaration(symbol.site.as_ref()) else {
+            continue;
+        };
+        let name = symbols.text(callee);
+        let mut label = format!("{name}({})", member.parameter_labels.join(", "));
+        if let Some(result) = &member.return_label {
+            label.push_str(" -> ");
+            label.push_str(result);
+        }
+        let parameters: Vec<_> = member
+            .parameter_labels
+            .iter()
+            .map(|label| json!({"label": label}))
+            .collect();
+        let mut result = json!({
+            "signatures": [{"label": label, "parameters": parameters}],
+            "activeSignature": 0,
+        });
+        if !parameters.is_empty() {
+            result["activeParameter"] = json!(active.min(parameters.len() - 1));
+        }
+        return result;
+    }
+    Value::Null
 }
 
 pub(crate) fn query(
@@ -133,21 +235,7 @@ pub(crate) fn query(
     let Some(cursor) = position.and_then(|(line, column)| source.offset_at(line, column)) else {
         return Value::Null;
     };
-    let Some(i) = symbols
-        .code
-        .partition_point(|token| token.range.start <= cursor)
-        .checked_sub(1)
-    else {
-        return Value::Null;
-    };
-    let hit = |i: usize| {
-        let token = symbols
-            .code
-            .get(i)
-            .filter(|token| cursor <= token.range.end)?;
-        Some((*token, symbols.at(i)?))
-    };
-    let Some((token, symbol)) = hit(i).or_else(|| hit(i.checked_sub(1)?)) else {
+    let Some((token, symbol)) = symbols.hit(cursor) else {
         return Value::Null;
     };
     match method {
@@ -224,11 +312,157 @@ pub(crate) fn query(
     }
 }
 
+pub(super) struct Occurrence {
+    pub(super) range: Range<usize>,
+    pub(super) site: Site,
+    pub(super) declaration: bool,
+    pub(super) definition: Site,
+    pub(super) alias: bool,
+}
+
+pub(super) fn occurrences(
+    tokens: &[Token<'_>],
+    end: usize,
+    workspace: Option<&Workspace<'_>>,
+) -> Vec<Occurrence> {
+    let symbols = Symbols::new(tokens, end, workspace);
+    symbols
+        .code
+        .iter()
+        .enumerate()
+        .filter_map(|(index, token)| {
+            let symbol = symbols.at(index)?;
+            Some(Occurrence {
+                range: token.range.clone(),
+                site: symbol.refactor_site(token)?.clone(),
+                declaration: symbol.modifiers & DECLARATION != 0,
+                definition: symbol.site.clone()?,
+                alias: symbol.alias_site.is_some(),
+            })
+        })
+        .collect()
+}
+
+/// Detect duplicate declarations even when the surrounding document is incomplete.
+pub(super) fn duplicate_declaration(
+    tokens: &[Token<'_>],
+    end: usize,
+    edits: &[(Range<usize>, Range<usize>)],
+    name: &str,
+) -> bool {
+    let edited = |offset| {
+        edits
+            .binary_search_by_key(&offset, |(_, new)| new.start)
+            .is_ok()
+    };
+    let code: Vec<_> = tokens.iter().filter(|token| token.code()).collect();
+    let index = Index::new(&code, end);
+    let key = xrack_ir::semantic::rust_name(name);
+    let matches = |token: &Token<'_>| xrack_ir::semantic::rust_name(token.text) == key;
+    let mut types = Vec::new();
+    let mut elements = Vec::new();
+
+    for (scope_id, scope) in index.scopes.iter().enumerate() {
+        let header = &code[scope.header.clone()];
+        match scope.role {
+            Role::Component { .. } | Role::Record { .. } => {
+                let exported =
+                    usize::from(header.first().is_some_and(|token| token.text == "export"));
+                if let Some(token) = header.get(exported + 1).filter(|token| matches(token)) {
+                    types.push(token.range.start);
+                }
+            }
+            Role::Element { id: Some(_), .. } => {
+                if let Some(token) = header
+                    .iter()
+                    .rev()
+                    .nth(2)
+                    .filter(|token| token.text == name)
+                {
+                    elements.push((index.component(scope_id), token.range.start));
+                }
+            }
+            _ => {}
+        }
+        for local in [true, false] {
+            let mut matching = scope
+                .members
+                .iter()
+                .filter(|member| {
+                    (member.kind == VARIABLE) == local
+                        && xrack_ir::semantic::rust_name(&member.name) == key
+                })
+                .peekable();
+            if let Some(first) = matching.next()
+                && matching.peek().is_some()
+                && (edited(first.range.start) || matching.any(|member| edited(member.range.start)))
+            {
+                return true;
+            }
+        }
+        // The callback declaration's parameter names are distinct from the
+        // names chosen by its handler.
+        for member in scope
+            .members
+            .iter()
+            .filter(|member| member.kind == FUNCTION)
+        {
+            let start = code.partition_point(|token| token.range.start <= member.range.start);
+            let Some([open, parameters @ ..]) = code.get(start..) else {
+                continue;
+            };
+            if open.text != "(" {
+                continue;
+            }
+            let parameters = parameters
+                .iter()
+                .take_while(|token| !matches!(token.text, ")" | "{" | "}" | ";"))
+                .copied()
+                .collect::<Vec<_>>();
+            let names: Vec<_> = parameters
+                .split(|token| token.text == ",")
+                .filter_map(|parameter| match parameter {
+                    [token, colon, ..] if colon.text == ":" && matches(token) => {
+                        Some(token.range.start)
+                    }
+                    _ => None,
+                })
+                .collect();
+            if names.len() > 1 && names.iter().copied().any(edited) {
+                return true;
+            }
+        }
+    }
+    let imports: Vec<_> = tokens
+        .iter()
+        .filter(|token| token.code() || token.quoted())
+        .collect();
+    for clause in named_imports(&imports) {
+        for binding in clause.names.split(|token| token.text == ",") {
+            if let Some(token) = binding.last().filter(|token| matches(token)) {
+                types.push(token.range.start);
+            }
+        }
+    }
+    if (types.len() > 1 || is_builtin(name) || Type::parse(name).is_some())
+        && types.iter().copied().any(edited)
+    {
+        return true;
+    }
+    elements.iter().any(|(component, offset)| {
+        edited(*offset)
+            && elements
+                .iter()
+                .any(|(other, start)| other == component && start != offset)
+    })
+}
+
 struct Symbols<'a, 'w> {
     code: Vec<&'a Token<'a>>,
     index: Index<'a>,
     workspace: Option<&'a Workspace<'w>>,
     imports: BTreeMap<String, Target>,
+    aliases: BTreeMap<String, Site>,
     modules: RefCell<BTreeMap<PathBuf, Module>>,
     known: BTreeMap<usize, Symbol>,
     elements: BTreeMap<(usize, &'a str), usize>,
@@ -261,11 +495,11 @@ impl<'a, 'w> Symbols<'a, 'w> {
             index,
             workspace,
             imports,
+            aliases: BTreeMap::new(),
             modules: RefCell::new(modules),
             known: BTreeMap::new(),
             elements,
         };
-        result.mark_declarations();
         if let Some(workspace) = workspace {
             let imports: Vec<_> = tokens.iter().filter(|t| t.code() || t.quoted()).collect();
             for clause in named_imports(&imports) {
@@ -276,6 +510,7 @@ impl<'a, 'w> Symbols<'a, 'w> {
                     let [original, ..] = binding else { continue };
                     let target = Target {
                         file: file.clone(),
+                        input: file.clone(),
                         name: original.text.into(),
                     };
                     let Some(symbol) = result.external_type(&target) else {
@@ -287,12 +522,86 @@ impl<'a, 'w> Symbols<'a, 'w> {
                     {
                         let mut alias_symbol = symbol;
                         alias_symbol.modifiers |= DECLARATION;
+                        let site = Site {
+                            range: alias.range.clone(),
+                            file: None,
+                        };
+                        alias_symbol.alias_site = Some(site.clone());
+                        result.aliases.insert(alias.text.into(), site);
                         result.known.insert(alias.range.start, alias_symbol);
                     }
                 }
             }
         }
+        result.mark_declarations();
         result
+    }
+
+    fn callback_declaration(&self, site: Option<&Site>) -> Option<Member> {
+        let mut site = site?.clone();
+        let mut visited = BTreeSet::new();
+        loop {
+            if !visited.insert((site.file.clone(), site.range.start)) {
+                return None;
+            }
+            let (member, target) = if let Some(path) = &site.file {
+                let workspace = self.workspace?.for_entry(path);
+                let text = workspace.load(path)?;
+                let tokens = editor_tokens::scan(&text);
+                let symbols = Symbols::new(&tokens, text.len(), Some(&workspace));
+                let (member, mut target) = symbols.callback_at(&site.range)?;
+                if let Some(target) = &mut target {
+                    target.file.get_or_insert_with(|| path.clone());
+                }
+                (member, target)
+            } else {
+                self.callback_at(&site.range)?
+            };
+            if let Some(target) = target {
+                site = target;
+            } else {
+                return Some(member);
+            }
+        }
+    }
+
+    fn callback_at(&self, range: &Range<usize>) -> Option<(Member, Option<Site>)> {
+        let (owner, member) = self
+            .index
+            .scopes
+            .iter()
+            .enumerate()
+            .find_map(|(owner, scope)| {
+                scope
+                    .members
+                    .iter()
+                    .find(|member| member.kind == FUNCTION && member.range == *range)
+                    .map(|member| (owner, member))
+            })?;
+        let Some(alias) = &member.callback_alias else {
+            return Some((member.clone(), None));
+        };
+        let symbol = if let Some((receiver, name)) = alias.split_once('.') {
+            let owner = self.owner(owner, receiver)?;
+            self.owner_member(owner, name, false, true)?
+        } else {
+            self.index
+                .ancestors(owner)
+                .find_map(|owner| self.owner_member(owner, alias, false, true))?
+        };
+        Some((member.clone(), Some(symbol.site?)))
+    }
+
+    fn hit(&self, cursor: usize) -> Option<(&Token<'_>, Symbol)> {
+        let i = self
+            .code
+            .partition_point(|token| token.range.start <= cursor)
+            .checked_sub(1)?;
+        let hit = |i: usize| {
+            let token = self.code.get(i).filter(|token| cursor <= token.range.end)?;
+            Some((*token, self.at(i)?))
+        };
+        hit(i).or_else(|| hit(i.checked_sub(1)?))
     }
 
     fn mark_declarations(&mut self) {
@@ -450,16 +759,18 @@ impl<'a, 'w> Symbols<'a, 'w> {
                 return Symbol::declared(kind, declaration.range.clone(), None);
             }
         }
-        if let Some(symbol) = self
+        if let Some(mut symbol) = self
             .imports
             .get(name)
             .and_then(|target| self.external_type(target))
         {
+            symbol.alias_site = self.aliases.get(name).cloned();
             return symbol;
         }
         Symbol {
             kind: fallback,
             site: None,
+            alias_site: None,
             ty: None,
             type_file: None,
             modifiers: 0,

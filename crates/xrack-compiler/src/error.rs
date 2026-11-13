@@ -25,14 +25,19 @@ pub enum CompilerError {
     Json(#[from] serde_json::Error),
 }
 
-impl CompilerError {
-    pub(crate) fn at(file: &std::path::Path, span: ast::Span, message: impl Into<String>) -> Self {
-        Self::Diagnostics {
-            filename: file.to_string_lossy().into_owned(),
-            diagnostics: vec![ast::Diagnostic {
-                span,
-                message: message.into(),
-            }],
+impl From<xrack_ir::modules::ModuleError> for CompilerError {
+    fn from(error: xrack_ir::modules::ModuleError) -> Self {
+        use xrack_ir::modules::ModuleError;
+        match error {
+            ModuleError::Diagnostics {
+                filename,
+                diagnostics,
+                ..
+            } => Self::Diagnostics {
+                filename,
+                diagnostics,
+            },
+            ModuleError::Io { path, source } => Self::Io { path, source },
         }
     }
 }

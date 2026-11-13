@@ -5,6 +5,59 @@ use std::{
 };
 
 #[doc(hidden)]
+#[derive(Clone, Copy, Debug)]
+pub enum SecondaryWindowCommand {
+    Show,
+    Hide,
+    Close,
+}
+
+impl SecondaryWindowCommand {
+    pub fn parse(name: &str) -> Option<Self> {
+        Some(match name {
+            "show" => Self::Show,
+            "hide" => Self::Hide,
+            "close" => Self::Close,
+            _ => return None,
+        })
+    }
+
+    pub fn try_apply<E>(
+        self,
+        visible: impl FnOnce() -> Result<bool, E>,
+        set_visible: impl FnOnce(bool) -> Result<(), E>,
+        close: impl FnOnce() -> Result<(), E>,
+    ) -> Result<(), E> {
+        match self {
+            Self::Show => set_visible(true),
+            Self::Hide => set_visible(false),
+            Self::Close if visible()? => close(),
+            Self::Close => Ok(()),
+        }
+    }
+
+    pub fn apply(
+        self,
+        visible: impl FnOnce() -> bool,
+        set_visible: impl FnOnce(bool),
+        close: impl FnOnce(),
+    ) {
+        self.try_apply(
+            || Ok::<_, std::convert::Infallible>(visible()),
+            |value| {
+                set_visible(value);
+                Ok(())
+            },
+            || {
+                close();
+                Ok(())
+            },
+        )
+        .unwrap_or_else(|error| match error {})
+    }
+}
+
+#[doc(hidden)]
 pub struct SecondaryWindowSlot(u64);
 
 impl Default for SecondaryWindowSlot {

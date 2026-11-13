@@ -188,6 +188,15 @@ impl EditableRow for String {
 
 impl Instance {
     pub(crate) fn visual_flag_value(&self, element: &Element, name: &str) -> Result<Option<bool>> {
+        self.visual_flag_value_with(element, name, |cases| self.state_value(cases))
+    }
+
+    pub(super) fn visual_flag_value_with(
+        &self,
+        element: &Element,
+        name: &str,
+        state_value: impl FnOnce(&[StateCase]) -> Result<Option<Value>>,
+    ) -> Result<Option<bool>> {
         if let Some(cases) = element.state_bindings.get(name) {
             if self.caches_action_flag(element, name, cases) {
                 return Ok(match self.cached_action_flag(element, name, cases)? {
@@ -195,7 +204,7 @@ impl Instance {
                     _ => None,
                 });
             }
-            if let Some(Value::Bool(value)) = self.state_value(cases)? {
+            if let Some(Value::Bool(value)) = state_value(cases)? {
                 return Ok(Some(value));
             }
         }
@@ -445,6 +454,7 @@ impl Instance {
                 item: repeat.item.clone(),
                 index: repeat.index.clone(),
                 context: RowContext::with_sample(key, index, item),
+                sampled: true,
             },
         )
     }

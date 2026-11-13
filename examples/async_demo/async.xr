@@ -16,6 +16,16 @@ export component AsyncDemo inherits Window {
     pure callback result-label(string) -> string;
     result-label(label) => { label }
 
+    startup := Timer {
+        interval: 1;
+        running: true;
+        repeat: false;
+        triggered() => {
+            root.start-local();
+            root.search(root.query);
+        }
+    }
+
     VerticalLayout {
         padding: 16px;
         spacing: 8px;

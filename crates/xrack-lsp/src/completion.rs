@@ -1,11 +1,14 @@
 mod imports;
+mod index_cache;
 mod symbols;
+mod workspace_index;
 
 use crate::{
     analysis::Source,
     catalog,
     editor_tokens::{self, Token, name},
 };
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -21,8 +24,9 @@ use xrack_ir::semantic::{
 };
 use xrack_parser::ast::Type;
 
-pub(crate) use imports::Workspace;
-pub(crate) use symbols::{legend, query};
+pub(crate) use imports::{Workspace, document_links, file_path, import_definition};
+pub(crate) use symbols::{legend, query, signature_help};
+pub(crate) use workspace_index::{BackgroundIndex, Index as WorkspaceIndex};
 
 const CLASS: u32 = 7;
 const FIELD: u32 = 5;
@@ -59,16 +63,19 @@ enum Role<'a> {
     Block,
 }
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct Member {
     name: String,
     ty: Option<Type>,
-    visibility: &'static str,
+    visibility: String,
     kind: u32,
     range: Range<usize>,
     file: Option<PathBuf>,
     type_file: Option<PathBuf>,
     parameters: Vec<Type>,
+    parameter_labels: Vec<String>,
+    return_label: Option<String>,
+    callback_alias: Option<String>,
 }
 
 struct Scope<'a> {
@@ -197,12 +204,15 @@ impl<'a> Index<'a> {
                         scopes[current].members.push(Member {
                             name: member.text.into(),
                             ty: Some(ty),
-                            visibility,
+                            visibility: visibility.into(),
                             kind: PROPERTY,
                             range: member.range.clone(),
                             file: None,
                             type_file: None,
                             parameters: vec![],
+                            parameter_labels: vec![],
+                            return_label: None,
+                            callback_alias: None,
                         });
                     }
                 }
@@ -213,15 +223,19 @@ impl<'a> Index<'a> {
                     ) =>
                 {
                     if let Some(member) = tokens.get(i + 1).filter(|t| name(t.text)) {
+                        let signature = callback_signature(&tokens[i + 2..]);
                         scopes[current].members.push(Member {
                             name: member.text.into(),
                             ty: None,
-                            visibility: "out",
+                            visibility: "out".into(),
                             kind: FUNCTION,
                             range: member.range.clone(),
                             file: None,
                             type_file: None,
-                            parameters: callback_parameters(&tokens[i + 2..]),
+                            parameters: signature.parameters,
+                            parameter_labels: signature.labels,
+                            return_label: signature.result,
+                            callback_alias: signature.alias,
                         });
                     }
                 }
@@ -233,12 +247,15 @@ impl<'a> Index<'a> {
                         scopes[current].members.push(Member {
                             name: token.text.into(),
                             ty: Some(ty),
-                            visibility: "in-out",
+                            visibility: "in-out".into(),
                             kind: FIELD,
                             range: token.range.clone(),
                             file: None,
                             type_file: None,
                             parameters: vec![],
+                            parameter_labels: vec![],
+                            return_label: None,
+                            callback_alias: None,
                         });
                     }
                 }
@@ -493,12 +510,15 @@ fn locals(head: &[&Token<'_>], role: Role<'_>) -> Vec<Member> {
                     .or_else(|| pointer_handler.then_some(Type::PointerEvent))
                     .or_else(|| key_handler.then_some(Type::KeyEvent))
             },
-            visibility: "private",
+            visibility: "private".into(),
             kind: VARIABLE,
             range: t.range.clone(),
             file: None,
             type_file: None,
             parameters: vec![],
+            parameter_labels: vec![],
+            return_label: None,
+            callback_alias: None,
         })
         .collect()
 }
@@ -520,27 +540,65 @@ fn repeat_model<'a>(head: &[&Token<'a>]) -> Vec<&'a str> {
         })
 }
 
-fn callback_parameters(tokens: &[&Token<'_>]) -> Vec<Type> {
+#[derive(Default)]
+struct CallbackSignature {
+    parameters: Vec<Type>,
+    labels: Vec<String>,
+    result: Option<String>,
+    alias: Option<String>,
+}
+
+fn callback_signature(tokens: &[&Token<'_>]) -> CallbackSignature {
+    let mut signature = CallbackSignature::default();
     let [open, tail @ ..] = tokens else {
-        return vec![];
+        return signature;
     };
+    if open.text == "<=>" {
+        let target = tail
+            .iter()
+            .take_while(|token| token.text != ";")
+            .take_while(|token| name(token.text) || token.text == ".")
+            .map(|token| token.text)
+            .collect::<String>();
+        signature.alias = (!target.is_empty()).then_some(target);
+        return signature;
+    }
     if open.text != "(" {
-        return vec![];
+        return signature;
     }
     let end = tail
         .iter()
         .position(|token| matches!(token.text, ")" | ";" | "{" | "}"))
         .unwrap_or(tail.len());
-    tail[..end]
-        .split(|token| token.text == ",")
-        .filter_map(|parameter| {
-            let ty = match parameter {
-                [_, colon, ty @ ..] if colon.text == ":" => ty,
-                _ => parameter,
-            };
-            read_type(ty)
-        })
-        .collect()
+    for parameter in tail[..end].split(|token| token.text == ",") {
+        let (name, ty) = match parameter {
+            [name, colon, ty @ ..] if colon.text == ":" => (Some(name.text), ty),
+            _ => (None, parameter),
+        };
+        if let Some(kind) = read_type(ty) {
+            let label = type_spelling(ty);
+            signature
+                .labels
+                .push(name.map_or_else(|| label.clone(), |name| format!("{name}: {label}")));
+            signature.parameters.push(kind);
+        }
+    }
+    if let [close, arrow, ty @ ..] = &tail[end..]
+        && close.text == ")"
+        && arrow.text == "->"
+        && read_type(ty).is_some()
+    {
+        signature.result = Some(type_spelling(ty));
+    }
+    signature
+}
+
+fn type_spelling(tokens: &[&Token<'_>]) -> String {
+    match tokens {
+        [open, ty, close, ..] if open.text == "[" && close.text == "]" => format!("[{}]", ty.text),
+        [ty, ..] => ty.text.into(),
+        [] => String::new(),
+    }
 }
 
 fn read_type(tokens: &[&Token<'_>]) -> Option<Type> {
@@ -571,6 +629,7 @@ struct Items<'a> {
     range: Value,
     seen: BTreeSet<String>,
     values: Vec<Value>,
+    import_kind: Option<u32>,
 }
 
 impl<'a> Items<'a> {
@@ -604,6 +663,7 @@ impl<'a> Items<'a> {
     }
 
     fn elements(&mut self, index: &Index<'a>) {
+        self.import_kind = Some(CLASS);
         for kind in catalog::ELEMENTS
             .split_ascii_whitespace()
             .filter(|kind| is_builtin(kind))
@@ -621,6 +681,7 @@ impl<'a> Items<'a> {
     }
 
     fn types(&mut self, index: &Index<'a>) {
+        self.import_kind = Some(STRUCT);
         self.words(catalog::TYPES, CLASS, "XRack type");
         for scope in &index.scopes {
             if let Role::Record { name, .. } = scope.role {
@@ -633,11 +694,22 @@ impl<'a> Items<'a> {
     }
 }
 
+#[cfg(test)]
 pub(crate) fn complete(
     text: &str,
     line: usize,
     character: usize,
     workspace: Option<&Workspace<'_>>,
+) -> Vec<Value> {
+    complete_with_imports(text, line, character, workspace, |_, _| Vec::new())
+}
+
+pub(crate) fn complete_with_imports(
+    text: &str,
+    line: usize,
+    character: usize,
+    workspace: Option<&Workspace<'_>>,
+    exports: impl FnOnce(&str, u32) -> Vec<(String, String)>,
 ) -> Vec<Value> {
     let source = Source::new(text);
     let Some(cursor) = source.offset_at(line, character) else {
@@ -658,6 +730,7 @@ pub(crate) fn complete(
         range: source.range(start, end),
         seen: BTreeSet::new(),
         values: vec![],
+        import_kind: None,
     };
     let mut index = Index::new(&code, text.len());
     let scope = index.scope_at(cursor);
@@ -688,7 +761,111 @@ pub(crate) fn complete(
         .rposition(|t| matches!(t.text, "{" | "}" | ";"))
         .map_or(0, |i| i + 1)..];
     suggest(&index, scope, head, &mut items);
+    if let Some(kind) = items
+        .import_kind
+        .filter(|_| !items.prefix.is_empty() && workspace.is_some())
+    {
+        let occupied = import_names(&index);
+        for (label, path) in exports(items.prefix, kind) {
+            if items.seen.contains(&label)
+                || occupied.contains(&xrack_ir::semantic::rust_name(&label))
+            {
+                continue;
+            }
+            let edit = import_edit(&source, text, &tokens, &label, &path);
+            items.values.push(json!({
+                "label": label, "kind": kind, "detail": format!("Auto import from {path}"),
+                "textEdit": { "range": items.range, "newText": label },
+                "additionalTextEdits": [edit],
+            }));
+        }
+    }
     items.values
+}
+
+fn import_names(index: &Index<'_>) -> BTreeSet<String> {
+    index
+        .imports
+        .iter()
+        .copied()
+        .chain(index.scopes.iter().filter_map(|scope| match scope.role {
+            Role::Component { name, .. } | Role::Record { name, .. } => Some(name),
+            _ => None,
+        }))
+        .map(xrack_ir::semantic::rust_name)
+        .collect()
+}
+
+fn import_edit(
+    source: &Source<'_>,
+    text: &str,
+    tokens: &[Token<'_>],
+    name: &str,
+    path: &str,
+) -> Value {
+    let first = tokens
+        .iter()
+        .find(|token| token.code())
+        .map_or(0, |token| token.range.start);
+    let insertion = text[..first].rfind('\n').map_or_else(
+        || usize::from(text.starts_with('\u{feff}')) * '\u{feff}'.len_utf8(),
+        |offset| offset + 1,
+    );
+    let line_break = if text.contains("\r\n") { "\r\n" } else { "\n" };
+    let path = serde_json::to_string(path).expect("serialize import path");
+    json!({"range": source.range(insertion, insertion), "newText": format!("import {{ {name} }} from {path};{line_break}")})
+}
+
+pub(crate) fn import_fixes(
+    uri: &str,
+    text: &str,
+    version: i64,
+    diagnostics: &[Value],
+    params: &Value,
+    mut exports: impl FnMut(&str, u32) -> Vec<(String, String)>,
+) -> Vec<Value> {
+    if params["context"]["only"]
+        .as_array()
+        .is_some_and(|kinds| !kinds.iter().any(|kind| kind == "quickfix"))
+    {
+        return vec![];
+    }
+    let Some(requested) = params["context"]["diagnostics"].as_array() else {
+        return vec![];
+    };
+    let source = Source::new(text);
+    let tokens = editor_tokens::scan(text);
+    let code: Vec<_> = tokens.iter().filter(|token| token.code()).collect();
+    let occupied = import_names(&Index::new(&code, text.len()));
+    let mut fixes = Vec::new();
+    let mut seen = BTreeSet::new();
+    for diagnostic in diagnostics {
+        let Some(name) = diagnostic["data"]["missingComponent"].as_str() else {
+            continue;
+        };
+        if occupied.contains(&xrack_ir::semantic::rust_name(name))
+            || !requested.iter().any(|item| {
+                item["range"] == diagnostic["range"]
+                    && item["message"] == diagnostic["message"]
+                    && item["code"] == diagnostic["code"]
+                    && item["source"] == "xrack"
+            })
+        {
+            continue;
+        }
+        for (candidate, path) in exports(name, CLASS) {
+            if candidate != name || !seen.insert((candidate, path.clone())) {
+                continue;
+            }
+            let edit = import_edit(&source, text, &tokens, name, &path);
+            fixes.push(json!({
+                "title": format!("Import {name} from {path}"),
+                "kind": "quickfix", "diagnostics": [diagnostic],
+                "edit": { "documentChanges": [{ "textDocument": {"uri": uri, "version": version}, "edits": [edit] }] },
+            }));
+        }
+    }
+    fixes
 }
 
 fn suggest<'a>(index: &Index<'a>, scope: usize, head: &[&Token<'a>], items: &mut Items<'a>) {
@@ -977,7 +1154,9 @@ fn suggest<'a>(index: &Index<'a>, scope: usize, head: &[&Token<'a>], items: &mut
                         member.kind,
                         &format!("{} · supports two-way binding", ty.name()),
                     );
-                } else if member.kind == FUNCTION || matches!(member.visibility, "in" | "in-out") {
+                } else if member.kind == FUNCTION
+                    || matches!(member.visibility.as_str(), "in" | "in-out")
+                {
                     items.member(member);
                 }
             }
@@ -1042,7 +1221,7 @@ fn add_state_properties(index: &Index<'_>, owner: usize, timing: bool, items: &m
     }
     if instance && !timing {
         for member in index.members(owner, true) {
-            if matches!(member.visibility, "in" | "in-out") && member.ty.is_some() {
+            if matches!(member.visibility.as_str(), "in" | "in-out") && member.ty.is_some() {
                 items.member(member);
             }
         }

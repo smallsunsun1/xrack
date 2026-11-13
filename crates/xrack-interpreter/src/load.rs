@@ -5,7 +5,7 @@ use crate::{
 };
 use std::{cell::RefCell, collections::HashMap};
 use xrack_mlir::{
-    AliasGraph, AnimationRef, ComponentAnalysis, Module, OperationRef, RecordDeclRef, RepeatRef,
+    AliasGraphs, AnimationRef, ComponentAnalysis, Module, OperationRef, RecordDeclRef, RepeatRef,
     StateCaseRef, TranslationRef, ValueRef,
 };
 use xrack_resources::visual::{
@@ -48,21 +48,7 @@ pub(crate) fn program(
             })
             .collect::<Result<BTreeMap<_, _>>>()?,
     );
-    let mut properties = BTreeMap::new();
-    let mut callbacks = BTreeMap::new();
-    for op in module.operations().filter(|op| op.name() == "xr.component") {
-        let name = attribute(op, "sym_name")?;
-        let mut graph = AliasGraph::default();
-        graph.index(op, false).map_err(|error| invalid(op, error))?;
-        properties.insert(name, graph);
-        let mut graph = AliasGraph::default();
-        graph.index(op, true).map_err(|error| invalid(op, error))?;
-        callbacks.insert(name, graph);
-    }
-    let aliases = Aliases {
-        properties: &properties,
-        callbacks: &callbacks,
-    };
+    let aliases = AliasGraphs::from_module(module).map_err(Error::Invalid)?;
     let assets = Rc::new(AssetValues {
         images,
         markdown: xrack_resources::collect_markdown(module).map_err(Error::Invalid)?,
@@ -109,11 +95,6 @@ pub(crate) fn program(
         translations: translations.map(Rc::new),
         fonts,
     })
-}
-
-struct Aliases<'a, 'm> {
-    properties: &'a BTreeMap<&'m str, AliasGraph<'m>>,
-    callbacks: &'a BTreeMap<&'m str, AliasGraph<'m>>,
 }
 
 type Op<'m> = OperationRef<'m>;
@@ -217,10 +198,7 @@ fn kind(op: Op<'_>, ty: &Type) -> Result<ValueType> {
 }
 
 fn value_type(op: Op<'_>, value: ValueRef<'_>) -> Result<Type> {
-    let ty = value.type_name();
-    ty.strip_prefix("!xr.")
-        .and_then(Type::parse)
-        .ok_or_else(|| unsupported(op, &ty))
+    value.xr_type().map_err(|error| unsupported(op, &error))
 }
 
 fn value_kind(op: Op<'_>, value: ValueRef<'_>) -> Result<ValueType> {
@@ -302,7 +280,7 @@ impl<'m> Loader<'m> {
         can_translate: bool,
         records: Rc<RecordSchemas>,
         assets: Rc<AssetValues<'m>>,
-        aliases: &Aliases<'_, 'm>,
+        aliases: &AliasGraphs<'m>,
     ) -> Result<Definition> {
         let visual_bindings = op
             .children()
@@ -315,8 +293,8 @@ impl<'m> Loader<'m> {
             visual_bindings,
             analysis: ComponentAnalysis::from_component(
                 op,
-                aliases.properties,
-                aliases.callbacks,
+                &aliases.properties,
+                &aliases.callbacks,
                 use_visual_plan,
             )
             .map_err(|error| invalid(op, error))?,
@@ -339,7 +317,7 @@ impl<'m> Loader<'m> {
         for (member, property) in &mut loader.properties {
             if let PropertySource::Alias(target) = &mut property.source {
                 let (owner, name) = aliases.properties[component]
-                    .resolve(aliases.properties, (&member.owner, &member.name))
+                    .resolve(&aliases.properties, (&member.owner, &member.name))
                     .map_err(|error| invalid(op, error))?;
                 *target = Member::new(owner, name);
             }
@@ -347,7 +325,7 @@ impl<'m> Loader<'m> {
         for (member, callback) in &mut loader.callbacks {
             if callback.alias.is_some() {
                 let (owner, name) = aliases.callbacks[component]
-                    .resolve(aliases.callbacks, (&member.owner, &member.name))
+                    .resolve(&aliases.callbacks, (&member.owner, &member.name))
                     .map_err(|error| invalid(op, error))?;
                 callback.alias = Some(Member::new(owner, name));
             }
@@ -423,8 +401,7 @@ impl<'m> Loader<'m> {
     }
 
     fn function(&mut self, op: Op<'m>) -> Result<Function> {
-        let parameters: Vec<Parameter> =
-            serde_json::from_str(attribute(op, "parameters")?).map_err(|err| invalid(op, err))?;
+        let parameters = op.parameters().map_err(|error| invalid(op, error))?;
         let parameter_types = parameters
             .iter()
             .map(|param| kind(op, &param.ty))
@@ -452,16 +429,13 @@ impl<'m> Loader<'m> {
                         "xr.return_to_bounds" => "return-to-bounds",
                         _ => attribute(statement, "method")?,
                     };
-                    let command = viewport::Command::parse(method)
+                    let command = runtime::ScrollCommandMethod::parse(method)
                         .ok_or_else(|| unsupported(statement, method))?;
                     let arguments = (0..statement.operand_count())
                         .map(|index| expression(self, index))
                         .collect::<Result<_>>()?;
                     self.viewport_targets.insert(target.clone());
-                    if matches!(
-                        command,
-                        viewport::Command::SourceIndex | viewport::Command::SourceCell
-                    ) {
+                    if command.uses_source_row() {
                         self.source_scroll_targets.insert(target.clone());
                     }
                     body.push(Statement::Scroll(target, command, arguments));
@@ -503,37 +477,37 @@ impl<'m> Loader<'m> {
                             attribute(statement, "method")?,
                         )
                     };
-                    let command = focus::Command::parse(method).ok_or_else(|| {
+                    let command = runtime::FocusCommandMethod::parse(method).ok_or_else(|| {
                         invalid(statement, format_args!("unknown focus command {method}"))
                     })?;
-                    let arguments = (0..statement.operand_count())
-                        .map(|index| expression(self, index))
-                        .collect::<Result<_>>()?;
+                    let arguments = if statement.operand_count() == 0 {
+                        None
+                    } else {
+                        Some([expression(self, 0)?, expression(self, 1)?])
+                    };
                     self.focus_targets.insert(owner.into());
                     body.push(Statement::Focus(owner.into(), command, arguments));
                 }
                 "xr.tree_command" => {
                     let method = attribute(statement, "method")?;
-                    let command = tree::Command::parse(method)
+                    let command = runtime::TreeCommandMethod::parse(method)
                         .ok_or_else(|| unsupported(statement, method))?;
-                    let depth = (command == tree::Command::ExpandRecursively)
+                    let key = expression(self, 0)?;
+                    let depth = command
+                        .requires_depth()
                         .then(|| expression(self, 1))
                         .transpose()?;
                     body.push(Statement::Tree(
                         attribute(statement, "owner")?.into(),
                         command,
-                        expression(self, 0)?,
+                        key,
                         depth,
                     ));
                 }
                 "xr.timer_command" => {
-                    use xrack_runtime::TimerCommand;
-                    let command = match attribute(statement, "command")? {
-                        "start" => TimerCommand::Start,
-                        "stop" => TimerCommand::Stop,
-                        "restart" => TimerCommand::Restart,
-                        name => return Err(unsupported(statement, name)),
-                    };
+                    let name = attribute(statement, "command")?;
+                    let command = runtime::TimerCommand::parse(name)
+                        .ok_or_else(|| unsupported(statement, name))?;
                     body.push(Statement::Timer(
                         attribute(statement, "owner")?.into(),
                         command,
@@ -545,10 +519,11 @@ impl<'m> Loader<'m> {
                 )),
                 "xr.navigate" => {
                     let method = attribute(statement, "method")?;
-                    let command = stack::Command::parse(method).ok_or_else(|| {
-                        invalid(statement, format_args!("unknown stack command {method}"))
-                    })?;
-                    let argument = (command != stack::Command::Pop)
+                    let command =
+                        runtime::StackNavigationMethod::parse(method).ok_or_else(|| {
+                            invalid(statement, format_args!("unknown stack command {method}"))
+                        })?;
+                    let argument = (command != runtime::StackNavigationMethod::Pop)
                         .then(|| expression(self, 0))
                         .transpose()?;
                     body.push(Statement::StackNavigate(
@@ -576,37 +551,27 @@ impl<'m> Loader<'m> {
                 "xr.window_close" => body.push(Statement::WindowClose),
                 "xr.secondary_window_command" => {
                     let command = attribute(statement, "command")?;
-                    let command = secondary_window::Command::parse(command).ok_or_else(|| {
-                        invalid(
-                            statement,
-                            format_args!("unknown secondary window command {command}"),
-                        )
-                    })?;
+                    let command =
+                        runtime::SecondaryWindowCommand::parse(command).ok_or_else(|| {
+                            invalid(
+                                statement,
+                                format_args!("unknown secondary window command {command}"),
+                            )
+                        })?;
                     body.push(Statement::SecondaryWindow(
                         attribute(statement, "owner")?.into(),
                         command,
                     ));
                 }
                 "xr.window_command" => {
-                    use runtime::WindowCommand;
-                    let command = match attribute(statement, "command")? {
-                        "minimize" => WindowCommand::Minimize,
-                        "maximize" => WindowCommand::Maximize,
-                        "restore" => WindowCommand::Restore,
-                        "toggle-maximized" => WindowCommand::ToggleMaximized,
-                        "toggle-full-screen" => WindowCommand::ToggleFullScreen,
-                        "set-full-screen" => {
-                            body.push(Statement::WindowFullScreen(expression(self, 0)?));
-                            continue;
-                        }
-                        command => {
-                            return Err(invalid(
-                                statement,
-                                format_args!("unknown window command {command}"),
-                            ));
-                        }
-                    };
-                    body.push(Statement::WindowCommand(command));
+                    let name = attribute(statement, "command")?;
+                    let command = runtime::WindowCommandMethod::parse(name).ok_or_else(|| {
+                        invalid(statement, format_args!("unknown window command {name}"))
+                    })?;
+                    let enabled = (command == runtime::WindowCommandMethod::SetFullScreen)
+                        .then(|| expression(self, 0))
+                        .transpose()?;
+                    body.push(Statement::WindowCommand(command, enabled));
                 }
                 "xr.return" => {
                     result = Some(value_kind(statement, operand(statement, 0)?)?);
@@ -931,14 +896,14 @@ impl<'m> Loader<'m> {
                             | "column-moved"
                             | "row-moved"
                             | "search-triggered"
-                    ) && !focus::is_handler(name)
+                    ) && !runtime::is_focus_handler(name)
                         && !runtime::KeyPhase::ALL
                             .iter()
                             .any(|phase| phase.handler() == name)
                     {
                         return Err(unsupported(child, &format!("event {name}")));
                     }
-                    if focus::is_handler(name) {
+                    if runtime::is_focus_handler(name) {
                         self.focus_targets.insert(key.into());
                     }
                     if (name == "triggered" && op.attribute("kind") != Some("Timer"))
@@ -1484,15 +1449,9 @@ impl<'m> Loader<'m> {
                 Expression::NativeDialogRead(attribute(op, "owner")?.into(), field)
             }
             "xr.window_read" => {
-                use runtime::WindowMetric;
-                let metric = match spelling()? {
-                    "window-active" => WindowMetric::Active,
-                    "minimized" => WindowMetric::Minimized,
-                    "minimized-known" => WindowMetric::MinimizedKnown,
-                    "maximized" => WindowMetric::Maximized,
-                    "full-screen" => WindowMetric::FullScreen,
-                    name => return Err(invalid(op, format_args!("unknown window metric {name}"))),
-                };
+                let name = spelling()?;
+                let metric = runtime::WindowMetric::parse(name)
+                    .ok_or_else(|| invalid(op, format_args!("unknown window metric {name}")))?;
                 Expression::WindowRead(metric)
             }
             "xr.swipe_read" | "xr.scale_rotate_read" => {
@@ -1535,11 +1494,14 @@ impl<'m> Loader<'m> {
                 Expression::TreeQuery(attribute(op, "owner")?.into(), query, argument(self, 0)?)
             }
             "xr.view_index" => {
-                let target = attribute(op, "owner")?.to_owned();
+                let method = spelling()?;
+                let direction = runtime::ViewIndex::parse(method).ok_or_else(|| {
+                    invalid(op, format_args!("unknown view index query {method}"))
+                })?;
                 Expression::ViewIndex(
-                    target,
+                    attribute(op, "owner")?.into(),
                     argument(self, 0)?,
-                    spelling()? == "view-index-for-source",
+                    direction,
                 )
             }
             "xr.table_selection_read" | "xr.table_sort_read" | "xr.table_history_read" => {

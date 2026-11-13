@@ -89,7 +89,8 @@ pub struct PreviewScene {
     timers: TimerQueue,
     dialogs: NativeDialogQueue,
     window_closed: bool,
-    window_active: bool,
+    window_selected: bool,
+    window_status: xrack_runtime::WindowStatus,
     renderer_needs_redraw: bool,
     pointer_capture: Option<PointerCapture>,
     direct_pointers: Captures,
@@ -102,6 +103,12 @@ pub struct PreviewScene {
 
 impl PreviewScene {
     pub fn new(component: Box<dyn Component>) -> Self {
+        let window_status = xrack_runtime::WindowStatus {
+            active: true,
+            minimized: Some(false),
+            ..Default::default()
+        };
+        component.publish_window_status(window_status);
         Self {
             component,
             input: Interaction::default(),
@@ -129,7 +136,8 @@ impl PreviewScene {
             timers: TimerQueue::default(),
             dialogs: NativeDialogQueue::default(),
             window_closed: false,
-            window_active: true,
+            window_selected: true,
+            window_status,
             renderer_needs_redraw: false,
             pointer_capture: None,
             direct_pointers: Captures::default(),
@@ -687,7 +695,7 @@ impl PreviewScene {
         let _scroll = self.scroll.enter();
         let _focus = self.focus.enter();
         let previous = self.hover_observers.cursor_shape();
-        let pointer = self.hover_pointer.filter(|_| self.window_active);
+        let pointer = self.hover_pointer.filter(|_| self.window_status.active);
         let events = self
             .hover_observers
             .sync(&self.input, scene, layout, pointer);
@@ -2300,8 +2308,12 @@ impl PreviewScene {
     }
 
     pub fn render(&mut self, renderer: &mut Renderer) -> Result<&[u8], String> {
+        self.render_scaled(renderer, 1.0)
+    }
+
+    pub fn render_scaled(&mut self, renderer: &mut Renderer, scale: f32) -> Result<&[u8], String> {
         self.prepare_snapshot(renderer, false);
-        self.draw_prepared(renderer)?;
+        self.draw_prepared_scaled(renderer, scale)?;
         self.renderer_needs_redraw = false;
         Ok(&self.png)
     }
@@ -2331,16 +2343,38 @@ impl PreviewScene {
 
     #[doc(hidden)]
     pub fn draw_prepared(&mut self, renderer: &mut Renderer) -> Result<&[u8], String> {
+        self.draw_prepared_scaled(renderer, 1.0)
+    }
+
+    pub fn logical_size(&self) -> [u32; 2] {
+        [self.dimensions.0, self.dimensions.1]
+    }
+
+    #[doc(hidden)]
+    pub fn draw_prepared_scaled(
+        &mut self,
+        renderer: &mut Renderer,
+        scale: f32,
+    ) -> Result<&[u8], String> {
         let (scene, layout) = self
             .frame
             .take()
             .ok_or("preview window has no prepared scene")?;
         let (width, height) = self.dimensions;
+        // Bound readback and PNG transfer for large windows at high display zoom.
+        let scale = if scale.is_finite() { scale } else { 1.0 };
+        let pixel_budget = (7_000_000.0 / (width as f32 * height as f32)).sqrt();
+        let texture_limit =
+            renderer.device.limits().max_texture_dimension_2d as f32 / width.max(height) as f32;
+        let scale = scale.clamp(1.0, 4.0).min(pixel_budget).min(texture_limit);
         let snapshot = renderer.snapshot_prepared_with_transitions(
             &scene,
             layout,
-            [width, height],
-            1.0,
+            [
+                (width as f32 * scale).ceil() as u32,
+                (height as f32 * scale).ceil() as u32,
+            ],
+            scale,
             &self.input,
             &self.stack_transitions,
         )?;
@@ -2471,7 +2505,8 @@ impl PreviewScene {
                 self.input.reconcile(&scene, &layout);
             }
             self.observers.sync(&scene, &layout);
-            let mut changed = animated && self.sync_window_effects(&scene, &layout);
+            let mut changed = self.apply_window_commands();
+            changed |= animated && self.sync_window_effects(&scene, &layout);
             if animated {
                 self.input.reconcile_swipe(&scene, &layout);
                 for event in self.input.take_swipe_events() {
@@ -2626,7 +2661,7 @@ impl PreviewScene {
         }
         self.update_stack_transitions(&scene, &layout, animated);
         self.input.sync_editor(&scene);
-        if animated && self.window_active {
+        if animated && self.window_status.active {
             self.input.update_tooltip(&scene, &layout, Instant::now());
         }
         self.renderer_needs_redraw = false;
@@ -2697,10 +2732,12 @@ impl PreviewScene {
                     }
                 }
             }
-            for event in
-                self.focus_observers
-                    .sync(&self.input, &frame.0, &frame.1, self.window_active)
-            {
+            for event in self.focus_observers.sync(
+                &self.input,
+                &frame.0,
+                &frame.1,
+                self.window_status.active,
+            ) {
                 event.apply(&mut self.component, &frame.0);
             }
             if !self.component.scene_dirty() && self.focus.is_empty() && self.scroll.is_empty() {
@@ -2789,13 +2826,13 @@ impl PreviewScene {
 
     #[doc(hidden)]
     pub fn set_window_active(&mut self, active: bool) {
-        self.window_active = active;
-        self.component
-            .publish_window_status(xrack_runtime::WindowStatus {
-                active,
-                ..Default::default()
-            });
-        if !active {
+        self.window_selected = active;
+        self.publish_window_status(self.window_status);
+    }
+
+    fn publish_window_status(&mut self, mut status: xrack_runtime::WindowStatus) {
+        status.active = self.window_selected && status.minimized != Some(true);
+        if self.window_status.active && !status.active {
             self.input.cancel_text_composition(None);
             self.cancel_pointer();
             self.direct_pointers.clear();
@@ -2805,6 +2842,53 @@ impl PreviewScene {
             self.leave();
             self.input.dismiss_tooltip();
         }
+        self.window_status = status;
+        self.component.publish_window_status(status);
+    }
+
+    pub fn window_status(&self) -> xrack_runtime::WindowStatus {
+        self.window_status
+    }
+
+    pub fn request_window_restore(&mut self) {
+        let mut status = self.window_status;
+        status.minimized = Some(false);
+        status.maximized = false;
+        status.full_screen = false;
+        self.publish_window_status(status);
+    }
+
+    fn apply_window_commands(&mut self) -> bool {
+        use xrack_runtime::WindowCommand::*;
+        let mut status = self.window_status;
+        for command in self.component.take_window_commands() {
+            match command {
+                Minimize => status.minimized = Some(true),
+                Maximize | Restore | ToggleMaximized => {
+                    status.maximized = match command {
+                        Maximize => true,
+                        Restore => false,
+                        _ => status.full_screen || !status.maximized,
+                    };
+                    status.minimized = Some(false);
+                    status.full_screen = false;
+                }
+                SetFullScreen(_) | ToggleFullScreen => {
+                    status.full_screen = match command {
+                        SetFullScreen(enabled) => enabled,
+                        _ => !status.full_screen,
+                    };
+                    if status.full_screen {
+                        status.minimized = Some(false);
+                    }
+                }
+            }
+        }
+        if status == self.window_status {
+            return false;
+        }
+        self.publish_window_status(status);
+        true
     }
 
     pub fn window_closed(&self) -> bool {

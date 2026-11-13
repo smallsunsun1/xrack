@@ -1,5 +1,5 @@
 use crate::{Element, Error, Instance, Member, Result};
-use xrack_runtime::{ControlAction, DialogCommand, DialogRole, InputRoute, Node, Value};
+use xrack_runtime::{ControlAction, DialogEvent, InputRoute, Node, Value};
 
 pub(crate) struct Membership {
     pub(crate) group: String,
@@ -164,22 +164,15 @@ impl Instance {
         action: ControlAction,
         input: xrack_runtime::InputRoute<'_>,
     ) -> Result<bool> {
-        if self.control_value(element, "open")? != Some(Value::Bool(true)) || !input.is_current() {
-            return Ok(false);
-        }
-        let (event, close) = match action {
-            ControlAction::Dialog(DialogRole::Accept) => ("accepted", true),
-            ControlAction::Dialog(DialogRole::Reject) => ("rejected", true),
-            ControlAction::DialogCommand(DialogCommand::Apply) => ("applied", false),
-            ControlAction::DialogCommand(DialogCommand::Reset) => ("reset", false),
-            ControlAction::DialogCommand(DialogCommand::Help) => ("help-requested", false),
-            ControlAction::DialogCommand(DialogCommand::Discard) => ("discarded", true),
-            _ => return Ok(false),
-        };
-        if close {
-            self.set_control_value(element, "open", false.into())?;
-        }
-        self.handler(element, event, &[])?;
-        Ok(true)
+        DialogEvent::try_deliver(
+            action,
+            input,
+            || Ok(self.control_value(element, "open")? == Some(Value::Bool(true))),
+            || {
+                self.set_control_value(element, "open", false.into())
+                    .map(|_| ())
+            },
+            |event| self.handler(element, event.handler(), &[]).map(|_| ()),
+        )
     }
 }

@@ -1,6 +1,6 @@
 use crate::{
-    ChangeSignal, InputRoute, ListModel, Node, Property, RowKey, RowLifetime, TableSort, VecModel,
-    list::MAX_ROWS,
+    ChangeSignal, ControlAction, InputRoute, ListModel, Node, Property, RoutedEvent, RowKey,
+    RowLifetime, TableSort, VecModel, list::MAX_ROWS,
 };
 use std::{cell::RefCell, cmp::Ordering, ops::Range, rc::Rc};
 
@@ -323,6 +323,14 @@ impl TableRowPositions {
             None => (source < self.count).then_some(source),
         }
     }
+
+    #[doc(hidden)]
+    pub fn view_index(&self, index: usize, direction: crate::ViewIndex) -> Option<usize> {
+        match direction {
+            crate::ViewIndex::FromSource => self.visual_index(index),
+            crate::ViewIndex::ToSource => self.source_index(index),
+        }
+    }
 }
 
 #[derive(Clone, Default)]
@@ -619,6 +627,16 @@ impl TableRowOrder {
         };
         let prepared = crate::property::watch_reads(|reads| {
             let rows = rows()?;
+            if let Some(RoutedEvent::Control(ControlAction::MoveRow { row, stamp, .. })) =
+                input.map(InputRoute::event)
+                && (rows.positions().stamp() != *stamp
+                    || from >= rows.row_count()
+                    || rows.row_key(from) != *row
+                    || reads.changed()
+                    || input.is_some_and(|input| !input.is_current()))
+            {
+                return Ok(None);
+            }
             let current = usize::try_from(current()?).ok();
             let cursor = current.and_then(|index| rows.positions.source_index(index));
             let valid = !rows.positions.projected()

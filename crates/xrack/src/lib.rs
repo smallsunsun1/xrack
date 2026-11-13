@@ -1,10 +1,12 @@
 //! Cargo-facing API for XRack applications.
 pub use xrack_assets as assets;
+#[cfg(feature = "interpreter")]
+pub use xrack_interpreter as interpreter;
 pub use xrack_layout as layout;
 pub use xrack_platform_winit as platform;
 pub use xrack_platform_winit::{
-    Desktop, DesktopTray, DesktopWindow, LocalTask, SpawnLocalError, TaskCancelled, UiSender, run,
-    run_desktop, run_with_messages, spawn_local,
+    Desktop, DesktopTray, DesktopWindow, LocalTask, SpawnLocalError, TaskCancelled, run,
+    run_desktop, spawn_local,
 };
 pub use xrack_renderer_femtovg as renderer;
 pub use xrack_runtime as runtime;

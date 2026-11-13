@@ -226,8 +226,7 @@ pub fn control_default(
 }
 
 pub fn operand_type(binding: OperationRef<'_>) -> Option<Type> {
-    let name = binding.operand(0)?.type_name();
-    Type::parse(name.strip_prefix("!xr.")?)
+    binding.operand(0)?.xr_type().ok()
 }
 
 pub fn control_link<'a>(element: OperationRef<'a>, property: &str) -> Option<OperationRef<'a>> {
