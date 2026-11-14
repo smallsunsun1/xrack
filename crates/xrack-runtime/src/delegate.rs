@@ -1,6 +1,7 @@
 use crate::{
     ListModel, Node, Property, RowKey, RowLifetime, TableCellEditTarget, TableEditHistory,
-    TableRowPatch, TableRows, VecModel, table_rows::try_prepare_table_write,
+    TableRowPatch, TableRows, VecModel,
+    table_rows::{prepare_matching_table_edit, try_prepare_table_write},
 };
 use std::{
     cell::{Cell, RefCell},
@@ -10,7 +11,7 @@ use std::{
 };
 
 struct Input<Item> {
-    key: RowKey,
+    key: Cell<RowKey>,
     item: Property<Item>,
     index: Property<i64>,
 }
@@ -25,22 +26,36 @@ impl<Item> Clone for RowContext<Item> {
 }
 
 impl<Item: Clone> RowContext<Item> {
-    #[doc(hidden)]
-    pub fn with_sample(key: RowKey, index: usize, item: Item) -> Self {
-        let input = Self(Rc::new(Input {
-            key,
+    pub(crate) fn new(key: RowKey, index: usize) -> Self {
+        let context = Self(Rc::new(Input {
+            key: Cell::new(key),
             item: Property::default(),
             index: Property::default(),
         }));
-        input.0.index.set(index as i64);
+        context.0.index.set(index as i64);
+        context
+    }
+
+    #[doc(hidden)]
+    pub fn with_sample(key: RowKey, index: usize, item: Item) -> Self {
+        let input = Self::new(key, index);
         input.0.item.set(item);
         input
+    }
+
+    pub(crate) fn set_key(&self, key: RowKey) {
+        self.0.key.set(key);
     }
 
     pub fn item(&self) -> Item {
         self.0
             .item
             .get(|| unreachable!("delegate item is initialized"))
+    }
+
+    #[doc(hidden)]
+    pub fn key(&self) -> RowKey {
+        self.0.key.get()
     }
 
     pub fn index(&self) -> i64 {
@@ -59,6 +74,28 @@ impl<Item: Clone> RowContext<Item> {
         self.try_table_edit_target_for_field(rows, |_| Ok(Some(())), prepare)
     }
 
+    /// Validate an edit from a displayed row without tracking unrelated fields.
+    #[doc(hidden)]
+    pub fn try_table_edit_target_matching<M: ListModel + Clone, A, E>(
+        &self,
+        rows: impl Fn() -> Result<Option<TableRows<M>>, E>,
+        matches: impl Fn(&TableCellEditTarget<M>) -> bool,
+        available: impl FnOnce() -> Result<bool, E>,
+        prepare: impl FnOnce() -> Result<Option<A>, E>,
+    ) -> Result<Option<(TableCellEditTarget<M>, A)>, E> {
+        if !crate::property::input_path_is_current() {
+            return Ok(None);
+        }
+        let edit = try_prepare_table_write(
+            || Ok(self.table_edit_target(rows()?)),
+            |target, current| {
+                prepare_matching_table_edit(target, current, &matches, available, prepare)
+            },
+            TableCellEditTarget::edit_key,
+        )?;
+        Ok(edit.filter(|(target, _)| crate::property::input_path_is_current() && matches(target)))
+    }
+
     /// Check that the field being written still has the same value after preparation.
     #[doc(hidden)]
     pub fn try_table_edit_target_for_field<M: ListModel + Clone, A, E, F: Clone + PartialEq>(
@@ -67,35 +104,44 @@ impl<Item: Clone> RowContext<Item> {
         field: impl Fn(&TableCellEditTarget<M>) -> Result<Option<F>, E>,
         prepare: impl FnOnce() -> Result<Option<A>, E>,
     ) -> Result<Option<(TableCellEditTarget<M>, A)>, E> {
+        if !crate::property::input_path_is_current() {
+            return Ok(None);
+        }
         let result = try_prepare_table_write(
             || {
-                let Some(rows) = rows()? else {
+                let Some(target) = self.table_edit_target(rows()?) else {
                     return Ok(None);
                 };
-                let key = self.0.key;
-                let Some(index) = rows
-                    .source()
-                    .index_of_source_key(key, self.index() as usize)
-                else {
-                    return Ok(None);
-                };
-                let target = TableCellEditTarget { rows, index, key };
                 Ok(field(&target)?.map(|value| (target, value)))
             },
-            prepare,
+            |_, _| prepare(),
             |(target, value)| (target.edit_key(), value.clone()),
         )?;
-        Ok(result.map(|((target, _), prepared)| (target, prepared)))
+        Ok(result
+            .filter(|_| crate::property::input_path_is_current())
+            .map(|((target, _), prepared)| (target, prepared)))
+    }
+
+    fn table_edit_target<M: ListModel>(
+        &self,
+        rows: Option<TableRows<M>>,
+    ) -> Option<TableCellEditTarget<M>> {
+        let rows = rows?;
+        let key = self.key();
+        let index = rows
+            .source()
+            .index_of_source_key(key, self.index() as usize)?;
+        Some(TableCellEditTarget { rows, index, key })
     }
 }
 
 impl<Item: Clone + PartialEq> RowContext<Item> {
     fn current_index<T>(&self, model: &VecModel<T>) -> Option<usize> {
         let hint = self.index() as usize;
-        if model.row_key(hint) == Some(self.0.key) {
+        if model.row_key(hint) == Some(self.key()) {
             Some(hint)
         } else {
-            model.row_index(self.0.key)
+            model.row_index(self.key())
         }
     }
 
@@ -172,13 +218,19 @@ impl<Item: Clone + PartialEq> RowContext<Item> {
         let Some(index) = self.current_index(model) else {
             return false;
         };
-        if !write(index, self.0.key) {
+        if !write(index, self.key()) {
             return false;
         }
         if let Some(item) = model.project_row(index, project) {
             self.0.item.set_if_changed(item);
         }
         true
+    }
+}
+
+impl<Item: Clone + PartialEq> RowContext<Item> {
+    pub(crate) fn set_item(&self, item: Item) {
+        self.0.item.set_if_changed(item);
     }
 }
 
@@ -196,7 +248,7 @@ impl<Item: Clone + PartialEq, State, Ui> Delegate<Item, State, Ui> {
         self.synchronize.get(|| {
             // A record can move without notifying its old slot's value readers.
             self.input.index();
-            self.input.0.item.set_if_changed(item());
+            self.input.set_item(item());
         });
     }
 }
@@ -419,12 +471,7 @@ impl<Model: ListModel, State: Default, Ui> ComponentRepeater<Model, State, Ui> {
                 let row = match self.rows.borrow_mut().entry(key) {
                     std::collections::btree_map::Entry::Occupied(row) => row.get().clone(),
                     std::collections::btree_map::Entry::Vacant(row) => {
-                        let input = RowContext(Rc::new(Input {
-                            key,
-                            item: Property::default(),
-                            index: Property::default(),
-                        }));
-                        input.0.index.set_if_changed(index as i64);
+                        let input = RowContext::new(key, index);
                         row.insert(Rc::new(Delegate {
                             synchronize: Property::default(),
                             lifetime: model.row_lifetime(key),
@@ -544,16 +591,9 @@ impl<Model: ListModel, State: Default, Ui> ComponentRepeater<Model, State, Ui> {
         key: RowKey,
         follow_row: bool,
     ) -> Option<Rc<Delegate<Model::Item, State, Ui>>> {
-        let index = if follow_row {
-            model.index_of_source_key(key, index)?
-        } else {
-            if index >= model.row_count() || model.row_key(index) != key {
-                return None;
-            }
-            index
-        };
+        let index = model.event_row_index(index, key, follow_row)?;
         let row = self.rows.borrow().get(&key).cloned()?;
-        row.sync(index, || model.item(index));
+        crate::property::without_read_watches(|| row.sync(index, || model.item(index)));
         Some(row)
     }
 }

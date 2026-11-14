@@ -33,13 +33,10 @@ impl State {
 }
 
 pub(crate) fn property(element: &Element) -> Option<&'static str> {
-    match element.visual {
-        Visual::Builtin("DatePickerPopup") => Some("date"),
-        Visual::Builtin("TimePickerPopup") => Some("time"),
-        Visual::Builtin("ColorPickerPopup") => Some("color"),
-        Visual::Builtin("FontPickerPopup") => Some("font"),
-        _ => None,
-    }
+    let Visual::Builtin(kind) = element.visual else {
+        return None;
+    };
+    xrack_resources::visual::picker_value(kind).map(|(name, _)| name)
 }
 
 pub(crate) enum Input<'a> {
@@ -129,9 +126,6 @@ impl Instance {
         let ControlAction::Dialog(role) = action else {
             return Ok(false);
         };
-        if self.control_value(element, "open")? != Some(Value::Bool(true)) {
-            return Ok(false);
-        }
         let value = match self.picker_state(element).as_ref() {
             State::Date(picker) => picker
                 .try_finish_input(node, role, route, || self.date_bounds(element))?
@@ -167,73 +161,63 @@ impl Instance {
 
     pub(crate) fn picker_child_input(
         &self,
-        scene: &Node,
-        path: &[usize],
+        element: &Element,
+        tail: &[usize],
         node: &Node,
         input: Input<'_>,
     ) -> Result<bool> {
-        let mut target = None;
-        for depth in (0..path.len()).rev() {
-            let resolved = match input {
-                Input::Control(_, route) | Input::Range(_, route) => {
-                    self.input_route_target(scene, &path[..depth], route)?
-                }
-            };
-            if let Some((owner, element)) = resolved {
-                target = Some((owner, element, &path[depth..]));
-                break;
-            }
-        }
-        let Some((owner, element, tail)) = target else {
-            return Ok(false);
-        };
         if matches!(element.visual, Visual::Builtin("TimePicker")) {
             let ([slot], Input::Control(action, route)) = (tail, input) else {
                 return Ok(false);
             };
-            let Some(time) = owner.time_options(element)?.select(
-                owner.time_value(element)?,
-                *slot,
-                node,
-                action,
-            ) else {
+            let Some(time) =
+                self.time_options(element)?
+                    .select(self.time_value(element)?, *slot, node, action)
+            else {
                 return Ok(false);
             };
             if !route.is_current() {
                 return Ok(false);
             }
-            owner.set_control_value(element, "time", time.into())?;
-            owner.handler(element, "changed", &[time.into()])?;
+            self.set_control_value(element, "time", time.into())?;
+            self.handler(element, "changed", &[time.into()])?;
             return Ok(true);
         }
-        if property(element).is_none()
-            || owner.control_value(element, "open")? != Some(Value::Bool(true))
-        {
+        if property(element).is_none() {
             return Ok(false);
         }
-        Ok(match (owner.picker_state(element).as_ref(), input, tail) {
-            (State::Date(picker), Input::Control(action, route), [0]) => {
-                let bounds = owner.date_bounds(element)?;
+        Ok(match (self.picker_state(element).as_ref(), input, tail) {
+            (State::Date(picker), Input::Control(action, route), [0])
+                if picker.accepts_input(node, route) =>
+            {
+                let bounds = self.date_bounds(element)?;
                 route.is_current() && picker.edit(bounds, node, action)
             }
-            (State::Time(picker), Input::Control(action, route), [0, slot]) => {
-                let options = owner.time_options(element)?;
+            (State::Time(picker), Input::Control(action, route), [0, slot])
+                if picker.accepts_input(node, route) =>
+            {
+                let options = self.time_options(element)?;
                 route.is_current() && picker.edit(options, *slot, node, action)
             }
             (State::Font(picker), Input::Control(action, route), [0, ..]) => {
                 route.is_current() && picker.edit(node, action)
             }
-            (State::Color(picker), Input::Control(ControlAction::Spin(action), route), [0, ..]) => {
-                let show_alpha = owner.show_alpha(element)?;
+            (State::Color(picker), Input::Control(ControlAction::Spin(action), route), [0, ..])
+                if picker.accepts_input(node, route) =>
+            {
+                let show_alpha = self.show_alpha(element)?;
                 route.is_current() && picker.spin(show_alpha, node, action)
             }
             (State::Color(picker), Input::Range(action, route), [0, 5, ..]) => {
-                owner.binding_value(element, "show-color-plane")? == Some(Value::Bool(true))
+                picker.accepts_input(node, route)
+                    && self.binding_value(element, "show-color-plane")? == Some(Value::Bool(true))
                     && route.is_current()
                     && picker.adjust_plane(node, action)
             }
-            (State::Color(picker), Input::Range(action, route), [0, ..]) => {
-                let show_alpha = owner.show_alpha(element)?;
+            (State::Color(picker), Input::Range(action, route), [0, ..])
+                if picker.accepts_input(node, route) =>
+            {
+                let show_alpha = self.show_alpha(element)?;
                 route.is_current() && picker.slide(show_alpha, node, action)
             }
             _ => false,
@@ -242,26 +226,23 @@ impl Instance {
 
     pub(crate) fn edit_picker_hex(
         &self,
-        scene: &Node,
-        path: &[usize],
+        element: &Element,
+        tail: &[usize],
         node: &Node,
         text: &str,
         input: xrack_runtime::InputRoute<'_>,
     ) -> Result<bool> {
-        let Some(owner_path) = path.strip_suffix(&[0, 0, 1]) else {
-            return Ok(false);
-        };
-        let Some((owner, element)) = self.input_route_target(scene, owner_path, input)? else {
-            return Ok(false);
-        };
-        if !matches!(element.visual, Visual::Builtin("ColorPickerPopup")) {
+        if tail != [0, 0, 1] || !matches!(element.visual, Visual::Builtin("ColorPickerPopup")) {
             return Ok(false);
         }
-        let show_alpha = owner.show_alpha(element)?;
-        let state = owner.picker_state(element);
+        let state = self.picker_state(element);
         let State::Color(picker) = state.as_ref() else {
             unreachable!("color picker state")
         };
+        if !picker.accepts_input(node, input) {
+            return Ok(false);
+        }
+        let show_alpha = self.show_alpha(element)?;
         Ok(input.is_current() && picker.edit_hex(show_alpha, node, text.into()))
     }
 }

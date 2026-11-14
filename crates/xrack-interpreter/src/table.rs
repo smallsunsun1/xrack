@@ -3,17 +3,32 @@ use crate::{
     *,
 };
 use std::{cmp::Ordering, ops::Range};
+use xrack_mlir::TableRead;
 use xrack_runtime::{
     ControlAction, ListMetrics, Property, RecordValue, RowHeightOverrides, SelectionTarget,
-    TableCellEditor, TableColumnOrder, TableColumnWindow, TableHeader, TableRows, TableSelection,
-    TableSelectionAction, TableSelectionChange, TableSelectionCommand, TableSelectionMethod,
-    TableSelectionOptions, TableSelectionSnapshot, TableSort, VecModel,
+    TableCellEditor, TableColumnOrder, TableColumnWindow, TableField, TableHeader,
+    TableHeaderAction, TableRows, TableSelection, TableSelectionAction, TableSelectionChange,
+    TableSelectionCommand, TableSelectionMethod, TableSelectionOptions, TableSelectionSnapshot,
+    TableSort, VecModel,
 };
 
 pub(crate) struct Definition {
     pub(crate) model: Option<Expr>,
+    pub(crate) columns: Rc<[StandardColumn]>,
+    pub(crate) history: bool,
+    pub(crate) paste: bool,
     pub(crate) filter_field: Option<Rc<[String]>>,
     pub(crate) row_header: Option<Rc<[String]>>,
+}
+
+pub(crate) struct StandardColumn {
+    pub(crate) path: Box<[String]>,
+    pub(crate) editor: Option<(TableCellEditor, Expr)>,
+}
+
+pub(crate) enum ClipboardText {
+    Expression(Expr),
+    Text(Option<Expr>),
 }
 
 #[derive(Default)]
@@ -74,25 +89,37 @@ impl Element {
 
 pub(crate) fn field_text(value: Option<&Value>) -> String {
     match value {
-        Some(Value::String(value)) => value.clone(),
-        Some(Value::Int(value)) => value.to_string(),
-        Some(Value::Float(value)) => value.to_string(),
-        Some(Value::Bool(value)) => value.to_string(),
-        Some(Value::Time(value)) => value.to_string(),
-        Some(Value::Date(value)) => value.to_string(),
+        Some(Value::String(value)) => value.cell_text(),
+        Some(Value::Int(value)) => value.cell_text(),
+        Some(Value::Float(value)) => value.cell_text(),
+        Some(Value::Bool(value)) => value.cell_text(),
+        Some(Value::Time(value)) => value.cell_text(),
+        Some(Value::Date(value)) => value.cell_text(),
         Some(Value::CheckState(value)) => format!("{value:?}"),
         _ => String::new(),
     }
 }
 
+pub(crate) fn matches_field_text(value: Option<&Value>, text: &str) -> bool {
+    match value {
+        Some(Value::String(value)) => value.matches_cell_text(text),
+        Some(Value::Int(value)) => value.matches_cell_text(text),
+        Some(Value::Float(value)) => value.matches_cell_text(text),
+        Some(Value::Bool(value)) => value.matches_cell_text(text),
+        Some(Value::Time(value)) => value.matches_cell_text(text),
+        Some(Value::Date(value)) => value.matches_cell_text(text),
+        _ => false,
+    }
+}
+
 fn compare_fields(left: Option<&Value>, right: Option<&Value>) -> Ordering {
     match (left, right) {
-        (Some(Value::String(a)), Some(Value::String(b))) => a.cmp(b),
-        (Some(Value::Int(a)), Some(Value::Int(b))) => a.cmp(b),
-        (Some(Value::Float(a)), Some(Value::Float(b))) => a.total_cmp(b),
-        (Some(Value::Bool(a)), Some(Value::Bool(b))) => a.cmp(b),
-        (Some(Value::Date(a)), Some(Value::Date(b))) => a.cmp(b),
-        (Some(Value::Time(a)), Some(Value::Time(b))) => a.cmp(b),
+        (Some(Value::String(a)), Some(Value::String(b))) => a.compare_cells(b),
+        (Some(Value::Int(a)), Some(Value::Int(b))) => a.compare_cells(b),
+        (Some(Value::Float(a)), Some(Value::Float(b))) => a.compare_cells(b),
+        (Some(Value::Bool(a)), Some(Value::Bool(b))) => a.compare_cells(b),
+        (Some(Value::Date(a)), Some(Value::Date(b))) => a.compare_cells(b),
+        (Some(Value::Time(a)), Some(Value::Time(b))) => a.compare_cells(b),
         _ => Ordering::Equal,
     }
 }
@@ -104,55 +131,35 @@ fn filter_text(path: Rc<[String]>) -> impl Fn(&RecordValue) -> &str + Clone {
     }
 }
 
-pub(crate) fn editor(value: &Value) -> Option<TableCellEditor> {
-    Some(match value {
-        Value::String(_) => TableCellEditor::String,
-        Value::Int(_) => TableCellEditor::Int,
-        Value::Float(_) => TableCellEditor::Float,
-        Value::Bool(_) => TableCellEditor::Bool,
-        Value::Date(_) => TableCellEditor::Date,
-        Value::Time(_) => TableCellEditor::Time,
-        _ => return None,
-    })
-}
-
 fn index(value: i64) -> Option<usize> {
     usize::try_from(value).ok()
 }
 
 impl Instance {
-    fn table_owner(&self, id: &str) -> Result<(Self, &Element)> {
-        let (owner, view) = self.element_owner(id)?;
-        if view.table.is_none() {
-            return Err(Error::Invalid(format!("{id} is not a table")));
-        }
-        Ok((owner, view))
-    }
-
     /// Read the current selection of a table in this component.
     pub fn table_selection(&self, id: &str) -> Result<TableSelectionSnapshot> {
-        let (owner, view) = self.table_owner(id)?;
-        let rows = owner.view_model(view)?.table_rows()?;
-        let state = owner.repeat_state(view);
-        owner.table_snapshot(view, &rows, state.table_state())
+        let view = self.host_element(id, |view| view.table.is_some())?;
+        let rows = self.view_model(view)?.table_rows()?;
+        let state = self.repeat_state(view);
+        self.table_snapshot(view, &rows, state.table_state())
     }
 
     /// Apply a host selection command using the same path as a DSL command.
     pub fn select_table(&mut self, id: &str, action: TableSelectionAction) -> Result<bool> {
-        let (owner, view) = self.table_owner(id)?;
-        owner.apply_table_selection(view, TableSelectionCommand::Visual(action))
+        let view = self.host_element(id, |view| view.table.is_some())?;
+        self.apply_table_selection(view, TableSelectionCommand::Visual(action))
     }
 
     /// Read the active sort indicator of a table in this component.
     pub fn table_sort(&self, id: &str) -> Result<Option<TableSort>> {
-        let (owner, view) = self.table_owner(id)?;
-        Ok(owner.repeat_state(view).table_state().sort.get(|| None))
+        let view = self.host_element(id, |view| view.table.is_some())?;
+        Ok(self.repeat_state(view).table_state().sort.get(|| None))
     }
 
     /// Set or clear a table sort using the same path as a DSL command.
     pub fn set_table_sort(&mut self, id: &str, sort: Option<TableSort>) -> Result<bool> {
-        let (owner, view) = self.table_owner(id)?;
-        owner.sort_table(view, sort, None)
+        let view = self.host_element(id, |view| view.table.is_some())?;
+        self.sort_table(view, sort, None)
     }
 
     pub(crate) fn project_table(
@@ -165,10 +172,7 @@ impl Instance {
         if definition.model.is_none() && view.visible_field.is_none() {
             return Ok(state.row_order.rows(Rc::new(model.clone())));
         }
-        let columns: Rc<[Option<Rc<[String]>>]> = view
-            .table_columns()
-            .map(|column| column.column_field.clone())
-            .collect();
+        let columns = definition.columns.clone();
         state.row_order.try_project_rows_by(
             || Rc::new(model.clone()),
             || {
@@ -179,10 +183,13 @@ impl Instance {
                 }
             },
             move |column, left, right| {
-                let Some(Some(path)) = columns.get(column) else {
+                let Some(column) = columns.get(column) else {
                     return Ordering::Equal;
                 };
-                compare_fields(left.field_path(path), right.field_path(path))
+                compare_fields(
+                    left.field_path(&column.path),
+                    right.field_path(&column.path),
+                )
             },
             definition.filter_field.clone().map(filter_text),
             || match self.binding_value(view, "filter-text")? {
@@ -230,38 +237,6 @@ impl Instance {
         Ok(())
     }
 
-    fn column_editor(&self, record: &str, path: &[String]) -> Result<TableCellEditor> {
-        let mut ty = ValueType::Record(Rc::from(record));
-        for name in path {
-            let ValueType::Record(record) = &ty else {
-                return Err(Error::Invalid(format!(
-                    "invalid table field {}",
-                    path.join(".")
-                )));
-            };
-            ty = self
-                .program()
-                .records
-                .get(record.as_ref())
-                .and_then(|fields| fields.iter().find(|field| field.name == *name))
-                .ok_or_else(|| Error::Invalid(format!("unknown table field {}", path.join("."))))?
-                .ty
-                .clone();
-        }
-        match ty {
-            ValueType::String => Ok(TableCellEditor::String),
-            ValueType::Int => Ok(TableCellEditor::Int),
-            ValueType::Float => Ok(TableCellEditor::Float),
-            ValueType::Bool => Ok(TableCellEditor::Bool),
-            ValueType::Date => Ok(TableCellEditor::Date),
-            ValueType::Time => Ok(TableCellEditor::Time),
-            _ => Err(Error::Invalid(format!(
-                "unsupported editable table field {}",
-                path.join(".")
-            ))),
-        }
-    }
-
     pub(crate) fn standard_table_rows(
         &self,
         view: &Element,
@@ -273,35 +248,28 @@ impl Instance {
             .projected
             .as_ref()
             .ok_or_else(|| Error::Invalid("standard table needs records".into()))?;
-        let Some(Model::Records(records)) = &model.source else {
-            return Err(Error::Invalid("standard table needs records".into()));
-        };
-        let columns = view
-            .table_columns()
-            .map(|column| {
-                let path = column
-                    .column_field
-                    .as_deref()
-                    .ok_or_else(|| Error::Invalid("missing column field".into()))?;
-                Ok((column, path))
-            })
-            .collect::<Result<Vec<_>>>()?;
-        let header = view.table_definition().row_header.as_deref();
+        let definition = view.table_definition();
+        let columns = &definition.columns;
+        let header = definition.row_header.as_deref();
         xrack_runtime::try_project_standard_table_rows(
             rows,
             range,
             window,
             columns.len(),
             |record| header.map(|path| field_text(record.field_path(path))),
-            |record, column| field_text(record.field_path(columns[column].1)),
-            |index| {
-                let (column, path) = columns[index];
-                if !self.table_flag(column, "editable", false)? {
-                    return Ok(None);
-                }
-                self.column_editor(records.name(), path).map(Some)
-            },
+            |record, column| field_text(record.field_path(&columns[column].path)),
+            |index| self.standard_column_editor(&columns[index]),
         )
+    }
+
+    pub(crate) fn standard_column_editor(
+        &self,
+        column: &StandardColumn,
+    ) -> Result<Option<TableCellEditor>> {
+        let Some((editor, enabled)) = &column.editor else {
+            return Ok(None);
+        };
+        Ok((self.evaluate(enabled, &[])? == Value::Bool(true)).then_some(*editor))
     }
 
     pub(crate) fn table_flag(&self, element: &Element, name: &str, default: bool) -> Result<bool> {
@@ -390,8 +358,7 @@ impl Instance {
             TableSelectionEvent::CurrentCellChanged => {
                 let column = self
                     .table_snapshot(view, &self.view_model(view)?.table_rows()?, state)?
-                    .current_column()
-                    .map_or(-1, |column| column as i64);
+                    .current_column_index();
                 self.handler(
                     view,
                     "current-cell-changed",
@@ -513,31 +480,22 @@ impl Instance {
         Ok(true)
     }
 
-    pub(crate) fn table_read(&self, member: &Member) -> Result<Value> {
-        let (owner, view) = self.element_owner(&member.owner)?;
+    pub(crate) fn table_read(&self, key: &str, read: TableRead) -> Result<Value> {
+        let (owner, view) = self.element_owner(key)?;
         let state = owner.repeat_state(view);
         let sort = || state.table_state().sort.get(|| None);
-        match member.name.as_str() {
-            "can-undo" | "can-redo" => Ok(Value::Bool(
-                owner.can_replay_table(view, member.name == "can-redo")?,
-            )),
-            "current-sort-column" => Ok(Value::Int(sort().map_or(-1, |sort| sort.column as i64))),
-            "current-sort-descending" => {
-                Ok(Value::Bool(sort().is_some_and(|sort| sort.descending)))
-            }
-            name => {
-                let model = owner.view_model(view)?.table_rows()?;
-                let snapshot = owner.table_snapshot(view, &model, state.table_state())?;
-                Ok(match name {
-                    "current-column" => {
-                        Value::Int(snapshot.current_column().map_or(-1, |column| column as i64))
-                    }
-                    "selection-count" => Value::Int(snapshot.len() as i64),
-                    "has-selection" => Value::Bool(!snapshot.is_empty()),
-                    _ => return Err(Error::Invalid(format!("unknown table metric {name}"))),
-                })
-            }
-        }
+        let snapshot = || {
+            let model = owner.view_model(view)?.table_rows()?;
+            owner.table_snapshot(view, &model, state.table_state())
+        };
+        Ok(match read {
+            TableRead::History { redo } => owner.can_replay_table(view, redo)?.into(),
+            TableRead::SortColumn => TableSort::column_index(sort()).into(),
+            TableRead::SortDescending => TableSort::is_descending(sort()).into(),
+            TableRead::CurrentColumn => snapshot()?.current_column_index().into(),
+            TableRead::SelectionCount => snapshot()?.selection_count().into(),
+            TableRead::HasSelection => (!snapshot()?.is_empty()).into(),
+        })
     }
 
     pub(crate) fn table_command(
@@ -610,15 +568,12 @@ impl Instance {
             return Ok(None);
         }
         let rows = || {
-            self.table_action_view_model(view, "copyable", &node.table_column_order)?
+            self.table_action_view_model(view, "copyable", &node.table_column_order, input)?
                 .map(|model| model.table_rows())
                 .transpose()
         };
         if view.table_definition().model.is_some() {
-            let paths: Vec<_> = view
-                .table_columns()
-                .map(|column| column.column_field.as_deref())
-                .collect();
+            let fields = &view.table_definition().columns;
             return xrack_runtime::try_copy_table_text_while_current(
                 node,
                 columns,
@@ -628,11 +583,9 @@ impl Instance {
                     let Value::Record(record) = item else {
                         return Ok(None);
                     };
-                    Ok(paths
+                    Ok(fields
                         .get(column)
-                        .copied()
-                        .flatten()
-                        .map(|path| field_text(record.field_path(path))))
+                        .map(|field| field_text(record.field_path(&field.path))))
                 },
             );
         }
@@ -649,6 +602,9 @@ impl Instance {
                 let Some(cell) = template.children.get(column) else {
                     return Ok(None);
                 };
+                let Some(text) = &cell.clipboard_text else {
+                    return Ok(None);
+                };
                 if sampled.as_ref().is_none_or(|(index, _)| *index != source) {
                     sampled = Some((
                         source,
@@ -659,31 +615,21 @@ impl Instance {
                 if !row.element_shown(template)? || !row.element_shown(cell)? {
                     return Ok(None);
                 }
-                if let Some(expression) = &cell.clipboard_text {
-                    let value = row.evaluate(expression, &[])?;
-                    return Ok(Some(field_text(Some(&value))));
-                }
-                if let Some(field) = cell.row_links.values().next() {
-                    let value = match item {
-                        Value::Record(record) if !field.path.is_empty() => {
-                            record.field_path(&field.path)
+                let value = match text {
+                    ClipboardText::Expression(expression) => Some(row.evaluate(expression, &[])?),
+                    ClipboardText::Text(base) => {
+                        if let Some(cases) = cell.state_bindings.get("text")
+                            && let Some(value) = row.state_value(cases)?
+                        {
+                            Some(value)
+                        } else {
+                            base.as_ref()
+                                .map(|base| row.evaluate(base, &[]))
+                                .transpose()?
                         }
-                        _ if field.path.is_empty() => Some(item),
-                        _ => None,
-                    };
-                    return Ok(value.map(|value| field_text(Some(value))));
-                }
-                if !matches!(cell.visual, Visual::Builtin("Text" | "TableCell")) {
-                    return Ok(None);
-                }
-                if let Some(cases) = cell.state_bindings.get("text")
-                    && let Some(value) = row.state_value(cases)?
-                {
-                    return Ok(Some(field_text(Some(&value))));
-                }
-                Ok(row
-                    .binding_value(cell, "text")?
-                    .map(|value| field_text(Some(&value))))
+                    }
+                };
+                Ok(Some(field_text(value.as_ref())))
             },
         )
     }
@@ -704,7 +650,7 @@ impl Instance {
             let change = state.selection.try_apply_control(
                 node,
                 input,
-                || self.element_allows_editing(view),
+                || self.element_allows_routed_input(view, input),
                 || self.view_model(view)?.table_rows(),
                 || {
                     Ok(TableSelectionOptions {
@@ -741,38 +687,26 @@ impl Instance {
             return self.move_table_row(view, from as i64, to as i64, Some(input));
         }
         let state = state.table_state();
-        let sort = match action {
-            ControlAction::SortColumn(column) => {
-                let Some(sort) = node.table_header.as_ref().and_then(|header| {
-                    header.next_sort_if_current(column, state.sort.get(|| None))
-                }) else {
-                    return Ok(false);
-                };
-                Some(sort)
-            }
-            ControlAction::MoveColumn { from, to }
-                if !node.table_column_move_is_current(from, to, &state.column_order()) =>
-            {
-                return Ok(false);
-            }
-            _ => None,
-        };
-        let model = self.view_model(view)?;
-        if !input.is_current() || node.standard_list_stamp != model.stamp() {
+        let Some((action, rows)) = TableHeaderAction::try_prepare(
+            node,
+            input,
+            action,
+            || state.sort.get(|| None),
+            || state.column_order(),
+            || self.view_model(view)?.table_rows(),
+        )?
+        else {
             return Ok(false);
-        }
+        };
         match action {
-            ControlAction::ResizeRow { row, key, height } => {
-                Ok(state
-                    .heights
-                    .set(&model.table_rows()?, row, Some(key), f64::from(height)))
+            TableHeaderAction::ResizeRow { row, key, height } => {
+                Ok(state.heights.set(&rows, row, Some(key), f64::from(height)))
             }
-            ControlAction::ResizeColumn { column, width } => Ok(
+            TableHeaderAction::ResizeColumn { column, width } => Ok(
                 xrack_runtime::resize_table_column(&state.widths, column, width),
             ),
-            ControlAction::MoveColumn { from, to } => self.move_table_column(view, from, to),
-            ControlAction::SortColumn(_) => self.sort_table(view, sort, Some(input)),
-            _ => Ok(false),
+            TableHeaderAction::MoveColumn { from, to } => self.move_table_column(view, from, to),
+            TableHeaderAction::Sort(sort) => self.sort_table(view, Some(sort), Some(input)),
         }
     }
 }

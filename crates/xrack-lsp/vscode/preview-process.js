@@ -2,7 +2,7 @@ const { spawn } = require('node:child_process');
 const files = require('node:fs/promises');
 
 class PreviewProcess {
-    constructor(program, component, cwd, scale = 1) {
+    constructor(program, component, cwd, scale = 1, onLog) {
         this.program = program;
         this.temporary = component !== undefined;
         this.child = spawn(program, this.temporary ? [component, String(scale)] : [], { cwd, windowsHide: true });
@@ -16,6 +16,7 @@ class PreviewProcess {
         this.child.stderr.setEncoding('utf8');
         this.child.stderr.on('data', text => {
             this.stderr = (this.stderr + text).slice(-65536);
+            onLog?.(text);
         });
     }
 

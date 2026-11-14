@@ -156,6 +156,11 @@ impl TimePickerOptions {
 pub struct TimePopupState(PickerSession<Time>);
 
 impl TimePopupState {
+    #[doc(hidden)]
+    pub fn accepts_input(&self, node: &Node, input: InputRoute<'_>) -> bool {
+        self.0.accepts_input(node, input)
+    }
+
     pub fn close(&self) {
         self.0.close();
     }

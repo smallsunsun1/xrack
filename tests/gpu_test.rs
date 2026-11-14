@@ -32,6 +32,73 @@ use xrack_layout::{
     TextMeasurer, TextPosition, font_size,
 };
 
+fn interpret_example(file: &str) -> xrack_interpreter::Program {
+    let source = std::fs::read_to_string(file).unwrap();
+    let mut preview = xrack_compiler::prepare_preview(&source, file, Default::default()).unwrap();
+    let translations = preview.take_translation_catalog();
+    let (program, _) = xrack_interpreter::Program::from_module_with_file_resources(
+        &preview.module,
+        file,
+        translations,
+    )
+    .unwrap();
+    program
+}
+
+fn assert_same_pixels(
+    actual: &xrack_renderer_femtovg::Snapshot,
+    expected: &xrack_renderer_femtovg::Snapshot,
+) {
+    assert_eq!(
+        (actual.width, actual.height),
+        (expected.width, expected.height)
+    );
+    assert_eq!(actual.rgba.len(), expected.rgba.len());
+    if let Some(byte) = actual
+        .rgba
+        .iter()
+        .zip(&expected.rgba)
+        .position(|(actual, expected)| actual != expected)
+    {
+        let index = byte / 4;
+        let width = actual.width as usize;
+        let (x, y) = ((index % width) as u32, (index / width) as u32);
+        panic!(
+            "different pixel at ({x}, {y}): interpreted {:?}, compiled {:?}",
+            actual.pixel(x, y),
+            expected.pixel(x, y)
+        );
+    }
+}
+
+#[test]
+fn slotted_content_and_replacement_controls_paint_identically_in_both_backends() {
+    use xrack_runtime::Component;
+
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))
+    .unwrap();
+    let input = Interaction::default();
+    let size = Size::new(480.0, 270.0);
+    let aot = slots_ui::SlotDemo::new();
+    let interpreter = interpret_example("examples/slots/slots.xr")
+        .create("SlotDemo")
+        .unwrap();
+    let (scene, _) = renderer.prepare_scene(&aot, aot.render_shared(), size, &input);
+    let aot = renderer.snapshot(&scene, 480, 270, 1.0, &input).unwrap();
+    let (scene, _) =
+        renderer.prepare_scene(&interpreter, interpreter.render_shared(), size, &input);
+    let interpreted = renderer.snapshot(&scene, 480, 270, 1.0, &input).unwrap();
+    assert_same_pixels(&interpreted, &aot);
+    assert!(
+        aot.rgba
+            .chunks_exact(4)
+            .any(|pixel| pixel == [0xfd, 0x9f, 0x58, 0xff])
+    );
+}
+
 #[test]
 fn disabled_touch_area_keeps_its_border_and_the_child_buttons_enabled_style() {
     use layout_ui::PointerPassThroughDemo;
@@ -1503,17 +1570,14 @@ fn bundled_font_collection_shapes_and_paints_without_system_fonts() {
         );
     }
 
-    let mut loaded = scene.clone();
-    let sources = loaded.fonts.take().unwrap().sources();
-    loaded.loaded_fonts = Some(xrack_runtime::LoadedFonts::new(
-        sources.iter().map(|source| source.to_vec()).collect(),
-    ));
+    let ui = interpret_example("examples/layout/bundled.xr")
+        .create("BundledFontsDemo")
+        .unwrap();
+    let loaded = ui.try_render().unwrap();
+    assert_eq!(loaded.loaded_fonts.as_ref().unwrap().sources().len(), 1);
     let interpreted = renderer.snapshot(&loaded, 420, 190, 1.0, &input).unwrap();
-    assert_eq!(frame.rgba, interpreted.rgba);
-    assert_eq!(
-        frame.layout.at_path(&[0, 1]).unwrap().bounds,
-        interpreted.layout.at_path(&[0, 1]).unwrap().bounds,
-    );
+    assert_same_pixels(&interpreted, &frame);
+    assert_eq!(interpreted.layout, frame.layout);
 
     let blank = xrack_runtime::Node::new("Window", None);
     renderer.snapshot(&blank, 420, 190, 1.0, &input).unwrap();
@@ -2955,7 +3019,7 @@ fn scrolling_a_nested_table_preserves_its_frozen_column_and_the_next_table() {
 #[test]
 fn nested_virtual_list_scroll_repaints_only_its_own_viewport() {
     use list_ui::NestedListsDemo;
-    use xrack_runtime::Orientation;
+    use xrack_runtime::{Component, Orientation};
 
     let mut renderer = pollster::block_on(Renderer::new(
         wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
@@ -2963,17 +3027,68 @@ fn nested_virtual_list_scroll_repaints_only_its_own_viewport() {
     ))
     .unwrap();
     let ui = NestedListsDemo::new();
+    let interpreted = interpret_example("examples/list/list.xr")
+        .create("NestedListsDemo")
+        .unwrap();
     let viewport = Size::new(580.0, 330.0);
     let mut input = Interaction::default();
+    let mut interpreted_input = Interaction::default();
     let a = [1, 0, 0, 1];
     let b = [1, 1, 0, 1];
     let (initial, layout) = renderer.prepare_scene(&ui, ui.render_shared(), viewport, &input);
-    let before = renderer.snapshot(&initial, 580, 330, 1.0, &input).unwrap();
+    let before = renderer
+        .snapshot_prepared(&initial, layout.clone(), 580, 330, 1.0, &input)
+        .unwrap();
+    let (initial, interpreted_layout) = renderer.prepare_scene(
+        &interpreted,
+        interpreted.try_render().unwrap(),
+        viewport,
+        &interpreted_input,
+    );
+    let interpreted_before = renderer
+        .snapshot_prepared(
+            &initial,
+            interpreted_layout.clone(),
+            580,
+            330,
+            1.0,
+            &interpreted_input,
+        )
+        .unwrap();
+    assert_same_pixels(&interpreted_before, &before);
     assert!(input.accessibility_scroll_to(&layout, &a, Orientation::Vertical, 48.0));
+    assert!(interpreted_input.accessibility_scroll_to(
+        &interpreted_layout,
+        &a,
+        Orientation::Vertical,
+        48.0
+    ));
     let (scrolled, layout) = renderer.prepare_scene(&ui, ui.render_shared(), viewport, &input);
-    let after = renderer.snapshot(&scrolled, 580, 330, 1.0, &input).unwrap();
-    assert_eq!(scrolled.at_path(&a).unwrap().list.unwrap().first_row, 2);
-    assert_eq!(scrolled.at_path(&b).unwrap().list.unwrap().first_row, 0);
+    let after = renderer
+        .snapshot_prepared(&scrolled, layout.clone(), 580, 330, 1.0, &input)
+        .unwrap();
+    let (interpreted_scrolled, interpreted_layout) = renderer.prepare_scene(
+        &interpreted,
+        interpreted.render_shared(),
+        viewport,
+        &interpreted_input,
+    );
+    let interpreted_after = renderer
+        .snapshot_prepared(
+            &interpreted_scrolled,
+            interpreted_layout,
+            580,
+            330,
+            1.0,
+            &interpreted_input,
+        )
+        .unwrap();
+    assert_same_pixels(&interpreted_after, &after);
+    for scene in [&scrolled, &interpreted_scrolled] {
+        assert_eq!(scene.at_path(&a).unwrap().list.unwrap().first_row, 2);
+        assert_eq!(scene.at_path(&b).unwrap().list.unwrap().first_row, 0);
+    }
+    assert_eq!(interpreted.take_error(), None);
     let changed = |path: &[usize]| {
         let bounds = layout.at_path(path).unwrap().bounds;
         (bounds.y as u32..(bounds.y + bounds.height) as u32).any(|y| {
@@ -8086,15 +8201,26 @@ fn a_fixed_image_paints_its_new_source_with_the_previous_layout() {
 
 #[test]
 fn media_renders_embedded_images_and_vector_paths() {
+    use xrack_runtime::Component;
+
     let mut renderer = pollster::block_on(Renderer::new(
         wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
         None,
     ))
     .expect("GPU test requires an adapter and installed fonts");
     let mut demo = MediaDemo::new();
+    let mut interpreted = interpret_example("examples/media/media.xr")
+        .create("MediaDemo")
+        .unwrap();
     let scene = demo.render();
+    let interpreted_scene = interpreted.try_render().unwrap();
     let input = Interaction::default();
     let snapshot = renderer.snapshot(&scene, 660, 376, 1.0, &input).unwrap();
+    let interpreted_snapshot = renderer
+        .snapshot(&interpreted_scene, 660, 376, 1.0, &input)
+        .unwrap();
+    assert_same_pixels(&interpreted_snapshot, &snapshot);
+    assert_eq!(interpreted_snapshot.layout, snapshot.layout);
     let card = [0x1d, 0x29, 0x3d, 255];
 
     let mut badge = scene.find("badge").unwrap().clone();
@@ -8164,9 +8290,14 @@ fn media_renders_embedded_images_and_vector_paths() {
     );
 
     assert!(demo.dispatch("toggle", "clicked"));
+    assert!(interpreted.dispatch("toggle", "clicked"));
     let cropped = renderer
         .snapshot(&demo.render(), 660, 376, 1.0, &input)
         .unwrap();
+    let interpreted_cropped = renderer
+        .snapshot(&interpreted.try_render().unwrap(), 660, 376, 1.0, &input)
+        .unwrap();
+    assert_same_pixels(&interpreted_cropped, &cropped);
     assert_ne!(
         cropped.pixel(123, 120),
         Some(card),
@@ -8179,6 +8310,10 @@ fn media_renders_embedded_images_and_vector_paths() {
     );
 
     let hidpi = renderer.snapshot(&scene, 1320, 752, 2.0, &input).unwrap();
+    let interpreted_hidpi = renderer
+        .snapshot(&interpreted_scene, 1320, 752, 2.0, &input)
+        .unwrap();
+    assert_same_pixels(&interpreted_hidpi, &hidpi);
     assert_eq!(hidpi.layout.bounds, snapshot.layout.bounds);
     assert_eq!(hidpi.pixel(660, 372), Some([0xff, 0xe5, 0x96, 255]));
     assert_eq!(hidpi.pixel(1074, 376), Some(card));
@@ -8334,24 +8469,15 @@ fn nine_slice_preserves_asymmetric_corners_and_tiles_each_axis() {
             .unwrap()
     };
     let stretch = snapshot(&mut renderer, &ui);
-    let scene = ui.render_shared();
-    let embedded = scene.find("sliced").unwrap();
-    let image = embedded.image_asset("source").unwrap();
-    let pixels = image.pixels().unwrap();
-    let mut loaded = embedded.clone();
-    let asset = xrack_runtime::ImageAsset::Loaded(xrack_runtime::LoadedImage::new(
-        pixels.format,
-        pixels.bytes.to_vec(),
-        pixels.size,
-    ))
-    .with_nine_slice(pixels.edges.unwrap())
-    .unwrap();
-    loaded
-        .properties
-        .insert("source", xrack_runtime::Value::ImageAsset(asset));
-    let embedded_pixels = renderer.snapshot(embedded, 240, 160, 1.0, &input).unwrap();
-    let loaded_pixels = renderer.snapshot(&loaded, 240, 160, 1.0, &input).unwrap();
-    assert_eq!(loaded_pixels.rgba, embedded_pixels.rgba);
+    let interpreted = interpret_example("examples/media/media.xr")
+        .create("NineSliceDemo")
+        .unwrap();
+    let loaded = |renderer: &mut Renderer| {
+        renderer
+            .snapshot(&interpreted.try_render().unwrap(), 460, 268, 1.0, &input)
+            .unwrap()
+    };
+    assert_same_pixels(&loaded(&mut renderer), &stretch);
     let first = Some([0x6b, 0x3d, 0x92, 255]);
     let second = Some([0xd4, 0x4b, 0x76, 255]);
     let top_left = Some([0xff, 0xd1, 0x77, 255]);
@@ -8367,7 +8493,11 @@ fn nine_slice_preserves_asymmetric_corners_and_tiles_each_axis() {
     assert_eq!(stretch.pixel(218, 65), second);
 
     ui.set_horizontal_mode(ImageTileMode::Repeat);
+    interpreted
+        .set("horizontal-mode", ImageTileMode::Repeat.into())
+        .unwrap();
     let repeat = snapshot(&mut renderer, &ui);
+    assert_same_pixels(&loaded(&mut renderer), &repeat);
     assert_eq!(repeat.pixel(37, 65), first);
     assert_eq!(repeat.pixel(45, 65), second);
     assert_eq!(repeat.pixel(53, 65), first);
@@ -8377,7 +8507,14 @@ fn nine_slice_preserves_asymmetric_corners_and_tiles_each_axis() {
 
     ui.set_horizontal_mode(ImageTileMode::Round);
     ui.set_vertical_mode(ImageTileMode::Repeat);
+    interpreted
+        .set("horizontal-mode", ImageTileMode::Round.into())
+        .unwrap();
+    interpreted
+        .set("vertical-mode", ImageTileMode::Repeat.into())
+        .unwrap();
     let round = snapshot(&mut renderer, &ui);
+    assert_same_pixels(&loaded(&mut renderer), &round);
     assert_eq!(round.pixel(218, 65), second);
     assert_eq!(round.pixel(26, 72), round.pixel(26, 92));
     assert_ne!(round.pixel(26, 72), round.pixel(26, 82));
@@ -8400,7 +8537,7 @@ fn nine_slice_preserves_asymmetric_corners_and_tiles_each_axis() {
     let scene = MediaDemo::new().render_shared();
     let png = scene.find("png-image").unwrap().image("source").unwrap();
     let mut original = Node::new("Image", None);
-    original.properties.insert("source", png.into());
+    original.properties.insert("source", png.clone().into());
     let reference = renderer.snapshot(&original, 96, 48, 1.0, &input).unwrap();
     ui.set_frame(
         png.with_nine_slice(NineSlice {
@@ -8536,6 +8673,66 @@ fn animated_gif_samples_composited_frames_and_freezes_offscreen_and_when_paused(
     ui.set_animation(Image::Empty);
     sync(&mut playback, &ui, 2150);
     assert_eq!(ui.get_frame_total(), 0);
+}
+
+#[test]
+fn interpreted_and_compiled_gif_paint_the_same_frames_and_completion() {
+    use media_ui::AnimatedImageDemo;
+    use std::time::{Duration, Instant};
+    use xrack_runtime::{Component, ImagePlaybackQueue};
+
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))
+    .unwrap();
+    let interpreted = interpret_example("examples/media/media.xr")
+        .create("AnimatedImageDemo")
+        .unwrap();
+    let mut generated = AnimatedImageDemo::new();
+    interpreted.set("passes", 1_i64.into()).unwrap();
+    generated.set_passes(1);
+    let mut actual_clock = ImagePlaybackQueue::default();
+    let mut expected_clock = ImagePlaybackQueue::default();
+    let start = Instant::now();
+    let input = Interaction::default();
+    let sample = |clock: &mut ImagePlaybackQueue, scene: &xrack_runtime::Node, now| {
+        let image = scene.find("pulse").unwrap();
+        clock.sync(
+            now,
+            [(image.image_playback.as_ref().unwrap(), image.is_visible())],
+        );
+        clock.advance(now);
+        clock.next_finished().is_some_and(|event| event.finish())
+    };
+    let mut previous_color = None;
+    for (elapsed, completed) in [(0, false), (80, false), (200, false), (400, true)] {
+        let now = start + Duration::from_millis(elapsed);
+        assert_eq!(
+            sample(&mut actual_clock, &interpreted.try_render().unwrap(), now),
+            completed
+        );
+        assert_eq!(
+            sample(&mut expected_clock, &generated.render_shared(), now),
+            completed
+        );
+        assert_eq!(actual_clock.deadline(), expected_clock.deadline());
+        let actual = renderer
+            .snapshot(&interpreted.try_render().unwrap(), 460, 258, 1.0, &input)
+            .unwrap();
+        let expected = renderer
+            .snapshot(&generated.render_shared(), 460, 258, 1.0, &input)
+            .unwrap();
+        assert_same_pixels(&actual, &expected);
+        let color = actual.pixel(60, 80).unwrap();
+        if elapsed < 400 {
+            assert_ne!(Some(color), previous_color);
+        }
+        previous_color = Some(color);
+    }
+    assert_eq!(generated.get_completions(), 1);
+    assert_eq!(interpreted.get("completions"), Ok(1_i64.into()));
+    assert_eq!(interpreted.take_error(), None);
 }
 
 #[test]
@@ -10006,4 +10203,31 @@ fn preview_multiline_editor_uses_shaped_vertical_navigation_and_wheel_scroll() {
     let insertion = edited.find('X').expect("text inserted");
     assert!(insertion > 0 && insertion < long.len());
     assert_eq!(edited.replacen('X', "", 1), long);
+}
+
+#[test]
+fn media_texture_updates_pixels_without_affecting_layout() {
+    use xrack_runtime::{MediaFrame, MediaSlot, Node};
+
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))
+    .unwrap();
+    let mut root = Node::new("Window", None);
+    let mut media = Node::new("MediaPlayer", Some("video"));
+    let slot = std::rc::Rc::new(MediaSlot::default());
+    slot.populate(&mut media, "video.xr");
+    let frame = |pixel: [u8; 4]| MediaFrame::new([4, 4], pixel.repeat(16)).unwrap();
+    media.media_frame = Some(frame([255, 0, 0, 255]));
+    root.children.push(media);
+    let before = root.clone();
+    let input = Interaction::default();
+    let first = renderer.snapshot(&before, 320, 180, 1.0, &input).unwrap();
+    root.children[0].media_frame = Some(frame([0, 255, 0, 255]));
+    assert!(before.same_frame_inputs(&root));
+    assert!(!before.children[0].same_paint_except_opacity(&root.children[0]));
+    let next = renderer.snapshot(&root, 320, 180, 1.0, &input).unwrap();
+    assert_eq!(first.pixel(160, 90), Some([255, 0, 0, 255]));
+    assert_eq!(next.pixel(160, 90), Some([0, 255, 0, 255]));
 }

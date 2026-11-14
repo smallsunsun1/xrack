@@ -1,7 +1,12 @@
-use crate::Property;
+use crate::{Property, localized_number::LocalizedNumber};
 use fluent_bundle::{FluentArgs, FluentBundle, FluentResource};
 use fluent_langneg::{NegotiationStrategy, negotiate_languages};
-use std::{borrow::Cow, cell::OnceCell, collections::BTreeMap, rc::Rc};
+use std::{
+    borrow::Cow,
+    cell::{OnceCell, RefCell},
+    collections::BTreeMap,
+    rc::Rc,
+};
 
 pub use fluent_bundle::FluentValue as TranslationValue;
 pub use unic_langid::LanguageIdentifier as LocaleId;
@@ -30,15 +35,80 @@ impl LocaleContext {
 
 /// One reactive connection shared by a generated component and its descendants.
 #[derive(Clone, Default)]
-pub struct LocaleBinding(Rc<Property<LocaleContext>>);
+pub struct LocaleBinding {
+    context: Rc<Property<LocaleContext>>,
+    number: Rc<RefCell<Option<(LocaleId, LocalizedNumber)>>>,
+}
 
 impl LocaleBinding {
     pub fn set_context(&self, context: LocaleContext) {
-        self.0.set(context);
+        self.context.set(context);
     }
 
     fn language(&self) -> Option<LocaleId> {
-        self.0.get(LocaleContext::default).0.get(|| None)
+        self.context.get(LocaleContext::default).0.get(|| None)
+    }
+
+    #[doc(hidden)]
+    pub fn locale(&self, catalog: Option<&TranslationCatalog>) -> String {
+        let requested = self.language();
+        match catalog {
+            Some(catalog) => catalog.languages(requested).first().unwrap().to_string(),
+            None => requested.map_or_else(|| "und".to_owned(), |locale| locale.to_string()),
+        }
+    }
+
+    fn with_number<T>(
+        &self,
+        catalog: Option<&TranslationCatalog>,
+        use_number: impl FnOnce(&LocalizedNumber) -> T,
+    ) -> T {
+        // Keep regional number conventions even when the translation catalog
+        // resolves a requested language to a less specific tag.
+        let language = self.language().unwrap_or_else(|| {
+            catalog.map_or_else(LocaleId::default, |catalog| {
+                catalog.locales[catalog.default].clone()
+            })
+        });
+        let mut cache = self.number.borrow_mut();
+        if cache.as_ref().is_none_or(|(cached, _)| *cached != language) {
+            let formatter = LocalizedNumber::new(&language.to_string());
+            *cache = Some((language, formatter));
+        }
+        use_number(&cache.as_ref().unwrap().1)
+    }
+
+    #[doc(hidden)]
+    pub fn format_number_int(
+        &self,
+        catalog: Option<&TranslationCatalog>,
+        value: i64,
+        decimals: i64,
+    ) -> String {
+        let ascii = crate::format_fixed_int(value, decimals.clamp(0, 20) as usize);
+        self.with_number(catalog, |format| format.format(ascii))
+    }
+
+    #[doc(hidden)]
+    pub fn format_number_float(
+        &self,
+        catalog: Option<&TranslationCatalog>,
+        value: f64,
+        decimals: i64,
+    ) -> String {
+        let ascii = crate::format_fixed_float(value, decimals.clamp(0, 20) as usize);
+        self.with_number(catalog, |format| format.format(ascii))
+    }
+
+    #[doc(hidden)]
+    pub fn parse_number(
+        &self,
+        catalog: Option<&TranslationCatalog>,
+        text: &str,
+        fallback: f64,
+    ) -> f64 {
+        self.with_number(catalog, |format| format.parse(text))
+            .unwrap_or(fallback)
     }
 }
 
@@ -75,6 +145,16 @@ impl TranslationCatalog {
                 .map_err(|_| "translation bundle was already initialized")?;
         }
         Ok(catalog)
+    }
+
+    /// Expose the catalog text to the XR resource validator.
+    #[doc(hidden)]
+    pub fn sources(&self) -> impl Iterator<Item = (&LocaleId, &str, bool)> {
+        self.locales
+            .iter()
+            .zip(&self.sources)
+            .enumerate()
+            .map(|(index, (locale, source))| (locale, source.as_ref(), index == self.default))
     }
 
     fn from_sources(
@@ -118,14 +198,9 @@ impl TranslationCatalog {
         Ok(bundle)
     }
 
-    pub fn translate(
-        &self,
-        locale: &LocaleBinding,
-        id: &str,
-        args: &[(&str, TranslationValue<'_>)],
-    ) -> String {
+    fn languages(&self, requested: Option<LocaleId>) -> Vec<&LocaleId> {
         let fallback = &self.locales[self.default];
-        let mut locales = match locale.language() {
+        let mut locales = match requested {
             Some(language) => negotiate_languages(
                 &[language],
                 &self.locales,
@@ -137,8 +212,17 @@ impl TranslationCatalog {
         if !locales.contains(&fallback) {
             locales.push(fallback);
         }
+        locales
+    }
+
+    pub fn translate(
+        &self,
+        locale: &LocaleBinding,
+        id: &str,
+        args: &[(&str, TranslationValue<'_>)],
+    ) -> String {
         let args: FluentArgs<'_> = args.iter().cloned().collect();
-        for language in locales {
+        for language in self.languages(locale.language()) {
             let index = self
                 .locales
                 .iter()

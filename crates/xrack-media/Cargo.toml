@@ -1,0 +1,49 @@
+[package]
+name = "xrack-media"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "FFmpeg-backed media playback for XRack"
+include = ["src/**", "licenses/**", "tests/**"]
+
+[lib]
+path = "src/lib.rs"
+
+[features]
+default = []
+ffmpeg = [
+    "dep:lzma-rust2",
+    "dep:sha2",
+    "dep:tempfile",
+    "dep:xrack-media-bin-aarch64-apple-darwin",
+    "dep:xrack-media-bin-aarch64-pc-windows-msvc",
+    "dep:xrack-media-bin-aarch64-unknown-linux-gnu",
+    "dep:xrack-media-bin-x86_64-pc-windows-msvc",
+    "dep:xrack-media-bin-x86_64-unknown-linux-gnu",
+]
+bazel_bindings = ["ffmpeg"]
+
+[dependencies]
+libloading.workspace = true
+tempfile = { version = "3.27", optional = true }
+xrack-runtime.workspace = true
+
+lzma-rust2 = { version = "0.25", default-features = false, features = ["std", "xz"], optional = true }
+sha2 = { version = "0.11", optional = true }
+
+[target.'cfg(all(target_os = "macos", target_arch = "aarch64"))'.dependencies]
+xrack-media-bin-aarch64-apple-darwin = { path = "../../bundles/media/aarch64-apple-darwin", version = "=0.5.1", optional = true }
+
+[target.'cfg(all(target_os = "windows", target_arch = "aarch64", target_env = "msvc"))'.dependencies]
+xrack-media-bin-aarch64-pc-windows-msvc = { path = "../../bundles/media/aarch64-pc-windows-msvc", version = "=0.5.1", optional = true }
+
+[target.'cfg(all(target_os = "linux", target_arch = "aarch64", target_env = "gnu"))'.dependencies]
+xrack-media-bin-aarch64-unknown-linux-gnu = { path = "../../bundles/media/aarch64-unknown-linux-gnu", version = "=0.5.1", optional = true }
+
+[target.'cfg(all(target_os = "windows", target_arch = "x86_64", target_env = "msvc"))'.dependencies]
+xrack-media-bin-x86_64-pc-windows-msvc = { path = "../../bundles/media/x86_64-pc-windows-msvc", version = "=0.5.1", optional = true }
+
+[target.'cfg(all(target_os = "linux", target_arch = "x86_64", target_env = "gnu"))'.dependencies]
+xrack-media-bin-x86_64-unknown-linux-gnu = { path = "../../bundles/media/x86_64-unknown-linux-gnu", version = "=0.5.1", optional = true }

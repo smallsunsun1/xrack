@@ -1,0 +1,77 @@
+component SettingsPanel inherits VerticalLayout {
+    in property <string> heading: "Settings";
+    in property <color> panel-accent: #34788a;
+    padding: 16px;
+    spacing: 10px;
+
+    caption := Label { text: root.heading; color: root.panel-accent; }
+    VerticalLayout {
+        spacing: 12px;
+        @children
+    }
+    Label { text: "Tab to navigate • Space to apply • Arrow keys to adjust"; }
+}
+
+export component SlotDemo inherits Window {
+    title: "XRack — replaceable control parts";
+    width: 480px;
+    height: 270px;
+    in-out property <int> applied: 0;
+    in-out property <float> volume: 40;
+    in-out property <string> caption: "Audio settings";
+    in-out property <bool> controls-enabled: true;
+
+    panel := SettingsPanel {
+        heading: root.caption;
+        panel-accent: #26a69a;
+
+        caption := Label { text: "Volume " + root.volume; }
+        apply := Button {
+            accessible-name: "Apply settings";
+            text: "Apply settings";
+            enabled: root.controls-enabled;
+            clicked => { root.applied += 1; }
+            ButtonContent {
+                HorizontalLayout {
+                    alignment: center;
+                    spacing: 8px;
+                    Rectangle { width: 10px; height: 10px; border-radius: 5px; background: #fff; }
+                    Label { text: "Apply • " + root.applied; color: #fff; }
+                }
+            }
+        }
+        volume-slider := Slider {
+            accessible-name: "Volume";
+            value <=> root.volume;
+            minimum: 0;
+            maximum: 100;
+            step: 5;
+            enabled: root.controls-enabled;
+            SliderHandle { width: 14px; height: 14px; border-radius: 4px; background: #fd9f58; }
+        }
+    }
+}
+
+export global SharedSettings {
+    in-out property <int> count: 2;
+    out property <int> doubled: root.count * 2;
+    callback increment();
+    increment => { root.count += 1; }
+}
+
+export global SharedSummary {
+    out property <int> value: SharedSettings.doubled;
+    callback increment();
+    increment => { SharedSettings.increment(); }
+}
+
+component SettingsReadout inherits Label {
+    text: "Shared: " + SharedSettings.doubled;
+}
+
+export component GlobalDemo inherits Window {
+    out property <int> current: SharedSettings.count;
+    SettingsReadout {}
+    SettingsReadout {}
+    update := Button { clicked => { SharedSettings.increment(); } }
+}

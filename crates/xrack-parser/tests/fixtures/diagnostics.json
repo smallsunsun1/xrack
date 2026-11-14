@@ -7,7 +7,7 @@
           "line": 1,
           "column": 1
         },
-        "message": "mismatched input '<EOF>' expecting {'import', 'translations', 'export', 'struct', 'component'}"
+        "message": "mismatched input '<EOF>' expecting {'import', 'translations', 'export', 'struct', 'component', 'global'}"
       }
     ]
   ],
@@ -43,7 +43,7 @@
           "line": 1,
           "column": 34
         },
-        "message": "extraneous input 'trailing' expecting {<EOF>, 'export', 'struct', 'component'}"
+        "message": "extraneous input 'trailing' expecting {<EOF>, 'export', 'struct', 'component', 'global'}"
       }
     ]
   ],

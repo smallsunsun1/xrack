@@ -85,6 +85,8 @@ pub struct ImportName {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Component {
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub global: bool,
     pub name: String,
     pub base: String,
     #[serde(skip)]
@@ -105,6 +107,7 @@ pub enum Member {
     Element(Element),
     Animation(Animation),
     States(StateBlock),
+    Children(Span),
 }
 
 impl Member {
@@ -117,6 +120,7 @@ impl Member {
             Self::Element(x) => x.span,
             Self::Animation(x) => x.span,
             Self::States(x) => x.span,
+            Self::Children(span) => *span,
         }
     }
 }
@@ -178,6 +182,7 @@ pub enum Type {
     Color,
     Brush,
     Image,
+    LogLevel,
     ImageFit,
     ImageTileMode,
     ImageHorizontalAlignment,
@@ -269,6 +274,7 @@ impl Type {
             Self::Color => "color",
             Self::Brush => "brush",
             Self::Image => "image",
+            Self::LogLevel => "loglevel",
             Self::ImageFit => "imagefit",
             Self::ImageTileMode => "imagetilemode",
             Self::ImageHorizontalAlignment => "imagehorizontalalignment",
@@ -334,6 +340,7 @@ impl Type {
             "color" => Self::Color,
             "brush" => Self::Brush,
             "image" => Self::Image,
+            "loglevel" | "LogLevel" => Self::LogLevel,
             "imagefit" | "ImageFit" => Self::ImageFit,
             "imagetilemode" | "ImageTileMode" => Self::ImageTileMode,
             "imagehorizontalalignment" | "ImageHorizontalAlignment" => {
@@ -413,6 +420,7 @@ impl Type {
         match self {
             Self::PointerEventKind => &["down", "move", "up", "cancel"],
             Self::PointerButton => &["primary", "secondary", "middle"],
+            Self::LogLevel => crate::builtins::LOG_LEVELS,
             Self::ImageFit => &["fill", "contain", "cover", "preserve"],
             Self::ImageTileMode => &["stretch", "repeat", "round"],
             Self::ImageHorizontalAlignment => &["left", "center", "right"],
@@ -525,6 +533,7 @@ impl Serialize for Type {
             Self::RecordList(name) => serializer.serialize_str(&format!("[{name}]")),
             Self::StyledText => serializer.serialize_str("styled-text"),
             Self::StringList => serializer.serialize_str("[string]"),
+            Self::LogLevel => serializer.serialize_str("LogLevel"),
             Self::ImageFit => serializer.serialize_str("ImageFit"),
             Self::ImageTileMode => serializer.serialize_str("ImageTileMode"),
             Self::ImageHorizontalAlignment => serializer.serialize_str("ImageHorizontalAlignment"),
@@ -667,8 +676,22 @@ pub struct Call {
     pub span: Span,
 }
 
+/// Source scope retained when the compiler places a component's supplied children.
+#[doc(hidden)]
+#[derive(Clone, Debug)]
+pub struct PlacementScope {
+    pub key: String,
+    pub lexical_scope: usize,
+    pub lexical_parent: Option<String>,
+    pub source_component: Option<String>,
+    pub caller: Option<(usize, String)>,
+    pub caller_members: std::collections::BTreeSet<String>,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Element {
+    #[serde(skip)]
+    pub placement_scope: Option<PlacementScope>,
     pub id: Option<String>,
     pub ty: String,
     #[serde(skip)]

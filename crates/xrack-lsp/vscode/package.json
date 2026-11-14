@@ -2,7 +2,7 @@
   "name": "xrack",
   "displayName": "XRack",
   "description": "Navigation, semantic highlighting, diagnostics, completions and live XRack preview",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "publisher": "SunJiahe",
   "license": "MIT OR Apache-2.0",
   "repository": {
@@ -60,6 +60,7 @@
           "enumMember": ["constant.other.enum.xrack"],
           "property": ["variable.other.property.xrack"],
           "parameter": ["variable.parameter.xrack"],
+          "function.defaultLibrary": ["support.function.xrack"],
           "function": ["entity.name.function.callback.xrack"],
           "event": ["entity.name.function.handler.xrack"]
         }

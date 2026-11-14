@@ -59,7 +59,7 @@ fn fixed_image_source_updates_preserve_layout_but_intrinsic_sources_do_not() {
         bytes: &[],
         size: [48, 24],
     };
-    ui.set_picture(image.into());
+    ui.set_picture(image.clone().into());
     let fixed = ui.render_shared();
     assert_eq!(
         fixed.children[0].image_asset("source").unwrap().size(),

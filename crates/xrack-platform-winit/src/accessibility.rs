@@ -427,7 +427,10 @@ impl Builder<'_> {
         xrack_layout::child_reading_order(node)
             .filter_map(|index| {
                 let (child, layout) = node.child_at(index).zip(item.child_at(index))?;
-                if is_window_overlay(child.kind) || child.kind == "CalendarCells" {
+                if is_window_overlay(child.kind)
+                    || child.kind == "CalendarCells"
+                    || child.is_control_part()
+                {
                     return None;
                 }
                 path.push(index);
@@ -1674,7 +1677,7 @@ fn role(node: &Node, view: Option<&str>) -> Role {
             Role::Group
         }
         "Text" | "Label" | "StyledText" => Role::Label,
-        "Image" | "AnimatedImage"
+        "Image" | "AnimatedImage" | "MediaPlayer"
             if ["accessible-name", "accessible-description"]
                 .iter()
                 .any(|name| node.text(name).is_some_and(|value| !value.is_empty())) =>
@@ -2138,6 +2141,53 @@ mod tests {
             assert_eq!(frame.is_disabled(), !enabled);
             assert_eq!(child.supports_action(Action::Click), enabled);
         }
+    }
+
+    #[test]
+    fn replacement_visuals_keep_the_control_accessibility_role_actions_and_focus() {
+        let mut window = Node::new("Window", None);
+        let mut apply = button("apply", "Apply settings", 0.0);
+        let mut content = Node::new("ButtonContent", None);
+        content
+            .children
+            .push(button("decoration", "Decoration", 0.0));
+        apply.children.push(content);
+
+        let mut slider = Node::new("Slider", Some("volume"));
+        length(&mut slider, "x", 110.0);
+        length(&mut slider, "width", 100.0);
+        length(&mut slider, "height", 30.0);
+        slider
+            .properties
+            .insert("accessible-name", "Volume".to_owned().into());
+        slider.properties.insert("value", 40.0.into());
+        slider.properties.insert("maximum", 100.0.into());
+        slider.children.push(Node::new("SliderHandle", None));
+        window.children.extend([apply, slider]);
+
+        let scene = Rc::new(window);
+        let frame = Rc::new(layout(&scene, Size::new(220.0, 100.0), &mut Text));
+        let mut input = Interaction::default();
+        input.focus_next(&scene, &frame, false);
+        let mut projection = Projection::default();
+        let update = projection
+            .update(&scene, &frame, &input, 1.0, None)
+            .unwrap();
+        let (button_id, apply) = named(&update, "Apply settings");
+        assert_eq!(apply.role(), Role::Button);
+        assert!(apply.supports_action(Action::Click));
+        assert_eq!(update.focus, button_id);
+        assert!(apply.children().is_empty());
+        let (slider_id, slider) = named(&update, "Volume");
+        assert_eq!(slider.role(), Role::Slider);
+        assert_eq!(slider.numeric_value(), Some(40.0));
+        assert!(slider.supports_action(Action::SetValue));
+        assert!(slider.children().is_empty());
+        input.focus_next(&scene, &frame, false);
+        let update = projection
+            .update(&scene, &frame, &input, 1.0, None)
+            .unwrap();
+        assert_eq!(update.focus, slider_id);
     }
 
     #[test]

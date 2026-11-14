@@ -646,6 +646,8 @@ fn changing_locale_refreshes_the_tray_and_nested_window_bindings_without_resetti
     // language subscription to the context supplied by the desktop.
     window.set_count(1);
     assert!(label(&window).ends_with(" click"));
+    assert_eq!(window.get_locale(), "en-US");
+    assert_eq!(window.get_formatted_number(), "1,234.50");
     window.set_locale_context(locale.clone());
     window.set_count(3);
     assert!(label(&window).ends_with(" clicks"));
@@ -655,6 +657,7 @@ fn changing_locale_refreshes_the_tray_and_nested_window_bindings_without_resetti
     );
 
     locale.set_locale("zh-CN").unwrap();
+    assert_eq!(window.get_locale(), "zh-CN");
     let scene = window.render_shared();
     assert_eq!(scene.text("title"), Some("XRack · 系统托盘"));
     assert_eq!(
@@ -670,7 +673,9 @@ fn changing_locale_refreshes_the_tray_and_nested_window_bindings_without_resetti
         Some("打开 XRack 窗口")
     );
 
-    locale.set_locale("en-US").unwrap();
+    locale.set_locale("fr-CA").unwrap();
+    assert_eq!(window.get_locale(), "en-US");
+    assert_eq!(window.get_formatted_number(), "1\u{a0}234,50");
     assert!(label(&window).ends_with(" clicks"));
 }
 

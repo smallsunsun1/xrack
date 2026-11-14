@@ -3,6 +3,7 @@
 
 import argparse
 import json
+import os
 from pathlib import Path, PurePosixPath
 import re
 import shutil
@@ -16,6 +17,7 @@ import zipfile
 
 from compiler_bundles import ROOT, archive_members, verified_archive, workspace_version
 from package_xrackc import BAZEL_OPTIONS, cargo_licenses
+import media_bundles
 
 EXTENSION = ROOT / "crates" / "xrack-lsp" / "vscode"
 VSCE = "@vscode/vsce@4.1.0"
@@ -108,7 +110,8 @@ def stage_servers(destination, archives, host, suffix):
     if not executable.is_file() or executable.stat().st_size == 0:
         raise ValueError(f"{archive}: missing {compiler}")
     executable.chmod(0o755)
-    for source, relative in cargo_licenses(host, roots=("xrack-lsp", "xrack-preview")):
+    media_bundles.install_library(archive, host, destination)
+    for source, relative in cargo_licenses(host, roots=("xrack-lsp", "xrack-preview", "xrack-media")):
         output = destination / relative
         if not output.exists():
             output.parent.mkdir(parents=True, exist_ok=True)
@@ -116,7 +119,7 @@ def stage_servers(destination, archives, host, suffix):
 
     bazel = tool("bazel")
     targets = [f"//{directory}:{name}" for name, directory in SERVER_TARGETS.items()]
-    subprocess.run((bazel, "build", *BAZEL_OPTIONS, *targets), cwd=ROOT, check=True)
+    subprocess.run((bazel, "build", *BAZEL_OPTIONS, "--config=media", *targets), cwd=ROOT, check=True)
     bin_dir = subprocess.check_output((bazel, "info", *BAZEL_OPTIONS, "bazel-bin"), cwd=ROOT, text=True).strip()
     for name, directory in SERVER_TARGETS.items():
         server = destination / (name + suffix)
@@ -142,6 +145,10 @@ def verify_vsix(package, extension, target):
         if any(packed_manifest.get(key) != extension[key] for key in ("name", "publisher", "version")):
             raise ValueError(f"{package}: extension manifest does not match the release")
         suffix = ".exe" if target.startswith("win32-") else ""
+        host = next(host for host, platform in TARGETS.items() if platform == target)
+        media = archive.getinfo("extension/server/" + media_bundles.library_name(host))
+        if not media.file_size:
+            raise ValueError(f"{package}: empty media library")
         for name in ("xrackc", *SERVER_TARGETS):
             binary = archive.getinfo("extension/server/" + name + suffix)
             mode = binary.external_attr >> 16
@@ -168,9 +175,21 @@ def smoke_test(package, directory, suffix):
             Path(archive.extract(f"extension/server/{name}{suffix}", directory))
             for name in ("xrackc", *SERVER_TARGETS)
         )
+        media = next(name for name in archive.namelist()
+                     if name.startswith("extension/server/") and "xrack_media_ffmpeg." in name)
+        archive.extract(media, directory)
     compiler.chmod(0o755)
     lsp.chmod(0o755)
     preview.chmod(0o755)
+    source = directory / "sync.mp4"
+    shutil.copyfile(ROOT / "crates/xrack-media/tests/sync.mp4", source)
+    media_env = os.environ.copy()
+    for name in ("XRACK_MEDIA_LIBRARY", "RUNFILES_DIR", "RUNFILES_MANIFEST_FILE"):
+        media_env.pop(name, None)
+    media = subprocess.check_output((preview, "--check-media", source), text=True,
+                                    env=media_env, timeout=30)
+    if media.strip() != "media=160x90":
+        raise ValueError(f"{package}: bundled media smoke test failed: {media}")
     compiled = json.loads(subprocess.run(
         (compiler, directory / "probe.xr", "--emit", "preview"),
         input=json.dumps({"text": SAMPLE}).encode(),

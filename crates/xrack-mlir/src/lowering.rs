@@ -241,6 +241,15 @@ impl Builder {
                     let attrs = self.strings(&[("owner", &call.owner), ("name", &call.name)]);
                     self.emit("invoke", call.span, &operands, &[], &attrs)?;
                 }
+                ir::Statement::Log {
+                    level,
+                    message,
+                    span,
+                } => {
+                    let level = self.expr(level)?;
+                    let message = self.expr(message)?;
+                    self.emit("log", *span, &[level, message], &[], &[])?;
+                }
                 ir::Statement::Navigate(navigation) => {
                     let operands = self.operands(navigation.page.as_slice())?;
                     let attrs = self
@@ -251,6 +260,11 @@ impl Builder {
                     let attrs =
                         self.strings(&[("owner", &timer.owner), ("command", &timer.command)]);
                     self.emit("timer_command", timer.span, &[], &[], &attrs)?;
+                }
+                ir::Statement::Media(media) => {
+                    let operands = self.operands(media.position.as_slice())?;
+                    let attrs = self.strings(&[("owner", &media.owner), ("method", &media.method)]);
+                    self.emit("media_command", media.span, &operands, &[], &attrs)?;
                 }
                 ir::Statement::Popup(popup) => {
                     let attrs = self.strings(&[
@@ -413,7 +427,10 @@ impl Builder {
         self.filename = component.filename.as_deref().unwrap_or(filename).into();
         self.state_selectors.clear();
         let exported = if component.exported { "true" } else { "false" };
-        let attrs = self.strings(&[("sym_name", &component.name), ("exported", exported)]);
+        let mut attrs = self.strings(&[("sym_name", &component.name), ("exported", exported)]);
+        if component.global {
+            attrs.extend(self.strings(&[("global", "true")]));
+        }
         self.open("component", component.span, &attrs)?;
         for member in members {
             match member {

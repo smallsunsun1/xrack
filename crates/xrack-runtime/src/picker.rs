@@ -74,6 +74,15 @@ impl<T: Clone> PickerSession<T> {
             .then(|| self.draft.get(|| None).unwrap_or_else(|| value.clone()))
     }
 
+    pub(crate) fn accepts_input(&self, scene: &Node, input: InputRoute<'_>) -> bool {
+        input.is_current()
+            && self
+                .initial
+                .borrow()
+                .as_ref()
+                .is_some_and(|(revision, _)| scene.int(SESSION) == Some(*revision))
+    }
+
     pub(crate) fn set(&self, draft: T) {
         self.draft_revision.set(
             self.draft_revision
@@ -91,7 +100,7 @@ impl<T: Clone> PickerSession<T> {
         input: InputRoute<'_>,
         accept: impl FnOnce(T) -> Result<Option<T>, E>,
     ) -> Result<Option<T>, E> {
-        if !input.is_current() {
+        if !self.accepts_input(dialog, input) {
             return Ok(None);
         }
         if role == DialogRole::Reject {
@@ -107,9 +116,12 @@ impl<T: Clone> PickerSession<T> {
             return Ok(None);
         };
         // Bindings sampled by confirmation may invalidate the route or change the session.
-        if !input.is_current() || self.finish(dialog, role).is_none() {
+        if !self.accepts_input(dialog, input)
+            || dialog.int(DRAFT_REVISION) != Some(self.draft_revision.get())
+        {
             return Ok(None);
         }
+        self.close();
         Ok(Some(value))
     }
 

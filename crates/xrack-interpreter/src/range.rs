@@ -33,12 +33,12 @@ impl Instance {
     ) -> Result<bool> {
         model.contents_stamp();
         if let Some(tree) = view.filter(|view| view.tree.is_some()) {
-            if !owner.element_allows_editing(tree)? {
+            if !owner.editor_view_available(tree)? {
                 return Ok(false);
             }
             owner.tree_projection(tree)?;
         }
-        self.element_allows_editing(element)
+        self.input_element_available(element, false)
     }
 
     pub(crate) fn range_action(
@@ -57,22 +57,23 @@ impl Instance {
                 field,
                 node.properties.get("value"),
                 value.into(),
-                |owner, view, model, history| {
+                || Ok(true),
+                |owner, view, model, _, history| {
                     let prepared = xrack_runtime::try_prepare_range_view(
                         node,
                         action,
                         || self.row_numeric_input_available(element, owner, view, model),
                         |name| self.binding_value(element, name),
-                        history,
+                        || input.try_prepare(|| Ok(true), || history().map(Some)),
                     )?;
-                    Ok(prepared.filter(|_| input.is_current()))
+                    Ok(prepared.flatten())
                 },
             );
         }
         let Some(current) = xrack_runtime::try_prepare_range_view(
             node,
             action,
-            || self.element_allows_editing(element),
+            || self.element_allows_routed_input(element, input),
             |name| self.binding_value(element, name),
             || self.range_value(element, "value"),
         )?
@@ -83,22 +84,24 @@ impl Instance {
             return Ok(false);
         }
         let range = range.with_value(current);
-        if let Some(value) = range.apply(action) {
-            if !self.update_control(element, node, "value", value.into())? {
-                return Ok(false);
-            }
-            self.handler(element, "changed", &[value.into()])?;
-        } else if !action.is_release() {
-            return Ok(false);
-        }
-        if action.is_release() {
-            let value = self
-                .range_with_live_bounds(element, range)?
-                .with_value(self.range_value(element, "value")?)
-                .value();
-            self.handler(element, "released", &[value.into()])?;
-        }
-        Ok(true)
+        action.try_deliver(
+            range.apply(action),
+            |value| {
+                if !self.update_control(element, node, "value", value.into())? {
+                    return Ok(false);
+                }
+                self.handler(element, "changed", &[value.into()])?;
+                Ok(true)
+            },
+            || {
+                let value = self
+                    .range_with_live_bounds(element, range)?
+                    .with_value(self.range_value(element, "value")?)
+                    .value();
+                self.handler(element, "released", &[value.into()])
+                    .map(|_| ())
+            },
+        )
     }
 
     pub(crate) fn scroll_bar_action(
@@ -111,7 +114,7 @@ impl Instance {
         let Some(position) = xrack_runtime::try_prepare_range_view(
             node,
             action,
-            || self.element_allows_editing(element),
+            || self.element_allows_routed_input(element, input),
             |name| self.binding_value(element, name),
             || self.range_value(element, "position"),
         )?
@@ -152,7 +155,7 @@ impl Instance {
         let Some([lower, upper]) = xrack_runtime::try_prepare_range_view(
             node,
             action,
-            || self.element_allows_editing(element),
+            || self.element_allows_routed_input(element, input),
             |name| self.binding_value(element, name),
             &values,
         )?
@@ -171,21 +174,20 @@ impl Instance {
                 .map(Value::Float);
             self.handler(element, event, &values)
         };
-        if let Some([next_lower, next_upper]) = interval.apply(handle, action) {
-            if next_lower != lower {
-                self.update_control(element, node, "lower-value", next_lower.into())?;
-            }
-            if next_upper != upper {
-                self.update_control(element, node, "upper-value", next_upper.into())?;
-            }
-            dispatch("changed")?;
-        } else if !action.is_release() {
-            return Ok(false);
-        }
-        if action.is_release() {
-            dispatch("released")?;
-        }
-        Ok(true)
+        action.try_deliver(
+            interval.changed_values(handle, action, [lower, upper]),
+            |[next_lower, next_upper]| {
+                if let Some(value) = next_lower {
+                    self.update_control(element, node, "lower-value", value.into())?;
+                }
+                if let Some(value) = next_upper {
+                    self.update_control(element, node, "upper-value", value.into())?;
+                }
+                dispatch("changed")?;
+                Ok(true)
+            },
+            || dispatch("released").map(|_| ()),
+        )
     }
 
     pub(crate) fn spin_action(
@@ -210,17 +212,15 @@ impl Instance {
                 field,
                 node.properties.get("value"),
                 value,
-                |owner, view, model, history| {
+                || Ok(true),
+                |owner, view, model, _, history| {
                     xrack_runtime::try_prepare_spin_view(
                         node,
                         action,
                         || self.row_numeric_input_available(element, owner, view, model),
                         current,
                         |name| self.binding_value(element, name),
-                        || {
-                            let history = history()?;
-                            Ok(input.is_current().then_some(history))
-                        },
+                        || input.try_prepare(|| Ok(true), || history().map(Some)),
                     )
                 },
             );
@@ -228,7 +228,7 @@ impl Instance {
         let current = xrack_runtime::try_spin_view_is_current(
             node,
             action,
-            || self.element_allows_editing(element),
+            || self.element_allows_routed_input(element, input),
             current,
             |name| self.binding_value(element, name),
         )?;

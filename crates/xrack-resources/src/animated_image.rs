@@ -2,8 +2,8 @@ use rgb::ComponentBytes;
 use std::io::Cursor;
 use xrack_assets::{MAX_ASSET_BYTES, validate_image_size};
 
-const MAX_DECODED_BYTES: u64 = 64 * 1024 * 1024;
-const MAX_FRAMES: usize = 512;
+pub(crate) const MAX_DECODED_BYTES: u64 = 64 * 1024 * 1024;
+pub(crate) const MAX_FRAMES: usize = 512;
 
 pub(crate) struct EncodedGif {
     pub size: [u32; 2],

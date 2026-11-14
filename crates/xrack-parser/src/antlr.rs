@@ -251,8 +251,13 @@ fn document(ctx: &DocumentContextAll<'_>) -> Document {
             .iter()
             .map(|component| Component {
                 name: component.identifier(0).expect("component name").get_text(),
-                base: component.identifier(1).expect("component base").get_text(),
-                base_span: span(&*component.identifier(1).expect("component base")),
+                global: component.identifier(1).is_none(),
+                base: component
+                    .identifier(1)
+                    .map_or_else(|| "Rectangle".into(), |base| base.get_text()),
+                base_span: component
+                    .identifier(1)
+                    .map_or_else(|| span(&**component), |base| span(&*base)),
                 exported: starts_with(&**component, "export"),
                 members: members(component.member_all()),
                 span: span(&**component),
@@ -459,6 +464,7 @@ fn member(ctx: &MemberContextAll<'_>) -> Member {
             None => (None, first),
         };
         Member::Element(Element {
+            placement_scope: None,
             type_span: span(
                 &*element
                     .identifier(usize::from(id.is_some()))
@@ -483,6 +489,8 @@ fn member(ctx: &MemberContextAll<'_>) -> Member {
         })
     } else if let Some(block) = ctx.stateBlock() {
         Member::States(state_block(&block))
+    } else if starts_with(ctx, "@children") {
+        Member::Children(span(ctx))
     } else {
         unreachable!("non-animation member alternative")
     }

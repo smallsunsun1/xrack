@@ -1,6 +1,6 @@
 use crate::{Element, Error, Instance, Member, Result, Visual};
 use std::{collections::BTreeMap, rc::Rc};
-use xrack_runtime::{ButtonGroupSelection, CheckState, ListModel, Node, Value};
+use xrack_runtime::{ButtonGroupOptions, ButtonGroupSelection, CheckState, ListModel, Node, Value};
 
 pub(crate) struct Membership {
     pub(crate) key: String,
@@ -87,22 +87,27 @@ impl Instance {
                 .root
                 .find_key(key)
                 .ok_or_else(|| Error::Invalid(format!("unknown button group {key}")))?;
-            let name = match self.binding_value(group, "accessible-name")? {
-                Some(Value::String(name)) => name,
-                _ => String::new(),
-            };
-            let selection = if group.non_exclusive {
-                None
-            } else {
-                Some(self.group_selection(group)?)
-            };
+            let options = ButtonGroupOptions::try_read(
+                || {
+                    Ok(match self.binding_value(group, "accessible-name")? {
+                        Some(Value::String(name)) => name,
+                        _ => String::new(),
+                    })
+                },
+                || {
+                    (!group.non_exclusive)
+                        .then(|| self.group_selection(group))
+                        .transpose()
+                },
+                || self.group_enabled(group),
+            )?;
             xrack_runtime::bind_dynamic_button_group(
                 scene,
                 key.clone(),
-                name,
+                options.name,
                 members.paths.clone(),
-                selection,
-                self.group_enabled(group)?,
+                options.selection,
+                options.enabled,
             );
         }
         Ok(())
@@ -265,7 +270,11 @@ impl Instance {
                     else {
                         return Ok(None);
                     };
-                    return row.live_group_option(template, label);
+                    return row.live_group_option(
+                        template,
+                        label,
+                        row.item_delegate_available(template)?,
+                    );
                 }
                 if element
                     .children
@@ -283,7 +292,7 @@ impl Instance {
                 let Some(option) = element.children.get(index) else {
                     return Ok(None);
                 };
-                self.live_group_option(option, label)
+                self.live_group_option(option, label, self.input_element_available(option, false)?)
             },
         )?
         else {
@@ -308,8 +317,13 @@ impl Instance {
         Ok(true)
     }
 
-    fn live_group_option(&self, element: &Element, label: bool) -> Result<Option<String>> {
-        if !self.item_delegate_available(element)? {
+    fn live_group_option(
+        &self,
+        element: &Element,
+        label: bool,
+        available: bool,
+    ) -> Result<Option<String>> {
+        if !available {
             return Ok(None);
         }
         if label {
@@ -336,7 +350,7 @@ impl Instance {
         let selected = xrack_runtime::try_prepare_index_selection(
             index,
             || {
-                Ok(self.element_allows_editing(element)?
+                Ok(self.element_allows_routed_input(element, input)?
                     && self.table_flag(element, "interactive", false)?)
             },
             |index| {

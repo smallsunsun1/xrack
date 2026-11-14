@@ -109,7 +109,7 @@ impl Instance {
             let Some(state) = weak.upgrade() else {
                 return false;
             };
-            let owner = Instance(state);
+            let owner = Instance(state, None);
             let Some(element) = owner.definition().root.find_key(&key) else {
                 return false;
             };

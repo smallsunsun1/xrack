@@ -1,5 +1,6 @@
 use crate::ffi;
 use std::{
+    cell::Cell,
     collections::BTreeSet,
     ffi::c_void,
     fmt,
@@ -39,6 +40,7 @@ impl Drop for PassManager {
 pub struct Module {
     raw: ffi::MlirModule,
     context: Context,
+    verified: Cell<bool>,
     visual_cache_plan: bool,
 }
 
@@ -62,11 +64,13 @@ impl Module {
         Self {
             raw,
             context,
+            verified: Cell::new(false),
             visual_cache_plan: false,
         }
     }
 
     pub(crate) fn builder_handles(&mut self) -> (ffi::MlirContext, ffi::MlirBlock) {
+        self.verified.set(false);
         (self.context.0, unsafe { ffi::mlirModuleGetBody(self.raw) })
     }
 
@@ -84,46 +88,62 @@ impl Module {
         let mut module = Self {
             raw,
             context,
+            verified: Cell::new(false),
             visual_cache_plan: false,
         };
         module.verify()?;
-        module.assign_anonymous_element_keys();
+        module.normalize_element_keys();
+        module.verify()?;
         Ok(module)
     }
 
-    fn assign_anonymous_element_keys(&mut self) {
+    fn normalize_element_keys(&mut self) {
         fn collect<'m>(
             parent: OperationRef<'m>,
             used: &mut BTreeSet<String>,
-            anonymous: &mut Vec<(OperationRef<'m>, bool)>,
+            missing_keys: &mut Vec<OperationRef<'m>>,
+            root_to_normalize: &mut Option<OperationRef<'m>>,
         ) {
             for op in parent.children() {
                 if !matches!(op.name(), "xr.element" | "xr.instance") {
                     continue;
                 }
                 let key = op.attribute("key").or_else(|| op.attribute("id"));
-                if let Some(key) = key.filter(|key| !key.is_empty()) {
+                let is_root = parent.name() == "xr.component";
+                if is_root {
+                    // The dialect resolves root references through the component.
+                    if key != Some("root") {
+                        *root_to_normalize = Some(op);
+                    }
+                } else if let Some(key) = key.filter(|key| !key.is_empty()) {
                     used.insert(key.to_owned());
                 } else {
-                    anonymous.push((op, parent.name() == "xr.component"));
+                    missing_keys.push(op);
                 }
-                collect(op, used, anonymous);
+                collect(op, used, missing_keys, root_to_normalize);
             }
         }
 
         for component in self.operations().filter(|op| op.name() == "xr.component") {
             let mut used = BTreeSet::from(["root".to_owned()]);
-            let mut anonymous = Vec::new();
-            collect(component, &mut used, &mut anonymous);
-            let mut candidates = (0..).map(|index| format!("__xr_anon_{index}"));
-            for (op, is_root) in anonymous {
-                let key = if is_root {
-                    "root".into()
-                } else {
-                    candidates
-                        .find(|candidate| !used.contains(candidate))
-                        .expect("unbounded keys")
-                };
+            let mut missing_keys = Vec::new();
+            let mut root_to_normalize = None;
+            collect(
+                component,
+                &mut used,
+                &mut missing_keys,
+                &mut root_to_normalize,
+            );
+            let candidates = (0..).map(|index| format!("__xr_anon_{index}"));
+            let generated = missing_keys
+                .into_iter()
+                .zip(candidates.filter(|candidate| !used.contains(candidate)));
+            for (op, key) in root_to_normalize
+                .into_iter()
+                .map(|op| (op, "root".to_owned()))
+                .chain(generated)
+            {
+                self.verified.set(false);
                 let selector = op
                     .children()
                     .find(|child| child.name() == "xr.state_select");
@@ -146,6 +166,9 @@ impl Module {
 
     /// Verify the ODS operations and XR's module-wide constraints.
     pub fn verify(&self) -> Result<(), String> {
+        if self.verified.get() {
+            return Ok(());
+        }
         capture_diagnostics(&self.context, || {
             let op = unsafe { ffi::mlirModuleGetOperation(self.raw) };
             if !unsafe { ffi::mlirOperationVerify(op) }
@@ -154,12 +177,16 @@ impl Module {
                 return Err("XR module verification failed");
             }
             Ok(())
-        })
+        })?;
+        crate::visual::verify_element_interfaces(self)?;
+        self.verified.set(true);
+        Ok(())
     }
 
     /// Consume the module before running mutating passes, invalidating old borrows.
     pub fn optimize(mut self) -> Result<Self, String> {
         self.verify()?;
+        self.verified.set(false);
         capture_diagnostics(&self.context, || {
             let manager = PassManager(unsafe { ffi::mlirPassManagerCreate(self.context.0) });
             // The operation, manager and dialect all belong to this context.
@@ -178,6 +205,8 @@ impl Module {
             }
             Ok(())
         })?;
+        crate::visual::verify_element_interfaces(&self)?;
+        self.verified.set(true);
         self.visual_cache_plan = true;
         Ok(self)
     }

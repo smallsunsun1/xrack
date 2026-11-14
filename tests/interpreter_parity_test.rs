@@ -8,6 +8,16 @@ use xrack_runtime::{Component, Node, Value};
 
 fn assert_same_scene(interpreted: &Node, generated: &Node) {
     assert_eq!(interpreted.kind, generated.kind);
+    assert_eq!(interpreted.application_window, generated.application_window);
+    assert_eq!(interpreted.key_handlers, generated.key_handlers);
+    assert_eq!(
+        interpreted.scroll_event_handler,
+        generated.scroll_event_handler
+    );
+    assert_eq!(
+        interpreted.press_and_hold_handler,
+        generated.press_and_hold_handler
+    );
     assert_eq!(
         interpreted.element_id(),
         generated.element_id(),
@@ -716,6 +726,23 @@ fn host_bound_models_keep_row_keys_and_reset_to_the_declared_defaults() {
     assert_eq!(generated.model_points(), points);
     assert_same_scene(&actual.render(), &generated.render());
 
+    let actual_cache = xrack_runtime::Property::default();
+    let expected_cache = xrack_runtime::Property::default();
+    let snapshot = || {
+        let Value::RecordList(rows) = actual_cache.get(|| actual.get_snapshot("rows").unwrap())
+        else {
+            panic!("expected a record-list snapshot");
+        };
+        rows
+    };
+    let original = snapshot();
+    let expected_original = expected_cache.get(|| generated.get_rows());
+    assert_ne!(original.model(), &dynamic_rows);
+    assert_eq!(
+        original.model().snapshot(),
+        vec![row(&expected_original[0].text)]
+    );
+
     assert!(dynamic_rows.set_row(0, row("edited")));
     assert!(compiled_rows.set_row(
         0,
@@ -730,6 +757,23 @@ fn host_bound_models_keep_row_keys_and_reset_to_the_declared_defaults() {
         ..Default::default()
     });
     check();
+    assert!(actual_cache.is_dirty());
+    assert!(expected_cache.is_dirty());
+    let expected_snapshot = expected_cache.get(|| generated.get_rows());
+    assert_eq!(
+        snapshot().model().snapshot(),
+        vec![row(&expected_snapshot[0].text)]
+    );
+    assert_eq!(original.model().snapshot(), vec![row("before")]);
+    let Value::TouchPoints(snapshot_points) = actual.get_snapshot("points").unwrap() else {
+        panic!("expected a touch-point snapshot");
+    };
+    assert_ne!(snapshot_points, points);
+    assert_eq!(snapshot_points.snapshot(), generated.get_points());
+    assert_eq!(
+        actual.get_snapshot("strings"),
+        Ok(Value::StringList(generated.get_strings()))
+    );
     assert_eq!(generated.model_rows().row_key(0), Some(compiled_key));
     let touch_key = points.row_key(0);
     assert_eq!(
@@ -944,13 +988,16 @@ fn nested_records_compare_host_and_loaded_images_like_generated_rust() {
         [2, 3],
     ));
     let left = record(Value::ImageAsset(loaded.clone()), 1.0);
-    let right = record(Value::Image(embedded), 1.0);
+    let right = record(Value::Image(embedded.clone()), 1.0);
     actual.set("original", Value::Record(left.clone())).unwrap();
     actual
         .set("candidate", Value::Record(right.clone()))
         .unwrap();
-    generated.set_original(card(embedded, 1.0));
-    generated.set_candidate(card(embedded, 1.0));
+    let ImageAsset::Loaded(loaded) = loaded else {
+        unreachable!()
+    };
+    generated.set_original(card(Image::Loaded(loaded.clone()), 1.0));
+    generated.set_candidate(card(embedded.clone(), 1.0));
 
     let candidates = RecordList::new("ComparedCard", vec![right]);
     actual
@@ -962,8 +1009,8 @@ fn nested_records_compare_host_and_loaded_images_like_generated_rust() {
     actual
         .set("candidates", Value::RecordList(candidates.clone()))
         .unwrap();
-    generated.set_originals(vec![card(embedded, 1.0)]);
-    generated.set_candidates(vec![card(embedded, 1.0)]);
+    generated.set_originals(vec![card(Image::Loaded(loaded.clone()), 1.0)]);
+    generated.set_candidates(vec![card(embedded.clone(), 1.0)]);
     for (name, generated_result, expected) in [
         ("same-source", generated.get_same_source(), true),
         ("same-record", generated.get_same_record(), true),
@@ -974,11 +1021,10 @@ fn nested_records_compare_host_and_loaded_images_like_generated_rust() {
         assert_eq!(actual.get(name), Ok(expected.into()), "{name}");
     }
 
-    assert!(
-        !candidates
-            .model()
-            .set_row(0, record(Value::ImageAsset(loaded), 1.0))
-    );
+    assert!(!candidates.model().set_row(
+        0,
+        record(Value::ImageAsset(ImageAsset::Loaded(loaded.clone())), 1.0)
+    ));
     assert!(
         candidates
             .model()
@@ -995,10 +1041,10 @@ fn nested_records_compare_host_and_loaded_images_like_generated_rust() {
     );
     assert_eq!(actual.get("same-list"), Ok(false.into()));
 
-    let nan = record(Value::Image(embedded), f64::NAN);
+    let nan = record(Value::Image(embedded.clone()), f64::NAN);
     actual.set("original", Value::Record(nan.clone())).unwrap();
     actual.set("candidate", Value::Record(nan)).unwrap();
-    generated.set_original(card(embedded, f64::NAN));
+    generated.set_original(card(embedded.clone(), f64::NAN));
     generated.set_candidate(card(embedded, f64::NAN));
     assert!(!generated.get_same_record());
     assert_eq!(actual.get("same-record"), Ok(false.into()));
@@ -1109,9 +1155,32 @@ fn host_record_inputs_require_the_generated_field_schema() {
         .set("originals", Value::RecordList(live.clone()))
         .unwrap();
     assert_eq!(actual.get("originals"), Ok(Value::RecordList(live.clone())));
+
+    // Caching either host getter must follow the validity of the same live model.
+    // A valid-to-valid edit can keep the cached handle and its row identities.
+    let get_cached = xrack_runtime::Property::default();
+    let model_cached = xrack_runtime::Property::default();
+    let get_rows = || get_cached.get(|| actual.get("originals"));
+    let get_model = || model_cached.get(|| actual.record_model("originals"));
+    let key = live.model().row_key(0);
+    assert_eq!(get_rows(), Ok(Value::RecordList(live.clone())));
+    assert_eq!(get_model(), Ok(live.clone()));
+    let changed = valid
+        .with_field(&["picture".into(), "score".into()], Value::Float(2.0))
+        .unwrap();
+    assert!(live.model().set_row(0, changed));
+    assert!(!get_cached.is_dirty());
+    assert!(!model_cached.is_dirty());
+
     assert!(live.model().set_row(0, bad.clone()));
+    assert!(get_cached.is_dirty());
+    assert!(model_cached.is_dirty());
     require_path(
-        actual.get("originals").unwrap_err(),
+        get_rows().unwrap_err(),
+        "property originals[0].picture.score",
+    );
+    require_path(
+        get_model().unwrap_err(),
         "property originals[0].picture.score",
     );
     require_path(
@@ -1133,7 +1202,21 @@ fn host_record_inputs_require_the_generated_field_schema() {
         "callback observe-list argument 1[0].picture.score",
     );
     assert_eq!(observed.get(), 0);
+    require_path(
+        actual.invoke("forward-list", &[]).unwrap_err(),
+        "callback ignore-model argument 1[0].picture.score",
+    );
+    assert_eq!(actual.get("received"), Ok(0_i64.into()));
+    require_path(
+        actual.invoke("return-model", &[]).unwrap_err(),
+        "callback return-model return value[0].picture.score",
+    );
     assert!(live.model().set_row(0, valid.clone()));
+    assert!(get_cached.is_dirty());
+    assert!(model_cached.is_dirty());
+    assert_eq!(get_rows(), Ok(Value::RecordList(live.clone())));
+    assert_eq!(get_model(), Ok(live.clone()));
+    assert_eq!(get_model().unwrap().model().row_key(0), key);
     assert_eq!(actual.get("originals"), Ok(Value::RecordList(live)));
     actual.invoke("publish", &[]).unwrap();
     assert_eq!(observed.get(), 1);
@@ -1151,6 +1234,15 @@ fn host_record_inputs_require_the_generated_field_schema() {
     generated.invoke_receive(generated.get_original());
     assert_eq!(actual.get("received"), Ok(generated.get_received().into()));
     assert_eq!(generated.get_received(), 1);
+    actual.invoke("forward-list", &[]).unwrap();
+    generated.invoke_forward_list();
+    assert_eq!(actual.get("received"), Ok(generated.get_received().into()));
+    assert_eq!(generated.get_received(), 2);
+    let Some(Value::RecordList(returned)) = actual.invoke("return-model", &[]).unwrap() else {
+        panic!("expected the returned model snapshot");
+    };
+    assert_eq!(returned.model().snapshot(), vec![valid.clone()]);
+    assert_eq!(generated.invoke_return_model(), generated.get_originals());
 
     actual
         .on(
@@ -1263,6 +1355,54 @@ fn live_record_models_validate_before_rendering_or_sorting() {
     model.remove(3).unwrap();
     model.remove(0).unwrap();
     compare(&actual, &generated);
+}
+
+#[test]
+fn standard_table_formats_and_sorts_nested_float_fields_in_both_backends() {
+    use expressions_ui::LiveRecordValidationParity;
+    use xrack_runtime::ControlAction;
+
+    let preview = xrack_compiler::prepare_preview(
+        include_str!("expressions.xr"),
+        "expressions.xr",
+        Default::default(),
+    )
+    .unwrap();
+    let mut interpreted = Program::from_module(&preview.module)
+        .unwrap()
+        .create("LiveRecordValidationParity")
+        .unwrap();
+    let mut generated = LiveRecordValidationParity::new();
+    interpreted.set("mode", 1_i64.into()).unwrap();
+    generated.set_mode(1);
+    let interpreted_rows = interpreted.record_model("rows").unwrap();
+    let generated_rows = generated.model_rows();
+    for (index, score) in [0.0, -0.0].into_iter().enumerate() {
+        let row = interpreted_rows
+            .model()
+            .row(index)
+            .unwrap()
+            .with_field(&["picture".into(), "score".into()], Value::Float(score))
+            .unwrap();
+        assert!(interpreted_rows.model().set_row(index, row));
+        let mut row = generated_rows.row(index).unwrap();
+        row.picture.score = score;
+        assert!(generated_rows.set_row(index, row));
+    }
+
+    for ui in [&mut interpreted as &mut dyn Component, &mut generated] {
+        for expected in [["-0", "0"], ["0", "-0"]] {
+            let scene = ui.render_shared();
+            assert!(ui.control_at(&scene, &[1], ControlAction::SortColumn(0)));
+            let rows = ui.list_rows(&[1], 0..2);
+            let text: Vec<_> = rows
+                .iter()
+                .map(|row| row.child_at(0).unwrap().text("text").unwrap())
+                .collect();
+            assert_eq!(text, expected);
+        }
+    }
+    assert_eq!(interpreted.take_error(), None);
 }
 
 #[test]
@@ -2246,6 +2386,24 @@ fn nested_repetition_matches_generated_scene_and_model_replacement() {
 }
 
 #[test]
+fn nested_repeat_parameters_keep_distinct_dsl_names() {
+    let preview = xrack_compiler::prepare_preview(
+        include_str!("expressions.xr"),
+        "expressions.xr",
+        Default::default(),
+    )
+    .unwrap();
+    let program = Program::from_module(&preview.module).unwrap();
+    let actual = program.create("RepeatParameterNamesParity").unwrap();
+    let expected = expressions_ui::RepeatParameterNamesParity::new();
+    let scene = actual.try_render().unwrap();
+    assert_same_scene(&scene, &expected.render());
+    let inner = &scene.children[0].children[0].children[0].children;
+    assert_eq!(inner[0].text("text"), Some("outer/0"));
+    assert_eq!(inner[1].text("text"), Some("outer/1"));
+}
+
+#[test]
 fn static_repeat_snapshots_match_dynamic_rendering_and_keep_row_keys() {
     let source = include_str!("expressions.xr");
     let document = xrack_compiler::parse(source).unwrap();
@@ -2431,6 +2589,37 @@ fn dynamic_gradient_angle_is_sampled_before_color_stops() {
         let angle = brush.find("__xr_invoke_cb_726f6f74_angle").unwrap();
         let color = brush.find("__xr_invoke_cb_726f6f74_color").unwrap();
         assert!(angle < color);
+        let gradient = module
+            .operations()
+            .find(|op| op.name() == "xr.component")
+            .unwrap()
+            .children()
+            .find(|op| op.name() == "xr.element")
+            .unwrap()
+            .children()
+            .find(|op| op.name() == "xr.linear_gradient")
+            .unwrap();
+        let operands = xrack_compiler::mlir::GradientRef::from_operation(gradient).unwrap();
+        assert_eq!(
+            operands
+                .angle
+                .unwrap()
+                .defining_operation()
+                .unwrap()
+                .attr("value"),
+            Ok("angle")
+        );
+        assert_eq!(operands.stops.len(), 1);
+        let (color, offset) = operands.stops[0];
+        assert_eq!(
+            color.defining_operation().unwrap().attr("value"),
+            Ok("color")
+        );
+        assert_eq!(offset.defining_operation().unwrap().attr("value"), Ok("0"));
+        assert_eq!(
+            xrack_compiler::mlir::GradientRef::static_group(gradient),
+            None
+        );
         let program = Program::from_module(module).unwrap();
         let instance = program.create("GradientOrder").unwrap();
         let original = instance.try_render().unwrap();
@@ -2822,6 +3011,80 @@ fn visual_input_rechecks_nonpersistent_state_predicates() {
 }
 
 #[test]
+fn static_input_paths_sample_each_state_once_per_component() {
+    use std::{
+        cell::{Cell, RefCell},
+        rc::Rc,
+    };
+
+    use xrack_runtime::RangeAction;
+
+    let preview = xrack_compiler::prepare_preview(
+        include_str!("expressions.xr"),
+        "expressions.xr",
+        Default::default(),
+    )
+    .unwrap();
+    let mut actual = Program::from_module(&preview.module)
+        .unwrap()
+        .create("InputPathPredicateParity")
+        .unwrap();
+    let mut expected = expressions_ui::InputPathPredicateParity::new();
+    let blocked = Rc::new(Cell::new(0));
+    let actual_reads = Rc::new(RefCell::new(Vec::new()));
+    let expected_reads = Rc::new(RefCell::new(Vec::new()));
+    actual
+        .on("blocked", {
+            let blocked = blocked.clone();
+            let reads = actual_reads.clone();
+            Rc::new(move |args| {
+                let [Value::Int(tag)] = args else {
+                    unreachable!()
+                };
+                reads.borrow_mut().push(*tag);
+                Ok(Some((blocked.get() == *tag).into()))
+            })
+        })
+        .unwrap();
+    expected.on_blocked({
+        let blocked = blocked.clone();
+        let reads = expected_reads.clone();
+        move |tag| {
+            reads.borrow_mut().push(tag);
+            blocked.get() == tag
+        }
+    });
+    let actual_scene = actual.render_shared();
+    let expected_scene = expected.render_shared();
+    actual_reads.take();
+    expected_reads.take();
+    let path = [0, 0, 0];
+    for (tag, value, allowed, reads) in [
+        (0, 20.0, true, &[1, 2][..]),
+        (1, 25.0, false, &[1]),
+        (2, 30.0, false, &[1, 2]),
+        (0, 40.0, true, &[1, 2]),
+    ] {
+        blocked.set(tag);
+        assert_eq!(
+            actual.adjust_range_at(&actual_scene, &path, RangeAction::SetValue(value)),
+            allowed
+        );
+        assert_eq!(
+            expected.adjust_range_at(&expected_scene, &path, RangeAction::SetValue(value)),
+            allowed
+        );
+        assert_eq!(actual_reads.take(), reads);
+        assert_eq!(expected_reads.take(), reads);
+    }
+    assert_eq!(actual.get("changes"), Ok(2_i64.into()));
+    assert_eq!(expected.get_changes(), 2);
+    assert_eq!(actual.get("latest"), Ok(40.0.into()));
+    assert_eq!(expected.get_latest(), 40.0);
+    assert_eq!(actual.take_error(), None);
+}
+
+#[test]
 fn visual_state_predicates_run_at_the_declaration_on_each_scene_rebuild() {
     use std::{
         cell::{Cell, RefCell},
@@ -3015,7 +3278,7 @@ fn record_grid_rows_and_selection_match_compiler() {
 }
 
 #[test]
-fn combo_text_accepts_the_first_string_match_and_keeps_the_submitted_draft() {
+fn combo_text_accepts_the_first_match_and_preserves_a_newer_draft() {
     use xrack_runtime::{ControlAction, text_input_value};
 
     let preview = xrack_compiler::prepare_preview(
@@ -3048,18 +3311,20 @@ fn combo_text_accepts_the_first_string_match_and_keeps_the_submitted_draft() {
         assert!(ui.edit_at(&ui.render(), path, "submitted".into()));
         let snapshot = ui.render();
         assert!(ui.edit_at(&snapshot, path, "new draft".into()));
-        assert!(ui.control_at(&snapshot, path, ControlAction::AcceptComboText));
+        assert!(!ui.edit_at(&snapshot, path, "stale edit".into()));
+        assert!(!ui.control_at(&snapshot, path, ControlAction::AcceptComboText));
         assert_eq!(
             text_input_value(ui.render().at_path(path).unwrap()),
-            "submitted"
+            "new draft"
         );
+        assert!(ui.control_at(&ui.render(), path, ControlAction::AcceptComboText));
     }
     assert_eq!(compiled.get_selection(), -1);
     assert_eq!(interpreted.get("selection"), Ok((-1_i64).into()));
-    assert_eq!(compiled.get_accepted(), "submitted");
+    assert_eq!(compiled.get_accepted(), "new draft");
     assert_eq!(
         interpreted.get("accepted"),
-        Ok(Value::String("submitted".into()))
+        Ok(Value::String("new draft".into()))
     );
     assert_eq!(compiled.get_selections(), 1);
     assert_eq!(interpreted.get("selections"), Ok(1_i64.into()));
@@ -3097,6 +3362,146 @@ fn combo_callbacks_observe_selection_and_explicit_edit_text_in_order() {
     assert_eq!(generated.get_current(), 1);
     assert_same_scene(&actual.render(), &generated.render());
     assert_eq!(actual.take_error(), None);
+}
+
+#[test]
+fn record_combo_projects_the_selection_already_read_for_the_scene() {
+    use expressions_ui::ComboRenderSampleParity;
+    use std::rc::Rc;
+    use xrack_runtime::{combo_index, combo_text};
+
+    let preview = xrack_compiler::prepare_preview(
+        include_str!("expressions.xr"),
+        "expressions.xr",
+        Default::default(),
+    )
+    .unwrap();
+    let interpreted = Program::from_module(&preview.module)
+        .unwrap()
+        .create("ComboRenderSampleParity")
+        .unwrap();
+    let mut generated = ComboRenderSampleParity::new();
+    interpreted
+        .on("sample-options", {
+            let owner = interpreted.as_weak();
+            Rc::new(move |_| {
+                let owner = owner.upgrade().unwrap();
+                owner.set("current", 2_i64.into()).unwrap();
+                Ok(Some(owner.get("options").unwrap()))
+            })
+        })
+        .unwrap();
+    generated.on_sample_options({
+        let owner = generated.as_weak();
+        move || {
+            let mut owner = owner.upgrade().unwrap();
+            owner.set_current(2);
+            owner.get_options()
+        }
+    });
+
+    for (value, label) in [(1, "A"), (2, "B")] {
+        let actual = interpreted.render_shared();
+        let compiled = generated.render_shared();
+        for scene in [&actual, &compiled] {
+            let combo = scene.child_at(0).unwrap();
+            assert_eq!(combo.int("current-value"), Some(value));
+            assert_eq!(combo_index(combo), Some((value - 1) as usize));
+            assert_eq!(combo_text(combo), label);
+        }
+    }
+    assert_eq!(interpreted.take_error(), None);
+}
+
+#[test]
+fn combo_rejects_an_outdated_linked_draft_and_accepts_the_current_text() {
+    use xrack_runtime::ControlAction::AcceptComboText;
+
+    let preview = xrack_compiler::prepare_preview(
+        include_str!("expressions.xr"),
+        "expressions.xr",
+        Default::default(),
+    )
+    .unwrap();
+    let path = [0];
+    let mut actual = Program::from_module(&preview.module)
+        .unwrap()
+        .create("ComboCommitParity")
+        .unwrap();
+    let mut generated = expressions_ui::ComboCommitParity::new();
+    actual.set("draft", "B".to_owned().into()).unwrap();
+    generated.set_draft("B".into());
+    let before = actual.render_shared();
+    let compiled_before = generated.render_shared();
+    actual.set("draft", "A".to_owned().into()).unwrap();
+    generated.set_draft("A".into());
+    assert!(!actual.edit_at(&before, &path, "outdated".into()));
+    assert!(!generated.edit_at(&compiled_before, &path, "outdated".into()));
+    assert!(!actual.control_at(&before, &path, AcceptComboText));
+    assert!(!generated.control_at(&compiled_before, &path, AcceptComboText));
+    assert_eq!(actual.get("events"), Ok(String::new().into()));
+    assert!(generated.get_events().is_empty());
+    for ui in [&mut actual as &mut dyn Component, &mut generated] {
+        assert!(ui.control_at(&ui.render_shared(), &path, AcceptComboText));
+    }
+    assert_eq!(generated.get_events(), "value:1:1:A;accept:A:1:A;");
+    assert_eq!(actual.get("events"), Ok(generated.get_events().into()));
+    assert_eq!(actual.take_error(), None);
+}
+
+#[test]
+fn combo_edit_and_submit_reject_an_outdated_selected_label() {
+    use xrack_runtime::{
+        ControlAction::{AcceptComboText, Select},
+        text_input_value,
+    };
+
+    let preview = xrack_compiler::prepare_preview(
+        include_str!("expressions.xr"),
+        "expressions.xr",
+        Default::default(),
+    )
+    .unwrap();
+    let program = Program::from_module(&preview.module).unwrap();
+    let path = [0];
+    for change_model in [false, true] {
+        let mut actual = program.create("ComboTextParity").unwrap();
+        let mut generated = expressions_ui::ComboTextParity::new();
+        let shown = actual.render_shared();
+        let compiled = generated.render_shared();
+        if change_model {
+            let models = [
+                actual.string_model("choices").unwrap(),
+                generated.model_choices(),
+            ];
+            for model in models {
+                assert!(model.set_row(0, "updated".into()));
+            }
+        } else {
+            assert!(actual.control_at(&shown, &path, Select(2)));
+            assert!(generated.control_at(&compiled, &path, Select(2)));
+        }
+
+        for (ui, scene) in [
+            (&mut actual as &mut dyn Component, &*shown),
+            (&mut generated, &*compiled),
+        ] {
+            assert!(!ui.edit_at(scene, &path, "outdated".into()));
+            assert!(!ui.control_at(scene, &path, AcceptComboText));
+        }
+        assert_eq!(actual.get("accepted"), Ok(String::new().into()));
+        assert!(generated.get_accepted().is_empty());
+        let label = if change_model { "updated" } else { "B" };
+        for ui in [&mut actual as &mut dyn Component, &mut generated] {
+            let live = ui.render_shared();
+            assert_eq!(text_input_value(live.at_path(&path).unwrap()), label);
+            assert!(ui.edit_at(&live, &path, "fresh".into()));
+            assert!(ui.control_at(&ui.render_shared(), &path, AcceptComboText));
+        }
+        assert_eq!(actual.get("accepted"), Ok("fresh".to_owned().into()));
+        assert_eq!(generated.get_accepted(), "fresh");
+        assert_eq!(actual.take_error(), None);
+    }
 }
 
 #[test]
@@ -3484,6 +3889,733 @@ fn standalone_media_module(name: &str) -> std::path::PathBuf {
 }
 
 #[test]
+fn backends_reject_unverified_module_before_resolving_resources() {
+    let source = r#"
+        translations "first.toml";
+        translations "second.toml";
+        export component App inherits Window {}
+    "#;
+    let document = xrack_compiler::parse(source).unwrap();
+    let module = xrack_compiler::mlir::lower_module(&document, "invalid-module.xr").unwrap();
+    let diagnostic = module.verify().unwrap_err();
+    assert!(diagnostic.contains("only one translation catalog can be declared"));
+    let Err(compiled) = xrack_compiler::codegen::generate(&module) else {
+        panic!("codegen accepted an unverified module");
+    };
+    assert_eq!(compiled, diagnostic);
+    assert_eq!(
+        Program::from_module(&module).err(),
+        Some(xrack_interpreter::Error::Invalid(diagnostic.clone()))
+    );
+    let Err(error) = xrack_compiler::generate_rust(&module, "invalid-module.xr", None) else {
+        panic!("file-backed codegen accepted an unverified module");
+    };
+    assert!(matches!(error, xrack_compiler::CompilerError::Mlir(message) if message == diagnostic));
+    assert_eq!(
+        Program::from_module_with_file_resources(&module, "invalid-module.xr", None).err(),
+        Some(xrack_interpreter::Error::Invalid(diagnostic))
+    );
+}
+
+#[test]
+fn standalone_mlir_rejects_duplicate_visual_bindings_and_handlers() {
+    let source = r#"
+        export component App inherits Window {
+            out property <int> edits: 0;
+            in-out property <string> draft: "";
+            width: 200px;
+            height: 100px;
+            field := LineEdit {
+                text <=> root.draft;
+                placeholder-text: "Edit";
+                edited => { root.edits += 1; }
+                accepted => { root.edits += 2; }
+            }
+        }
+    "#;
+    let document = xrack_compiler::parse(source).unwrap();
+    let raw = xrack_compiler::mlir::lower(&document, "duplicate-members.xr").unwrap();
+    for (from, to, message) in [
+        (
+            "name = \"height\"",
+            "name = \"width\"",
+            "duplicate visual binding",
+        ),
+        (
+            "name = \"placeholder-text\"",
+            "name = \"text\"",
+            "duplicate visual binding text",
+        ),
+        (
+            "name = \"accepted\"",
+            "name = \"edited\"",
+            "duplicate event handler",
+        ),
+    ] {
+        let text = raw.replace(from, to);
+        assert_ne!(text, raw);
+        let Err(diagnostic) = xrack_compiler::mlir::Module::parse(&text) else {
+            panic!("accepted duplicate member in standalone MLIR: {to}");
+        };
+        assert!(diagnostic.contains(message), "{diagnostic}");
+        assert_eq!(
+            xrack_interpreter::load_mlir(&text).err(),
+            Some(xrack_interpreter::Error::Invalid(diagnostic))
+        );
+    }
+}
+
+#[test]
+fn standalone_mlir_validates_declaration_names_before_either_backend() {
+    let source = r#"
+        export struct DataPoint { weight: int }
+        export component Name_Probe inherits Window {
+            in-out property <int> first-value: 2;
+            in-out property <int> other-value: 7;
+            pure callback convert(int) -> int;
+            pure callback reset-counter();
+            convert(value) => { value + root.first-value }
+            display := Text { text: "Ready"; }
+        }
+    "#;
+    let doc = xrack_compiler::parse(source).unwrap();
+    let raw = xrack_compiler::mlir::lower(&doc, "standalone-names.xr").unwrap();
+    let module = xrack_compiler::mlir::Module::parse(&raw).unwrap();
+    assert!(xrack_compiler::codegen::generate(&module).is_ok());
+    let ui = xrack_interpreter::load_mlir(&raw)
+        .unwrap()
+        .create("Name_Probe")
+        .unwrap();
+    assert_eq!(
+        ui.invoke("convert", &[3_i64.into()]),
+        Ok(Some(5_i64.into()))
+    );
+
+    for (before, after, message) in [
+        (
+            "sym_name = \"Name_Probe\"",
+            "sym_name = \"Name Probe\"",
+            "invalid declaration name",
+        ),
+        (
+            "sym_name = \"DataPoint\"",
+            "sym_name = \"Name-Probe\"",
+            "duplicate symbol after normalizing",
+        ),
+        (
+            "name = \"other-value\"",
+            "name = \"first_value\"",
+            "duplicate member",
+        ),
+        (
+            "name = \"reset-counter\"",
+            "name = \"first_value\"",
+            "duplicate member",
+        ),
+        (
+            "key = \"display\"",
+            "key = \"bad/key\"",
+            "invalid element key",
+        ),
+    ] {
+        let text = raw.replace(before, after);
+        assert_ne!(text, raw, "fixture did not contain {before}");
+        let diagnostic = xrack_compiler::mlir::Module::parse(&text).unwrap_err();
+        assert!(diagnostic.contains(message), "{diagnostic}");
+        assert_eq!(
+            xrack_interpreter::load_mlir(&text).err(),
+            Some(xrack_interpreter::Error::Invalid(diagnostic))
+        );
+    }
+}
+
+#[test]
+fn standalone_mlir_rejects_incompatible_control_event_interfaces() {
+    use xrack_compiler::mlir::{Module, lower};
+
+    let source = r#"
+        export component App inherits Window {
+            pure callback example(int, int) -> int;
+            example(first, second) => { 1 }
+            button := Button { clicked => {} }
+            area := TouchArea { scroll-event(event) => { accept } }
+        }
+    "#;
+    let document = xrack_compiler::parse(source).unwrap();
+    let ir = lower(&document, "event-interface.xr").unwrap();
+    let verified = Module::parse(&ir).unwrap();
+    assert!(xrack_compiler::codegen::generate(&verified).is_ok());
+    assert!(
+        Program::from_module(&verified)
+            .unwrap()
+            .create("App")
+            .is_ok()
+    );
+    for (before, after, message) in [
+        (
+            "kind = \"Button\"",
+            "kind = \"Unrecognized\"",
+            "unknown element kind `Unrecognized`",
+        ),
+        (
+            "name = \"clicked\"",
+            "name = \"activated\"",
+            "unknown event `Button.activated`",
+        ),
+        (
+            "name = \"clicked\", parameters = \"[]\"",
+            r#"name = "clicked", parameters = "[{\22name\22:\22unused\22,\22ty\22:\22int\22}]""#,
+            "event `Button.clicked` requires ()",
+        ),
+        (
+            r#"\22event\22"#,
+            r#"\22bad name\22"#,
+            "invalid parameter name `bad name`",
+        ),
+        (
+            r#"\22second\22"#,
+            r#"\22first\22"#,
+            "duplicate parameter `first`",
+        ),
+    ] {
+        let text = ir.replace(before, after);
+        assert_ne!(text, ir);
+        let diagnostic = Module::parse(&text).unwrap_err();
+        assert!(diagnostic.contains("event-interface.xr"), "{diagnostic}");
+        assert!(diagnostic.contains(message), "{diagnostic}");
+        assert_eq!(
+            xrack_interpreter::load_mlir(&text).err(),
+            Some(xrack_interpreter::Error::Invalid(diagnostic))
+        );
+    }
+}
+
+#[test]
+fn standalone_mlir_checks_visual_property_names_and_types() {
+    use xrack_compiler::mlir::{Module, lower};
+
+    let source = r#"
+        export component App inherits Window {
+            in-out property <bool> narrow: false;
+            button := Button { text: "Go"; }
+            panel := Rectangle {
+                width: 50%;
+                background: #aabbcc;
+                states [ small when root.narrow: { width: 32px; } ]
+            }
+        }
+    "#;
+    let document = xrack_compiler::parse(source).unwrap();
+    let raw = lower(&document, "visual-properties.xr").unwrap();
+    let module = Module::parse(&raw).unwrap();
+    let compiled = xrack_compiler::codegen::generate(&module).unwrap();
+    assert!(!compiled.is_empty());
+    let ui = Program::from_module(&module)
+        .unwrap()
+        .create("App")
+        .unwrap();
+    let scene = ui.try_render().unwrap();
+    assert_eq!(scene.find("button").unwrap().text("text"), Some("Go"));
+    assert_eq!(
+        scene.find("panel").unwrap().properties["width"],
+        Value::Percent(xrack_runtime::Percent(0.5))
+    );
+    ui.set("narrow", true.into()).unwrap();
+    assert_eq!(
+        ui.try_render()
+            .unwrap()
+            .find("panel")
+            .unwrap()
+            .length("width"),
+        Some(32.0)
+    );
+
+    for (before, after, expected) in [
+        (
+            "name = \"text\"",
+            "name = \"txet\"",
+            "unknown property `Button.txet`",
+        ),
+        (
+            "name = \"text\"",
+            "name = \"width\"",
+            "property `Button.width` requires length, found string",
+        ),
+        (
+            "case_index = 0 : i64, name = \"width\"",
+            "case_index = 0 : i64, name = \"visible\"",
+            "property `Rectangle.visible` requires bool, found length",
+        ),
+    ] {
+        let malformed = raw.replace(before, after);
+        assert_ne!(malformed, raw);
+        let diagnostic = Module::parse(&malformed).unwrap_err();
+        assert!(diagnostic.contains("visual-properties.xr"), "{diagnostic}");
+        assert!(diagnostic.contains(expected), "{diagnostic}");
+        assert_eq!(
+            xrack_interpreter::load_mlir(&malformed).err(),
+            Some(xrack_interpreter::Error::Invalid(diagnostic))
+        );
+    }
+}
+
+#[test]
+fn standalone_mlir_rejects_conflicting_controls_and_animation_targets() {
+    use xrack_compiler::mlir::{Module, lower};
+
+    let source = r#"
+        export component App inherits Window {
+            in-out property <int> selected: 0;
+            choice := ComboBox {
+                model: ["one", "two"];
+                edit-text: "draft";
+                current-index <=> root.selected;
+            }
+            panel := Rectangle {
+                animate x, width { duration: 120ms; }
+            }
+        }
+    "#;
+    let document = xrack_compiler::parse(source).unwrap();
+    let raw = lower(&document, "visual-writes.xr").unwrap();
+    let module = Module::parse(&raw).unwrap();
+    let mut ui = Program::from_module(&module)
+        .unwrap()
+        .create("App")
+        .unwrap();
+    assert!(xrack_compiler::codegen::generate(&module).is_ok());
+    assert!(ui.control_at(
+        &ui.render_shared(),
+        &[0],
+        xrack_runtime::ControlAction::Select(1)
+    ));
+    assert_eq!(ui.get("selected"), Ok(1_i64.into()));
+
+    for (before, after, expected) in [
+        (
+            "name = \"edit-text\"",
+            "name = \"current-value\"",
+            "ComboBox selection accepts either current-index or current-value",
+        ),
+        (
+            "name = \"width\"",
+            "name = \"visible\"",
+            "cannot animate `Rectangle.visible`",
+        ),
+        (
+            "name = \"width\"",
+            "name = \"typo\"",
+            "cannot animate `Rectangle.typo`",
+        ),
+    ] {
+        let malformed = raw.replace(before, after);
+        assert_ne!(malformed, raw);
+        let diagnostic = Module::parse(&malformed).unwrap_err();
+        assert!(diagnostic.contains("visual-writes.xr"), "{diagnostic}");
+        assert!(diagnostic.contains(expected), "{diagnostic}");
+        assert_eq!(
+            xrack_interpreter::load_mlir(&malformed).err(),
+            Some(xrack_interpreter::Error::Invalid(diagnostic))
+        );
+    }
+    let duplicate = raw.replace("name = \"width\"", "name = \"x\"");
+    let diagnostic = Module::parse(&duplicate).unwrap_err();
+    assert!(
+        diagnostic.contains("animation requires a nonempty, unique property name"),
+        "{diagnostic}"
+    );
+    assert_eq!(
+        xrack_interpreter::load_mlir(&duplicate).err(),
+        Some(xrack_interpreter::Error::Invalid(diagnostic))
+    );
+}
+
+#[test]
+fn standalone_mlir_checks_parameter_names_and_types_in_their_scope() {
+    let source = r#"
+        export component ParameterScope inherits Window {
+            pure callback echo(int) -> int;
+            echo(callback-value) => { callback-value }
+            for row[index] in ["A", "B"] : Text { text: row + index; }
+        }
+        export component NestedParameterScope inherits Window {
+            pure callback labels(int) -> [string];
+            labels(size) => { size == 2 ? ["a", "b"] : [] }
+            for count in 3 : Rectangle {
+                for count in root.labels(count) : Text { text: "inner-" + count; }
+            }
+        }
+    "#;
+    let document = xrack_compiler::parse(source).unwrap();
+    let raw = xrack_compiler::mlir::lower(&document, "parameter-scope.xr").unwrap();
+    let valid = xrack_compiler::mlir::Module::parse(&raw).unwrap();
+    let ui = Program::from_module(&valid)
+        .unwrap()
+        .create("ParameterScope")
+        .unwrap();
+    assert_eq!(ui.invoke("echo", &[7_i64.into()]), Ok(Some(7_i64.into())));
+    assert_eq!(
+        ui.try_render().unwrap().children[0].children[1].text("text"),
+        Some("B1")
+    );
+    assert!(xrack_compiler::codegen::generate(&valid).is_ok());
+    for module in [valid, xrack_compiler::mlir::process(&raw).unwrap()] {
+        let scene = Program::from_module(&module)
+            .unwrap()
+            .create("NestedParameterScope")
+            .unwrap()
+            .try_render()
+            .unwrap();
+        let outer = &scene.children[0].children;
+        assert_eq!(outer.len(), 3);
+        let inner = &outer[2].children[0].children;
+        assert_eq!(inner.len(), 2);
+        assert_eq!(inner[1].text("text"), Some("inner-b"));
+        assert!(xrack_compiler::codegen::generate(&module).is_ok());
+    }
+
+    for (from, to, message) in [
+        (
+            "value = \"callback-value\"",
+            "value = \"missing\"",
+            "unknown parameter missing",
+        ),
+        (
+            "value = \"row\"",
+            "value = \"index\"",
+            "parameter type mismatch for index",
+        ),
+        (
+            "value = \"index\"",
+            "value = \"row\"",
+            "parameter type mismatch for row",
+        ),
+        (
+            "value = \"row\"",
+            "value = \"missing\"",
+            "unknown parameter missing",
+        ),
+    ] {
+        let malformed = raw.replacen(from, to, 1);
+        assert_ne!(malformed, raw);
+        let Err(diagnostic) = xrack_compiler::mlir::Module::parse(&malformed) else {
+            panic!("accepted invalid parameter in standalone MLIR: {to}");
+        };
+        assert!(diagnostic.contains(message), "{diagnostic}");
+        assert_eq!(
+            xrack_interpreter::load_mlir(&malformed).err(),
+            Some(xrack_interpreter::Error::Invalid(diagnostic))
+        );
+    }
+}
+
+#[test]
+fn missing_module_resources_fail_at_load_with_the_codegen_diagnostic() {
+    use xrack_interpreter::Error;
+
+    for (source, message) in [
+        (
+            r#"export component App inherits Window {
+                Image { source: @image-url("missing.svg"); }
+            }"#,
+            "unresolved image \"missing.svg\"",
+        ),
+        (
+            r#"import "fonts/demo.ttc";
+            export component App inherits Window {}"#,
+            "unresolved font \"fonts/demo.ttc\"",
+        ),
+        (
+            r#"translations "i18n/catalog.toml";
+            export component App inherits Window { title: @tr("title"); }"#,
+            "@tr requires a translation catalog",
+        ),
+        (
+            r#"translations "i18n/catalog.toml";
+            export component App inherits Window { title: I18n.locale(); }"#,
+            "unresolved translation catalog \"i18n/catalog.toml\"",
+        ),
+    ] {
+        let document = xrack_compiler::parse(source).unwrap();
+        let module = xrack_compiler::lower(&document, "resources.xr").unwrap();
+        assert_eq!(
+            xrack_compiler::codegen::generate(&module).unwrap_err(),
+            message
+        );
+        assert_eq!(
+            Program::from_module(&module).err(),
+            Some(Error::Invalid(message.into()))
+        );
+        assert_eq!(
+            xrack_interpreter::load_mlir(&module.to_mlir()).err(),
+            Some(Error::Invalid(message.into()))
+        );
+    }
+}
+
+#[test]
+fn text_mlir_checks_translations_before_dead_branches_are_removed() {
+    let source = r#"export component App inherits Window {
+        title: true ? "Fixed" : @tr("missing");
+    }"#;
+    let document = xrack_compiler::parse(source).unwrap();
+    let filename = "missing-catalog.xr";
+    let raw = xrack_compiler::mlir::lower_module(&document, filename).unwrap();
+    let text = raw.to_mlir();
+    assert!(text.contains("xr.translate"));
+    let optimized = raw.optimize().unwrap();
+    assert!(!optimized.to_mlir().contains("xr.translate"));
+
+    let error = xrack_compiler::compile(source, filename).err().unwrap();
+    assert!(error.to_string().contains("requires a translation catalog"));
+    assert_eq!(
+        xrack_interpreter::load_mlir(&text).err(),
+        Some(xrack_interpreter::Error::Invalid(
+            "@tr requires a translation catalog".into()
+        ))
+    );
+}
+
+#[test]
+fn missing_imported_image_reports_its_source_in_compiler_and_interpreter() {
+    use std::fs;
+
+    let directory = std::env::var_os("TEST_TMPDIR")
+        .map_or_else(std::env::temp_dir, std::path::PathBuf::from)
+        .join(format!("xrack-import-image-{}", std::process::id()));
+    let dependency = directory.join("parts/picture.xr");
+    fs::create_dir_all(dependency.parent().unwrap()).unwrap();
+    fs::write(
+        &dependency,
+        "export component Picture inherits Image {\n    source: @image-url(\"missing.svg\");\n}",
+    )
+    .unwrap();
+    let path = directory.join("app.xr");
+    let filename = path.to_str().unwrap();
+    let source = r#"import { Picture } from "parts/picture.xr";
+        export component App inherits Window { Picture {} }
+    "#;
+    let compiled = xrack_compiler::compile(source, filename).err().unwrap();
+    let preview = xrack_compiler::prepare_preview(source, filename, Default::default()).unwrap();
+    let error = Program::from_module_with_file_resources(&preview.module, &path, None)
+        .err()
+        .unwrap();
+    assert_eq!(error.to_string(), compiled.to_string());
+    let text = path.with_extension("mlir");
+    fs::write(&text, preview.module.to_mlir()).unwrap();
+    assert_eq!(xrack_interpreter::load_mlir_file(text).err(), Some(error));
+    assert!(
+        compiled.to_string().contains("parts/picture.xr:2:"),
+        "{compiled}"
+    );
+    assert!(
+        compiled.to_string().contains("parts/missing.svg"),
+        "{compiled}"
+    );
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn host_font_sources_are_validated_before_instantiation() {
+    use std::collections::BTreeMap;
+    use xrack_runtime::LoadedFonts;
+
+    let source = r#"import "fonts/demo.ttc";
+        export component App inherits Window {}"#;
+    let document = xrack_compiler::parse(source).unwrap();
+    let module = xrack_compiler::lower(&document, "host-fonts.xr").unwrap();
+    let valid = std::fs::read("examples/layout/fonts/demo.ttc").unwrap();
+    let generate = |fonts: &[Vec<u8>]| {
+        xrack_compiler::codegen::generate_with_assets(&module, &BTreeMap::new(), fonts)
+    };
+    let load =
+        |fonts| Program::from_module_with_resources(&module, None, Some(LoadedFonts::new(fonts)));
+    for (invalid, diagnostic) in [
+        (b"not a font".to_vec(), "invalid font face 0"),
+        (vec![0; 16 * 1024 * 1024 + 1], "font file exceeds 16 MiB"),
+    ] {
+        let fonts = vec![valid.clone(), invalid];
+        let Err(compiled) = generate(&fonts) else {
+            panic!("codegen accepted invalid font data");
+        };
+        let message = compiled.strip_prefix("supplied font 2: ").unwrap();
+        assert!(message.starts_with(diagnostic), "{compiled}");
+        assert_eq!(
+            load(fonts).err(),
+            Some(xrack_interpreter::Error::Invalid(compiled))
+        );
+    }
+
+    assert!(generate(std::slice::from_ref(&valid)).is_ok());
+    let program = load(vec![valid.clone()]).unwrap();
+    let scene = program.create("App").unwrap().try_render().unwrap();
+    assert_eq!(
+        scene.loaded_fonts.as_ref().unwrap().sources()[0].as_slice(),
+        valid
+    );
+}
+
+#[test]
+fn module_only_backends_validate_and_plan_literal_vector_paths() {
+    use xrack_compiler::{codegen, mlir};
+
+    let lower = |commands: &str| {
+        let source = format!(
+            r#"export component App inherits Window {{
+                badge := Path {{ commands: "{commands}"; }}
+            }}"#,
+        );
+        mlir::lower_module(&xrack_compiler::parse(&source).unwrap(), "vector-path.xr").unwrap()
+    };
+    for module in [lower("M0 0 L10"), lower("M0 0 L10").optimize().unwrap()] {
+        let interpreted = Program::from_module(&module).err().unwrap();
+        let Err(compiled) = codegen::generate(&module) else {
+            panic!("codegen accepted invalid vector path commands");
+        };
+        assert!(compiled.contains("vector-path.xr:"));
+        assert!(compiled.contains("invalid Path commands"));
+        assert_eq!(interpreted, xrack_interpreter::Error::Invalid(compiled));
+    }
+
+    let commands = "M0 0 L10 10";
+    let raw = lower(commands);
+    let optimized = lower(commands).optimize().unwrap();
+    for (module, planned) in [(&raw, false), (&optimized, true)] {
+        let scene = Program::from_module(module)
+            .unwrap()
+            .create("App")
+            .unwrap()
+            .try_render()
+            .unwrap();
+        let geometry = scene.find("badge").unwrap().vector_path_geometry(commands);
+        assert_eq!(geometry.is_some(), planned);
+        if let Some((bounds, segments)) = geometry {
+            assert_eq!(bounds, [0.0, 0.0, 10.0, 10.0]);
+            assert!(!segments.is_empty());
+        }
+        let rust = codegen::generate(module).unwrap().to_string();
+        assert_eq!(rust.contains("set_precompiled_path"), planned);
+    }
+}
+
+#[test]
+fn host_resources_report_image_errors_before_path_errors_in_both_backends() {
+    use std::collections::BTreeMap;
+    use xrack_compiler::codegen::{EmbeddedImage, generate_with_images};
+    use xrack_runtime::{ImageAsset, ImageFormat, LoadedImage};
+
+    let source = r#"export component App inherits Window {
+        Path { commands: "M0 0 L10"; }
+        Image { source: @image-url("frame.svg"); }
+    }"#;
+    let document = xrack_compiler::parse(source).unwrap();
+    let module = xrack_compiler::lower(&document, "host-resource-order.xr").unwrap();
+    let url = "frame.svg";
+    for (source, expected) in [
+        (None, "unresolved image"),
+        (Some(b"invalid SVG".as_slice()), "image \"frame.svg\":"),
+        (
+            Some(br#"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16"/>"#.as_slice()),
+            "invalid Path commands",
+        ),
+    ] {
+        let embedded: BTreeMap<_, _> = source
+            .map(|bytes| EmbeddedImage::Static {
+                format: ImageFormat::Svg,
+                size: [16, 16],
+                bytes: bytes.to_vec(),
+            })
+            .into_iter()
+            .map(|image| (url.into(), image))
+            .collect();
+        let loaded = source
+            .map(|bytes| LoadedImage::new(ImageFormat::Svg, bytes.to_vec(), [16, 16]))
+            .into_iter()
+            .map(|image| (url.into(), ImageAsset::Loaded(image)))
+            .collect();
+        let compiled = generate_with_images(&module, &embedded).unwrap_err();
+        assert!(compiled.contains(expected), "{compiled}");
+        assert_eq!(
+            Program::from_module_with_assets(&module, None, None, loaded).err(),
+            Some(xrack_interpreter::Error::Invalid(compiled))
+        );
+    }
+}
+
+#[test]
+fn host_translation_catalogs_are_checked_before_running_either_backend() {
+    use std::collections::BTreeMap;
+    use xrack_compiler::codegen::{EmbeddedTranslations, generate_with_translations};
+    use xrack_runtime::{LocaleContext, TranslationCatalog};
+
+    let source = r#"
+        translations "catalog.toml";
+        export component App inherits Window {
+            title: @tr("title", count: 3);
+        }
+    "#;
+    let document = xrack_compiler::parse(source).unwrap();
+    let module = xrack_compiler::lower(&document, "host-localization.xr").unwrap();
+    let generate = |locales| {
+        generate_with_translations(
+            &module,
+            &BTreeMap::new(),
+            &[],
+            &BTreeMap::new(),
+            Some(&EmbeddedTranslations {
+                default: "en-US".into(),
+                locales,
+            }),
+        )
+    };
+    for (english, french, message) in [
+        ("other = Missing", "", "has no message value for 'title'"),
+        (
+            "title = { details }\ndetails = { $other }",
+            "",
+            "requires argument 'other'",
+        ),
+        (
+            "title = { $count } items",
+            "title = { $missing }",
+            "requires argument 'missing'",
+        ),
+    ] {
+        let locales = BTreeMap::from([
+            ("en-US".into(), english.into()),
+            ("fr".into(), french.into()),
+        ]);
+        let catalog = TranslationCatalog::from_owned("en-US", locales.clone()).unwrap();
+        let Err(compiled) = generate(locales) else {
+            panic!("codegen accepted invalid translations");
+        };
+        let interpreted = Program::from_module_with_translations(&module, Some(catalog))
+            .err()
+            .expect("interpreter accepted invalid translations");
+        assert!(
+            compiled.contains(message) && compiled.contains("host-localization.xr"),
+            "{compiled}"
+        );
+        assert_eq!(interpreted, xrack_interpreter::Error::Invalid(compiled));
+    }
+
+    let locales = BTreeMap::from([
+        ("en-US".into(), "title = { $count } items".into()),
+        ("fr".into(), "other = Autre".into()),
+    ]);
+    generate(locales.clone()).unwrap();
+    let catalog = TranslationCatalog::from_owned("en-US", locales).unwrap();
+    let locale = LocaleContext::default();
+    locale.set_locale("fr").unwrap();
+    let ui = Program::from_module_with_translations(&module, Some(catalog))
+        .unwrap()
+        .create_with_locale("App", locale)
+        .unwrap();
+    let scene = ui.try_render().unwrap();
+    assert!(scene.text("title").unwrap().ends_with(" items"));
+}
+
+#[test]
 fn host_supplied_nine_slice_assets_are_validated_before_instantiation() {
     use std::collections::BTreeMap;
     use xrack_runtime::{ImageAsset, ImageFormat, LoadedAnimation, LoadedImage, NineSlice};
@@ -3525,7 +4657,11 @@ fn host_supplied_nine_slice_assets_are_validated_before_instantiation() {
     assert_eq!(load(None).err().unwrap().to_string(), missing);
     for (asset, diagnostic) in [
         (
-            ImageAsset::Loaded(LoadedImage::new(ImageFormat::Svg, svg.to_vec(), [8, 16])),
+            ImageAsset::Loaded(LoadedImage::new(
+                ImageFormat::Svg,
+                br#"<svg xmlns="http://www.w3.org/2000/svg" width="8" height="16"/>"#.to_vec(),
+                [8, 16],
+            )),
             "must leave a nonempty center",
         ),
         (
@@ -3542,6 +4678,126 @@ fn host_supplied_nine_slice_assets_are_validated_before_instantiation() {
             .expect("asset validation should fail at load time");
         assert!(error.to_string().contains(diagnostic), "{error}");
     }
+}
+
+#[test]
+fn host_images_match_file_decoding_and_validate_animation_frames() {
+    use std::collections::BTreeMap;
+    use xrack_compiler::codegen::{self, EmbeddedImage};
+    use xrack_runtime::ImageFormat;
+
+    let source = r#"export component App inherits Window {
+        AnimatedImage { source: @image-url("asset"); }
+    }"#;
+    let module =
+        xrack_compiler::lower(&xrack_compiler::parse(source).unwrap(), "host-image.xr").unwrap();
+    let svg = br#"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="20"/>"#;
+    let png = std::fs::read("examples/media/assets/landscape.png").unwrap();
+    let png_size = [96, 48];
+    let generate =
+        |image| codegen::generate_with_images(&module, &BTreeMap::from([("asset".into(), image)]));
+    let load = |image: EmbeddedImage| {
+        Program::from_module_with_assets(
+            &module,
+            None,
+            None,
+            BTreeMap::from([("asset".into(), image.into_image_asset())]),
+        )
+    };
+    let vector = |size, bytes: &[u8]| EmbeddedImage::Static {
+        format: ImageFormat::Svg,
+        size,
+        bytes: bytes.to_vec(),
+    };
+    let animation = |frames| EmbeddedImage::Animated {
+        size: png_size,
+        frames,
+        plays: 1,
+    };
+    let cases = [
+        (
+            vector([8, 20], svg),
+            vector([8, 20], svg),
+            "declared dimensions",
+        ),
+        (
+            vector([16, 20], b"invalid SVG"),
+            vector([16, 20], b"invalid SVG"),
+            "image \"asset\"",
+        ),
+        (animation(vec![]), animation(vec![]), "no frames"),
+        (
+            animation(vec![(100, png.clone()), (100, png.clone())]),
+            animation(vec![(100, png.clone()), (100, png.clone())]),
+            "frame 2 must end after",
+        ),
+        (
+            animation(vec![(100, Vec::new())]),
+            animation(vec![(100, Vec::new())]),
+            "frame 1:",
+        ),
+        (
+            EmbeddedImage::Animated {
+                size: [8, 8],
+                frames: vec![(100, png.clone())],
+                plays: 1,
+            },
+            EmbeddedImage::Animated {
+                size: [8, 8],
+                frames: vec![(100, png.clone())],
+                plays: 1,
+            },
+            "frame 1: declared dimensions",
+        ),
+    ];
+    for (embedded, loaded, diagnostic) in cases {
+        let Err(compiled) = generate(embedded) else {
+            panic!("codegen accepted an invalid host image");
+        };
+        assert!(compiled.contains(diagnostic), "{compiled}");
+        assert_eq!(
+            load(loaded).err(),
+            Some(xrack_interpreter::Error::Invalid(compiled))
+        );
+    }
+    assert!(generate(vector([16, 20], svg)).is_ok());
+    let scene = load(vector([16, 20], svg))
+        .unwrap()
+        .create("App")
+        .unwrap()
+        .try_render()
+        .unwrap();
+    assert_eq!(
+        scene.children[0].image_asset("source").unwrap().size(),
+        [16, 20]
+    );
+    assert!(generate(animation(vec![(100, png.clone())])).is_ok());
+    assert!(load(animation(vec![(100, png)])).is_ok());
+
+    use xrack_runtime::{Image, ImageAnimation, ImageAnimationFrame, ImageAsset};
+    static BROKEN_TIMELINE: ImageAnimation = ImageAnimation::new(
+        [96, 48],
+        &[ImageAnimationFrame {
+            end_ms: 0,
+            png: &[],
+        }],
+        1,
+    );
+    let load_asset = |image: Image| {
+        Program::from_module_with_assets(
+            &module,
+            None,
+            None,
+            BTreeMap::from([("asset".into(), ImageAsset::Embedded(image))]),
+        )
+    };
+    assert!(load_asset(Image::Empty).is_ok());
+    assert_eq!(
+        load_asset(Image::Animated(&BROKEN_TIMELINE)).err(),
+        Some(xrack_interpreter::Error::Invalid(
+            "image \"asset\": frame 1 must end after 0 ms".into(),
+        )),
+    );
 }
 
 #[test]
@@ -3588,9 +4844,9 @@ fn animated_image_equality_matches_across_file_and_host_representations() {
         picture: ComparedPicture { source, score: 1.0 },
     };
     interpreted.set("original", dynamic_card(loaded)).unwrap();
-    generated.set_original(compiled_card(embedded));
+    generated.set_original(compiled_card(embedded.clone()));
     for (dynamic, compiled, equal) in [
-        (Value::Image(embedded), embedded, true),
+        (Value::Image(embedded.clone()), embedded.clone(), true),
         (Value::Image(Image::Empty), Image::Empty, false),
         (load_animation(), embedded, true),
     ] {
@@ -3794,6 +5050,48 @@ fn standalone_mlir_state_selector_can_supply_a_binding_value() {
         }
         xrack_compiler::codegen::generate(&module).unwrap();
     }
+}
+
+#[test]
+fn standalone_mlir_rejects_state_overrides_of_control_storage() {
+    let source = r#"
+        export component App inherits Window {
+            in property <bool> active: false;
+            spin := SpinBox {
+                value: 2;
+                states [ marked when root.active: { font-weight: 600; } ]
+            }
+        }
+    "#;
+    let file = "state-storage.xr";
+    let invalid_source = source.replace("font-weight: 600", "value: 600");
+    let message = "state cannot override `SpinBox.value`";
+    let error = xrack_compiler::compile(&invalid_source, file)
+        .err()
+        .unwrap();
+    assert!(error.to_string().contains(message), "{error}");
+
+    let document = xrack_compiler::parse(source).unwrap();
+    let raw = xrack_compiler::mlir::lower(&document, file).unwrap();
+    let program = xrack_interpreter::load_mlir(&raw).unwrap();
+    let ui = program.create("App").unwrap();
+    ui.set("active", true.into()).unwrap();
+    let scene = ui.try_render().unwrap();
+    let spin = &scene.children[0];
+    assert_eq!(spin.int("value"), Some(2));
+    assert_eq!(spin.int("font-weight"), Some(600));
+
+    let invalid = raw.replace("name = \"font-weight\"", "name = \"value\"");
+    assert_ne!(invalid, raw);
+    let diagnostic = xrack_compiler::mlir::Module::parse(&invalid).unwrap_err();
+    assert!(
+        diagnostic.contains(file) && diagnostic.contains(message),
+        "{diagnostic}"
+    );
+    assert_eq!(
+        xrack_interpreter::load_mlir(&invalid).err(),
+        Some(xrack_interpreter::Error::Invalid(diagnostic))
+    );
 }
 
 #[test]
@@ -5586,6 +6884,103 @@ fn shared_records_keep_independent_table_sorting_and_source_order() {
 }
 
 #[test]
+fn pending_table_paste_does_not_keep_its_component_alive() {
+    use expressions_ui::ProjectedPasteParity;
+
+    let preview = xrack_compiler::prepare_preview(
+        include_str!("expressions.xr"),
+        "expressions.xr",
+        Default::default(),
+    )
+    .unwrap();
+    let program = Program::from_module(&preview.module).unwrap();
+    let interpreted = program.create("ProjectedPasteParity").unwrap();
+    let generated = ProjectedPasteParity::new();
+    let actual_rows = interpreted.record_model("rows").unwrap();
+    let expected_rows = generated.model_rows();
+    let actual_stamp = actual_rows.model().edit_stamp();
+    let expected_stamp = expected_rows.edit_stamp();
+    let actual_weak = interpreted.as_weak();
+    let expected_weak = generated.as_weak();
+    let capture = |ui: &dyn Component| {
+        ui.prepare_table_paste(&ui.render_shared(), &[0], 0, vec![0])
+            .expect("paste destination")
+    };
+    let actual_paste = capture(&interpreted);
+    let expected_paste = capture(&generated);
+    drop(interpreted);
+    drop(generated);
+
+    // The row models may outlive the components that initiated the clipboard reads.
+    assert!(actual_weak.upgrade().is_none());
+    assert!(expected_weak.upgrade().is_none());
+    assert!(!actual_paste("late clipboard reply"));
+    assert!(!expected_paste("late clipboard reply"));
+    assert_eq!(actual_rows.model().edit_stamp(), actual_stamp);
+    assert_eq!(expected_rows.edit_stamp(), expected_stamp);
+}
+
+#[test]
+fn table_edit_history_retains_the_same_batch_sizes_in_both_backends() {
+    use expressions_ui::{ProjectedPasteParity, ProjectedPasteRow};
+    use xrack_runtime::{RecordList, RecordValue};
+
+    let preview = xrack_compiler::prepare_preview(
+        include_str!("expressions.xr"),
+        "expressions.xr",
+        Default::default(),
+    )
+    .unwrap();
+    let program = Program::from_module(&preview.module).unwrap();
+    for (count, retain_history) in [(1_000, true), (30_000, false)] {
+        let interpreted = program.create("ProjectedPasteParity").unwrap();
+        let mut generated = ProjectedPasteParity::new();
+        let row = RecordValue::new(
+            "ProjectedPasteRow",
+            [
+                ("first".into(), "one".to_owned().into()),
+                ("second".into(), "two".to_owned().into()),
+            ]
+            .into(),
+        );
+        let rows = RecordList::new("ProjectedPasteRow", vec![row; count]);
+        interpreted
+            .set("rows", Value::RecordList(rows.clone()))
+            .unwrap();
+        generated.set_rows(vec![
+            ProjectedPasteRow {
+                first: "one".into(),
+                second: "two".into()
+            };
+            count
+        ]);
+        let text = "edited\n".repeat(count);
+        let path = [0];
+        for ui in [&interpreted as &dyn Component, &generated] {
+            let scene = ui.render_shared();
+            assert!(ui.prepare_table_paste(&scene, &path, 0, vec![0]).unwrap()(
+                &text
+            ));
+        }
+        for ui in [&interpreted as &dyn Component, &generated] {
+            let scene = ui.render_shared();
+            assert_eq!(
+                ui.replay_table_edit_at(&scene, &path, false),
+                retain_history,
+                "row count {count}"
+            );
+        }
+        let first = if retain_history { "one" } else { "edited" };
+        assert_eq!(
+            rows.model().row(count - 1).unwrap().field("first"),
+            Some(&first.to_owned().into())
+        );
+        assert_eq!(generated.model_rows().row(count - 1).unwrap().first, first);
+        assert_eq!(interpreted.take_error(), None);
+    }
+}
+
+#[test]
 fn standard_table_paste_and_edit_history_match_compiled_transactions() {
     use table_ui::{InventoryRow, StandardTableDemo};
     use xrack_layout::{Interaction, Size};
@@ -5678,6 +7073,32 @@ fn standard_table_paste_and_edit_history_match_compiled_transactions() {
     assert!(expected.set_row(2, row));
     assert!(!stale("16\t09:00:00"));
     assert!(!expected_stale("16\t09:00:00"));
+
+    let old_scene = interpreted.render_shared();
+    let expected_old_scene = generated.render_shared();
+    let stale = paste(&interpreted, vec![1, 3]);
+    let expected_stale = paste(&generated, vec![1, 3]);
+    let stamps = (actual.edit_stamp(), expected.edit_stamp());
+    interpreted
+        .invoke("move-visible-row", &[Value::Int(0), Value::Int(1)])
+        .unwrap();
+    generated.invoke_move_visible_row(0, 1);
+    assert_eq!((actual.edit_stamp(), expected.edit_stamp()), stamps);
+    for (ui, scene) in [
+        (&interpreted as &dyn Component, &*old_scene),
+        (&generated, &*expected_old_scene),
+    ] {
+        assert!(
+            ui.prepare_table_paste(scene, &path, 0, vec![1, 3])
+                .is_none()
+        );
+    }
+    assert!(!stale("16\t09:00:00"));
+    assert!(!expected_stale("16\t09:00:00"));
+    interpreted
+        .invoke("move-visible-row", &[Value::Int(1), Value::Int(0)])
+        .unwrap();
+    generated.invoke_move_visible_row(1, 0);
 
     assert!(paste(&interpreted, vec![1, 3])(
         "16\t09:00:00\n22\t12:00:00"
@@ -6489,6 +7910,90 @@ fn table_history_replay_keeps_the_displayed_model_and_live_availability() {
 }
 
 #[test]
+fn table_history_does_not_sample_read_only_model_bindings() {
+    use std::{cell::Cell, rc::Rc};
+
+    let preview = xrack_compiler::prepare_preview(
+        include_str!("expressions.xr"),
+        "expressions.xr",
+        Default::default(),
+    )
+    .unwrap();
+    let actual = Program::from_module(&preview.module)
+        .unwrap()
+        .create("ReadOnlyTableHistoryParity")
+        .unwrap();
+    let mut generated = expressions_ui::ReadOnlyTableHistoryParity::new();
+    let actual_calls = Rc::new(Cell::new(0));
+    let generated_calls = Rc::new(Cell::new(0));
+    for (name, value) in [
+        ("rows", Value::Int(2)),
+        ("history-enabled", Value::Bool(true)),
+    ] {
+        let calls = actual_calls.clone();
+        actual
+            .on(
+                name,
+                Rc::new(move |_| {
+                    calls.set(calls.get() + 1);
+                    Ok(Some(value.clone()))
+                }),
+            )
+            .unwrap();
+    }
+    generated.on_rows({
+        let calls = generated_calls.clone();
+        move || {
+            calls.set(calls.get() + 1);
+            2
+        }
+    });
+    generated.on_history_enabled({
+        let calls = generated_calls.clone();
+        move || {
+            calls.set(calls.get() + 1);
+            true
+        }
+    });
+
+    assert!(!generated.get_undo_available());
+    assert!(!generated.get_redo_available());
+    assert!(!generated.get_touch_undo_available());
+    assert!(!generated.get_touch_redo_available());
+    for name in [
+        "undo-available",
+        "redo-available",
+        "touch-undo-available",
+        "touch-redo-available",
+    ] {
+        assert_eq!(actual.get(name), Ok(false.into()));
+    }
+    generated.invoke_undo();
+    actual.invoke("undo", &[]).unwrap();
+    assert_eq!(generated_calls.get(), 0);
+    assert_eq!(actual_calls.get(), 0);
+
+    let actual_scene = actual.render_shared();
+    let generated_scene = generated.render_shared();
+    actual_calls.set(0);
+    generated_calls.set(0);
+    for (ui, scene) in [
+        (&actual as &dyn Component, &*actual_scene),
+        (&generated, &*generated_scene),
+    ] {
+        for path in [[0], [1]] {
+            assert!(ui.prepare_table_paste(scene, &path, 0, vec![0]).is_none());
+            for redo in [false, true] {
+                assert!(!ui.replay_table_edit_at(scene, &path, redo));
+            }
+        }
+    }
+    assert_eq!(generated_calls.get(), 0);
+    assert_eq!(actual_calls.get(), 0);
+    assert_eq!(actual.take_error(), None);
+}
+
+#[test]
 fn custom_table_edit_reuses_rendered_binding_cache() {
     use expressions_ui::TableBindingCacheParity;
     use std::{cell::RefCell, rc::Rc};
@@ -6738,6 +8243,72 @@ fn table_cell_commit_rechecks_parent_scope_through_edit_preparation() {
         assert_eq!(row.field("linked"), Some(&Value::String("two".into())));
         assert_eq!(expected.get_rows()[0].direct, "one");
         assert_eq!(expected.get_rows()[0].linked, "two");
+        assert_eq!(actual.take_error(), None);
+    }
+}
+
+#[test]
+fn stale_table_cell_drafts_skip_history_callbacks_in_both_backends() {
+    use expressions_ui::RoutedCellCommitParity;
+    use std::{cell::Cell, rc::Rc};
+    use xrack_layout::{Interaction, Size};
+
+    let preview = xrack_compiler::prepare_preview(
+        include_str!("expressions.xr"),
+        "expressions.xr",
+        Default::default(),
+    )
+    .unwrap();
+    let program = Program::from_module(&preview.module).unwrap();
+    for (view, field, original) in [(0, "direct", "one"), (1, "linked", "two")] {
+        let mut actual = program.create("RoutedCellCommitParity").unwrap();
+        let mut generated = RoutedCellCommitParity::new();
+        let input = Interaction::default();
+        let size = Size::new(640.0, 420.0);
+        let (scene, _) = prepare_list(&actual, &input, size);
+        let (expected, _) = prepare_list(&generated, &input, size);
+        let rows = actual.record_model("rows").unwrap();
+        let generated_rows = generated.model_rows();
+        let path = [0, view, 0, 0, 0];
+        let calls = Rc::new(Cell::new(0));
+        let compiled_calls = Rc::new(Cell::new(0));
+        actual
+            .on("record-history", {
+                let calls = calls.clone();
+                Rc::new(move |_| {
+                    calls.set(calls.get() + 1);
+                    Ok(Some(true.into()))
+                })
+            })
+            .unwrap();
+        generated.on_record_history({
+            let calls = compiled_calls.clone();
+            move || {
+                calls.set(calls.get() + 1);
+                true
+            }
+        });
+        let changed = rows
+            .model()
+            .row(0)
+            .unwrap()
+            .with_field(&[field.into()], "external".to_owned().into())
+            .unwrap();
+        assert!(rows.model().set_row(0, changed));
+        let mut changed = generated_rows.row(0).unwrap();
+        if view == 0 {
+            changed.direct = "external".into();
+        } else {
+            changed.linked = "external".into();
+        }
+        assert!(generated_rows.set_row(0, changed));
+        assert!(!actual.commit_table_cell(&scene, &path, original, "draft".into()));
+        assert!(!generated.commit_table_cell(&expected, &path, original, "draft".into()));
+        assert_eq!((calls.get(), compiled_calls.get()), (0, 0), "view {view}");
+        assert_eq!(
+            rows.model().row(0).unwrap().field(field),
+            Some(&Value::String("external".into()))
+        );
         assert_eq!(actual.take_error(), None);
     }
 }
@@ -7161,6 +8732,137 @@ fn projected_cell_commit_rechecks_table_enabled_after_column_callback() {
 }
 
 #[test]
+fn table_cell_commit_rechecks_the_field_after_edit_permission() {
+    use expressions_ui::RoutedCellCommitParity;
+    use std::{cell::Cell, rc::Rc};
+    use xrack_layout::{Interaction, Size};
+
+    let preview = xrack_compiler::prepare_preview(
+        include_str!("expressions.xr"),
+        "expressions.xr",
+        Default::default(),
+    )
+    .unwrap();
+    let program = Program::from_module(&preview.module).unwrap();
+    for (view, field, accepted) in [
+        (0, "direct", false),
+        (0, "linked", true),
+        (1, "linked", false),
+        (1, "direct", true),
+    ] {
+        let permission = if view == 0 {
+            "direct-read-only"
+        } else {
+            "allow-column"
+        };
+        let original = if view == 0 { "one" } else { "two" };
+        let mut actual = program.create("RoutedCellCommitParity").unwrap();
+        let mut generated = RoutedCellCommitParity::new();
+        let input = Interaction::default();
+        let size = Size::new(640.0, 420.0);
+        let (scene, _) = prepare_list(&actual, &input, size);
+        let (expected, _) = prepare_list(&generated, &input, size);
+        let rows = actual.record_model("rows").unwrap();
+        let compiled_rows = generated.model_rows();
+        let calls = Rc::new(Cell::new(0));
+        let compiled_calls = Rc::new(Cell::new(0));
+        actual
+            .on(permission, {
+                let rows = rows.clone();
+                let changed = rows
+                    .model()
+                    .row(0)
+                    .unwrap()
+                    .with_field(&[field.into()], "external".to_owned().into())
+                    .unwrap();
+                Rc::new(move |_| {
+                    rows.model().set_row(0, changed.clone());
+                    Ok(Some((view != 0).into()))
+                })
+            })
+            .unwrap();
+        let change_field = {
+            let rows = compiled_rows.clone();
+            let mut changed = rows.row(0).unwrap();
+            if field == "linked" {
+                changed.linked = "external".into();
+            } else {
+                changed.direct = "external".into();
+            }
+            move || {
+                rows.set_row(0, changed.clone());
+                view != 0
+            }
+        };
+        if view == 0 {
+            generated.on_direct_read_only(change_field);
+        } else {
+            generated.on_allow_column(change_field);
+        }
+        actual
+            .on("record-history", {
+                let calls = calls.clone();
+                Rc::new(move |_| {
+                    calls.set(calls.get() + 1);
+                    Ok(Some(true.into()))
+                })
+            })
+            .unwrap();
+        generated.on_record_history({
+            let calls = compiled_calls.clone();
+            move || {
+                calls.set(calls.get() + 1);
+                true
+            }
+        });
+        let path = [0, view, 0, 0, 0];
+        assert_eq!(
+            actual.commit_table_cell(&scene, &path, original, "draft".into()),
+            accepted,
+            "interpreted view {view}, changed field {field}"
+        );
+        assert_eq!(
+            generated.commit_table_cell(&expected, &path, original, "draft".into()),
+            accepted,
+            "compiled view {view}, changed field {field}"
+        );
+        let count = usize::from(accepted);
+        assert_eq!((calls.get(), compiled_calls.get()), (count, count));
+        let compare = |direct, linked| {
+            let row = rows.model().row(0).unwrap();
+            let compiled = compiled_rows.row(0).unwrap();
+            assert_eq!(
+                row.field("direct"),
+                Some(&Value::String(String::from(direct)))
+            );
+            assert_eq!(
+                row.field("linked"),
+                Some(&Value::String(String::from(linked)))
+            );
+            assert_eq!(
+                (compiled.direct.as_str(), compiled.linked.as_str()),
+                (direct, linked)
+            );
+        };
+        match (view, accepted) {
+            (0, true) => compare("draft", "external"),
+            (0, false) => compare("external", "two"),
+            (_, true) => compare("external", "draft"),
+            (_, false) => compare("one", "external"),
+        }
+        for (ui, scene) in [(&actual as &dyn Component, &scene), (&generated, &expected)] {
+            assert_eq!(ui.replay_table_edit_at(scene, &[0, view], false), accepted);
+        }
+        if accepted && view == 0 {
+            compare("one", "external");
+        } else if accepted {
+            compare("external", "two");
+        }
+        assert_eq!(actual.take_error(), None);
+    }
+}
+
+#[test]
 fn projected_table_paste_evaluates_only_columns_with_parsed_cells() {
     use std::{
         cell::Cell,
@@ -7250,6 +8952,91 @@ fn projected_table_paste_evaluates_only_columns_with_parsed_cells() {
         rows.model().row(0).unwrap().field("first"),
         Some(&Value::String(generated.model_rows().row(0).unwrap().first))
     );
+}
+
+#[test]
+fn table_paste_checks_only_supported_cells_and_stops_at_an_invalidated_row() {
+    use expressions_ui::PastePermissionOrderParity;
+    use std::{cell::RefCell, rc::Rc};
+
+    let preview = xrack_compiler::prepare_preview(
+        include_str!("expressions.xr"),
+        "expressions.xr",
+        Default::default(),
+    )
+    .unwrap();
+    let actual = Program::from_module(&preview.module)
+        .unwrap()
+        .create("PastePermissionOrderParity")
+        .unwrap();
+    let mut generated = PastePermissionOrderParity::new();
+    let actual_scene = actual.render_shared();
+    let generated_scene = generated.render_shared();
+    let actual_calls = Rc::new(RefCell::new(Vec::new()));
+    let generated_calls = Rc::new(RefCell::new(Vec::new()));
+    for name in ["row-visible", "cell-enabled"] {
+        let calls = actual_calls.clone();
+        let owner = actual.as_weak();
+        actual
+            .on(
+                name,
+                Rc::new(move |_| {
+                    calls.borrow_mut().push(name);
+                    if name == "row-visible" {
+                        owner
+                            .upgrade()
+                            .unwrap()
+                            .set("paste-active", false.into())
+                            .unwrap();
+                    }
+                    Ok(Some(true.into()))
+                }),
+            )
+            .unwrap();
+    }
+    generated.on_row_visible({
+        let owner = generated.as_weak();
+        let calls = generated_calls.clone();
+        move || {
+            calls.borrow_mut().push("row-visible");
+            owner.upgrade().unwrap().set_paste_active(false);
+            true
+        }
+    });
+    let record = |name| {
+        let calls = generated_calls.clone();
+        move || {
+            calls.borrow_mut().push(name);
+            true
+        }
+    };
+    generated.on_cell_enabled(record("cell-enabled"));
+
+    for (ui, scene, calls) in [
+        (
+            &generated as &dyn Component,
+            &generated_scene,
+            &generated_calls,
+        ),
+        (&actual as &dyn Component, &actual_scene, &actual_calls),
+    ] {
+        let paste = |column| {
+            ui.prepare_table_paste(scene, &[0], 0, vec![column])
+                .unwrap()("changed")
+        };
+        assert!(!paste(1));
+        assert!(calls.borrow().is_empty());
+        assert!(!paste(0));
+        assert_eq!(*calls.borrow(), ["row-visible"]);
+    }
+    assert_eq!(actual.get("paste-active"), Ok(false.into()));
+    assert!(!generated.get_paste_active());
+    assert_eq!(
+        actual.string_model("rows").unwrap().snapshot(),
+        ["original"]
+    );
+    assert_eq!(generated.get_rows(), ["original"]);
+    assert_eq!(actual.take_error(), None);
 }
 
 #[test]
@@ -8001,6 +9788,57 @@ fn control_aliases_share_defaults_reset_and_callback_storage() {
 }
 
 #[test]
+fn standalone_mlir_uses_root_for_control_aliases_even_with_a_custom_root_id() {
+    use std::{cell::Cell, rc::Rc};
+
+    let source = r#"
+        export component Editor inherits LineEdit {
+            in-out property <string> value <=> root.text;
+            text: "Original";
+            callback submitted();
+            accepted => { root.submitted(); }
+        }
+    "#;
+    let document = xrack_compiler::parse(source).unwrap();
+    let raw = xrack_compiler::mlir::lower(&document, "root-alias.xr").unwrap();
+    for root in [
+        r#"id = "editor", kind = "LineEdit""#,
+        r#"id = "editor", key = "custom-root", kind = "LineEdit""#,
+    ] {
+        let edited = raw.replace(r#"id = "root", key = "root", kind = "LineEdit""#, root);
+        assert_ne!(edited, raw);
+        let module = xrack_compiler::mlir::Module::parse(&edited).unwrap();
+        let rust = xrack_compiler::codegen::generate(&module).unwrap();
+        assert!(rust.to_string().contains("__control_root_text"));
+        let mut ui = xrack_interpreter::load_mlir(&edited)
+            .unwrap()
+            .create("Editor")
+            .unwrap();
+        let submissions = Rc::new(Cell::new(0));
+        ui.on("submitted", {
+            let submissions = submissions.clone();
+            Rc::new(move |_| {
+                submissions.set(submissions.get() + 1);
+                Ok(None)
+            })
+        })
+        .unwrap();
+        let scene = ui.try_render().unwrap();
+        assert_eq!(scene.element_id(), Some("editor"));
+        assert_eq!(ui.get("value"), Ok("Original".to_owned().into()));
+        ui.set("value", "Updated".to_owned().into()).unwrap();
+        assert_eq!(ui.try_render().unwrap().text("text"), Some("Updated"));
+        assert!(ui.edit_at(&ui.render_shared(), &[], "Input".into()));
+        assert_eq!(ui.get("value"), Ok("Input".to_owned().into()));
+        ui.reset("value").unwrap();
+        assert_eq!(ui.try_render().unwrap().text("text"), Some("Original"));
+        assert!(ui.dispatch("editor", "accepted"));
+        assert_eq!(submissions.get(), 1);
+        assert_eq!(ui.take_error(), None);
+    }
+}
+
+#[test]
 fn range_slider_property_aliases_share_storage_through_nested_components() {
     use xrack_runtime::RangeAction;
 
@@ -8047,6 +9885,315 @@ fn range_slider_property_aliases_share_storage_through_nested_components() {
     generated.reset_upper();
     check(&interpreted, &generated, 10.0, 90.0);
     assert_eq!(interpreted.take_error(), None);
+}
+
+#[test]
+fn instance_visibility_overrides_apply_to_root_numeric_controls() {
+    use expressions_ui::InstanceRangeVisibilityParity;
+    use xrack_runtime::{ControlAction, RangeAction, SpinAction};
+
+    let preview = xrack_compiler::prepare_preview(
+        include_str!("expressions.xr"),
+        "expressions.xr",
+        Default::default(),
+    )
+    .unwrap();
+    let program = Program::from_module(&preview.module).unwrap();
+    let mut actual = program.create("InstanceRangeVisibilityParity").unwrap();
+    let mut expected = InstanceRangeVisibilityParity::new();
+    let actual_scene = actual.render_shared();
+    let expected_scene = expected.render_shared();
+    let inputs = |ui: &mut dyn Component, scene: &Node, step| {
+        [
+            ui.adjust_range_at(scene, &[0], RangeAction::SetValue(25.0 + step)),
+            ui.adjust_range_at(scene, &[1, 1], RangeAction::SetValue(35.0 + step)),
+            ui.control_at(scene, &[2], ControlAction::Spin(SpinAction::Increase)),
+        ]
+    };
+    assert_same_scene(&actual_scene, &expected_scene);
+    assert_eq!(inputs(&mut expected, &expected_scene, 0.0), [true; 3]);
+    assert_eq!(inputs(&mut actual, &actual_scene, 0.0), [true; 3]);
+    assert_eq!(expected.get_level(), 25.0);
+    assert_eq!(expected.get_upper(), 35.0);
+    assert_eq!(expected.get_amount(), 11);
+    assert_eq!(actual.get("level"), Ok(expected.get_level().into()));
+    assert_eq!(actual.get("upper"), Ok(expected.get_upper().into()));
+    assert_eq!(actual.get("amount"), Ok(expected.get_amount().into()));
+
+    let old_actual = actual.try_render().unwrap();
+    let old_expected = expected.render_shared();
+    actual.set("shown", false.into()).unwrap();
+    expected.set_shown(false);
+    assert_eq!(inputs(&mut actual, &old_actual, 1.0), [false; 3]);
+    assert_eq!(inputs(&mut expected, &old_expected, 1.0), [false; 3]);
+    assert_same_scene(&actual.try_render().unwrap(), &expected.render());
+    assert_eq!(actual.take_error(), None);
+}
+
+#[test]
+fn instance_visibility_overrides_apply_to_root_control_actions() {
+    use expressions_ui::InstanceControlVisibilityParity;
+    use xrack_runtime::{
+        ControlAction::{DelayButton, Select, SubmitSearch},
+        Tumbler,
+    };
+
+    let preview = xrack_compiler::prepare_preview(
+        include_str!("expressions.xr"),
+        "expressions.xr",
+        Default::default(),
+    )
+    .unwrap();
+    let program = Program::from_module(&preview.module).unwrap();
+    let mut actual = program.create("InstanceControlVisibilityParity").unwrap();
+    let mut expected = InstanceControlVisibilityParity::new();
+    assert_same_scene(&actual.render_shared(), &expected.render_shared());
+    let wheel_action = |scene: &Node, index| {
+        Tumbler::from_node(scene.at_path(&[4]).unwrap())
+            .select(index)
+            .unwrap()
+    };
+    for (slot, action) in [
+        Select(1),
+        SubmitSearch,
+        Select(1),
+        DelayButton(true),
+        wheel_action(&actual.render_shared(), 1),
+        Select(1),
+        Select(1),
+        Select(0),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        assert!(
+            expected.control_at(&expected.render_shared(), &[slot], action),
+            "{slot} {action:?}"
+        );
+        assert!(
+            actual.control_at(&actual.render_shared(), &[slot], action),
+            "{slot} {action:?}"
+        );
+    }
+    let assert_values = |actual: &Instance, expected: &InstanceControlVisibilityParity| {
+        for (property, value) in [
+            ("combo-index", expected.get_combo_index()),
+            ("submissions", expected.get_submissions()),
+            ("list-index", expected.get_list_index()),
+            ("tumbler-index", expected.get_tumbler_index()),
+            ("indicator-index", expected.get_indicator_index()),
+            ("table-index", expected.get_table_index()),
+            ("tree-key", expected.get_tree_key()),
+        ] {
+            assert_eq!(value, 1, "{property}");
+            assert_eq!(actual.get(property), Ok(value.into()), "{property}");
+        }
+        assert!(expected.get_confirmed());
+        assert_eq!(actual.get("confirmed"), Ok(true.into()));
+    };
+    assert_values(&actual, &expected);
+
+    let old_actual = actual.render_shared();
+    let old_expected = expected.render_shared();
+    actual.set("shown", false.into()).unwrap();
+    expected.set_shown(false);
+    for (slot, action) in [
+        Select(0),
+        SubmitSearch,
+        Select(0),
+        DelayButton(false),
+        wheel_action(&old_actual, 0),
+        Select(0),
+        Select(0),
+        Select(0),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        assert!(
+            !actual.control_at(&old_actual, &[slot], action),
+            "{slot} {action:?}"
+        );
+        assert!(
+            !expected.control_at(&old_expected, &[slot], action),
+            "{slot} {action:?}"
+        );
+    }
+    assert_values(&actual, &expected);
+    assert_same_scene(&actual.render_shared(), &expected.render_shared());
+    assert_eq!(actual.take_error(), None);
+}
+
+#[test]
+fn instance_visibility_overrides_apply_to_table_editing_and_clipboard() {
+    use expressions_ui::InstanceTableVisibilityParity;
+    use std::rc::Rc;
+    use xrack_layout::{Interaction, Size};
+    use xrack_runtime::{TableEditPosition, TablePaste};
+
+    const TABLE: &[usize] = &[0];
+    const CELL: &[usize] = &[0, 0, 0, 0];
+
+    fn copy(ui: &dyn Component, scene: &Node) -> Option<String> {
+        ui.copy_table_at(scene, TABLE, &[0, 1])
+    }
+
+    fn next(ui: &dyn Component, scene: &Node) -> Option<(usize, usize)> {
+        let (_, key, _) = scene.at_path(TABLE).unwrap().list_event_row(0).unwrap();
+        let origin = TableEditPosition {
+            row: 0,
+            column: 0,
+            key,
+        };
+        ui.next_table_edit_cell(scene, TABLE, origin, &[0, 1], false)
+            .map(|position| (position.row, position.column))
+    }
+
+    fn exercise(ui: &mut impl Component) -> (Rc<Node>, TablePaste) {
+        let interaction = Interaction::default();
+        let size = Size {
+            width: 320.0,
+            height: 240.0,
+        };
+        let scene = prepare_list(ui, &interaction, size).0;
+        assert_eq!(copy(ui, &scene).as_deref(), Some("one\ttwo"));
+        assert_eq!(next(ui, &scene), Some((0, 1)));
+        assert!(ui.commit_table_cell(&scene, CELL, "one", "edited".into()));
+        let scene = ui.render_shared();
+        assert_eq!(copy(ui, &scene).as_deref(), Some("edited\ttwo"));
+        let paste = ui.prepare_table_paste(&scene, TABLE, 0, vec![1]).unwrap();
+        assert!(paste("pasted"));
+        let scene = ui.render_shared();
+        assert_eq!(copy(ui, &scene).as_deref(), Some("edited\tpasted"));
+        assert!(ui.replay_table_edit_at(&scene, TABLE, false));
+        let scene = prepare_list(ui, &interaction, size).0;
+        assert_eq!(copy(ui, &scene).as_deref(), Some("edited\ttwo"));
+        let paste = ui.prepare_table_paste(&scene, TABLE, 0, vec![1]).unwrap();
+        (scene, paste)
+    }
+
+    let preview = xrack_compiler::prepare_preview(
+        include_str!("expressions.xr"),
+        "expressions.xr",
+        Default::default(),
+    )
+    .unwrap();
+    let program = Program::from_module(&preview.module).unwrap();
+    let mut actual = program.create("InstanceTableVisibilityParity").unwrap();
+    let mut expected = InstanceTableVisibilityParity::new();
+    let old_scenes = [exercise(&mut expected), exercise(&mut actual)];
+
+    expected.set_shown(false);
+    actual.set("shown", false.into()).unwrap();
+    for (ui, (scene, paste)) in [&mut expected as &mut dyn Component, &mut actual]
+        .into_iter()
+        .zip(old_scenes)
+    {
+        assert_eq!(copy(ui, &scene), None);
+        assert_eq!(next(ui, &scene), None);
+        assert!(!ui.commit_table_cell(&scene, CELL, "edited", "stale".into()));
+        assert!(!paste("stale"));
+        assert!(!ui.replay_table_edit_at(&scene, TABLE, true));
+    }
+    assert_eq!(actual.take_error(), None);
+}
+
+#[test]
+fn instance_visibility_overrides_apply_to_virtual_row_editors() {
+    use expressions_ui::InstanceRowEditorVisibilityParity;
+    use std::rc::Rc;
+    use xrack_layout::{Interaction, Size};
+    use xrack_runtime::{ControlAction, SpinAction};
+
+    fn prepare(ui: &impl Component) -> Rc<Node> {
+        prepare_list(ui, &Interaction::default(), Size::new(480.0, 260.0)).0
+    }
+
+    let preview = xrack_compiler::prepare_preview(
+        include_str!("expressions.xr"),
+        "expressions.xr",
+        Default::default(),
+    )
+    .unwrap();
+    let program = Program::from_module(&preview.module).unwrap();
+    let mut actual = program.create("InstanceRowEditorVisibilityParity").unwrap();
+    let mut expected = InstanceRowEditorVisibilityParity::new();
+    let table_text = [0, 0, 0, 0];
+    let linked_text = [0, 0, 0, 1, 0];
+    let check = [0, 0, 0, 2];
+    let table_spin = [0, 0, 0, 3];
+    let tree_text = [1, 0, 0, 0];
+    let tree_spin = [1, 0, 0, 1];
+    let spin = ControlAction::Spin(SpinAction::Increase);
+    let scenes = [prepare(&expected), prepare(&actual)];
+    for (ui, scene) in [&mut expected as &mut dyn Component, &mut actual]
+        .into_iter()
+        .zip(&scenes)
+    {
+        assert!(ui.commit_table_cell(scene, &table_text, "before", "table".into()));
+        assert!(ui.edit_at(scene, &linked_text, "linked".into()));
+        assert!(ui.dispatch_at(scene, &check, "clicked"));
+        assert!(ui.control_at(scene, &table_spin, spin));
+    }
+    let assert_row =
+        |actual: &Instance, expected: &InstanceRowEditorVisibilityParity, title, amount| {
+            let generated = expected.model_rows().row(0).unwrap();
+            let row = actual.record_model("rows").unwrap().model().row(0).unwrap();
+            assert_eq!(generated.title, title);
+            assert_eq!(generated.linked, "linked");
+            assert!(generated.checked);
+            assert_eq!(generated.amount, amount);
+            assert_eq!(row.field("title"), Some(&generated.title.into()));
+            assert_eq!(row.field("linked"), Some(&generated.linked.into()));
+            assert_eq!(row.field("checked"), Some(&generated.checked.into()));
+            assert_eq!(row.field("amount"), Some(&generated.amount.into()));
+        };
+    assert_row(&actual, &expected, "table", 11);
+    let scenes = [prepare(&expected), prepare(&actual)];
+    for (ui, scene) in [&mut expected as &mut dyn Component, &mut actual]
+        .into_iter()
+        .zip(&scenes)
+    {
+        assert!(ui.commit_table_cell(scene, &tree_text, "table", "tree".into()));
+        assert!(ui.control_at(scene, &tree_spin, spin));
+    }
+    assert_row(&actual, &expected, "tree", 12);
+    let scenes = [prepare(&expected), prepare(&actual)];
+    actual
+        .on("record-history", {
+            let owner = actual.as_weak();
+            Rc::new(move |_| {
+                owner.upgrade().unwrap().set("shown", false.into()).unwrap();
+                Ok(Some(true.into()))
+            })
+        })
+        .unwrap();
+    expected.on_record_history({
+        let owner = expected.as_weak();
+        move || {
+            owner.upgrade().unwrap().set_shown(false);
+            true
+        }
+    });
+    // The delegate handles the text event, but the model write must be canceled.
+    assert!(expected.edit_at(&scenes[0], &linked_text, "invalidated".into()));
+    assert!(actual.edit_at(&scenes[1], &linked_text, "invalidated".into()));
+    assert!(!expected.get_shown());
+    assert_eq!(actual.get("shown"), Ok(false.into()));
+    assert_row(&actual, &expected, "tree", 12);
+    for (ui, scene) in [&mut expected as &mut dyn Component, &mut actual]
+        .into_iter()
+        .zip(&scenes)
+    {
+        assert!(!ui.commit_table_cell(scene, &table_text, "tree", "stale".into()));
+        assert!(!ui.edit_at(scene, &linked_text, "stale".into()));
+        assert!(!ui.dispatch_at(scene, &check, "clicked"));
+        assert!(!ui.control_at(scene, &table_spin, spin));
+        assert!(!ui.commit_table_cell(scene, &tree_text, "tree", "stale".into()));
+        assert!(!ui.control_at(scene, &tree_spin, spin));
+    }
+    assert_row(&actual, &expected, "tree", 12);
+    assert_eq!(actual.take_error(), None);
 }
 
 #[test]
@@ -8200,22 +10347,23 @@ fn instance_state_targets_validate_aliases_the_same_in_both_backends() {
         "#
         )
     };
-    let ambiguous = source("", "child.first: 4; child.second: 5;");
     let diagnostic = "states target multiple aliases of the same component input at `second`";
-    let compile = xrack_compiler::compile(&ambiguous, "state-alias.xr")
-        .err()
-        .expect("ambiguous state input was accepted by the compiler");
-    assert!(compile.to_string().contains(diagnostic), "{compile}");
-    let preview =
-        xrack_compiler::prepare_preview(&ambiguous, "state-alias.xr", Default::default()).unwrap();
-    let interpreted = Program::from_module(&preview.module)
-        .and_then(|program| program.create("StateAliasProbe"))
-        .err()
-        .expect("ambiguous state input was accepted by the interpreter");
-    assert!(
-        interpreted.to_string().contains(diagnostic),
-        "{interpreted}"
-    );
+    let ambiguous = source("", "child.first: 4; child.second: 5;");
+    let inactive = ambiguous.replace("when root.active", "when false");
+    for source in [&ambiguous, &inactive] {
+        let filename = "state-alias.xr";
+        let document = xrack_compiler::parse(source).unwrap();
+        let raw = xrack_compiler::mlir::lower(&document, filename).unwrap();
+        assert_eq!(raw.matches("\"xr.instance_state\"").count(), 2);
+        let compile = xrack_compiler::compile(source, filename).err().unwrap();
+        let preview = xrack_compiler::prepare_preview(source, filename, Default::default())
+            .err()
+            .unwrap();
+        let interpreted = xrack_interpreter::load_mlir(&raw).err().unwrap();
+        assert!(compile.to_string().contains(diagnostic), "{compile}");
+        assert_eq!(preview.to_string(), compile.to_string());
+        assert_eq!(interpreted.to_string(), compile.to_string());
+    }
 
     let source = source("first: root.external;", "child.second: 4;");
     xrack_compiler::compile(&source, "state-alias.xr").unwrap();
@@ -8241,6 +10389,77 @@ fn instance_state_targets_validate_aliases_the_same_in_both_backends() {
         error
             .to_string()
             .contains("state cannot override two-way input `second`"),
+        "{error}"
+    );
+}
+
+#[test]
+fn standalone_mlir_rejects_a_forwarded_two_way_input_with_an_inner_state() {
+    let source = r#"
+        component Leaf inherits Rectangle {
+            in-out property <string> caption <=> field.text;
+            field := LineEdit {}
+        }
+        component Frame inherits Rectangle {
+            in-out property <string> alias <=> badge.caption;
+            in property <bool> active: false;
+            badge := Leaf {
+                states [ warning when root.active: { caption: "Warning"; } ]
+            }
+        }
+        export component App inherits Window {
+            in-out property <string> caption: "Normal";
+            in-out property <bool> active: false;
+            frame := Frame { alias: root.caption; active: root.active; }
+        }
+    "#;
+    let filename = "nested-state-link.xr";
+    let compiled = xrack_compiler::compile(source, filename).unwrap();
+    let ui = xrack_interpreter::load_mlir(&compiled.mlir)
+        .unwrap()
+        .create("App")
+        .unwrap();
+    let text = || {
+        ui.try_render()
+            .unwrap()
+            .find("field")
+            .unwrap()
+            .text("text")
+            .unwrap()
+            .to_owned()
+    };
+    assert_eq!(text(), "Normal");
+    ui.set("active", true.into()).unwrap();
+    assert_eq!(text(), "Warning");
+    ui.set("caption", "Updated".to_owned().into()).unwrap();
+    assert_eq!(text(), "Warning");
+    ui.set("active", false.into()).unwrap();
+    assert_eq!(text(), "Updated");
+
+    let raw =
+        xrack_compiler::mlir::lower(&xrack_compiler::parse(source).unwrap(), filename).unwrap();
+    let binding = raw
+        .lines()
+        .find(|line| line.contains("name = \"alias\"") && line.contains("\"xr.bind\""))
+        .unwrap();
+    let linked = raw.replace(
+        binding,
+        &binding.replace("\"xr.bind\"", "\"xr.instance_link\""),
+    );
+    let error = xrack_compiler::mlir::Module::parse(&linked).unwrap_err();
+    assert!(
+        error.contains("state cannot override two-way input `caption`"),
+        "{error}"
+    );
+    assert_eq!(
+        xrack_interpreter::load_mlir(&linked).err(),
+        Some(xrack_interpreter::Error::Invalid(error)),
+    );
+
+    let invalid = source.replace("alias: root.caption;", "alias <=> root.caption;");
+    let error = xrack_compiler::compile(&invalid, filename).err().unwrap();
+    assert!(
+        error.to_string().contains("state cannot override"),
         "{error}"
     );
 }
@@ -8277,17 +10496,10 @@ fn instance_callback_handlers_validate_shared_alias_targets() {
         .err()
         .expect("duplicate instance handlers were accepted by the compiler");
     assert!(compiled.to_string().contains(diagnostic), "{compiled}");
-    let preview =
-        xrack_compiler::prepare_preview(&duplicate, "callback-alias.xr", Default::default())
-            .unwrap();
-    let interpreted = Program::from_module(&preview.module)
-        .and_then(|program| program.create("CallbackAliasProbe"))
-        .err()
-        .expect("duplicate instance handlers were accepted by the interpreter");
-    assert!(
-        interpreted.to_string().contains(diagnostic),
-        "{interpreted}"
-    );
+    let document = xrack_compiler::parse(&duplicate).unwrap();
+    let raw = xrack_compiler::mlir::lower(&document, "callback-alias.xr").unwrap();
+    let interpreted = xrack_interpreter::load_mlir(&raw).err().unwrap();
+    assert_eq!(interpreted.to_string(), compiled.to_string());
 
     for (valid, observed) in [(source("left", first), 57), (source("right", &both), 58)] {
         xrack_compiler::compile(&valid, "callback-alias.xr").unwrap();
@@ -8312,11 +10524,32 @@ fn incoming_callback_precedes_defaults_on_equivalent_nested_aliases() {
         .unwrap()
         .create("CallbackPrecedenceParity")
         .unwrap();
-    let generated = expressions_ui::CallbackPrecedenceParity::new();
+    let mut generated = expressions_ui::CallbackPrecedenceParity::new();
 
     assert_eq!(interpreted.get("overridden"), Ok(31_i64.into()));
+    assert_eq!(interpreted.get("same-slot"), Ok(32_i64.into()));
     assert_eq!(interpreted.get("fallback"), Ok(11_i64.into()));
     assert_eq!(generated.get_overridden(), 31);
+    assert_eq!(generated.get_same_slot(), 32);
+    assert_eq!(generated.get_fallback(), 11);
+
+    interpreted
+        .on(
+            "public-score",
+            std::rc::Rc::new(|args| {
+                let [Value::Int(value)] = args else {
+                    unreachable!()
+                };
+                Ok(Some((value + 100).into()))
+            }),
+        )
+        .unwrap();
+    generated.on_public_score(|value| value + 100);
+    assert_eq!(interpreted.get("overridden"), Ok(101_i64.into()));
+    assert_eq!(interpreted.get("same-slot"), Ok(102_i64.into()));
+    assert_eq!(generated.get_overridden(), 101);
+    assert_eq!(generated.get_same_slot(), 102);
+    assert_eq!(interpreted.get("fallback"), Ok(11_i64.into()));
     assert_eq!(generated.get_fallback(), 11);
 
     let duplicate = source.replace(
@@ -8331,15 +10564,57 @@ fn incoming_callback_precedes_defaults_on_equivalent_nested_aliases() {
         compiled_error.to_string().contains(diagnostic),
         "{compiled_error}"
     );
-    let preview =
-        xrack_compiler::prepare_preview(&duplicate, "expressions.xr", Default::default()).unwrap();
-    let interpreted_error = Program::from_module(&preview.module)
-        .and_then(|program| program.create("CallbackPrecedenceParity"))
-        .err()
-        .expect("interpreter accepted two defaults for the same callback");
-    assert!(
-        interpreted_error.to_string().contains(diagnostic),
-        "{interpreted_error}"
+    let document = xrack_compiler::parse(&duplicate).unwrap();
+    let raw = xrack_compiler::mlir::lower(&document, "expressions.xr").unwrap();
+    let interpreted_error = xrack_interpreter::load_mlir(&raw).err().unwrap();
+    assert_eq!(interpreted_error.to_string(), compiled_error.to_string());
+}
+
+#[test]
+fn standalone_mlir_detects_cycles_through_equivalent_control_aliases() {
+    let source = r#"
+        component AliasEditor inherits LineEdit {
+            in-out property <string> primary <=> root.text;
+            in-out property <string> alternate <=> root.text;
+        }
+        component AliasWrapper inherits Rectangle {
+            in-out property <string> primary <=> field.primary;
+            in-out property <string> alternate <=> field.alternate;
+            field := AliasEditor {}
+        }
+        export component AliasCycleProbe inherits Window {
+            in-out property <string> input: "Initial";
+            editor := AliasWrapper { primary: root.input; }
+        }
+    "#;
+    let document = xrack_compiler::parse(source).unwrap();
+    let raw = xrack_compiler::mlir::lower(&document, "control-alias-cycle.xr").unwrap();
+    let module = xrack_compiler::mlir::Module::parse(&raw).unwrap();
+    assert!(xrack_compiler::codegen::generate(&module).is_ok());
+    let ui = xrack_interpreter::load_mlir(&raw)
+        .unwrap()
+        .create("AliasCycleProbe")
+        .unwrap();
+    assert_eq!(
+        ui.try_render().unwrap().children[0].children[0].text("text"),
+        Some("Initial")
+    );
+    ui.set("input", "Updated".to_owned().into()).unwrap();
+    assert_eq!(
+        ui.try_render().unwrap().children[0].children[0].text("text"),
+        Some("Updated")
+    );
+
+    let cyclic = raw.replace(
+        r#"owner = "root", value = "input""#,
+        r#"owner = "editor", value = "alternate""#,
+    );
+    assert_ne!(raw, cyclic);
+    let error = xrack_compiler::mlir::Module::parse(&cyclic).unwrap_err();
+    assert!(error.contains("cyclic property binding"), "{error}");
+    assert_eq!(
+        xrack_interpreter::load_mlir(&cyclic).err(),
+        Some(xrack_interpreter::Error::Invalid(error))
     );
 }
 
@@ -8386,6 +10661,44 @@ fn nested_property_aliases_preserve_incoming_links_and_local_defaults() {
     generated.reset_external();
     check(&generated, 30);
     assert_eq!(interpreted.take_error(), None);
+}
+
+#[test]
+fn nested_property_reset_restores_state_and_base_bindings() {
+    let preview = xrack_compiler::prepare_preview(
+        include_str!("expressions.xr"),
+        "expressions.xr",
+        Default::default(),
+    )
+    .unwrap();
+    let actual = Program::from_module(&preview.module)
+        .unwrap()
+        .create("PropertyForwardStateParity")
+        .unwrap();
+    let mut generated = expressions_ui::PropertyForwardStateParity::new();
+    let check = |compiled: &expressions_ui::PropertyForwardStateParity, value| {
+        assert_eq!(actual.get("edited"), Ok(Value::Int(value)));
+        assert_eq!(actual.get("observed"), Ok(Value::Int(value)));
+        assert_eq!(compiled.get_edited(), value);
+        assert_eq!(compiled.get_observed(), value);
+    };
+    check(&generated, 30);
+    actual.set("active", true.into()).unwrap();
+    generated.set_active(true);
+    check(&generated, 40);
+    actual.set("edited", 50_i64.into()).unwrap();
+    generated.set_edited(50);
+    check(&generated, 50);
+    actual.reset("edited").unwrap();
+    generated.reset_edited();
+    check(&generated, 40);
+    actual.set("base", 35_i64.into()).unwrap();
+    generated.set_base(35);
+    check(&generated, 40);
+    actual.set("active", false.into()).unwrap();
+    generated.set_active(false);
+    check(&generated, 35);
+    assert_eq!(actual.take_error(), None);
 }
 
 #[test]
@@ -8588,26 +10901,34 @@ fn effectful_host_callbacks_reject_reentry_and_allow_replacement() {
     let actual = callback_replacement_fixture();
     let mut generated = expressions_ui::CallbackReplacementParity::new();
     actual
-        .on("advance", {
-            let owner = Cell::new(Some(actual.clone()));
-            Rc::new(move |_| {
-                let Some(owner) = owner.take() else {
-                    return Ok(Some(10.into()));
-                };
-                owner
-                    .invoke("advance", &[])
-                    .map_err(|error| error.to_string())
-            })
+        .on_mut("advance", {
+            let owner = actual.as_weak();
+            let mut reenter = true;
+            let mut calls = 0_i64;
+            move |_| {
+                calls += 1;
+                if std::mem::take(&mut reenter) {
+                    owner
+                        .upgrade()
+                        .unwrap()
+                        .invoke("advance", &[])
+                        .map_err(|error| error.to_string())
+                } else {
+                    Ok(Some((calls * 5).into()))
+                }
+            }
         })
         .unwrap();
     generated.on_advance({
         let owner = generated.as_weak();
-        let reenter = Cell::new(true);
+        let mut reenter = true;
+        let mut calls = 0;
         move || {
-            if reenter.replace(false) {
+            calls += 1;
+            if std::mem::take(&mut reenter) {
                 owner.upgrade().unwrap().invoke_advance()
             } else {
-                10
+                calls * 5
             }
         }
     });
@@ -8625,17 +10946,15 @@ fn effectful_host_callbacks_reject_reentry_and_allow_replacement() {
     assert_eq!(generated.invoke_advance(), 10);
 
     actual
-        .on("advance", {
-            let owner = Cell::new(Some(actual.clone()));
-            Rc::new(move |_| {
-                let owner = owner.take().unwrap();
-                owner
-                    .on("advance", Rc::new(|_| Ok(Some(20.into()))))
-                    .unwrap();
+        .on_mut("advance", {
+            let owner = actual.as_weak();
+            move |_| {
+                let owner = owner.upgrade().unwrap();
+                owner.on_mut("advance", |_| Ok(Some(20.into()))).unwrap();
                 owner
                     .invoke("advance", &[])
                     .map_err(|error| error.to_string())
-            })
+            }
         })
         .unwrap();
     generated.on_advance({
@@ -8650,6 +10969,12 @@ fn effectful_host_callbacks_reject_reentry_and_allow_replacement() {
     assert_eq!(generated.invoke_advance(), 20);
     assert_eq!(actual.get("steps"), Ok(generated.get_steps().into()));
     assert_eq!(generated.get_steps(), 5);
+
+    let error = actual
+        .on_mut("probe", |_| panic!("pure callback registration must fail"))
+        .unwrap_err();
+    assert!(error.to_string().contains("pure callback root.probe"));
+    assert_eq!(actual.invoke("probe", &[]), Ok(Some(0.into())));
 
     actual
         .on("probe", {
@@ -8884,6 +11209,117 @@ fn delegated_table_controls_and_clipboard_parsers_share_live_row_links() {
     );
     assert_eq!(actual.get("committed-units"), Ok(Value::Int(47)));
     assert_eq!(actual.get("committed-row"), Ok(Value::Int(0)));
+}
+
+#[test]
+fn nested_clipboard_paste_from_mlir_matches_generated_field_history() {
+    let source = include_str!("../examples/table/records.xr");
+    let preview =
+        xrack_compiler::prepare_preview(source, "records.xr", Default::default()).unwrap();
+    let interpreted = xrack_interpreter::load_mlir(&preview.module.to_mlir())
+        .unwrap()
+        .create("NestedRecordsDemo")
+        .unwrap();
+    let generated = records_ui::NestedRecordsDemo::new();
+    let actual_rows = interpreted.record_model("records").unwrap();
+    let generated_rows = generated.model_records();
+    let note_path = ["reserve".into(), "note".into()];
+    let available_path = ["reserve".into(), "available".into()];
+    let table = [0, 2];
+    for ui in [&interpreted as &dyn Component, &generated] {
+        let scene = ui.render_shared();
+        let paste = || ui.prepare_table_paste(&scene, &table, 0, vec![3]).unwrap();
+        assert!(!paste()("pending\n\"\""));
+        assert!(paste()("first\nsecond"));
+    }
+    let compare = |notes: [&str; 2], available| {
+        for (index, note) in notes.into_iter().enumerate() {
+            let actual = actual_rows.model().row(index).unwrap();
+            let expected = generated_rows.row(index).unwrap();
+            assert_eq!(
+                actual.field_path(&note_path),
+                Some(&Value::String(note.into()))
+            );
+            assert_eq!(expected.reserve.note, note);
+            let available = index != 0 || available;
+            assert_eq!(
+                actual.field_path(&available_path),
+                Some(&Value::Bool(available))
+            );
+            assert_eq!(expected.reserve.available, available);
+        }
+    };
+    compare(["first", "second"], true);
+    let actual = actual_rows
+        .model()
+        .row(0)
+        .unwrap()
+        .with_field(&available_path, false.into())
+        .unwrap();
+    assert!(actual_rows.model().set_row(0, actual));
+    let mut generated_row = generated_rows.row(0).unwrap();
+    generated_row.reserve.available = false;
+    assert!(generated_rows.set_row(0, generated_row));
+    for (redo, notes) in [(false, ["备用", "备用"]), (true, ["first", "second"])] {
+        for ui in [&interpreted as &dyn Component, &generated] {
+            assert!(ui.replay_table_edit_at(&ui.render_shared(), &table, redo));
+        }
+        compare(notes, false);
+    }
+    assert_eq!(interpreted.take_error(), None);
+}
+
+#[test]
+fn nested_tree_roles_from_text_mlir_route_edits_to_the_source_record() {
+    use xrack_runtime::TreeCommand;
+
+    fn edit(ui: &mut impl Component, tree: &[usize], cell: &[usize]) {
+        let (scene, _) = prepare_list(
+            ui,
+            &xrack_layout::Interaction::default(),
+            xrack_layout::Size::new(840.0, 580.0),
+        );
+        assert_eq!(tree_keys(&scene, tree), [1, 2]);
+        assert_eq!(scene.at_path(cell).unwrap().text("text"), Some("货位 B"));
+        assert!(ui.commit_table_cell(&scene, cell, "货位 B", "改名".into()));
+        assert!(!ui.commit_table_cell(&scene, cell, "货位 B", "旧草稿".into()));
+    }
+
+    let file = "examples/table/records.xr";
+    let preview = xrack_compiler::prepare_preview(
+        include_str!("../examples/table/records.xr"),
+        file,
+        Default::default(),
+    )
+    .unwrap();
+    let mut interpreted = xrack_interpreter::load_mlir(&preview.module.to_mlir())
+        .unwrap()
+        .create("NestedRecordsDemo")
+        .unwrap();
+    let mut generated = records_ui::NestedRecordsDemo::new();
+    let tree = [0, 1, 1];
+    let cell = [0, 1, 1, 1, 0, 0];
+    assert_eq!(tree_keys(&interpreted.render_shared(), &tree), [1]);
+    assert_eq!(tree_keys(&generated.render_shared(), &tree), [1]);
+    assert_eq!(
+        interpreted.command_tree("shelves", TreeCommand::Expand(1)),
+        Ok(true)
+    );
+    assert!(generated.command_tree("shelves", TreeCommand::Expand(1)));
+
+    edit(&mut interpreted, &tree, &cell);
+    edit(&mut generated, &tree, &cell);
+    let rows = interpreted.record_model("records").unwrap();
+    let title = ["location".into(), "title".into()];
+    let generated_rows = generated.get_records();
+    for (index, expected) in ["仓库 A", "改名"].into_iter().enumerate() {
+        assert_eq!(
+            rows.model().row(index).unwrap().field_path(&title),
+            Some(&Value::String(expected.into()))
+        );
+        assert_eq!(generated_rows[index].location.title, expected);
+    }
+    assert_eq!(interpreted.take_error(), None);
 }
 
 #[test]
@@ -9341,6 +11777,160 @@ fn tree_queries_evaluate_the_key_before_sampling_the_tree() {
         assert_eq!(read(&compiled), expected_value, "{property}");
         assert_eq!(*actual_trace.borrow(), ["key", "root"], "{property}");
         assert_eq!(*compiled_trace.borrow(), ["key", "root"], "{property}");
+    }
+}
+
+#[test]
+fn tree_root_callback_changes_are_included_in_the_first_projection() {
+    use std::{cell::Cell, rc::Rc};
+
+    let (interpreted, mut generated) = tree_input_fixture();
+    let rows = interpreted.record_model("records").unwrap();
+    interpreted
+        .on("query-root", {
+            let model = rows.model().clone();
+            let pending = Cell::new(true);
+            Rc::new(move |_| {
+                if pending.replace(false) {
+                    assert!(model.remove(0).is_some());
+                }
+                Ok(Some((-1_i64).into()))
+            })
+        })
+        .unwrap();
+    generated.on_query_root({
+        let model = generated.model_records();
+        let pending = Cell::new(true);
+        move || {
+            if pending.replace(false) {
+                assert!(model.remove(0).is_some());
+            }
+            -1
+        }
+    });
+
+    for tree in [
+        interpreted.tree_snapshot("branches").unwrap(),
+        generated.tree_snapshot("branches").unwrap(),
+    ] {
+        let visible: Vec<_> = tree
+            .rows()
+            .iter()
+            .map(|row| (row.key, row.model_index))
+            .collect();
+        assert_eq!(visible, [(2, 0), (3, 1), (11, 2)]);
+    }
+    assert_eq!(interpreted.take_error(), None);
+}
+
+#[test]
+fn tree_projection_uses_the_replacement_model_for_rows_and_editing() {
+    use expressions_ui::{TreeInputParityRow, TreeModelReplacementParity};
+    use std::rc::Rc;
+    use xrack_runtime::{RecordList, RecordValue, VecModel};
+
+    let preview = xrack_compiler::prepare_preview(
+        include_str!("expressions.xr"),
+        "expressions.xr",
+        Default::default(),
+    )
+    .unwrap();
+    let program = Program::from_module(&preview.module).unwrap();
+    for filtering in [false, true] {
+        let mut actual = program.create("TreeModelReplacementParity").unwrap();
+        let mut generated = TreeModelReplacementParity::new();
+        actual.set("filtering", filtering.into()).unwrap();
+        generated.set_filtering(filtering);
+        let original = actual.record_model("rows").unwrap();
+        let original_compiled = generated.model_rows();
+        let replacement = RecordList::new(
+            "TreeInputParityRow",
+            vec![RecordValue::new(
+                "TreeInputParityRow",
+                [
+                    ("id".into(), 2_i64.into()),
+                    ("parent".into(), (-1_i64).into()),
+                    ("label".into(), "new".to_owned().into()),
+                ]
+                .into(),
+            )],
+        );
+        let compiled_replacement = VecModel::from(vec![TreeInputParityRow {
+            id: 2,
+            parent: -1,
+            label: "new".into(),
+        }]);
+        actual
+            .on(
+                if filtering {
+                    "query-text"
+                } else {
+                    "query-root"
+                },
+                {
+                    let owner = actual.as_weak();
+                    let replacement = replacement.clone();
+                    Rc::new(move |_| {
+                        owner
+                            .upgrade()
+                            .unwrap()
+                            .set("rows", Value::RecordList(replacement.clone()))
+                            .unwrap();
+                        Ok(Some(if filtering {
+                            "new".to_owned().into()
+                        } else {
+                            (-1_i64).into()
+                        }))
+                    })
+                },
+            )
+            .unwrap();
+        let replace = {
+            let owner = generated.as_weak();
+            let replacement = compiled_replacement.clone();
+            move || {
+                owner
+                    .upgrade()
+                    .unwrap()
+                    .bind_model_rows(replacement.clone())
+            }
+        };
+        if filtering {
+            generated.on_query_text(move || {
+                replace();
+                "new".into()
+            });
+        } else {
+            generated.on_query_root(move || {
+                replace();
+                -1
+            });
+        }
+
+        let view = usize::from(filtering);
+        let path = [view, 0, 0, 0];
+        // A host query samples the tree before ordinary scene bindings run.
+        let id = if filtering { "filtered" } else { "plain" };
+        assert_eq!(actual.tree_snapshot(id).unwrap().rows()[0].key, 2);
+        assert_eq!(generated.tree_snapshot(id).unwrap().rows()[0].key, 2);
+        let input = xrack_layout::Interaction::default();
+        let size = xrack_layout::Size::new(320.0, 200.0);
+        let (scene, _) = prepare_list(&actual, &input, size);
+        let (expected, _) = prepare_list(&generated, &input, size);
+        for (ui, scene) in [
+            (&mut actual as &mut dyn Component, &scene),
+            (&mut generated, &expected),
+        ] {
+            assert_eq!(tree_keys(scene, &[view]), [2]);
+            assert_eq!(scene.at_path(&path).unwrap().text("text"), Some("new"));
+            assert!(ui.commit_table_cell(scene, &path, "new", "new label".into()));
+        }
+        let label = |rows: &RecordList| rows.model().row(0).unwrap().field("label").cloned();
+        assert_eq!(label(&replacement), Some("new label".to_owned().into()));
+        assert_eq!(compiled_replacement.row(0).unwrap().label, "new label");
+        assert_eq!(label(&original), Some("old".to_owned().into()));
+        assert_eq!(original_compiled.row(0).unwrap().label, "old");
+        assert_eq!(actual.take_error(), None);
     }
 }
 
@@ -11014,6 +13604,170 @@ fn ordinary_repeated_group_boxes_toggle_by_row_identity() {
 }
 
 #[test]
+fn virtual_list_group_boxes_route_clicks_and_keep_state_by_row_identity() {
+    use expressions_ui::VirtualListGroupParity;
+    use xrack_layout::{Interaction, Size};
+
+    let preview = xrack_compiler::prepare_preview(
+        include_str!("expressions.xr"),
+        "expressions.xr",
+        Default::default(),
+    )
+    .unwrap();
+    let mut actual = Program::from_module(&preview.module)
+        .unwrap()
+        .create("VirtualListGroupParity")
+        .unwrap();
+    let mut expected = VirtualListGroupParity::new();
+    let input = Interaction::default();
+    let size = Size::new(320.0, 270.0);
+    let old = [
+        prepare_list(&actual, &input, size).0,
+        prepare_list(&expected, &input, size).0,
+    ];
+    assert_same_scene(&old[0], &old[1]);
+
+    actual.set("allow-rows", false.into()).unwrap();
+    expected.set_allow_rows(false);
+    for (ui, scene) in [&mut actual as &mut dyn Component, &mut expected]
+        .into_iter()
+        .zip(&old)
+    {
+        for view in [0, 1] {
+            assert!(!ui.dispatch_at(scene, &[view, 0, 0], "clicked"));
+        }
+    }
+    actual.set("allow-rows", true.into()).unwrap();
+    expected.set_allow_rows(true);
+    for (ui, scene) in [&mut actual as &mut dyn Component, &mut expected]
+        .into_iter()
+        .zip(&old)
+    {
+        for view in [0, 1] {
+            assert!(
+                ui.dispatch_at(scene, &[view, 0, 0, 0, 0], "clicked"),
+                "nested group in view {view}"
+            );
+            assert!(
+                ui.dispatch_at(scene, &[view, 0, 0], "clicked"),
+                "root group in view {view}"
+            );
+            assert!(!ui.dispatch_at(scene, &[view, 0, 0, 0, 0], "clicked"));
+            assert!(ui.dispatch_at(scene, &[view, 1, 0], "clicked"));
+        }
+    }
+    for model in [
+        actual.string_model("labels").unwrap(),
+        expected.model_labels(),
+    ] {
+        assert!(model.sort_by(|left, right| right.cmp(left)));
+    }
+    for (ui, scene) in [&mut actual as &mut dyn Component, &mut expected]
+        .into_iter()
+        .zip(&old)
+    {
+        for view in [0, 1] {
+            assert!(!ui.dispatch_at(scene, &[view, 0, 0], "clicked"));
+        }
+    }
+    let actual_scene = prepare_list(&actual, &input, size).0;
+    let expected_scene = prepare_list(&expected, &input, size).0;
+    assert_same_scene(&actual_scene, &expected_scene);
+    for view in [0, 1] {
+        assert!(
+            actual_scene
+                .at_path(&[view, 0, 0])
+                .unwrap()
+                .boolean("checked", false)
+        );
+        assert!(
+            !actual_scene
+                .at_path(&[view, 1, 0])
+                .unwrap()
+                .boolean("checked", true)
+        );
+        assert!(
+            !actual_scene
+                .at_path(&[view, 1, 0, 0, 0])
+                .unwrap()
+                .boolean("checked", true)
+        );
+    }
+    assert_eq!(actual.take_error(), None);
+}
+
+#[test]
+fn linked_group_boxes_route_clicks_in_ordinary_and_filtered_repeats() {
+    use expressions_ui::LinkedGroupRepeatParity;
+    use xrack_layout::{Interaction, Size};
+
+    let preview = xrack_compiler::prepare_preview(
+        include_str!("expressions.xr"),
+        "expressions.xr",
+        Default::default(),
+    )
+    .unwrap();
+    let mut actual = Program::from_module(&preview.module)
+        .unwrap()
+        .create("LinkedGroupRepeatParity")
+        .unwrap();
+    let mut expected = LinkedGroupRepeatParity::new();
+    let input = Interaction::default();
+    let size = Size::new(320.0, 230.0);
+    let old = [
+        prepare_list(&actual, &input, size).0,
+        prepare_list(&expected, &input, size).0,
+    ];
+    assert_same_scene(&old[0], &old[1]);
+    let visible = [1, 0, 0];
+    assert_eq!(
+        old[0].at_path(&visible).unwrap().text("title"),
+        Some("visible")
+    );
+
+    assert!(actual.dispatch_at(&old[0], &[0, 1], "clicked"));
+    assert!(expected.dispatch_at(&old[1], &[0, 1], "clicked"));
+    assert_eq!(actual.get("expanded"), Ok(false.into()));
+    assert!(!expected.get_expanded());
+    assert!(actual.dispatch_at(&old[0], &visible, "clicked"));
+    assert!(expected.dispatch_at(&old[1], &visible, "clicked"));
+    assert_eq!(actual.get("expanded"), Ok(true.into()));
+    assert!(expected.get_expanded());
+
+    let rows = actual.record_model("rows").unwrap();
+    let next = rows
+        .model()
+        .row(0)
+        .unwrap()
+        .with_field(&["shown".into()], true.into())
+        .unwrap();
+    assert!(rows.model().set_row(0, next));
+    let rows = expected.model_rows();
+    let mut next = rows.row(0).unwrap();
+    next.shown = true;
+    assert!(rows.set_row(0, next));
+    assert!(!actual.dispatch_at(&old[0], &visible, "clicked"));
+    assert!(!expected.dispatch_at(&old[1], &visible, "clicked"));
+    assert_eq!(actual.get("expanded"), Ok(true.into()));
+    assert!(expected.get_expanded());
+
+    let scenes = [
+        prepare_list(&actual, &input, size).0,
+        prepare_list(&expected, &input, size).0,
+    ];
+    assert_same_scene(&scenes[0], &scenes[1]);
+    assert_eq!(
+        scenes[0].at_path(&visible).unwrap().text("title"),
+        Some("hidden")
+    );
+    assert!(actual.dispatch_at(&scenes[0], &visible, "clicked"));
+    assert!(expected.dispatch_at(&scenes[1], &visible, "clicked"));
+    assert_eq!(actual.get("expanded"), Ok(false.into()));
+    assert!(!expected.get_expanded());
+    assert_eq!(actual.take_error(), None);
+}
+
+#[test]
 fn table_row_group_boxes_keep_independent_state_and_route_their_children() {
     let preview = xrack_compiler::prepare_preview(
         include_str!("expressions.xr"),
@@ -11156,6 +13910,40 @@ fn nested_terminal_events_follow_both_rows_after_reordering() {
     generated.set_labels(replacement);
     assert!(!actual.focus_event_at(&actual_scene, &scope, loss));
     assert!(!generated.focus_event_at(&generated_scene, &scope, loss));
+    assert_eq!(actual.take_error(), None);
+}
+
+#[test]
+fn focus_handlers_report_empty_callbacks_and_preserve_event_order() {
+    use xrack_runtime::{FocusEvent, FocusReason};
+
+    let preview = xrack_compiler::prepare_preview(
+        include_str!("expressions.xr"),
+        "expressions.xr",
+        Default::default(),
+    )
+    .unwrap();
+    let mut actual = Program::from_module(&preview.module)
+        .unwrap()
+        .create("FocusHandlerParity")
+        .unwrap();
+    let mut compiled = expressions_ui::FocusHandlerParity::new();
+    let reason = FocusReason::PointerClick;
+    for ui in [&mut actual as &mut dyn Component, &mut compiled] {
+        let scene = ui.render_shared();
+        assert!(ui.focus_event_at(&scene, &[0], FocusEvent::Gained(reason)));
+        assert!(!ui.focus_event_at(&scene, &[0], FocusEvent::Lost(reason)));
+        for focused in [true, false] {
+            let event = FocusEvent::Within { focused, reason };
+            assert!(ui.focus_event_at(&scene, &[0], event));
+            assert!(ui.focus_event_at(&scene, &[1], event));
+        }
+        assert!(ui.focus_event_at(&scene, &[1], FocusEvent::Gained(reason)));
+        assert!(ui.focus_event_at(&scene, &[1], FocusEvent::Lost(reason)));
+    }
+    let expected = "within:true;within:false;gain;change;loss;change;";
+    assert_eq!(actual.get("events"), Ok(expected.to_owned().into()));
+    assert_eq!(compiled.get_events(), expected);
     assert_eq!(actual.take_error(), None);
 }
 
@@ -11437,6 +14225,225 @@ fn shared_action_updates_menu_tool_button_and_shortcut_in_both_modes() {
     );
     assert_same_scene(&actual.render(), &expected.render());
     assert_eq!(actual.take_error(), None);
+}
+
+#[test]
+fn action_bound_item_delegate_rechecks_live_row_for_both_activation_routes() {
+    use expressions_ui::ItemActionRouteParity;
+    use xrack_layout::{Interaction, Size};
+    use xrack_runtime::ControlAction::ActivateAction;
+
+    let raw = xrack_compiler::mlir::lower(
+        &xrack_compiler::parse(include_str!("expressions.xr")).unwrap(),
+        "expressions.xr",
+    )
+    .unwrap();
+    let mut actual = xrack_interpreter::load_mlir(&raw)
+        .unwrap()
+        .create("ItemActionRouteParity")
+        .unwrap();
+    let mut expected = ItemActionRouteParity::new();
+    let input = Interaction::default();
+    let size = Size::new(300.0, 120.0);
+    let (interpreted, _) = prepare_list(&actual, &input, size);
+    let (compiled, _) = prepare_list(&expected, &input, size);
+    let first = [0, 0, 0];
+    let second = [0, 1, 0];
+    let dynamic_rows = actual.record_model("rows").unwrap();
+    let compiled_rows = expected.model_rows();
+    let row = dynamic_rows.model().row(0).unwrap();
+    assert!(dynamic_rows.model().set_row(
+        0,
+        row.with_field(&["allowed".into()], false.into()).unwrap()
+    ));
+    let mut record = compiled_rows.row(0).unwrap();
+    record.allowed = false;
+    assert!(compiled_rows.set_row(0, record));
+
+    for (ui, scene) in [
+        (&mut actual as &mut dyn Component, &interpreted),
+        (&mut expected, &compiled),
+    ] {
+        assert!(!ui.dispatch_at(scene, &first, "clicked"));
+        assert!(!ui.control_at(scene, &first, ActivateAction));
+        assert!(ui.dispatch_at(scene, &second, "clicked"));
+        assert!(ui.control_at(scene, &second, ActivateAction));
+    }
+    actual.set("command-enabled", false.into()).unwrap();
+    expected.set_command_enabled(false);
+    assert!(!actual.control_at(&interpreted, &second, ActivateAction));
+    assert!(!expected.control_at(&compiled, &second, ActivateAction));
+    assert_eq!(actual.get("activations"), Ok(2_i64.into()));
+    assert_eq!(expected.get_activations(), 2);
+    assert_eq!(actual.take_error(), None);
+}
+
+#[test]
+fn action_bound_item_delegate_rejects_row_changes_during_command_preparation() {
+    use expressions_ui::ItemActionRouteParity;
+    use std::rc::Rc;
+    use xrack_layout::{Interaction, Size};
+    use xrack_runtime::ControlAction::ActivateAction;
+
+    let preview = xrack_compiler::prepare_preview(
+        include_str!("expressions.xr"),
+        "expressions.xr",
+        Default::default(),
+    )
+    .unwrap();
+    let program = Program::from_module(&preview.module).unwrap();
+    let input = Interaction::default();
+    let size = Size::new(300.0, 120.0);
+    for (change, accepted) in [
+        ("disable", false),
+        ("remove", false),
+        ("reorder", false),
+        ("unrelated", true),
+    ] {
+        let mut actual = program.create("ItemActionRouteParity").unwrap();
+        let mut expected = ItemActionRouteParity::new();
+        let (interpreted, _) = prepare_list(&actual, &input, size);
+        let (compiled, _) = prepare_list(&expected, &input, size);
+        let index = usize::from(change == "unrelated");
+        let actual_rows = actual.record_model("rows").unwrap().model().clone();
+        let replacement = actual_rows
+            .row(index)
+            .unwrap()
+            .with_field(&["allowed".into()], false.into())
+            .unwrap();
+        actual
+            .on(
+                "prepare-action",
+                Rc::new(move |_| {
+                    match change {
+                        "remove" => {
+                            actual_rows.remove(0).unwrap();
+                        }
+                        "reorder" => {
+                            assert!(actual_rows.sort_by(|left, right| {
+                                let label =
+                                    |row: &xrack_runtime::RecordValue| match row.field("label") {
+                                        Some(Value::String(label)) => label.clone(),
+                                        _ => unreachable!(),
+                                    };
+                                label(right).cmp(&label(left))
+                            }));
+                        }
+                        _ => {
+                            assert!(actual_rows.set_row(index, replacement.clone()));
+                        }
+                    }
+                    Ok(Some(true.into()))
+                }),
+            )
+            .unwrap();
+        let compiled_rows = expected.model_rows();
+        let mut replacement = compiled_rows.row(index).unwrap();
+        replacement.allowed = false;
+        expected.on_prepare_action(move || {
+            match change {
+                "remove" => {
+                    compiled_rows.remove(0).unwrap();
+                }
+                "reorder" => {
+                    assert!(compiled_rows.sort_by(|left, right| right.label.cmp(&left.label)));
+                }
+                _ => {
+                    assert!(compiled_rows.set_row(index, replacement.clone()));
+                }
+            }
+            true
+        });
+        assert_eq!(
+            actual.control_at(&interpreted, &[0, 0, 0], ActivateAction),
+            accepted,
+            "{change}"
+        );
+        assert_eq!(
+            expected.control_at(&compiled, &[0, 0, 0], ActivateAction),
+            accepted,
+            "{change}"
+        );
+        assert_eq!(actual.get("activations"), Ok(i64::from(accepted).into()));
+        assert_eq!(expected.get_activations(), i64::from(accepted));
+        assert_eq!(actual.take_error(), None);
+    }
+}
+
+#[test]
+fn filtered_item_actions_reject_a_changed_projection_in_both_backends() {
+    use expressions_ui::FilteredItemActionRouteParity;
+    use std::rc::Rc;
+    use xrack_layout::{Interaction, Size};
+    use xrack_runtime::ControlAction::ActivateAction;
+
+    let preview = xrack_compiler::prepare_preview(
+        include_str!("expressions.xr"),
+        "expressions.xr",
+        Default::default(),
+    )
+    .unwrap();
+    let program = Program::from_module(&preview.module).unwrap();
+    let size = Size::new(300.0, 120.0);
+    let path = [0, 1, 0];
+    for (row, field, accepted) in [
+        (0, "allowed", false),
+        (1, "allowed", false),
+        (2, "label", true),
+    ] {
+        let mut actual = program.create("FilteredItemActionRouteParity").unwrap();
+        let mut expected = FilteredItemActionRouteParity::new();
+        let input = Interaction::default();
+        let (scene, _) = prepare_list(&actual, &input, size);
+        let (compiled, _) = prepare_list(&expected, &input, size);
+        assert_eq!(scene.at_path(&path).unwrap().text("text"), Some("Target"));
+        assert_eq!(
+            compiled.at_path(&path).unwrap().text("text"),
+            Some("Target")
+        );
+        let dynamic = actual.record_model("rows").unwrap().model().clone();
+        let updated = dynamic
+            .row(row)
+            .unwrap()
+            .with_field(
+                &[field.into()],
+                if field == "allowed" {
+                    false.into()
+                } else {
+                    "Edited".to_owned().into()
+                },
+            )
+            .unwrap();
+        actual
+            .on(
+                "prepare-action",
+                Rc::new(move |_| {
+                    assert!(dynamic.set_row(row, updated.clone()));
+                    Ok(Some(true.into()))
+                }),
+            )
+            .unwrap();
+        let model = expected.model_rows();
+        let mut updated = model.row(row).unwrap();
+        if field == "allowed" {
+            updated.allowed = false;
+        } else {
+            updated.label = "Edited".into();
+        }
+        expected.on_prepare_action(move || {
+            assert!(model.set_row(row, updated.clone()));
+            true
+        });
+
+        assert_eq!(actual.control_at(&scene, &path, ActivateAction), accepted);
+        assert_eq!(
+            expected.control_at(&compiled, &path, ActivateAction),
+            accepted
+        );
+        assert_eq!(actual.get("activations"), Ok(i64::from(accepted).into()));
+        assert_eq!(expected.get_activations(), i64::from(accepted));
+        assert_eq!(actual.take_error(), None);
+    }
 }
 
 #[test]
@@ -12316,6 +15323,56 @@ fn native_dialog_open_checks_live_permission_before_publishing() {
 }
 
 #[test]
+fn file_event_list_parameters_use_the_by_value_callback_boundary() {
+    use std::sync::Arc;
+    use xrack_runtime::{DragEvent, NativeDialogResult};
+
+    let preview = xrack_compiler::prepare_preview(
+        include_str!("expressions.xr"),
+        "expressions.xr",
+        Default::default(),
+    )
+    .unwrap();
+    let mut actual = Program::from_module(&preview.module)
+        .unwrap()
+        .create("FileEventListParity")
+        .unwrap();
+    let mut compiled = expressions_ui::FileEventListParity::new();
+    let paths = vec!["original.txt".to_owned()];
+    actual.invoke("open-picker", &[]).unwrap();
+    compiled.invoke_open_picker();
+    for ui in [&mut actual as &mut dyn Component, &mut compiled] {
+        let scene = ui.render_shared();
+        assert!(
+            scene.native_dialogs[0]
+                .clone()
+                .deliver(NativeDialogResult::Files(paths.clone()))
+        );
+    }
+    let verify = |actual: &Instance, compiled: &expressions_ui::FileEventListParity| {
+        let first = actual.string_model("first").unwrap();
+        let second = actual.string_model("second").unwrap();
+        let compiled_first = compiled.model_first();
+        let compiled_second = compiled.model_second();
+        for (first, second) in [(first, second), (compiled_first, compiled_second)] {
+            assert_eq!(first.snapshot(), paths);
+            assert_eq!(second.snapshot(), paths);
+            assert!(first.set_row(0, "changed.txt".into()));
+            assert_eq!(second.snapshot(), paths);
+        }
+    };
+    verify(&actual, &compiled);
+
+    let dropped = DragEvent::FilesDropped(Arc::from(paths.clone()));
+    for ui in [&mut actual as &mut dyn Component, &mut compiled] {
+        let scene = ui.render_shared();
+        assert!(ui.drag_event_at(&scene, &[0], &dropped));
+    }
+    verify(&actual, &compiled);
+    assert_eq!(actual.take_error(), None);
+}
+
+#[test]
 fn native_file_dialog_snapshots_options_and_commits_results_before_callbacks() {
     use form_ui::FileDialogDemo;
     use xrack_runtime::{
@@ -13025,6 +16082,56 @@ fn range_inputs_reject_old_limits_and_releases_use_live_values() {
     assert_eq!(generated.get_changes(), 1);
     assert_eq!(actual.get("releases"), Ok(3_i64.into()));
     assert_eq!(generated.get_releases(), 3);
+
+    actual.set("limit", 100.0.into()).unwrap();
+    generated.set_limit(100.0);
+    actual
+        .on("after-change", {
+            let owner = actual.as_weak();
+            Rc::new(move |_| {
+                let owner = owner.upgrade().unwrap();
+                owner.set("lower", 12.0.into()).unwrap();
+                owner.set("limit", 15.0.into()).unwrap();
+                Ok(None)
+            })
+        })
+        .unwrap();
+    generated.on_after_change({
+        let owner = generated.as_weak();
+        move || {
+            let mut owner = owner.upgrade().unwrap();
+            owner.set_lower(12.0);
+            owner.set_limit(15.0);
+        }
+    });
+    for ui in [&mut actual as &mut dyn Component, &mut generated] {
+        assert!(ui.adjust_range_at(
+            &ui.render_shared(),
+            &upper,
+            RangeAction::CommitFraction(0.5)
+        ));
+    }
+    for (property, expected, observed) in [
+        ("upper", 50.0, generated.get_upper()),
+        (
+            "band-changed-upper",
+            50.0,
+            generated.get_band_changed_upper(),
+        ),
+        (
+            "band-released-lower",
+            12.0,
+            generated.get_band_released_lower(),
+        ),
+        ("last-release", 15.0, generated.get_last_release()),
+    ] {
+        assert_eq!(observed, expected, "{property}");
+        assert_eq!(actual.get(property), Ok(expected.into()), "{property}");
+    }
+    assert_eq!(actual.get("changes"), Ok(2_i64.into()));
+    assert_eq!(generated.get_changes(), 2);
+    assert_eq!(actual.get("releases"), Ok(4_i64.into()));
+    assert_eq!(generated.get_releases(), 4);
     assert_eq!(actual.take_error(), None);
 }
 
@@ -13239,6 +16346,115 @@ fn row_toggle_input_rechecks_permissions_settings_and_history() {
 }
 
 #[test]
+fn row_toggle_rechecks_the_edited_field_before_sampling_history() {
+    use std::{cell::Cell, rc::Rc};
+    use xrack_layout::{Interaction, Size};
+    use xrack_runtime::CheckState;
+
+    let preview = xrack_compiler::prepare_preview(
+        include_str!("expressions.xr"),
+        "expressions.xr",
+        Default::default(),
+    )
+    .unwrap();
+    let program = Program::from_module(&preview.module).unwrap();
+    let size = Size::new(420.0, 300.0);
+    for view in [0, 1] {
+        for change_target in [false, true] {
+            let mut interpreted = program.create("RowToggleInputParity").unwrap();
+            let mut compiled = expressions_ui::RowToggleInputParity::new();
+            let scene = prepare_list(&interpreted, &Interaction::default(), size).0;
+            let expected = prepare_list(&compiled, &Interaction::default(), size).0;
+            let records = interpreted.record_model("rows").unwrap();
+            let model = records.model();
+            let compiled_model = compiled.model_rows();
+            let (field, value) = if change_target {
+                ("state", CheckState::Checked.into())
+            } else {
+                ("checked", true.into())
+            };
+            interpreted
+                .on("read-tristate", {
+                    let model = model.clone();
+                    let row = model
+                        .row(0)
+                        .unwrap()
+                        .with_field(&[field.into()], value)
+                        .unwrap();
+                    Rc::new(move |_| {
+                        assert!(model.set_row(0, row.clone()));
+                        Ok(Some(true.into()))
+                    })
+                })
+                .unwrap();
+            compiled.on_read_tristate({
+                let model = compiled_model.clone();
+                let mut row = model.row(0).unwrap();
+                if change_target {
+                    row.state = CheckState::Checked;
+                } else {
+                    row.checked = true;
+                }
+                move || {
+                    assert!(model.set_row(0, row.clone()));
+                    true
+                }
+            });
+            let interpreted_history = Rc::new(Cell::new(0));
+            let compiled_history = Rc::new(Cell::new(0));
+            interpreted
+                .on("record-history", {
+                    let calls = interpreted_history.clone();
+                    Rc::new(move |_| {
+                        calls.set(calls.get() + 1);
+                        Ok(Some(true.into()))
+                    })
+                })
+                .unwrap();
+            compiled.on_record_history({
+                let calls = compiled_history.clone();
+                move || {
+                    calls.set(calls.get() + 1);
+                    true
+                }
+            });
+            let path = [0, view, 0, 0, 1];
+            assert_eq!(
+                interpreted.dispatch_at(&scene, &path, "clicked"),
+                !change_target
+            );
+            assert_eq!(
+                compiled.dispatch_at(&expected, &path, "clicked"),
+                !change_target
+            );
+            let history_calls = u32::from(view == 0 && !change_target);
+            assert_eq!(interpreted_history.get(), history_calls);
+            assert_eq!(compiled_history.get(), history_calls);
+            let state = if change_target {
+                CheckState::Checked
+            } else {
+                CheckState::PartiallyChecked
+            };
+            let row = model.row(0).unwrap();
+            assert_eq!(row.field("checked"), Some(&(!change_target).into()));
+            assert_eq!(row.field("state"), Some(&state.into()));
+            let row = compiled_model.row(0).unwrap();
+            assert_eq!((row.checked, row.state), (!change_target, state));
+            if history_calls == 1 {
+                assert!(interpreted.replay_table_edit_at(&scene, &[0, view], false));
+                assert!(compiled.replay_table_edit_at(&expected, &[0, view], false));
+                let row = model.row(0).unwrap();
+                assert_eq!(row.field("checked"), Some(&true.into()));
+                assert_eq!(row.field("state"), Some(&CheckState::Unchecked.into()));
+                let row = compiled_model.row(0).unwrap();
+                assert_eq!((row.checked, row.state), (true, CheckState::Unchecked));
+            }
+            assert_eq!(interpreted.take_error(), None);
+        }
+    }
+}
+
+#[test]
 fn virtual_numeric_editors_recheck_row_availability() {
     use std::rc::Rc;
     use xrack_layout::{Interaction, Size};
@@ -13337,6 +16553,314 @@ fn virtual_numeric_editors_recheck_row_availability() {
         );
         assert_eq!(compiled.model_rows().row(0).unwrap().amount, 11);
         assert_eq!(interpreted.take_error(), None);
+    }
+}
+
+#[test]
+fn tree_numeric_edits_sample_view_state_once_per_input() {
+    use std::{cell::Cell, rc::Rc};
+    use xrack_layout::{Interaction, Size};
+    use xrack_runtime::{ControlAction, SpinAction};
+
+    let preview = xrack_compiler::prepare_preview(
+        include_str!("expressions.xr"),
+        "expressions.xr",
+        Default::default(),
+    )
+    .unwrap();
+    let mut interpreted = Program::from_module(&preview.module)
+        .unwrap()
+        .create("RowSpinOptionsParity")
+        .unwrap();
+    let mut compiled = expressions_ui::RowSpinOptionsParity::new();
+    let hidden = Rc::new(Cell::new(false));
+    let reads = Rc::new(Cell::new(0));
+    let compiled_reads = Rc::new(Cell::new(0));
+    interpreted
+        .on("tree-hidden", {
+            let hidden = hidden.clone();
+            let reads = reads.clone();
+            Rc::new(move |_| {
+                reads.set(reads.get() + 1);
+                Ok(Some(hidden.get().into()))
+            })
+        })
+        .unwrap();
+    compiled.on_tree_hidden({
+        let hidden = hidden.clone();
+        let reads = compiled_reads.clone();
+        move || {
+            reads.set(reads.get() + 1);
+            hidden.get()
+        }
+    });
+    let input = Interaction::default();
+    let size = Size::new(480.0, 250.0);
+    let (actual, _) = prepare_list(&interpreted, &input, size);
+    let (expected, _) = prepare_list(&compiled, &input, size);
+    reads.set(0);
+    compiled_reads.set(0);
+    let path = [1, 0, 0, 0];
+    for (blocked, allowed) in [(true, false), (false, true)] {
+        hidden.set(blocked);
+        let spin = ControlAction::Spin(SpinAction::Increase);
+        assert_eq!(interpreted.control_at(&actual, &path, spin), allowed);
+        assert_eq!(compiled.control_at(&expected, &path, spin), allowed);
+        assert_eq!((reads.replace(0), compiled_reads.replace(0)), (1, 1));
+    }
+    let rows = interpreted.record_model("rows").unwrap();
+    assert_eq!(
+        rows.model().row(0).unwrap().field("amount"),
+        Some(&Value::Int(11))
+    );
+    assert_eq!(compiled.model_rows().row(0).unwrap().amount, 11);
+    assert_eq!(interpreted.take_error(), None);
+}
+
+#[test]
+fn stale_numeric_table_edits_skip_history_callbacks() {
+    use std::{cell::Cell, rc::Rc};
+    use xrack_layout::{Interaction, Size};
+    use xrack_runtime::{ControlAction, RangeAction, SpinAction};
+
+    let preview = xrack_compiler::prepare_preview(
+        include_str!("expressions.xr"),
+        "expressions.xr",
+        Default::default(),
+    )
+    .unwrap();
+    let mut interpreted = Program::from_module(&preview.module)
+        .unwrap()
+        .create("RowSpinOptionsParity")
+        .unwrap();
+    let mut compiled = expressions_ui::RowSpinOptionsParity::new();
+    let input = Interaction::default();
+    let size = Size::new(480.0, 250.0);
+    let (actual, _) = prepare_list(&interpreted, &input, size);
+    let (expected, _) = prepare_list(&compiled, &input, size);
+    let reads = Rc::new(Cell::new(0));
+    let compiled_reads = Rc::new(Cell::new(0));
+    interpreted
+        .on("record-history", {
+            let reads = reads.clone();
+            Rc::new(move |_| {
+                reads.set(reads.get() + 1);
+                Ok(Some(true.into()))
+            })
+        })
+        .unwrap();
+    compiled.on_record_history({
+        let reads = compiled_reads.clone();
+        move || {
+            reads.set(reads.get() + 1);
+            true
+        }
+    });
+    let rows = interpreted.record_model("rows").unwrap();
+    let model = rows.model();
+    let row = model
+        .row(0)
+        .unwrap()
+        .with_field(&["amount".into()], 12_i64.into())
+        .unwrap()
+        .with_field(&["level".into()], 15.0.into())
+        .unwrap();
+    assert!(model.set_row(0, row));
+    let compiled_rows = compiled.model_rows();
+    let mut row = compiled_rows.row(0).unwrap();
+    row.amount = 12;
+    row.level = 15.0;
+    assert!(compiled_rows.set_row(0, row));
+    for (ui, scene) in [
+        (&mut interpreted as &mut dyn Component, &actual),
+        (&mut compiled, &expected),
+    ] {
+        assert!(!ui.control_at(
+            scene,
+            &[0, 0, 0, 0],
+            ControlAction::Spin(SpinAction::Increase)
+        ));
+        assert!(!ui.adjust_range_at(scene, &[0, 0, 0, 2], RangeAction::CommitFraction(0.4)));
+    }
+    assert_eq!((reads.get(), compiled_reads.get()), (0, 0));
+    assert_eq!(model.row(0).unwrap().field("amount"), Some(&Value::Int(12)));
+    assert_eq!(
+        model.row(0).unwrap().field("level"),
+        Some(&Value::Float(15.0))
+    );
+    assert_eq!(compiled_rows.row(0).unwrap().amount, 12);
+    assert_eq!(compiled_rows.row(0).unwrap().level, 15.0);
+    assert_eq!(interpreted.take_error(), None);
+}
+
+#[test]
+fn stale_tree_numeric_edits_skip_control_settings() {
+    use expressions_ui::RowSpinOptionsParity;
+    use std::{cell::Cell, rc::Rc};
+    use xrack_layout::{Interaction, Size};
+    use xrack_runtime::{ControlAction, SpinAction};
+
+    let preview = xrack_compiler::prepare_preview(
+        include_str!("expressions.xr"),
+        "expressions.xr",
+        Default::default(),
+    )
+    .unwrap();
+    let program = Program::from_module(&preview.module).unwrap();
+    let mut actual = program.create("RowSpinOptionsParity").unwrap();
+    let mut expected = RowSpinOptionsParity::new();
+    let input = Interaction::default();
+    let size = Size::new(480.0, 250.0);
+    let old_actual = prepare_list(&actual, &input, size).0;
+    let old_expected = prepare_list(&expected, &input, size).0;
+    let reads = Rc::new(Cell::new(0));
+    let compiled_reads = Rc::new(Cell::new(0));
+    actual
+        .on("read-limit", {
+            let reads = reads.clone();
+            Rc::new(move |args| {
+                reads.set(reads.get() + 1);
+                Ok(args.first().cloned())
+            })
+        })
+        .unwrap();
+    expected.on_read_limit({
+        let reads = compiled_reads.clone();
+        move |limit| {
+            reads.set(reads.get() + 1);
+            limit
+        }
+    });
+    let records = actual.record_model("rows").unwrap();
+    let model = records.model();
+    let row = model
+        .row(0)
+        .unwrap()
+        .with_field(&["amount".into()], 12_i64.into())
+        .unwrap();
+    assert!(model.set_row(0, row));
+    let generated = expected.model_rows();
+    let mut row = generated.row(0).unwrap();
+    row.amount = 12;
+    assert!(generated.set_row(0, row));
+
+    let path = [1, 0, 0, 0];
+    let action = ControlAction::Spin(SpinAction::Increase);
+    assert!(!actual.control_at(&old_actual, &path, action));
+    assert!(!expected.control_at(&old_expected, &path, action));
+    assert_eq!((reads.get(), compiled_reads.get()), (0, 0));
+    assert_eq!(model.row(0).unwrap().field("amount"), Some(&Value::Int(12)));
+    assert_eq!(generated.row(0).unwrap().amount, 12);
+    let current_actual = prepare_list(&actual, &input, size).0;
+    let current_expected = prepare_list(&expected, &input, size).0;
+    assert!(actual.control_at(&current_actual, &path, action));
+    assert!(expected.control_at(&current_expected, &path, action));
+    assert_eq!(model.row(0).unwrap().field("amount"), Some(&Value::Int(13)));
+    assert_eq!(generated.row(0).unwrap().amount, 13);
+    assert_eq!(actual.take_error(), None);
+}
+
+#[test]
+fn numeric_row_edit_skips_history_when_settings_disable_an_ancestor() {
+    use expressions_ui::NumericEditScopeParity;
+    use std::{cell::Cell, rc::Rc};
+    use xrack_layout::{Interaction, Size};
+    use xrack_runtime::{ControlAction, RangeAction, SpinAction};
+
+    let preview = xrack_compiler::prepare_preview(
+        include_str!("expressions.xr"),
+        "expressions.xr",
+        Default::default(),
+    )
+    .unwrap();
+    let program = Program::from_module(&preview.module).unwrap();
+    let interaction = Interaction::default();
+    let size = Size::new(300.0, 180.0);
+    for slider in [false, true] {
+        let mut actual = program.create("NumericEditScopeParity").unwrap();
+        let mut generated = NumericEditScopeParity::new();
+        let scene = prepare_list(&actual, &interaction, size).0;
+        let compiled = prepare_list(&generated, &interaction, size).0;
+        let actual_history = Rc::new(Cell::new(0));
+        let compiled_history = Rc::new(Cell::new(0));
+        actual
+            .on("record-history", {
+                let calls = actual_history.clone();
+                Rc::new(move |_| {
+                    calls.set(calls.get() + 1);
+                    Ok(Some(true.into()))
+                })
+            })
+            .unwrap();
+        generated.on_record_history({
+            let calls = compiled_history.clone();
+            move || {
+                calls.set(calls.get() + 1);
+                true
+            }
+        });
+        let callback = if slider {
+            "read-range-limit"
+        } else {
+            "read-limit"
+        };
+        actual
+            .on(callback, {
+                let owner = actual.as_weak();
+                Rc::new(move |args| {
+                    owner
+                        .upgrade()
+                        .unwrap()
+                        .set("accepting-input", false.into())
+                        .unwrap();
+                    let [Value::Int(limit)] = args else {
+                        unreachable!()
+                    };
+                    Ok(Some(if slider {
+                        (*limit as f64).into()
+                    } else {
+                        (*limit).into()
+                    }))
+                })
+            })
+            .unwrap();
+        if slider {
+            let owner = generated.as_weak();
+            generated.on_read_range_limit(move |limit| {
+                owner.upgrade().unwrap().set_accepting_input(false);
+                limit as f64
+            });
+        } else {
+            let owner = generated.as_weak();
+            generated.on_read_limit(move |limit| {
+                owner.upgrade().unwrap().set_accepting_input(false);
+                limit
+            });
+        }
+        let edit = |ui: &mut dyn Component, scene: &Node| {
+            if slider {
+                ui.adjust_range_at(scene, &[0, 0, 0, 0, 1], RangeAction::CommitFraction(0.4))
+            } else {
+                ui.control_at(
+                    scene,
+                    &[0, 0, 0, 0, 0],
+                    ControlAction::Spin(SpinAction::Increase),
+                )
+            }
+        };
+        assert!(!edit(&mut actual, &scene));
+        assert!(!edit(&mut generated, &compiled));
+        assert_eq!(actual.get("accepting-input"), Ok(false.into()));
+        assert!(!generated.get_accepting_input());
+        assert_eq!((actual_history.get(), compiled_history.get()), (0, 0));
+        let rows = actual.record_model("rows").unwrap();
+        let row = rows.model().row(0).unwrap();
+        let compiled_row = generated.model_rows().row(0).unwrap();
+        assert_eq!(row.field("amount"), Some(&Value::Int(10)));
+        assert_eq!(row.field("level"), Some(&Value::Float(10.0)));
+        assert_eq!(compiled_row.amount, 10);
+        assert_eq!(compiled_row.level, 10.0);
+        assert_eq!(actual.take_error(), None);
     }
 }
 
@@ -14842,6 +18366,63 @@ fn check_group_bulk_updates_include_hidden_members_without_child_events() {
 }
 
 #[test]
+fn button_group_samples_name_selection_and_enabled_in_order() {
+    use expressions_ui::ButtonGroupRenderOrderParity;
+    use std::{cell::RefCell, rc::Rc};
+
+    let raw = xrack_compiler::mlir::lower(
+        &xrack_compiler::parse(include_str!("expressions.xr")).unwrap(),
+        "expressions.xr",
+    )
+    .unwrap();
+    let actual = xrack_interpreter::load_mlir(&raw)
+        .unwrap()
+        .create("ButtonGroupRenderOrderParity")
+        .unwrap();
+    let mut expected = ButtonGroupRenderOrderParity::new();
+    let actual_reads = Rc::new(RefCell::new(Vec::new()));
+    let expected_reads = Rc::new(RefCell::new(Vec::new()));
+    let sample = |reads: Rc<RefCell<Vec<_>>>| {
+        move |tag, revision| {
+            reads.borrow_mut().push(tag);
+            revision
+        }
+    };
+    let interpreted_sample = sample(actual_reads.clone());
+    actual
+        .on(
+            "sample",
+            Rc::new(move |args| match args {
+                [Value::Int(tag), Value::Int(revision)] => {
+                    Ok(Some(Value::Int(interpreted_sample(*tag, *revision))))
+                }
+                _ => unreachable!(),
+            }),
+        )
+        .unwrap();
+    expected.on_sample(sample(expected_reads.clone()));
+    for revision in [0, 1, 2] {
+        actual.set("revision", revision.into()).unwrap();
+        expected.set_revision(revision);
+        let interpreted = actual.try_render().unwrap();
+        let compiled = expected.render_shared();
+        assert_eq!(expected_reads.take(), [1, 2, 3]);
+        assert_eq!(actual_reads.take(), [1, 2, 3]);
+        assert_same_scene(&interpreted, &compiled);
+        for scene in [&interpreted, &compiled] {
+            let membership = scene.children[0].button_group.as_ref().unwrap();
+            assert_eq!(membership.group.name, format!("Options {revision}"));
+            assert_eq!(membership.group.selected, Some(revision as usize));
+            assert_eq!(membership.group.enabled, revision != 0);
+        }
+        assert!(Rc::ptr_eq(&actual.try_render().unwrap(), &interpreted));
+        assert!(Rc::ptr_eq(&expected.render_shared(), &compiled));
+        assert!(actual_reads.take().is_empty());
+        assert!(expected_reads.take().is_empty());
+    }
+}
+
+#[test]
 fn distributed_groups_reject_stale_values_and_disabled_check_groups() {
     use expressions_ui::DistributedSelectionParity;
     use xrack_runtime::ControlAction::ActivateRadioOption;
@@ -15458,6 +19039,272 @@ fn virtual_check_delegates_dispatch_after_committing_the_row() {
 }
 
 #[test]
+fn stale_check_delegate_clicks_skip_tristate_settings() {
+    use expressions_ui::ToggleDelegateEvents;
+    use std::{cell::Cell, rc::Rc};
+    use xrack_layout::{Interaction, Size};
+    use xrack_runtime::CheckState;
+
+    let preview = xrack_compiler::prepare_preview(
+        include_str!("expressions.xr"),
+        "expressions.xr",
+        Default::default(),
+    )
+    .unwrap();
+    let program = Program::from_module(&preview.module).unwrap();
+    let mut actual = program.create("ToggleDelegateEvents").unwrap();
+    let mut expected = ToggleDelegateEvents::new();
+    let input = Interaction::default();
+    let size = Size::new(240.0, 180.0);
+    let old_actual = prepare_list(&actual, &input, size).0;
+    let old_expected = prepare_list(&expected, &input, size).0;
+    let reads = Rc::new(Cell::new(0));
+    let compiled_reads = Rc::new(Cell::new(0));
+    actual
+        .on("read-three-states", {
+            let reads = reads.clone();
+            Rc::new(move |_| {
+                reads.set(reads.get() + 1);
+                Ok(Some(true.into()))
+            })
+        })
+        .unwrap();
+    expected.on_read_three_states({
+        let reads = compiled_reads.clone();
+        move || {
+            reads.set(reads.get() + 1);
+            true
+        }
+    });
+    let records = actual.record_model("rows").unwrap();
+    let model = records.model();
+    let row = model
+        .row(0)
+        .unwrap()
+        .with_field(&["state".into()], CheckState::Checked.into())
+        .unwrap();
+    assert!(model.set_row(0, row));
+    let generated = expected.model_rows();
+    let mut row = generated.row(0).unwrap();
+    row.state = CheckState::Checked;
+    assert!(generated.set_row(0, row));
+
+    let path = [1, 0, 0];
+    assert!(!actual.dispatch_at(&old_actual, &path, "clicked"));
+    assert!(!expected.dispatch_at(&old_expected, &path, "clicked"));
+    assert_eq!((reads.get(), compiled_reads.get()), (0, 0));
+    assert_eq!(actual.get("trace"), Ok(0_i64.into()));
+    assert_eq!(expected.get_trace(), 0);
+    // Explicit notification has no expected field value to validate.
+    assert!(actual.dispatch_at(&old_actual, &path, "toggled"));
+    assert!(expected.dispatch_at(&old_expected, &path, "toggled"));
+    assert_eq!((reads.get(), compiled_reads.get()), (0, 0));
+    assert_eq!(actual.get("trace"), Ok(7_i64.into()));
+    assert_eq!(expected.get_trace(), 7);
+    assert_eq!(
+        model.row(0).unwrap().field("state"),
+        Some(&CheckState::Checked.into())
+    );
+    assert_eq!(generated.row(0).unwrap().state, CheckState::Checked);
+    assert_eq!(actual.take_error(), None);
+}
+
+#[test]
+fn check_delegate_rechecks_projection_and_field_after_tristate_binding() {
+    use expressions_ui::ToggleDelegateEvents;
+    use std::{cell::Cell, rc::Rc};
+    use xrack_layout::{Interaction, Size};
+    use xrack_runtime::CheckState;
+
+    let preview = xrack_compiler::prepare_preview(
+        include_str!("expressions.xr"),
+        "expressions.xr",
+        Default::default(),
+    )
+    .unwrap();
+    let program = Program::from_module(&preview.module).unwrap();
+    let input = Interaction::default();
+    let size = Size::new(240.0, 180.0);
+    for (field, value, accepted) in [
+        ("enabled", Value::Bool(true), true),
+        ("shown", Value::Bool(false), false),
+        ("state", Value::CheckState(CheckState::Checked), false),
+    ] {
+        let mut actual = program.create("ToggleDelegateEvents").unwrap();
+        let mut generated = ToggleDelegateEvents::new();
+        let scene = prepare_list(&actual, &input, size).0;
+        let compiled = prepare_list(&generated, &input, size).0;
+        let records = actual.record_model("rows").unwrap();
+        let model = records.model();
+        let compiled_model = generated.model_rows();
+        let calls = Rc::new(Cell::new(0));
+        let compiled_calls = Rc::new(Cell::new(0));
+        actual
+            .on("read-three-states", {
+                let model = model.clone();
+                let row = model
+                    .row(0)
+                    .unwrap()
+                    .with_field(&[field.into()], value.clone())
+                    .unwrap();
+                let calls = calls.clone();
+                Rc::new(move |_| {
+                    calls.set(calls.get() + 1);
+                    assert!(model.set_row(0, row.clone()));
+                    Ok(Some(true.into()))
+                })
+            })
+            .unwrap();
+        generated.on_read_three_states({
+            let model = compiled_model.clone();
+            let mut row = model.row(0).unwrap();
+            match field {
+                "enabled" => row.enabled = true,
+                "shown" => row.shown = false,
+                _ => row.state = CheckState::Checked,
+            }
+            let calls = compiled_calls.clone();
+            move || {
+                calls.set(calls.get() + 1);
+                assert!(model.set_row(0, row.clone()));
+                true
+            }
+        });
+        let path = [1, 0, 0];
+        assert_eq!(
+            actual.dispatch_at(&scene, &path, "clicked"),
+            accepted,
+            "interpreted {field}"
+        );
+        assert_eq!(
+            generated.dispatch_at(&compiled, &path, "clicked"),
+            accepted,
+            "compiled {field}"
+        );
+        assert_eq!((calls.get(), compiled_calls.get()), (1, 1));
+        let row = model.row(0).unwrap();
+        let compiled_row = compiled_model.row(0).unwrap();
+        let state = match field {
+            "enabled" => CheckState::PartiallyChecked,
+            "state" => CheckState::Checked,
+            _ => CheckState::Unchecked,
+        };
+        assert_eq!(row.field(field), Some(&value));
+        assert_eq!(row.field("state"), Some(&state.into()));
+        assert_eq!(compiled_row.enabled, field == "enabled");
+        assert_eq!(compiled_row.shown, field != "shown");
+        assert_eq!(compiled_row.state, state);
+        assert_eq!(
+            actual.get("trace"),
+            Ok(if accepted { 56_i64 } else { 0 }.into())
+        );
+        assert_eq!(generated.get_trace(), if accepted { 56 } else { 0 });
+        assert_eq!(actual.take_error(), None);
+    }
+}
+
+#[test]
+fn check_delegate_rejects_a_replaced_or_reordered_model_during_click() {
+    use expressions_ui::ToggleDelegateEvents;
+    use std::rc::Rc;
+    use xrack_layout::{Interaction, Size};
+    use xrack_runtime::{CheckState, RecordList, VecModel};
+
+    let preview = xrack_compiler::prepare_preview(
+        include_str!("expressions.xr"),
+        "expressions.xr",
+        Default::default(),
+    )
+    .unwrap();
+    let program = Program::from_module(&preview.module).unwrap();
+    let input = Interaction::default();
+    let size = Size::new(240.0, 180.0);
+    for replace_model in [false, true] {
+        let mut interpreted = program.create("ToggleDelegateEvents").unwrap();
+        let mut compiled = ToggleDelegateEvents::new();
+        let rows = interpreted.record_model("rows").unwrap();
+        let model = rows.model();
+        let compiled_model = compiled.model_rows();
+        let second = model
+            .row(0)
+            .unwrap()
+            .with_field(&["enabled".into()], true.into())
+            .unwrap();
+        model.push(second);
+        let mut second = compiled_model.row(0).unwrap();
+        second.enabled = true;
+        compiled_model.push(second);
+        let scene = prepare_list(&interpreted, &input, size).0;
+        let compiled_scene = prepare_list(&compiled, &input, size).0;
+        interpreted
+            .on("read-three-states", {
+                let model = model.clone();
+                let replacement = RecordList::new(rows.name(), model.snapshot());
+                let owner = interpreted.as_weak();
+                Rc::new(move |_| {
+                    if replace_model {
+                        owner
+                            .upgrade()
+                            .unwrap()
+                            .set("rows", Value::RecordList(replacement.clone()))
+                            .unwrap();
+                    } else {
+                        assert!(model.sort_by(|a, b| {
+                            let enabled = |row: &xrack_runtime::RecordValue| {
+                                row.field("enabled") == Some(&true.into())
+                            };
+                            enabled(b).cmp(&enabled(a))
+                        }));
+                    }
+                    Ok(Some(true.into()))
+                })
+            })
+            .unwrap();
+        compiled.on_read_three_states({
+            let model = compiled_model.clone();
+            let replacement = VecModel::from(model.snapshot());
+            let owner = compiled.as_weak();
+            move || {
+                if replace_model {
+                    owner
+                        .upgrade()
+                        .unwrap()
+                        .bind_model_rows(replacement.clone());
+                } else {
+                    assert!(model.sort_by(|a, b| b.enabled.cmp(&a.enabled)));
+                }
+                true
+            }
+        });
+        let path = [1, 0, 0];
+        assert!(!interpreted.dispatch_at(&scene, &path, "clicked"));
+        assert!(!compiled.dispatch_at(&compiled_scene, &path, "clicked"));
+        let live = interpreted.record_model("rows").unwrap();
+        let compiled_live = compiled.model_rows();
+        assert_eq!(live.model() == model, !replace_model);
+        assert_eq!(compiled_live == compiled_model, !replace_model);
+        for index in 0..2 {
+            for rows in [model, live.model()] {
+                let row = rows.row(index).unwrap();
+                assert_eq!(row.field("state"), Some(&CheckState::Unchecked.into()));
+                assert_eq!(
+                    row.field("enabled"),
+                    Some(&((index == 1) == replace_model).into())
+                );
+            }
+            for rows in [&compiled_model, &compiled_live] {
+                let row = rows.row(index).unwrap();
+                assert_eq!(row.state, CheckState::Unchecked);
+                assert_eq!(row.enabled, (index == 1) == replace_model);
+            }
+        }
+        assert_eq!(interpreted.get("trace"), Ok(0_i64.into()));
+        assert_eq!(compiled.get_trace(), 0);
+        assert_eq!(interpreted.take_error(), None);
+    }
+}
+
+#[test]
 fn item_delegates_share_selection_and_preserve_record_fields() {
     use list_ui::ItemDelegatesDemo;
     use xrack_layout::{Interaction, Size};
@@ -15663,6 +19510,66 @@ fn stack_path_commands_sample_once_and_notify_in_lifecycle_order() {
     assert_eq!(compiled.get_events(), events);
     assert_eq!(actual_reads.take(), [1, 2]);
     assert_eq!(compiled_reads.take(), [1, 2]);
+    assert_eq!(actual.take_error(), None);
+}
+
+fn rename_mlir_view_key(text: &str, component: &str, id: &str, key: &str) -> String {
+    let symbol = format!("sym_name = \"{component}\"");
+    let declaration = text.find(&symbol).unwrap();
+    let start = text[..declaration].rfind('\n').unwrap() + 1;
+    let end = declaration + text[declaration..].find("\n  })").unwrap();
+    let body = &text[start..end];
+    let renamed = body.replace(
+        &format!("id = \"{id}\", key = \"{id}\""),
+        &format!("id = \"{id}\", key = \"{key}\""),
+    );
+    assert_ne!(renamed, body);
+    let renamed = renamed.replace(&format!("owner = \"{id}\""), &format!("owner = \"{key}\""));
+    format!("{}{renamed}{}", &text[..start], &text[end..])
+}
+
+#[test]
+fn standalone_mlir_stack_queries_match_compiled_navigation() {
+    use navigation_ui::StackGuardDemo;
+    use xrack_runtime::StackNavigation;
+
+    let preview = xrack_compiler::prepare_preview(
+        include_str!("../examples/navigation/navigation.xr"),
+        "navigation.xr",
+        Default::default(),
+    )
+    .unwrap();
+    let text = rename_mlir_view_key(
+        &preview.module.to_mlir(),
+        "StackGuardDemo",
+        "navigation",
+        "stack-key",
+    );
+    let mut actual = xrack_interpreter::load_mlir(&text)
+        .unwrap()
+        .create("StackGuardDemo")
+        .unwrap();
+    let mut expected = StackGuardDemo::new();
+    assert!(actual.stack_snapshot("stack-key").is_err());
+    assert!(expected.stack_snapshot("stack-key").is_none());
+    let check = |actual: &Instance, expected: &StackGuardDemo, active, index| {
+        assert_eq!(actual.get("editor-active"), Ok(Value::Bool(active)));
+        assert_eq!(expected.get_editor_active(), active);
+        assert_eq!(actual.get("editor-index"), Ok(Value::Int(index)));
+        assert_eq!(expected.get_editor_index(), index);
+        assert_same_scene(&actual.try_render().unwrap(), &expected.render_shared());
+    };
+    check(&actual, &expected, false, -1);
+    for (action, active, index) in [
+        (StackNavigation::Push("editor"), true, 1),
+        (StackNavigation::Push("preview"), false, 1),
+        (StackNavigation::Pop, true, 1),
+        (StackNavigation::Reset("home"), false, -1),
+    ] {
+        assert!(actual.navigate_stack("navigation", action).unwrap());
+        assert!(expected.navigate_stack("navigation", action));
+        check(&actual, &expected, active, index);
+    }
     assert_eq!(actual.take_error(), None);
 }
 
@@ -16246,6 +20153,105 @@ fn text_edits_recheck_live_constraints_and_parent_overlay() {
     assert!(!expected.edit_at(&expected_scene, &field, "23".into()));
     assert_eq!(actual.get("value"), Ok(Value::String("12".into())));
     assert_eq!(expected.get_value(), "12");
+    assert_eq!(actual.take_error(), None);
+}
+
+#[test]
+fn text_edit_conflicts_preserve_host_writes_and_skip_stale_callbacks() {
+    use std::{cell::Cell, rc::Rc};
+
+    let preview = xrack_compiler::prepare_preview(
+        include_str!("expressions.xr"),
+        "expressions.xr",
+        Default::default(),
+    )
+    .unwrap();
+    let mut actual = Program::from_module(&preview.module)
+        .unwrap()
+        .create("TextEditConflictParity")
+        .unwrap();
+    let mut generated = expressions_ui::TextEditConflictParity::new();
+    let shown = actual.render_shared();
+    let compiled = generated.render_shared();
+    actual.set("line", "external".to_owned().into()).unwrap();
+    actual
+        .set("paragraph", "external".to_owned().into())
+        .unwrap();
+    actual.set("query", "external".to_owned().into()).unwrap();
+    generated.set_line("external".into());
+    generated.set_paragraph("external".into());
+    generated.set_query("external".into());
+
+    let actual_reads = Rc::new(Cell::new(0));
+    let generated_reads = Rc::new(Cell::new(0));
+    actual
+        .on("line-limit", {
+            let reads = actual_reads.clone();
+            Rc::new(move |_| {
+                reads.set(reads.get() + 1);
+                Ok(Some(40_i64.into()))
+            })
+        })
+        .unwrap();
+    generated.on_line_limit({
+        let reads = generated_reads.clone();
+        move || {
+            reads.set(reads.get() + 1);
+            40
+        }
+    });
+    for index in 0..3 {
+        assert!(!actual.edit_at(&shown, &[index], "stale edit".into()));
+        assert!(!generated.edit_at(&compiled, &[index], "stale edit".into()));
+    }
+    assert_eq!((actual_reads.get(), generated_reads.get()), (0, 0));
+    assert_eq!(actual.get("edits"), Ok(0_i64.into()));
+    assert_eq!(generated.get_edits(), 0);
+    let shown = actual.render_shared();
+    let compiled = generated.render_shared();
+    assert_same_scene(&shown, &compiled);
+    for index in 0..3 {
+        assert_eq!(
+            shown.at_path(&[index]).unwrap().text("text"),
+            Some("external")
+        );
+    }
+
+    actual
+        .on("line-limit", {
+            let owner = actual.as_weak();
+            Rc::new(move |_| {
+                owner
+                    .upgrade()
+                    .unwrap()
+                    .set("line", "callback".to_owned().into())
+                    .unwrap();
+                Ok(Some(40_i64.into()))
+            })
+        })
+        .unwrap();
+    generated.on_line_limit({
+        let owner = generated.as_weak();
+        move || {
+            owner.upgrade().unwrap().set_line("callback".into());
+            40
+        }
+    });
+    assert!(!actual.edit_at(&shown, &[0], "interrupted".into()));
+    assert!(!generated.edit_at(&compiled, &[0], "interrupted".into()));
+    assert_eq!(actual.get("line"), Ok("callback".to_owned().into()));
+    assert_eq!(generated.get_line(), "callback");
+    assert_eq!(actual.get("edits"), Ok(0_i64.into()));
+    assert_eq!(generated.get_edits(), 0);
+
+    for ui in [&mut actual as &mut dyn Component, &mut generated] {
+        for index in 0..3 {
+            assert!(ui.edit_at(&ui.render_shared(), &[index], "fresh".into()));
+        }
+    }
+    assert_eq!(actual.get("edits"), Ok(3_i64.into()));
+    assert_eq!(generated.get_edits(), 3);
+    assert_same_scene(&actual.render_shared(), &generated.render_shared());
     assert_eq!(actual.take_error(), None);
 }
 
@@ -16990,10 +20996,36 @@ fn swipe_delegate_updates_a_two_way_row_property_and_dispatches_the_exposed_butt
 }
 
 #[test]
+fn drag_delivery_requires_a_static_element_path_in_its_component() {
+    use xrack_runtime::{DragAction, DragEvent};
+
+    let preview = xrack_compiler::prepare_preview(
+        include_str!("expressions.xr"),
+        "expressions.xr",
+        Default::default(),
+    )
+    .unwrap();
+    let mut actual = Program::from_module(&preview.module)
+        .unwrap()
+        .create("RepeatedDragRoutingParity")
+        .unwrap();
+    let mut compiled = expressions_ui::RepeatedDragRoutingParity::new();
+    for ui in [&mut actual as &mut dyn Component, &mut compiled] {
+        let scene = ui.render_shared();
+        assert_eq!(scene.at_path(&[0, 0]).unwrap().kind, "DragArea");
+        for event in [DragEvent::Started, DragEvent::Finished(DragAction::Copy)] {
+            assert!(!ui.drag_event_at(&scene, &[0, 0], &event));
+            assert!(ui.drag_event_at(&scene, &[1], &event));
+        }
+    }
+    assert_eq!(actual.take_error(), None);
+}
+
+#[test]
 fn internal_and_file_drag_events_match_generated_components() {
     use std::sync::Arc;
     use xrack_layout::{FileDragInput, Interaction, Point, Size};
-    use xrack_runtime::DragAction;
+    use xrack_runtime::{DragAction, DragEvent, Length};
 
     fn drop_card(ui: &mut impl Component) {
         let mut input = Interaction::default();
@@ -17053,6 +21085,23 @@ fn internal_and_file_drag_events_match_generated_components() {
         actual.get("result").unwrap(),
         Value::DragAction(expected.get_result())
     );
+    for ui in [&mut actual as &mut dyn Component, &mut expected] {
+        let scene = ui.render_shared();
+        let source = [1];
+        let target = [2];
+        let moved = DragEvent::Moved {
+            x: Length(12.5),
+            y: Length(9.0),
+        };
+        assert!(!ui.drag_event_at(&scene, &source, &moved));
+        assert!(ui.drag_event_at(&scene, &target, &moved));
+        assert!(!ui.drag_event_at(&scene, &target, &DragEvent::Started));
+        assert!(ui.drag_event_at(&scene, &target, &DragEvent::Exited));
+    }
+    assert_eq!(actual.get("last-x"), Ok(Value::Length(Length(12.5))));
+    assert_eq!(expected.get_last_x(), Length(12.5));
+    assert_eq!(actual.get("trace"), Ok(Value::String(expected.get_trace())));
+    assert_eq!(expected.get_trace(), "start-enter-drop-finish-exit");
     assert_same_scene(&actual.try_render().unwrap(), &expected.render());
 
     let mut actual = interpret_form_fixture("FileDropDemo");
@@ -17071,6 +21120,12 @@ fn internal_and_file_drag_events_match_generated_components() {
         Value::StringList(paths.to_vec())
     );
     assert_eq!(expected.get_paths(), paths.as_ref());
+    for ui in [&mut actual as &mut dyn Component, &mut expected] {
+        let scene = ui.render_shared();
+        assert!(ui.drag_event_at(&scene, &[1], &DragEvent::FilesEntered(paths.clone())));
+    }
+    assert_eq!(actual.get("preview"), Ok(Value::StringList(paths.to_vec())));
+    assert_eq!(expected.get_preview(), paths.as_ref());
     assert_same_scene(&actual.try_render().unwrap(), &expected.render());
 }
 
@@ -17121,6 +21176,100 @@ fn virtual_drop_delivers_only_to_the_row_that_owns_the_capture() {
         assert!(generated.sort_by(|a, b| a.cmp(b)))
     });
     assert_same_scene(&left, &right);
+}
+
+#[test]
+fn swipe_reveal_rechecks_live_panel_visibility_and_keeps_close_available() {
+    use std::{cell::Cell, rc::Rc};
+    use xrack_runtime::{ControlAction::SwipeDelegate, SwipeSide};
+
+    let preview = xrack_compiler::prepare_preview(
+        include_str!("expressions.xr"),
+        "expressions.xr",
+        Default::default(),
+    )
+    .unwrap();
+    let program = xrack_interpreter::load_mlir(&preview.module.to_mlir()).unwrap();
+    let open = SwipeDelegate(SwipeSide::Right);
+    let close = SwipeDelegate(SwipeSide::Closed);
+    for change_during_dispatch in [false, true] {
+        let mut actual = program.create("SwipePanelAvailabilityParity").unwrap();
+        let mut expected = expressions_ui::SwipePanelAvailabilityParity::new();
+        let left = actual.render_shared();
+        let right = expected.render_shared();
+        assert!(left.children[0].swipe_panel(SwipeSide::Right).is_some());
+        assert!(right.children[0].swipe_panel(SwipeSide::Right).is_some());
+        if change_during_dispatch {
+            let weak = actual.as_weak();
+            actual
+                .on(
+                    "panel-shown",
+                    Rc::new(move |_| {
+                        weak.upgrade()
+                            .unwrap()
+                            .set("enabled", false.into())
+                            .unwrap();
+                        Ok(Some(true.into()))
+                    }),
+                )
+                .unwrap();
+            let weak = expected.as_weak();
+            expected.on_panel_shown(move |_| {
+                weak.upgrade().unwrap().set_enabled(false);
+                true
+            });
+        } else {
+            actual.set("panel-visible", false.into()).unwrap();
+            expected.set_panel_visible(false);
+        }
+        for (ui, scene) in [
+            (&mut actual as &mut dyn Component, &left),
+            (&mut expected as &mut dyn Component, &right),
+        ] {
+            assert!(!ui.control_at(scene, &[0], open));
+            assert_eq!(
+                ui.render_shared().children[0].swipe_side(),
+                SwipeSide::Closed
+            );
+        }
+        assert_eq!(actual.get("changes"), Ok(0_i64.into()));
+        assert_eq!(expected.get_changes(), 0);
+        assert_eq!(actual.take_error(), None);
+    }
+
+    let mut actual = program.create("SwipePanelAvailabilityParity").unwrap();
+    let mut expected = expressions_ui::SwipePanelAvailabilityParity::new();
+    let actual_reads = Rc::new(Cell::new(0));
+    let expected_reads = Rc::new(Cell::new(0));
+    let left = actual.render_shared();
+    let right = expected.render_shared();
+    assert!(actual.control_at(&left, &[0], open));
+    assert!(expected.control_at(&right, &[0], open));
+    let left = actual.render_shared();
+    let right = expected.render_shared();
+    actual
+        .on("panel-shown", {
+            let reads = actual_reads.clone();
+            Rc::new(move |_| {
+                reads.set(reads.get() + 1);
+                Ok(Some(false.into()))
+            })
+        })
+        .unwrap();
+    expected.on_panel_shown({
+        let reads = expected_reads.clone();
+        move |_| {
+            reads.set(reads.get() + 1);
+            false
+        }
+    });
+    assert!(actual.control_at(&left, &[0], close));
+    assert!(expected.control_at(&right, &[0], close));
+    assert_eq!([actual_reads.get(), expected_reads.get()], [0, 0]);
+    assert_eq!(actual.get("changes"), Ok(2_i64.into()));
+    assert_eq!(expected.get_changes(), 2);
+    assert_same_scene(&actual.render_shared(), &expected.render_shared());
+    assert_eq!(actual.take_error(), None);
 }
 
 #[test]
@@ -17223,12 +21372,15 @@ fn clipboard_named_input_and_table_projection_keep_their_own_bindings() {
         .err()
         .expect("duplicate alias accepted");
     assert!(error.to_string().contains(expected), "{error}");
-    let preview = xrack_compiler::prepare_preview(&source, filename, Default::default()).unwrap();
-    let error = Program::from_module(&preview.module)
-        .and_then(|program| program.create("ClipboardBindingParity"))
-        .err()
-        .expect("duplicate alias accepted by the interpreter");
-    assert!(error.to_string().contains(expected), "{error}");
+    let document = xrack_compiler::parse(&source).unwrap();
+    let raw = xrack_compiler::mlir::lower(&document, filename).unwrap();
+    assert_eq!(
+        xrack_interpreter::load_mlir(&raw)
+            .err()
+            .unwrap()
+            .to_string(),
+        error.to_string()
+    );
 }
 
 #[test]
@@ -17280,6 +21432,103 @@ fn table_clipboard_projection_is_lazy_in_both_modes() {
         Some("copy: item".into())
     );
     assert_eq!((actual_calls.get(), expected_calls.get()), (1, 1));
+}
+
+#[test]
+fn table_clipboard_only_samples_cells_with_a_text_projection() {
+    use std::{cell::Cell, rc::Rc};
+    use xrack_layout::{Interaction, Size};
+
+    let preview = xrack_compiler::prepare_preview(
+        include_str!("expressions.xr"),
+        "expressions.xr",
+        Default::default(),
+    )
+    .unwrap();
+    let interpreted = Program::from_module(&preview.module)
+        .unwrap()
+        .create("ClipboardProjectionParity")
+        .unwrap();
+    let mut generated = expressions_ui::ClipboardProjectionParity::new();
+    let text = Rc::new(Cell::new("rendered"));
+    let interpreted_calls = Rc::new(Cell::new(0));
+    let generated_calls = Rc::new(Cell::new(0));
+    let interpreted_rows = Rc::new(Cell::new(0));
+    let generated_rows = Rc::new(Cell::new(0));
+    interpreted
+        .on("cell-text", {
+            let text = text.clone();
+            let calls = interpreted_calls.clone();
+            Rc::new(move |_| {
+                calls.set(calls.get() + 1);
+                Ok(Some(text.get().to_owned().into()))
+            })
+        })
+        .unwrap();
+    generated.on_cell_text({
+        let text = text.clone();
+        let calls = generated_calls.clone();
+        move || {
+            calls.set(calls.get() + 1);
+            text.get().to_owned()
+        }
+    });
+
+    let input = Interaction::default();
+    let size = Size::new(320.0, 180.0);
+    let (left, _) = prepare_list(&interpreted, &input, size);
+    let (right, _) = prepare_list(&generated, &input, size);
+    assert_same_scene(&left, &right);
+    assert!(interpreted_calls.replace(0) > 0);
+    assert!(generated_calls.replace(0) > 0);
+
+    interpreted
+        .on(
+            "show-decoration",
+            Rc::new(|_| panic!("clipboard evaluated decoration")),
+        )
+        .unwrap();
+    generated.on_show_decoration(|| panic!("clipboard evaluated decoration"));
+    interpreted
+        .on("show-row", {
+            let calls = interpreted_rows.clone();
+            Rc::new(move |_| {
+                calls.set(calls.get() + 1);
+                Ok(Some(true.into()))
+            })
+        })
+        .unwrap();
+    generated.on_show_row({
+        let calls = generated_rows.clone();
+        move || {
+            calls.set(calls.get() + 1);
+            true
+        }
+    });
+    text.set("copied");
+    for (ui, scene, calls, rows) in [
+        (
+            &generated as &dyn Component,
+            &right,
+            &generated_calls,
+            &generated_rows,
+        ),
+        (
+            &interpreted as &dyn Component,
+            &left,
+            &interpreted_calls,
+            &interpreted_rows,
+        ),
+    ] {
+        assert_eq!(ui.copy_table_at(scene, &[0], &[2]).as_deref(), Some("\"\""));
+        assert_eq!((calls.get(), rows.get()), (0, 0));
+        assert_eq!(
+            ui.copy_table_at(scene, &[0], &[0, 1, 2]).as_deref(),
+            Some("copied\tcopied\t")
+        );
+        assert_eq!((calls.get(), rows.get()), (2, 2));
+    }
+    assert_eq!(interpreted.take_error(), None);
 }
 
 #[test]
@@ -18455,7 +22704,7 @@ fn standard_table_samples_editors_only_for_materialized_columns() {
 }
 
 #[test]
-fn stale_table_sort_click_does_not_read_the_row_model() {
+fn rejected_table_header_input_does_not_read_the_row_model() {
     use std::{cell::Cell, rc::Rc};
     use xrack_runtime::{ControlAction, TableSort};
 
@@ -18499,11 +22748,14 @@ fn stale_table_sort_click_does_not_read_the_row_model() {
         }
     });
 
-    assert!(!interpreted.control_at(&scenes[0], &[0], ControlAction::SortColumn(0)));
-    assert!(!generated.control_at(&scenes[1], &[0], ControlAction::SortColumn(0)));
+    for action in [ControlAction::SortColumn(0), ControlAction::Drawer(false)] {
+        assert!(!interpreted.control_at(&scenes[0], &[0], action));
+        assert!(!generated.control_at(&scenes[1], &[0], action));
+    }
     assert_eq!([actual_reads.get(), expected_reads.get()], [0, 0]);
     assert_eq!(interpreted.table_sort("table"), Ok(sort));
     assert_eq!(generated.table_sort("table"), sort);
+    assert_eq!(interpreted.take_error(), None);
 }
 
 #[test]
@@ -19343,6 +23595,7 @@ fn table_range_command_evaluates_operands_before_rejecting_an_invalid_index() {
 
 #[test]
 fn host_table_apis_match_generated_selection_sort_and_callbacks() {
+    use std::{cell::Cell, rc::Rc};
     use xrack_runtime::{RowSelection, TableSelectionAction, TableSort};
 
     let preview = xrack_compiler::prepare_preview(
@@ -19351,12 +23604,66 @@ fn host_table_apis_match_generated_selection_sort_and_callbacks() {
         Default::default(),
     )
     .unwrap();
-    let mut actual = Program::from_module(&preview.module)
+    let text = rename_mlir_view_key(
+        &preview.module.to_mlir(),
+        "TableMoveOrderParity",
+        "table",
+        "table-key",
+    );
+    let mut actual = xrack_interpreter::load_mlir(&text)
         .unwrap()
         .create("TableMoveOrderParity")
         .unwrap();
     let mut generated = expressions_ui::TableMoveOrderParity::new();
     let id = "table";
+    assert!(actual.table_selection("table-key").is_err());
+    assert!(generated.table_selection("table-key").is_none());
+    let actual_reads = Rc::new(Cell::new(0));
+    let generated_reads = Rc::new(Cell::new(0));
+    let actual_rows = actual.get_snapshot("rows").unwrap();
+    actual
+        .on("source", {
+            let reads = actual_reads.clone();
+            Rc::new(move |_| {
+                reads.set(reads.get() + 1);
+                Ok(Some(actual_rows.clone()))
+            })
+        })
+        .unwrap();
+    let generated_rows = generated.get_rows();
+    generated.on_source({
+        let reads = generated_reads.clone();
+        move || {
+            reads.set(reads.get() + 1);
+            generated_rows.clone()
+        }
+    });
+    let check_sort = |actual: &Instance,
+                      generated: &expressions_ui::TableMoveOrderParity,
+                      column: i64,
+                      descending| {
+        assert_eq!(actual.get("sort-column"), Ok(column.into()));
+        assert_eq!(generated.get_sort_column(), column);
+        assert_eq!(actual.get("sort-descending"), Ok(Value::Bool(descending)));
+        assert_eq!(generated.get_sort_descending(), descending);
+    };
+    check_sort(&actual, &generated, -1, false);
+    assert_eq!(actual.get("can-undo"), Ok(false.into()));
+    assert_eq!(actual.get("can-redo"), Ok(false.into()));
+    assert!(!generated.get_can_undo());
+    assert!(!generated.get_can_redo());
+    assert_eq!([actual_reads.get(), generated_reads.get()], [0, 0]);
+    let check_selection = |actual: &Instance,
+                           generated: &expressions_ui::TableMoveOrderParity,
+                           column: i64,
+                           count: i64| {
+        assert_eq!(actual.get("selected-column"), Ok(column.into()));
+        assert_eq!(generated.get_selected_column(), column);
+        assert_eq!(actual.get("selected-count"), Ok(count.into()));
+        assert_eq!(generated.get_selected_count(), count);
+        assert_eq!(actual.get("has-selection"), Ok((count > 0).into()));
+        assert_eq!(generated.get_has_selection(), count > 0);
+    };
     let action = TableSelectionAction::Cell {
         row: 1,
         column: 0,
@@ -19364,6 +23671,7 @@ fn host_table_apis_match_generated_selection_sort_and_callbacks() {
     };
     assert!(actual.select_table(id, action).unwrap());
     assert!(generated.select_table(id, action));
+    check_selection(&actual, &generated, 0, 1);
 
     let sort = TableSort {
         column: 0,
@@ -19376,6 +23684,13 @@ fn host_table_apis_match_generated_selection_sort_and_callbacks() {
         assert_eq!(generated.set_table_sort(id, candidate), changed);
         assert_eq!(actual.table_sort(id), Ok(candidate));
         assert_eq!(generated.table_sort(id), candidate);
+        check_sort(
+            &actual,
+            &generated,
+            candidate.map_or(-1, |_| 0),
+            candidate.is_some(),
+        );
+        check_selection(&actual, &generated, 0, 1);
 
         let left = actual.table_selection(id).unwrap();
         let right = generated.table_selection(id).unwrap();
@@ -19412,7 +23727,25 @@ fn host_table_apis_match_generated_selection_sort_and_callbacks() {
 fn host_tree_commands_match_generated_snapshots_and_callbacks() {
     use xrack_runtime::TreeCommand::{Collapse, Expand};
 
-    let (mut interpreted, mut generated) = tree_input_fixture();
+    let preview = xrack_compiler::prepare_preview(
+        include_str!("expressions.xr"),
+        "expressions.xr",
+        Default::default(),
+    )
+    .unwrap();
+    let text = rename_mlir_view_key(
+        &preview.module.to_mlir(),
+        "TreeInputParity",
+        "branches",
+        "tree-key",
+    );
+    let mut interpreted = xrack_interpreter::load_mlir(&text)
+        .unwrap()
+        .create("TreeInputParity")
+        .unwrap();
+    let mut generated = expressions_ui::TreeInputParity::new();
+    assert!(interpreted.tree_snapshot("tree-key").is_err());
+    assert!(generated.tree_snapshot("tree-key").is_none());
     let id = "branches";
     interpreted.set("current", 11_i64.into()).unwrap();
     generated.set_current(11);
@@ -19590,4 +23923,269 @@ fn picker_cancel_does_not_evaluate_commit_bindings() {
     assert_eq!(generated.get_cancels(), 3);
     assert_same_scene(&interpreted.render(), &generated.render());
     assert_eq!(interpreted.take_error(), None);
+}
+
+#[test]
+fn picker_editor_resolves_its_live_visibility_once_per_input() {
+    use expressions_ui::PickerCancelBindingsParity;
+    use std::{cell::Cell, rc::Rc};
+    use xrack_runtime::{ControlAction, RangeAction, SpinAction};
+
+    let preview = xrack_compiler::prepare_preview(
+        include_str!("expressions.xr"),
+        "expressions.xr",
+        Default::default(),
+    )
+    .unwrap();
+    let mut interpreted = Program::from_module(&preview.module)
+        .unwrap()
+        .create("PickerCancelBindingsParity")
+        .unwrap();
+    let mut generated = PickerCancelBindingsParity::new();
+    let interpreted_calls = Rc::new(Cell::new(0));
+    let generated_calls = Rc::new(Cell::new(0));
+    let interpreted_visible = Rc::new(Cell::new(true));
+    let generated_visible = Rc::new(Cell::new(true));
+    interpreted
+        .on("color-visible", {
+            let calls = interpreted_calls.clone();
+            let visible = interpreted_visible.clone();
+            Rc::new(move |_| {
+                calls.set(calls.get() + 1);
+                Ok(Some(visible.get().into()))
+            })
+        })
+        .unwrap();
+    generated.on_color_visible({
+        let calls = generated_calls.clone();
+        let visible = generated_visible.clone();
+        move || {
+            calls.set(calls.get() + 1);
+            visible.get()
+        }
+    });
+
+    for visible in [true, false] {
+        for edit in 0..3 {
+            interpreted_visible.set(true);
+            generated_visible.set(true);
+            let actual = interpreted.render_shared();
+            let expected = generated.render_shared();
+            // Route input from the visible scene even after its live state changes.
+            interpreted_visible.set(visible);
+            generated_visible.set(visible);
+            interpreted_calls.set(0);
+            generated_calls.set(0);
+            let deliver = |ui: &mut dyn Component, scene: &Node| match edit {
+                0 => ui.edit_at(scene, &[0, 0, 0, 1], "#12AB349A".into()),
+                1 => ui.adjust_range_at(scene, &[0, 0, 1, 1], RangeAction::SetValue(32.0)),
+                _ => ui.control_at(
+                    scene,
+                    &[0, 0, 3, 2],
+                    ControlAction::Spin(SpinAction::Step(2)),
+                ),
+            };
+            assert_eq!(
+                deliver(&mut generated, &expected),
+                visible,
+                "compiled edit {edit}"
+            );
+            assert_eq!(
+                deliver(&mut interpreted, &actual),
+                visible,
+                "interpreted edit {edit}"
+            );
+            assert_eq!(generated_calls.get(), 1, "compiled edit {edit}");
+            assert_eq!(interpreted_calls.get(), 1, "interpreted edit {edit}");
+            assert_eq!(interpreted.take_error(), None);
+        }
+    }
+}
+
+#[test]
+fn closed_picker_rejects_old_input_before_evaluating_its_options() {
+    use expressions_ui::PickerCancelBindingsParity;
+    use std::{cell::Cell, rc::Rc};
+    use xrack_runtime::{ControlAction, DialogRole, RangeAction, SpinAction};
+
+    let preview = xrack_compiler::prepare_preview(
+        include_str!("expressions.xr"),
+        "expressions.xr",
+        Default::default(),
+    )
+    .unwrap();
+    let mut actual = xrack_interpreter::load_mlir(&preview.module.to_mlir())
+        .unwrap()
+        .create("PickerCancelBindingsParity")
+        .unwrap();
+    let mut generated = PickerCancelBindingsParity::new();
+    let rendered = actual.render_shared();
+    let compiled = generated.render_shared();
+    let actual_calls = Rc::new(Cell::new(0));
+    let generated_calls = Rc::new(Cell::new(0));
+    actual
+        .on("color-alpha", {
+            let calls = actual_calls.clone();
+            Rc::new(move |_| {
+                calls.set(calls.get() + 1);
+                Ok(Some(true.into()))
+            })
+        })
+        .unwrap();
+    generated.on_color_alpha({
+        let calls = generated_calls.clone();
+        move || {
+            calls.set(calls.get() + 1);
+            true
+        }
+    });
+
+    actual.set("color-open", false.into()).unwrap();
+    generated.set_color_open(false);
+    for (ui, scene) in [
+        (&mut actual as &mut dyn Component, &rendered),
+        (&mut generated as &mut dyn Component, &compiled),
+    ] {
+        assert!(!ui.edit_at(scene, &[0, 0, 0, 1], "#12AB349A".into()));
+        assert!(!ui.adjust_range_at(scene, &[0, 0, 1, 1], RangeAction::SetValue(32.0)));
+        assert!(!ui.control_at(
+            scene,
+            &[0, 0, 3, 2],
+            ControlAction::Spin(SpinAction::Step(2))
+        ));
+        assert!(!ui.control_at(scene, &[0], ControlAction::Dialog(DialogRole::Accept)));
+        assert!(!ui.control_at(scene, &[0], ControlAction::Dialog(DialogRole::Reject)));
+    }
+    assert_eq!([actual_calls.get(), generated_calls.get()], [0, 0]);
+    assert_eq!(actual.get("cancels"), Ok(0_i64.into()));
+    assert_eq!(generated.get_cancels(), 0);
+
+    actual.set("color-open", true.into()).unwrap();
+    generated.set_color_open(true);
+    actual
+        .on("color-alpha", {
+            let weak = actual.as_weak();
+            let calls = actual_calls.clone();
+            Rc::new(move |_| {
+                calls.set(calls.get() + 1);
+                weak.upgrade()
+                    .unwrap()
+                    .set("color-open", false.into())
+                    .unwrap();
+                Ok(Some(true.into()))
+            })
+        })
+        .unwrap();
+    generated.on_color_alpha({
+        let weak = generated.as_weak();
+        let calls = generated_calls.clone();
+        move || {
+            weak.upgrade().unwrap().set_color_open(false);
+            calls.set(calls.get() + 1);
+            true
+        }
+    });
+    let accept = ControlAction::Dialog(DialogRole::Accept);
+    assert!(!actual.control_at(&rendered, &[0], accept));
+    assert!(!generated.control_at(&compiled, &[0], accept));
+    assert_eq!([actual_calls.get(), generated_calls.get()], [1, 1]);
+    assert_eq!(actual.get("color-open"), Ok(false.into()));
+    assert!(!generated.get_color_open());
+    assert_eq!(actual.take_error(), None);
+}
+
+#[test]
+fn picker_editor_ignores_previous_session_before_reading_current_options() {
+    use expressions_ui::PickerCancelBindingsParity;
+    use std::{cell::Cell, rc::Rc};
+    use xrack_runtime::{ControlAction, RangeAction, SpinAction};
+
+    let preview = xrack_compiler::prepare_preview(
+        include_str!("expressions.xr"),
+        "expressions.xr",
+        Default::default(),
+    )
+    .unwrap();
+    let mut actual = xrack_interpreter::load_mlir(&preview.module.to_mlir())
+        .unwrap()
+        .create("PickerCancelBindingsParity")
+        .unwrap();
+    let mut compiled = PickerCancelBindingsParity::new();
+    let old_actual = actual.render_shared();
+    let old_compiled = compiled.render_shared();
+    actual.set("color-open", false.into()).unwrap();
+    compiled.set_color_open(false);
+    assert!(actual.render_shared().children[0].children.is_empty());
+    assert!(compiled.render_shared().children[0].children.is_empty());
+    actual.set("color-open", true.into()).unwrap();
+    compiled.set_color_open(true);
+    let current_actual = actual.render_shared();
+    let current_compiled = compiled.render_shared();
+    let actual_reads = Rc::new(Cell::new(0));
+    let compiled_reads = Rc::new(Cell::new(0));
+    actual
+        .on("color-alpha", {
+            let reads = actual_reads.clone();
+            Rc::new(move |_| {
+                reads.set(reads.get() + 1);
+                Ok(Some(true.into()))
+            })
+        })
+        .unwrap();
+    compiled.on_color_alpha({
+        let reads = compiled_reads.clone();
+        move || {
+            reads.set(reads.get() + 1);
+            true
+        }
+    });
+
+    for (ui, old) in [
+        (&mut actual as &mut dyn Component, &old_actual),
+        (&mut compiled as &mut dyn Component, &old_compiled),
+    ] {
+        assert!(!ui.edit_at(old, &[0, 0, 0, 1], "#12AB349A".into()));
+        assert!(!ui.adjust_range_at(old, &[0, 0, 1, 1], RangeAction::SetValue(32.0)));
+        assert!(!ui.control_at(old, &[0, 0, 3, 2], ControlAction::Spin(SpinAction::Step(2))));
+    }
+    assert_eq!([actual_reads.get(), compiled_reads.get()], [0, 0]);
+    assert_eq!(actual.take_error(), None);
+
+    assert!(actual.edit_at(&current_actual, &[0, 0, 0, 1], "#12AB349A".into()));
+    assert!(compiled.edit_at(&current_compiled, &[0, 0, 0, 1], "#12AB349A".into()));
+    assert_eq!([actual_reads.get(), compiled_reads.get()], [1, 1]);
+    assert_same_scene(&actual.render_shared(), &compiled.render_shared());
+}
+
+#[test]
+fn picker_confirmation_preserves_a_draft_edited_while_reading_options() {
+    use xrack_runtime::{Color, ColorPopupState, ControlAction, DialogRole, RoutedEvent};
+
+    let popup = ColorPopupState::default();
+    let render = || {
+        let mut dialog = Node::new("Dialog", None);
+        dialog.properties.insert("open", true.into());
+        dialog.properties.insert("show-alpha", true.into());
+        popup.populate_editor(&mut dialog, || Color(0x336699ff));
+        dialog
+    };
+    let old = render();
+    let text = old.at_path(&[0, 0, 1]).unwrap();
+    let accept = RoutedEvent::Control(ControlAction::Dialog(DialogRole::Accept));
+    assert_eq!(
+        accept.with_input(&old, &[], |route| {
+            popup.finish_input(&old, DialogRole::Accept, route, || {
+                assert!(popup.edit_hex(true, text, "#12AB349A".into()));
+                true
+            })
+        }),
+        Some(None)
+    );
+    let updated = render();
+    assert_eq!(
+        accept.with_input(&updated, &[], |route| {
+            popup.finish_input(&updated, DialogRole::Accept, route, || true)
+        }),
+        Some(Some(Color(0x12ab349a)))
+    );
 }

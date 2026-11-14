@@ -124,6 +124,7 @@ fn format(text: &str, options: &Value) -> Option<String> {
                 && (prev.opens_block()
                     || token.closes_block()
                     || prev.text == ";"
+                    || prev.text == "@children" && token.text != ";"
                     || prev.closes_block() && !matches!(token.text, ";" | "," | ")" | "]")
                     || prev.text == "," && inline.is_empty()
                     || prev.text.starts_with("//")

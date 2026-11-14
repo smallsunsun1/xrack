@@ -83,11 +83,11 @@ impl Instance {
                         move || {
                             child
                                 .upgrade()
-                                .map(|child| Box::new(Instance(child)) as Box<dyn Component>)
+                                .map(|child| Box::new(Instance(child, None)) as Box<dyn Component>)
                         },
                         move || {
                             if let Some(owner) = owner.upgrade() {
-                                let owner = Instance(owner);
+                                let owner = Instance(owner, None);
                                 if let Err(error) = owner
                                     .secondary_window_command(&key, SecondaryWindowCommand::Hide)
                                 {

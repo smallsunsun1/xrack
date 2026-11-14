@@ -126,11 +126,13 @@ impl ImagePresentation {
                 node.image_tile_mode("vertical-tile-mode"),
             ],
             rendering,
-            fit: node.image_fit("image-fit").unwrap_or(if in_layout {
-                ImageFit::Contain
-            } else {
-                ImageFit::Fill
-            }),
+            fit: node.image_fit("image-fit").unwrap_or(
+                if in_layout || node.kind == "MediaPlayer" {
+                    ImageFit::Contain
+                } else {
+                    ImageFit::Fill
+                },
+            ),
             alignment: [x, y],
         }
     }

@@ -1,0 +1,13 @@
+[package]
+name = "xrack-media-bin-aarch64-apple-darwin"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+description = "Prebuilt XRack media library for aarch64-apple-darwin"
+publish = false
+include = ["src/**", "library.xz", "ffmpeg_bindings.rs", "licenses/**", "release.json"]
+
+[lib]
+path = "../stub.rs"

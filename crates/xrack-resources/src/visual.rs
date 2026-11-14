@@ -1,6 +1,6 @@
 //! Describe the visual bindings and control storage shared by both backends.
-use xrack_mlir::OperationRef;
-use xrack_runtime::{is_text_input, is_toggle};
+use xrack_mlir::{OperationRef, ValueRef, scene_children};
+use xrack_runtime::{MediaCommand, is_text_input, is_toggle};
 use xrack_syntax::ast::Type;
 
 fn children<'m, 'n>(
@@ -8,6 +8,97 @@ fn children<'m, 'n>(
     name: &'n str,
 ) -> impl Iterator<Item = OperationRef<'m>> + use<'m, 'n> {
     op.children().filter(move |child| child.name() == name)
+}
+
+/// Runtime media paths use the declaration's file, or the entry file when
+/// standalone MLIR has no source locations.
+pub fn media_source_file<'a>(op: OperationRef<'a>, entry: &'a str) -> &'a str {
+    // MLIR gives an unnamed parser buffer the filename "-".
+    op.source_file()
+        .filter(|file| !matches!(*file, "" | "-"))
+        .unwrap_or(entry)
+}
+
+/// A media effect whose seek position has yet to be evaluated.
+#[derive(Clone)]
+pub enum MediaEffect<Position> {
+    Play,
+    Pause,
+    Stop,
+    GoLive,
+    Seek(Position),
+}
+
+impl<'m> MediaEffect<ValueRef<'m>> {
+    pub fn from_operation(op: OperationRef<'m>) -> Result<Self, String> {
+        match (op.attr("method")?, op.operand(0)) {
+            ("play", None) => Ok(Self::Play),
+            ("pause", None) => Ok(Self::Pause),
+            ("stop", None) => Ok(Self::Stop),
+            ("go-live", None) => Ok(Self::GoLive),
+            ("seek", Some(position)) => Ok(Self::Seek(position)),
+            _ => Err("requires play(), pause(), stop(), go-live(), or seek(float)".into()),
+        }
+    }
+}
+
+impl<Position> MediaEffect<Position> {
+    pub fn try_map_position<T, E>(
+        self,
+        convert: impl FnOnce(Position) -> Result<T, E>,
+    ) -> Result<MediaEffect<T>, E> {
+        Ok(match self {
+            Self::Play => MediaEffect::Play,
+            Self::Pause => MediaEffect::Pause,
+            Self::Stop => MediaEffect::Stop,
+            Self::GoLive => MediaEffect::GoLive,
+            Self::Seek(position) => MediaEffect::Seek(convert(position)?),
+        })
+    }
+
+    pub fn try_evaluate<E>(
+        &self,
+        evaluate: impl FnOnce(&Position) -> Result<f64, E>,
+    ) -> Result<MediaCommand, E> {
+        Ok(match self {
+            Self::Play => MediaCommand::Play,
+            Self::Pause => MediaCommand::Pause,
+            Self::Stop => MediaCommand::Stop,
+            Self::GoLive => MediaCommand::GoLive,
+            Self::Seek(position) => MediaCommand::Seek(evaluate(position)?),
+        })
+    }
+}
+
+pub fn table_option_configured(element: OperationRef<'_>, name: &str) -> bool {
+    element.children().any(|binding| {
+        matches!(binding.name(), "xr.bind" | "xr.state_set")
+            && binding.attribute("name") == Some(name)
+    })
+}
+
+/// Editing history requires a writable string or record model.
+pub fn table_history_item(table: OperationRef<'_>) -> Result<Option<Type>, String> {
+    let kind = table.attribute("kind");
+    if !matches!(kind, Some("TableView" | "StandardTableView"))
+        || !(table_option_configured(table, "undoable")
+            || table_option_configured(table, "pasteable"))
+    {
+        return Ok(None);
+    }
+    let model = if kind == Some("StandardTableView") {
+        children(table, "xr.bind").find(|op| op.attribute("name") == Some("model"))
+    } else {
+        scene_children(table).find_map(|row| children(row, "xr.repeat").next())
+    };
+    let source = model
+        .and_then(|op| op.operand(0))
+        .ok_or("missing table model")?;
+    Ok(match source.xr_type()? {
+        Type::StringList => Some(Type::String),
+        Type::RecordList(name) => Some(Type::Record(name)),
+        _ => None,
+    })
 }
 
 /// Visual bindings that can allocate cache slots in their scene scope.
@@ -34,6 +125,18 @@ pub fn picker_value(kind: &str) -> Option<(&'static str, Type)> {
         "ColorPickerPopup" => Some(("color", Type::Color)),
         "FontPickerPopup" => Some(("font", Type::Font)),
         _ => None,
+    }
+}
+
+/// Return the scene node kind and whether it uses application window layout.
+pub fn scene_element(kind: &str) -> (&str, bool) {
+    match kind {
+        "ApplicationWindow" => ("Window", true),
+        "StandardTableView" => ("TableView", false),
+        "StandardButton" => ("Button", false),
+        "DayCell" | "SplitHandle" => ("Rectangle", false),
+        kind if picker_value(kind).is_some() => ("Dialog", false),
+        kind => (kind, false),
     }
 }
 

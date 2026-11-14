@@ -5,7 +5,7 @@ rust_library(
     srcs = glob(["src/*.rs"]),
     crate_root = "src/lib.rs",
     edition = "2024",
-    version = "0.5.0",
+    version = "0.5.1",
     visibility = ["//visibility:public"],
     deps = [
         "//crates/xrack-mlir:xrack_mlir",

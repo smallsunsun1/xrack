@@ -121,6 +121,20 @@ impl Date {
         Self::new(index.div_euclid(12) + 1, index.rem_euclid(12) + 1, 1)
     }
 
+    /// Shift by whole months, retaining the day or clamping it to the target month's end.
+    pub fn add_months_clamped(self, months: i64) -> Option<Self> {
+        let month = self.add_months(months)?;
+        Some(Self {
+            day: self.day.min(month.month_length()),
+            ..month
+        })
+    }
+
+    /// ISO weekday number, Monday (1) through Sunday (7).
+    pub fn weekday(self) -> Option<i64> {
+        self.valid().then(|| self.ordinal().rem_euclid(7) + 1)
+    }
+
     /// ISO 8601 week-based year and week number.
     pub fn iso_week(self) -> Option<(i64, i64)> {
         if !self.valid() {
@@ -506,6 +520,11 @@ impl CalendarCells {
 pub struct DatePopupState(PickerSession<(Date, Date)>);
 
 impl DatePopupState {
+    #[doc(hidden)]
+    pub fn accepts_input(&self, node: &Node, input: InputRoute<'_>) -> bool {
+        self.0.accepts_input(node, input)
+    }
+
     pub fn close(&self) {
         self.0.close();
     }

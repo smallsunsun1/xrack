@@ -13,4 +13,4 @@ path = "../stub.rs"
 
 [build-dependencies]
 lzma-rust2 = { version = "0.25", default-features = false, features = ["std", "xz"] }
-xrackc-bin-aarch64-pc-windows-msvc = { path = "../../compiler/aarch64-pc-windows-msvc", version = "=0.5.0" }
+xrackc-bin-aarch64-pc-windows-msvc = { path = "../../compiler/aarch64-pc-windows-msvc", version = "=0.5.1" }

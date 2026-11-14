@@ -23,12 +23,7 @@ struct Manifest {
     locales: BTreeMap<String, String>,
 }
 
-pub fn resolve_translations(
-    module: &Module,
-    filename: &Path,
-    declared_assets: Option<&[PathBuf]>,
-    buffers: &BTreeMap<PathBuf, String>,
-) -> Result<ResolvedTranslations, String> {
+fn translation_calls(module: &Module) -> Vec<OperationRef<'_>> {
     fn collect<'a>(op: OperationRef<'a>, calls: &mut Vec<OperationRef<'a>>) {
         if op.name() == "xr.translate" {
             calls.push(op);
@@ -38,16 +33,78 @@ pub fn resolve_translations(
         }
     }
 
-    let base = filename.parent().unwrap_or_else(|| Path::new("."));
-    let filename = filename.to_string_lossy();
     let mut calls = Vec::new();
     for op in module.operations() {
         collect(op, &mut calls);
     }
-    let Some(catalog) = module
+    calls
+}
+
+fn translation_catalog(module: &Module) -> Option<OperationRef<'_>> {
+    module
         .operations()
         .find(|op| op.name() == "xr.translation_catalog")
-    else {
+}
+
+pub(crate) const MISSING_TRANSLATION_CATALOG: &str = "@tr requires a translation catalog";
+
+/// Validate a module being loaded without a translation catalog.
+pub fn check_missing_translation_catalog(module: &Module) -> Result<(), String> {
+    for op in module.operations() {
+        crate::assets::walk(op, &mut |op| {
+            if op.name() == "xr.translate" {
+                return Err(MISSING_TRANSLATION_CATALOG.into());
+            }
+            Ok(())
+        })?;
+    }
+    check_catalog_declaration(module)
+}
+
+pub(crate) fn check_catalog_declaration(module: &Module) -> Result<(), String> {
+    // Locale negotiation can observe a declared catalog without using @tr.
+    if let Some(catalog) = translation_catalog(module) {
+        return Err(format!(
+            "unresolved translation catalog {:?}",
+            catalog.attr("path")?
+        ));
+    }
+    Ok(())
+}
+
+/// Check host-provided language packs against every translation call in the module.
+pub fn check_translation_sources<'a, L: std::fmt::Display>(
+    module: &Module,
+    sources: impl IntoIterator<Item = (L, &'a str, bool)>,
+) -> Result<(), String> {
+    let calls = translation_calls(module);
+    let mut default_language = false;
+    let mut languages = BTreeSet::new();
+    for (language, text, default) in sources {
+        let language = locale_id(&language.to_string())?;
+        if !languages.insert(language.clone()) {
+            return Err(format!("duplicate language '{language}'"));
+        }
+        default_language |= default;
+        let path = format!("<Fluent {language}>");
+        validate(text, Path::new(&path), &language, default, &calls, "<MLIR>")?;
+    }
+    if !default_language {
+        return Err("translation catalog missing default language".into());
+    }
+    Ok(())
+}
+
+pub fn resolve_translations(
+    module: &Module,
+    filename: &Path,
+    declared_assets: Option<&[PathBuf]>,
+    buffers: &BTreeMap<PathBuf, String>,
+) -> Result<ResolvedTranslations, String> {
+    let base = filename.parent().unwrap_or_else(|| Path::new("."));
+    let filename = filename.to_string_lossy();
+    let calls = translation_calls(module);
+    let Some(catalog) = translation_catalog(module) else {
         if let Some(&call) = calls.first() {
             return Err(at(
                 call,

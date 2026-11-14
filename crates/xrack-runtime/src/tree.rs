@@ -1,5 +1,6 @@
 use crate::{
-    ChangeSignal, ControlAction, Node, Property, RowKey, RowSelection, VecModel, list::MAX_ROWS,
+    ChangeSignal, ControlAction, ListMetrics, Node, Property, RowKey, RowSelection, Value,
+    VecModel, list::MAX_ROWS,
 };
 use std::{
     cell::RefCell,
@@ -649,7 +650,8 @@ impl TreeState {
         self.source.set_if_changed(model.edit_stamp().0);
         self.snapshot.try_get(|| {
             self.track_source();
-            Ok(self.build_snapshot(self.topology(&model, roles), root()?, None, None))
+            let root = root()?;
+            Ok(self.build_snapshot(self.topology(&model, roles), root, None, None))
         })
     }
 
@@ -711,136 +713,204 @@ impl TreeState {
     ) -> Result<Arc<TreeSnapshot>, E> {
         self.source.set_if_changed(model.edit_stamp().0);
         self.snapshot.try_get(|| {
-            self.track_source();
             let root = root()?;
-            let topology = self.topology(&model, roles.clone());
-            let available = visible.map(|visible| {
-                self.availability.get(|| {
-                    let topology = self.topology(&model, roles);
-                    let mut shown = vec![false; topology.entries.len()];
-                    let mut pending = topology.roots.clone();
-                    while let Some(index) = pending.pop() {
-                        let entry = &topology.entries[index];
-                        if model
-                            .project_row_untracked(entry.model_index, &visible)
-                            .unwrap_or(false)
-                        {
-                            shown[index] = true;
-                            pending.extend_from_slice(&entry.children);
-                        }
+            let query = Self::read_filter(field.is_some(), query)?;
+            Ok(self.project_snapshot(&model, roles, root, visible, field, query))
+        })
+    }
+
+    /// Resolve the row model after the view bindings and return it with its projection.
+    /// The model resolver must track changes to the source binding.
+    #[doc(hidden)]
+    pub fn try_project_model<T: 'static, M, E>(
+        &self,
+        resolve: impl Fn() -> Result<M, E>,
+        model: impl Fn(&M) -> &VecModel<T>,
+        roles: impl Fn(&T) -> (i64, i64) + Clone + 'static,
+        root: impl FnOnce() -> Result<i64, E>,
+        visible: Option<impl Fn(&T) -> bool + Clone + 'static>,
+        field: Option<impl Fn(&T) -> &str + Clone + 'static>,
+        query: impl FnOnce() -> Result<String, E>,
+    ) -> Result<(Arc<TreeSnapshot>, M), E> {
+        let mut source = None;
+        let snapshot = self.snapshot.try_get(|| {
+            let root = root()?;
+            let query = Self::read_filter(field.is_some(), query)?;
+            let resolved = resolve()?;
+            let rows = model(&resolved);
+            self.source.set_if_changed(rows.edit_stamp().0);
+            let snapshot = self.project_snapshot(rows, roles, root, visible, field, query);
+            source = Some(resolved);
+            Ok(snapshot)
+        })?;
+        Ok((snapshot, source.map_or_else(resolve, Ok)?))
+    }
+
+    #[doc(hidden)]
+    pub fn project_model<T: 'static>(
+        &self,
+        model: impl Fn() -> Rc<VecModel<T>>,
+        roles: impl Fn(&T) -> (i64, i64) + Clone + 'static,
+        root: impl FnOnce() -> i64,
+        visible: Option<fn(&T) -> bool>,
+        field: Option<fn(&T) -> &str>,
+        query: impl FnOnce() -> String,
+    ) -> (Arc<TreeSnapshot>, Rc<VecModel<T>>) {
+        self.try_project_model(
+            || Ok::<_, std::convert::Infallible>(model()),
+            |model| model.as_ref(),
+            roles,
+            || Ok(root()),
+            visible,
+            field,
+            || Ok(query()),
+        )
+        .unwrap_or_else(|error| match error {})
+    }
+
+    fn read_filter<E>(
+        has_field: bool,
+        query: impl FnOnce() -> Result<String, E>,
+    ) -> Result<Rc<str>, E> {
+        Ok(if has_field {
+            query()?.trim().to_lowercase().into()
+        } else {
+            Rc::from("")
+        })
+    }
+
+    fn project_snapshot<T: 'static>(
+        &self,
+        model: &VecModel<T>,
+        roles: impl Fn(&T) -> (i64, i64) + Clone + 'static,
+        root: i64,
+        visible: Option<impl Fn(&T) -> bool + Clone + 'static>,
+        field: Option<impl Fn(&T) -> &str + Clone + 'static>,
+        query: Rc<str>,
+    ) -> Arc<TreeSnapshot> {
+        self.track_source();
+        let topology = self.topology(model, roles.clone());
+        let available = visible.map(|visible| {
+            self.availability.get(|| {
+                let topology = self.topology(model, roles);
+                let mut shown = vec![false; topology.entries.len()];
+                let mut pending = topology.roots.clone();
+                while let Some(index) = pending.pop() {
+                    let entry = &topology.entries[index];
+                    if model
+                        .project_row_untracked(entry.model_index, &visible)
+                        .unwrap_or(false)
+                    {
+                        shown[index] = true;
+                        pending.extend_from_slice(&entry.children);
                     }
-                    let shown: Arc<[bool]> = shown.into();
-                    let observed = Arc::downgrade(&topology);
-                    let reachable = shown.clone();
-                    let signal = model.observe_projection_changes(
+                }
+                let shown: Arc<[bool]> = shown.into();
+                let observed = Arc::downgrade(&topology);
+                let reachable = shown.clone();
+                let signal = model.observe_projection_changes(
+                    MAX_ROWS,
+                    move |model_index, before, after| {
+                        if visible(before) == visible(after) {
+                            return false;
+                        }
+                        let Some(topology) = observed.upgrade() else {
+                            return false;
+                        };
+                        topology
+                            .entries
+                            .binary_search_by_key(&model_index, |entry| entry.model_index)
+                            .is_ok_and(|index| {
+                                topology.entries[index]
+                                    .parent
+                                    .is_none_or(|parent| reachable[parent])
+                            })
+                    },
+                );
+                signal.track();
+                *self.visibility_changed.borrow_mut() = Some(signal);
+                shown
+            })
+        });
+        let Some(field) = field.filter(|_| !query.is_empty()) else {
+            self.filter_observation.borrow_mut().take();
+            return self.build_snapshot(topology, root, available, None);
+        };
+        let branch = topology.index.get(&root).copied();
+        let matches = |row: &T| field(row).to_lowercase().contains(query.as_ref());
+        {
+            let mut observation = self.filter_observation.borrow_mut();
+            let topology_ref = Arc::downgrade(&topology);
+            if observation.as_ref().is_none_or(|current| {
+                !Weak::ptr_eq(&current.topology, &topology_ref)
+                    || match (&current.available, &available) {
+                        (Some(a), Some(b)) => !Arc::ptr_eq(a, b),
+                        (None, None) => false,
+                        _ => true,
+                    }
+                    || current.root != root
+                    || current.query != query
+            }) {
+                let needle = query.clone();
+                let observed = topology_ref.clone();
+                let shown = available.clone();
+                let field = field.clone();
+                *observation = Some(FilterObservation {
+                    topology: topology_ref,
+                    available: available.clone(),
+                    root,
+                    query: query.clone(),
+                    changed: model.observe_projection_changes(
                         MAX_ROWS,
                         move |model_index, before, after| {
-                            if visible(before) == visible(after) {
-                                return false;
-                            }
                             let Some(topology) = observed.upgrade() else {
                                 return false;
                             };
-                            topology
+                            let Ok(index) = topology
                                 .entries
                                 .binary_search_by_key(&model_index, |entry| entry.model_index)
-                                .is_ok_and(|index| {
-                                    topology.entries[index]
-                                        .parent
-                                        .is_none_or(|parent| reachable[parent])
-                                })
+                            else {
+                                return false;
+                            };
+                            let in_scope = root == -1
+                                || branch.is_some_and(|branch| {
+                                    topology.contains_descendant(branch, index)
+                                });
+                            let matches =
+                                |row: &T| field(row).to_lowercase().contains(needle.as_ref());
+                            in_scope
+                                && shown.as_ref().is_none_or(|rows| rows[index])
+                                && matches(before) != matches(after)
                         },
-                    );
-                    signal.track();
-                    *self.visibility_changed.borrow_mut() = Some(signal);
-                    shown
-                })
-            });
-            let query: Rc<str> = if field.is_some() {
-                query()?.trim().to_lowercase().into()
-            } else {
-                Rc::from("")
-            };
-            let Some(field) = field.filter(|_| !query.is_empty()) else {
-                self.filter_observation.borrow_mut().take();
-                return Ok(self.build_snapshot(topology, root, available, None));
-            };
-            let branch = topology.index.get(&root).copied();
-            let matches = |row: &T| field(row).to_lowercase().contains(query.as_ref());
+                    ),
+                });
+            }
+            observation.as_ref().unwrap().changed.track();
+        }
+        let mut included = vec![false; topology.entries.len()];
+        let mut pending = topology.roots_for(root, branch).to_vec();
+        while let Some(index) = pending.pop() {
+            if available.as_ref().is_some_and(|rows| !rows[index]) {
+                continue;
+            }
+            let entry = &topology.entries[index];
+            pending.extend_from_slice(&entry.children);
+            if !model
+                .project_row_untracked(entry.model_index, matches)
+                .unwrap_or(false)
             {
-                let mut observation = self.filter_observation.borrow_mut();
-                let topology_ref = Arc::downgrade(&topology);
-                if observation.as_ref().is_none_or(|current| {
-                    !Weak::ptr_eq(&current.topology, &topology_ref)
-                        || match (&current.available, &available) {
-                            (Some(a), Some(b)) => !Arc::ptr_eq(a, b),
-                            (None, None) => false,
-                            _ => true,
-                        }
-                        || current.root != root
-                        || current.query != query
-                }) {
-                    let needle = query.clone();
-                    let observed = topology_ref.clone();
-                    let shown = available.clone();
-                    let field = field.clone();
-                    *observation = Some(FilterObservation {
-                        topology: topology_ref,
-                        available: available.clone(),
-                        root,
-                        query: query.clone(),
-                        changed: model.observe_projection_changes(
-                            MAX_ROWS,
-                            move |model_index, before, after| {
-                                let Some(topology) = observed.upgrade() else {
-                                    return false;
-                                };
-                                let Ok(index) = topology
-                                    .entries
-                                    .binary_search_by_key(&model_index, |entry| entry.model_index)
-                                else {
-                                    return false;
-                                };
-                                let in_scope = root == -1
-                                    || branch.is_some_and(|branch| {
-                                        topology.contains_descendant(branch, index)
-                                    });
-                                let matches =
-                                    |row: &T| field(row).to_lowercase().contains(needle.as_ref());
-                                in_scope
-                                    && shown.as_ref().is_none_or(|rows| rows[index])
-                                    && matches(before) != matches(after)
-                            },
-                        ),
-                    });
-                }
-                observation.as_ref().unwrap().changed.track();
+                continue;
             }
-            let mut included = vec![false; topology.entries.len()];
-            let mut pending = topology.roots_for(root, branch).to_vec();
-            while let Some(index) = pending.pop() {
-                if available.as_ref().is_some_and(|rows| !rows[index]) {
-                    continue;
+            let mut ancestor = Some(index);
+            while let Some(index) = ancestor {
+                if Some(index) == branch || included[index] {
+                    break;
                 }
-                let entry = &topology.entries[index];
-                pending.extend_from_slice(&entry.children);
-                if !model
-                    .project_row_untracked(entry.model_index, matches)
-                    .unwrap_or(false)
-                {
-                    continue;
-                }
-                let mut ancestor = Some(index);
-                while let Some(index) = ancestor {
-                    if Some(index) == branch || included[index] {
-                        break;
-                    }
-                    included[index] = true;
-                    ancestor = topology.entries[index].parent;
-                }
+                included[index] = true;
+                ancestor = topology.entries[index].parent;
             }
-            Ok(self.build_snapshot(topology, root, available, Some(included)))
-        })
+        }
+        self.build_snapshot(topology, root, available, Some(included))
     }
 
     fn track_source(&self) {
@@ -1051,6 +1121,22 @@ impl TreeState {
     pub fn selection(&self) -> Arc<BTreeMap<i64, RowKey>> {
         self.selection_changed.track();
         self.selection.borrow().keys.clone()
+    }
+
+    /// Publish the same visible rows for layout, painting and input routing.
+    #[doc(hidden)]
+    pub fn populate_scene(&self, node: &mut Node, tree: Arc<TreeSnapshot>) {
+        node.list = Some(ListMetrics {
+            row_count: tree.rows().len(),
+            first_row: 0,
+        });
+        node.properties
+            .entry("current-key")
+            .or_insert(Value::Int(-1));
+        node.tree_selection = node
+            .boolean("multi-select", false)
+            .then(|| self.selection());
+        node.tree = Some(tree);
     }
 
     /// Resolve a scene's positional input to stable rows before changing tree state.
@@ -1555,6 +1641,24 @@ mod tests {
         assert!(!before.same_model(&replaced));
         assert_eq!(replaced.rows()[0].key, 9);
         assert_eq!(replaced.rows().len(), 1);
+    }
+
+    #[test]
+    fn filtering_projects_the_model_after_reading_the_query() {
+        let model = Rc::new(VecModel::from(vec![(1, -1, "one"), (2, 1, "two")]));
+        let state = TreeState::default();
+        let tree = state.snapshot_filtered(
+            || model.clone(),
+            |row| (row.0, row.1),
+            || -1,
+            || {
+                assert_eq!(model.remove(0), Some((1, -1, "one")));
+                "two".to_owned()
+            },
+            |row| row.2,
+        );
+        assert_eq!(tree.rows().len(), 1);
+        assert_eq!((tree.rows()[0].key, tree.rows()[0].model_index), (2, 0));
     }
 
     #[test]

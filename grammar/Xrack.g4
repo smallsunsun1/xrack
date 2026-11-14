@@ -7,8 +7,9 @@ translationsDecl: 'translations' STRING ';';
 importName: identifier ('as' identifier)?;
 recordDecl: 'export'? 'struct' identifier '{' recordField (',' recordField)* ','? '}';
 recordField: identifier ':' typeName;
-component: 'export'? 'component' identifier 'inherits' identifier '{' member* '}';
-member: property | callback | binding | handler | element | animation | stateBlock;
+component: 'export'? ('component' identifier 'inherits' identifier '{' member* '}'
+                     | 'global' identifier '{' member* '}');
+member: property | callback | binding | handler | element | animation | stateBlock | '@children' ';'?;
 animation: 'animate' identifier (',' identifier)* animationBody;
 animationBody: '{' animationField* '}';
 animationField: ('duration' | identifier) ':' (NUMBER 'ms' | expression) ';';

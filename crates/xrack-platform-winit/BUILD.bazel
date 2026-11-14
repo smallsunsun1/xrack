@@ -5,17 +5,24 @@ rust_library(
     name = "xrack_platform_winit",
     srcs = glob(["src/**/*.rs"]),
     aliases = aliases(),
+    crate_features = select({
+        "//crates/xrack-media:enabled_config": ["media"],
+        "//conditions:default": [],
+    }),
     crate_name = "xrack_platform_winit",
     crate_root = "src/lib.rs",
     edition = "2024",
-    version = "0.5.0",
+    version = "0.5.1",
     visibility = ["//visibility:public"],
     deps = [
         "//crates/xrack-runtime:xrack_runtime",
         "//crates/xrack-assets:xrack_assets",
         "//crates/xrack-layout:xrack_layout",
         "//crates/xrack-renderer-femtovg:xrack_renderer_femtovg",
-    ] + all_crate_deps(normal = True),
+    ] + all_crate_deps(normal = True) + select({
+        "//crates/xrack-media:enabled_config": ["//crates/xrack-media:xrack_media"],
+        "//conditions:default": [],
+    }),
 )
 
 rust_test(

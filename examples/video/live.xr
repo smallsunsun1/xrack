@@ -1,0 +1,9 @@
+import { VideoDemo } from "video.xr";
+
+export component LocalLiveDemo inherits VideoDemo {
+    title: "XRack Local HLS";
+    video-source: "http://127.0.0.1:8785/live.m3u8";
+    start-playing: true;
+    muted: true;
+    network-controls: true;
+}

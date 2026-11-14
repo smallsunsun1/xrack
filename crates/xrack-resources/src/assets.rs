@@ -1,4 +1,7 @@
-use crate::{EmbeddedImage, EmbeddedPath, animated_image::encode_gif_frames};
+use crate::{
+    EmbeddedImage, EmbeddedPath,
+    animated_image::{MAX_DECODED_BYTES, MAX_FRAMES, encode_gif_frames},
+};
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs::File,
@@ -6,10 +9,12 @@ use std::{
     path::{Path, PathBuf},
 };
 use xrack_assets::{
-    ImageFormat, MAX_ASSET_BYTES, image_size, parse_path, vector_bounds, vector_segments,
+    ImageFormat, MAX_ASSET_BYTES, image_size, parse_path, validate_image_size, vector_bounds,
+    vector_segments,
 };
 
 use xrack_mlir::{Module, OperationRef};
+use xrack_runtime::{Image, ImageAsset};
 
 #[derive(Default)]
 pub struct ResolvedAssets {
@@ -50,8 +55,9 @@ pub fn resolve_assets(
             }
             let (path, image) = load_image(base, url, declared.as_ref()).map_err(|error| {
                 let span = op.span();
+                let source = op.source_file().unwrap_or(&filename);
                 format!(
-                    "{filename}:{}:{}: image {url:?}: {error}",
+                    "{source}:{}:{}: image {url:?}: {error}",
                     span.line, span.column
                 )
             })?;
@@ -62,6 +68,7 @@ pub fn resolve_assets(
                 op,
                 &filename,
                 module.has_visual_cache_plan(),
+                &|_| false,
                 &mut assets.paths,
             )?;
         }
@@ -75,8 +82,25 @@ pub fn resolve_assets(
 
 /// Validate literal SVG commands and collect the plans selected by MLIR.
 pub fn collect_vector_paths(module: &Module) -> Result<BTreeMap<String, EmbeddedPath>, String> {
+    collect_missing_vector_paths(module, |_| false)
+}
+
+/// Validate literal SVG commands and prepare missing plans. The supplied plans
+/// are expected to have been validated when they were built.
+pub fn collect_missing_vector_paths(
+    module: &Module,
+    has_plan: impl Fn(&str) -> bool,
+) -> Result<BTreeMap<String, EmbeddedPath>, String> {
     let mut paths = BTreeMap::new();
-    let mut visit = |op| collect_path(op, "<MLIR>", module.has_visual_cache_plan(), &mut paths);
+    let mut visit = |op| {
+        collect_path(
+            op,
+            "<MLIR>",
+            module.has_visual_cache_plan(),
+            &has_plan,
+            &mut paths,
+        )
+    };
     for op in module.operations() {
         walk(op, &mut visit)?;
     }
@@ -87,6 +111,7 @@ fn collect_path(
     op: OperationRef<'_>,
     filename: &str,
     use_visual_plan: bool,
+    has_plan: &impl Fn(&str) -> bool,
     paths: &mut BTreeMap<String, EmbeddedPath>,
 ) -> Result<(), String> {
     if op.name() != "xr.element" || op.attr("kind")? != "Path" {
@@ -105,7 +130,8 @@ fn collect_path(
         };
         let commands: String =
             serde_json::from_str(literal.attr("value")?).map_err(|error| error.to_string())?;
-        if paths.contains_key(&commands) {
+        let planned = use_visual_plan && binding.attribute("xr.precompiled_path") == Some("true");
+        if paths.contains_key(&commands) || planned && has_plan(&commands) {
             continue;
         }
         let path = parse_path(&commands).map_err(|error| {
@@ -116,7 +142,7 @@ fn collect_path(
                 span.line, span.column
             )
         })?;
-        if use_visual_plan && binding.attribute("xr.precompiled_path") == Some("true") {
+        if planned {
             let plan = match path {
                 Some(path) => EmbeddedPath {
                     bounds: vector_bounds(&path),
@@ -213,6 +239,99 @@ fn load_image(
     Ok((path, image))
 }
 
+/// Validate the source bytes and dimensions supplied for code generation.
+pub fn check_image_sources(images: &BTreeMap<String, EmbeddedImage>) -> Result<(), String> {
+    for (url, image) in images {
+        match image {
+            EmbeddedImage::Static {
+                format,
+                size,
+                bytes,
+            } => validate_image(*format, *size, bytes),
+            EmbeddedImage::Animated { size, frames, .. } => validate_animation(
+                *size,
+                frames.iter().map(|(end, png)| (*end, png.as_slice())),
+            ),
+        }
+        .map_err(|error| format!("image {url:?}: {error}"))?;
+    }
+    Ok(())
+}
+
+/// Validate the same constraints for images supplied to the interpreter.
+pub fn check_loaded_image_sources(images: &BTreeMap<String, ImageAsset>) -> Result<(), String> {
+    for (url, image) in images {
+        match image {
+            ImageAsset::Embedded(Image::Empty) => Ok(()),
+            ImageAsset::Embedded(Image::Animated(animation)) => {
+                validate_animation(image.size(), animation.frames())
+            }
+            ImageAsset::Animated(animation) => validate_animation(image.size(), animation.frames()),
+            _ => {
+                let pixels = image
+                    .pixels()
+                    .ok_or_else(|| format!("image {url:?}: no image data"))?;
+                validate_image(pixels.format, pixels.size, pixels.bytes).and_then(|()| {
+                    if pixels.edges.is_some_and(|edges| !edges.fits(pixels.size)) {
+                        return Err("nine-slice edges must leave a nonempty center".into());
+                    }
+                    Ok(())
+                })
+            }
+        }
+        .map_err(|error| format!("image {url:?}: {error}"))?;
+    }
+    Ok(())
+}
+
+fn validate_image(format: ImageFormat, size: [u32; 2], bytes: &[u8]) -> Result<(), String> {
+    if bytes.len() as u64 > MAX_ASSET_BYTES {
+        return Err("image file exceeds 16 MiB".into());
+    }
+    validate_image_size(size)?;
+    let actual = image_size(format, bytes)?;
+    if actual != size {
+        return Err(format!(
+            "declared dimensions {} × {} do not match decoded dimensions {} × {}",
+            size[0], size[1], actual[0], actual[1]
+        ));
+    }
+    Ok(())
+}
+
+fn validate_animation<'a>(
+    size: [u32; 2],
+    frames: impl ExactSizeIterator<Item = (u32, &'a [u8])>,
+) -> Result<(), String> {
+    let [width, height] = validate_image_size(size)?;
+    if frames.len() == 0 {
+        return Err("animation contains no frames".into());
+    }
+    if frames.len() > MAX_FRAMES
+        || frames.len() as u64 * u64::from(width) * u64::from(height) * 4 > MAX_DECODED_BYTES
+    {
+        return Err(format!(
+            "animation exceeds {MAX_FRAMES} frames or 64 MiB of composited pixels"
+        ));
+    }
+    let mut previous_end = 0;
+    let mut encoded_bytes = 0;
+    for (index, (end, png)) in frames.enumerate() {
+        let frame = index + 1;
+        if end <= previous_end {
+            return Err(format!("frame {frame} must end after {previous_end} ms"));
+        }
+        previous_end = end;
+        encoded_bytes += png.len() as u64;
+        if encoded_bytes > MAX_ASSET_BYTES {
+            return Err("animation exceeds 16 MiB of PNG frames".into());
+        }
+        validate_image(ImageFormat::Png, size, png)
+            .map_err(|error| format!("frame {frame}: {error}"))?;
+    }
+    Ok(())
+}
+
 pub(crate) fn declared_paths(
     paths: Option<&[PathBuf]>,
 ) -> Result<Option<BTreeSet<PathBuf>>, String> {
@@ -269,7 +388,18 @@ pub(crate) fn read_asset(path: &Path, kind: &str) -> Result<Vec<u8>, String> {
     Ok(bytes)
 }
 
+/// Validate each supplied font, including any extra fonts added by the host.
+pub fn check_font_sources<'a>(sources: impl IntoIterator<Item = &'a [u8]>) -> Result<(), String> {
+    for (index, bytes) in sources.into_iter().enumerate() {
+        validate_font(bytes).map_err(|error| format!("supplied font {}: {error}", index + 1))?;
+    }
+    Ok(())
+}
+
 fn validate_font(bytes: &[u8]) -> Result<(), String> {
+    if bytes.len() as u64 > MAX_ASSET_BYTES {
+        return Err("font file exceeds 16 MiB".into());
+    }
     let count = ttf_parser::fonts_in_collection(bytes).unwrap_or(1);
     if !(1..=256).contains(&count) {
         return Err("a font file must contain between 1 and 256 faces".into());

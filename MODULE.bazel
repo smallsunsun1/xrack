@@ -1,4 +1,4 @@
-module(name = "xrack", version = "0.5.0")
+module(name = "xrack", version = "0.5.1")
 
 bazel_dep(name = "llvm", version = "0.8.26")
 bazel_dep(name = "rules_rust", version = "0.75.0")
@@ -6,6 +6,14 @@ bazel_dep(name = "rules_rust_bindgen", version = "0.75.0")
 bazel_dep(name = "rules_cc", version = "0.2.27")
 bazel_dep(name = "rules_java", version = "9.3.0")
 bazel_dep(name = "platforms", version = "1.1.0")
+bazel_dep(name = "bazel_skylib", version = "1.9.2")
+bazel_dep(name = "ffmpeg", version = "9.0.1.beta.bcr.6")
+
+single_version_override(
+    module_name = "ffmpeg",
+    patches = ["//bazel:ffmpeg_hls_window.patch"],
+    patch_strip = 1,
+)
 
 register_toolchains("@llvm//toolchain:all")
 
@@ -34,29 +42,45 @@ register_toolchains("//mlir:bindgen_toolchain")
 # Keep the SDK supplied by LLVM and include the frameworks used by desktop apps.
 osx = use_extension("@llvm//extensions:osx.bzl", "osx")
 osx.frameworks(names = [
+    "AVFAudio",
+    "AVFCapture",
+    "AVFCore",
+    "AVFoundation",
+    "AVRouting",
     "AppKit",
     "ApplicationServices",
+    "AudioToolbox",
+    "AudioToolboxCore",
     "Carbon",
     "CFNetwork",
     "CollectionViewCore",
     "ColorSync",
+    "CoreAudio",
+    "CoreAudioTypes",
     "CoreFoundation",
     "CoreGraphics",
     "CoreImage",
+    "CoreMIDI",
+    "CoreMedia",
     "CoreServices",
     "CoreText",
     "CoreVideo",
+    "DiskArbitration",
     "FontServices",
     "Foundation",
+    "IOKit",
+    "IOSurface",
     "ImageIO",
     "Kernel",
     "Metal",
     "OSLog",
+    "OpenGL",
     "QuartzCore",
     "Security",
     "SystemConfiguration",
     "UIFoundation",
     "UniformTypeIdentifiers",
+    "VideoToolbox",
 ])
 
 rust = use_extension("@rules_rust//rust:extensions.bzl", "rust")
@@ -105,9 +129,37 @@ crate.from_cargo(
 use_repo(crate, "crates")
 
 http_file = use_repo_rule("@bazel_tools//tools/build_defs/repo:http.bzl", "http_file")
+http_archive = use_repo_rule("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
+http_archive(
+    name = "miniaudio",
+    urls = ["https://codeload.github.com/mackron/miniaudio/tar.gz/refs/tags/0.11.23"],
+    type = "tar.gz",
+    strip_prefix = "miniaudio-0.11.23",
+    sha256 = "1062155cc5882b55c48cb37f57a4dc783669e83ae0838535c62b206eeb1587a6",
+    build_file_content = 'load("@rules_cc//cc:defs.bzl", "cc_library")\ncc_library(name = "headers", hdrs = ["miniaudio.h"], includes = ["."], visibility = ["//visibility:public"])',
+)
 http_file(
     name = "antlr4_rust_tool",
     urls = ["https://github.com/antlr4rust/antlr4/releases/download/v0.6.0/antlr4-4.13.3-SNAPSHOT-complete.jar"],
     downloaded_file_path = "antlr4-4.13.3-SNAPSHOT-complete.jar",
     sha256 = "391e77311794f7c8fed2bc6d291f54b04725e37456d79e1981edfd3fc919b677",
+)
+
+# Extend the document layer of the pinned upstream LSP without changing LLVM's
+# repository or the dialect's serialized representation.
+mlir_lsp_sources = use_repo_rule("//mlir:lsp_sources.bzl", "mlir_lsp_sources")
+mlir_lsp_sources(
+    name = "xrack_mlir_lsp_upstream",
+    patch = "//mlir:llvm_lsp_document.patch",
+    srcs = [
+        "@llvm-project//mlir:lib/AsmParser/Lexer.h",
+        "@llvm-project//mlir:lib/AsmParser/Token.h",
+        "@llvm-project//mlir:lib/Tools/mlir-lsp-server/LSPServer.cpp",
+        "@llvm-project//mlir:lib/Tools/mlir-lsp-server/LSPServer.h",
+        "@llvm-project//mlir:lib/Tools/mlir-lsp-server/MLIRServer.cpp",
+        "@llvm-project//mlir:lib/Tools/mlir-lsp-server/MLIRServer.h",
+        "@llvm-project//mlir:lib/Tools/mlir-lsp-server/MlirLspServerMain.cpp",
+        "@llvm-project//mlir:lib/Tools/mlir-lsp-server/Protocol.cpp",
+        "@llvm-project//mlir:lib/Tools/mlir-lsp-server/Protocol.h",
+    ],
 )

@@ -1,0 +1,165 @@
+export component LogDemo inherits Window {
+    in-out property <int> count: 0;
+    in-out property <LogLevel> diagnostic-level: LogLevel.debug;
+    in-out property <float> measurement: 2.5;
+    out property <int> rounded: Math.round(root.measurement);
+    out property <int> constant-rounded: Math.round(-2.5);
+    out property <float> pi: Math.pi;
+    callback log(level: LogLevel);
+    log(level) => { Log.write(level, "user callback"); }
+    increment := Button {
+        text: Strings.format("Count {{ {} }}", root.count);
+        clicked => {
+            Log.trace("start");
+            Log.write(root.diagnostic-level, Strings.format("before: {}", root.count));
+            root.count += 1;
+            Log.write(LogLevel.info, Strings.format("after: {}", root.count));
+            Log.warn("warning");
+            Log.error("error");
+            root.log(LogLevel.info);
+        }
+    }
+}
+
+export struct BuiltinRow { label: string }
+
+export component BuiltinDemo inherits Window {
+    in-out property <float> sample: -2.5;
+    in-out property <string> input: "  中文👩‍💻é  ";
+    in-out property <[string]> names: ["one", "two"];
+    in-out property <[BuiltinRow]> rows: [BuiltinRow { label: "one" }];
+    out property <int> round-down: Math.floor(root.sample);
+    out property <int> round-up: Math.ceil(root.sample);
+    out property <float> minimum: Math.min(root.sample, -1);
+    out property <float> maximum: Math.max(root.sample, -1);
+    out property <length> width-limit: Math.clamp(128px, 96px, 16px);
+    out property <int> magnitude: Math.abs(Math.min(-9223372036854775807 - 1, 0));
+    out property <float> percent-magnitude: Math.abs(25%);
+    out property <string> trimmed: Strings.trim(root.input);
+    out property <bool> empty: Strings.is-empty(root.trimmed);
+    out property <bool> matches: Strings.contains(root.trimmed, "👩‍💻") && Strings.starts-with(root.trimmed, "中文");
+    out property <int> characters: Strings.character-count(root.trimmed);
+    pure callback observe-count(value: int) -> int;
+    observe-count(value) => { value }
+    out property <int> name-count: root.observe-count(Model.count(root.names));
+    out property <int> row-count: Model.count(root.rows);
+    out property <string> fixed: Strings.format("{:.2} {:.3} {{{:.0}}}", root.sample, 9007199254740993, 8.25);
+}
+
+export component StandardLibraryDemo inherits Window {
+    in-out property <float> sample: 2;
+    in-out property <string> input: " 42 ";
+    in-out property <int> index: 0;
+    in-out property <[string]> names: ["one", "two"];
+    in-out property <[BuiltinRow]> rows: [BuiltinRow { label: "record" }];
+
+    out property <float> magnitude: Math.sqrt(Math.pow(root.sample, 2) + Math.pow(3, 2));
+    out property <float> trig: Math.sin(Math.to-radians(90)) + Math.cos(0) + Math.tan(0);
+    out property <float> degrees: Math.to-degrees(Math.asin(1) + Math.acos(1) + Math.atan(0) + Math.atan2(1, 0));
+    out property <float> logarithms: Math.log(8, root.sample) + Math.ln(Math.exp(1));
+    out property <float> hypot: Math.hypot(3, 4);
+    out property <float> constants: Math.tau - 2 * Math.pi + Math.ln(Math.e);
+    out property <float> sign: Math.sign(root.sample);
+    out property <int> mod-int: Math.mod(-7, 4);
+    out property <int> mod-zero: Math.mod(-7, 0);
+    out property <length> mod-length: Math.mod(-7px, 4px);
+    out property <bool> finite: Math.is-finite(Math.sqrt(root.sample));
+    out property <string> replaced: Strings.replace-all(Strings.uppercase(Strings.lowercase("ÜberÜber")), "ÜBER", "X");
+    out property <bool> ends: Strings.ends-with("你好", "好");
+    out property <int> parsed-int: Strings.to-int(root.input, -1);
+    out property <float> parsed-float: Strings.to-float(root.input, -1);
+    out property <bool> valid-int: Strings.is-int(root.input);
+    out property <bool> valid-float: Strings.is-float(root.input);
+    out property <color> rgba: Colors.rgba(-1, 128, 256, 50%);
+    out property <color> mixed: Colors.with-alpha(Colors.mix(Colors.rgb(0, 0, 0), #fff, 0.5), 50%);
+    out property <bool> names-empty: Model.is-empty(root.names);
+    out property <BuiltinRow> selected-row: Model.at(root.rows, root.index, BuiltinRow { label: "fallback" });
+    out property <string> selected-label: root.selected-row.label;
+    pure callback missing() -> string;
+    missing => { "missing" }
+    out property <string> selected-name: Model.at(root.names, root.index, root.missing());
+    out property <string> language: I18n.locale();
+}
+
+export component SignedZeroMath inherits Window {
+    pure callback negative() -> float;
+    pure callback positive() -> float;
+    negative => { -0.0 }
+    positive => { 0.0 }
+    out property <float> fixed-minimum: Math.min(0.0, -0.0);
+    out property <float> fixed-maximum: Math.max(-0.0, 0.0);
+    out property <float> fixed-low: Math.clamp(-1.0, 0.0, -0.0);
+    out property <float> fixed-high: Math.clamp(1.0, 0.0, -0.0);
+    out property <float> sampled-minimum: Math.min(root.positive(), root.negative());
+    out property <float> sampled-maximum: Math.max(root.negative(), root.positive());
+    out property <float> sampled-low: Math.clamp(-1.0, root.positive(), root.negative());
+    out property <float> sampled-high: Math.clamp(1.0, root.positive(), root.negative());
+}
+
+export component SignedZeroProperties inherits Window {
+    in-out property <float> number: 0.0;
+    in-out property <length> extent: 0px;
+    in-out property <float> level <=> slider.value;
+    out property <string> display: Strings.format("{} {} {}", root.number, 1px / root.extent, root.level);
+    out property <bool> equal: root.number == root.level && root.extent == 0px;
+    slider := Slider { minimum: -1; maximum: 1; value: 0.0; }
+    Text { text: root.display; }
+}
+
+export component SplitHandleRetry inherits Window {
+    pure callback handle-label(int) -> string;
+    handle-label(index) => { "handle " + index }
+    split := SplitView {
+        SplitHandle {
+            Text { text: root.handle-label(handle-index); }
+        }
+        Rectangle {}
+        Rectangle {}
+        Rectangle {}
+    }
+}
+
+export component ConditionalFillSplit inherits Window {
+    in-out property <bool> show-center: true;
+    in property <string> saved-layout: "";
+    out property <string> layout: split.save-state();
+    callback restore();
+    restore => { split.restore-state(root.saved-layout); }
+    split := SplitView {
+        fill-pane: center;
+        Rectangle {}
+        if root.show-center : center := Rectangle {}
+        Rectangle {}
+    }
+}
+
+export component LocalizedNumberDemo inherits Window {
+    in-out property <string> input: "1,5";
+    in-out property <int> decimals: 2;
+    out property <float> parsed: I18n.parse-number(root.input, -99.0);
+    out property <string> display: I18n.format-number(1234.5, root.decimals);
+    out property <string> large-number: I18n.format-number(9007199254740993, 0);
+    out property <string> round-trip: I18n.format-number(root.parsed, 1);
+}
+
+export component DisplayRepeatCache inherits Window {
+    in-out property <[string]> items: ["B", "A"];
+    pure callback describe(string) -> string;
+    describe(value) => { value }
+    for item[index] in root.items : Text {
+        text: root.describe(item + index);
+    }
+}
+
+export component DateArithmeticDemo inherits Window {
+    in-out property <Date> selected-date: Date { year: 2024, month: 1, day: 31 };
+    in-out property <int> offset: 1;
+
+    pure callback missing-date() -> Date;
+    missing-date => { Date { year: 1970, month: 1, day: 1 } }
+
+    out property <bool> valid-date: Dates.is-valid(root.selected-date);
+    out property <Date> day-result: Dates.add-days(root.selected-date, root.offset, root.missing-date());
+    out property <Date> month-result: Dates.add-months(root.selected-date, root.offset, root.missing-date());
+    out property <int> day-of-week: Dates.weekday(root.selected-date);
+}

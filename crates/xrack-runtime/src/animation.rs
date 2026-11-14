@@ -258,7 +258,7 @@ fn mix(a: f64, b: f64, amount: f64) -> f64 {
     a * (1.0 - amount) + b * amount
 }
 
-fn mix_color(a: Color, b: Color, amount: f64) -> Color {
+pub(crate) fn mix_color(a: Color, b: Color, amount: f64) -> Color {
     let channels = [24, 16, 8, 0].map(|shift| {
         mix(
             f64::from((a.0 >> shift) & 255),

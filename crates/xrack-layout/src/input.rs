@@ -944,6 +944,9 @@ fn hit(
     transitioning_stacks: &BTreeSet<Vec<usize>>,
     purpose: HitPurpose<'_>,
 ) -> Hit {
+    if node.is_control_part() {
+        return Hit::None;
+    }
     let Some(point) = layout.map_from_window(window) else {
         return Hit::None;
     };
@@ -1401,7 +1404,11 @@ fn attached_radio_tab_stop(scene: &Node, path: &[usize], targets: &[Target]) -> 
 
 pub(crate) fn focus_targets(scene: &Node, layout: &LayoutNode, scope: &[usize]) -> Vec<Target> {
     fn collect(node: &Node, layout: &LayoutNode, path: &mut Vec<usize>, out: &mut Vec<Target>) {
-        if !layout.visible || !layout.enabled || node.kind == "CalendarCells" {
+        if !layout.visible
+            || !layout.enabled
+            || node.kind == "CalendarCells"
+            || node.is_control_part()
+        {
             return;
         }
         let clip = layout.clip_rect(layout.bounds);
@@ -4574,7 +4581,7 @@ impl Interaction {
                 Some(*target.path.last()?)
             } else {
                 let item = layout.at_path(path)?;
-                let geometry = SliderGeometry::new(item.bounds, node.orientation());
+                let geometry = SliderGeometry::for_node(item.bounds, node);
                 Some(interval.nearest_handle(geometry.fraction_at(item.map_from_window(point)?)?))
             }
         } else {
@@ -6429,7 +6436,7 @@ impl Interaction {
                 action: RangeAction::SetFraction(geometry.fraction_at(point)?),
             });
         }
-        let geometry = SliderGeometry::new(bounds, node.orientation());
+        let geometry = SliderGeometry::for_node(bounds, node);
         let fraction = geometry.fraction_at(point)?;
         let mut path = path.to_vec();
         let current = if node.kind == "RangeSlider" {
@@ -6491,7 +6498,7 @@ impl Interaction {
                 action: RangeAction::SetFraction(next),
             });
         }
-        let fraction = SliderGeometry::new(bounds, node.orientation()).fraction_at(point)?;
+        let fraction = SliderGeometry::for_node(bounds, node).fraction_at(point)?;
         let mut path = target.path.clone();
         if let Some(anchor) = self.slider_anchor {
             if fraction == anchor {

@@ -113,6 +113,11 @@ impl ColorDraft {
 pub struct ColorPopupState(PickerSession<ColorDraft>);
 
 impl ColorPopupState {
+    #[doc(hidden)]
+    pub fn accepts_input(&self, node: &Node, input: InputRoute<'_>) -> bool {
+        self.0.accepts_input(node, input)
+    }
+
     pub fn close(&self) {
         self.0.close();
     }

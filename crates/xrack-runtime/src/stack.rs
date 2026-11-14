@@ -105,6 +105,26 @@ impl StackSnapshot {
         self.routes.len()
     }
 
+    #[doc(hidden)]
+    pub fn current_page(&self) -> String {
+        self.current().unwrap_or_default().to_owned()
+    }
+
+    #[doc(hidden)]
+    pub fn can_go_back(&self) -> bool {
+        self.depth() > 1
+    }
+
+    #[doc(hidden)]
+    pub fn page_active(&self, route: &str) -> bool {
+        self.current() == Some(route)
+    }
+
+    #[doc(hidden)]
+    pub fn page_index(&self, route: &str) -> i64 {
+        self.index_of(route).map_or(-1, |index| index as i64)
+    }
+
     pub fn revision(&self) -> u64 {
         self.revision
     }

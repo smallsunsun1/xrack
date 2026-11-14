@@ -291,6 +291,16 @@ impl TableSelectionSnapshot {
         self.current_column
     }
 
+    #[doc(hidden)]
+    pub fn current_column_index(&self) -> i64 {
+        self.current_column().map_or(-1, |column| column as i64)
+    }
+
+    #[doc(hidden)]
+    pub fn selection_count(&self) -> i64 {
+        self.len() as i64
+    }
+
     pub fn multiple(&self) -> bool {
         self.multiple
     }

@@ -134,6 +134,8 @@ xrack-runtime = ${dependency('xrack-runtime')}
 xrack-layout = ${dependency('xrack-layout')}
 xrack-renderer-femtovg = ${dependency('xrack-renderer-femtovg')}
 pollster = "1.0"
+tracing = { version = "0.1.44", default-features = false, features = ["std"] }
+tracing-subscriber = { version = "0.3.23", default-features = false, features = ["fmt"] }
 wgpu = { version = "=30.0.0", default-features = false, features = ["std", "wgsl", "metal", "vulkan", "dx12"] }
 `;
 }
@@ -198,6 +200,7 @@ function page(webview, media, filename) {
             <button type="button" id="zoom-in" aria-label="Zoom in" title="Zoom in (Alt + wheel)">+</button>
             <button type="button" id="zoom-fit" title="Fit preview to panel">Fit</button>
         </div>
+        <button type="button" id="inspect" hidden>Inspect</button>
         <span class="status" id="status" data-phase="busy" role="status">Starting preview…</span>
     </div>
 </header>
@@ -205,11 +208,17 @@ function page(webview, media, filename) {
     <summary>Preview diagnostics</summary>
     <pre id="error"></pre>
 </details>
+<details id="scene-tree" class="diagnostics scene-tree" hidden open>
+    <summary>Scene tree</summary>
+    <div id="scene-elements" role="group" aria-label="Preview elements"></div>
+    <pre id="scene-properties"></pre>
+</details>
 <main class="canvas" id="canvas" aria-label="Component preview">
     <div class="waiting" id="waiting">
         <strong>Waiting for the first frame</strong>
         <p>The rendered component appears here once loading completes.</p>
     </div>
+    <div id="inspect-highlight" hidden></div>
     <img id="snapshot" alt="XRack component preview" draggable="false" hidden>
     <button type="button" id="restore-window" class="restore-window" hidden>Restore preview window</button>
     <textarea id="editor" class="preview-editor" aria-label="XRack preview keyboard input" tabindex="-1"></textarea>
@@ -224,6 +233,37 @@ const select = document.getElementById('component');
 const windowPicker = document.getElementById('window-picker');
 const windowSelect = document.getElementById('window');
 const status = document.getElementById('status');
+const inspect = document.getElementById('inspect');
+const sceneTree = document.getElementById('scene-tree');
+const sceneElements = document.getElementById('scene-elements');
+const sceneProperties = document.getElementById('scene-properties');
+const inspectHighlight = document.getElementById('inspect-highlight');
+let inspectedBounds;
+let inspectedFrame;
+function clearInspection() {
+    sceneTree.hidden = true;
+    inspectedBounds = undefined;
+    inspectedFrame = undefined;
+    positionInspection();
+}
+function positionInspection() {
+    if (!inspectedBounds || image.hidden || inspectedFrame !== frame) {
+        inspectHighlight.hidden = true;
+        return;
+    }
+    const [x, y, w, h] = inspectedBounds;
+    const shown = image.getBoundingClientRect();
+    const viewport = canvas.getBoundingClientRect();
+    inspectHighlight.style.left = (shown.left - viewport.left + x * zoom) + 'px';
+    inspectHighlight.style.top = (shown.top - viewport.top + y * zoom) + 'px';
+    inspectHighlight.style.width = (w * zoom) + 'px';
+    inspectHighlight.style.height = (h * zoom) + 'px';
+    inspectHighlight.hidden = w <= 0 || h <= 0 || !sceneTree.open;
+}
+sceneTree.addEventListener('toggle', positionInspection);
+inspect.onclick = () => {
+    if (frame !== undefined) vscode.postMessage({ type: 'inspect', frame });
+};
 const diagnostics = document.getElementById('diagnostics');
 const error = document.getElementById('error');
 const waiting = document.getElementById('waiting');
@@ -357,6 +397,7 @@ function layoutPreview() {
     image.style.transform = 'translate(calc(-50% + ' + offsetX + 'px), calc(-50% + ' + offsetY + 'px))';
     zoomActual.textContent = Math.round(zoom * 100) + '%';
     positionEditor();
+    positionInspection();
 }
 
 function updateZoom(value, anchor) {
@@ -582,6 +623,7 @@ window.addEventListener('message', ({data}) => {
     }
     if (data.components) {
         cancelComposition();
+        clearInspection();
         select.replaceChildren(...data.components.map(name => new Option(name, name)));
         select.value = data.component;
         select.disabled = false;
@@ -589,7 +631,10 @@ window.addEventListener('message', ({data}) => {
     if (data.windows) {
         const windows = data.windows;
         const selectedWindow = String(data.window ?? '');
-        if (windowSelect.value !== selectedWindow) cancelComposition();
+        if (windowSelect.value !== selectedWindow) {
+            cancelComposition();
+            clearInspection();
+        }
         windowPicker.hidden = windows.length < 2;
         if (windows.length !== windowSelect.options.length || windows.some((window, index) => {
             const option = windowSelect.options[index];
@@ -600,6 +645,37 @@ window.addEventListener('message', ({data}) => {
         windowSelect.value = selectedWindow;
     } else if (data.image && !data.dynamic) {
         windowPicker.hidden = true;
+    }
+    if (data.inspection) {
+        inspectedFrame = data.inspectedFrame;
+        sceneTree.hidden = false;
+        sceneTree.open = true;
+        inspectedBounds = undefined;
+        const rows = data.inspection.elements.map(item => {
+            const row = document.createElement('button');
+            row.type = 'button';
+            row.className = 'scene-element';
+            row.style.paddingInlineStart = (8 + 12 * Math.min(10, item.path.length)) + 'px';
+            const id = item.id ? ' #' + item.id : '';
+            const label = item.label ? ' · ' + item.label : '';
+            const state = item.focused ? ' [focused]' : item.enabled ? '' : ' [disabled]';
+            row.textContent = item.kind + id + state + label + ' (' + item.bounds.map(Math.round).join(', ') + ')';
+            row.addEventListener('click', () => {
+                sceneElements.querySelector('.selected')?.classList.remove('selected');
+                row.classList.add('selected');
+                inspectedBounds = item.bounds;
+                positionInspection();
+            });
+            return row;
+        });
+        sceneElements.replaceChildren(...rows);
+        const properties = data.inspection.properties ?? [];
+        sceneProperties.textContent = (data.inspection.truncated ? 'Showing the first 512 elements.\n' : '')
+            + (properties.length ? 'Public properties\n' + properties.map(property =>
+                property.name + ' · ' + property.kind + (property.writable ? ' · writable' : '')
+            ).join('\n') : '');
+        sceneProperties.hidden = !sceneProperties.textContent;
+        positionInspection();
     }
     if (data.windowClosed) {
         cancelComposition();
@@ -615,6 +691,8 @@ window.addEventListener('message', ({data}) => {
         image.hidden = true;
         restoreWindow.hidden = true;
         viewControls.hidden = true;
+        inspect.hidden = true;
+        clearInspection();
         logicalWidth = undefined;
         logicalHeight = undefined;
         waiting.textContent = 'Preview window closed';
@@ -627,6 +705,8 @@ window.addEventListener('message', ({data}) => {
             [logicalWidth, logicalHeight] = data.size ?? [image.naturalWidth, image.naturalHeight];
             frame = data.frame;
             dynamic = Boolean(data.dynamic);
+            inspect.hidden = !dynamic;
+            if (!dynamic) clearInspection();
             treeNavigationEnabled = Boolean(data.treeNavigationEnabled);
             controlNavigationEnabled = Boolean(data.controlNavigationEnabled);
             splitNavigationEnabled = Boolean(data.splitNavigationEnabled);
@@ -668,6 +748,14 @@ watchPixelRatio('ready');
 
 function registerPreview(context) {
     let current;
+    let output;
+    const appendLog = text => {
+        if (!output) {
+            output = vscode.window.createOutputChannel('XRack Preview');
+            context.subscriptions.push(output);
+        }
+        output.append(text);
+    };
     context.subscriptions.push(vscode.commands.registerCommand('xrack.openPreview', async () => {
         const document = vscode.window.activeTextEditor?.document;
         if (document?.languageId !== 'xrack' || document.uri.scheme !== 'file') {
@@ -728,7 +816,7 @@ function registerPreview(context) {
                 const executable = interpreterFor(context, checkout);
                 if (executable) {
                     if (!interpreter?.alive) {
-                        interpreter = new PreviewProcess(executable, undefined, cwd);
+                        interpreter = new PreviewProcess(executable, undefined, cwd, 1, appendLog);
                     }
                     const renderer = interpreter;
                     const requestedScale = scale;
@@ -808,7 +896,7 @@ function registerPreview(context) {
                 }
                 post({ status: 'Rendering preview…', phase: 'busy' });
                 const requestedScale = scale;
-                const renderer = new PreviewProcess(program, selected, cwd, requestedScale);
+                const renderer = new PreviewProcess(program, selected, cwd, requestedScale, appendLog);
                 starting = renderer;
                 try {
                     const rendered = await renderer.frame();
@@ -888,6 +976,7 @@ function registerPreview(context) {
                 || message.type === 'native_dialog_result';
             if ((!ending && queue.busy) || !session || session.closed) return;
             const active = session;
+            if (message.type === 'inspect' && message.frame !== frame) return;
             if (active.windowMinimized && !ending
                 && !['restore_window', 'select_window', 'frame', 'scale'].includes(message.type)) return;
             const inputWindow = active.window;
@@ -945,6 +1034,7 @@ function registerPreview(context) {
                     if (pendingUpdate === move) pendingUpdate = undefined;
                 }
                 if (disposed || session !== active || active.closed) return;
+                if (message.type === 'inspect' && message.frame !== frame) return;
                 if (active.windowMinimized && !ending
                     && !['restore_window', 'select_window', 'frame', 'scale'].includes(message.type)) return;
                 if (active.window !== inputWindow
@@ -982,6 +1072,12 @@ function registerPreview(context) {
                         }
                         if (reply.window_closed) {
                             closePreviewWindow(active);
+                            return;
+                        }
+                        if (reply.inspection) {
+                            if (session === active && !disposed) void panel.webview.postMessage({
+                                inspection: reply.inspection, inspectedFrame: message.frame,
+                            });
                             return;
                         }
                         if (!reply.image) return;
@@ -1049,7 +1145,7 @@ function registerPreview(context) {
                 } else if (message.type === 'select' && typeof message.component === 'string') {
                     component = message.component;
                     queue.refresh(0);
-                } else if (['click', 'wheel', 'edit', 'composition', 'escape', 'pointer', 'delay_key', 'key', 'context_menu', 'hover', 'leave', 'select_window', 'restore_window', 'file_drop'].includes(message.type)) {
+                } else if (['click', 'wheel', 'edit', 'composition', 'escape', 'pointer', 'delay_key', 'key', 'context_menu', 'hover', 'leave', 'select_window', 'restore_window', 'file_drop', 'inspect'].includes(message.type)) {
                     interact(message);
                 }
             }),

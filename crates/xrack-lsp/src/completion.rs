@@ -22,7 +22,7 @@ use xrack_ir::semantic::{
     table_selection_property, table_sort_property, touch_area_property, viewport_kind,
     viewport_offset_property, window_status_property,
 };
-use xrack_parser::ast::Type;
+use xrack_parser::{ast::Type, builtins};
 
 pub(crate) use imports::{Workspace, document_links, file_path, import_definition};
 pub(crate) use symbols::{legend, query, signature_help};
@@ -34,6 +34,7 @@ const FUNCTION: u32 = 3;
 const KEYWORD: u32 = 14;
 const PROPERTY: u32 = 10;
 const VARIABLE: u32 = 6;
+const ENUM: u32 = 13;
 const ENUM_MEMBER: u32 = 20;
 const STRUCT: u32 = 22;
 
@@ -303,6 +304,36 @@ impl<'a> Index<'a> {
         })
     }
 
+    fn builtin_namespace_visible(&self, scope: usize, namespace: &str) -> bool {
+        self.named_element(scope, namespace).is_none()
+            && !self.ancestors(scope).any(|id| {
+                self.scopes[id]
+                    .members
+                    .iter()
+                    .any(|member| member.kind == VARIABLE && member.name == namespace)
+            })
+    }
+
+    fn builtin_receiver(
+        &self,
+        scope: usize,
+        tokens: &[&Token<'_>],
+        member: usize,
+    ) -> Option<&'static str> {
+        let receiver = member.checked_sub(2)?;
+        let namespace = tokens.get(receiver)?.text;
+        if tokens[member - 1].text != "."
+            || (receiver > 0 && tokens[receiver - 1].text == ".")
+            || !self.builtin_namespace_visible(scope, namespace)
+        {
+            return None;
+        }
+        builtins::NAMESPACES
+            .iter()
+            .copied()
+            .find(|name| *name == namespace)
+    }
+
     fn declared_component(&self, name: &str) -> Option<usize> {
         self.scopes
             .iter()
@@ -432,9 +463,9 @@ fn role<'a>(head: &[&Token<'a>], top_level: bool) -> Role<'a> {
                 name: head.get(1).map_or("", |t| t.text),
                 exported,
             },
-            "component" => Role::Component {
+            "component" | "global" => Role::Component {
                 name: head.get(1).map_or("", |t| t.text),
-                base: last,
+                base: if first == "global" { "global" } else { last },
                 exported,
             },
             _ => Role::Block,
@@ -662,16 +693,25 @@ impl<'a> Items<'a> {
         }
     }
 
+    fn special_forms(&mut self) {
+        for function in catalog::FUNCTIONS {
+            if function.name.starts_with(self.prefix) {
+                self.add(function.name, FUNCTION, &function.signature());
+            }
+        }
+    }
+
     fn elements(&mut self, index: &Index<'a>) {
         self.import_kind = Some(CLASS);
-        for kind in catalog::ELEMENTS
-            .split_ascii_whitespace()
-            .filter(|kind| is_builtin(kind))
-        {
+        for kind in catalog::ELEMENTS.split_ascii_whitespace().filter(|kind| {
+            is_builtin(kind) && xrack_ir::semantic::control_part_parent(kind).is_none()
+        }) {
             self.add(kind, CLASS, "built-in element");
         }
         for scope in &index.scopes {
-            if let Role::Component { name, .. } = scope.role {
+            if let Role::Component { name, base, .. } = scope.role
+                && base != "global"
+            {
                 self.add(name, CLASS, "component");
             }
         }
@@ -760,6 +800,28 @@ pub(crate) fn complete_with_imports(
         .iter()
         .rposition(|t| matches!(t.text, "{" | "}" | ";"))
         .map_or(0, |i| i + 1)..];
+    if !matches!(prior.last().map(|token| token.text), Some(".")) {
+        let expected = symbols::active_calls(prior.iter().copied())
+            .find_map(|(callee, active)| {
+                // Parentheses around an argument do not introduce a call.
+                if !name(prior[callee].text) {
+                    return None;
+                }
+                Some(
+                    index
+                        .builtin_receiver(scope, prior, callee)
+                        .and_then(|receiver| builtins::function(receiver, prior[callee].text))
+                        .and_then(|function| function.parameters.get(active))
+                        .and_then(|parameter| parameter.expected),
+                )
+            })
+            .flatten();
+        if let Some(ty) = expected.filter(|ty| !ty.enum_variants().is_empty())
+            && let Ok(Value::String(name)) = serde_json::to_value(ty)
+        {
+            items.add(&name, ENUM, "expected enum");
+        }
+    }
     suggest(&index, scope, head, &mut items);
     if let Some(kind) = items
         .import_kind
@@ -869,11 +931,20 @@ pub(crate) fn import_fixes(
 }
 
 fn suggest<'a>(index: &Index<'a>, scope: usize, head: &[&Token<'a>], items: &mut Items<'a>) {
+    let role = index.scopes[scope].role;
     if items.prefix.starts_with('@') {
-        items.words(catalog::FUNCTIONS, FUNCTION, "built-in function");
+        if head.is_empty()
+            && matches!(role, Role::Component { .. } | Role::Element { .. })
+            && !index
+                .ancestors(scope)
+                .any(|ancestor| !index.scopes[ancestor].repeat_model.is_empty())
+        {
+            items.add("@children", KEYWORD, catalog::CHILDREN_DOC);
+        } else {
+            items.special_forms();
+        }
         return;
     }
-    let role = index.scopes[scope].role;
     let head = if matches!(role, Role::Record { .. } | Role::RecordValue(_)) {
         &head[head
             .iter()
@@ -1045,7 +1116,29 @@ fn suggest<'a>(index: &Index<'a>, scope: usize, head: &[&Token<'a>], items: &mut
             }
         }
         items.words("root self true false", KEYWORD, "XRack expression");
-        items.words(catalog::FUNCTIONS, FUNCTION, "built-in function");
+        items.special_forms();
+        for scope in &index.scopes {
+            if let Role::Component {
+                name,
+                base: "global",
+                ..
+            } = scope.role
+            {
+                items.add(name, VARIABLE, "shared global");
+            }
+        }
+        for namespace in builtins::NAMESPACES {
+            let statements_allowed = matches!(role, Role::Handler) && head.is_empty();
+            let has_member = builtins::FUNCTIONS.iter().any(|function| {
+                function.namespace == *namespace
+                    && (statements_allowed || function.result.is_some())
+            }) || builtins::CONSTANTS
+                .iter()
+                .any(|constant| constant.namespace == *namespace);
+            if has_member && index.builtin_namespace_visible(scope, namespace) {
+                items.add(namespace, CLASS, "built-in namespace");
+            }
+        }
         return;
     }
     if let Role::RecordValue(record) = role {
@@ -1057,8 +1150,9 @@ fn suggest<'a>(index: &Index<'a>, scope: usize, head: &[&Token<'a>], items: &mut
     if !kind.is_empty() {
         let animation = first == "animate";
         for property in catalog::PROPERTIES.split_ascii_whitespace() {
-            if matches!(property, "content-x" | "content-y")
-                && (animation || !viewport_offset_property(kind, property))
+            if kind == "MediaPlayer" && xrack_ir::semantic::media_read_type(property).is_some()
+                || matches!(property, "content-x" | "content-y")
+                    && (animation || !viewport_offset_property(kind, property))
                 || focus_property(kind, property)
                 || hover_property(kind, property).is_some()
                 || touch_area_property(kind, property).is_some()
@@ -1122,7 +1216,10 @@ fn suggest<'a>(index: &Index<'a>, scope: usize, head: &[&Token<'a>], items: &mut
                     "(string) → { accepted, value }",
                 );
             }
-            if matches!(kind, "Button" | "ToolButton" | "RoundButton" | "MenuItem") {
+            if matches!(
+                kind,
+                "Button" | "ToolButton" | "RoundButton" | "MenuItem" | "ItemDelegate"
+            ) {
                 items.add("action", PROPERTY, "Action id");
             }
             if kind == "Action" {
@@ -1162,8 +1259,16 @@ fn suggest<'a>(index: &Index<'a>, scope: usize, head: &[&Token<'a>], items: &mut
             }
             if instance {
                 items.add("states", KEYWORD, "conditional component inputs and layout");
+                items.elements(index);
                 return;
             }
+            if kind == "Button" {
+                items.add("ButtonContent", CLASS, "replacement button content");
+            }
+            if kind == "Slider" {
+                items.add("SliderHandle", CLASS, "replacement slider handle");
+            }
+            items.add("@children", KEYWORD, catalog::CHILDREN_DOC);
             for event in catalog::EVENTS
                 .split_ascii_whitespace()
                 .filter(|event| builtin_event(kind, event))
@@ -1239,6 +1344,39 @@ fn qualified<'a>(index: &Index<'a>, scope: usize, head: &[&Token<'a>], items: &m
     let Some(first) = receiver.pop() else {
         return;
     };
+    if let Some(global) = index.declared_component(first)
+        && matches!(
+            index.scopes[global].role,
+            Role::Component { base: "global", .. }
+        )
+        && receiver.is_empty()
+    {
+        for member in index.members(global, true) {
+            items.member(member);
+        }
+        return;
+    }
+    if receiver.is_empty()
+        && builtins::NAMESPACES.contains(&first)
+        && index.builtin_namespace_visible(scope, first)
+    {
+        let statement = matches!(index.scopes[scope].role, Role::Handler) && head.len() == 2;
+        for function in builtins::FUNCTIONS
+            .iter()
+            .filter(|function| function.namespace == first)
+        {
+            if function.result.is_some() || statement {
+                items.add(function.member, FUNCTION, &function.signature());
+            }
+        }
+        for constant in builtins::CONSTANTS
+            .iter()
+            .filter(|constant| constant.namespace == first)
+        {
+            items.add(constant.member, FIELD, "float constant");
+        }
+        return;
+    }
     if receiver.is_empty()
         && let Some(ty) = Type::parse(first)
     {
@@ -1425,6 +1563,39 @@ fn qualified<'a>(index: &Index<'a>, scope: usize, head: &[&Token<'a>], items: &m
             Role::Element { kind, .. } | Role::Component { base: kind, .. } => kind,
             _ => "",
         };
+        if kind == "MediaPlayer" {
+            for property in [
+                "position",
+                "duration",
+                "playing",
+                "ready",
+                "ended",
+                "error",
+                "status",
+                "seekable",
+                "live",
+                "seek-start",
+                "seek-end",
+                "at-live-edge",
+                "has-audio",
+                "has-video",
+                "audio-tracks",
+                "subtitle-tracks",
+                "media-title",
+                "subtitle",
+                "audio-error",
+                "subtitle-error",
+                "buffer-progress",
+                "bitrate",
+            ] {
+                if let Some(ty) = xrack_ir::semantic::media_read_type(property) {
+                    items.add(property, PROPERTY, &format!("read-only {}", ty.name()));
+                }
+            }
+            for method in catalog::MEDIA_METHODS {
+                items.add(method.name, FUNCTION, &method.signature());
+            }
+        }
         if matches!(kind, "ScrollBar" | "ScrollIndicator") {
             items.words(
                 "position size",

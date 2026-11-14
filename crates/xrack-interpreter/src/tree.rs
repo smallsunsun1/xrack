@@ -55,8 +55,6 @@ impl Instance {
             Model::Records(records) => Ok(records),
             _ => Err(Error::Invalid("tree requires a record model".into())),
         };
-        let source = records()?;
-        let model = Rc::new(source.model().clone());
         let key = definition.key.clone();
         let parent = definition.parent.clone();
         let roles = move |record: &RecordValue| (integer(record, &key), integer(record, &parent));
@@ -66,24 +64,20 @@ impl Instance {
         };
         let state = self.repeat_state(view);
         let tree = state.tree_state();
-        let snapshot = if view.visible_field.is_some() || definition.filter_field.is_some() {
-            tree.try_snapshot_projected_by(
-                model,
-                roles,
-                root,
-                view.visible_field.clone().map(|path| {
-                    move |record: &RecordValue| record.field_path(&path) == Some(&Value::Bool(true))
-                }),
-                definition.filter_field.clone().map(filter_field),
-                || match self.binding_value(view, "filter-text")? {
-                    Some(Value::String(query)) => Ok(query),
-                    _ => Ok(String::new()),
-                },
-            )?
-        } else {
-            tree.try_snapshot_with_root(model, roles, root)?
-        };
-        Ok((snapshot, source))
+        tree.try_project_model(
+            records,
+            xrack_runtime::RecordList::model,
+            roles,
+            root,
+            view.visible_field.clone().map(|path| {
+                move |record: &RecordValue| record.field_path(&path) == Some(&Value::Bool(true))
+            }),
+            definition.filter_field.clone().map(filter_field),
+            || match self.binding_value(view, "filter-text")? {
+                Some(Value::String(query)) => Ok(query),
+                _ => Ok(String::new()),
+            },
+        )
     }
 
     pub(crate) fn tree_query(&self, target: &str, query: Query, key: i64) -> Result<Value> {
@@ -96,37 +90,34 @@ impl Instance {
         })
     }
 
-    fn tree_owner(&self, id: &str) -> Result<(Self, &Element)> {
-        let (owner, view) = self.element_owner(id)?;
-        if view.tree.is_none() {
-            return Err(Error::Invalid(format!("{id} is not a TreeView")));
-        }
-        Ok((owner, view))
-    }
-
     /// Read the current visible tree and expansion state of a view.
     pub fn tree_snapshot(&self, id: &str) -> Result<Arc<TreeSnapshot>> {
-        let (owner, view) = self.tree_owner(id)?;
-        owner.tree_projection(view).map(|(tree, _)| tree)
+        let view = self.host_element(id, |view| view.tree.is_some())?;
+        self.tree_projection(view).map(|(tree, _)| tree)
     }
 
     /// Apply a host expansion command using the same path as a DSL command.
     pub fn command_tree(&mut self, id: &str, command: TreeCommand) -> Result<bool> {
-        self.tree_command(id, command)
+        let view = self.host_element(id, |view| view.tree.is_some())?;
+        self.tree_command_for(view, command)
     }
 
     pub(crate) fn tree_command(&self, target: &str, command: TreeCommand) -> Result<bool> {
-        let (owner, view) = self.tree_owner(target)?;
-        let state = owner.repeat_state(view);
+        let (owner, view) = self.element_owner(target)?;
+        owner.tree_command_for(view, command)
+    }
+
+    fn tree_command_for(&self, view: &Element, command: TreeCommand) -> Result<bool> {
+        let state = self.repeat_state(view);
         let Some((change, current)) = state.tree_state().try_apply_command(
             command,
-            || owner.tree_projection(view).map(|(tree, _)| tree),
-            || owner.current_tree_key(view),
+            || self.tree_projection(view).map(|(tree, _)| tree),
+            || self.current_tree_key(view),
         )?
         else {
             return Ok(false);
         };
-        owner.notify_tree_change(view, TreeControlChange::Expansion { change, current })
+        self.notify_tree_change(view, TreeControlChange::Expansion { change, current })
     }
 
     fn current_tree_key(&self, view: &Element) -> Result<i64> {
@@ -175,7 +166,7 @@ impl Instance {
         let change = state.tree_state().try_apply_control(
             node,
             input,
-            || self.element_allows_editing(view),
+            || self.element_allows_routed_input(view, input),
             || self.table_flag(view, "multi-select", false),
             || self.tree_projection(view).map(|(live, _)| live),
             || self.current_tree_key(view),

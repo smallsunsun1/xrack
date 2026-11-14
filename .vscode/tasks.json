@@ -23,6 +23,13 @@
       "problemMatcher": []
     },
     {
+      "label": "Bazel: Build XRack MLIR LSP",
+      "type": "process",
+      "command": "bazel",
+      "args": ["build", "//mlir:xrack-mlir-lsp-server"],
+      "problemMatcher": []
+    },
+    {
       "label": "Bazel: Build Counter",
       "type": "process",
       "command": "bazel",

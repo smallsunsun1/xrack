@@ -52,7 +52,10 @@ impl Default for ImageAsset {
 
 impl From<Image> for ImageAsset {
     fn from(image: Image) -> Self {
-        Self::Embedded(image)
+        match image {
+            Image::Loaded(image) => Self::Loaded(image),
+            embedded => Self::Embedded(embedded),
+        }
     }
 }
 
@@ -84,6 +87,18 @@ impl LoadedImage {
             }),
             edges: None,
         }
+    }
+
+    pub fn size(&self) -> [u32; 2] {
+        self.source.size
+    }
+
+    pub(crate) fn with_nine_slice(mut self, edges: NineSlice) -> Result<Self, InvalidNineSlice> {
+        if !edges.fits(self.source.size) {
+            return Err(InvalidNineSlice);
+        }
+        self.edges = Some(edges);
+        Ok(self)
     }
 
     pub(crate) fn bytes(&self) -> &[u8] {
@@ -132,6 +147,11 @@ impl LoadedAnimation {
             plays,
         }
     }
+
+    #[doc(hidden)]
+    pub fn frames(&self) -> impl ExactSizeIterator<Item = (u32, &[u8])> {
+        self.frames.iter().map(|(end, frame)| (*end, frame.bytes()))
+    }
 }
 
 /// Identity for a cache entry. Loaded assets can outlive their original scene
@@ -169,7 +189,7 @@ impl ImageAsset {
 
     pub fn frame(&self, index: usize) -> Self {
         match self {
-            Self::Embedded(image) => image.frame(index).into(),
+            Self::Embedded(image) => image.clone().frame(index).into(),
             Self::Loaded(_) => self.clone(),
             Self::Animated(animation) => animation
                 .frames
@@ -182,10 +202,7 @@ impl ImageAsset {
     pub fn with_nine_slice(self, edges: NineSlice) -> Result<Self, InvalidNineSlice> {
         match self {
             Self::Embedded(image) => image.with_nine_slice(edges).map(Self::Embedded),
-            Self::Loaded(mut image) if edges.fits(image.source.size) => {
-                image.edges = Some(edges);
-                Ok(Self::Loaded(image))
-            }
+            Self::Loaded(image) => image.with_nine_slice(edges).map(Self::Loaded),
             _ => Err(InvalidNineSlice),
         }
     }

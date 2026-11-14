@@ -313,6 +313,20 @@ impl TableRowPositions {
         self.source_index(visual)
     }
 
+    /// Resolve a position in a captured scene. An unprojected list uses its
+    /// source index directly and still validates the row key before delivery.
+    #[doc(hidden)]
+    pub fn event_source_index_in(
+        positions: Option<&Self>,
+        view: &crate::Node,
+        visual: usize,
+    ) -> Option<usize> {
+        match positions {
+            Some(positions) => positions.event_source_index(view.standard_list_stamp, visual),
+            None => Some(visual),
+        }
+    }
+
     pub fn visual_index(&self, source: usize) -> Option<usize> {
         match &self.order {
             Some(order) => order
@@ -889,6 +903,75 @@ pub fn try_table_cell_edit_target<M: ListModel + Clone, A, E>(
     rows: impl Fn() -> Result<Option<TableRows<M>>, E>,
     prepare: impl FnOnce() -> Result<Option<A>, E>,
 ) -> Result<Option<(TableCellEditTarget<M>, A)>, E> {
+    try_table_cell_edit_target_with(view, slot, rows, |_, _| prepare())
+}
+
+type ModelCellEdit<T, A> = (TableCellEditTarget<VecModel<T>>, A);
+
+#[doc(hidden)]
+pub fn table_cell_edit_target_matching<T: Clone + PartialEq, A>(
+    view: &Node,
+    slot: usize,
+    rows: impl Fn() -> Option<TableRows<VecModel<T>>>,
+    matches: impl Fn(&T) -> bool,
+    available: impl FnOnce() -> bool,
+    prepare: impl FnOnce() -> Option<A>,
+) -> Option<ModelCellEdit<T, A>> {
+    try_table_cell_edit_target_matching(
+        view,
+        slot,
+        || Ok::<_, std::convert::Infallible>(rows()),
+        matches,
+        || Ok(available()),
+        || Ok(prepare()),
+    )
+    .unwrap_or_else(|error| match error {})
+}
+
+/// Recheck the edited field after permissions and preparation are evaluated.
+#[doc(hidden)]
+pub fn try_table_cell_edit_target_matching<T: Clone + PartialEq, A, E>(
+    view: &Node,
+    slot: usize,
+    rows: impl Fn() -> Result<Option<TableRows<VecModel<T>>>, E>,
+    matches: impl Fn(&T) -> bool,
+    available: impl FnOnce() -> Result<bool, E>,
+    prepare: impl FnOnce() -> Result<Option<A>, E>,
+) -> Result<Option<ModelCellEdit<T, A>>, E> {
+    let matches = |target: &TableCellEditTarget<VecModel<T>>| {
+        target
+            .rows
+            .source()
+            .row_matches(target.index, target.key, &matches)
+    };
+    let edit = try_table_cell_edit_target_with(view, slot, rows, |target, current| {
+        prepare_matching_table_edit(target, current, &matches, available, prepare)
+    })?;
+    Ok(edit.filter(|(target, _)| matches(target)))
+}
+
+pub(crate) fn prepare_matching_table_edit<T, A, E>(
+    target: &T,
+    current: impl FnOnce() -> Result<Option<T>, E>,
+    matches: impl Fn(&T) -> bool,
+    available: impl FnOnce() -> Result<bool, E>,
+    prepare: impl FnOnce() -> Result<Option<A>, E>,
+) -> Result<Option<A>, E> {
+    if !matches(target) || !available()? || !current()?.as_ref().is_some_and(matches) {
+        return Ok(None);
+    }
+    prepare()
+}
+
+fn try_table_cell_edit_target_with<M: ListModel + Clone, A, E>(
+    view: &Node,
+    slot: usize,
+    rows: impl Fn() -> Result<Option<TableRows<M>>, E>,
+    prepare: impl FnOnce(
+        &TableCellEditTarget<M>,
+        &dyn Fn() -> Result<Option<TableCellEditTarget<M>>, E>,
+    ) -> Result<Option<A>, E>,
+) -> Result<Option<(TableCellEditTarget<M>, A)>, E> {
     let Some(stamp) = view.standard_list_stamp else {
         return Ok(None);
     };
@@ -899,7 +982,7 @@ pub fn try_table_cell_edit_target<M: ListModel + Clone, A, E>(
         return Ok(None);
     };
 
-    try_prepare_table_edit(
+    try_prepare_table_write(
         || {
             let Some(rows) = rows()? else {
                 return Ok(None);
@@ -915,14 +998,8 @@ pub fn try_table_cell_edit_target<M: ListModel + Clone, A, E>(
             Ok(Some(TableCellEditTarget { rows, index, key }))
         },
         prepare,
+        TableCellEditTarget::edit_key,
     )
-}
-
-pub(crate) fn try_prepare_table_edit<M: Clone, A, E>(
-    resolve: impl Fn() -> Result<Option<TableCellEditTarget<M>>, E>,
-    prepare: impl FnOnce() -> Result<Option<A>, E>,
-) -> Result<Option<(TableCellEditTarget<M>, A)>, E> {
-    try_prepare_table_write(resolve, prepare, TableCellEditTarget::edit_key)
 }
 
 /// Resolve the model represented by a scene before and after checking history availability.
@@ -948,7 +1025,7 @@ pub fn try_prepare_history_replay<M: ListModel, E>(
                 displayed_model.is_none_or(|model| source.structure_stamp().0 == model)
             }))
         },
-        || Ok(enabled()?.then_some(())),
+        |_, _| Ok(enabled()?.then_some(())),
         |source| source.structure_stamp().0,
     )?;
     Ok(target.map(|(source, ())| source))
@@ -956,20 +1033,20 @@ pub fn try_prepare_history_replay<M: ListModel, E>(
 
 pub(crate) fn try_prepare_table_write<T: Clone, A, E, K: PartialEq>(
     resolve: impl Fn() -> Result<Option<T>, E>,
-    prepare: impl FnOnce() -> Result<Option<A>, E>,
+    prepare: impl FnOnce(&T, &dyn Fn() -> Result<Option<T>, E>) -> Result<Option<A>, E>,
     key: impl Fn(&T) -> K,
 ) -> Result<Option<(T, A)>, E> {
     let target = Property::default();
     let read = || target.try_get(&resolve);
-    let Some(before) = read()?.as_ref().map(&key) else {
+    let Some(target_before) = read()? else {
         return Ok(None);
     };
-    let Some(prepared) = prepare()? else {
+    let before = key(&target_before);
+    let current = || Ok(read()?.filter(|after| key(after) == before));
+    let Some(prepared) = prepare(&target_before, &current)? else {
         return Ok(None);
     };
-    Ok(read()?
-        .filter(|after| key(after) == before)
-        .map(|target| (target, prepared)))
+    Ok(current()?.map(|target| (target, prepared)))
 }
 
 impl<M> TableRows<M> {

@@ -35,6 +35,15 @@ impl ListModel for Model {
         }
     }
 
+    fn track_item(&self, row: usize) {
+        match self {
+            Self::Count(count) => count.track_item(row),
+            Self::Strings(rows) => rows.track_item(row),
+            Self::Records(records) => records.model().track_item(row),
+            Self::Touches(points) => points.track_item(row),
+        }
+    }
+
     fn row_key(&self, row: usize) -> RowKey {
         match self {
             Self::Count(count) => count.row_key(row),
@@ -229,7 +238,7 @@ impl RepeatState {
                 let owner = Rc::downgrade(&owner.0);
                 let key = view.key.clone();
                 ListRowRenderer::with_columns(move |range, columns| {
-                    let Some(owner) = owner.upgrade().map(Instance) else {
+                    let Some(owner) = owner.upgrade().map(Instance::from_state) else {
                         return Vec::new();
                     };
                     let Some(view) = owner.definition().root.find_key(&key) else {
@@ -337,6 +346,17 @@ impl ViewModel {
 }
 
 impl Instance {
+    pub(crate) fn host_element(
+        &self,
+        id: &str,
+        matches_view: impl Fn(&Element) -> bool,
+    ) -> Result<&Element> {
+        self.definition()
+            .root
+            .find_host_element(id, &matches_view)
+            .ok_or_else(|| Error::Invalid(format!("unknown view {id}")))
+    }
+
     pub(crate) fn view_source_model(&self, view: &Element) -> Result<Option<Model>> {
         view.view_source()
             .map(|(element, expression)| self.repeat_state(element).model(self, expression))
@@ -475,17 +495,7 @@ impl Instance {
 
     fn render_tree_view(&self, view: &Element, node: &mut Node) -> Result<()> {
         let (tree, records) = self.tree_projection(view)?;
-        node.list = Some(ListMetrics {
-            row_count: tree.rows().len(),
-            first_row: 0,
-        });
-        node.properties
-            .entry("current-key")
-            .or_insert(Value::Int(-1));
         let state = self.repeat_state(view);
-        if node.boolean("multi-select", false) {
-            node.tree_selection = Some(state.tree_state().selection());
-        }
         if let Some(path) = &view.height_field {
             let path = path.clone();
             node.row_heights = state.row_heights.tree_snapshot(
@@ -498,7 +508,7 @@ impl Instance {
                 },
             );
         }
-        node.tree = Some(tree);
+        state.tree_state().populate_scene(node, tree);
         node.list_row_renderer = Some(state.renderer(self, view));
         Ok(())
     }
@@ -590,5 +600,13 @@ impl Element {
             return Some(self);
         }
         self.owned_children().find_map(|child| child.find_key(key))
+    }
+
+    fn find_host_element(&self, id: &str, matches_view: &impl Fn(&Self) -> bool) -> Option<&Self> {
+        if xrack_mlir::host_element_id(&self.key, &self.id) == Some(id) && matches_view(self) {
+            return Some(self);
+        }
+        self.owned_children()
+            .find_map(|child| child.find_host_element(id, matches_view))
     }
 }

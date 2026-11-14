@@ -1,5 +1,5 @@
 use crate::{
-    ControlAction, Node, Value, combo_editable, decimal_separator, is_text_input,
+    ControlAction, InputRoute, Node, Value, combo_editable, decimal_separator, is_text_input,
     search_suggestion, spin_text_is_valid, text_input_value,
 };
 use unicode_segmentation::UnicodeSegmentation;
@@ -224,6 +224,43 @@ impl Node {
             && !self.boolean("read-only", false)
             && text_input_value(self) != text
             && self.allows_text_edit(text)
+    }
+
+    /// Reject an edit based on text replaced since the scene was prepared.
+    #[doc(hidden)]
+    pub fn try_prepare_text_edit<E>(
+        &self,
+        input: InputRoute<'_>,
+        editable: impl FnOnce() -> Result<bool, E>,
+        current: impl FnOnce() -> Result<String, E>,
+        validate: impl FnOnce() -> Result<bool, E>,
+    ) -> Result<bool, E> {
+        if !input.try_available(editable)? {
+            return Ok(false);
+        }
+        // Keep the draft read in the route's watch, outside its availability
+        // watch. A linked table write checks its own field after reading history.
+        if current()? != text_input_value(self) {
+            return Ok(false);
+        }
+        input.try_available(validate)
+    }
+
+    #[doc(hidden)]
+    pub fn prepare_text_edit(
+        &self,
+        input: InputRoute<'_>,
+        editable: impl FnOnce() -> bool,
+        current: impl FnOnce() -> String,
+        validate: impl FnOnce() -> bool,
+    ) -> bool {
+        self.try_prepare_text_edit(
+            input,
+            || Ok::<_, std::convert::Infallible>(editable()),
+            || Ok(current()),
+            || Ok(validate()),
+        )
+        .unwrap_or_else(|error| match error {})
     }
 
     /// Check whether the current value can be submitted by an editor.

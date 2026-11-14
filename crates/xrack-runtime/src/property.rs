@@ -6,9 +6,23 @@ use std::{
 };
 
 thread_local! {
+    static INPUT_PATHS: RefCell<Vec<InputPath>> = const { RefCell::new(Vec::new()) };
     static EVALUATING: RefCell<EvaluationContext> = const {
         RefCell::new(EvaluationContext { binding: None, watches: Vec::new() })
     };
+}
+
+#[derive(Default)]
+struct InputPath {
+    root_overrides: Vec<Weak<DependencyNode>>,
+    availability: Option<Rc<ReadWatch>>,
+    states: Vec<InputState>,
+}
+
+struct InputState {
+    component: Weak<DependencyNode>,
+    selector: Box<str>,
+    selected: i64,
 }
 
 struct EvaluationContext {
@@ -50,12 +64,23 @@ impl ReadWatch {
         }
     }
 
+    fn invalidate(&self, source: *const DependencyNode) {
+        if self.sources.borrow().contains_key(&source) {
+            self.changed.set(true);
+        }
+    }
+
     pub(crate) fn changed(&self) -> bool {
         self.changed.get()
     }
 }
 
 pub(crate) fn watch_reads<T>(operation: impl FnOnce(&ReadWatch) -> T) -> T {
+    let watch = Rc::new(ReadWatch::default());
+    with_read_watch(&watch, || operation(&watch))
+}
+
+fn with_read_watch<T>(watch: &Rc<ReadWatch>, operation: impl FnOnce() -> T) -> T {
     struct Scope;
     impl Drop for Scope {
         fn drop(&mut self) {
@@ -63,10 +88,59 @@ pub(crate) fn watch_reads<T>(operation: impl FnOnce(&ReadWatch) -> T) -> T {
         }
     }
 
-    let watch = Rc::new(ReadWatch::default());
     EVALUATING.with(|context| context.borrow_mut().watches.push(watch.clone()));
     let _scope = Scope;
-    operation(&watch)
+    operation()
+}
+
+/// Synchronize a delegate's cached row without making the input depend on the whole row.
+pub(crate) fn without_read_watches<T>(operation: impl FnOnce() -> T) -> T {
+    struct Restore(Vec<Rc<ReadWatch>>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            EVALUATING.with(|context| context.borrow_mut().watches = std::mem::take(&mut self.0));
+        }
+    }
+    let _restore =
+        Restore(EVALUATING.with(|context| std::mem::take(&mut context.borrow_mut().watches)));
+    operation()
+}
+
+pub(crate) fn with_input_path<T>(operation: impl FnOnce() -> T) -> T {
+    struct Scope;
+    impl Drop for Scope {
+        fn drop(&mut self) {
+            INPUT_PATHS.with(|paths| paths.borrow_mut().pop());
+        }
+    }
+
+    INPUT_PATHS.with(|paths| paths.borrow_mut().push(InputPath::default()));
+    let _scope = Scope;
+    operation()
+}
+
+pub(crate) fn track_input_availability<T>(check: impl FnOnce() -> T) -> T {
+    let watch = INPUT_PATHS.with(|paths| {
+        paths
+            .borrow_mut()
+            .last_mut()
+            .map(|path| path.availability.get_or_insert_with(Rc::default).clone())
+    });
+    match watch {
+        Some(watch) => with_read_watch(&watch, check),
+        None => check(),
+    }
+}
+
+/// Linked row writes revalidate availability while checking individual field conflicts separately.
+pub(crate) fn input_path_is_current() -> bool {
+    INPUT_PATHS.with(|paths| {
+        paths
+            .borrow()
+            .last()
+            .and_then(|path| path.availability.as_ref())
+            .is_none_or(|watch| !watch.changed())
+    })
 }
 
 #[derive(Default)]
@@ -126,10 +200,15 @@ impl DependencyNode {
         EVALUATING.with(|context| {
             let address = std::ptr::from_ref(self);
             for watch in &context.borrow().watches {
-                if watch.sources.borrow().contains_key(&address) {
-                    watch.changed.set(true);
-                }
+                watch.invalidate(address);
             }
+            INPUT_PATHS.with(|paths| {
+                for path in paths.borrow().iter() {
+                    if let Some(watch) = &path.availability {
+                        watch.invalidate(address);
+                    }
+                }
+            });
         });
         self.invalidate_dependents();
     }
@@ -229,6 +308,76 @@ pub struct ComponentLifetime {
 impl ComponentLifetime {
     pub fn track(&self) {
         self.signal.get_or_init(ChangeSignal::default).track();
+    }
+
+    /// Share the selected case between availability checks and input preparation.
+    #[doc(hidden)]
+    pub fn try_input_state<E>(
+        &self,
+        selector: &str,
+        read: impl FnOnce() -> Result<i64, E>,
+    ) -> Result<i64, E> {
+        let component = &self.signal.get_or_init(ChangeSignal::default).0;
+        let cached = INPUT_PATHS.with(|paths| {
+            paths.borrow().last()?.states.iter().find_map(|entry| {
+                (entry.component.as_ptr() == Rc::as_ptr(component)
+                    && entry.selector.as_ref() == selector)
+                    .then_some(entry.selected)
+            })
+        });
+        if let Some(selected) = cached {
+            return Ok(selected);
+        }
+        let selected = read()?;
+        INPUT_PATHS.with(|paths| {
+            if let Some(path) = paths.borrow_mut().last_mut() {
+                path.states.push(InputState {
+                    component: Rc::downgrade(component),
+                    selector: selector.into(),
+                    selected,
+                });
+            }
+        });
+        Ok(selected)
+    }
+
+    #[doc(hidden)]
+    pub fn input_state(&self, selector: &str, read: impl FnOnce() -> i64) -> i64 {
+        self.try_input_state(selector, || Ok::<_, std::convert::Infallible>(read()))
+            .unwrap_or_else(|error| match error {})
+    }
+
+    pub(crate) fn record_input_root_override(&self) {
+        let signal = self.signal.get_or_init(ChangeSignal::default);
+        INPUT_PATHS.with(|paths| {
+            if let Some(path) = paths.borrow_mut().last_mut() {
+                path.root_overrides.push(Rc::downgrade(&signal.0));
+            }
+        });
+    }
+
+    /// Read the effective root visibility while a routed input writes through a linked property.
+    #[doc(hidden)]
+    pub fn try_input_root_visible<E>(
+        &self,
+        visible: impl FnOnce() -> Result<bool, E>,
+    ) -> Result<bool, E> {
+        let overridden = self.signal.get().is_some_and(|signal| {
+            INPUT_PATHS.with(|paths| {
+                paths.borrow().last().is_some_and(|path| {
+                    path.root_overrides
+                        .iter()
+                        .any(|owner| owner.as_ptr() == Rc::as_ptr(&signal.0))
+                })
+            })
+        });
+        if overridden { Ok(true) } else { visible() }
+    }
+
+    #[doc(hidden)]
+    pub fn input_root_visible(&self, visible: impl FnOnce() -> bool) -> bool {
+        self.try_input_root_visible(|| Ok::<_, std::convert::Infallible>(visible()))
+            .unwrap_or_else(|error| match error {})
     }
 }
 

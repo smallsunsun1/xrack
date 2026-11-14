@@ -1,4 +1,4 @@
-use crate::{ChangeSignal, ListModel, Node, Property, RowKey, TableColumnWindow};
+use crate::{ChangeSignal, ListModel, Node, Property, RowContext, RowKey, TableColumnWindow};
 use std::{
     cell::RefCell,
     collections::{BTreeMap, BTreeSet},
@@ -39,17 +39,17 @@ pub fn repeat_scene(children: Vec<Node>, positioned: bool) -> Node {
 struct Row<Model: ListModel, State> {
     synchronize: Property<()>,
     model: Property<Rc<Model>>,
-    item: Property<Model::Item>,
+    context: RowContext<Model::Item>,
     state: State,
     scene: Property<Node>,
 }
 
-impl<Model: ListModel, State: Default> Default for Row<Model, State> {
-    fn default() -> Self {
+impl<Model: ListModel, State: Default> Row<Model, State> {
+    fn new(index: usize, key: RowKey) -> Self {
         Self {
             synchronize: Property::default(),
             model: Property::default(),
-            item: Property::default(),
+            context: RowContext::new(key, index),
             state: State::default(),
             scene: Property::default(),
         }
@@ -58,30 +58,14 @@ impl<Model: ListModel, State: Default> Default for Row<Model, State> {
 
 impl<Model: ListModel, State> Row<Model, State> {
     fn sync(&self, model: &Rc<Model>, index: usize) {
+        self.context.set_key(model.row_key(index));
         self.model.set_if_changed_by(model.clone(), Rc::ptr_eq);
         self.synchronize.get(|| {
             let model = self
                 .model
                 .get(|| unreachable!("repeat model is initialized"));
-            self.item.set_if_changed(model.item(index));
+            self.context.set_item(model.item(index));
         });
-    }
-
-    fn item(&self) -> Model::Item {
-        self.item.get(|| unreachable!("repeat item is initialized"))
-    }
-
-    fn render(
-        &self,
-        index: usize,
-        model: &Rc<Model>,
-        render_row: &impl Fn(usize, &dyn Fn() -> Model::Item, &State) -> Node,
-    ) -> Node {
-        // Reconnect on model replacement, but preserve bindings when the row's
-        // value at this position is equal to the value we previously rendered.
-        self.sync(model, index);
-        let item = || self.item();
-        self.scene.get(|| render_row(index, &item, &self.state))
     }
 }
 
@@ -134,12 +118,30 @@ impl<Model: ListModel, State: Default> Repeater<Model, State> {
         read: impl FnOnce(&dyn Fn() -> Model::Item, &dyn Fn() -> i64, &State) -> R,
     ) -> Option<R> {
         let model = self.resolve_model(model);
-        if index >= model.row_count() || model.row_key(index) != key {
-            return None;
-        }
-        let row = self.rows.borrow().get(&index).cloned().unwrap_or_default();
-        row.sync(&model, index);
-        Some(read(&|| row.item(), &|| index as i64, &row.state))
+        let index = model.event_row_index(index, key, false)?;
+        let row = self
+            .rows
+            .borrow()
+            .get(&index)
+            .cloned()
+            .unwrap_or_else(|| Rc::new(Row::new(index, key)));
+        crate::property::without_read_watches(|| row.sync(&model, index));
+        Some(read(&|| row.context.item(), &|| index as i64, &row.state))
+    }
+
+    /// Access a materialized row after confirming the displayed key still matches.
+    #[doc(hidden)]
+    pub fn with_resolved_row<R>(
+        &self,
+        model: &Rc<Model>,
+        index: usize,
+        key: RowKey,
+        read: impl FnOnce(&State) -> R,
+    ) -> Option<R> {
+        let index = model.event_row_index(index, key, false)?;
+        let row = self.rows.borrow().get(&index).cloned()?;
+        crate::property::without_read_watches(|| row.sync(model, index));
+        Some(read(&row.state))
     }
 
     pub fn row_count(&self, model: impl FnOnce() -> Model) -> usize {
@@ -170,19 +172,7 @@ impl<Model: ListModel, State: Default> Repeater<Model, State> {
         render_row: impl Fn(usize, &dyn Fn() -> Model::Item, &State) -> Node,
     ) -> Vec<Node> {
         let resolved = self.model.get(|| Rc::new(model()));
-        let range = range.start..range.end.min(resolved.row_count());
-        let mut rows = self.rows.borrow_mut();
-        rows.retain(|index, _| range.contains(index));
-        range
-            .map(|index| {
-                let mut node = rows
-                    .entry(index)
-                    .or_default()
-                    .render(index, &resolved, &render_row);
-                node.set_row_key(Some(resolved.row_key(index)));
-                node
-            })
-            .collect()
+        self.render_resolved_indices(&resolved, range, render_row)
     }
 
     pub fn render_indices(
@@ -202,20 +192,42 @@ impl<Model: ListModel, State: Default> Repeater<Model, State> {
         indices: impl IntoIterator<Item = usize>,
         render_row: impl Fn(usize, &dyn Fn() -> Model::Item, &State) -> Node,
     ) -> Vec<Node> {
+        self.try_render_resolved_indices(resolved, indices, |index, context, state| {
+            Ok::<_, std::convert::Infallible>(render_row(index, &|| context.item(), state))
+        })
+        .unwrap_or_else(|error| match error {})
+    }
+
+    /// Cache only successful renders, retaining bindings at positions that remain visible.
+    #[doc(hidden)]
+    pub fn try_render_resolved_indices<E>(
+        &self,
+        resolved: &Rc<Model>,
+        indices: impl IntoIterator<Item = usize>,
+        render_row: impl Fn(usize, &RowContext<Model::Item>, &State) -> Result<Node, E>,
+    ) -> Result<Vec<Node>, E> {
         let count = resolved.row_count();
         let indices: Vec<_> = indices.into_iter().filter(|&index| index < count).collect();
         let retained: BTreeSet<_> = indices.iter().copied().collect();
-        let mut rows = self.rows.borrow_mut();
-        rows.retain(|index, _| retained.contains(index));
+        self.rows
+            .borrow_mut()
+            .retain(|index, _| retained.contains(index));
         indices
             .into_iter()
             .map(|index| {
-                let mut node = rows
+                let key = resolved.row_key(index);
+                let row = self
+                    .rows
+                    .borrow_mut()
                     .entry(index)
-                    .or_default()
-                    .render(index, resolved, &render_row);
-                node.set_row_key(Some(resolved.row_key(index)));
-                node
+                    .or_insert_with(|| Rc::new(Row::new(index, key)))
+                    .clone();
+                row.sync(resolved, index);
+                let mut node = row
+                    .scene
+                    .try_get(|| render_row(index, &row.context, &row.state))?;
+                node.set_row_key(Some(key));
+                Ok(node)
             })
             .collect()
     }

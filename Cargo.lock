@@ -1065,6 +1065,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1c66915cc5391097de7a2b0b972e8505aa33c0df401fd3a6811dbdb32881ba48"
 
 [[package]]
+name = "fixed_decimal"
+version = "0.7.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2214fb00f669ee96bee5bb29dfb1ddabe058b2bc426817efc79afa03c9bc55ae"
+dependencies = [
+ "displaydoc",
+ "smallvec",
+ "writeable",
+]
+
+[[package]]
 name = "fixedbitset"
 version = "0.5.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1393,6 +1404,100 @@ dependencies = [
 ]
 
 [[package]]
+name = "icu_decimal"
+version = "2.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1150ad5e272740670464934ee76facda43ef2e11f85c27b7ba76ccb33edf2d05"
+dependencies = [
+ "displaydoc",
+ "fixed_decimal",
+ "icu_decimal_data",
+ "icu_locale_core",
+ "icu_locale_fallback",
+ "icu_plurals",
+ "icu_provider",
+ "serde",
+ "writeable",
+ "zerovec",
+]
+
+[[package]]
+name = "icu_decimal_data"
+version = "2.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5595ab78370d48abd24a062f3db115d5108dd0b65634352036cae532aebb0df8"
+
+[[package]]
+name = "icu_locale_core"
+version = "2.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "25d29b57c17c6528d0dc4c2141cfa2d08200465acb537a3909c8b9b8a4a984c0"
+dependencies = [
+ "displaydoc",
+ "litemap",
+ "serde",
+ "tinystr",
+ "writeable",
+ "zerovec",
+]
+
+[[package]]
+name = "icu_locale_fallback"
+version = "2.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "406e9ae5b95d8aa37db6293405931b766a6172d1848daee22d70eb44aa78a43c"
+dependencies = [
+ "icu_locale_core",
+ "icu_locale_fallback_data",
+ "icu_provider",
+ "potential_utf",
+ "tinystr",
+ "zerovec",
+]
+
+[[package]]
+name = "icu_locale_fallback_data"
+version = "2.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3632ebbd0c5c3637ba1a40bdf8288f2cb9d2268e73441a69d5fc73d7cfbaa87c"
+
+[[package]]
+name = "icu_plurals"
+version = "2.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2ef046647b445acf95ce0f8083fa292467d3df649959fa9a20f3f8abfd957c5d"
+dependencies = [
+ "fixed_decimal",
+ "icu_locale_fallback",
+ "icu_plurals_data",
+ "icu_provider",
+ "zerovec",
+]
+
+[[package]]
+name = "icu_plurals_data"
+version = "2.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d43ff7df2c1a1d41588a6ddcba354d513d4a3e10eec22c06fe56d13c12a848ea"
+
+[[package]]
+name = "icu_provider"
+version = "2.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "413099315636c588ee8f011190b329b971a09a8fae9d157e01dcae8379468514"
+dependencies = [
+ "displaydoc",
+ "icu_locale_core",
+ "serde",
+ "stable_deref_trait",
+ "writeable",
+ "yoke",
+ "zerofrom",
+ "zerotrie",
+ "zerovec",
+]
+
+[[package]]
 name = "imagesize"
 version = "0.15.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1596,6 +1701,12 @@ name = "linux-raw-sys"
 version = "0.12.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32a66949e030da00e8c7d4434b251670a91556f4144941d37452769c25d58a53"
+
+[[package]]
+name = "litemap"
+version = "0.8.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "47d9d19d1d6efa0109d2f65ff4c85cddd50bd572e5a00127ab10987290bcefae"
 
 [[package]]
 name = "litrs"
@@ -2366,6 +2477,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "potential_utf"
+version = "0.1.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d83eb9bc6d8e5cf568e7a1101d60ee05e81ed50ea106026f3d18deeb046d7661"
+dependencies = [
+ "serde_core",
+ "writeable",
+ "zerovec",
+]
+
+[[package]]
 name = "presser"
 version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2752,6 +2874,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "sharded-slab"
+version = "0.1.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f40ca3c46823713e0d4209592e8d6e826aa57e928f09752619fc696c499637f6"
+dependencies = [
+ "lazy_static",
+]
+
+[[package]]
 name = "shlex"
 version = "2.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2869,6 +3000,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "stable_deref_trait"
+version = "1.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6ce2be8dc25455e1f91df71bfa12ad37d7af1092ae736f3a6cd0e37bc7810596"
+
+[[package]]
 name = "static_assertions"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2922,6 +3059,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "synstructure"
+version = "0.14.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "901704edd0dfe137f1987838ee4f259e4e063c31371bdb423f7ae38ec6f77f02"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 3.0.9",
+]
+
+[[package]]
 name = "tempfile"
 version = "3.27.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2972,6 +3120,15 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 3.0.9",
+]
+
+[[package]]
+name = "thread_local"
+version = "1.1.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f60246a4944f24f6e018aa17cdeffb7818b76356965d03b07d6a9886e8962185"
+dependencies = [
+ "cfg-if",
 ]
 
 [[package]]
@@ -3131,6 +3288,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "db97caf9d906fbde555dd62fa95ddba9eecfd14cb388e4f491a66d74cd5fb79a"
 dependencies = [
  "once_cell",
+]
+
+[[package]]
+name = "tracing-subscriber"
+version = "0.3.23"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cb7f578e5945fb242538965c2d0b04418d38ec25c79d160cd279bf0731c8d319"
+dependencies = [
+ "sharded-slab",
+ "thread_local",
+ "tracing-core",
 ]
 
 [[package]]
@@ -3956,6 +4124,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "writeable"
+version = "0.6.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3ad82d2a33cdc9674dc7465672f271e096168fcdbe0f799d9e6db8c5892679dc"
+
+[[package]]
 name = "x11-dl"
 version = "2.21.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4014,7 +4188,7 @@ checksum = "b9cc00251562a284751c9973bace760d86c0276c471b4be569fe6b068ee97a56"
 
 [[package]]
 name = "xrack"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "xrack-assets",
  "xrack-interpreter",
@@ -4026,7 +4200,7 @@ dependencies = [
 
 [[package]]
 name = "xrack-assets"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "png",
  "resvg",
@@ -4036,7 +4210,7 @@ dependencies = [
 
 [[package]]
 name = "xrack-build"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "flate2",
  "xrackc-bin-aarch64-apple-darwin",
@@ -4048,7 +4222,7 @@ dependencies = [
 
 [[package]]
 name = "xrack-codegen"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -4062,7 +4236,7 @@ dependencies = [
 
 [[package]]
 name = "xrack-compiler"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "clap",
  "proc-macro2",
@@ -4078,7 +4252,7 @@ dependencies = [
 
 [[package]]
 name = "xrack-interpreter"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "thiserror 2.0.21",
  "xrack-mlir",
@@ -4090,7 +4264,7 @@ dependencies = [
 
 [[package]]
 name = "xrack-ir"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -4100,7 +4274,7 @@ dependencies = [
 
 [[package]]
 name = "xrack-layout"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "unicode-bidi",
  "unicode-segmentation",
@@ -4109,7 +4283,7 @@ dependencies = [
 
 [[package]]
 name = "xrack-lsp"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -4119,8 +4293,44 @@ dependencies = [
 ]
 
 [[package]]
+name = "xrack-media"
+version = "0.5.1"
+dependencies = [
+ "libloading",
+ "lzma-rust2",
+ "sha2",
+ "tempfile",
+ "xrack-media-bin-aarch64-apple-darwin",
+ "xrack-media-bin-aarch64-pc-windows-msvc",
+ "xrack-media-bin-aarch64-unknown-linux-gnu",
+ "xrack-media-bin-x86_64-pc-windows-msvc",
+ "xrack-media-bin-x86_64-unknown-linux-gnu",
+ "xrack-runtime",
+]
+
+[[package]]
+name = "xrack-media-bin-aarch64-apple-darwin"
+version = "0.5.1"
+
+[[package]]
+name = "xrack-media-bin-aarch64-pc-windows-msvc"
+version = "0.5.1"
+
+[[package]]
+name = "xrack-media-bin-aarch64-unknown-linux-gnu"
+version = "0.5.1"
+
+[[package]]
+name = "xrack-media-bin-x86_64-pc-windows-msvc"
+version = "0.5.1"
+
+[[package]]
+name = "xrack-media-bin-x86_64-unknown-linux-gnu"
+version = "0.5.1"
+
+[[package]]
 name = "xrack-mlir"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "serde_json",
  "xrack-ir",
@@ -4134,14 +4344,14 @@ dependencies = [
 
 [[package]]
 name = "xrack-mlir-bin-aarch64-apple-darwin"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "lzma-rust2",
 ]
 
 [[package]]
 name = "xrack-mlir-bin-aarch64-pc-windows-msvc"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "lzma-rust2",
  "xrackc-bin-aarch64-pc-windows-msvc",
@@ -4149,14 +4359,14 @@ dependencies = [
 
 [[package]]
 name = "xrack-mlir-bin-aarch64-unknown-linux-gnu"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "lzma-rust2",
 ]
 
 [[package]]
 name = "xrack-mlir-bin-x86_64-pc-windows-msvc"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "lzma-rust2",
  "xrackc-bin-x86_64-pc-windows-msvc",
@@ -4164,14 +4374,14 @@ dependencies = [
 
 [[package]]
 name = "xrack-mlir-bin-x86_64-unknown-linux-gnu"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "lzma-rust2",
 ]
 
 [[package]]
 name = "xrack-parser"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "antlr4rust",
  "serde_json",
@@ -4180,7 +4390,7 @@ dependencies = [
 
 [[package]]
 name = "xrack-platform-winit"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "accesskit",
  "accesskit_winit",
@@ -4198,6 +4408,7 @@ dependencies = [
  "winit",
  "xrack-assets",
  "xrack-layout",
+ "xrack-media",
  "xrack-renderer-femtovg",
  "xrack-runtime",
  "zbus",
@@ -4205,11 +4416,13 @@ dependencies = [
 
 [[package]]
 name = "xrack-preview"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "pollster",
  "serde",
  "serde_json",
+ "tracing",
+ "tracing-subscriber",
  "wgpu",
  "xrack-compiler",
  "xrack-interpreter",
@@ -4220,7 +4433,7 @@ dependencies = [
 
 [[package]]
 name = "xrack-renderer-femtovg"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "femtovg",
  "fontdb",
@@ -4236,7 +4449,7 @@ dependencies = [
 
 [[package]]
 name = "xrack-resources"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "fluent-syntax",
  "gif",
@@ -4257,42 +4470,69 @@ dependencies = [
 
 [[package]]
 name = "xrack-runtime"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "fluent-bundle",
  "fluent-langneg",
+ "icu_decimal",
+ "icu_locale_core",
  "pulldown-cmark",
  "thiserror 2.0.21",
+ "tracing",
  "unic-langid",
  "unicode-segmentation",
+ "writeable",
 ]
 
 [[package]]
 name = "xrack-syntax"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "serde",
 ]
 
 [[package]]
 name = "xrackc-bin-aarch64-apple-darwin"
-version = "0.5.0"
+version = "0.5.1"
 
 [[package]]
 name = "xrackc-bin-aarch64-pc-windows-msvc"
-version = "0.5.0"
+version = "0.5.1"
 
 [[package]]
 name = "xrackc-bin-aarch64-unknown-linux-gnu"
-version = "0.5.0"
+version = "0.5.1"
 
 [[package]]
 name = "xrackc-bin-x86_64-pc-windows-msvc"
-version = "0.5.0"
+version = "0.5.1"
 
 [[package]]
 name = "xrackc-bin-x86_64-unknown-linux-gnu"
-version = "0.5.0"
+version = "0.5.1"
+
+[[package]]
+name = "yoke"
+version = "0.8.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "417ef3fcf6c300b7dbd25c85531a746931c02ad536f3cf4786ed1e88223340b3"
+dependencies = [
+ "stable_deref_trait",
+ "yoke-derive",
+ "zerofrom",
+]
+
+[[package]]
+name = "yoke-derive"
+version = "0.8.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ec8ebde2db3681e8c9980cc27822030e68752690ddfa9473e739aeb4dbde6d71"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 3.0.9",
+ "synstructure",
+]
 
 [[package]]
 name = "zbus"
@@ -4425,6 +4665,31 @@ name = "zerofrom"
 version = "0.1.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0ec05a11813ea801ff6d75110ad09cd0824ddba17dfe17128ea0d5f68e6c5272"
+dependencies = [
+ "zerofrom-derive",
+]
+
+[[package]]
+name = "zerofrom-derive"
+version = "0.1.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f75b4683f6c7f45248d4d64056a24298c6281e0993356d7d1b4a1a962ef10d4a"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 3.0.9",
+ "synstructure",
+]
+
+[[package]]
+name = "zerotrie"
+version = "0.2.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4ea269c3bd32f0a32c321907a2ae912ba6f4649bb0fc764a15627e99a7095a3f"
+dependencies = [
+ "displaydoc",
+ "zerovec",
+]
 
 [[package]]
 name = "zerovec"
@@ -4433,7 +4698,20 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f58a2799cfe9a1670c7ea8edbd52ef8edb93cb37a7f83bf31ba9e35d9dae6a40"
 dependencies = [
  "serde",
+ "yoke",
  "zerofrom",
+ "zerovec-derive",
+]
+
+[[package]]
+name = "zerovec-derive"
+version = "0.11.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c3743ddbf47738d929cd1ae2e199d40d0162979dfe31aef8ae646d2bf00bf97a"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 3.0.9",
 ]
 
 [[package]]

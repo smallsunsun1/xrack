@@ -1,4 +1,6 @@
-use crate::{CheckState, VecModel};
+use crate::{
+    CheckState, Component, InputRoute, Node, Property, RoutedEvent, VecModel, WeakComponent,
+};
 use std::borrow::Cow;
 
 pub(crate) const MAX_CLIPBOARD_CELLS: usize = 1_000_000;
@@ -15,6 +17,72 @@ pub struct TablePasteInput<'a> {
     pub row: usize,
     pub columns: &'a [usize],
     pub text: &'a str,
+}
+
+/// Capture the scene and model stamp before the asynchronous clipboard read.
+#[doc(hidden)]
+pub fn prepare_table_paste<C: Component + 'static>(
+    ui: &C,
+    weak: impl FnOnce() -> WeakComponent<C>,
+    scene: &Node,
+    path: &[usize],
+    row: usize,
+    columns: Vec<usize>,
+) -> Option<TablePaste> {
+    let stamp = ui.table_paste_stamp(scene, path)?;
+    let weak = weak();
+    let scene = scene.clone();
+    let path = path.to_vec();
+    Some(Box::new(move |text| {
+        let Some(mut ui) = weak.upgrade() else {
+            return false;
+        };
+        RoutedEvent::PasteTable(TablePasteInput {
+            stamp,
+            row,
+            columns: &columns,
+            text,
+        })
+        .deliver_input(&mut ui, &scene, &path)
+    }))
+}
+
+/// Resolve the live paste destination and recheck it when its dependencies change.
+#[doc(hidden)]
+pub fn try_with_table_paste_target<T: Clone, E>(
+    route: InputRoute<'_>,
+    resolve: impl Fn() -> Result<Option<T>, E>,
+    paste: impl FnOnce(&T, &dyn Fn() -> Result<bool, E>) -> Result<bool, E>,
+) -> Result<bool, E> {
+    let target = Property::default();
+    let read = || target.try_get(&resolve);
+    if !route.is_current() {
+        return Ok(false);
+    }
+    let Some(rows) = read()? else {
+        return Ok(false);
+    };
+    paste(&rows, &|| {
+        Ok(route.is_current() && (!target.is_dirty() || read()?.is_some()) && route.is_current())
+    })
+}
+
+#[doc(hidden)]
+pub fn with_table_paste_target<T: Clone>(
+    route: InputRoute<'_>,
+    resolve: impl Fn() -> Option<T>,
+    paste: impl FnOnce(&T, &dyn Fn() -> bool) -> bool,
+) -> bool {
+    try_with_table_paste_target(
+        route,
+        || Ok::<_, std::convert::Infallible>(resolve()),
+        |rows, current| {
+            Ok(paste(rows, &|| {
+                current().unwrap_or_else(|error| match error {})
+            }))
+        },
+    )
+    .unwrap_or_else(|error| match error {})
 }
 
 fn field(input: &str) -> Option<(Cow<'_, str>, &str)> {

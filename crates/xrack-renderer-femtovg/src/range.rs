@@ -77,7 +77,7 @@ pub(crate) fn slider(
     preview: Option<f64>,
 ) {
     let orientation = node.orientation();
-    let geometry = SliderGeometry::new(bounds, orientation);
+    let geometry = SliderGeometry::for_node(bounds, node);
     let start = geometry.position(0.0);
     let end = geometry.position(1.0);
     let range = SliderRange::from_node(node);
@@ -99,7 +99,9 @@ pub(crate) fn slider(
     } else {
         capsule(canvas, track(start, thumb, thickness, orientation), fill);
     }
-    knob(canvas, theme, thumb, geometry.radius, enabled, pressed);
+    if node.control_part("SliderHandle").is_none() {
+        knob(canvas, theme, thumb, geometry.radius, enabled, pressed);
+    }
 }
 
 fn knob(

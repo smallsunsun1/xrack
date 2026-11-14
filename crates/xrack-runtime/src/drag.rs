@@ -34,7 +34,32 @@ pub enum DragEvent {
     FilesDropped(Arc<[String]>),
 }
 
+/// Borrowed arguments for a DSL drag handler.
+#[doc(hidden)]
+pub enum DragArguments<'a> {
+    None,
+    Action(DragAction),
+    Data(&'a str, DragAction),
+    Files(&'a [String]),
+    Position(Length, Length),
+}
+
 impl DragEvent {
+    #[doc(hidden)]
+    pub fn notification(&self) -> (&'static str, DragArguments<'_>) {
+        use DragArguments::*;
+        match self {
+            Self::Started => ("drag-started", None),
+            Self::Finished(action) => ("drag-finished", Action(*action)),
+            Self::Entered { data, action } => ("entered", Data(data, *action)),
+            Self::Dropped { data, action } => ("dropped", Data(data, *action)),
+            Self::FilesEntered(paths) => ("files-entered", Files(paths)),
+            Self::FilesDropped(paths) => ("files-dropped", Files(paths)),
+            Self::Moved { x, y } => ("position-changed", Position(*x, *y)),
+            Self::Exited => ("exited", None),
+        }
+    }
+
     #[doc(hidden)]
     pub fn target_kind(&self) -> &'static str {
         match self {

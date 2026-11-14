@@ -789,6 +789,8 @@ fn event_loop() -> Result<EventLoop<DesktopEvent>, String> {
 
 /// Run windows and system tray components on one UI thread.
 pub fn run_desktop(setup: impl FnOnce(&Desktop) -> Result<(), String>) -> Result<(), String> {
+    #[cfg(feature = "media")]
+    xrack_media::install();
     let event_loop = event_loop()?;
     let mut desktop = DesktopRuntime::new(event_loop.create_proxy());
     let _registration = desktop.register_event_loop()?;
@@ -803,6 +805,8 @@ pub fn run_desktop(setup: impl FnOnce(&Desktop) -> Result<(), String>) -> Result
 }
 
 pub(crate) fn run_window<C: Component + 'static>(component: C) -> Result<(), String> {
+    #[cfg(feature = "media")]
+    xrack_media::install();
     let event_loop = event_loop()?;
     let mut desktop = DesktopRuntime::new(event_loop.create_proxy());
     let _registration = desktop.register_event_loop()?;

@@ -1,5 +1,6 @@
 use crate::{
-    Property, RowKey, TablePasteInput, TableRows, VecModel, table_clipboard::try_stage_table_text,
+    Brush, Font, KeyEvent, Property, RowKey, StyledText, TablePasteInput, TableRows, Value,
+    VecModel, table_clipboard::try_stage_table_text,
 };
 use std::{
     cell::RefCell,
@@ -11,6 +12,53 @@ const MAX_HISTORY_BYTES: usize = 8 * 1024 * 1024;
 const MAX_HISTORY_BATCHES: usize = 64;
 
 type FieldChange<T> = Box<dyn Fn(&mut T, bool) -> bool>;
+
+/// Payload retained by a table history entry in addition to the field itself.
+#[doc(hidden)]
+pub trait TableHistoryPayload {
+    fn history_payload_bytes(&self) -> usize;
+}
+
+impl TableHistoryPayload for String {
+    fn history_payload_bytes(&self) -> usize {
+        self.len()
+    }
+}
+
+impl TableHistoryPayload for Font {
+    fn history_payload_bytes(&self) -> usize {
+        self.family.len()
+    }
+}
+
+impl TableHistoryPayload for KeyEvent {
+    fn history_payload_bytes(&self) -> usize {
+        self.key.len().saturating_add(self.text.len())
+    }
+}
+
+impl TableHistoryPayload for StyledText {
+    fn history_payload_bytes(&self) -> usize {
+        self.links().iter().fold(
+            self.text()
+                .len()
+                .saturating_add(std::mem::size_of_val(self.runs()))
+                .saturating_add(std::mem::size_of_val(self.links())),
+            |size, link| size.saturating_add(link.href.len()),
+        )
+    }
+}
+
+impl TableHistoryPayload for Brush {
+    fn history_payload_bytes(&self) -> usize {
+        match self {
+            Self::Solid(_) => 0,
+            Self::Linear { stops, .. } | Self::Radial { stops, .. } => {
+                std::mem::size_of_val(stops.as_ref())
+            }
+        }
+    }
+}
 
 /// A typed patch for the fields changed by one table edit.
 #[doc(hidden)]
@@ -29,12 +77,25 @@ impl<T: 'static> TableRowPatch<T> {
         same: fn(&V, &V) -> bool,
         payload_bytes: fn(&V) -> usize,
     ) {
+        self.record_field(&[], before, after, field, same, payload_bytes);
+    }
+
+    /// Record a typed field with the same budget charge as a dynamic record field.
+    pub fn record_field<V: Clone + 'static>(
+        &mut self,
+        path: &[&str],
+        before: &V,
+        after: &V,
+        field: fn(&mut T) -> &mut V,
+        same: fn(&V, &V) -> bool,
+        payload_bytes: fn(&V) -> usize,
+    ) {
         self.record_with(
             before,
             after,
             same,
             payload_bytes,
-            0,
+            path,
             move |row, expected, replacement| {
                 let value = field(row);
                 if !same(value, expected) {
@@ -52,13 +113,22 @@ impl<T: 'static> TableRowPatch<T> {
         after: &V,
         same: fn(&V, &V) -> bool,
         payload_bytes: fn(&V) -> usize,
-        metadata_bytes: usize,
+        path: &[impl AsRef<str>],
         replace: impl Fn(&mut T, &V, &V) -> bool + 'static,
     ) {
         if self.bytes > self.limit || same(before, after) {
             return;
         }
-        let overhead = 2 * (size_of::<V>() + size_of::<usize>() + size_of::<FieldChange<T>>());
+        let field_bytes = if path.is_empty() {
+            size_of::<V>()
+        } else {
+            size_of::<Value>()
+        };
+        let overhead = 2 * (field_bytes + size_of::<usize>() + size_of::<FieldChange<T>>());
+        let metadata_bytes = path.iter().fold(
+            path.len().saturating_mul(size_of::<String>()),
+            |bytes, name| bytes.saturating_add(name.as_ref().len()),
+        );
         self.bytes = self
             .bytes
             .saturating_add(overhead)

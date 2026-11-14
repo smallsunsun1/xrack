@@ -70,6 +70,9 @@ use xrack_runtime::{
 };
 pub use xrack_runtime::{EventLoopError, invoke_from_event_loop};
 
+#[cfg(feature = "media")]
+pub use xrack_media::install as install_media;
+
 struct WindowState {
     surface: wgpu::Surface<'static>,
     renderer: Renderer,
@@ -375,6 +378,7 @@ struct Application<C> {
     animation_wake: Option<Instant>,
     timers: TimerQueue,
     image_playback: ImagePlaybackQueue,
+    media: xrack_runtime::MediaQueue,
     native_dialogs: NativeDialogQueue,
     stack_transitions: StackTransitions,
     layout: Option<Rc<LayoutNode>>,
@@ -413,6 +417,7 @@ impl<C: Component> Application<C> {
             animation_wake: None,
             timers: TimerQueue::default(),
             image_playback: ImagePlaybackQueue::default(),
+            media: xrack_runtime::MediaQueue::default(),
             native_dialogs: NativeDialogQueue::default(),
             stack_transitions: StackTransitions::default(),
             layout: None,
@@ -4107,6 +4112,7 @@ impl<C: Component> Application<C> {
         self.timers.sync(now, effects.timers);
         self.native_dialogs.sync(&effects.dialogs);
         self.image_playback.sync(now, effects.playback);
+        self.media.sync(effects.media);
     }
 
     fn tick_image_playback(&mut self, now: Instant) {
@@ -4406,6 +4412,7 @@ impl<C: Component> HostedWindow for Application<C> {
         self.layout = None;
         self.timers = TimerQueue::default();
         self.image_playback.sync(Instant::now(), []);
+        self.media.sync([]);
         self.native_dialogs.sync(&[]);
         self.state = None;
         self.component
@@ -4425,6 +4432,9 @@ impl<C: Component> HostedWindow for Application<C> {
         self.tick_pointer_hold(now);
         self.tick_timers(now);
         self.tick_image_playback(now);
+        if self.media.advance(now) {
+            self.refresh_after_update(false);
+        }
     }
 
     fn refresh_deadline(&mut self, now: Instant) -> Option<Instant> {
@@ -4489,6 +4499,7 @@ impl<C: Component> HostedWindow for Application<C> {
                 .and_then(|capture| capture.sequence.press_and_hold_deadline()),
             self.timers.deadline(),
             self.image_playback.deadline(),
+            self.media.deadline(now),
         ]
         .into_iter()
         .flatten()

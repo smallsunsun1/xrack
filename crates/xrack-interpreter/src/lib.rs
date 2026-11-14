@@ -68,6 +68,7 @@ type StaticCache<T> = Rc<OnceCell<Result<T>>>;
 pub struct Program {
     components: Rc<BTreeMap<String, Result<Definition>>>,
     exports: Rc<BTreeSet<String>>,
+    globals: Rc<BTreeMap<String, bool>>,
     records: Rc<RecordSchemas>,
     record_validator: Rc<RecordRowValidator>,
     translations: Option<Rc<TranslationCatalog>>,
@@ -101,9 +102,21 @@ impl Program {
         fonts: Option<LoadedFonts>,
         images: BTreeMap<String, ImageAsset>,
     ) -> Result<Self> {
+        module.verify().map_err(Error::Invalid)?;
+        xrack_resources::validate_module_resources(
+            module,
+            xrack_resources::ResourceImages::Loaded(&images),
+            fonts
+                .as_ref()
+                .map_or(&[][..], LoadedFonts::sources)
+                .iter()
+                .map(|font| font.as_slice()),
+            translations.as_ref().map(TranslationCatalog::sources),
+            true,
+        )
+        .map_err(Error::Invalid)?;
         let paths = xrack_resources::collect_vector_paths(module).map_err(Error::Invalid)?;
-        xrack_resources::check_loaded_nine_slices(module, &images).map_err(Error::Invalid)?;
-        load::program(module, translations, fonts, images, paths)
+        load::program(module, translations, fonts, images, paths, "")
     }
 
     /// Load file-backed images and fonts for a prepared module, using the
@@ -114,9 +127,17 @@ impl Program {
         filename: impl AsRef<Path>,
         translations: Option<EmbeddedTranslations>,
     ) -> Result<(Self, BTreeSet<PathBuf>)> {
+        module.verify().map_err(Error::Invalid)?;
         let assets = xrack_resources::resolve_assets(module, filename.as_ref(), None)
             .map_err(Error::Invalid)?;
-        xrack_resources::check_nine_slices(module, &assets.images).map_err(Error::Invalid)?;
+        xrack_resources::validate_module_resources(
+            module,
+            xrack_resources::ResourceImages::Embedded(&assets.images),
+            assets.fonts.iter().map(Vec::as_slice),
+            translations.as_ref().map(EmbeddedTranslations::sources),
+            false,
+        )
+        .map_err(Error::Invalid)?;
         let translations = translations
             .map(|catalog| TranslationCatalog::from_owned(&catalog.default, catalog.locales))
             .transpose()
@@ -127,7 +148,14 @@ impl Program {
             .into_iter()
             .map(|(url, image)| (url, image.into_image_asset()))
             .collect();
-        let program = load::program(module, translations, fonts, images, assets.paths)?;
+        let program = load::program(
+            module,
+            translations,
+            fonts,
+            images,
+            assets.paths,
+            &filename.as_ref().to_string_lossy(),
+        )?;
         Ok((program, assets.inputs))
     }
 
@@ -136,8 +164,19 @@ impl Program {
     }
 
     pub fn create(&self, name: &str) -> Result<Instance> {
+        if self.globals.contains_key(name) {
+            return Err(Error::Invalid(
+                "global belongs to a component instance".into(),
+            ));
+        }
         self.validate_dependencies(name, &mut BTreeSet::new())?;
-        self.allocate(name, None, BTreeMap::new(), &mut Vec::new())
+        self.allocate(
+            name,
+            None,
+            BTreeMap::new(),
+            BTreeMap::new(),
+            &mut Vec::new(),
+        )
     }
 
     /// Create a component whose translations share the supplied locale context.
@@ -207,6 +246,7 @@ pub enum ValueType {
     InputType,
     DialInputMode,
     Image,
+    LogLevel,
     ImageFit,
     ImageTileMode,
     ImageHorizontalAlignment,
@@ -231,6 +271,13 @@ impl Member {
     fn root(name: &str) -> Self {
         Self::new("root", name)
     }
+
+    fn path(endpoints: Vec<xrack_mlir::PropertyEndpoint<'_>>) -> Vec<Self> {
+        endpoints
+            .into_iter()
+            .map(|(owner, name)| Self::new(owner, name))
+            .collect()
+    }
 }
 
 type Expr = Rc<Expression>;
@@ -249,18 +296,30 @@ enum Expression {
     Binary(BinaryOperator, Expr, Expr),
     Select(Expr, Expr, Expr),
     Cast(Expr),
+    Round(Expr),
+    MathFunction(xrack_syntax::builtins::MathFunction, Vec<Expr>),
+    StringFunction(xrack_syntax::builtins::StringFunction, Vec<Expr>),
+    ModelCount(Expr),
+    ModelIsEmpty(Expr),
+    ModelAt(Expr, Expr, Expr),
+    ColorFunction(xrack_syntax::builtins::ColorFunction, Vec<Expr>),
+    Locale,
+    FormatNumber(Expr, Expr),
+    ParseNumber(Expr, Expr),
+    FormatFixed(Expr, usize),
     Stringify(Expr),
     SolidBrush(Expr),
     ImageDimension(Expr, usize),
     ImagePlaybackRead(Member),
+    MediaRead(Member),
     GeometryRead(String, Option<xrack_runtime::GeometryMetric>),
     ViewportRead(String, viewport::Metric),
     ViewIndex(String, Expr, xrack_runtime::ViewIndex),
     TreeQuery(String, tree::Query, Expr),
     SplitSave(String),
-    StackRead(String, stack::Read, Option<Expr>),
+    StackRead(String, xrack_mlir::StackRead),
     SplitResizing(String),
-    TableRead(Member),
+    TableRead(String, xrack_mlir::TableRead),
     FocusRead(String, bool),
     HoverRead(String, pointer::HoverRead),
     GestureRead(String, gesture::Metric),
@@ -290,6 +349,10 @@ enum Expression {
     RecordField(Expr, String),
     BuiltinField(Expr, BuiltinField),
     MakeDate([Expr; 3]),
+    DateIsValid(Expr),
+    DateWeekday(Expr),
+    DateAddDays(Expr, Expr, Expr),
+    DateAddMonths(Expr, Expr, Expr),
     MakeTime([Expr; 3]),
     MakeFont([Expr; 4]),
     Call(Member, Vec<Expr>),
@@ -299,6 +362,12 @@ enum Expression {
 enum Statement {
     Assign(Member, Expr),
     Call(Member, Vec<Expr>),
+    Log {
+        level: Expr,
+        message: Expr,
+        file: String,
+        span: xrack_syntax::ast::Span,
+    },
     Scroll(String, xrack_runtime::ScrollCommandMethod, Vec<Expr>),
     SelectSource(String, Expr, Option<Expr>),
     Table(String, table::Command, Vec<Expr>),
@@ -309,6 +378,7 @@ enum Statement {
     SetCheckGroup(String, Expr),
     StackNavigate(String, xrack_runtime::StackNavigationMethod, Option<Expr>),
     Timer(String, xrack_runtime::TimerCommand),
+    Media(String, xrack_resources::visual::MediaEffect<Expr>),
     Popup(String, bool),
     NativeDialogOpen(String),
     WindowClose,
@@ -347,9 +417,8 @@ type RecordSchemas = BTreeMap<String, Vec<RecordField>>;
 
 struct Definition {
     properties: BTreeMap<Member, PropertyDef>,
-    property_forwards: BTreeMap<String, Vec<Member>>,
     callbacks: BTreeMap<Member, Function>,
-    callback_defaults: Vec<Member>,
+    callback_defaults: BTreeMap<Vec<Member>, Member>,
     root: Element,
     selectors: Vec<StateSelector>,
     geometry_targets: BTreeSet<String>,
@@ -364,6 +433,7 @@ struct Definition {
 
 struct Element {
     key: String,
+    media_source_file: Option<String>,
     id: Arc<str>,
     repeat: Option<Repeat>,
     delegate: bool,
@@ -374,13 +444,12 @@ struct Element {
     split: Option<split::Definition>,
     stack_routes: Option<Box<[String]>>,
     day_cell: Option<Box<Element>>,
-    column_field: Option<Rc<[String]>>,
-    clipboard_parser: Option<table_edit::ClipboardParser>,
-    clipboard_text: Option<Expr>,
+    clipboard_paste: Option<table_edit::ClipboardPaste>,
+    clipboard_text: Option<table::ClipboardText>,
     contains_delegate: bool,
     visible_field: Option<Rc<[String]>>,
     height_field: Option<Rc<[String]>>,
-    instance_handlers: BTreeMap<String, Function>,
+    instance_handlers: BTreeMap<Vec<Member>, Function>,
     visual: Visual,
     grid_plan: Option<Arc<[xrack_runtime::GridCellSlot]>>,
     paint_plan: Option<Arc<[usize]>>,
@@ -459,6 +528,7 @@ struct AnimationSpec {
 }
 
 struct StateSelector {
+    owner: String,
     conditions: Vec<Expr>,
     persistent: bool,
 }
@@ -487,10 +557,7 @@ struct Input {
 impl Input {
     fn new(endpoint: Vec<xrack_mlir::PropertyEndpoint<'_>>) -> Self {
         Self {
-            endpoint: endpoint
-                .into_iter()
-                .map(|(owner, name)| Member::new(owner, name))
-                .collect(),
+            endpoint: Member::path(endpoint),
             source: None,
             cases: Vec::new(),
         }
@@ -513,12 +580,32 @@ struct RowField {
 pub type Callback = Rc<dyn Fn(&[Value]) -> std::result::Result<Option<Value>, String>>;
 
 #[derive(Clone)]
-pub struct Instance(Rc<evaluate::State>);
+pub struct Instance(Rc<evaluate::State>, Option<Rc<evaluate::Globals>>);
 
 impl Instance {
     /// Capture this instance in a callback without keeping the component alive.
+    pub(crate) fn from_state(state: Rc<evaluate::State>) -> Self {
+        Self(state, None)
+    }
+
     pub fn as_weak(&self) -> xrack_runtime::WeakComponent<Self> {
-        xrack_runtime::WeakComponent::new(&self.0, &self.0.binding_lifetime, Self)
+        xrack_runtime::WeakComponent::new(&self.0, &self.0.binding_lifetime, |state| {
+            let registry = match &state.globals {
+                evaluate::GlobalContext::Member(registry) => registry.upgrade(),
+                evaluate::GlobalContext::Owner(_) => None,
+            };
+            Self(state, registry)
+        })
+    }
+
+    /// Get an exported global in this component tree.
+    pub fn global(&self, name: &str) -> Result<Instance> {
+        if self.program().globals.get(name) != Some(&true) {
+            return Err(Error::Invalid(format!("unknown exported global {name}")));
+        }
+        let mut global = self.shared_global(name)?;
+        global.1 = Some(self.0.globals.registry()?);
+        Ok(global)
     }
 
     pub fn properties(&self) -> impl Iterator<Item = (&str, ValueType, bool)> {
@@ -545,16 +632,30 @@ impl Instance {
             })
     }
 
-    pub fn get(&self, name: &str) -> Result<Value> {
+    fn read_public_value(&self, name: &str) -> Result<Value> {
         let member = Member::root(name);
         let property = self.require_public(&member, false)?;
         let value = self.read(&member)?;
-        self.program().validate_host_value(
-            &property.ty,
-            &value,
-            format_args!("property {name}"),
-        )?;
-        Ok(evaluate::host_value(value))
+        self.program()
+            .observe_host_value(&property.ty, &value, format_args!("property {name}"))?;
+        Ok(value)
+    }
+
+    /// Read a public property. Record and touch lists retain their model handles.
+    pub fn get(&self, name: &str) -> Result<Value> {
+        self.read_public_value(name).map(evaluate::host_value)
+    }
+
+    /// Read a public property by value, as generated Rust getters do.
+    ///
+    /// Lists are detached from the live model. Reading a snapshot in a binding
+    /// tracks row edits, insertions, removals and reordering.
+    pub fn get_snapshot(&self, name: &str) -> Result<Value> {
+        let value = self.read_public_value(name)?;
+        Ok(match value {
+            Value::StringModel(_) => evaluate::host_value(value),
+            value => evaluate::callback_value(value),
+        })
     }
 
     /// Get the shared string model without taking a snapshot or replacing row identities.
@@ -571,18 +672,11 @@ impl Instance {
 
     /// Get the shared record model, validating its current rows against the declared schema.
     pub fn record_model(&self, name: &str) -> Result<RecordList> {
-        let member = Member::root(name);
-        let property = self.require_public(&member, false)?;
-        let Value::RecordList(model) = self.read(&member)? else {
+        let Value::RecordList(model) = self.read_public_value(name)? else {
             return Err(Error::Evaluation(format!(
                 "property {name} is not a record list"
             )));
         };
-        self.program().validate_host_value(
-            &property.ty,
-            &Value::RecordList(model.clone()),
-            format_args!("property {name}"),
-        )?;
         Ok(model)
     }
 
@@ -619,23 +713,26 @@ impl Instance {
         self.register_callback(&Member::root(name), callback)
     }
 
+    /// Install a handler with mutable captured state for a non-pure callback.
+    ///
+    /// Calls to the same handler cannot reenter it. A handler may replace itself
+    /// before invoking the callback again.
+    pub fn on_mut(
+        &self,
+        name: &str,
+        callback: impl FnMut(&[Value]) -> std::result::Result<Option<Value>, String> + 'static,
+    ) -> Result<()> {
+        self.register_mut_callback(&Member::root(name), callback)
+    }
+
     pub fn invoke(&self, name: &str, arguments: &[Value]) -> Result<Option<Value>> {
         let member = Member::root(name);
-        let function = self.definition().callbacks.get(&member);
-        if let Some(function) = function {
-            self.program()
-                .validate_host_arguments(name, &function.parameters, arguments)?;
-        }
         let arguments: Vec<_> = arguments
             .iter()
             .cloned()
             .map(evaluate::callback_value)
             .collect();
-        let result = self.call(&member, arguments)?;
-        let result_type = function.and_then(|function| function.result.as_ref());
-        self.program()
-            .validate_host_result(name, result_type, result.as_ref())?;
-        Ok(result.map(evaluate::host_value))
+        Ok(self.call(&member, arguments)?.map(evaluate::host_value))
     }
 
     pub fn try_render(&self) -> Result<Rc<Node>> {

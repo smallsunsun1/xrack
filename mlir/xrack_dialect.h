@@ -4,6 +4,7 @@
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/Dialect.h"
 #include "mlir/IR/OpDefinition.h"
+#include "mlir/IR/SymbolTable.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "mlir/XrackDialect.h.inc"
 #include "llvm/ADT/StringRef.h"
@@ -16,6 +17,9 @@
 #include "mlir/XrackOps.h.inc"
 
 namespace xrack::dialect {
+/// Key used to reference an element or instance within its component.
+llvm::StringRef scopedOwnerKey(::mlir::Operation *op);
+
 /// XR expressions evaluate at their use sites. Standalone actions are separate operations.
 bool isExpression(::mlir::Operation &op);
 

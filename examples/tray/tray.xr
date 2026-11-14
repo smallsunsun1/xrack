@@ -36,6 +36,8 @@ export component TrayDemo inherits SystemTrayIcon {
 
 export component TrayWindow inherits Window {
     in-out property <int> count: 0;
+    out property <string> locale: I18n.locale();
+    out property <string> formatted-number: I18n.format-number(1234.5, 2);
     title: @tr("window-title");
     width: 480px;
     height: 170px;

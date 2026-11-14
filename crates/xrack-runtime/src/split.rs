@@ -54,8 +54,21 @@ impl SplitResizeHandle {
     }
 
     pub fn decorate(&self, view: &mut Node, render: impl Fn(SplitHandleInput) -> Node) {
+        self.try_decorate(view, |input| {
+            Ok::<_, std::convert::Infallible>(render(input))
+        })
+        .unwrap_or_else(|error| match error {})
+    }
+
+    /// Keep a failed handle binding eligible for reevaluation on the next render.
+    #[doc(hidden)]
+    pub fn try_decorate<E>(
+        &self,
+        view: &mut Node,
+        render: impl Fn(SplitHandleInput) -> Result<Node, E>,
+    ) -> Result<(), E> {
         if !view.is_visible() {
-            return;
+            return Ok(());
         }
         let first = view.split_pane_count();
         let orientation = view.orientation();
@@ -74,9 +87,12 @@ impl SplitResizeHandle {
                 pressed: pressed == Some((slot, pair[1])),
             };
             visual.input.set_if_changed(input);
-            let decoration = visual.scene.get(|| render(visual.input.get(|| input)));
+            let decoration = visual
+                .scene
+                .try_get(|| render(visual.input.get(|| input)))?;
             view.children[slot].children.push(decoration);
         }
+        Ok(())
     }
 }
 

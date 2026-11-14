@@ -1,5 +1,6 @@
 use crate::{
-    DecimalSpinRange, InputRoute, ListModel, Node, Property, RoutedEvent, SpinDecimal, Value,
+    DecimalSpinRange, InputRoute, ListModel, Node, Property, RoutedEvent, RowKey, SpinDecimal,
+    TableRows, Value,
 };
 use std::sync::{
     Arc,
@@ -140,12 +141,29 @@ pub fn try_prepare_row_toggle<E>(
     tristate: Option<impl FnOnce() -> Result<bool, E>>,
     history: impl FnOnce() -> Result<bool, E>,
 ) -> Result<Option<bool>, E> {
+    try_prepare_row_toggle_matching(node, input, tristate, || true, history)
+}
+
+/// Revalidate the displayed field after reading settings and before recording history.
+#[doc(hidden)]
+pub fn try_prepare_row_toggle_matching<E>(
+    node: &Node,
+    input: crate::InputRoute<'_>,
+    tristate: Option<impl FnOnce() -> Result<bool, E>>,
+    field_current: impl FnOnce() -> bool,
+    history: impl FnOnce() -> Result<bool, E>,
+) -> Result<Option<bool>, E> {
     input.try_prepare(
         || match tristate {
             Some(read) => Ok(read()? == node.boolean("tristate", false)),
             None => Ok(true),
         },
-        || history().map(Some),
+        || {
+            if !field_current() {
+                return Ok(None);
+            }
+            history().map(Some)
+        },
     )
 }
 
@@ -156,10 +174,22 @@ pub fn prepare_row_toggle(
     tristate: Option<impl FnOnce() -> bool>,
     history: impl FnOnce() -> bool,
 ) -> Option<bool> {
-    try_prepare_row_toggle(
+    prepare_row_toggle_matching(node, input, tristate, || true, history)
+}
+
+#[doc(hidden)]
+pub fn prepare_row_toggle_matching(
+    node: &Node,
+    input: crate::InputRoute<'_>,
+    tristate: Option<impl FnOnce() -> bool>,
+    field_current: impl FnOnce() -> bool,
+    history: impl FnOnce() -> bool,
+) -> Option<bool> {
+    try_prepare_row_toggle_matching(
         node,
         input,
         tristate.map(|read| move || Ok::<_, std::convert::Infallible>(read())),
+        field_current,
         || Ok(history()),
     )
     .unwrap_or_else(|error| match error {})
@@ -351,6 +381,45 @@ pub fn is_window_overlay(kind: &str) -> bool {
     is_modal_overlay(kind) || kind == "PopupWindow"
 }
 
+/// A swipe may reveal a panel only if it was visible in the displayed scene
+/// and is still visible after reading the live open side.
+#[doc(hidden)]
+pub fn try_prepare_swipe_side<E>(
+    node: &Node,
+    side: SwipeSide,
+    input: InputRoute<'_>,
+    current: impl FnOnce() -> Result<SwipeSide, E>,
+    panel_visible: impl FnOnce(&str) -> Result<bool, E>,
+) -> Result<bool, E> {
+    if !input.is_current() || !node.accepts_swipe_side(current()?, side) || !input.is_current() {
+        return Ok(false);
+    }
+    if let Some(panel) = side.panel()
+        && !panel_visible(panel)?
+    {
+        return Ok(false);
+    }
+    Ok(input.is_current())
+}
+
+#[doc(hidden)]
+pub fn prepare_swipe_side(
+    node: &Node,
+    side: SwipeSide,
+    input: InputRoute<'_>,
+    current: impl FnOnce() -> SwipeSide,
+    panel_visible: impl FnOnce(&str) -> bool,
+) -> bool {
+    try_prepare_swipe_side(
+        node,
+        side,
+        input,
+        || Ok::<_, std::convert::Infallible>(current()),
+        |panel| Ok(panel_visible(panel)),
+    )
+    .unwrap_or_else(|error| match error {})
+}
+
 #[doc(hidden)]
 pub fn try_set_overlay_open<E>(
     open: bool,
@@ -419,6 +488,16 @@ impl TableSort {
             column: usize::try_from(column).ok()?,
             descending,
         })
+    }
+
+    #[doc(hidden)]
+    pub fn column_index(sort: Option<Self>) -> i64 {
+        sort.map_or(-1, |sort| sort.column as i64)
+    }
+
+    #[doc(hidden)]
+    pub fn is_descending(sort: Option<Self>) -> bool {
+        sort.is_some_and(|sort| sort.descending)
     }
 }
 
@@ -559,6 +638,77 @@ pub fn table_drag_available(
         |column| Ok(column_resizable(column)),
     )
     .unwrap_or_else(|error| match error {})
+}
+
+#[doc(hidden)]
+pub enum TableHeaderAction {
+    Sort(TableSort),
+    MoveColumn {
+        from: usize,
+        to: usize,
+    },
+    ResizeColumn {
+        column: usize,
+        width: u32,
+    },
+    ResizeRow {
+        row: usize,
+        key: RowKey,
+        height: u32,
+    },
+}
+
+impl TableHeaderAction {
+    /// Reject stale header actions before reading the row projection.
+    pub fn try_prepare<M, E>(
+        node: &Node,
+        input: InputRoute<'_>,
+        action: ControlAction,
+        sort: impl FnOnce() -> Option<TableSort>,
+        order: impl FnOnce() -> TableColumnOrder,
+        rows: impl FnOnce() -> Result<TableRows<M>, E>,
+    ) -> Result<Option<(Self, TableRows<M>)>, E> {
+        let action = match action {
+            ControlAction::SortColumn(column) => {
+                let Some(sort) = node
+                    .table_header
+                    .as_ref()
+                    .and_then(|header| header.next_sort_if_current(column, sort()))
+                else {
+                    return Ok(None);
+                };
+                Self::Sort(sort)
+            }
+            ControlAction::MoveColumn { from, to } => {
+                if !node.table_column_move_is_current(from, to, &order()) {
+                    return Ok(None);
+                }
+                Self::MoveColumn { from, to }
+            }
+            ControlAction::ResizeColumn { column, width } => Self::ResizeColumn { column, width },
+            ControlAction::ResizeRow { row, key, height } => Self::ResizeRow { row, key, height },
+            _ => return Ok(None),
+        };
+        let rows = rows()?;
+        Ok(
+            (input.is_current() && node.standard_list_stamp == Some(rows.positions().stamp()))
+                .then_some((action, rows)),
+        )
+    }
+
+    pub fn prepare<M>(
+        node: &Node,
+        input: InputRoute<'_>,
+        action: ControlAction,
+        sort: impl FnOnce() -> Option<TableSort>,
+        order: impl FnOnce() -> TableColumnOrder,
+        rows: impl FnOnce() -> TableRows<M>,
+    ) -> Option<(Self, TableRows<M>)> {
+        Self::try_prepare(node, input, action, sort, order, || {
+            Ok::<_, std::convert::Infallible>(rows())
+        })
+        .unwrap_or_else(|error| match error {})
+    }
 }
 
 impl TableHeader {

@@ -511,17 +511,38 @@ pub(crate) fn measure_with_width(
             }
             "Button" | "ToolButton" | "RoundButton" | "DialogButton" | "DelayButton" => {
                 let button = ButtonContent::new(node);
-                let icon = button.icon.as_ref().map_or(0.0, |(_, size)| *size);
                 let chrome = 2.0 * button.padding;
-                let decoration = icon + button.gap();
-                let label = if button.label.is_empty() {
-                    Size::default()
+                let content = if let Some(content) = node.control_part("ButtonContent") {
+                    let available = Size::new(
+                        (available.width - chrome).max(0.0),
+                        (available.height - chrome).max(0.0),
+                    );
+                    let mut size = Size::default();
+                    for child in &content.children {
+                        if participates_in_flow(child) {
+                            let child_metrics = measure(child, available, text);
+                            size.width = size
+                                .width
+                                .max(child_metrics.x.preferred + child.length("x").unwrap_or(0.0));
+                            size.height = size
+                                .height
+                                .max(child_metrics.y.preferred + child.length("y").unwrap_or(0.0));
+                        }
+                    }
+                    size
                 } else {
-                    text.measure_node(
-                        node,
-                        button.label,
-                        (available.width - chrome - decoration).max(0.0),
-                    )
+                    let icon = button.icon.as_ref().map_or(0.0, |(_, size)| *size);
+                    let decoration = icon + button.gap();
+                    let label = if button.label.is_empty() {
+                        Size::default()
+                    } else {
+                        text.measure_node(
+                            node,
+                            button.label,
+                            (available.width - chrome - decoration).max(0.0),
+                        )
+                    };
+                    Size::new(label.width + decoration, label.height.max(icon))
                 };
                 let min = match node.kind {
                     "ToolButton" => Size::new(34.0, 34.0),
@@ -529,10 +550,11 @@ pub(crate) fn measure_with_width(
                     _ => Size::new(64.0, 40.0),
                 };
                 Size::new(
-                    (label.width + decoration + chrome).max(min.width),
-                    (label.height.max(icon) + chrome).max(min.height),
+                    (content.width + chrome).max(min.width),
+                    (content.height + chrome).max(min.height),
                 )
             }
+            "MediaPlayer" => Size::new(320.0, 180.0),
             "Image" | "AnimatedImage" => {
                 let source = node.image_asset("source").unwrap_or_default().size();
                 let [width, height] = crate::ImageRegion::for_node(node, source).size();

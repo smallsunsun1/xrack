@@ -5,18 +5,27 @@ use crate::{
 };
 use std::{cell::RefCell, collections::HashMap};
 use xrack_mlir::{
-    AliasGraphs, AnimationRef, ComponentAnalysis, Module, OperationRef, RecordDeclRef, RepeatRef,
-    StateCaseRef, TranslationRef, ValueRef,
+    AliasGraphs, AnimationRef, ComponentAnalysis, GradientRef, Module, OperationRef,
+    RecordComboRef, RecordDeclRef, RepeatRef, StackRead, StandardTableRef, StateCaseRef,
+    TableClipboardRef, TablePasteRef, TranslationRef, TreeViewRef, ValueRef,
 };
 use xrack_resources::visual::{
-    ControlDefault, ControlLiteral, control_default, controlled_properties, default_combo_edit_text,
+    ControlDefault, ControlLiteral, control_default, controlled_properties,
+    default_combo_edit_text, table_history_item, table_option_configured,
 };
 use xrack_runtime::{self as runtime, Percent};
-use xrack_syntax::ast::{Parameter, Type};
+use xrack_syntax::{
+    ast::{Parameter, Type},
+    builtins::{ColorFunction, MathFunction, StringFunction, builtin_element},
+};
 
 /// Load XR dialect text without consulting the filesystem.
 pub fn load_mlir(source: &str) -> Result<Program> {
-    Program::from_module(&xrack_mlir::process(source).map_err(Error::Invalid)?)
+    let module = Module::parse(source).map_err(Error::Invalid)?;
+    // Match the file-backed pipeline, which validates translations before
+    // the optimizer can remove calls in unused branches.
+    xrack_resources::check_missing_translation_catalog(&module).map_err(Error::Invalid)?;
+    Program::from_module(&module.optimize().map_err(Error::Invalid)?)
 }
 
 pub(crate) fn program(
@@ -25,8 +34,8 @@ pub(crate) fn program(
     fonts: Option<LoadedFonts>,
     images: BTreeMap<String, ImageAsset>,
     paths: BTreeMap<String, xrack_resources::EmbeddedPath>,
+    entry_file: &str,
 ) -> Result<Program> {
-    module.verify().map_err(Error::Invalid)?;
     let records = Rc::new(
         module
             .operations()
@@ -51,6 +60,7 @@ pub(crate) fn program(
     let aliases = AliasGraphs::from_module(module).map_err(Error::Invalid)?;
     let assets = Rc::new(AssetValues {
         images,
+        entry_file: entry_file.to_owned(),
         markdown: xrack_resources::collect_markdown(module).map_err(Error::Invalid)?,
         paths: paths
             .into_iter()
@@ -63,11 +73,15 @@ pub(crate) fn program(
     });
     let mut components = BTreeMap::new();
     let mut exports = BTreeSet::new();
+    let mut globals = BTreeMap::new();
     for op in module.operations() {
         match op.name() {
             "xr.component" => {
                 let name = attribute(op, "sym_name")?.to_owned();
-                if op.attribute("exported") == Some("true") {
+                let exported = op.attribute("exported") == Some("true");
+                if op.attribute("global") == Some("true") {
+                    globals.insert(name.clone(), exported);
+                } else if exported {
                     exports.insert(name.clone());
                 }
                 components.insert(
@@ -75,21 +89,20 @@ pub(crate) fn program(
                     Loader::definition(
                         op,
                         module.has_visual_cache_plan(),
-                        translations.is_some(),
                         records.clone(),
                         assets.clone(),
                         &aliases,
                     ),
                 );
             }
-            "xr.record_decl" | "xr.translation_catalog" => {}
-            "xr.font" if fonts.is_some() => {}
+            "xr.record_decl" | "xr.translation_catalog" | "xr.font" => {}
             _ => return Err(unsupported(op, op.name())),
         }
     }
     Ok(Program {
         components: Rc::new(components),
         exports: Rc::new(exports),
+        globals: Rc::new(globals),
         record_validator: crate::host::record_validator(records.clone()),
         records,
         translations: translations.map(Rc::new),
@@ -188,6 +201,7 @@ fn kind(op: Op<'_>, ty: &Type) -> Result<ValueType> {
         Type::SwipeSide => ValueType::SwipeSide,
         Type::DragAction => ValueType::DragAction,
         Type::Image => ValueType::Image,
+        Type::LogLevel => ValueType::LogLevel,
         Type::ImageFit => ValueType::ImageFit,
         Type::ImageTileMode => ValueType::ImageTileMode,
         Type::ImageHorizontalAlignment => ValueType::ImageHorizontalAlignment,
@@ -232,6 +246,7 @@ fn reference(op: Op<'_>, value: ValueRef<'_>) -> Result<Member> {
 #[derive(Default)]
 struct AssetValues<'m> {
     images: BTreeMap<String, ImageAsset>,
+    entry_file: String,
     markdown: BTreeMap<&'m str, runtime::StyledText>,
     paths: BTreeMap<String, LoadedVectorPath>,
     subtrees: RefCell<BTreeMap<i64, StaticCache<Node>>>,
@@ -256,7 +271,6 @@ struct Loader<'m> {
     visual_bindings: VisualBindings<'m>,
     visual_scope: Option<&'m str>,
     use_visual_plan: bool,
-    can_translate: bool,
     selectors: Vec<StateSelector>,
     analysis: ComponentAnalysis<'m>,
     geometry_targets: BTreeSet<String>,
@@ -277,7 +291,6 @@ impl<'m> Loader<'m> {
     fn definition(
         op: Op<'m>,
         use_visual_plan: bool,
-        can_translate: bool,
         records: Rc<RecordSchemas>,
         assets: Rc<AssetValues<'m>>,
         aliases: &AliasGraphs<'m>,
@@ -289,7 +302,6 @@ impl<'m> Loader<'m> {
             .unwrap_or_default();
         let mut loader = Self {
             use_visual_plan,
-            can_translate,
             visual_bindings,
             analysis: ComponentAnalysis::from_component(
                 op,
@@ -334,29 +346,15 @@ impl<'m> Loader<'m> {
         let button_groups = group::members(&root);
         Ok(Definition {
             properties: loader.properties,
-            property_forwards: loader
-                .analysis
-                .property_forwards
-                .iter()
-                .filter(|(path, _)| path.len() > 1)
-                .flat_map(|(path, forward)| {
-                    let path: Vec<_> = path
-                        .iter()
-                        .map(|(owner, name)| Member::new(owner, name))
-                        .collect();
-                    forward
-                        .inputs
-                        .iter()
-                        .map(move |name| ((*name).to_owned(), path.clone()))
-                })
-                .collect(),
             callbacks: loader.callbacks,
             callback_defaults: loader
                 .analysis
                 .callback_forwards
-                .values()
-                .filter_map(|forward| forward.implementation)
-                .map(|((owner, name), _)| Member::new(owner, name))
+                .iter()
+                .filter_map(|(path, forward)| {
+                    let ((owner, name), _) = forward.implementation?;
+                    Some((Member::path(path.clone()), Member::new(owner, name)))
+                })
                 .collect(),
             root,
             button_groups,
@@ -421,6 +419,14 @@ impl<'m> Loader<'m> {
                         .map(|index| expression(self, index))
                         .collect::<Result<_>>()?;
                     body.push(Statement::Call(member(statement, "name")?, arguments));
+                }
+                "xr.log" => {
+                    body.push(Statement::Log {
+                        level: expression(self, 0)?,
+                        message: expression(self, 1)?,
+                        file: statement.source_file().unwrap_or("<MLIR>").to_owned(),
+                        span: statement.span(),
+                    });
                 }
                 "xr.scroll_command" | "xr.cancel_flick" | "xr.return_to_bounds" => {
                     let target = attribute(statement, "owner")?.to_owned();
@@ -502,6 +508,15 @@ impl<'m> Loader<'m> {
                         command,
                         key,
                         depth,
+                    ));
+                }
+                "xr.media_command" => {
+                    let command = xrack_resources::visual::MediaEffect::from_operation(statement)
+                        .map_err(|error| invalid(statement, error))?;
+                    body.push(Statement::Media(
+                        attribute(statement, "owner")?.into(),
+                        command
+                            .try_map_position(|position| self.expression(position, &parameters))?,
                     ));
                 }
                 "xr.timer_command" => {
@@ -592,6 +607,10 @@ impl<'m> Loader<'m> {
     }
 
     fn element(&mut self, op: Op<'m>) -> Result<Element> {
+        self.load_element(op, false)
+    }
+
+    fn load_element(&mut self, op: Op<'m>, table_cell: bool) -> Result<Element> {
         let repeat = op
             .children()
             .find(|child| child.name() == "xr.repeat")
@@ -641,7 +660,7 @@ impl<'m> Loader<'m> {
         let in_day_cell = self.in_day_cell;
         self.in_split_handle |= op.attribute("kind") == Some("SplitHandle");
         self.in_day_cell |= op.attribute("kind") == Some("DayCell");
-        let result = self.element_body(op, repeat);
+        let result = self.element_body(op, repeat, table_cell);
         self.visual_scope = previous_scope;
         self.in_split_handle = in_split_handle;
         self.in_day_cell = in_day_cell;
@@ -651,7 +670,12 @@ impl<'m> Loader<'m> {
         result
     }
 
-    fn element_body(&mut self, op: Op<'m>, repeat: Option<Repeat>) -> Result<Element> {
+    fn element_body(
+        &mut self,
+        op: Op<'m>,
+        repeat: Option<Repeat>,
+        table_cell: bool,
+    ) -> Result<Element> {
         let id = attribute(op, "id")?;
         let key = op
             .attribute("key")
@@ -676,57 +700,65 @@ impl<'m> Loader<'m> {
                 })
                 .map_err(|error| invalid(op, error))
         };
-        let column_field = if op.attribute("kind") == Some("TableColumn") {
-            field("field")?
-        } else {
-            None
-        };
+        let history = table_history_item(op)
+            .map_err(|error| invalid(op, error))?
+            .is_some();
+        let paste = history && table_option_configured(op, "pasteable");
         let table = match op.attribute("kind") {
-            Some("TableView" | "StandardTableView") => {
-                let standard = op.attribute("kind") == Some("StandardTableView");
-                let model = standard
-                    .then(|| {
-                        let binding = op
-                            .children()
-                            .find(|child| {
-                                child.name() == "xr.bind"
-                                    && child.attribute("name") == Some("model")
+            Some("StandardTableView") => {
+                let table =
+                    StandardTableRef::from_operation(op).map_err(|error| invalid(op, error))?;
+                let columns = table
+                    .columns
+                    .into_iter()
+                    .map(|column| {
+                        let path: Box<[_]> = column.field.split('.').map(str::to_owned).collect();
+                        let editor = column
+                            .editable
+                            .map(|binding| {
+                                Ok((
+                                    self.table_editor(binding, &table.record, &path)?,
+                                    self.visual_binding(binding)?,
+                                ))
                             })
-                            .ok_or_else(|| invalid(op, "missing standard table model"))?;
-                        self.visual_binding(binding)
+                            .transpose()?;
+                        Ok(table::StandardColumn { path, editor })
                     })
-                    .transpose()?;
+                    .collect::<Result<Rc<[_]>>>()?;
                 Some(table::Definition {
-                    model,
+                    model: Some(self.visual_binding(table.model)?),
+                    columns,
+                    history,
+                    paste,
                     filter_field: field("filter-field")?,
-                    row_header: field("row-header-field")?,
+                    row_header: table
+                        .row_header
+                        .map(|name| name.split('.').map(str::to_owned).collect()),
                 })
             }
+            Some("TableView") => Some(table::Definition {
+                model: None,
+                columns: Rc::from([]),
+                history,
+                paste,
+                filter_field: None,
+                row_header: None,
+            }),
             _ => None,
         };
-        let tree = if op.attribute("kind") == Some("TreeView") {
-            let row = op
-                .children()
-                .find(|child| child.attribute("kind") == Some("TreeRow"))
-                .ok_or_else(|| invalid(op, "TreeView is missing a row template"))?;
-            let role = |name| {
-                let binding = row
-                    .children()
-                    .find(|binding| {
-                        binding.name() == "xr.bind" && binding.attribute("name") == Some(name)
-                    })
-                    .ok_or_else(|| invalid(row, format!("TreeRow is missing {name}")))?;
-                let (_, path) = xrack_mlir::record_field_path(operand(binding, 0)?)
-                    .map_err(|error| invalid(binding, error))?;
-                Ok(path.into_iter().map(str::to_owned).collect::<Rc<[_]>>())
-            };
-            Some(tree::Definition {
-                key: role("key")?,
-                parent: role("parent-key")?,
-                filter_field: field("filter-field")?,
-            })
+        let (tree, tree_visible_field) = if op.attribute("kind") == Some("TreeView") {
+            let tree = TreeViewRef::from_operation(op).map_err(|error| invalid(op, error))?;
+            let path = |name: String| name.split('.').map(str::to_owned).collect::<Rc<[_]>>();
+            (
+                Some(tree::Definition {
+                    key: tree.key.into_iter().map(str::to_owned).collect(),
+                    parent: tree.parent.into_iter().map(str::to_owned).collect(),
+                    filter_field: tree.filter_field.map(path),
+                }),
+                tree.visible_field.map(path),
+            )
         } else {
-            None
+            (None, None)
         };
         let (visible_field, height_field) = if matches!(
             op.attribute("kind"),
@@ -739,7 +771,12 @@ impl<'m> Loader<'m> {
                     | "TreeView"
             )
         ) {
-            (field("row-visible-field")?, field("row-height-field")?)
+            let visible = if tree.is_some() {
+                tree_visible_field
+            } else {
+                field("row-visible-field")?
+            };
+            (visible, field("row-height-field")?)
         } else {
             (None, None)
         };
@@ -750,16 +787,50 @@ impl<'m> Loader<'m> {
             if callback.attribute("alias_owner").is_some() {
                 return Err(unsupported(callback, "instance callback aliases"));
             }
-            instance_handlers.insert(
-                attribute(callback, "name")?.into(),
-                self.function(callback)?,
-            );
+            instance_handlers.insert(Member::path(handler.endpoint), self.function(callback)?);
         }
-        let mut clipboard_parser = None;
-        let mut clipboard_text = instance_bindings
-            .clipboard_text
-            .map(|binding| self.expression(operand(binding, 0)?, &[]))
-            .transpose()?;
+        let clipboard_paste = if table_cell {
+            TablePasteRef::from_cell(op)
+                .map_err(|error| invalid(op, error))?
+                .map(|paste| {
+                    let parser = paste
+                        .parser
+                        .map(|parser| {
+                            let parameter = Parameter {
+                                name: parser.parameter.into(),
+                                ty: Type::String,
+                            };
+                            Ok(table_edit::ClipboardParser {
+                                path: parser.path,
+                                expression: self.expression(parser.result, &[parameter])?,
+                            })
+                        })
+                        .transpose()?;
+                    Ok(table_edit::ClipboardPaste {
+                        field: self.row_field(op, paste.target)?,
+                        parser,
+                    })
+                })
+                .transpose()?
+        } else {
+            None
+        };
+        let clipboard_text = if table_cell {
+            match TableClipboardRef::from_cell(op, instance_bindings.clipboard_text) {
+                Some(TableClipboardRef::Value(binding)) => Some(table::ClipboardText::Expression(
+                    self.expression(operand(binding, 0)?, &[])?,
+                )),
+                Some(TableClipboardRef::Text(binding)) => {
+                    let base = binding
+                        .map(|binding| self.expression(operand(binding, 0)?, &[]))
+                        .transpose()?;
+                    Some(table::ClipboardText::Text(base))
+                }
+                None => None,
+            }
+        } else {
+            None
+        };
         let mut bindings = Vec::new();
         let mut offsets = Vec::new();
         let mut scroll_target = None;
@@ -812,118 +883,16 @@ impl<'m> Loader<'m> {
         let mut secondary_windows = Vec::new();
         let mut split_handle = None;
         let mut day_cell = None;
-        let mut split_fill = None;
         for child in op.children() {
             match child.name() {
                 "xr.property" => self.property(key, child)?,
                 "xr.callback" if is_instance => {}
                 "xr.callback" => self.callback(key, child)?,
-                "xr.clipboard_paste" => {
-                    let parameter = Parameter {
-                        name: attribute(child, "text_parameter")?.to_owned(),
-                        ty: Type::String,
-                    };
-                    let result = child
-                        .children()
-                        .find(|op| op.name() == "xr.return")
-                        .ok_or_else(|| invalid(child, "missing clipboard parser result"))?;
-                    clipboard_parser = Some(table_edit::ClipboardParser {
-                        target: attribute(child, "target")?.into(),
-                        expression: self.expression(operand(result, 0)?, &[parameter])?,
-                    });
-                }
+                "xr.clipboard_paste" => {}
                 "xr.handler" => {
                     let name = attribute(child, "name")?;
-                    if !matches!(
-                        name,
-                        "clicked"
-                            | "edited"
-                            | "toggled"
-                            | "check-state-changed"
-                            | "selected"
-                            | "value-selected"
-                            | "accepted"
-                            | "link-activated"
-                            | "changed"
-                            | "released"
-                            | "finished"
-                            | "scrolled"
-                            | "flicked"
-                            | "opened"
-                            | "closed"
-                            | "current-row-changed"
-                            | "current-cell-changed"
-                            | "selection-changed"
-                            | "expanded"
-                            | "collapsed"
-                            | "resized"
-                            | "triggered"
-                            | "activated"
-                            | "activated-ambiguously"
-                            | "rejected"
-                            | "applied"
-                            | "reset"
-                            | "help-requested"
-                            | "discarded"
-                            | "canceled"
-                            | "month-changed"
-                            | "leave-requested"
-                            | "wheel"
-                            | "scroll-event"
-                            | "pointer-event"
-                            | "press-and-hold"
-                            | "double-clicked"
-                            | "entered"
-                            | "exited"
-                            | "moved"
-                            | "swiped"
-                            | "started"
-                            | "updated"
-                            | "ended"
-                            | "cancelled"
-                            | "drag-started"
-                            | "drag-finished"
-                            | "dropped"
-                            | "files-entered"
-                            | "files-dropped"
-                            | "position-changed"
-                            | "deactivated"
-                            | "removed"
-                            | "failed"
-                            | "close-requested"
-                            | "sort-ascending"
-                            | "sort-descending"
-                            | "column-moved"
-                            | "row-moved"
-                            | "search-triggered"
-                    ) && !runtime::is_focus_handler(name)
-                        && !runtime::KeyPhase::ALL
-                            .iter()
-                            .any(|phase| phase.handler() == name)
-                    {
-                        return Err(unsupported(child, &format!("event {name}")));
-                    }
                     if runtime::is_focus_handler(name) {
                         self.focus_targets.insert(key.into());
-                    }
-                    if (name == "triggered" && op.attribute("kind") != Some("Timer"))
-                        || (name == "activated"
-                            && !matches!(
-                                op.attribute("kind"),
-                                Some(
-                                    "DelayButton"
-                                        | "Shortcut"
-                                        | "Action"
-                                        | "ActionGroup"
-                                        | "MenuItem"
-                                        | "MonthGrid"
-                                        | "StackPage"
-                                )
-                            ))
-                        || (name == "activated-ambiguously"
-                            && op.attribute("kind") != Some("Shortcut"))
-                    {
-                        return Err(unsupported(child, &format!("event {name}")));
                     }
                     if matches!(name, "scrolled" | "flicked") {
                         self.viewport_targets.insert(key.into());
@@ -958,7 +927,8 @@ impl<'m> Loader<'m> {
                 "xr.element" if child.attribute("kind") == Some("SecondaryWindow") => {
                     secondary_windows.push(self.element(child)?);
                 }
-                "xr.element" | "xr.instance" => children.push(self.element(child)?),
+                "xr.element" | "xr.instance" => children
+                    .push(self.load_element(child, op.attribute("kind") == Some("TableRow"))?),
                 "xr.action_ref" => action = Some(attribute(child, "owner")?.into()),
                 "xr.radio_group_ref" | "xr.check_group_ref" => {
                     button_group = Some(group::Membership {
@@ -977,11 +947,9 @@ impl<'m> Loader<'m> {
                     self.focus_targets.insert(target.into());
                     initial_focus = Some(target.into());
                 }
-                "xr.split_fill" => split_fill = Some(attribute(child, "target")?),
+                "xr.split_fill" => {}
                 "xr.bind" | "xr.instance_link" if is_instance => {}
-                "xr.bind" if child.attribute("name") == Some("clipboard-text") => {
-                    clipboard_text = Some(self.expression(operand(child, 0)?, &[])?);
-                }
+                "xr.bind" if child.attribute("name") == Some("clipboard-text") => {}
                 "xr.state_select" => {
                     if self
                         .analysis
@@ -1033,8 +1001,9 @@ impl<'m> Loader<'m> {
                             child.attribute("name"),
                             Some("model" | "row-header-field")
                         ) => {}
-                "xr.bind" if column_field.is_some() && child.attribute("name") == Some("field") => {
-                }
+                "xr.bind"
+                    if op.attribute("kind") == Some("TableColumn")
+                        && child.attribute("name") == Some("field") => {}
                 "xr.bind" | "xr.layout_bind" => {
                     let name = property_name(child)?;
                     if name == "exclusive"
@@ -1145,7 +1114,7 @@ impl<'m> Loader<'m> {
             }
         } else {
             let kind = attribute(op, "kind")?;
-            Visual::Builtin(static_name(kind, ELEMENTS).ok_or_else(|| unsupported(op, kind))?)
+            Visual::Builtin(builtin_element(kind).ok_or_else(|| unsupported(op, kind))?)
         };
         if matches!(
             visual,
@@ -1168,16 +1137,8 @@ impl<'m> Loader<'m> {
             self.viewport_targets.insert(key.into());
         }
         let split = if matches!(visual, Visual::Builtin("SplitView")) {
-            let fill = split_fill
-                .map(|id| {
-                    children
-                        .iter()
-                        .position(|pane| pane.id.as_ref() == id)
-                        .ok_or_else(|| invalid(op, "split fill target must be a direct pane"))
-                })
-                .transpose()?;
             Some(split::Definition {
-                fill,
+                fill: xrack_mlir::split_fill_slot(op).map_err(|error| invalid(op, error))?,
                 handle: split_handle,
             })
         } else {
@@ -1196,6 +1157,9 @@ impl<'m> Loader<'m> {
             .collect::<Result<_>>()?;
         Ok(Element {
             key: key.into(),
+            media_source_file: matches!(visual, Visual::Builtin("MediaPlayer")).then(|| {
+                xrack_resources::visual::media_source_file(op, &self.assets.entry_file).to_owned()
+            }),
             id: id.into(),
             repeat,
             delegate: op.attribute("delegate").is_some(),
@@ -1206,8 +1170,7 @@ impl<'m> Loader<'m> {
             split,
             stack_routes,
             day_cell,
-            column_field,
-            clipboard_parser,
+            clipboard_paste,
             clipboard_text,
             contains_delegate: is_instance
                 || children
@@ -1272,31 +1235,16 @@ impl<'m> Loader<'m> {
     }
 
     fn record_combo(&mut self, op: Op<'m>) -> Result<Option<RecordCombo>> {
-        if op.attribute("kind") != Some("ComboBox") {
-            return Ok(None);
-        }
-        let Some(binding) = op
-            .children()
-            .find(|child| child.name() == "xr.bind" && child.attribute("name") == Some("model"))
+        let Some(combo) = RecordComboRef::from_operation(op).map_err(|error| invalid(op, error))?
         else {
             return Ok(None);
         };
-        let model = operand(binding, 0)?;
-        if !matches!(value_kind(binding, model)?, ValueType::RecordList(_)) {
-            return Ok(None);
-        }
-        let role = |name| {
-            xrack_mlir::record_role(op, name)
-                .map(|role| role.map(|role| role.split('.').map(str::to_owned).collect::<Vec<_>>()))
-                .map_err(|error| invalid(op, error))
-        };
-        let label = role("text-role")?.unwrap_or_else(|| vec!["text".to_owned()]);
-        let value = role("value-role")?.unwrap_or_else(|| label.clone());
+        let path = |role: String| role.split('.').map(str::to_owned).collect();
         Ok(Some(RecordCombo {
-            model: self.visual_binding(binding)?,
-            label,
-            value,
-            enabled: role("enabled-role")?,
+            model: self.visual_binding(combo.model)?,
+            label: path(combo.label),
+            value: path(combo.value),
+            enabled: combo.enabled.map(path),
         }))
     }
 
@@ -1362,6 +1310,46 @@ impl<'m> Loader<'m> {
             .get(name)
             .map(Vec::as_slice)
             .ok_or_else(|| invalid(op, format_args!("unknown record {name}")))
+    }
+
+    fn table_editor(
+        &self,
+        op: Op<'m>,
+        record: &str,
+        path: &[String],
+    ) -> Result<runtime::TableCellEditor> {
+        use runtime::TableField;
+        let missing = || invalid(op, format_args!("unknown table field {}", path.join(".")));
+        let mut fields = self.record_fields(op, record)?;
+        let (last, parents) = path.split_last().ok_or_else(missing)?;
+        for name in parents {
+            let Some(RecordField {
+                ty: ValueType::Record(record),
+                ..
+            }) = fields.iter().find(|field| field.name == *name)
+            else {
+                return Err(missing());
+            };
+            fields = self.record_fields(op, record)?;
+        }
+        let field = fields
+            .iter()
+            .find(|field| field.name == *last)
+            .ok_or_else(missing)?;
+        Ok(match field.ty {
+            ValueType::String => String::EDITOR,
+            ValueType::Int => i64::EDITOR,
+            ValueType::Float => f64::EDITOR,
+            ValueType::Bool => bool::EDITOR,
+            ValueType::Date => runtime::Date::EDITOR,
+            ValueType::Time => runtime::Time::EDITOR,
+            _ => {
+                return Err(invalid(
+                    op,
+                    format_args!("unsupported editable table field {}", path.join(".")),
+                ));
+            }
+        })
     }
 
     fn default_record(&self, op: Op<'m>, name: Rc<str>) -> Result<Value> {
@@ -1477,15 +1465,10 @@ impl<'m> Loader<'m> {
                 self.focus_targets.insert(owner.into());
                 Expression::FocusRead(owner.into(), spelling()? == "focus-within")
             }
-            "xr.stack_read" => {
-                let name = spelling()?;
-                let read = stack::Read::parse(name)
-                    .ok_or_else(|| invalid(op, format_args!("unknown stack property {name}")))?;
-                let route = matches!(read, stack::Read::Active | stack::Read::Index)
-                    .then(|| argument(self, 0))
-                    .transpose()?;
-                Expression::StackRead(attribute(op, "owner")?.into(), read, route)
-            }
+            "xr.stack_read" => Expression::StackRead(
+                attribute(op, "owner")?.into(),
+                StackRead::from_operation(op).map_err(|error| invalid(op, error))?,
+            ),
             "xr.split_state_read" => Expression::SplitSave(attribute(op, "owner")?.into()),
             "xr.split_resizing" => Expression::SplitResizing(attribute(op, "owner")?.into()),
             "xr.tree_query" => {
@@ -1505,7 +1488,11 @@ impl<'m> Loader<'m> {
                 )
             }
             "xr.table_selection_read" | "xr.table_sort_read" | "xr.table_history_read" => {
-                Expression::TableRead(member(op, "value")?)
+                Expression::TableRead(
+                    attribute(op, "owner")?.into(),
+                    xrack_mlir::TableRead::from_operation(op)
+                        .map_err(|error| invalid(op, error))?,
+                )
             }
             "xr.scroll_control_read" => Expression::ScrollControlRead(member(op, "value")?),
             "xr.image_url" => {
@@ -1513,9 +1500,11 @@ impl<'m> Loader<'m> {
                 let image = if url.is_empty() {
                     ImageAsset::default()
                 } else {
-                    self.assets.images.get(url).cloned().ok_or_else(|| {
-                        unsupported(op, &format!("unresolved image asset {url:?}"))
-                    })?
+                    self.assets
+                        .images
+                        .get(url)
+                        .cloned()
+                        .ok_or_else(|| invalid(op, format_args!("unresolved image {url:?}")))?
                 };
                 Expression::Literal(Value::ImageAsset(image))
             }
@@ -1527,6 +1516,7 @@ impl<'m> Loader<'m> {
                 };
                 Expression::ImageDimension(argument(self, 0)?, axis)
             }
+            "xr.media_read" => Expression::MediaRead(member(op, "value")?),
             "xr.image_playback_read" => Expression::ImagePlaybackRead(member(op, "value")?),
             "xr.nine_slice" => {
                 let edges =
@@ -1576,31 +1566,59 @@ impl<'m> Loader<'m> {
                 Expression::Select(argument(self, 0)?, argument(self, 1)?, argument(self, 2)?)
             }
             "xr.cast" | "xr.to_ratio" => Expression::Cast(argument(self, 0)?),
+            "xr.math_function" => {
+                let kind = MathFunction::parse(spelling()?)
+                    .ok_or_else(|| invalid(op, "unknown math function"))?;
+                Expression::MathFunction(kind, arguments(self)?)
+            }
+            "xr.string_function" => {
+                let kind = StringFunction::parse(spelling()?)
+                    .ok_or_else(|| invalid(op, "unknown string function"))?;
+                Expression::StringFunction(kind, arguments(self)?)
+            }
+            "xr.model_count" => Expression::ModelCount(argument(self, 0)?),
+            "xr.model_is_empty" => Expression::ModelIsEmpty(argument(self, 0)?),
+            "xr.model_at" => {
+                Expression::ModelAt(argument(self, 0)?, argument(self, 1)?, argument(self, 2)?)
+            }
+            "xr.color_function" => {
+                let kind = ColorFunction::parse(spelling()?)
+                    .ok_or_else(|| invalid(op, "unknown color function"))?;
+                Expression::ColorFunction(kind, arguments(self)?)
+            }
+            "xr.locale" => Expression::Locale,
+            "xr.format_number" => Expression::FormatNumber(argument(self, 0)?, argument(self, 1)?),
+            "xr.parse_number" => Expression::ParseNumber(argument(self, 0)?, argument(self, 1)?),
+            "xr.format_fixed" => Expression::FormatFixed(
+                argument(self, 0)?,
+                spelling()?
+                    .parse::<usize>()
+                    .map_err(|_| invalid(op, "invalid fixed precision"))?,
+            ),
+            "xr.round" => Expression::Round(argument(self, 0)?),
             "xr.stringify" => Expression::Stringify(argument(self, 0)?),
             "xr.solid_brush" => Expression::SolidBrush(argument(self, 0)?),
             "xr.linear_gradient" | "xr.radial_gradient" => {
-                let linear = op.name() == "xr.linear_gradient";
-                let angle = linear.then(|| argument(self, 0)).transpose()?;
-                let stops = (usize::from(linear)..op.operand_count())
-                    .map(|index| {
-                        let stop = operand(op, index)?
-                            .defining_operation()
-                            .filter(|stop| stop.name() == "xr.gradient_stop")
-                            .ok_or_else(|| invalid(op, "expected a gradient stop"))?;
+                let GradientRef { angle, stops } =
+                    GradientRef::from_operation(op).map_err(|error| invalid(op, error))?;
+                let angle = angle
+                    .map(|value| self.expression(value, parameters))
+                    .transpose()?;
+                let stops = stops
+                    .into_iter()
+                    .map(|(color, offset)| {
                         Ok((
-                            self.expression(operand(stop, 0)?, parameters)?,
-                            self.expression(operand(stop, 1)?, parameters)?,
+                            self.expression(color, parameters)?,
+                            self.expression(offset, parameters)?,
                         ))
                     })
                     .collect::<Result<_>>()?;
-                let cache = (self.use_visual_plan
-                    && op.attribute("xr.static_gradient") == Some("true"))
-                .then(|| {
-                    static_cache(
-                        op.integer_attribute("xr.static_gradient_group"),
-                        &self.assets.gradients,
-                    )
-                });
+                let cache = if self.use_visual_plan {
+                    GradientRef::static_group(op)
+                        .map(|group| static_cache(Some(group), &self.assets.gradients))
+                } else {
+                    None
+                };
                 Expression::Gradient {
                     angle,
                     stops,
@@ -1610,19 +1628,15 @@ impl<'m> Loader<'m> {
             "xr.state_select" => {
                 let conditions = arguments(self)?;
                 let index = self.selectors.len();
+                let owner = attribute(op, "owner")?;
                 self.selectors.push(StateSelector {
+                    owner: owner.into(),
                     conditions,
-                    persistent: self
-                        .analysis
-                        .persistent_state_selectors
-                        .contains_key(attribute(op, "owner")?),
+                    persistent: self.analysis.persistent_state_selectors.contains_key(owner),
                 });
                 Expression::StateSelect(index)
             }
             "xr.translate" => {
-                if !self.can_translate {
-                    return Err(unsupported(op, "translations without a loaded catalog"));
-                }
                 let translation =
                     TranslationRef::from_operation(op).map_err(|error| invalid(op, error))?;
                 Expression::Translate {
@@ -1687,6 +1701,16 @@ impl<'m> Loader<'m> {
             "xr.make_date" => {
                 Expression::MakeDate([argument(self, 0)?, argument(self, 1)?, argument(self, 2)?])
             }
+            "xr.date_is_valid" => Expression::DateIsValid(argument(self, 0)?),
+            "xr.date_weekday" => Expression::DateWeekday(argument(self, 0)?),
+            "xr.date_add_days" => {
+                Expression::DateAddDays(argument(self, 0)?, argument(self, 1)?, argument(self, 2)?)
+            }
+            "xr.date_add_months" => Expression::DateAddMonths(
+                argument(self, 0)?,
+                argument(self, 1)?,
+                argument(self, 2)?,
+            ),
             "xr.make_time" => {
                 Expression::MakeTime([argument(self, 0)?, argument(self, 1)?, argument(self, 2)?])
             }
@@ -1820,6 +1844,7 @@ fn runtime_default(kind: &ValueType) -> Option<Value> {
         ColorScheme,
         InputType,
         DialInputMode,
+        LogLevel,
         ImageFit,
         ImageTileMode,
         ImageHorizontalAlignment,
@@ -1836,127 +1861,6 @@ fn property_name(op: Op<'_>) -> Result<&'static str> {
     let name = attribute(op, "name")?;
     static_name(name, PROPERTIES).ok_or_else(|| unsupported(op, &format!("visual property {name}")))
 }
-
-const ELEMENTS: &[&str] = &[
-    "Window",
-    "ApplicationWindow",
-    "SecondaryWindow",
-    "SystemTrayIcon",
-    "WindowMoveArea",
-    "Page",
-    "PageHeader",
-    "PageFooter",
-    "FileDialog",
-    "MessageDialog",
-    "Rectangle",
-    "Pane",
-    "ControlFrame",
-    "PopupWindow",
-    "Image",
-    "AnimatedImage",
-    "Path",
-    "Text",
-    "Label",
-    "StyledText",
-    "TouchArea",
-    "WheelHandler",
-    "HoverHandler",
-    "SwipeGestureHandler",
-    "ScaleRotateGestureHandler",
-    "SwipeDelegate",
-    "SwipeLeft",
-    "SwipeContent",
-    "SwipeRight",
-    "DragArea",
-    "DropArea",
-    "Timer",
-    "DelayButton",
-    "FocusScope",
-    "Shortcut",
-    "Action",
-    "ActionGroup",
-    "ButtonGroup",
-    "RadioButton",
-    "RadioGroup",
-    "TabWidget",
-    "Tab",
-    "TabBar",
-    "TabButton",
-    "SwipeView",
-    "SwipePage",
-    "StackView",
-    "StackPage",
-    "PageIndicator",
-    "MenuBar",
-    "Menu",
-    "MenuItem",
-    "MenuSeparator",
-    "ContextMenuArea",
-    "ToolBar",
-    "ToolButton",
-    "ToolSeparator",
-    "RoundButton",
-    "Tooltip",
-    "GroupBox",
-    "Dialog",
-    "DialogButton",
-    "DialogButtonBox",
-    "StandardButton",
-    "Drawer",
-    "ProgressIndicator",
-    "BusyIndicator",
-    "Spinner",
-    "Button",
-    "TextInput",
-    "LineEdit",
-    "TextEdit",
-    "TextArea",
-    "CheckBox",
-    "ComboBox",
-    "SpinBox",
-    "DoubleSpinBox",
-    "Slider",
-    "Dial",
-    "RangeSlider",
-    "Calendar",
-    "MonthGrid",
-    "DayCell",
-    "DayOfWeekRow",
-    "WeekNumberColumn",
-    "DatePickerPopup",
-    "TimePicker",
-    "TimePickerPopup",
-    "ColorPickerPopup",
-    "FontPickerPopup",
-    "Tumbler",
-    "Switch",
-    "HorizontalBox",
-    "VerticalBox",
-    "HorizontalLayout",
-    "VerticalLayout",
-    "GridLayout",
-    "FlowLayout",
-    "FlexboxLayout",
-    "Row",
-    "ScrollView",
-    "Flickable",
-    "ScrollIndicator",
-    "ScrollBar",
-    "ListView",
-    "StandardListView",
-    "StandardTableView",
-    "TableView",
-    "TableColumn",
-    "TableRow",
-    "TableCell",
-    "TreeView",
-    "TreeRow",
-    "TreeCell",
-    "SplitView",
-    "SplitHandle",
-    "SearchField",
-    "GridView",
-];
 
 const PROPERTIES: &[&str] = &[
     "x",
@@ -1999,6 +1903,14 @@ const PROPERTIES: &[&str] = &[
     "padding-bottom",
     "visible",
     "source",
+    "autoplay",
+    "muted",
+    "playback-rate",
+    "network-bandwidth",
+    "audio-track",
+    "subtitle-track",
+    "subtitle-file",
+    "volume",
     "icon",
     "icon-template",
     "icon-size",

@@ -10,6 +10,8 @@ publish = false
 pollster.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
 wgpu.workspace = true
 xrack-compiler = { path = "../xrack-compiler" }
 xrack-interpreter = { path = "../xrack-interpreter" }

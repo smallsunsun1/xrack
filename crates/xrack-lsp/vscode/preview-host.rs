@@ -75,7 +75,13 @@ fn run() -> Result<(), String> {
 }
 
 fn main() -> std::process::ExitCode {
-    match run() {
+    let subscriber = tracing_subscriber::fmt()
+        .without_time()
+        .with_ansi(false)
+        .with_max_level(tracing::Level::TRACE)
+        .with_writer(io::stderr)
+        .finish();
+    match tracing::subscriber::with_default(subscriber, run) {
         Ok(()) => std::process::ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("XRack preview: {error}");

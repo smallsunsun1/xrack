@@ -183,7 +183,7 @@
           ]
         },
         {
-          "match": "(?<![A-Za-z_0-9-])(component|struct)\\s+([A-Za-z_][A-Za-z_0-9]*(?:-[A-Za-z_0-9]+)*)(?![A-Za-z_0-9-])",
+          "match": "(?<![A-Za-z_0-9-])(component|global|struct)\\s+([A-Za-z_][A-Za-z_0-9]*(?:-[A-Za-z_0-9]+)*)(?![A-Za-z_0-9-])",
           "captures": {
             "1": {
               "name": "storage.type.xrack"
@@ -365,14 +365,28 @@
         },
         {
           "name": "support.function.xrack",
-          "match": "@(?:image-url|markdown|tr|linear-gradient|radial-gradient)(?![A-Za-z_0-9-])"
+          "match": "@(?:image-url|markdown|tr|linear-gradient|radial-gradient|children)(?![A-Za-z_0-9-])"
+        },
+        {
+          "match": "(?<![A-Za-z_0-9.-])(Math|Strings|Model|Colors|Dates|I18n|Log)(\\.)([A-Za-z_][A-Za-z_0-9]*(?:-[A-Za-z_0-9]+)*)(?=\\s*\\()",
+          "captures": {
+            "1": {
+              "name": "support.class.xrack"
+            },
+            "2": {
+              "name": "punctuation.accessor.xrack"
+            },
+            "3": {
+              "name": "support.function.xrack"
+            }
+          }
         },
         {
           "name": "variable.other.property.xrack",
           "match": "(?<=\\.)[A-Za-z_][A-Za-z_0-9]*(?:-[A-Za-z_0-9]+)*"
         },
         {
-          "match": "(?<![A-Za-z_0-9-])(ImageFit|ImageTileMode|ImageHorizontalAlignment|ImageVerticalAlignment|ImageRendering|LayoutAlignment|CrossAxisAlignment|Orientation|FlickDirection|FlickBoundsBehavior|FlickBoundsMovement|FlexboxLayoutDirection|FlexboxLayoutWrap|DialInputMode|ScrollBarPolicy|ScrollSnapMode|ScrollAlignment|TextWrap|TextHorizontalAlignment|TextVerticalAlignment|TextOverflow|InputType|CheckState|ColorScheme|DialogRole|DragAction|DrawerEdge|EventResult|FocusReason|FileDialogMode|MessageButtons|MessageLevel|PopupPlacement|SelectionTarget|StandardButtonKind|SwipeSide)(\\.)(?:([A-Za-z_][A-Za-z_0-9]*(?:-[A-Za-z_0-9]+)*))?",
+          "match": "(?<![A-Za-z_0-9-])(ImageFit|ImageTileMode|ImageHorizontalAlignment|ImageVerticalAlignment|ImageRendering|LayoutAlignment|CrossAxisAlignment|Orientation|FlickDirection|FlickBoundsBehavior|FlickBoundsMovement|FlexboxLayoutDirection|FlexboxLayoutWrap|DialInputMode|ScrollBarPolicy|ScrollSnapMode|ScrollAlignment|TextWrap|TextHorizontalAlignment|TextVerticalAlignment|TextOverflow|InputType|CheckState|ColorScheme|DialogRole|DragAction|DrawerEdge|EventResult|FocusReason|FileDialogMode|MessageButtons|LogLevel|MessageLevel|PopupPlacement|SelectionTarget|StandardButtonKind|SwipeSide)(\\.)(?:([A-Za-z_][A-Za-z_0-9]*(?:-[A-Za-z_0-9]+)*))?",
           "captures": {
             "1": {
               "name": "support.type.xrack"
@@ -399,7 +413,7 @@
         },
         {
           "name": "storage.type.xrack",
-          "match": "(?<![A-Za-z_0-9-])(?:component|struct|property|callback)(?![A-Za-z_0-9-])"
+          "match": "(?<![A-Za-z_0-9-])(?:component|global|struct|property|callback)(?![A-Za-z_0-9-])"
         },
         {
           "name": "variable.language.xrack",
@@ -411,7 +425,7 @@
       "patterns": [
         {
           "name": "support.type.xrack",
-          "match": "(?<![A-Za-z_0-9-])(?:int|float|bool|string|styled-text|length|percent|color|brush|image|ImageFit|ImageTileMode|ImageHorizontalAlignment|ImageVerticalAlignment|ImageRendering|LayoutAlignment|CrossAxisAlignment|Orientation|FlickDirection|FlickBoundsBehavior|FlickBoundsMovement|FlexboxLayoutDirection|FlexboxLayoutWrap|DialInputMode|ScrollBarPolicy|ScrollSnapMode|ScrollAlignment|TextWrap|TextHorizontalAlignment|TextVerticalAlignment|TextOverflow|InputType|CheckState|ColorScheme|Date|DialogRole|DragAction|DrawerEdge|EventResult|FocusReason|KeyEvent|KeyModifiers|FileDialogMode|MessageButtons|MessageLevel|PopupPlacement|SelectionTarget|StandardButtonKind|SwipeSide|Time)(?![A-Za-z_0-9-])"
+          "match": "(?<![A-Za-z_0-9-])(?:int|float|bool|string|styled-text|length|percent|color|brush|image|ImageFit|ImageTileMode|ImageHorizontalAlignment|ImageVerticalAlignment|ImageRendering|LayoutAlignment|CrossAxisAlignment|Orientation|FlickDirection|FlickBoundsBehavior|FlickBoundsMovement|FlexboxLayoutDirection|FlexboxLayoutWrap|DialInputMode|ScrollBarPolicy|ScrollSnapMode|ScrollAlignment|TextWrap|TextHorizontalAlignment|TextVerticalAlignment|TextOverflow|InputType|CheckState|ColorScheme|Date|DialogRole|DragAction|DrawerEdge|EventResult|FocusReason|KeyEvent|KeyModifiers|FileDialogMode|MessageButtons|LogLevel|MessageLevel|PopupPlacement|SelectionTarget|StandardButtonKind|SwipeSide|Time)(?![A-Za-z_0-9-])"
         },
         {
           "name": "entity.name.type.xrack",

@@ -35,6 +35,50 @@ impl RangeAction {
     pub fn is_release(self) -> bool {
         matches!(self, Self::Release | Self::CommitFraction(_))
     }
+
+    /// A release observes live values after the change handler has run.
+    #[doc(hidden)]
+    pub fn try_deliver<T, E>(
+        self,
+        change: Option<T>,
+        commit: impl FnOnce(T) -> Result<bool, E>,
+        release: impl FnOnce() -> Result<(), E>,
+    ) -> Result<bool, E> {
+        match change {
+            Some(value) => {
+                if !commit(value)? {
+                    return Ok(false);
+                }
+            }
+            None if !self.is_release() => return Ok(false),
+            None => {}
+        }
+        if self.is_release() {
+            release()?;
+        }
+        Ok(true)
+    }
+
+    #[doc(hidden)]
+    pub fn deliver<T>(
+        self,
+        change: Option<T>,
+        commit: impl FnOnce(T),
+        release: impl FnOnce(),
+    ) -> bool {
+        self.try_deliver(
+            change,
+            |value| {
+                commit(value);
+                Ok::<_, std::convert::Infallible>(true)
+            },
+            || {
+                release();
+                Ok(())
+            },
+        )
+        .unwrap_or_else(|error| match error {})
+    }
 }
 
 #[doc(hidden)]
@@ -516,6 +560,19 @@ impl SliderInterval {
             next.max(values[0])
         };
         (values != self.values).then_some(values)
+    }
+
+    #[doc(hidden)]
+    pub fn changed_values(
+        self,
+        handle: usize,
+        action: RangeAction,
+        raw: [f64; 2],
+    ) -> Option<[Option<f64>; 2]> {
+        let next = self.apply(handle, action)?;
+        Some(std::array::from_fn(|index| {
+            (next[index] != raw[index]).then_some(next[index])
+        }))
     }
 }
 

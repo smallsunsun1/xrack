@@ -146,28 +146,29 @@ fn activate_pointer(
     (target, handled)
 }
 
-fn compare_file(
+fn example_program(
+    mut preview: xrack_compiler::PreviewModule,
     file: &str,
-    source: &str,
-    examples: &[Example],
-    failures: &mut Vec<String>,
-) -> usize {
-    let mut preview = xrack_compiler::prepare_preview(source, file, Default::default()).unwrap();
+    expected: &BTreeSet<&str>,
+) -> Program {
     let catalog = preview.take_translation_catalog();
-    let expected: BTreeSet<_> = examples.iter().map(|(name, _)| *name).collect();
-    let declared: BTreeSet<_> = preview.components.iter().map(String::as_str).collect();
-    assert!(
-        expected.is_subset(&declared),
-        "{file} is missing a listed component"
-    );
     let (program, _) =
         Program::from_module_with_file_resources(&preview.module, file, catalog).unwrap();
+    let declared: BTreeSet<_> = preview.components.iter().map(String::as_str).collect();
     let exported: BTreeSet<_> = program
         .exported_components()
         .filter(|name| declared.contains(name))
         .collect();
-    assert_eq!(expected, exported, "{file} export inventory");
+    assert_eq!(*expected, exported, "{file} export inventory");
+    program
+}
 
+fn compare_program(
+    program: &Program,
+    file: &str,
+    examples: &[Example],
+    failures: &mut Vec<String>,
+) -> usize {
     let mut activated = 0;
     for &(name, construct) in examples {
         let comparison = catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -242,6 +243,25 @@ fn compare_file(
         }
     }
     activated
+}
+
+fn compare_file(
+    file: &str,
+    source: &str,
+    examples: &[Example],
+    failures: &mut Vec<String>,
+) -> usize {
+    let preview = xrack_compiler::prepare_preview(source, file, Default::default()).unwrap();
+    let expected: BTreeSet<_> = examples.iter().map(|(name, _)| *name).collect();
+    let mlir = preview.module.to_mlir();
+    let path = std::path::Path::new(file).with_extension("mlir");
+    let mlir_file = path.to_str().unwrap();
+    let from_text = xrack_compiler::prepare_mlir_preview(&mlir, mlir_file)
+        .unwrap_or_else(|error| panic!("{mlir_file}: {error}"));
+    let from_text = example_program(from_text, mlir_file, &expected);
+    let from_xr = example_program(preview, file, &expected);
+    compare_program(&from_xr, file, examples, failures)
+        + compare_program(&from_text, mlir_file, examples, failures)
 }
 
 #[test]
@@ -410,6 +430,7 @@ fn all_example_exports_match_generated_scenes_layout_and_input_routes() {
             EditableChoiceDemo
         ]
     );
+    check!("slots/slots.xr", slots_ui, [SlotDemo, GlobalDemo]);
     check!(
         "split/split.xr",
         split_ui,
@@ -456,6 +477,7 @@ fn all_example_exports_match_generated_scenes_layout_and_input_routes() {
             TreeBranchesDemo
         ]
     );
+    check!("video/video.xr", video_ui, [VideoDemo]);
     assert!(failures.is_empty(), "{}", failures.join("\n\n"));
-    println!("Compared {activated} distinct pointer activations from fresh example scenes");
+    println!("Compared {activated} pointer activations across source and text MLIR inputs");
 }

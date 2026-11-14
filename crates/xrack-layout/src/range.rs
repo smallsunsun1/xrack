@@ -38,34 +38,66 @@ pub struct SliderGeometry {
     start: Point,
     end: Point,
     pub radius: f32,
+    horizontal: f32,
+    vertical: f32,
 }
 
 impl SliderGeometry {
     pub fn new(bounds: Rect, orientation: Orientation) -> Self {
         let radius = (bounds.width.min(bounds.height) * 0.5).clamp(0.0, 8.0);
+        Self::with_travel(bounds, orientation, radius, radius)
+    }
+
+    pub fn for_node(bounds: Rect, node: &Node) -> Self {
+        let orientation = node.orientation();
+        let radius = (bounds.width.min(bounds.height) * 0.5).clamp(0.0, 8.0);
+        let extent = |part: &Node, property, available: f32| {
+            part.length(property)
+                .unwrap_or(radius * 2.0)
+                .clamp(0.0, available)
+        };
+        let (horizontal, vertical) =
+            node.control_part("SliderHandle")
+                .map_or((radius, radius), |part| {
+                    (
+                        extent(part, "width", bounds.width) * 0.5,
+                        extent(part, "height", bounds.height) * 0.5,
+                    )
+                });
+        Self::with_travel(bounds, orientation, horizontal, vertical)
+    }
+
+    fn with_travel(bounds: Rect, orientation: Orientation, horizontal: f32, vertical: f32) -> Self {
+        let radius = (bounds.width.min(bounds.height) * 0.5).clamp(0.0, 8.0);
         let (start, end) = match orientation {
             Orientation::Horizontal => (
                 Point {
-                    x: bounds.x + radius,
+                    x: bounds.x + horizontal,
                     y: bounds.y + bounds.height * 0.5,
                 },
                 Point {
-                    x: bounds.x + bounds.width - radius,
+                    x: bounds.x + bounds.width - horizontal,
                     y: bounds.y + bounds.height * 0.5,
                 },
             ),
             Orientation::Vertical => (
                 Point {
                     x: bounds.x + bounds.width * 0.5,
-                    y: bounds.y + bounds.height - radius,
+                    y: bounds.y + bounds.height - vertical,
                 },
                 Point {
                     x: bounds.x + bounds.width * 0.5,
-                    y: bounds.y + radius,
+                    y: bounds.y + vertical,
                 },
             ),
         };
-        Self { start, end, radius }
+        Self {
+            start,
+            end,
+            radius,
+            horizontal,
+            vertical,
+        }
     }
 
     pub fn position(&self, fraction: f64) -> Point {
@@ -78,7 +110,7 @@ impl SliderGeometry {
 
     pub(crate) fn contains_thumb(&self, fraction: f64, point: Point) -> bool {
         let center = self.position(fraction);
-        (point.x - center.x).abs() <= self.radius && (point.y - center.y).abs() <= self.radius
+        (point.x - center.x).abs() <= self.horizontal && (point.y - center.y).abs() <= self.vertical
     }
 
     pub fn fraction_at(&self, point: Point) -> Option<f64> {

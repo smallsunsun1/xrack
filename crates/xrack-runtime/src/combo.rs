@@ -1,4 +1,4 @@
-use crate::{ChangeSignal, ControlAction, Node, RowKey, Value, VecModel};
+use crate::{ChangeSignal, ControlAction, InputRoute, Node, RowKey, Value, VecModel};
 use std::{borrow::Cow, cell::Cell, fmt, ops::Range, rc::Rc};
 
 trait Rows {
@@ -140,6 +140,14 @@ impl ComboItems {
             revision: self.revision.get(),
             selected,
         }
+    }
+
+    /// Use the selection already read for the scene when projecting record options.
+    #[doc(hidden)]
+    pub fn populate_scene(&self, node: &mut Node) {
+        let index = node.int("current-index").unwrap_or(0);
+        let snapshot = self.snapshot(index, node.properties.get("current-value"));
+        node.properties.insert("model", Value::ComboModel(snapshot));
     }
 }
 
@@ -438,6 +446,39 @@ pub fn try_prepare_combo_input<E>(
     editable: impl FnOnce() -> Result<bool, E>,
     model_current: impl FnOnce() -> Result<bool, E>,
 ) -> Result<Option<ComboInput>, E> {
+    try_prepare_combo_input_with_draft(node, action, available, editable, model_current, || {
+        Ok(None)
+    })
+}
+
+#[doc(hidden)]
+pub fn try_prepare_combo_input_with_draft<E>(
+    node: &Node,
+    action: ControlAction,
+    available: impl FnOnce() -> Result<bool, E>,
+    editable: impl FnOnce() -> Result<bool, E>,
+    model_current: impl FnOnce() -> Result<bool, E>,
+    linked_draft: impl FnOnce() -> Result<Option<String>, E>,
+) -> Result<Option<ComboInput>, E> {
+    try_prepare_combo_input_with_live_draft(
+        node,
+        action,
+        available,
+        editable,
+        model_current,
+        || Ok(linked_draft()?.is_none_or(|draft| draft == crate::text_input_value(node))),
+    )
+}
+
+#[doc(hidden)]
+pub fn try_prepare_combo_input_with_live_draft<E>(
+    node: &Node,
+    action: ControlAction,
+    available: impl FnOnce() -> Result<bool, E>,
+    editable: impl FnOnce() -> Result<bool, E>,
+    model_current: impl FnOnce() -> Result<bool, E>,
+    draft_current: impl FnOnce() -> Result<bool, E>,
+) -> Result<Option<ComboInput>, E> {
     if !matches!(
         action,
         ControlAction::Select(_) | ControlAction::AcceptComboText
@@ -464,6 +505,9 @@ pub fn try_prepare_combo_input<E>(
                 })
             }
             ControlAction::AcceptComboText => {
+                if !draft_current()? || reads.changed() {
+                    return Ok(None);
+                }
                 let Some(submission) = combo_submission(node) else {
                     return Ok(None);
                 };
@@ -486,6 +530,26 @@ pub fn try_prepare_combo_input<E>(
 }
 
 #[doc(hidden)]
+pub fn prepare_combo_input_with_live_draft(
+    node: &Node,
+    action: ControlAction,
+    available: impl FnOnce() -> bool,
+    editable: impl FnOnce() -> bool,
+    model_current: impl FnOnce() -> bool,
+    draft_current: impl FnOnce() -> bool,
+) -> Option<ComboInput> {
+    try_prepare_combo_input_with_live_draft(
+        node,
+        action,
+        || Ok::<_, std::convert::Infallible>(available()),
+        || Ok(editable()),
+        || Ok(model_current()),
+        || Ok(draft_current()),
+    )
+    .unwrap_or_else(|error| match error {})
+}
+
+#[doc(hidden)]
 pub fn prepare_combo_input(
     node: &Node,
     action: ControlAction,
@@ -503,6 +567,26 @@ pub fn prepare_combo_input(
     .unwrap_or_else(|error| match error {})
 }
 
+#[doc(hidden)]
+pub fn prepare_combo_input_with_draft(
+    node: &Node,
+    action: ControlAction,
+    available: impl FnOnce() -> bool,
+    editable: impl FnOnce() -> bool,
+    model_current: impl FnOnce() -> bool,
+    linked_draft: impl FnOnce() -> Option<String>,
+) -> Option<ComboInput> {
+    try_prepare_combo_input_with_draft(
+        node,
+        action,
+        || Ok::<_, std::convert::Infallible>(available()),
+        || Ok(editable()),
+        || Ok(model_current()),
+        || Ok(linked_draft()),
+    )
+    .unwrap_or_else(|error| match error {})
+}
+
 pub fn choice_enabled(node: &Node, index: usize) -> bool {
     if node.kind == "SearchField" {
         return crate::search_suggestion(node, index).is_some();
@@ -514,6 +598,63 @@ pub fn choice_enabled(node: &Node, index: usize) -> bool {
 }
 
 impl Node {
+    /// Only read the model and selection when the editor is displaying a label.
+    #[doc(hidden)]
+    pub fn try_combo_draft_is_current<E>(
+        &self,
+        draft: Option<String>,
+        selection: impl FnOnce() -> Result<bool, E>,
+    ) -> Result<bool, E> {
+        let shown = crate::text_input_value(self);
+        match draft {
+            Some(draft) => Ok(draft == shown),
+            None => Ok(shown == combo_text(self) && selection()?),
+        }
+    }
+
+    #[doc(hidden)]
+    pub fn combo_draft_is_current(
+        &self,
+        draft: Option<String>,
+        selection: impl FnOnce() -> bool,
+    ) -> bool {
+        self.try_combo_draft_is_current(draft, || Ok::<_, std::convert::Infallible>(selection()))
+            .unwrap_or_else(|error| match error {})
+    }
+
+    #[doc(hidden)]
+    pub fn combo_selection_is_current(&self, property: &str, value: &Value) -> bool {
+        match (self.properties.get(property), value) {
+            (Some(Value::Float(shown)), Value::Float(live)) if shown.is_nan() => live.is_nan(),
+            (shown, live) => shown == Some(live),
+        }
+    }
+
+    #[doc(hidden)]
+    pub fn try_prepare_combo_edit<E>(
+        &self,
+        input: InputRoute<'_>,
+        editable: impl FnOnce() -> Result<bool, E>,
+        draft_current: impl FnOnce() -> Result<bool, E>,
+    ) -> Result<bool, E> {
+        Ok(input.try_available(editable)? && draft_current()? && input.is_current())
+    }
+
+    #[doc(hidden)]
+    pub fn prepare_combo_edit(
+        &self,
+        input: InputRoute<'_>,
+        editable: impl FnOnce() -> bool,
+        draft_current: impl FnOnce() -> bool,
+    ) -> bool {
+        self.try_prepare_combo_edit(
+            input,
+            || Ok::<_, std::convert::Infallible>(editable()),
+            || Ok(draft_current()),
+        )
+        .unwrap_or_else(|error| match error {})
+    }
+
     #[doc(hidden)]
     pub fn set_string_combo_model(&mut self, source: VecModel<String>) {
         self.standard_list_stamp = Some(source.edit_stamp());
@@ -527,7 +668,7 @@ pub fn combo_model_is_current<T>(node: &Node, source: &VecModel<T>) -> bool {
         model.items.changes.track();
         model.structure == source.structure_stamp() && model.revision == model.items.revision.get()
     } else {
-        node.standard_list_stamp == Some(source.edit_stamp())
+        node.standard_list_stamp == Some(source.contents_stamp())
     }
 }
 

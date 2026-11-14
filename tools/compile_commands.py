@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Export first-party C/C++ compile actions for the MLIR bridge and dialect."""
+"""Export first-party C/C++ compile actions for the MLIR and media libraries."""
 
 import json
 import os
@@ -9,6 +9,7 @@ import subprocess
 
 ROOT = Path(__file__).resolve().parents[1]
 MLIR_TARGETS = "//mlir/..."
+MEDIA_TARGETS = ("//crates/xrack-media:audio_device", "//crates/xrack-media:native_payload")
 SUFFIXES = {".c", ".cc", ".cpp", ".cxx", ".C", ".m", ".mm"}
 
 
@@ -51,10 +52,11 @@ def macos_driver(args, action, execution_root):
 
 def main():
     # Materialize TableGen outputs and third-party headers before indexing.
-    subprocess.run(["bazel", "build", MLIR_TARGETS], cwd=ROOT, check=True)
+    subprocess.run(["bazel", "build", "--config=media", MLIR_TARGETS, *MEDIA_TARGETS], cwd=ROOT, check=True)
     execution_root = Path(bazel("info", "execution_root").strip())
-    query = f'mnemonic("CppCompile", {MLIR_TARGETS})'
-    graph = json.loads(bazel("aquery", query, "--output=jsonproto", "--include_param_files"))
+    targets = " + ".join((MLIR_TARGETS, *MEDIA_TARGETS))
+    query = f'mnemonic("CppCompile", deps({targets}))'
+    graph = json.loads(bazel("aquery", "--config=media", query, "--output=jsonproto", "--include_param_files"))
     commands = {}
     for action in graph.get("actions", []):
         args = expand_arguments(action)

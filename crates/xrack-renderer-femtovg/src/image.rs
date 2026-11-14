@@ -11,7 +11,7 @@ use std::collections::{HashMap, hash_map::Entry};
 use xrack_assets::{MAX_IMAGE_DIMENSION, Raster, decode_png, rasterize_svg_region};
 use xrack_layout::{ImagePresentation, ImageRegion, Rect, Size};
 use xrack_runtime::{
-    ImageAsset, ImageFit, ImageFormat, ImageIdentity, ImagePixels, ImageRendering,
+    ImageAsset, ImageFit, ImageFormat, ImageIdentity, ImagePixels, ImageRendering, MediaFrame,
 };
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
@@ -127,10 +127,17 @@ impl AtlasCache {
     }
 }
 
+struct VideoTexture {
+    id: ImageId,
+    frame: MediaFrame,
+    used: bool,
+}
+
 #[derive(Default)]
 pub(crate) struct Images {
     textures: HashMap<Key, Texture>,
     atlases: AtlasCache,
+    video: HashMap<usize, VideoTexture>,
 }
 
 impl Images {
@@ -159,6 +166,9 @@ impl Images {
     }
 
     pub(crate) fn begin_frame(&mut self) {
+        for texture in self.video.values_mut() {
+            texture.used = false;
+        }
         for texture in self.textures.values_mut() {
             texture.used = false;
             if let Some(gradient) = &mut texture.gradient {
@@ -168,6 +178,12 @@ impl Images {
     }
 
     pub(crate) fn end_frame(&mut self, canvas: &mut Canvas<WGPURenderer>) {
+        self.video.retain(|_, texture| {
+            if !texture.used {
+                canvas.delete_image(texture.id);
+            }
+            texture.used
+        });
         self.textures.retain(|_, texture| {
             if let Some(gradient) = texture.gradient.take_if(|gradient| !gradient.used) {
                 canvas.delete_image(gradient.id);
@@ -177,6 +193,56 @@ impl Images {
             }
             texture.used
         });
+    }
+
+    pub(crate) fn draw_video(
+        &mut self,
+        canvas: &mut Canvas<WGPURenderer>,
+        key: usize,
+        frame: &MediaFrame,
+        bounds: Rect,
+        presentation: ImagePresentation,
+    ) -> Result<(), String> {
+        let placement = presentation.placement(bounds);
+        if placement.visible.width <= 0.0 || placement.visible.height <= 0.0 {
+            return Ok(());
+        }
+        let [width, height] = frame.size();
+        let pixels = ImageSource::Rgba(imgref::Img::new(
+            frame.rgba().as_rgba(),
+            width as usize,
+            height as usize,
+        ));
+        if self
+            .video
+            .get(&key)
+            .is_some_and(|texture| texture.frame.size() != frame.size())
+        {
+            canvas.delete_image(self.video.remove(&key).unwrap().id);
+        }
+        let texture = match self.video.entry(key) {
+            Entry::Occupied(entry) => {
+                let texture = entry.into_mut();
+                if &texture.frame != frame {
+                    canvas
+                        .update_image(texture.id, pixels, 0, 0)
+                        .map_err(|error| error.to_string())?;
+                    texture.frame = frame.clone();
+                }
+                texture
+            }
+            Entry::Vacant(entry) => entry.insert(VideoTexture {
+                id: canvas
+                    .create_image(pixels, ImageFlags::empty())
+                    .map_err(|error| error.to_string())?,
+                frame: frame.clone(),
+                used: true,
+            }),
+        };
+        texture.used = true;
+        let paint = Colorize::Original.paint(texture.id, placement.pattern);
+        fill(canvas, placement.visible, &paint);
+        Ok(())
     }
 
     pub(crate) fn draw(

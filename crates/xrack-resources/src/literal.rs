@@ -193,6 +193,8 @@ pub fn decode(ty: &Type, spelling: &str) -> Result<Literal, String> {
             "circular" => Circular, "horizontal" => Horizontal, "vertical" => Vertical),
         Type::InputType => enumeration!(InputType,
             "text" => Text, "password" => Password, "number" => Number, "decimal" => Decimal, "search" => Search),
+        Type::LogLevel => enumeration!(LogLevel,
+            "trace" => Trace, "debug" => Debug, "info" => Info, "warn" => Warn, "error" => Error),
         Type::ImageFit => enumeration!(ImageFit,
             "fill" => Fill, "contain" => Contain, "cover" => Cover, "preserve" => Preserve),
         Type::ImageTileMode => enumeration!(ImageTileMode,

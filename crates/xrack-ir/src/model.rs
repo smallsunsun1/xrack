@@ -56,8 +56,14 @@ pub struct CallbackRef {
 pub enum Statement {
     Assignment(Assignment),
     Invoke(CallbackCall),
+    Log {
+        level: Expr,
+        message: Expr,
+        span: Span,
+    },
     Navigate(Navigation),
     Timer(TimerEffect),
+    Media(MediaEffect),
     Popup(PopupEffect),
     NativeDialogOpen(NativeDialogOpen),
     WindowClose {
@@ -211,6 +217,14 @@ pub struct PopupEffect {
 pub struct TimerEffect {
     pub owner: String,
     pub command: String,
+    pub span: Span,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct MediaEffect {
+    pub owner: String,
+    pub method: String,
+    pub position: Option<Expr>,
     pub span: Span,
 }
 

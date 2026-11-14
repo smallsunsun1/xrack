@@ -15,7 +15,7 @@ use std::{
     path::{Path, PathBuf},
 };
 use xrack_ir::semantic::{builtin_event, builtin_property, is_builtin, layout_item_property};
-use xrack_parser::ast::Type;
+use xrack_parser::{ast::Type, builtins};
 
 #[repr(u32)]
 #[derive(Clone, Copy)]
@@ -105,27 +105,11 @@ impl Symbol {
     }
 }
 
-pub(crate) fn signature_help(
-    text: &str,
-    position: (usize, usize),
-    workspace: Option<&Workspace<'_>>,
-) -> Value {
-    let source = Source::new(text);
-    let Some(cursor) = source.offset_at(position.0, position.1) else {
-        return Value::Null;
-    };
-    let tokens = editor_tokens::scan(text);
-    if tokens.iter().any(|token| token.blocks_completion(cursor)) {
-        return Value::Null;
-    }
-    let symbols = Symbols::new(&tokens, text.len(), workspace);
+pub(super) fn active_calls<'a>(
+    tokens: impl Iterator<Item = &'a Token<'a>>,
+) -> impl Iterator<Item = (usize, usize)> {
     let mut frames = Vec::new();
-    for (index, token) in symbols
-        .code
-        .iter()
-        .enumerate()
-        .take_while(|(_, token)| token.range.end <= cursor)
-    {
+    for (index, token) in tokens.enumerate() {
         match token.text {
             "(" | "[" | "{" => frames.push((index, token.text, 0)),
             ")" | "]" | "}" => {
@@ -149,11 +133,38 @@ pub(crate) fn signature_help(
             _ => {}
         }
     }
-    for (open, delimiter, active) in frames.into_iter().rev() {
-        if delimiter != "(" || open == 0 {
-            continue;
-        }
-        let callee = open - 1;
+    frames
+        .into_iter()
+        .rev()
+        .filter_map(|(open, delimiter, active)| {
+            (delimiter == "(")
+                .then(|| open.checked_sub(1).map(|callee| (callee, active)))
+                .flatten()
+        })
+}
+
+pub(crate) fn signature_help(
+    text: &str,
+    position: (usize, usize),
+    workspace: Option<&Workspace<'_>>,
+) -> Value {
+    let source = Source::new(text);
+    let Some(cursor) = source.offset_at(position.0, position.1) else {
+        return Value::Null;
+    };
+    let tokens = editor_tokens::scan(text);
+    if tokens.iter().any(|token| token.blocks_completion(cursor)) {
+        return Value::Null;
+    }
+    let symbols = Symbols::new(&tokens, text.len(), workspace);
+    for (callee, active) in active_calls(
+        symbols
+            .code
+            .iter()
+            .copied()
+            .take_while(|token| token.range.end <= cursor),
+    ) {
+        let open = callee + 1;
         // Parentheses in declarations and handler heads are not calls.
         if symbols.text(callee.saturating_sub(1)) == "callback"
             || symbols
@@ -164,6 +175,18 @@ pub(crate) fn signature_help(
         {
             return Value::Null;
         }
+        let name = symbols.text(callee);
+        if let Some((signature, parameters, documentation)) = symbols.builtin_signature(callee) {
+            return json!({
+                "signatures": [{
+                    "label": signature,
+                    "documentation": {"kind": "markdown", "value": documentation},
+                    "parameters": parameters.iter().map(|label| json!({"label": label})).collect::<Vec<_>>()
+                }],
+                "activeSignature": 0,
+                "activeParameter": active.min(parameters.len().saturating_sub(1)),
+            });
+        }
         let Some(symbol) = symbols
             .at(callee)
             .filter(|symbol| matches!(symbol.kind, Kind::Function))
@@ -173,7 +196,6 @@ pub(crate) fn signature_help(
         let Some(member) = symbols.callback_declaration(symbol.site.as_ref()) else {
             continue;
         };
-        let name = symbols.text(callee);
         let mut label = format!("{name}({})", member.parameter_labels.join(", "));
         if let Some(result) = &member.return_label {
             label.push_str(" -> ");
@@ -260,6 +282,32 @@ pub(crate) fn query(
             }
         }
         "textDocument/hover" => {
+            let i = symbols
+                .code
+                .partition_point(|other| other.range.start < token.range.start);
+            let description = if token.text == "@children" {
+                Some(catalog::CHILDREN_DOC.to_owned())
+            } else if let Some((signature, _, docs)) = symbols.builtin_signature(i) {
+                Some(format!("```xrack\n{signature}\n```\n\n{docs}"))
+            } else if let Some(constant) = symbols.builtin_constant(i) {
+                Some(format!(
+                    "```xrack\n{}.{}: float = {}\n```\n\n{}",
+                    constant.namespace, constant.member, constant.value, constant.documentation
+                ))
+            } else if matches!(symbol.kind, Kind::EnumMember) && symbol.ty == Some(Type::LogLevel) {
+                Some(format!(
+                    "`LogLevel.{}` selects the {} level for `Log.write`.",
+                    token.text, token.text
+                ))
+            } else {
+                None
+            };
+            if let Some(description) = description {
+                return json!({
+                    "contents": { "kind": "markdown", "value": description },
+                    "range": source.range(token.range.start, token.range.end),
+                });
+            }
             let role = match symbol.kind {
                 Kind::Type => "type",
                 Kind::Class => "component",
@@ -288,6 +336,26 @@ pub(crate) fn query(
             })
         }
         "textDocument/documentHighlight" => {
+            let i = symbols
+                .code
+                .partition_point(|other| other.range.start < token.range.start);
+            if let Some((signature, _, _)) = symbols.builtin_signature(i) {
+                return json!(
+                    symbols
+                        .code
+                        .iter()
+                        .enumerate()
+                        .filter(|(index, occurrence)| occurrence.text == token.text
+                            && symbols
+                                .builtin_signature(*index)
+                                .is_some_and(|(label, _, _)| label == signature))
+                        .map(|(_, occurrence)| json!({
+                            "range": source.range(occurrence.range.start, occurrence.range.end),
+                            "kind": 1,
+                        }))
+                        .collect::<Vec<_>>()
+                );
+            }
             let Some(site) = symbol.site else {
                 return Value::Null;
             };
@@ -795,9 +863,17 @@ impl<'a, 'w> Symbols<'a, 'w> {
             "root" => self.index.component(scope),
             "self" => self.index.element(scope),
             id => self
-                .elements
-                .get(&(self.index.component(scope)?, id))
-                .copied(),
+                .index
+                .component(scope)
+                .and_then(|component| self.elements.get(&(component, id)).copied())
+                .or_else(|| {
+                    self.index.declared_component(id).filter(|owner| {
+                        matches!(
+                            self.index.scopes[*owner].role,
+                            Role::Component { base: "global", .. }
+                        )
+                    })
+                }),
         }
     }
 
@@ -815,6 +891,20 @@ impl<'a, 'w> Symbols<'a, 'w> {
             Role::Component { base, .. } | Role::Element { kind: base, .. } => base,
             _ => return None,
         };
+        if kind == "MediaPlayer" {
+            if call
+                && catalog::MEDIA_METHODS
+                    .iter()
+                    .any(|method| method.name == name)
+            {
+                return Some(Symbol::builtin(Kind::Function, None));
+            }
+            if let Some(ty) = xrack_ir::semantic::media_read_type(name) {
+                let mut symbol = Symbol::builtin(Kind::Property, Some(ty));
+                symbol.modifiers |= READONLY;
+                return Some(symbol);
+            }
+        }
         if call && builtin_event(kind, name) {
             return Some(Symbol::builtin(Kind::Event, None));
         }
@@ -869,6 +959,59 @@ impl<'a, 'w> Symbols<'a, 'w> {
         Some(Symbol::member(member, false))
     }
 
+    fn builtin_namespace(&self, i: usize) -> Option<&'static str> {
+        let scope = self.index.scope_at(self.code.get(i)?.range.start);
+        self.index.builtin_receiver(scope, &self.code, i)
+    }
+
+    fn builtin_signature(&self, i: usize) -> Option<(String, Vec<&'static str>, &'static str)> {
+        if i >= 2 && self.text(i - 1) == "." {
+            let scope = self.index.scope_at(self.code[i].range.start);
+            if let Some(owner) = self.owner(scope, self.text(i - 2))
+                && matches!(
+                    self.index.scopes[owner].role,
+                    Role::Element {
+                        kind: "MediaPlayer",
+                        ..
+                    } | Role::Component {
+                        base: "MediaPlayer",
+                        ..
+                    }
+                )
+                && let Some(method) = catalog::MEDIA_METHODS
+                    .iter()
+                    .find(|method| method.name == self.text(i))
+            {
+                return Some((
+                    method.signature(),
+                    method.parameters.to_vec(),
+                    method.documentation,
+                ));
+            }
+        }
+        if let Some(form) = catalog::builtin_function(self.text(i)) {
+            return Some((
+                form.signature(),
+                form.parameters.to_vec(),
+                form.documentation,
+            ));
+        }
+        let function = builtins::function(self.builtin_namespace(i)?, self.text(i))?;
+        Some((
+            function.signature(),
+            function
+                .parameters
+                .iter()
+                .map(|parameter| parameter.label)
+                .collect(),
+            function.documentation,
+        ))
+    }
+
+    fn builtin_constant(&self, i: usize) -> Option<&'static builtins::Constant> {
+        builtins::constant(self.builtin_namespace(i)?, self.text(i))
+    }
+
     fn at(&self, i: usize) -> Option<Symbol> {
         let token = self.code[i];
         if let Some(symbol) = self.known.get(&token.range.start) {
@@ -876,13 +1019,25 @@ impl<'a, 'w> Symbols<'a, 'w> {
         }
         let word = token.text;
         if !name(word) {
-            return catalog::FUNCTIONS
-                .split_ascii_whitespace()
-                .any(|f| f == word)
-                .then(|| Symbol::builtin(Kind::Function, None));
+            if word == "@children" {
+                return Some(Symbol::builtin(Kind::Function, None));
+            }
+            return catalog::builtin_function(word).map(|_| Symbol::builtin(Kind::Function, None));
+        }
+        if self.builtin_namespace(i).is_some() {
+            return if self.builtin_signature(i).is_some() {
+                Some(Symbol::builtin(Kind::Function, None))
+            } else {
+                self.builtin_constant(i)
+                    .map(|_| Symbol::builtin(Kind::Property, Some(Type::Float)))
+            };
         }
         let scope = self.index.scope_at(token.range.start);
         let next = self.text(i + 1);
+        if next == "." && self.code.get(i + 2).is_some() && self.builtin_namespace(i + 2).is_some()
+        {
+            return Some(Symbol::builtin(Kind::Type, None));
+        }
         let call = next == "(";
         let mut start = i;
         while start >= 2 && self.text(start - 1) == "." && name(self.text(start - 2)) {

@@ -1,5 +1,6 @@
 include "mlir/IR/OpBase.td"
 include "mlir/IR/AttrTypeBase.td"
+include "mlir/IR/SymbolInterfaces.td"
 include "mlir/Interfaces/SideEffectInterfaces.td"
 
 def Xrack_Dialect : Dialect {
@@ -29,6 +30,7 @@ def XR_Percent : XR_Type<"Percent", "percent">;
 def XR_Color : XR_Type<"Color", "color">;
 def XR_Brush : XR_Type<"Brush", "brush">;
 def XR_Image : XR_Type<"Image", "image">;
+def XR_LogLevel : XR_Type<"LogLevel", "loglevel">;
 def XR_ImageFit : XR_Type<"ImageFit", "imagefit">;
 def XR_ImageTileMode : XR_Type<"ImageTileMode", "imagetilemode">;
 def XR_ImageHorizontalAlignment : XR_Type<"ImageHorizontalAlignment", "imagehorizontalalignment">;
@@ -82,7 +84,7 @@ def XR_GradientStop : XR_Type<"GradientStop", "gradientstop">;
 def XR_Value : AnyTypeOf<[XR_Int, XR_Float, XR_Bool, XR_String, XR_StyledText, XR_StringList, XR_Record, XR_RecordList, XR_Length, XR_Percent, XR_Color,
                          XR_EventResult, XR_FocusReason, XR_KeyEvent, XR_KeyModifiers, XR_WheelEvent,
                          XR_PointerEvent, XR_PointerEventKind, XR_PointerButton, XR_PointerButtons, XR_TouchPoint, XR_TouchPoints,
-                         XR_Brush, XR_Image, XR_ImageFit, XR_ImageTileMode,
+                         XR_Brush, XR_Image, XR_LogLevel, XR_ImageFit, XR_ImageTileMode,
                          XR_ImageHorizontalAlignment, XR_ImageVerticalAlignment, XR_ImageRendering, XR_LayoutAlignment, XR_CrossAxisAlignment,
                          XR_Orientation, XR_FlickDirection, XR_FlickBoundsBehavior, XR_FlickBoundsMovement, XR_FlexboxLayoutDirection, XR_FlexboxLayoutWrap, XR_DialInputMode, XR_ScrollBarPolicy, XR_ScrollSnapMode, XR_ScrollAlignment, XR_TextWrap, XR_TextHorizontalAlignment, XR_TextVerticalAlignment, XR_TextOverflow, XR_InputType, XR_CursorShape, XR_ColorScheme, XR_FileDialogMode, XR_MessageLevel, XR_MessageButtons, XR_CheckState, XR_DialogRole, XR_StandardButtonKind, XR_SwipeSide, XR_DragAction, XR_DrawerEdge, XR_PopupPlacement, XR_SelectionTarget, XR_Date, XR_Time, XR_Font]>;
 def XR_Stringifiable : AnyTypeOf<[XR_Int, XR_Float, XR_Bool, XR_Date, XR_Time]>;
@@ -96,11 +98,11 @@ class XR_ScopeOp<string mnemonic, list<Trait> traits = []>
   let regions = (region SizedRegion<1>:$body);
 }
 
-def XR_ComponentOp : XR_ScopeOp<"component", [HasParent<"::mlir::ModuleOp">]> {
-  let arguments = (ins StrAttr:$sym_name, StrAttr:$exported);
+def XR_ComponentOp : XR_ScopeOp<"component", [HasParent<"::mlir::ModuleOp">, Symbol]> {
+  let arguments = (ins StrAttr:$sym_name, StrAttr:$exported, OptionalAttr<StrAttr>:$global);
   let hasVerifier = 1;
 }
-def XR_RecordDeclOp : XR_Op<"record_decl", [HasParent<"::mlir::ModuleOp">]> {
+def XR_RecordDeclOp : XR_Op<"record_decl", [HasParent<"::mlir::ModuleOp">, Symbol]> {
   let arguments = (ins StrAttr:$sym_name, StrAttr:$fields);
 }
 def XR_FontOp : XR_Op<"font", [HasParent<"::mlir::ModuleOp">]> {
@@ -217,6 +219,11 @@ def XR_AssignOp : XR_Op<"assign"> {
 def XR_ReturnOp : XR_Op<"return", [ParentOneOf<["CallbackOp", "HandlerOp", "ClipboardPasteOp"]>]> {
   let arguments = (ins XR_Value:$input, StrAttr:$name);
 }
+def XR_LogOp : XR_Op<"log", [ParentOneOf<["CallbackOp", "HandlerOp"]>,
+                                MemoryEffects<[MemWrite]>]> {
+  let arguments = (ins XR_LogLevel:$level, XR_String:$message);
+  let hasVerifier = 1;
+}
 def XR_InvokeOp : XR_Op<"invoke"> {
   let arguments = (ins Variadic<XR_Value>:$args, StrAttr:$owner, StrAttr:$name);
 }
@@ -226,6 +233,10 @@ def XR_NavigateOp : XR_Op<"navigate"> {
 }
 def XR_TimerCommandOp : XR_Op<"timer_command"> {
   let arguments = (ins StrAttr:$owner, StrAttr:$command);
+  let hasVerifier = 1;
+}
+def XR_MediaCommandOp : XR_Op<"media_command"> {
+  let arguments = (ins Optional<XR_Float>:$position, StrAttr:$owner, StrAttr:$method);
   let hasVerifier = 1;
 }
 def XR_PopupCommandOp : XR_Op<"popup_command"> {
@@ -341,6 +352,11 @@ def XR_TranslateOp : XR_ExpressionOp<"translate",
     (ins Variadic<AnyTypeOf<[XR_String, XR_Int, XR_Float]>>:$args, StrArrayAttr:$arg_names), XR_String> {
   let hasVerifier = 1;
 }
+def XR_LocaleOp : XR_ExpressionOp<"locale", (ins), XR_String, [MemoryEffects<[MemRead]>]>;
+def XR_FormatNumberOp : XR_ExpressionOp<"format_number",
+    (ins AnyTypeOf<[XR_Int, XR_Float]>:$input, XR_Int:$decimals), XR_String, [MemoryEffects<[MemRead]>]>;
+def XR_ParseNumberOp : XR_ExpressionOp<"parse_number",
+    (ins XR_String:$input, XR_Float:$fallback), XR_Float, [MemoryEffects<[MemRead]>]>;
 def XR_ArrayOp : XR_ExpressionOp<"array", (ins Variadic<XR_String>:$items), XR_StringList, [Pure]>;
 def XR_PointerButtonsOp : XR_ExpressionOp<"pointer_buttons", (ins Variadic<XR_PointerButton>:$items), XR_PointerButtons, [Pure]>;
 def XR_RecordArrayOp : XR_ExpressionOp<"record_array", (ins Variadic<XR_Record>:$items), XR_RecordList, [Pure]>;
@@ -363,6 +379,12 @@ def XR_MakeDateOp : XR_ExpressionOp<"make_date", (ins XR_Int:$year, XR_Int:$mont
 def XR_DateFieldOp : XR_ExpressionOp<"date_field", (ins XR_Date:$input), XR_Int, [Pure]> {
   let hasVerifier = 1;
 }
+def XR_DateIsValidOp : XR_ExpressionOp<"date_is_valid", (ins XR_Date:$input), XR_Bool, [Pure]>;
+def XR_DateAddDaysOp : XR_ExpressionOp<"date_add_days",
+    (ins XR_Date:$input, XR_Int:$days, XR_Date:$fallback), XR_Date, [Pure]>;
+def XR_DateAddMonthsOp : XR_ExpressionOp<"date_add_months",
+    (ins XR_Date:$input, XR_Int:$months, XR_Date:$fallback), XR_Date, [Pure]>;
+def XR_DateWeekdayOp : XR_ExpressionOp<"date_weekday", (ins XR_Date:$input), XR_Int, [Pure]>;
 def XR_MakeTimeOp : XR_ExpressionOp<"make_time", (ins XR_Int:$hour, XR_Int:$minute, XR_Int:$second), XR_Time, [Pure]>;
 def XR_TimeFieldOp : XR_ExpressionOp<"time_field", (ins XR_Time:$input), XR_Int, [Pure]> {
   let hasVerifier = 1;
@@ -395,6 +417,9 @@ def XR_StackReadOp : XR_ExpressionOp<"stack_read", (ins Optional<XR_String>:$rou
   let hasVerifier = 1;
 }
 def XR_ImagePlaybackReadOp : XR_ExpressionOp<"image_playback_read", (ins StrAttr:$owner), XR_Int> {
+  let hasVerifier = 1;
+}
+def XR_MediaReadOp : XR_ExpressionOp<"media_read", (ins StrAttr:$owner), AnyTypeOf<[XR_Float, XR_Bool, XR_String, XR_Int]>> {
   let hasVerifier = 1;
 }
 def XR_WindowReadOp : XR_ExpressionOp<"window_read", (ins), XR_Bool, [Pure]> {
@@ -433,6 +458,26 @@ def XR_UnaryOp : XR_ExpressionOp<"unary", (ins XR_Value:$input), XR_Value,
   let hasVerifier = 1;
 }
 def XR_CastOp : XR_ExpressionOp<"cast", (ins XR_Int:$input), XR_Float>;
+def XR_MathOperand : AnyTypeOf<[XR_Int, XR_Float, XR_Length, XR_Percent]>;
+def XR_MathFunctionOp : XR_ExpressionOp<"math_function", (ins Variadic<XR_MathOperand>:$inputs),
+    AnyTypeOf<[XR_MathOperand, XR_Bool]>, [Pure]> { let hasVerifier = 1; }
+def XR_StringFunctionOp : XR_ExpressionOp<"string_function", (ins Variadic<AnyTypeOf<[XR_String, XR_Int, XR_Float]>>:$inputs),
+    AnyTypeOf<[XR_String, XR_Bool, XR_Int, XR_Float]>, [Pure]> { let hasVerifier = 1; }
+def XR_ColorFunctionOp : XR_ExpressionOp<"color_function",
+    (ins Variadic<AnyTypeOf<[XR_Int, XR_Float, XR_Color]>>:$inputs), XR_Color, [Pure]> {
+  let hasVerifier = 1;
+}
+def XR_Model : AnyTypeOf<[XR_StringList, XR_RecordList]>;
+def XR_ModelCountOp : XR_ExpressionOp<"model_count", (ins XR_Model:$input), XR_Int, [MemoryEffects<[MemRead]>]>;
+def XR_ModelIsEmptyOp : XR_ExpressionOp<"model_is_empty", (ins XR_Model:$input), XR_Bool, [MemoryEffects<[MemRead]>]>;
+def XR_ModelAtOp : XR_ExpressionOp<"model_at",
+    (ins XR_Model:$model, XR_Int:$index, AnyTypeOf<[XR_String, XR_Record]>:$fallback),
+    AnyTypeOf<[XR_String, XR_Record]>, [MemoryEffects<[MemRead]>, AllTypesMatch<["fallback", "result"]>]> {
+  let hasVerifier = 1;
+}
+def XR_FormatFixedOp : XR_ExpressionOp<"format_fixed",
+    (ins AnyTypeOf<[XR_Int, XR_Float]>:$input), XR_String, [Pure]> { let hasVerifier = 1; }
+def XR_RoundOp : XR_ExpressionOp<"round", (ins XR_Float:$input), XR_Int, [Pure]>;
 def XR_ToRatioOp : XR_ExpressionOp<"to_ratio", (ins XR_Percent:$input), XR_Float, [Pure]>;
 def XR_StringifyOp : XR_ExpressionOp<"stringify", (ins XR_Stringifiable:$input), XR_String>;
 def XR_SolidBrushOp : XR_ExpressionOp<"solid_brush", (ins XR_Color:$color), XR_Brush, [Pure]>;

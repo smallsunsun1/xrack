@@ -1,4 +1,6 @@
-use crate::{ChangeSignal, RowKey, TableRowPatch, Value, VecModel, model::RowObserver};
+use crate::{
+    ChangeSignal, RowKey, TableHistoryPayload, TableRowPatch, Value, VecModel, model::RowObserver,
+};
 use std::{
     cell::RefCell,
     collections::BTreeMap,
@@ -92,17 +94,12 @@ impl TableRowPatch<RecordValue> {
                 self.record_record(before, after, path);
             } else if !same_field(before, after) {
                 let field = path.clone();
-                let metadata_bytes = field
-                    .iter()
-                    .fold(std::mem::size_of_val(field.as_slice()), |bytes, name| {
-                        bytes.saturating_add(name.len())
-                    });
                 self.record_with(
                     before,
                     after,
                     same_field,
                     field_bytes,
-                    metadata_bytes,
+                    path,
                     move |row, expected, value| {
                         if !row
                             .field_path(&field)
@@ -136,18 +133,11 @@ fn same_field(before: &Value, after: &Value) -> bool {
 
 fn field_bytes(value: &Value) -> usize {
     match value {
-        Value::String(value) => value.len(),
-        Value::StyledText(value) => value.links().iter().fold(
-            value
-                .text()
-                .len()
-                .saturating_add(std::mem::size_of_val(value.runs()))
-                .saturating_add(std::mem::size_of_val(value.links())),
-            |bytes, link| bytes.saturating_add(link.href.len()),
-        ),
-        Value::Brush(crate::Brush::Linear { stops, .. } | crate::Brush::Radial { stops, .. }) => {
-            std::mem::size_of_val(stops.as_ref())
-        }
+        Value::String(value) => value.history_payload_bytes(),
+        Value::Font(value) => value.history_payload_bytes(),
+        Value::KeyEvent(value) => value.history_payload_bytes(),
+        Value::StyledText(value) => value.history_payload_bytes(),
+        Value::Brush(value) => value.history_payload_bytes(),
         _ => 0,
     }
 }

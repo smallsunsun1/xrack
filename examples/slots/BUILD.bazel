@@ -1,0 +1,23 @@
+load("@rules_rust//rust:defs.bzl", "rust_binary")
+load("//bazel:xrack.bzl", "xr_ui_library")
+
+exports_files(
+    ["slots.xr"],
+    visibility = ["//tests:__pkg__"],
+)
+
+xr_ui_library(
+    name = "slots_ui",
+    src = "slots.xr",
+    visibility = ["//tests:__pkg__"],
+)
+
+rust_binary(
+    name = "slots",
+    srcs = ["main.rs"],
+    edition = "2024",
+    deps = [
+        ":slots_ui",
+        "//crates/xrack-platform-winit:xrack_platform_winit",
+    ],
+)

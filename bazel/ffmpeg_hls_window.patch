@@ -1,0 +1,202 @@
+--- a/libavformat/hls.c
++++ b/libavformat/hls.c
+@@ -162,6 +162,9 @@
+     /* Constant offset of this playlist's DTS baseline relative to
+      * c->first_timestamp. */
+     int64_t ts_offset;
++    /* DTS of the first segment still advertised by this playlist. */
++    int64_t xr_window_start;
++    int64_t xr_probe_seq;
+     int64_t seek_timestamp;
+     int seek_flags;
+     int seek_stream_index; /* into subdemuxer stream array */
+@@ -354,6 +357,7 @@
+     }
+     av_strlcpy(pls->url, abs_url, sizeof(pls->url));
+     pls->ts_offset = AV_NOPTS_VALUE;
++    pls->xr_window_start = AV_NOPTS_VALUE;
+     pls->seek_timestamp = AV_NOPTS_VALUE;
+ 
+     pls->is_id3_timestamped = -1;
+@@ -1126,6 +1130,16 @@
+         }
+     }
+     if (prev_segments) {
++        if (pls->xr_window_start != AV_NOPTS_VALUE &&
++            pls->start_seq_no > prev_start_seq_no) {
++            int64_t skipped = pls->start_seq_no - prev_start_seq_no;
++            for (int i = 0; i < prev_n_segments && i < skipped; i++)
++                pls->xr_window_start = av_sat_add64(pls->xr_window_start, prev_segments[i]->duration);
++            /* No segment durations are available across a gap. Anchor again
++             * to the next packet originating in the new window. */
++            if (skipped > prev_n_segments)
++                pls->xr_window_start = AV_NOPTS_VALUE;
++        }
+         if (pls->start_seq_no > prev_start_seq_no && c->first_timestamp != AV_NOPTS_VALUE &&
+             c->first_timestamp_pls == pls) {
+             int64_t prev_timestamp = c->first_timestamp;
+@@ -1768,6 +1782,9 @@
+ 
+     seg = current_segment(v);
+ 
++    if (v->xr_window_start == AV_NOPTS_VALUE && v->ts_offset != AV_NOPTS_VALUE)
++        v->xr_probe_seq = v->cur_seq_no;
++
+     if (!v->input || v->input_read_done) {
+         /* load/update Media Initialization Section, if any */
+         ret = update_init_section(v, seg);
+@@ -2373,6 +2390,9 @@
+ 
+     av_dict_set(&c->seg_format_opts, "prefer_hls_mpegts_pts", "1", 0);
+ 
++    for (i = 0; i < c->n_playlists; i++)
++        c->playlists[i]->xr_probe_seq = c->playlists[i]->cur_seq_no;
++
+     /* Open the demuxer for each playlist */
+     for (i = 0; i < c->n_playlists; i++) {
+         struct playlist *pls = c->playlists[i];
+@@ -2718,6 +2738,16 @@
+                     if (pls->is_id3_timestamped && pls->pkt->stream_index == 0) {
+                         /* audio elementary streams are id3 timestamped */
+                         fill_timing_for_id3_timestamped_stream(pls);
++                    }
++
++                    if (!pls->finished && pls->xr_window_start == AV_NOPTS_VALUE &&
++                        pls->pkt->dts != AV_NOPTS_VALUE &&
++                        pls->xr_probe_seq >= pls->start_seq_no &&
++                        pls->xr_probe_seq - pls->start_seq_no < pls->n_segments) {
++                        int64_t start = av_rescale_q(pls->pkt->dts, get_timebase(pls), AV_TIME_BASE_Q);
++                        for (int64_t k = 0; k < pls->xr_probe_seq - pls->start_seq_no; k++)
++                            start = av_sat_sub64(start, pls->segments[k]->duration);
++                        pls->xr_window_start = start;
+                     }
+ 
+                     if (pls->ts_offset == AV_NOPTS_VALUE &&
+@@ -2873,6 +2903,54 @@
+         return 0;
+     }
+     return AVERROR_EOF;
++}
++
++static struct playlist *xr_hls_playlist(AVFormatContext *s, int stream_index)
++{
++    HLSContext *c = s->priv_data;
++
++    for (int i = 0; i < c->n_playlists; i++) {
++        struct playlist *pls = c->playlists[i];
++        for (int j = 0; j < pls->n_main_streams; j++)
++            if (pls->main_streams[j] == s->streams[stream_index])
++                return pls;
++    }
++    return NULL;
++}
++
++/* XRack's native wrapper calls this on its decoder thread. Return timestamps
++ * on the selected stream's DTS clock, in AV_TIME_BASE units. */
++int xrack_ffmpeg_hls_window(AVFormatContext *s, int stream_index, int refresh,
++                          int64_t *start, int64_t *end, int64_t *edge);
++
++int xrack_ffmpeg_hls_window(AVFormatContext *s, int stream_index, int refresh,
++                          int64_t *start, int64_t *end, int64_t *edge)
++{
++    HLSContext *c = s->priv_data;
++    struct playlist *pls = xr_hls_playlist(s, stream_index);
++    int64_t position;
++
++    if (!pls || pls->finished)
++        return AVERROR(ENOSYS);
++    if (refresh && av_gettime_relative() - pls->last_load_time >= default_reload_interval(pls)) {
++        int ret = parse_playlist(c, pls->url, pls, NULL);
++        if (ret < 0)
++            return ret;
++    }
++    if (pls->xr_window_start == AV_NOPTS_VALUE || !pls->n_segments)
++        return AVERROR(EAGAIN);
++
++    *start = position = pls->xr_window_start;
++    *edge = position;
++    for (int i = 0; i < pls->n_segments; i++) {
++        /* Match the default HLS start three complete segments from the end. */
++        if (i == FFMAX(pls->n_segments - 3, 0))
++            *edge = position;
++        position = av_sat_add64(position, pls->segments[i]->duration);
++    }
++    *end = position;
++
++    return 0;
+ }
+ 
+ static int hls_read_seek(AVFormatContext *s, int stream_index,
+@@ -2884,8 +2962,9 @@
+     int stream_subdemuxer_index;
+     int64_t first_timestamp, seek_timestamp, duration;
+     int64_t seq_no, seg_start_ts;
++    int live;
+ 
+-    if ((flags & AVSEEK_FLAG_BYTE) || (c->ctx->ctx_flags & AVFMTCTX_UNSEEKABLE))
++    if (flags & AVSEEK_FLAG_BYTE)
+         return AVERROR(ENOSYS);
+ 
+     first_timestamp = c->first_timestamp == AV_NOPTS_VALUE ?
+@@ -2898,8 +2977,6 @@
+     duration = s->duration == AV_NOPTS_VALUE ?
+                0 : s->duration;
+ 
+-    if (0 < duration && duration < seek_timestamp - first_timestamp)
+-        return AVERROR(EIO);
+ 
+     /* find the playlist with the specified stream */
+     for (i = 0; i < c->n_playlists; i++) {
+@@ -2914,8 +2991,23 @@
+     }
+     /* check if the timestamp is valid for the playlist with the
+      * specified stream index */
+-    if (!seek_pls || !find_timestamp_in_playlist(c, seek_pls, seek_timestamp, &seq_no, &seg_start_ts))
++    if (!seek_pls)
+         return AVERROR(EIO);
++    live = !seek_pls->finished;
++    if (live) {
++        int64_t end, edge;
++        int ret = xrack_ffmpeg_hls_window(s, stream_index, 0, &seg_start_ts, &end, &edge);
++        if (ret < 0)
++            return ret;
++        seek_timestamp = av_clip64(seek_timestamp, seg_start_ts, end - 1);
++        for (j = 0; j + 1 < seek_pls->n_segments &&
++             seek_timestamp >= av_sat_add64(seg_start_ts, seek_pls->segments[j]->duration); j++)
++            seg_start_ts += seek_pls->segments[j]->duration;
++        seq_no = seek_pls->start_seq_no + j;
++    } else if ((0 < duration && duration < seek_timestamp - first_timestamp) ||
++               !find_timestamp_in_playlist(c, seek_pls, seek_timestamp, &seq_no, &seg_start_ts)) {
++        return AVERROR(EIO);
++    }
+ 
+     if (s->streams[stream_index]->codecpar->codec_type == AVMEDIA_TYPE_VIDEO &&
+         flags & AVSEEK_FLAG_BACKWARD && !(flags & AVSEEK_FLAG_ANY)) {
+@@ -2965,7 +3057,9 @@
+          * baseline (whichever stream produced the first packet). Streams can
+          * have different DTS baselines, so translate the threshold onto this
+          * playlist's own baseline using its captured offset. */
+-        if (pls->ts_offset != AV_NOPTS_VALUE)
++        if (live)
++            pls->seek_timestamp = seek_timestamp;
++        else if (pls->ts_offset != AV_NOPTS_VALUE)
+             pls->seek_timestamp = seek_timestamp + pls->ts_offset;
+         else
+             pls->seek_timestamp = seek_timestamp;
+@@ -2973,7 +3067,15 @@
+ 
+         if (pls != seek_pls) {
+             /* set closest segment seq_no for playlists not handled above */
+-            find_timestamp_in_playlist(c, pls, seek_timestamp, &pls->cur_seq_no, NULL);
++            if (live && pls->xr_window_start != AV_NOPTS_VALUE && pls->n_segments) {
++                int64_t start = pls->xr_window_start;
++                for (j = 0; j + 1 < pls->n_segments &&
++                     seek_timestamp >= av_sat_add64(start, pls->segments[j]->duration); j++)
++                    start += pls->segments[j]->duration;
++                pls->cur_seq_no = pls->start_seq_no + j;
++            } else {
++                find_timestamp_in_playlist(c, pls, seek_timestamp, &pls->cur_seq_no, NULL);
++            }
+             /* seek the playlist to the given position without taking
+              * keyframes into account since this playlist does not have the
+              * specified stream where we should look for the keyframes */

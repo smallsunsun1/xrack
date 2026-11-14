@@ -1,13 +1,13 @@
 // Enumerate candidate spellings. The compiler decides whether each is available in context.
-pub(crate) const ELEMENTS: &str = "Action ActionGroup AnimatedImage ApplicationWindow BusyIndicator Button ButtonGroup Calendar CheckBox CheckDelegate ColorPickerPopup ComboBox ContextMenuArea DatePickerPopup DelayButton Dial Dialog ControlFrame Pane
-    DayCell DayOfWeekRow DialogButton DialogButtonBox DoubleSpinBox DragArea Drawer DropArea FileDialog FontPickerPopup Flickable FlexboxLayout FlowLayout FocusScope GridLayout GridView GroupBox HorizontalBox HorizontalLayout Image Label LineEdit
+pub(crate) const ELEMENTS: &str = "Action ActionGroup AnimatedImage ApplicationWindow MediaPlayer BusyIndicator Button ButtonGroup Calendar CheckBox CheckDelegate ColorPickerPopup ComboBox ContextMenuArea DatePickerPopup DelayButton Dial Dialog ControlFrame Pane
+    ButtonContent SliderHandle DayCell DayOfWeekRow DialogButton DialogButtonBox DoubleSpinBox DragArea Drawer DropArea FileDialog FontPickerPopup Flickable FlexboxLayout FlowLayout FocusScope GridLayout GridView GroupBox HorizontalBox HorizontalLayout Image Label LineEdit
     HoverHandler ItemDelegate ListView Menu MenuBar MenuItem MenuSeparator MessageDialog MonthGrid Page PageFooter PageHeader PageIndicator Path PopupWindow ProgressIndicator RadioButton RadioDelegate
     RadioGroup RangeSlider Rectangle RoundButton Row ScaleRotateGestureHandler ScrollBar ScrollIndicator ScrollView SearchField SecondaryWindow Shortcut Slider SpinBox Spinner SplitView StackPage StackView
     StyledText StandardButton StandardListView StandardTableView SwipeContent SwipeDelegate SwipeGestureHandler SwipeLeft SwipePage SwipeRight SwipeView Switch SwitchDelegate Tab TabBar TabButton TabWidget TableCell TableColumn TableRow TableView Text TextArea
     SystemTrayIcon TextEdit TextInput TimePicker TimePickerPopup Timer ToolBar ToolButton ToolSeparator Tooltip TouchArea TreeCell TreeRow TreeView VerticalBox
     Tumbler VerticalLayout WeekNumberColumn WheelHandler Window WindowMoveArea";
 
-pub(crate) const PROPERTIES: &str = "accent-color accept-files accept-text accepted-buttons accessible-description accessible-name action alignment anchor-gap animated allow-copy allow-link allow-move auto-complete auto-repeat auto-sort cancel-text blocking cursor-shape
+pub(crate) const PROPERTIES: &str = "autoplay duration volume ready ended error muted playback-rate network-bandwidth audio-track subtitle-track subtitle-tracks subtitle-file status seekable seek-start seek-end at-live-edge has-audio has-video audio-tracks media-title subtitle audio-error subtitle-error buffer-progress bitrate accent-color accept-files accept-text accepted-buttons accessible-description accessible-name action alignment anchor-gap animated allow-copy allow-link allow-move auto-complete auto-repeat auto-sort cancel-text blocking cursor-shape
     handle-swipe-left handle-swipe-right handle-swipe-up handle-swipe-down
     background bounds-behavior bounds-movement border-bottom-left-radius border-bottom-right-radius border-color border-radius buttons
     border-top-left-radius border-top-right-radius border-width can-go-back cell-height cell-width check-state checkable checked clip
@@ -32,6 +32,94 @@ pub(crate) const EVENTS: &str = "accepted activated activated-ambiguously applie
 
 pub(crate) const TYPES: &str = "int float bool string styled-text length percent color brush image [string] WheelEvent CursorShape PointerEvent PointerEventKind PointerButton PointerButtons TouchPoint TouchPoints [TouchPoint]
     ImageFit ImageTileMode ImageHorizontalAlignment ImageVerticalAlignment ImageRendering LayoutAlignment CrossAxisAlignment Orientation FlickDirection FlickBoundsBehavior FlickBoundsMovement FlexboxLayoutDirection FlexboxLayoutWrap DialInputMode ScrollBarPolicy ScrollSnapMode ScrollAlignment TextWrap TextHorizontalAlignment TextVerticalAlignment TextOverflow InputType
-    CheckState ColorScheme Date DialogRole DragAction DrawerEdge EventResult FocusReason Font KeyEvent KeyModifiers FileDialogMode MessageButtons MessageLevel PopupPlacement SelectionTarget StandardButtonKind SwipeSide Time";
+    CheckState ColorScheme Date DialogRole DragAction DrawerEdge EventResult FocusReason Font KeyEvent KeyModifiers FileDialogMode LogLevel MessageButtons MessageLevel PopupPlacement SelectionTarget StandardButtonKind SwipeSide Time";
 
-pub(crate) const FUNCTIONS: &str = "@image-url @markdown @linear-gradient @radial-gradient";
+pub(crate) struct BuiltinFunction {
+    pub name: &'static str,
+    pub parameters: &'static [&'static str],
+    pub result: Option<&'static str>,
+    pub documentation: &'static str,
+}
+
+impl BuiltinFunction {
+    pub fn signature(&self) -> String {
+        let mut label = format!("{}({})", self.name, self.parameters.join(", "));
+        if let Some(result) = self.result {
+            label.push_str(" -> ");
+            label.push_str(result);
+        }
+        label
+    }
+}
+
+pub(crate) fn builtin_function(name: &str) -> Option<&'static BuiltinFunction> {
+    FUNCTIONS.iter().find(|function| function.name == name)
+}
+
+pub(crate) const FUNCTIONS: &[BuiltinFunction] = &[
+    BuiltinFunction {
+        name: "@tr",
+        parameters: &["id: string literal", "named arguments..."],
+        result: Some("string"),
+        documentation: "Looks up a Fluent message in the current locale. Supply arguments as `name: value`.",
+    },
+    BuiltinFunction {
+        name: "@image-url",
+        parameters: &["path: string literal", "nine-slice(...) (optional)"],
+        result: Some("image"),
+        documentation: "Loads an image relative to the source file. An optional `nine-slice(...)` argument defines the image's slice margins.",
+    },
+    BuiltinFunction {
+        name: "@markdown",
+        parameters: &["source: string literal"],
+        result: Some("styled-text"),
+        documentation: "Parses Markdown into styled text at compile time.",
+    },
+    BuiltinFunction {
+        name: "@linear-gradient",
+        parameters: &["angle: degrees", "color stops..."],
+        result: Some("brush"),
+        documentation: "Creates a linear gradient. Specify the angle with `deg` and optionally give each color stop a percentage position.",
+    },
+    BuiltinFunction {
+        name: "@radial-gradient",
+        parameters: &["shape: circle", "color stops..."],
+        result: Some("brush"),
+        documentation: "Creates a circular gradient. Each color stop can have a percentage position.",
+    },
+];
+
+pub(crate) const CHILDREN_DOC: &str = "Places the caller's child elements at this point in a component. Their bindings still use the caller's scope.";
+
+pub(crate) const MEDIA_METHODS: &[BuiltinFunction] = &[
+    BuiltinFunction {
+        name: "go-live",
+        parameters: &[],
+        result: None,
+        documentation: "Jumps to the current HLS live edge and starts playback.",
+    },
+    BuiltinFunction {
+        name: "stop",
+        parameters: &[],
+        result: None,
+        documentation: "Stops playback and rewinds seekable media.",
+    },
+    BuiltinFunction {
+        name: "play",
+        parameters: &[],
+        result: None,
+        documentation: "Starts or resumes playback. After the end, starts again from the beginning.",
+    },
+    BuiltinFunction {
+        name: "pause",
+        parameters: &[],
+        result: None,
+        documentation: "Pauses audio and video at the current playback position.",
+    },
+    BuiltinFunction {
+        name: "seek",
+        parameters: &["position: float"],
+        result: None,
+        documentation: "Seeks to a position in seconds and preserves whether playback was paused.",
+    },
+];

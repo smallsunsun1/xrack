@@ -123,7 +123,7 @@ impl Instance {
         input: xrack_runtime::InputRoute<'_>,
     ) -> Result<bool> {
         let Some(next) = xrack_runtime::try_prepare_action_activation(
-            || self.element_allows_editing(element),
+            || self.element_allows_routed_input(element, input),
             || self.action_flag(element, "checkable", false),
             || Ok(self.control_value(element, "checked")? == Some(Value::Bool(true))),
         )?

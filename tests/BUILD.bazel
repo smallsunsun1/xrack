@@ -9,6 +9,12 @@ rust_test(
         "gpu_test.rs",
         "ui_driver.rs",
     ],
+    data = [
+        "//examples/layout:bundled_sources",
+        "//examples/list:list.xr",
+        "//examples/media:media_sources",
+        "//examples/slots:slots.xr",
+    ],
     edition = "2024",
     tags = [
         "local",
@@ -17,6 +23,8 @@ rust_test(
         "requires-gpu",
     ],
     deps = [
+        "//crates/xrack-compiler:xrack_compiler",
+        "//crates/xrack-interpreter:xrack_interpreter",
         "//crates/xrack-layout:xrack_layout",
         "//crates/xrack-renderer-femtovg:xrack_renderer_femtovg",
         "//crates/xrack-runtime:xrack_runtime",
@@ -35,6 +43,7 @@ rust_test(
         "//examples/notes:notes_ui",
         "//examples/painting:painting_ui",
         "//examples/selection:selection_ui",
+        "//examples/slots:slots_ui",
         "//examples/split:split_ui",
         "//examples/table:records_ui",
         "//examples/table:table_ui",
@@ -59,6 +68,42 @@ rust_test(
     ],
 )
 
+xr_ui_library(
+    name = "ui_log",
+    src = "ui_log.xr",
+)
+
+rust_test(
+    name = "ui_log_test",
+    size = "small",
+    srcs = ["ui_log_test.rs"],
+    compile_data = ["ui_log.xr"],
+    edition = "2024",
+    deps = [
+        ":ui_log",
+        "//crates/xrack-compiler:xrack_compiler",
+        "//crates/xrack-interpreter:xrack_interpreter",
+        "//crates/xrack-runtime:xrack_runtime",
+        "@crates//:tracing",
+        "@crates//:tracing-subscriber",
+    ],
+)
+
+rust_test(
+    name = "slots_test",
+    size = "small",
+    srcs = ["slots_test.rs"],
+    compile_data = ["//examples/slots:slots.xr"],
+    edition = "2024",
+    deps = [
+        "//crates/xrack-compiler:xrack_compiler",
+        "//crates/xrack-interpreter:xrack_interpreter",
+        "//crates/xrack-layout:xrack_layout",
+        "//crates/xrack-runtime:xrack_runtime",
+        "//examples/slots:slots_ui",
+    ],
+)
+
 rust_test(
     name = "mlir_pass_test",
     size = "small",
@@ -70,6 +115,20 @@ rust_test(
 filegroup(
     name = "mlir_filecheck_cases",
     srcs = glob(["pass_cases/*.mlir", "pass_cases/*.xr"]),
+)
+
+rust_test(
+    name = "mlir_lsp_test",
+    size = "small",
+    srcs = ["mlir_lsp_test.rs"],
+    data = ["//mlir:xrack-mlir-lsp-server"],
+    edition = "2024",
+    env = {"XRACK_MLIR_LSP": "$(rlocationpath //mlir:xrack-mlir-lsp-server)"},
+    deps = [
+        "//crates/xrack-compiler:xrack_compiler",
+        "@crates//:serde_json",
+        "@rules_rust//rust/runfiles",
+    ],
 )
 
 rust_test(
@@ -199,6 +258,7 @@ rust_test(
         "//examples/notes:notes.xr",
         "//examples/painting:gallery.xr",
         "//examples/selection:selection.xr",
+        "//examples/slots:slots.xr",
         "//examples/split:split.xr",
         "//examples/stepper:stepper.xr",
         "//examples/table:records.xr",
@@ -206,6 +266,7 @@ rust_test(
         "//examples/tooltip:tooltip.xr",
         "//examples/tray:tray_sources",
         "//examples/tree:tree.xr",
+        "//examples/video:video.xr",
     ],
     edition = "2024",
     deps = [
@@ -233,6 +294,7 @@ rust_test(
         "//examples/notes:notes_ui",
         "//examples/painting:painting_ui",
         "//examples/selection:selection_ui",
+        "//examples/slots:slots_ui",
         "//examples/split:split_ui",
         "//examples/stepper:stepper_ui",
         "//examples/table:records_ui",
@@ -240,5 +302,32 @@ rust_test(
         "//examples/tooltip:tooltip_ui",
         "//examples/tray:tray_ui",
         "//examples/tree:tree_ui",
+        "//examples/video:video_ui",
     ],
+)
+
+rust_test(
+    name = "media_player_test",
+    size = "small",
+    srcs = ["media_player_test.rs"],
+    compile_data = [
+        "//crates/xrack-media:hls_test_fixtures",
+        "//examples/video:video.xr",
+    ],
+    crate_features = select({
+        "//crates/xrack-media:enabled_config": ["media_backend"],
+        "//conditions:default": [],
+    }),
+    edition = "2024",
+    env = {"XRACK_MEDIA_TEST_AUDIO": "1"},
+    deps = [
+        "//crates/xrack-compiler:xrack_compiler",
+        "//crates/xrack-interpreter:xrack_interpreter",
+        "//crates/xrack-layout:xrack_layout",
+        "//crates/xrack-runtime:xrack_runtime",
+        "//examples/video:video_ui",
+    ] + select({
+        "//crates/xrack-media:enabled_config": ["//crates/xrack-media:xrack_media"],
+        "//conditions:default": [],
+    }),
 )

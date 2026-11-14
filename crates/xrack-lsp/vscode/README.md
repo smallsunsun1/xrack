@@ -31,7 +31,11 @@ With the `from "widgets.xr"` path in place, completion inside the import braces 
 
 Install the VSIX for your platform with **Extensions → Install from VSIX…** and open an `.xr` file. The platform package includes `xrack-lsp`, `xrackc`, the `xrack-preview` host, and runtime sources for the generated-code fallback.
 
+Type `Math.`, `Strings.`, `Model.`, or `Log.` for built-in functions and constants. Type `@` for constructs such as `@tr`. Hover over a built-in to see its signature and usage. Signature help follows the active argument in calls such as `Log.write(LogLevel.debug, Strings.format("count={}", root.count))`, and `LogLevel.` offers all five levels inside `Log.write`.
+
 ## Live preview
+
+The platform VSIX includes the FFmpeg media library used by `MediaPlayer`. Open an `.xr` file with a local video, then use **XRack: Open Live Preview** to play, pause, or seek. Relative media paths are resolved from the `.xr` file. FFmpeg source and build inputs are available with each XRack release. [XRack releases](https://github.com/smallsunsun1/xrack/releases)
 
 Open a saved `.xr` file and choose **XRack: Open Live Preview** from the Command Palette or use the preview button in the editor title bar. The side panel follows edits to that file and its open imports, including unsaved edits. Use the component dropdown to choose an entry component. Click buttons in the preview to run their XRack handlers and see the updated component state. While a new frame is building, the previous frame stays visible. Compiler errors appear above it and clear automatically after the next successful render.
 
@@ -39,7 +43,11 @@ For supported components, the bundled preview host loads optimized XR MLIR into 
 
 Drag the canvas background to move the preview. Turn on **Pan** or hold **Alt** to drag directly on the component. Use **−**, **+**, or **Alt + wheel** to zoom, the percentage button to return to actual size, and **Fit** to keep the component centered and within the panel. Trackpad pinch also zooms the view in Pan mode. These controls change the view of the rendered component while preserving its layout and state.
 
+Open **View → Output** and select **XRack Preview** to see UI logs as handlers run. For example, `Log.debug(Strings.format("count={}", root.count));` prints the current value together with the component and source location.
+
 Window presentation commands update the preview component's window state inside the panel. If the component calls `minimize()`, use **Restore preview window** to show it again.
+
+In the interpreter preview, open **Inspect** to see the rendered element tree and the component's public property declarations. Select an element to highlight its visible bounds. The tree shows which element has focus and which elements are disabled.
 
 ## Development
 
@@ -95,7 +103,7 @@ Set the extension version in `package.json` and `package-lock.json` to match the
 
 ```sh
 git fetch origin
-git tag -a v0.5.0 origin/main -m "XRack 0.5.0"
+git tag -a v0.5.0 origin/main -m "XRack 0.5.1"
 git push origin v0.5.0
 ```
 

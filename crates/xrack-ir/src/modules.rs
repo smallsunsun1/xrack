@@ -138,6 +138,7 @@ fn resolve(
         components: Vec::new(),
         records: Vec::new(),
         fonts: Vec::new(),
+        global_symbols: BTreeSet::new(),
     };
     loader.active.insert(normalize_source_path(file));
     let translations = entry.translations.clone();
@@ -181,6 +182,7 @@ struct Loader<'a> {
     components: Vec<ast::Component>,
     records: Vec<ast::RecordDef>,
     fonts: Vec<ast::FontImport>,
+    global_symbols: BTreeSet<String>,
 }
 
 impl Loader<'_> {
@@ -350,6 +352,16 @@ impl Loader<'_> {
             }
             self.records.push(record);
         }
+        for component in &doc.components {
+            if component.global {
+                self.global_symbols.insert(names[&component.name].clone());
+            }
+        }
+        let globals: BTreeMap<_, _> = names
+            .iter()
+            .filter(|(_, resolved)| self.global_symbols.contains(*resolved))
+            .map(|(name, resolved)| (name.clone(), resolved.clone()))
+            .collect();
         for mut component in doc.components {
             component.span.source = source;
             component.base_span.source = source;
@@ -358,6 +370,7 @@ impl Loader<'_> {
             component.filename = Some(file.to_string_lossy().into_owned());
             rewrite_type(&mut component.base, &names, file, component.base_span)?;
             rewrite_members(&mut component.members, &names, &asset_prefix, file, source)?;
+            rewrite_global_members(&mut component.members, &globals);
             self.components.push(component);
         }
         Ok(exports)
@@ -477,6 +490,7 @@ fn rewrite_members(
                     rewrite_record_type(result, names);
                 }
             }
+            ast::Member::Children(span) => span.source = source,
             ast::Member::Animation(animation) => {
                 rewrite_animation(animation, asset_prefix, names, source);
             }
@@ -588,5 +602,131 @@ fn rewrite_expr(
             }
         }
         Literal { .. } | Reference(_) | Markdown(_) => {}
+    }
+}
+
+fn rewrite_global_reference(reference: &mut String, globals: &BTreeMap<String, String>) {
+    if let Some((receiver, rest)) = reference.split_once('.')
+        && let Some(symbol) = globals.get(receiver)
+        && symbol != receiver
+    {
+        *reference = format!("{receiver}@{symbol}.{rest}");
+    }
+}
+
+fn rewrite_global_expr(expr: &mut ast::Expr, globals: &BTreeMap<String, String>) {
+    use ast::ExprKind::*;
+    match &mut expr.kind {
+        Reference(reference) => rewrite_global_reference(reference, globals),
+        Call(call) => {
+            rewrite_global_reference(&mut call.callee, globals);
+            for value in &mut call.arguments {
+                rewrite_global_expr(value, globals);
+            }
+        }
+        Unary { value, .. } => rewrite_global_expr(value, globals),
+        Binary { left, right, .. } => {
+            rewrite_global_expr(left, globals);
+            rewrite_global_expr(right, globals);
+        }
+        Conditional { condition, yes, no } => {
+            for value in [condition, yes, no] {
+                rewrite_global_expr(value, globals);
+            }
+        }
+        Array(values) => {
+            for value in values {
+                rewrite_global_expr(value, globals);
+            }
+        }
+        Record { fields, .. }
+        | Translation {
+            arguments: fields, ..
+        } => {
+            for field in fields {
+                rewrite_global_expr(&mut field.value, globals);
+            }
+        }
+        LinearGradient { stops, .. } | RadialGradient { stops } => {
+            for stop in stops {
+                rewrite_global_expr(&mut stop.color, globals);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn rewrite_global_members(members: &mut [ast::Member], globals: &BTreeMap<String, String>) {
+    for member in members {
+        match member {
+            ast::Member::Property(property) => {
+                if let Some(value) = &mut property.value {
+                    rewrite_global_expr(value, globals);
+                }
+            }
+            ast::Member::Binding(binding) => rewrite_global_expr(&mut binding.value, globals),
+            ast::Member::Callback(callback) => {
+                if let Some(alias) = &mut callback.alias {
+                    rewrite_global_reference(alias, globals);
+                }
+            }
+            ast::Member::Handler(handler) => {
+                for statement in &mut handler.statements {
+                    match statement {
+                        ast::Statement::Assignment(assignment) => {
+                            rewrite_global_reference(&mut assignment.target, globals);
+                            rewrite_global_expr(&mut assignment.value, globals);
+                        }
+                        ast::Statement::Call(call) => {
+                            rewrite_global_reference(&mut call.callee, globals);
+                            for value in &mut call.arguments {
+                                rewrite_global_expr(value, globals);
+                            }
+                        }
+                    }
+                }
+                if let Some(value) = &mut handler.result {
+                    rewrite_global_expr(value, globals);
+                }
+            }
+            ast::Member::Element(element) => {
+                if let Some(value) = &mut element.condition {
+                    rewrite_global_expr(value, globals);
+                }
+                if let Some(repeat) = &mut element.repeat {
+                    rewrite_global_expr(&mut repeat.model, globals);
+                }
+                rewrite_global_members(&mut element.members, globals);
+            }
+            ast::Member::Animation(animation) => {
+                for option in &mut animation.options {
+                    if let ast::AnimationValue::Expression(value) = &mut option.value {
+                        rewrite_global_expr(value, globals);
+                    }
+                }
+            }
+            ast::Member::States(states) => {
+                for state in &mut states.states {
+                    if let Some(value) = &mut state.when {
+                        rewrite_global_expr(value, globals);
+                    }
+                    for change in &mut state.changes {
+                        rewrite_global_expr(&mut change.value, globals);
+                    }
+                    for animation in state
+                        .transitions
+                        .iter_mut()
+                        .flat_map(|transition| &mut transition.animations)
+                    {
+                        for option in &mut animation.options {
+                            if let ast::AnimationValue::Expression(value) = &mut option.value {
+                                rewrite_global_expr(value, globals);
+                            }
+                        }
+                    }
+                }
+            }
+            ast::Member::Children(_) => {}
+        }
     }
 }

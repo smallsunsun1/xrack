@@ -246,6 +246,7 @@ impl ScrollLayout {
 pub struct WindowEffects<'a> {
     pub timers: Vec<&'a xrack_runtime::TimerRegistration>,
     pub dialogs: Vec<&'a xrack_runtime::NativeDialogRegistration>,
+    pub media: Vec<&'a xrack_runtime::MediaRegistration>,
     pub playback: Vec<(&'a Rc<xrack_runtime::ImagePlaybackRegistration>, bool)>,
 }
 
@@ -262,6 +263,9 @@ impl<'a> WindowEffects<'a> {
             self.dialogs.extend(&node.native_dialogs);
         }
         self.playback.extend(layout.image_playback(node));
+        if layout.visible {
+            self.media.extend(node.media.as_ref());
+        }
         for (child, item) in node.children.iter().zip(&layout.children) {
             self.extend(child, item);
         }
@@ -1342,6 +1346,53 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
                     })
                 })
                 .collect()
+        } else if node.control_part("SliderHandle").is_some() {
+            let geometry = SliderGeometry::for_node(bounds, node);
+            let range = xrack_runtime::SliderRange::from_node(node);
+            let fraction = self
+                .input
+                .and_then(|input| {
+                    (!node.boolean("live", true))
+                        .then(|| input.slider_preview(&self.path))
+                        .flatten()
+                })
+                .map_or_else(|| range.fraction(), |value| range.preview_fraction(value));
+            let center = geometry.position(fraction);
+            node.children
+                .iter()
+                .map(|child| {
+                    let extent = geometry.radius * 2.0;
+                    let rect = if child.kind == "SliderHandle" {
+                        let width = dimension(child, "width")
+                            .unwrap_or(extent)
+                            .min(bounds.width);
+                        let height = dimension(child, "height")
+                            .unwrap_or(extent)
+                            .min(bounds.height);
+                        Rect::new(
+                            center.x - width * 0.5,
+                            center.y - height * 0.5,
+                            width,
+                            height,
+                        )
+                    } else {
+                        self.absolute_child(child, bounds)
+                    };
+                    grid::Placement::plain(rect)
+                })
+                .collect()
+        } else if node.control_part("ButtonContent").is_some() {
+            let content = bounds.inset(ButtonContent::new(node).padding);
+            node.children
+                .iter()
+                .map(|child| {
+                    grid::Placement::plain(if child.kind == "ButtonContent" {
+                        content
+                    } else {
+                        self.absolute_child(child, bounds)
+                    })
+                })
+                .collect()
         } else if node.kind == "SplitHandle" {
             node.children
                 .iter()
@@ -1417,7 +1468,7 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
                 })
                 .collect()
         } else if node.kind == "RangeSlider" {
-            let geometry = SliderGeometry::new(bounds, node.orientation());
+            let geometry = SliderGeometry::for_node(bounds, node);
             let fractions = xrack_runtime::SliderInterval::from_node(node).fractions();
             node.children
                 .iter()

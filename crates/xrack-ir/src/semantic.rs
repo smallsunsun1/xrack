@@ -1,6 +1,9 @@
 use crate::model as ir;
 use std::collections::{BTreeMap, BTreeSet};
-use xrack_syntax::ast::{self as ast, Diagnostic, ExprKind, Member, Span, Type};
+use xrack_syntax::{
+    ast::{self as ast, Diagnostic, ExprKind, Member, Span, Type},
+    builtins::{self, FunctionKind, MathFunction},
+};
 
 pub use crate::debug_hir::analyze;
 
@@ -17,10 +20,12 @@ pub fn rust_name(name: &str) -> String {
     name.replace('-', "_")
 }
 
+pub fn is_reserved_identifier(name: &str) -> bool {
+    matches!(name, "_" | "self" | "Self" | "super" | "crate" | "root") || name.starts_with("__")
+}
+
 fn check_name(name: &str, span: Span) -> Result<()> {
-    let n = rust_name(name);
-    if ["_", "self", "Self", "super", "crate", "root"].contains(&n.as_str()) || n.starts_with("__")
-    {
+    if is_reserved_identifier(&rust_name(name)) {
         return fail(span, format!("reserved identifier `{name}`"));
     }
     Ok(())
@@ -212,7 +217,18 @@ fn box_shadow_type(name: &str) -> Option<Type> {
     })
 }
 
+pub fn control_part_parent(kind: &str) -> Option<&'static str> {
+    match kind {
+        "ButtonContent" => Some("Button"),
+        "SliderHandle" => Some("Slider"),
+        _ => None,
+    }
+}
+
 pub fn builtin_property(kind: &str, name: &str) -> Option<Type> {
+    if matches!(kind, "ButtonContent" | "SliderHandle") {
+        return builtin_property("Rectangle", name);
+    }
     if matches!(kind, "DayCell" | "SplitHandle") {
         return match name {
             "background" | "border-color" | "border-width" | "border-radius" | "opacity"
@@ -404,6 +420,22 @@ pub fn builtin_property(kind: &str, name: &str) -> Option<Type> {
             "primary" => Some(Type::Bool),
             _ => builtin_property("Button", name),
         };
+    }
+    if kind == "MediaPlayer" {
+        match name {
+            "source" | "subtitle-file" => return Some(Type::String),
+            "autoplay" | "muted" => return Some(Type::Bool),
+            "volume" | "playback-rate" => return Some(Type::Float),
+            "loops" | "audio-track" | "subtitle-track" | "network-bandwidth" => {
+                return Some(Type::Int);
+            }
+            "image-fit" => return Some(Type::ImageFit),
+            _ => {
+                if let Some(ty) = media_read_type(name) {
+                    return Some(ty);
+                }
+            }
+        }
     }
     if kind == "AnimatedImage" {
         return match name {
@@ -1153,110 +1185,21 @@ pub fn delegate_base(kind: &str) -> Option<&'static str> {
     })
 }
 
-pub fn is_builtin(s: &str) -> bool {
-    let s = delegate_base(s).unwrap_or(s);
-    linear_layout(s)
-        || text_input(s)
-        || matches!(
-            s,
-            "Window"
-                | "ApplicationWindow"
-                | "WindowMoveArea"
-                | "ScaleRotateGestureHandler"
-                | "SwipeGestureHandler"
-                | "WheelHandler"
-                | "HoverHandler"
-                | "Rectangle"
-                | "Pane"
-                | "ControlFrame"
-                | "Page"
-                | "Text"
-                | "Label"
-                | "StyledText"
-                | "Button"
-                | "ButtonGroup"
-                | "StandardButton"
-                | "Action"
-                | "ActionGroup"
-                | "Timer"
-                | "FileDialog"
-                | "MessageDialog"
-                | "SecondaryWindow"
-                | "Shortcut"
-                | "ToolButton"
-                | "RoundButton"
-                | "ToolSeparator"
-                | "DelayButton"
-                | "DialogButton"
-                | "Dialog"
-                | "Drawer"
-                | "MenuBar"
-                | "SystemTrayIcon"
-                | "Menu"
-                | "MenuItem"
-                | "MenuSeparator"
-                | "ContextMenuArea"
-                | "TouchArea"
-                | "FocusScope"
-                | "DragArea"
-                | "DropArea"
-                | "Image"
-                | "AnimatedImage"
-                | "Path"
-                | "GridLayout"
-                | "Row"
-                | "ScrollView"
-                | "Flickable"
-                | "ScrollBar"
-                | "ScrollIndicator"
-                | "ListView"
-                | "GridView"
-                | "StandardListView"
-                | "TableView"
-                | "StandardTableView"
-                | "TableColumn"
-                | "TableRow"
-                | "TableCell"
-                | "TreeCell"
-                | "SplitView"
-                | "Tooltip"
-                | "TreeView"
-                | "TreeRow"
-                | "CheckBox"
-                | "Switch"
-                | "Slider"
-                | "Dial"
-                | "RangeSlider"
-                | "ProgressIndicator"
-                | "Spinner"
-                | "BusyIndicator"
-                | "SpinBox"
-                | "DoubleSpinBox"
-                | "ComboBox"
-                | "RadioGroup"
-                | "RadioButton"
-                | "TabWidget"
-                | "Tab"
-                | "TabBar"
-                | "TabButton"
-                | "SwipeView"
-                | "SwipeDelegate"
-                | "PageIndicator"
-                | "Calendar"
-                | "MonthGrid"
-                | "DayCell"
-                | "SplitHandle"
-                | "DayOfWeekRow"
-                | "WeekNumberColumn"
-                | "TimePickerPopup"
-                | "DatePickerPopup"
-                | "ColorPickerPopup"
-                | "FontPickerPopup"
-                | "Tumbler"
-                | "SwipePage"
-                | "StackView"
-                | "StackPage"
-        )
+pub fn is_builtin(kind: &str) -> bool {
+    builtins::builtin_element(delegate_base(kind).unwrap_or(kind)).is_some()
+}
+
+pub fn media_read_type(name: &str) -> Option<Type> {
+    Some(match name {
+        "position" | "duration" | "buffer-progress" | "seek-start" | "seek-end" => Type::Float,
+        "playing" | "ready" | "ended" | "seekable" | "has-video" | "has-audio" | "live"
+        | "at-live-edge" => Type::Bool,
+        "error" | "status" | "media-title" | "subtitle" | "audio-error" | "subtitle-error" => {
+            Type::String
+        }
+        "audio-tracks" | "subtitle-tracks" | "bitrate" => Type::Int,
+        _ => return None,
+    })
 }
 
 fn text_input(kind: &str) -> bool {
@@ -1496,7 +1439,7 @@ pub fn builtin_event(kind: &str, event: &str) -> bool {
         || control_event(kind, event)
 }
 
-fn event_parameters<'a>(
+pub fn event_parameters<'a>(
     kind: &str,
     event: &str,
     combo_value: Option<&'a Type>,
@@ -1554,14 +1497,17 @@ fn event_parameters<'a>(
     })
 }
 
-fn event_return_type(kind: &str, event: &str) -> Option<Type> {
+pub fn event_return_type(kind: &str, event: &str) -> Option<Type> {
     if matches!(
         (kind, event),
         ("Window" | "ApplicationWindow", "close-requested") | ("StackPage", "leave-requested")
     ) {
         Some(Type::Bool)
     } else if kind == "FocusScope" && key_handler(event)
-        || kind == "WheelHandler" && event == "wheel"
+        || matches!(
+            (kind, event),
+            ("WheelHandler", "wheel") | ("TouchArea", "scroll-event")
+        )
     {
         Some(Type::EventResult)
     } else {
@@ -1740,15 +1686,48 @@ fn analyze_components(
         return Err(errors);
     }
 
+    let placed = crate::slots::place(components).map_err(|error| vec![error])?;
+    let definitions: BTreeMap<_, _> = placed
+        .iter()
+        .map(|placed| (placed.component.name.as_str(), &placed.component))
+        .collect();
     let mut scopes = BTreeMap::new();
-    for c in &components {
+    for placed in &placed {
+        let c = &placed.component;
         let mut scope = Scope {
             records: records.clone(),
             component_name: &c.name,
+            global: c.global,
+            placement_names: &placed.scopes,
             references: references.clone(),
             ..Scope::default()
         };
-        match scope.register(&definitions, &c.members, &c.base, "root", None, c.span) {
+        for (&name, definition) in &definitions {
+            if !definition.global || name == c.name {
+                continue;
+            }
+            let global = format!("__global_{name}");
+            if let Err(error) = scope.register(
+                &definitions,
+                &[],
+                name,
+                &global,
+                Some("root"),
+                definition.span,
+                None,
+            ) {
+                errors.push(error);
+            }
+        }
+        match scope.register(
+            &definitions,
+            &c.members,
+            &c.base,
+            "root",
+            None,
+            c.span,
+            None,
+        ) {
             Ok(()) => {
                 scopes.insert(c.name.as_str(), scope);
             }
@@ -1760,7 +1739,8 @@ fn analyze_components(
     }
     let callbacks = std::rc::Rc::new(resolve_callbacks(&scopes).map_err(|error| vec![error])?);
     let mut validated = Vec::new();
-    for c in &components {
+    for placed in &placed {
+        let c = &placed.component;
         let mut scope = scopes
             .remove(c.name.as_str())
             .expect("registered component scope");
@@ -1894,6 +1874,9 @@ fn inherit<'a>(
             span: component.base_span,
             message: format!("unknown base element or component `{}`", component.base),
         })?;
+    if base.global {
+        return fail(component.base_span, "a component cannot inherit a global");
+    }
     let base = inherit(base, definitions, expanded, active, references)?;
     let mut result = component.clone();
     result.base = base.base;
@@ -1957,6 +1940,7 @@ struct Owner<'a> {
     callbacks: BTreeMap<&'a str, &'a ast::Callback>,
     parent: Option<String>,
     instance: bool,
+    placement: Option<&'a ast::PlacementScope>,
     kind: String,
     members: &'a [Member],
     repeated: bool,
@@ -1988,6 +1972,9 @@ struct Scope<'a> {
     records: BTreeMap<&'a str, &'a ast::RecordDef>,
     state_targets: BTreeMap<String, StateTarget>,
     component_name: &'a str,
+    global: bool,
+    placement_names: &'a [crate::slots::Names],
+    caller_scope: Option<(&'a ast::PlacementScope, String)>,
     callback_catalog: Option<std::rc::Rc<CallbackCatalog>>,
     action_groups: std::rc::Rc<ActionGroups>,
     references: Option<SymbolReferences>,
@@ -2182,6 +2169,12 @@ impl CallbackResolver<'_, '_> {
                     declaration.span,
                     |scope, name| scope.callbacks.contains_key(name),
                 )?;
+                if target.starts_with("__global_") {
+                    return fail(
+                        declaration.span,
+                        "global callbacks can be called but cannot be aliased",
+                    );
+                }
                 for start in [owner, target] {
                     let mut current = Some(start);
                     while let Some(key) = current {
@@ -2288,6 +2281,9 @@ impl CallbackResolver<'_, '_> {
 }
 
 fn key(e: &ast::Element, parent: &str, index: usize) -> String {
+    if let Some(placement) = &e.placement_scope {
+        return placement.key.clone();
+    }
     match &e.id {
         Some(id) => id.clone(),
         None => format!("__{parent}_{index}"),
@@ -2536,7 +2532,13 @@ impl<'a> Scope<'a> {
     ) {
         if let Some((receiver, _)) = spelling.split_once('.') {
             if !matches!(receiver, "root" | "self") {
-                self.reference(usage, spelling, 0, self.owners[owner].span, receiver);
+                let source = receiver
+                    .split_once('@')
+                    .map_or(receiver, |(source, _)| source);
+                let spelling = format!("{source}.{}", spelling.split_once('.').unwrap().1);
+                self.reference(usage, &spelling, 0, self.owners[owner].span, source);
+                self.reference(usage, &spelling, 1, declaration, name);
+                return;
             }
             self.reference(usage, spelling, 1, declaration, name);
         } else {
@@ -2608,6 +2610,7 @@ impl<'a> Scope<'a> {
         owner: &str,
         parent: Option<&str>,
         span: Span,
+        placement: Option<&'a ast::PlacementScope>,
     ) -> Result<()> {
         if matches!(kind, "ActionGroup" | "ButtonGroup")
             && let Some(binding) = exclusive_binding(members)
@@ -2704,6 +2707,7 @@ impl<'a> Scope<'a> {
                     callbacks,
                     parent: parent.map(str::to_owned),
                     instance,
+                    placement,
                     kind: kind.into(),
                     members,
                     span,
@@ -2891,7 +2895,15 @@ impl<'a> Scope<'a> {
                         if let Some(definition) = definitions.get(e.ty.as_str()) {
                             self.reference(e.type_span, "", 0, definition.span, &definition.name);
                         }
-                        self.register(definitions, &e.members, &e.ty, id, Some(owner), e.span)?;
+                        self.register(
+                            definitions,
+                            &e.members,
+                            &e.ty,
+                            id,
+                            Some(owner),
+                            e.span,
+                            e.placement_scope.as_ref(),
+                        )?;
                         continue;
                     }
                     if e.ty == "TreeRow" && kind != "TreeView" {
@@ -2970,6 +2982,17 @@ impl<'a> Scope<'a> {
                         }
                         if !page_slots.insert(&e.ty) {
                             return fail(e.span, "MonthGrid accepts only one DayCell");
+                        }
+                    }
+                    if let Some(expected) = control_part_parent(&e.ty) {
+                        if kind != expected || e.repeat.is_some() || e.condition.is_some() {
+                            return fail(
+                                e.span,
+                                format!("{} requires a static child of {expected}", e.ty),
+                            );
+                        }
+                        if !page_slots.insert(&e.ty) {
+                            return fail(e.span, format!("{kind} accepts at most one {}", e.ty));
                         }
                     }
                     if e.ty == "SplitHandle" {
@@ -3107,10 +3130,23 @@ impl<'a> Scope<'a> {
                     }
                     let child = key(e, owner, index);
                     check_element_type(definitions, e)?;
-                    if let Some(definition) = definitions.get(e.ty.as_str()) {
+                    let source_type = e
+                        .placement_scope
+                        .as_ref()
+                        .and_then(|placement| placement.source_component.as_deref())
+                        .unwrap_or(&e.ty);
+                    if let Some(definition) = definitions.get(source_type) {
                         self.reference(e.type_span, "", 0, definition.span, &definition.name);
                     }
-                    self.register(definitions, &e.members, &e.ty, &child, Some(owner), e.span)?;
+                    self.register(
+                        definitions,
+                        &e.members,
+                        &e.ty,
+                        &child,
+                        Some(owner),
+                        e.span,
+                        e.placement_scope.as_ref(),
+                    )?;
                     self.owners
                         .get_mut(&child)
                         .expect("registered child")
@@ -3119,6 +3155,73 @@ impl<'a> Scope<'a> {
             }
         }
         Ok(())
+    }
+
+    fn lexical_scope(&self, owner: &str) -> usize {
+        self.owners[owner]
+            .placement
+            .map_or(0, |placement| placement.lexical_scope)
+    }
+
+    fn receiver<'b>(&'b self, current: &'b str, prefix: &'b str) -> Option<&'b str> {
+        if prefix == "self" {
+            return Some(current);
+        }
+        let (source, global_name) = prefix.split_once('@').unwrap_or((prefix, prefix));
+        let prefix = source;
+        let scope = self.caller_scope.as_ref().map_or_else(
+            || self.lexical_scope(current),
+            |(placement, _)| placement.caller.as_ref().unwrap().0,
+        );
+        let names = self.placement_names.get(scope);
+        if prefix == "root" {
+            return Some(names.map_or("root", |names| names.root.as_str()));
+        }
+        if let Some(key) = names.and_then(|names| names.ids.get(prefix)) {
+            return Some(key);
+        }
+        if scope == 0
+            && self.owners.get(prefix).is_some_and(|target| {
+                target.placement.is_none_or(|placement| {
+                    placement
+                        .caller
+                        .as_ref()
+                        .map_or(placement.lexical_scope, |caller| caller.0)
+                        == 0
+                })
+            })
+        {
+            return Some(prefix);
+        }
+        if self.global && global_name == self.component_name {
+            return Some("root");
+        }
+        self.owners
+            .get_key_value(&format!("__global_{global_name}"))
+            .map(|(key, _)| key.as_str())
+    }
+
+    fn lexical_parent<'b>(&'b self, owner: &'b str) -> Option<&'b str> {
+        let element = &self.owners[owner];
+        if let Some((placement, root)) = &self.caller_scope
+            && root == owner
+        {
+            return Some(&placement.caller.as_ref().unwrap().1);
+        }
+        match element.placement {
+            Some(placement) => placement.lexical_parent.as_deref(),
+            None => element.parent.as_deref(),
+        }
+    }
+
+    fn for_caller(&self, owner: &str, member: &str) -> Option<Self> {
+        let placement = self.owners[owner].placement?;
+        if !placement.caller_members.contains(member) {
+            return None;
+        }
+        let mut scope = self.clone();
+        scope.caller_scope = Some((placement, owner.into()));
+        Some(scope)
     }
 
     fn member_owner<'b>(
@@ -3130,10 +3233,10 @@ impl<'a> Scope<'a> {
         contains: impl Fn(&Owner<'a>, &str) -> bool,
     ) -> Result<(&'b str, &'b str)> {
         if let Some((prefix, name)) = reference.split_once('.') {
-            let owner = if prefix == "self" { current } else { prefix };
-            if !self.owners.contains_key(owner) {
-                return fail(span, format!("unknown element id `{owner}`"));
-            }
+            let owner = self.receiver(current, prefix).ok_or_else(|| Diagnostic {
+                span,
+                message: format!("unknown element id `{prefix}`"),
+            })?;
             Ok((owner, name))
         } else {
             let mut owner = current;
@@ -3142,7 +3245,7 @@ impl<'a> Scope<'a> {
                 if contains(scope, reference) {
                     return Ok((owner, reference));
                 }
-                owner = scope.parent.as_deref().ok_or_else(|| Diagnostic {
+                owner = self.lexical_parent(owner).ok_or_else(|| Diagnostic {
                     span,
                     message: format!("unknown {kind} `{reference}`"),
                 })?;
@@ -3169,6 +3272,7 @@ impl<'a> Scope<'a> {
                 || self.action_group_read(current, reference, span)?.is_some()
                 || self.native_dialog_read(current, reference, span).is_some()
                 || self.image_playback_read(current, reference, span).is_some()
+                || self.media_read(current, reference, span).is_some()
                 || self.viewport_read(current, reference, span)?.is_some()
                 || self
                     .scroll_control_read(current, reference, span)?
@@ -3189,13 +3293,18 @@ impl<'a> Scope<'a> {
             span,
             message: format!("unknown property `{reference}`"),
         })?;
-        if scope.instance && p.visibility == "private" {
+        let external = scope.instance
+            || scope.placement.is_some_and(|placement| {
+                placement.caller.is_some()
+                    && self.caller_scope.as_ref().map_or_else(
+                        || self.lexical_scope(current),
+                        |(caller, _)| caller.caller.as_ref().unwrap().0,
+                    ) != placement.lexical_scope
+            });
+        if external && p.visibility == "private" {
             return fail(span, format!("property `{reference}` is private"));
         }
-        if write
-            && ((scope.instance && p.visibility == "out")
-                || (!scope.instance && p.visibility == "in"))
-        {
+        if write && ((external && p.visibility == "out") || (!external && p.visibility == "in")) {
             return fail(
                 span,
                 format!("property `{reference}` is read-only in this scope"),
@@ -3241,7 +3350,7 @@ impl<'a> Scope<'a> {
         let Some((owner, "current-value")) = reference.split_once('.') else {
             return Ok(None);
         };
-        let owner = if owner == "self" { current } else { owner };
+        let owner = self.receiver(current, owner).unwrap_or(owner);
         let Some(group) = self
             .owners
             .get(owner)
@@ -3281,7 +3390,7 @@ impl<'a> Scope<'a> {
 
     fn native_dialog_read(&self, current: &str, reference: &str, span: Span) -> Option<ir::Expr> {
         let (owner, property) = reference.split_once('.')?;
-        let owner = if owner == "self" { current } else { owner };
+        let owner = self.receiver(current, owner).unwrap_or(owner);
         let ty = native_dialog_property(&self.owners.get(owner)?.kind, property)?;
         Some(ir::Expr {
             owner: Some(owner.into()),
@@ -3343,7 +3452,7 @@ impl<'a> Scope<'a> {
         let Some((id, name)) = reference.split_once('.') else {
             return Ok(None);
         };
-        let owner = if id == "self" { current } else { id };
+        let owner = self.receiver(current, id).unwrap_or(id);
         let Some(element) = self.owners.get(owner).filter(|element| !element.instance) else {
             return Ok(None);
         };
@@ -3385,7 +3494,7 @@ impl<'a> Scope<'a> {
         let Some((id, name @ ("position" | "size"))) = reference.split_once('.') else {
             return Ok(None);
         };
-        let owner = if id == "self" { current } else { id };
+        let owner = self.receiver(current, id).unwrap_or(id);
         if !self
             .owners
             .get(owner)
@@ -3496,11 +3605,7 @@ impl<'a> Scope<'a> {
         let Some((receiver, name)) = reference.rsplit_once('.') else {
             return Ok(None);
         };
-        let owner = if receiver == "self" {
-            current
-        } else {
-            receiver
-        };
+        let owner = self.receiver(current, receiver).unwrap_or(receiver);
         let Some(element) = self.owners.get(owner).filter(|element| !element.instance) else {
             return Ok(None);
         };
@@ -3527,11 +3632,7 @@ impl<'a> Scope<'a> {
         let Some((receiver, name)) = reference.rsplit_once('.') else {
             return Ok(None);
         };
-        let owner = if receiver == "self" {
-            current
-        } else {
-            receiver
-        };
+        let owner = self.receiver(current, receiver).unwrap_or(receiver);
         let Some(element) = self.owners.get(owner).filter(|element| !element.instance) else {
             return Ok(None);
         };
@@ -3558,11 +3659,7 @@ impl<'a> Scope<'a> {
         let Some((receiver, name)) = reference.rsplit_once('.') else {
             return Ok(None);
         };
-        let owner = if receiver == "self" {
-            current
-        } else {
-            receiver
-        };
+        let owner = self.receiver(current, receiver).unwrap_or(receiver);
         let Some(element) = self.owners.get(owner).filter(|element| !element.instance) else {
             return Ok(None);
         };
@@ -3582,11 +3679,7 @@ impl<'a> Scope<'a> {
 
     fn stack_read(&self, current: &str, reference: &str, span: Span) -> Option<ir::Expr> {
         let (receiver, name) = reference.rsplit_once('.')?;
-        let owner = if receiver == "self" {
-            current
-        } else {
-            receiver
-        };
+        let owner = self.receiver(current, receiver).unwrap_or(receiver);
         let element = self.owners.get(owner)?;
         let (stack, ty, args) = match element.kind.as_str() {
             "StackView" => (owner, stack_read_type(name)?, Vec::new()),
@@ -3611,13 +3704,25 @@ impl<'a> Scope<'a> {
         })
     }
 
+    fn media_read(&self, current: &str, reference: &str, span: Span) -> Option<ir::Expr> {
+        let (receiver, name) = reference.rsplit_once('.')?;
+        let owner = self.receiver(current, receiver).unwrap_or(receiver);
+        if self.owners.get(owner)?.kind != "MediaPlayer" {
+            return None;
+        }
+        Some(ir::Expr {
+            op: "media_read".into(),
+            owner: Some(owner.into()),
+            value: name.into(),
+            ty: media_read_type(name)?,
+            args: Vec::new(),
+            span,
+        })
+    }
+
     fn image_playback_read(&self, current: &str, reference: &str, span: Span) -> Option<ir::Expr> {
         let (receiver, name) = reference.rsplit_once('.')?;
-        let owner = if receiver == "self" {
-            current
-        } else {
-            receiver
-        };
+        let owner = self.receiver(current, receiver).unwrap_or(receiver);
         if self.owners.get(owner)?.kind != "AnimatedImage" || !playback_property(name) {
             return None;
         }
@@ -3729,7 +3834,7 @@ impl<'a> Scope<'a> {
         let Some((id, name @ "resizing")) = reference.split_once('.') else {
             return Ok(None);
         };
-        let owner = if id == "self" { current } else { id };
+        let owner = self.receiver(current, id).unwrap_or(id);
         if !self
             .owners
             .get(owner)
@@ -3752,11 +3857,7 @@ impl<'a> Scope<'a> {
         let Some((receiver, "save-state")) = call.callee.rsplit_once('.') else {
             return Ok(None);
         };
-        let owner = if receiver == "self" {
-            current
-        } else {
-            receiver
-        };
+        let owner = self.receiver(current, receiver).unwrap_or(receiver);
         if !self.owners.get(owner).is_some_and(|target| {
             !target.instance
                 && target.kind == "SplitView"
@@ -3782,11 +3883,7 @@ impl<'a> Scope<'a> {
         let Some((receiver, method)) = call.callee.rsplit_once('.') else {
             return Ok(None);
         };
-        let owner = if receiver == "self" {
-            current
-        } else {
-            receiver
-        };
+        let owner = self.receiver(current, receiver).unwrap_or(receiver);
         if !matches!(method, "is-expanded" | "depth" | "row-for-key")
             || !self.owners.get(owner).is_some_and(|target| {
                 !target.instance
@@ -3819,11 +3916,7 @@ impl<'a> Scope<'a> {
         let Some((receiver, method)) = call.callee.rsplit_once('.') else {
             return Ok(None);
         };
-        let owner = if receiver == "self" {
-            current
-        } else {
-            receiver
-        };
+        let owner = self.receiver(current, receiver).unwrap_or(receiver);
         if !matches!(method, "view-index-for-source" | "source-index-for-view")
             || !self.owners.get(owner).is_some_and(|target| {
                 !target.instance
@@ -3848,13 +3941,71 @@ impl<'a> Scope<'a> {
         }))
     }
 
+    fn builtin_call(&self, call: &ast::Call) -> Result<Option<&'static builtins::Function>> {
+        let Some((namespace, member)) = call.callee.split_once('.') else {
+            return Ok(None);
+        };
+        if self.owners.contains_key(namespace)
+            || self.parameters.contains_key(namespace)
+            || !builtins::NAMESPACES.contains(&namespace)
+        {
+            return Ok(None);
+        }
+        builtins::function(namespace, member)
+            .map(Some)
+            .ok_or_else(|| Diagnostic {
+                span: call.span,
+                message: format!("unknown built-in function `{}`", call.callee),
+            })
+    }
+
+    fn log_call(
+        &self,
+        call: &ast::Call,
+        current: &str,
+        kind: FunctionKind,
+    ) -> Result<ir::Statement> {
+        let name = call.callee.as_str();
+        let (level, message) = match (kind, call.arguments.as_slice()) {
+            (FunctionKind::Log, [level, message]) => (
+                expression_as(level, self, current, Type::LogLevel)?,
+                message,
+            ),
+            (FunctionKind::LogAt(level), [message]) => {
+                (ir::Expr::literal(Type::LogLevel, level, call.span), message)
+            }
+            (FunctionKind::Log, _) => {
+                return fail(call.span, "Log.write expects a level and a message");
+            }
+            (FunctionKind::LogAt(_), _) => {
+                return fail(call.span, format!("{name} expects one message"));
+            }
+            _ => {
+                return fail(
+                    call.span,
+                    format!("{name} produces a value and must be used as an expression"),
+                );
+            }
+        };
+        if !self.effects_allowed {
+            return fail(
+                call.span,
+                format!("{name} is not allowed in a pure callback"),
+            );
+        }
+        Ok(ir::Statement::Log {
+            level,
+            message: expression_as(message, self, current, Type::String)?,
+            span: call.span,
+        })
+    }
+
     fn effect_call(&self, call: &ast::Call, current: &str) -> Result<ir::Statement> {
+        if let Some(function) = self.builtin_call(call)? {
+            return self.log_call(call, current, function.kind);
+        }
         if let Some((receiver, method)) = call.callee.rsplit_once('.') {
-            let owner = if receiver == "self" {
-                current
-            } else {
-                receiver
-            };
+            let owner = self.receiver(current, receiver).unwrap_or(receiver);
             if matches!(method, "select-source-index" | "select-source-cell")
                 && let Some(target) = self.owners.get(owner)
                 && !target.instance
@@ -4488,6 +4639,30 @@ impl<'a> Scope<'a> {
             if self
                 .owners
                 .get(owner)
+                .is_some_and(|target| target.kind == "MediaPlayer")
+                && matches!(method, "play" | "pause" | "stop" | "seek" | "go-live")
+            {
+                if !self.effects_allowed {
+                    return fail(call.span, "MediaPlayer commands require an impure callback");
+                }
+                let position = match (method, call.arguments.as_slice()) {
+                    ("seek", [position]) => {
+                        Some(expression_as(position, self, current, Type::Float)?)
+                    }
+                    ("seek", _) => return fail(call.span, "seek() takes one position in seconds"),
+                    (_, []) => None,
+                    _ => return fail(call.span, format!("{method}() takes no arguments")),
+                };
+                return Ok(ir::Statement::Media(ir::MediaEffect {
+                    owner: owner.into(),
+                    method: method.into(),
+                    position,
+                    span: call.span,
+                }));
+            }
+            if self
+                .owners
+                .get(owner)
                 .is_some_and(|target| target.kind == "Timer")
                 && matches!(method, "start" | "stop" | "restart")
             {
@@ -4594,6 +4769,12 @@ fn alias_initializer(p: &ast::Property, scope: &Scope<'_>, owner: &str) -> Resul
         scope.member_owner(owner, reference, "property", *span, |scope, name| {
             scope.properties.contains_key(name)
         })?;
+    if target.starts_with("__global_") {
+        return fail(
+            *span,
+            "use a binding or an assignment to access a global property",
+        );
+    }
     for start in [owner, target] {
         let mut current = Some(start);
         while let Some(key) = current {
@@ -4640,6 +4821,8 @@ fn alias_initializer(p: &ast::Property, scope: &Scope<'_>, owner: &str) -> Resul
 }
 
 fn property(p: &ast::Property, scope: &Scope<'_>, owner: &str) -> Result<ir::Property> {
+    let caller = scope.for_caller(owner, &p.name);
+    let scope = caller.as_ref().unwrap_or(scope);
     let init = match &p.value {
         _ if p.two_way => alias_initializer(p, scope, owner)?,
         Some(e) => expression_as(e, scope, owner, p.ty.clone())?,
@@ -4730,7 +4913,9 @@ fn lower_callable(
                 &definition.name,
             );
         }
-        let mut handler_scope = scope.clone();
+        let mut handler_scope = scope
+            .for_caller(owner, &handler.name)
+            .unwrap_or_else(|| scope.clone());
         handler_scope.effects_allowed = !callback.pure;
         handler_scope.record_handler_parameters(handler);
         handler_scope.parameters.extend(
@@ -4951,6 +5136,19 @@ fn custom_clipboard_paste(
 
 fn component<'a>(c: &'a ast::Component, scope: Scope<'a>) -> Result<Vec<LoweredMember<'a>>> {
     check_name(&c.name, c.span)?;
+    if c.global {
+        if let Some(member) = c.members.iter().find(|member| {
+            !matches!(
+                member,
+                Member::Property(_) | Member::Callback(_) | Member::Handler(_)
+            )
+        }) {
+            return fail(
+                member.span(),
+                "global only accepts properties, callbacks and handlers",
+            );
+        }
+    }
     if is_builtin(&c.name) {
         return fail(
             c.span,
@@ -4974,6 +5172,12 @@ fn component<'a>(c: &'a ast::Component, scope: Scope<'a>) -> Result<Vec<LoweredM
     }
     if swipe_slot(&c.base) {
         return fail(c.span, "swipe slots require a direct SwipeDelegate parent");
+    }
+    if let Some(parent) = control_part_parent(&c.base) {
+        return fail(
+            c.span,
+            format!("{} requires a direct {parent} parent", c.base),
+        );
     }
     if c.base == "SplitHandle" {
         return fail(c.span, "SplitHandle requires a direct SplitView parent");
@@ -5097,14 +5301,14 @@ fn element<'a>(
             "TreeCell requires a stable child path within a TreeRow",
         );
     }
-    if kind == "AnimatedImage" {
+    if matches!(kind, "AnimatedImage" | "MediaPlayer") {
         let mut current = Some(owner);
         while let Some(key) = current {
             let element = &scope.owners[key];
             if element.repeated {
                 return fail(
                     span,
-                    "AnimatedImage in a repetition requires a component delegate",
+                    format!("{kind} in a repetition requires a component delegate"),
                 );
             }
             current = element.parent.as_deref();
@@ -5133,7 +5337,11 @@ fn element<'a>(
         }));
     }
     if let Some(condition) = condition {
-        let parent = scope.owners[owner].parent.as_deref().unwrap_or("root");
+        let parent = scope.owners[owner]
+            .placement
+            .and_then(|placement| placement.caller.as_ref().map(|caller| caller.1.as_str()))
+            .or_else(|| scope.lexical_parent(owner))
+            .unwrap_or("root");
         lowered.push(LoweredMember::Condition(expression_as(
             condition,
             scope,
@@ -5188,7 +5396,11 @@ fn element<'a>(
                 return fail(span, "repeat item and index must have different names");
             }
         }
-        let parent = scope.owners[owner].parent.as_deref().unwrap_or("root");
+        let parent = scope.owners[owner]
+            .placement
+            .and_then(|placement| placement.caller.as_ref().map(|caller| caller.1.as_str()))
+            .or_else(|| scope.lexical_parent(owner))
+            .unwrap_or("root");
         let model = expression(&repeat.model, scope, parent)?;
         if kind == "TreeRow" {
             if !matches!(model.ty, Type::RecordList(_)) {
@@ -5435,6 +5647,8 @@ fn element<'a>(
         }
         match m {
             Member::Binding(b) => {
+                let caller = scope.for_caller(owner, &b.name);
+                let scope = caller.as_ref().unwrap_or(scope);
                 if virtual_delegate && kind == "RadioButton" && b.name == "checked" {
                     return fail(
                         b.span,
@@ -5481,6 +5695,12 @@ fn element<'a>(
                     return fail(
                         b.span,
                         format!("property `AnimatedImage.{}` is read-only", b.name),
+                    );
+                }
+                if kind == "MediaPlayer" && media_read_type(&b.name).is_some() {
+                    return fail(
+                        b.span,
+                        format!("property `MediaPlayer.{}` is read-only", b.name),
                     );
                 }
                 if table_sort_property(kind, &b.name).is_some()
@@ -5729,35 +5949,15 @@ fn element<'a>(
                         "group requires the id of a ButtonGroup in this component",
                     );
                 }
-                if kind == "Shortcut"
-                    && bindings.contains("sequence")
-                    && bindings.contains("sequences")
-                {
-                    return fail(b.span, "Shortcut requires sequence or sequences");
-                }
                 if has_action && matches!(b.name.as_str(), "checked" | "checkable" | "shortcut") {
                     return fail(
                         b.span,
                         "checked, checkable and shortcut belong to the linked Action",
                     );
                 }
-                if matches!(kind, "ComboBox" | "RadioGroup" | "ButtonGroup")
-                    && bindings.contains("current-index")
-                    && bindings.contains("current-value")
+                if let Some(error) = control_binding_conflict(kind, |name| bindings.contains(name))
                 {
-                    return fail(
-                        b.span,
-                        format!("{kind} selection accepts either current-index or current-value"),
-                    );
-                }
-                if kind == "CheckBox"
-                    && bindings.contains("checked")
-                    && (bindings.contains("check-state") || bindings.contains("tristate"))
-                {
-                    return fail(b.span, "CheckBox accepts checked or check-state/tristate");
-                }
-                if kind == "Tumbler" && bindings.contains("model") && bindings.contains("count") {
-                    return fail(b.span, "Tumbler accepts either model or count");
+                    return fail(b.span, error);
                 }
                 if b.two_way {
                     if instance {
@@ -6184,11 +6384,6 @@ fn element<'a>(
                 let close_requested = is_window(kind) && h.name == "close-requested";
                 let leave_requested = kind == "StackPage" && h.name == "leave-requested";
                 let scrolled = matches!(h.name.as_str(), "scrolled" | "flicked");
-                let key_handler = kind == "FocusScope" && key_handler(&h.name);
-                let wheel_handler = matches!(
-                    (kind, h.name.as_str()),
-                    ("WheelHandler", "wheel") | ("TouchArea", "scroll-event")
-                );
                 if close_requested && !root {
                     return fail(
                         h.span,
@@ -6303,24 +6498,17 @@ fn element<'a>(
                         .map(|parameter| (parameter.name.clone(), parameter.ty.clone())),
                 );
                 let mut body = statements(h, &handler_scope, owner)?;
-                let result = if close_requested || leave_requested {
+                let result = if let Some(ty) = event_return_type(kind, &h.name) {
                     let Some(expr) = &h.result else {
-                        return fail(h.span, format!("{} must return a bool", h.name));
+                        let message = if ty == Type::Bool {
+                            format!("{} must return a bool", h.name)
+                        } else {
+                            "input handlers must return EventResult.accept or EventResult.reject"
+                                .into()
+                        };
+                        return fail(h.span, message);
                     };
-                    Some(expression_as(expr, &handler_scope, owner, Type::Bool)?)
-                } else if key_handler || wheel_handler {
-                    let Some(expr) = &h.result else {
-                        return fail(
-                            h.span,
-                            "input handlers must return EventResult.accept or EventResult.reject",
-                        );
-                    };
-                    Some(expression_as(
-                        expr,
-                        &handler_scope,
-                        owner,
-                        Type::EventResult,
-                    )?)
+                    Some(expression_as(expr, &handler_scope, owner, ty)?)
                 } else {
                     if let Some(expr) = &h.result {
                         body.push(discarded_call(expr, &handler_scope, owner)?);
@@ -6349,26 +6537,8 @@ fn element<'a>(
                         format!("duplicate animation for `{target}`"),
                     );
                 }
-                if root && is_window(kind) {
-                    return fail(
-                        animation.span,
-                        "animate a visual child instead of the Window",
-                    );
-                }
-                if kind == "AnimatedImage" && playback_property(target) {
-                    return fail(animation.span, "AnimatedImage playback state is read-only");
-                }
-                if viewport_property(kind, target) || geometry_property(target).is_some() {
-                    return fail(
-                        animation.span,
-                        format!("property `{kind}.{target}` is read-only"),
-                    );
-                }
-                if !matches!(
-                    builtin_property(kind, target),
-                    Some(Type::Length | Type::Color | Type::Brush | Type::Float | Type::Int)
-                ) {
-                    return fail(animation.span, format!("cannot animate `{kind}.{target}`"));
+                if let Some(error) = animation_target_error(kind, target, root) {
+                    return fail(animation.span, error);
                 }
                 lowered.push(LoweredMember::Animation(lower_animation(
                     animation, scope, owner,
@@ -6384,11 +6554,11 @@ fn element<'a>(
 fn state_target<'a>(
     reference: &'a str,
     owner: &'a str,
-    scope: &Scope<'_>,
+    scope: &'a Scope<'_>,
     span: Span,
 ) -> Result<(&'a str, &'a str, Type, bool)> {
     let (target, property) = reference.split_once('.').unwrap_or((owner, reference));
-    let target = if target == "self" { owner } else { target };
+    let target = scope.receiver(owner, target).unwrap_or(target);
     let Some(element) = scope.owners.get(target) else {
         return fail(span, format!("unknown state target `{target}`"));
     };
@@ -6406,7 +6576,7 @@ fn state_target<'a>(
         };
         path = parent;
     }
-    if nonvisual_element(&element.kind) || element.kind == "TableColumn" {
+    if !visual_state_target(&element.kind) {
         return fail(
             span,
             "state targets must be visual elements or component instances",
@@ -6446,6 +6616,10 @@ fn state_target<'a>(
         return fail(span, format!("state cannot override `{kind}.{property}`"));
     };
     Ok((target, property, ty, false))
+}
+
+pub fn visual_state_target(kind: &str) -> bool {
+    !nonvisual_element(kind) && kind != "TableColumn"
 }
 
 pub fn state_property(kind: &str, property: &str) -> Option<Type> {
@@ -6679,6 +6853,45 @@ fn lower_states(
     Ok((!selection.cases.is_empty()).then_some((selection, targets)))
 }
 
+/// Reject controls configured with conflicting forms of the same input.
+pub fn control_binding_conflict(kind: &str, has: impl Fn(&str) -> bool) -> Option<String> {
+    Some(match kind {
+        "Shortcut" if has("sequence") && has("sequences") => {
+            "Shortcut requires sequence or sequences".into()
+        }
+        "ComboBox" | "RadioGroup" | "ButtonGroup"
+            if has("current-index") && has("current-value") =>
+        {
+            format!("{kind} selection accepts either current-index or current-value")
+        }
+        "CheckBox" if has("checked") && (has("check-state") || has("tristate")) => {
+            "CheckBox accepts checked or check-state/tristate".into()
+        }
+        "Tumbler" if has("model") && has("count") => "Tumbler accepts either model or count".into(),
+        _ => return None,
+    })
+}
+
+/// Check a standalone animation's target, independently of its timing expression.
+pub fn animation_target_error(kind: &str, target: &str, root: bool) -> Option<String> {
+    if root && is_window(kind) {
+        Some("animate a visual child instead of the Window".into())
+    } else if kind == "AnimatedImage" && playback_property(target) {
+        Some("AnimatedImage playback state is read-only".into())
+    } else if kind == "MediaPlayer" && media_read_type(target).is_some() {
+        Some("MediaPlayer playback state is read-only".into())
+    } else if viewport_property(kind, target) || geometry_property(target).is_some() {
+        Some(format!("property `{kind}.{target}` is read-only"))
+    } else if !builtin_property(kind, target)
+        .as_ref()
+        .is_some_and(animatable)
+    {
+        Some(format!("cannot animate `{kind}.{target}`"))
+    } else {
+        None
+    }
+}
+
 fn animatable(ty: &Type) -> bool {
     matches!(
         ty,
@@ -6686,7 +6899,7 @@ fn animatable(ty: &Type) -> bool {
     )
 }
 
-fn relative_size(kind: &str, name: &str, ty: &Type) -> bool {
+pub fn relative_size(kind: &str, name: &str, ty: &Type) -> bool {
     *ty == Type::Length
         && (matches!(
             name,
@@ -7371,6 +7584,7 @@ fn default(ty: Type, span: Span) -> ir::Expr {
         Type::String => "\"\"",
         Type::Bool => "false",
         Type::Color => "#00000000",
+        Type::LogLevel => "info",
         Type::ImageFit => "contain",
         Type::ImageTileMode => "stretch",
         Type::ImageHorizontalAlignment | Type::ImageVerticalAlignment => "center",
@@ -7783,6 +7997,90 @@ fn expression(e: &ast::Expr, scope: &Scope<'_>, owner: &str) -> Result<ir::Expr>
             ir::Expr::operation(op, ty, args, span)
         }
         ExprKind::Call(call) => {
+            if let Some(function) = scope.builtin_call(call)? {
+                return match function.kind {
+                    FunctionKind::Format => format_call(call, scope, owner),
+                    FunctionKind::Math(kind) => math_call(call, scope, owner, function, kind),
+                    FunctionKind::String(kind) => {
+                        let args = builtin_arguments(call, scope, owner, function)?;
+                        Ok(ir::Expr {
+                            value: kind.name().into(),
+                            ..ir::Expr::operation("string_function", kind.result(), args, span)
+                        })
+                    }
+                    FunctionKind::ModelCount
+                    | FunctionKind::ModelIsEmpty
+                    | FunctionKind::ModelAt => model_call(call, scope, owner, function),
+                    FunctionKind::Color(kind) => {
+                        let args = builtin_arguments(call, scope, owner, function)?;
+                        Ok(ir::Expr {
+                            value: kind.name().into(),
+                            ..ir::Expr::operation("color_function", Type::Color, args, span)
+                        })
+                    }
+                    FunctionKind::DateIsValid
+                    | FunctionKind::DateAddDays
+                    | FunctionKind::DateAddMonths
+                    | FunctionKind::DateWeekday => {
+                        let (op, result) = match function.kind {
+                            FunctionKind::DateIsValid => ("date_is_valid", Type::Bool),
+                            FunctionKind::DateAddDays => ("date_add_days", Type::Date),
+                            FunctionKind::DateAddMonths => ("date_add_months", Type::Date),
+                            FunctionKind::DateWeekday => ("date_weekday", Type::Int),
+                            _ => unreachable!(),
+                        };
+                        let args = builtin_arguments(call, scope, owner, function)?;
+                        Ok(ir::Expr::operation(op, result, args, span))
+                    }
+                    FunctionKind::Locale => Ok(ir::Expr::operation(
+                        "locale",
+                        Type::String,
+                        builtin_arguments(call, scope, owner, function)?,
+                        span,
+                    )),
+                    FunctionKind::FormatNumber => {
+                        let args = builtin_arguments(call, scope, owner, function)?;
+                        if !matches!(args[0].ty, Type::Int | Type::Float) {
+                            return fail(
+                                args[0].span,
+                                "I18n.format-number requires an int or float",
+                            );
+                        }
+                        Ok(ir::Expr::operation(
+                            "format_number",
+                            Type::String,
+                            args,
+                            span,
+                        ))
+                    }
+                    FunctionKind::ParseNumber => Ok(ir::Expr::operation(
+                        "parse_number",
+                        Type::Float,
+                        builtin_arguments(call, scope, owner, function)?,
+                        span,
+                    )),
+                    FunctionKind::Round => {
+                        let [operand] = call.arguments.as_slice() else {
+                            return fail(span, "Math.round expects one argument");
+                        };
+                        let operand = expression(operand, scope, owner)?;
+                        match operand.ty {
+                            Type::Int => Ok(operand),
+                            Type::Float => {
+                                Ok(ir::Expr::operation("round", Type::Int, vec![operand], span))
+                            }
+                            _ => fail(operand.span, "Math.round requires an int or float"),
+                        }
+                    }
+                    FunctionKind::Log | FunctionKind::LogAt(_) => fail(
+                        span,
+                        format!(
+                            "{} can only be used as a statement in an effectful handler",
+                            call.callee
+                        ),
+                    ),
+                };
+            }
             if let Some(state) = scope.split_state_read(call, owner)? {
                 return Ok(state);
             }
@@ -7824,10 +8122,25 @@ fn expression(e: &ast::Expr, scope: &Scope<'_>, owner: &str) -> Result<ir::Expr>
             ir::Expr::operation("radial_gradient", Type::Brush, args, span)
         }
         ExprKind::Reference(s) => {
+            if let Some((namespace, member)) = s.split_once('.')
+                && !scope.owners.contains_key(namespace)
+                && !scope.parameters.contains_key(namespace)
+                && builtins::NAMESPACES.contains(&namespace)
+            {
+                return match builtins::constant(namespace, member) {
+                    Some(constant) => Ok(ir::Expr::literal(
+                        Type::Float,
+                        constant.value.to_string(),
+                        span,
+                    )),
+                    None => fail(span, format!("unknown built-in value `{s}`")),
+                };
+            }
             if let Some((namespace, name)) = s.split_once('.')
                 && matches!(
                     namespace,
-                    "ImageFit"
+                    "LogLevel"
+                        | "ImageFit"
                         | "ImageTileMode"
                         | "ImageHorizontalAlignment"
                         | "ImageVerticalAlignment"
@@ -7989,6 +8302,7 @@ fn expression(e: &ast::Expr, scope: &Scope<'_>, owner: &str) -> Result<ir::Expr>
             if let Some(read) = scope
                 .stack_read(owner, s, span)
                 .or_else(|| scope.image_playback_read(owner, s, span))
+                .or_else(|| scope.media_read(owner, s, span))
                 .or_else(|| scope.window_read(owner, s, span))
                 .or_else(|| scope.native_dialog_read(owner, s, span))
             {
@@ -8045,6 +8359,226 @@ fn expression(e: &ast::Expr, scope: &Scope<'_>, owner: &str) -> Result<ir::Expr>
     })
 }
 
+fn builtin_arguments(
+    call: &ast::Call,
+    scope: &Scope<'_>,
+    owner: &str,
+    function: &builtins::Function,
+) -> Result<Vec<ir::Expr>> {
+    if call.arguments.len() != function.parameters.len() {
+        return fail(
+            call.span,
+            format!(
+                "{} expects {} arguments, found {}",
+                call.callee,
+                function.parameters.len(),
+                call.arguments.len()
+            ),
+        );
+    }
+    call.arguments
+        .iter()
+        .zip(function.parameters)
+        .map(|(arg, parameter)| match parameter.expected {
+            Some(ty) => expression_as(arg, scope, owner, ty.clone()),
+            None => expression(arg, scope, owner),
+        })
+        .collect()
+}
+
+fn model_call(
+    call: &ast::Call,
+    scope: &Scope<'_>,
+    owner: &str,
+    function: &builtins::Function,
+) -> Result<ir::Expr> {
+    let mut args = builtin_arguments(call, scope, owner, function)?;
+    let row = match &args[0].ty {
+        Type::StringList => Type::String,
+        Type::RecordList(name) => Type::Record(name.clone()),
+        _ => {
+            return fail(
+                args[0].span,
+                format!("{} requires a string or record model", call.callee),
+            );
+        }
+    };
+    let (op, result) = match function.kind {
+        FunctionKind::ModelCount => ("model_count", Type::Int),
+        FunctionKind::ModelIsEmpty => ("model_is_empty", Type::Bool),
+        FunctionKind::ModelAt => {
+            let fallback = coerce(args.pop().unwrap(), row.clone())?;
+            args.push(fallback);
+            ("model_at", row)
+        }
+        _ => unreachable!(),
+    };
+    Ok(ir::Expr::operation(op, result, args, call.span))
+}
+
+fn math_call(
+    call: &ast::Call,
+    scope: &Scope<'_>,
+    owner: &str,
+    function: &builtins::Function,
+    kind: MathFunction,
+) -> Result<ir::Expr> {
+    let mut args = builtin_arguments(call, scope, owner, function)?;
+    let first = args[0].ty.clone();
+    let integral = matches!(kind, MathFunction::Floor | MathFunction::Ceil);
+    let ty = if matches!(first, Type::Int | Type::Float)
+        && args
+            .iter()
+            .all(|arg| matches!(arg.ty, Type::Int | Type::Float))
+    {
+        if args.iter().any(|arg| arg.ty == Type::Float) {
+            Type::Float
+        } else {
+            Type::Int
+        }
+    } else if !integral
+        && matches!(first, Type::Length | Type::Percent)
+        && args.iter().all(|arg| arg.ty == first)
+    {
+        first
+    } else {
+        return fail(
+            call.span,
+            format!(
+                "{}: arguments must share a numeric type and unit",
+                call.callee
+            ),
+        );
+    };
+    if integral && ty == Type::Int {
+        return Ok(args.remove(0));
+    }
+    let args = args
+        .into_iter()
+        .map(|arg| coerce(arg, ty.clone()))
+        .collect::<Result<_>>()?;
+    Ok(ir::Expr {
+        value: kind.name().into(),
+        ..ir::Expr::operation(
+            "math_function",
+            if integral {
+                Type::Int
+            } else if kind == MathFunction::IsFinite {
+                Type::Bool
+            } else {
+                ty
+            },
+            args,
+            call.span,
+        )
+    })
+}
+
+fn format_call(call: &ast::Call, scope: &Scope<'_>, owner: &str) -> Result<ir::Expr> {
+    let Some((template, values)) = call.arguments.split_first() else {
+        return fail(call.span, "Strings.format expects a string literal");
+    };
+    let ExprKind::Literal {
+        ty: Type::String,
+        value,
+    } = &template.kind
+    else {
+        return fail(
+            template.span,
+            "Strings.format expects a string literal as its first argument",
+        );
+    };
+    let pattern: String = serde_json::from_str(value).map_err(|error| Diagnostic {
+        span: template.span,
+        message: format!("invalid format string: {error}"),
+    })?;
+    let literal = |text: &str| {
+        ir::Expr::literal(
+            Type::String,
+            serde_json::to_string(text).unwrap(),
+            template.span,
+        )
+    };
+    let mut chars = pattern.chars().peekable();
+    let mut values_iter = values.iter();
+    let mut parts = Vec::new();
+    let mut text = String::new();
+    while let Some(ch) = chars.next() {
+        match ch {
+            '{' | '}' if chars.next_if_eq(&ch).is_some() => text.push(ch),
+            '{' => {
+                let precision = if chars.next_if_eq(&'}').is_some() {
+                    None
+                } else if chars.next_if_eq(&':').is_some() && chars.next_if_eq(&'.').is_some() {
+                    let digits: String =
+                        std::iter::from_fn(|| chars.next_if(|ch| ch.is_ascii_digit())).collect();
+                    let precision = digits.parse::<usize>().ok().filter(|value| *value <= 20);
+                    if precision.is_none() || chars.next_if_eq(&'}').is_none() {
+                        return fail(
+                            template.span,
+                            "Strings.format precision must be between 0 and 20",
+                        );
+                    }
+                    precision
+                } else {
+                    return fail(
+                        template.span,
+                        "Strings.format accepts {}, {:.N}, {{ and }} in a format string",
+                    );
+                };
+                if !text.is_empty() {
+                    parts.push(literal(&text));
+                    text.clear();
+                }
+                let Some(value) = values_iter.next() else {
+                    return fail(
+                        template.span,
+                        "Strings.format has more placeholders than arguments",
+                    );
+                };
+                let value = expression(value, scope, owner)?;
+                if let Some(precision) = precision {
+                    if !matches!(value.ty, Type::Int | Type::Float) {
+                        return fail(
+                            value.span,
+                            "Strings.format fixed precision requires an int or float",
+                        );
+                    }
+                    parts.push(ir::Expr {
+                        value: precision.to_string(),
+                        ..ir::Expr::operation("format_fixed", Type::String, vec![value], call.span)
+                    });
+                } else {
+                    parts.push(stringify(value, "Strings.format")?);
+                }
+            }
+            '}' => {
+                return fail(
+                    template.span,
+                    "Strings.format accepts {}, {:.N}, {{ and }} in a format string",
+                );
+            }
+            _ => text.push(ch),
+        }
+    }
+    if let Some(extra) = values_iter.next() {
+        return fail(
+            extra.span,
+            "Strings.format has more arguments than placeholders",
+        );
+    }
+    if !text.is_empty() || parts.is_empty() {
+        parts.push(literal(&text));
+    }
+    Ok(parts
+        .into_iter()
+        .reduce(|left, right| ir::Expr {
+            value: "+".into(),
+            ..ir::Expr::operation("binary", Type::String, vec![left, right], call.span)
+        })
+        .expect("format includes at least one part"))
+}
+
 fn numeric(t: &Type) -> bool {
     matches!(t, Type::Int | Type::Float)
 }
@@ -8058,31 +8592,36 @@ fn promote(a: ir::Expr, b: ir::Expr) -> Result<(ir::Expr, ir::Expr)> {
     }
 }
 
+fn stringify(e: ir::Expr, operation: &str) -> Result<ir::Expr> {
+    match e.ty {
+        Type::String => Ok(e),
+        Type::Int | Type::Float | Type::Bool | Type::Date | Type::Time => {
+            let span = e.span;
+            Ok(ir::Expr::operation(
+                "stringify",
+                Type::String,
+                vec![e],
+                span,
+            ))
+        }
+        _ => fail(
+            e.span,
+            format!("{operation} accepts string, int, float, bool, Date or Time"),
+        ),
+    }
+}
+
 fn binary(op: &str, a: ir::Expr, b: ir::Expr, span: Span) -> Result<ir::Expr> {
     if op == "+" && (a.ty == Type::String || b.ty == Type::String) {
-        fn stringify(e: ir::Expr) -> Result<ir::Expr> {
-            match e.ty {
-                Type::String => Ok(e),
-                Type::Int | Type::Float | Type::Bool | Type::Date | Type::Time => Ok(ir::Expr {
-                    op: "stringify".into(),
-                    value: String::new(),
-                    owner: None,
-                    ty: Type::String,
-                    span: e.span,
-                    args: vec![e],
-                }),
-                _ => fail(
-                    e.span,
-                    "string concatenation accepts string, int, float, bool, Date or Time",
-                ),
-            }
-        }
         return Ok(ir::Expr {
             op: "binary".into(),
             value: op.into(),
             owner: None,
             ty: Type::String,
-            args: vec![stringify(a)?, stringify(b)?],
+            args: vec![
+                stringify(a, "string concatenation")?,
+                stringify(b, "string concatenation")?,
+            ],
             span,
         });
     }
@@ -8133,36 +8672,59 @@ fn binary(op: &str, a: ir::Expr, b: ir::Expr, span: Span) -> Result<ir::Expr> {
 type Dependencies = BTreeMap<String, (Span, Vec<String>)>;
 
 fn check_cycles(edges: &Dependencies, description: &str) -> Result<()> {
-    fn visit<'a>(
+    if let Some(name) = dependency_cycle(edges) {
+        return fail(
+            edges[name].0,
+            format!("cyclic {description} involving `{name}`"),
+        );
+    }
+    Ok(())
+}
+
+/// Find a member that participates in a dependency cycle.
+pub fn dependency_cycle<T>(edges: &BTreeMap<String, (T, Vec<String>)>) -> Option<&str> {
+    fn visit<'a, T>(
         name: &'a str,
-        edges: &'a Dependencies,
+        edges: &'a BTreeMap<String, (T, Vec<String>)>,
         active: &mut BTreeSet<&'a str>,
         done: &mut BTreeSet<&'a str>,
-        description: &str,
-    ) -> Result<()> {
+    ) -> Option<&'a str> {
         if done.contains(name) {
-            return Ok(());
+            return None;
         }
-        let Some((span, next)) = edges.get(name) else {
-            return Ok(());
-        };
+        let (_, next) = edges.get(name)?;
         if !active.insert(name) {
-            return fail(*span, format!("cyclic {description} involving `{name}`"));
+            return Some(name);
         }
         for dependency in next {
-            visit(dependency, edges, active, done, description)?;
+            if let Some(name) = visit(dependency, edges, active, done) {
+                return Some(name);
+            }
         }
         active.remove(name);
         done.insert(name);
-        Ok(())
+        None
     }
 
     let mut done = BTreeSet::new();
     let mut active = BTreeSet::new();
     for name in edges.keys() {
-        visit(name, edges, &mut active, &mut done, description)?;
+        if let Some(name) = visit(name, edges, &mut active, &mut done) {
+            return Some(name);
+        }
     }
-    Ok(())
+    None
+}
+
+/// Resolve a global's local or cross-global dependency to a module-wide name.
+pub fn qualify_global_dependency(component: &str, path: &str) -> String {
+    path.strip_prefix("__global_").map_or_else(
+        || format!("{component}.{path}"),
+        |name| {
+            let (global, member) = name.split_once('.').unwrap_or((name, ""));
+            format!("{global}.root.{member}")
+        },
+    )
 }
 
 fn check_composition(components: &[(&ast::Component, Vec<LoweredMember<'_>>)]) -> Result<()> {
@@ -8188,6 +8750,33 @@ fn check_composition(components: &[(&ast::Component, Vec<LoweredMember<'_>>)]) -
         })
         .collect();
     check_cycles(&types, "component instantiation")?;
+    let mut globals = Dependencies::new();
+    for (component, members) in components.iter().filter(|(component, _)| component.global) {
+        let mut edges = Dependencies::new();
+        let mut links = BTreeMap::new();
+        collect_bindings(
+            members,
+            &definitions,
+            "",
+            &mut edges,
+            &mut links,
+            &mut GeometryFlow::default(),
+            false,
+        );
+        for (key, (span, dependencies)) in edges {
+            globals.insert(
+                qualify_global_dependency(&component.name, &key),
+                (
+                    span,
+                    dependencies
+                        .iter()
+                        .map(|name| qualify_global_dependency(&component.name, name))
+                        .collect(),
+                ),
+            );
+        }
+    }
+    check_cycles(&globals, "global binding or callback call")?;
     for members in definitions.values() {
         let mut edges = Dependencies::new();
         let mut links = BTreeMap::new();
@@ -8652,6 +9241,10 @@ fn collect_bindings(
                                 dependencies(arg, &path, &mut deps);
                             }
                         }
+                        ir::Statement::Log { level, message, .. } => {
+                            dependencies(level, &path, &mut deps);
+                            dependencies(message, &path, &mut deps);
+                        }
                         ir::Statement::Navigate(navigation) => {
                             if let Some(page) = &navigation.page {
                                 dependencies(page, &path, &mut deps);
@@ -8703,6 +9296,11 @@ fn collect_bindings(
                         ir::Statement::WindowCommand(command) => {
                             if let Some(argument) = &command.argument {
                                 dependencies(argument, &path, &mut deps);
+                            }
+                        }
+                        ir::Statement::Media(command) => {
+                            if let Some(position) = &command.position {
+                                dependencies(position, &path, &mut deps);
                             }
                         }
                         ir::Statement::CheckGroupCommand(command) => {

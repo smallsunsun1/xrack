@@ -43,7 +43,7 @@ impl Instance {
         Ok(Some(self.timer_slot(&timer.key)?.register(
             config,
             move |tick| {
-                let Some(owner) = owner.upgrade().map(Instance) else {
+                let Some(owner) = owner.upgrade().map(Instance::from_state) else {
                     return false;
                 };
                 let Some(timer) = owner.definition().root.find_key(&key) else {

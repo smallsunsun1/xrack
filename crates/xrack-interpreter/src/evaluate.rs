@@ -9,12 +9,31 @@ use std::{
 use xrack_runtime::{
     Brush, CallbackSlot, Component, ComponentLifetime, ControlAction, DragEvent, EffectfulCallback,
     EventResult, FocusEvent, GradientStop, ImagePlaybackSlot, InputProperty, InputRoute, Length,
-    Property, RangeAction, RoutedEvent, StateTiming,
+    ListModel, Property, RangeAction, RoutedEvent, StateTiming,
 };
+
+pub(crate) type Globals = RefCell<BTreeMap<String, Instance>>;
+
+pub(crate) enum GlobalContext {
+    Owner(Rc<Globals>),
+    Member(Weak<Globals>),
+}
+
+impl GlobalContext {
+    pub(crate) fn registry(&self) -> Result<Rc<Globals>> {
+        match self {
+            Self::Owner(registry) => Ok(registry.clone()),
+            Self::Member(registry) => registry
+                .upgrade()
+                .ok_or_else(|| evaluation("global component tree was released")),
+        }
+    }
+}
 
 pub(crate) struct State {
     pub(crate) binding_lifetime: ComponentLifetime,
     program: Program,
+    pub(crate) globals: GlobalContext,
     name: String,
     row: Option<RowScope>,
     repeats: RefCell<BTreeMap<String, Rc<RepeatState>>>,
@@ -45,6 +64,7 @@ pub(crate) struct State {
     pub(crate) layout: viewport::Handles,
     combo_items: RefCell<BTreeMap<String, Rc<Property<xrack_runtime::ComboItems>>>>,
     image_playback: RefCell<BTreeMap<String, Rc<ImagePlaybackSlot>>>,
+    media: RefCell<BTreeMap<String, Rc<xrack_runtime::MediaSlot>>>,
     table_columns: OnceCell<Property<xrack_runtime::TableColumnWindow>>,
     scene: Property<Rc<Node>>,
     pub(crate) error: Rc<Cell<Option<Error>>>,
@@ -72,15 +92,40 @@ impl Drop for RenderedSelection<'_> {
 struct TargetRoute<'a> {
     follow_row: bool,
     input: Option<xrack_runtime::InputRoute<'a>>,
-    row_selectors: Option<&'a RefCell<BTreeMap<usize, i64>>>,
+}
+
+struct LocatedTarget<'a, 'p> {
+    owner: Instance,
+    element: &'a Element,
+    remaining: &'p [usize],
+    visibility_overridden: bool,
+}
+
+impl<'a> LocatedTarget<'a, '_> {
+    fn exact(self) -> Option<(Instance, &'a Element)> {
+        self.remaining
+            .is_empty()
+            .then_some((self.owner, self.element))
+    }
 }
 
 type BoundInput = InputProperty<Result<Value>>;
+type InstanceInputs = BTreeMap<Vec<Member>, BoundInput>;
 type CallbackBinding = Rc<dyn Fn(&[Value]) -> Result<Option<Value>>>;
+type InstanceCallbacks = BTreeMap<Vec<Member>, CallbackBinding>;
 type ActionFlagCache = BTreeMap<Member, Rc<Property<Option<Value>>>>;
 
 fn evaluation(message: impl Into<String>) -> Error {
     Error::Evaluation(message.into())
+}
+
+fn host_callback_arguments(args: &[Value]) -> Vec<Value> {
+    args.iter()
+        .map(|arg| match arg {
+            Value::StringModel(model) => Value::StringList(model.snapshot_untracked()),
+            value => value.clone(),
+        })
+        .collect()
 }
 
 impl Program {
@@ -88,11 +133,19 @@ impl Program {
         &self,
         name: &str,
         parent: Option<Weak<State>>,
-        incoming: BTreeMap<String, BoundInput>,
+        incoming: InstanceInputs,
+        callbacks: InstanceCallbacks,
         stack: &mut Vec<String>,
     ) -> Result<Instance> {
         let definition = self.definition(name)?;
-        self.allocate_scope(name, parent, incoming, &definition.root, None, stack)
+        self.allocate_scope(
+            name,
+            parent,
+            (incoming, callbacks),
+            &definition.root,
+            None,
+            stack,
+        )
     }
 
     pub(crate) fn validate_dependencies(
@@ -120,7 +173,7 @@ impl Program {
         &self,
         name: &str,
         parent: Option<Weak<State>>,
-        incoming: BTreeMap<String, BoundInput>,
+        (incoming, mut callbacks): (InstanceInputs, InstanceCallbacks),
         root: &Element,
         row: Option<RowScope>,
         stack: &mut Vec<String>,
@@ -138,31 +191,33 @@ impl Program {
         root.allocate_controls(&mut controls);
         let mut local = BTreeMap::new();
         let mut forwarded = BTreeMap::new();
-        for (name, input) in incoming {
-            let endpoint = definition.alias_endpoint(&name)?;
-            let previous = if let Some(path) = definition.property_forwards.get(&name) {
-                forwarded.insert(path.clone(), (endpoint, input)).is_some()
-            } else if definition.properties.contains_key(&endpoint)
-                || controls.contains_key(&endpoint)
-            {
-                local.insert(endpoint, input).is_some()
-            } else {
+        for (mut path, input) in incoming {
+            if path.len() > 1 {
+                forwarded.insert(path, input);
+                continue;
+            }
+            let endpoint = path.pop().expect("verified instance input endpoint");
+            if !definition.properties.contains_key(&endpoint) && !controls.contains_key(&endpoint) {
                 return Err(Error::Invalid(format!(
                     "unknown input target {}.{}",
                     endpoint.owner, endpoint.name
                 )));
-            };
-            if previous {
-                return Err(Error::Invalid(format!(
-                    "duplicate input binding for {name}"
-                )));
             }
+            local.insert(endpoint, input);
         }
         let owner = row
             .as_ref()
             .map(|scope| &scope.owner)
             .or(parent.as_ref())
             .and_then(Weak::upgrade);
+        let registry = owner
+            .as_ref()
+            .map_or_else(|| Ok(Rc::default()), |owner| owner.globals.registry())?;
+        let globals = if self.globals.contains_key(name) {
+            GlobalContext::Member(Rc::downgrade(&registry))
+        } else {
+            GlobalContext::Owner(registry.clone())
+        };
         let locale = owner
             .as_ref()
             .map_or_else(xrack_runtime::LocaleBinding::default, |owner| {
@@ -174,118 +229,131 @@ impl Program {
         };
         let error = owner.map_or_else(Rc::default, |owner| owner.error.clone());
         let layout = viewport::Handles::new(definition, &keys);
-        let instance = Instance(Rc::new(State {
-            binding_lifetime: ComponentLifetime::default(),
-            program: self.clone(),
-            name: name.into(),
-            row,
-            repeats: RefCell::default(),
-            splits: RefCell::default(),
-            stacks: RefCell::default(),
-            timers: definition
-                .timer_order
-                .iter()
-                .filter(|key| keys.contains(key.as_str()))
-                .cloned()
-                .map(|key| (key, Default::default()))
-                .collect(),
-            focus: definition
-                .focus_targets
-                .iter()
-                .filter(|key| keys.contains(key.as_str()))
-                .cloned()
-                .map(|key| (key, Default::default()))
-                .collect(),
-            actions: definition
-                .action_keys
-                .iter()
-                .filter(|key| keys.contains(key.as_str()))
-                .cloned()
-                .map(|key| (key, Default::default()))
-                .collect(),
-            native_dialogs: definition
-                .native_dialog_keys
-                .iter()
-                .filter(|key| keys.contains(key.as_str()))
-                .cloned()
-                .map(|key| (key, Default::default()))
-                .collect(),
-            window,
-            secondary_windows: secondary_window::State::new(&root.secondary_windows),
-            hover: RefCell::default(),
-            gestures: gesture::Handles::default(),
-            pointers: RefCell::default(),
-            split_input: Cell::default(),
-            calendar_input: Cell::default(),
-            calendars: RefCell::default(),
-            pickers: RefCell::default(),
-            locale,
-            incoming: local,
-            children: OnceCell::new(),
-            values: definition
-                .properties
-                .keys()
-                .filter(|member| keys.contains(member.owner.as_str()))
-                .cloned()
-                .map(|member| (member, Property::default()))
-                .collect(),
-            selectors: definition
-                .selectors
-                .iter()
-                .map(|_| SelectorState::default())
-                .collect(),
-            visual_cache: RefCell::default(),
-            action_flags: RefCell::default(),
-            callbacks: definition
-                .callbacks
-                .keys()
-                .filter(|member| keys.contains(member.owner.as_str()))
-                .cloned()
-                .map(|member| (member, CallbackSlot::default()))
-                .collect(),
-            controls,
-            layout,
-            combo_items: RefCell::default(),
-            image_playback: RefCell::default(),
-            table_columns: OnceCell::new(),
-            scene: Property::default(),
-            check_groups: RefCell::default(),
-            error,
-        }));
+        let instance = Instance(
+            Rc::new(State {
+                binding_lifetime: ComponentLifetime::default(),
+                program: self.clone(),
+                globals,
+                name: name.into(),
+                row,
+                repeats: RefCell::default(),
+                splits: RefCell::default(),
+                stacks: RefCell::default(),
+                timers: definition
+                    .timer_order
+                    .iter()
+                    .filter(|key| keys.contains(key.as_str()))
+                    .cloned()
+                    .map(|key| (key, Default::default()))
+                    .collect(),
+                focus: definition
+                    .focus_targets
+                    .iter()
+                    .filter(|key| keys.contains(key.as_str()))
+                    .cloned()
+                    .map(|key| (key, Default::default()))
+                    .collect(),
+                actions: definition
+                    .action_keys
+                    .iter()
+                    .filter(|key| keys.contains(key.as_str()))
+                    .cloned()
+                    .map(|key| (key, Default::default()))
+                    .collect(),
+                native_dialogs: definition
+                    .native_dialog_keys
+                    .iter()
+                    .filter(|key| keys.contains(key.as_str()))
+                    .cloned()
+                    .map(|key| (key, Default::default()))
+                    .collect(),
+                window,
+                secondary_windows: secondary_window::State::new(&root.secondary_windows),
+                hover: RefCell::default(),
+                gestures: gesture::Handles::default(),
+                pointers: RefCell::default(),
+                split_input: Cell::default(),
+                calendar_input: Cell::default(),
+                calendars: RefCell::default(),
+                pickers: RefCell::default(),
+                locale,
+                incoming: local,
+                children: OnceCell::new(),
+                values: definition
+                    .properties
+                    .keys()
+                    .filter(|member| keys.contains(member.owner.as_str()))
+                    .cloned()
+                    .map(|member| (member, Property::default()))
+                    .collect(),
+                selectors: definition
+                    .selectors
+                    .iter()
+                    .map(|_| SelectorState::default())
+                    .collect(),
+                visual_cache: RefCell::default(),
+                action_flags: RefCell::default(),
+                callbacks: definition
+                    .callbacks
+                    .keys()
+                    .filter(|member| keys.contains(member.owner.as_str()))
+                    .cloned()
+                    .map(|member| (member, CallbackSlot::default()))
+                    .collect(),
+                controls,
+                layout,
+                combo_items: RefCell::default(),
+                image_playback: RefCell::default(),
+                media: RefCell::default(),
+                table_columns: OnceCell::new(),
+                scene: Property::default(),
+                check_groups: RefCell::default(),
+                error,
+            }),
+            None,
+        );
+        for (path, member) in &definition.callback_defaults {
+            if keys.contains(member.owner.as_str()) {
+                callbacks.entry(path.clone()).or_insert_with(|| {
+                    instance.bind_callback(definition.callbacks[member].clone())
+                });
+            }
+        }
         let mut children = BTreeMap::new();
         stack.push(name.into());
-        let result = root.allocate_children(self, &instance, &mut forwarded, &mut children, stack);
+        let result = root.allocate_children(
+            self,
+            &instance,
+            &mut forwarded,
+            &mut callbacks,
+            &mut children,
+            stack,
+        );
         stack.pop();
         result?;
-        if let Some((_, (member, _))) = forwarded.first_key_value() {
+        if let Some((path, _)) = forwarded.first_key_value() {
+            let member = &path[0];
             return Err(Error::Invalid(format!(
                 "unknown input target {}.{}",
                 member.owner, member.name
             )));
         }
         assert!(instance.0.children.set(children).is_ok());
-        for member in &definition.callback_defaults {
-            if keys.contains(member.owner.as_str()) {
-                let function = &definition.callbacks[member];
-                instance.install_callback(member, instance.bind_callback(function.clone()))?;
+        for (mut path, callback) in callbacks {
+            let member = path.pop().expect("verified callback endpoint");
+            if !path.is_empty() {
+                return Err(evaluation(format!(
+                    "unknown callback instance {}",
+                    path[0].owner
+                )));
             }
+            let slot = instance.0.callbacks.get(&member).ok_or_else(|| {
+                evaluation(format!("unknown callback {}.{}", member.owner, member.name))
+            })?;
+            slot.set(callback);
         }
         root.bind_viewport_offsets(&instance);
         Ok(instance)
-    }
-}
-
-impl Definition {
-    fn alias_endpoint(&self, name: &str) -> Result<Member> {
-        let member = Member::root(name);
-        let property = self
-            .properties
-            .get(&member)
-            .ok_or_else(|| Error::Invalid(format!("unknown component input {name}")))?;
-        Ok(match &property.source {
-            PropertySource::Initial(_) => member,
-            PropertySource::Alias(target) => target.clone(),
-        })
     }
 }
 
@@ -325,24 +393,35 @@ impl Element {
         &self,
         program: &Program,
         parent: &Instance,
-        forwarded: &mut BTreeMap<Vec<Member>, (Member, BoundInput)>,
+        forwarded: &mut InstanceInputs,
+        callbacks: &mut InstanceCallbacks,
         children: &mut BTreeMap<String, Instance>,
         stack: &mut Vec<String>,
     ) -> Result<()> {
         if let Visual::Instance { component, inputs } = &self.visual {
             let incoming = self.child_inputs(parent, inputs, forwarded);
-            let child =
-                program.allocate(component, Some(Rc::downgrade(&parent.0)), incoming, stack)?;
-            for (name, function) in &self.instance_handlers {
-                child.install_callback(
-                    &Member::root(name),
-                    parent.bind_callback(function.clone()),
-                )?;
+            let mut handlers: InstanceCallbacks = self
+                .instance_handlers
+                .iter()
+                .map(|(path, function)| (path.clone(), parent.bind_callback(function.clone())))
+                .collect();
+            for (mut path, callback) in
+                callbacks.extract_if(.., |path, _| path.len() > 1 && path[0].owner == self.key)
+            {
+                path.remove(0);
+                handlers.insert(path, callback);
             }
+            let child = program.allocate(
+                component,
+                Some(Rc::downgrade(&parent.0)),
+                incoming,
+                handlers,
+                stack,
+            )?;
             children.insert(self.key.clone(), child);
         }
         for element in self.owned_children().filter(|child| child.repeat.is_none()) {
-            element.allocate_children(program, parent, forwarded, children, stack)?;
+            element.allocate_children(program, parent, forwarded, callbacks, children, stack)?;
         }
         Ok(())
     }
@@ -351,40 +430,35 @@ impl Element {
         &self,
         parent: &Instance,
         inputs: &BTreeMap<String, Input>,
-        forwarded: &mut BTreeMap<Vec<Member>, (Member, BoundInput)>,
-    ) -> BTreeMap<String, BoundInput> {
-        let mut bindings: BTreeMap<_, _> = inputs
-            .iter()
-            .filter_map(|(name, input)| {
+        forwarded: &mut InstanceInputs,
+    ) -> InstanceInputs {
+        let mut bindings: InstanceInputs = inputs
+            .values()
+            .filter_map(|input| {
                 let source = input.source.as_ref()?;
-                Some((
-                    input.endpoint.clone(),
-                    (name.clone(), parent.bind_input(source)),
-                ))
+                Some((input.endpoint.clone(), parent.bind_input(source)))
             })
             .collect();
-        for (path, (member, input)) in forwarded.extract_if(.., |path, _| path[0].owner == self.key)
-        {
-            bindings.insert(path[1..].to_vec(), (member.name, input));
+        for (mut path, input) in forwarded.extract_if(.., |path, _| path[0].owner == self.key) {
+            path.remove(0);
+            bindings.insert(path, input);
         }
-        for (name, input) in inputs.iter().filter(|(_, input)| !input.cases.is_empty()) {
+        for input in inputs.values().filter(|input| !input.cases.is_empty()) {
             let key = input.endpoint.clone();
-            let (_, base) = bindings
-                .remove(&key)
-                .unwrap_or_else(|| (name.clone(), BoundInput::default()));
+            let base = bindings.remove(&key).unwrap_or_default();
             let cases = input.cases.clone();
             let owner = Rc::downgrade(&parent.0);
             let state = base.with_state(move || {
                 let owner = owner.upgrade()?;
                 owner.binding_lifetime.track();
-                match Instance(owner).state_value(&cases) {
+                match Instance(owner, None).state_value(&cases) {
                     Ok(value) => value.map(Ok),
                     Err(error) => Some(Err(error)),
                 }
             });
-            bindings.insert(key, (name.clone(), state));
+            bindings.insert(key, state);
         }
-        bindings.into_values().collect()
+        bindings
     }
 
     pub(crate) fn selection_property(&self) -> &'static str {
@@ -438,7 +512,7 @@ impl Instance {
         self.0.program.allocate_scope(
             &self.0.name,
             None,
-            BTreeMap::new(),
+            (BTreeMap::new(), BTreeMap::new()),
             template,
             Some(row),
             &mut Vec::new(),
@@ -455,7 +529,7 @@ impl Instance {
     }
 
     pub(crate) fn row_owner(&self) -> Option<Self> {
-        self.0.row.as_ref()?.owner.upgrade().map(Self)
+        self.0.row.as_ref()?.owner.upgrade().map(Self::from_state)
     }
 
     pub(crate) fn row_template(&self) -> Option<&str> {
@@ -548,15 +622,39 @@ impl Instance {
         })
     }
 
+    fn edit_field_matches(
+        field: &RowField,
+        model: &Model,
+        index: usize,
+        key: xrack_runtime::RowKey,
+        expected: &Value,
+    ) -> bool {
+        match model {
+            Model::Records(records) => records.model().row_matches(index, key, |record| {
+                record.field_path(&field.path) == Some(expected)
+            }),
+            Model::Strings(strings) if field.path.is_empty() => strings.row_matches(
+                index,
+                key,
+                |text| matches!(expected, Value::String(value) if value == text),
+            ),
+            _ => false,
+        }
+    }
+
     fn write_row_field(
         &self,
         field: &RowField,
         expected: Option<&Value>,
         value: Value,
     ) -> Result<bool> {
-        self.prepare_row_field_write(field, expected, value, |_, _, _, history| {
-            history().map(Some)
-        })
+        self.prepare_row_field_write(
+            field,
+            expected,
+            value,
+            || Ok(true),
+            |_, _, _, _, history| history().map(Some),
+        )
     }
 
     pub(crate) fn prepare_row_field_write(
@@ -564,14 +662,31 @@ impl Instance {
         field: &RowField,
         expected: Option<&Value>,
         value: Value,
+        available: impl FnOnce() -> Result<bool>,
         prepare: impl FnOnce(
             &Self,
             Option<&Element>,
             &Model,
+            &dyn Fn() -> bool,
             &dyn Fn() -> Result<bool>,
         ) -> Result<Option<bool>>,
     ) -> Result<bool> {
         self.with_row_model(field, |owner, row, model| {
+            let field_current = || {
+                expected.is_none_or(|expected| {
+                    model
+                        .index_of_source_key(row.context.key(), row.context.index() as usize)
+                        .is_some_and(|index| {
+                            Self::edit_field_matches(
+                                field,
+                                model,
+                                index,
+                                row.context.key(),
+                                expected,
+                            )
+                        })
+                })
+            };
             let view = owner
                 .definition()
                 .root
@@ -580,24 +695,40 @@ impl Instance {
             let target;
             let (model, state, history) = if let Some(table) = table {
                 let record_history = table.table_history_configured();
-                let Some((resolved, history)) = row.context.try_table_edit_target_for_field(
-                    || {
-                        owner
-                            .editable_table_view_model(table)?
-                            .map(|model| model.table_rows())
-                            .transpose()
-                    },
-                    |target| {
-                        let value = Self::read_row_field_from(field, row, target.rows.source())?;
-                        Ok(value.filter(|value| expected.is_none_or(|expected| expected == value)))
-                    },
-                    || {
-                        prepare(owner, view, model, &|| {
-                            Ok(record_history && owner.table_history_enabled(table)?)
-                        })
-                    },
-                )?
-                else {
+                let rows = || {
+                    owner
+                        .editable_table_view_model(table)?
+                        .map(|model| model.table_rows())
+                        .transpose()
+                };
+                let prepare = || {
+                    prepare(owner, view, model, &field_current, &|| {
+                        Ok(record_history && owner.table_history_enabled(table)?)
+                    })
+                };
+                let edit = if let Some(expected) = expected {
+                    row.context.try_table_edit_target_matching(
+                        rows,
+                        |target| {
+                            Self::edit_field_matches(
+                                field,
+                                target.rows.source(),
+                                target.index,
+                                target.key,
+                                expected,
+                            )
+                        },
+                        available,
+                        prepare,
+                    )?
+                } else {
+                    row.context.try_table_edit_target_for_field(
+                        rows,
+                        |target| Self::read_row_field_from(field, row, target.rows.source()),
+                        || if available()? { prepare() } else { Ok(None) },
+                    )?
+                };
+                let Some((resolved, history)) = edit else {
                     return Ok(false);
                 };
                 target = resolved;
@@ -607,7 +738,11 @@ impl Instance {
                     history,
                 )
             } else {
-                if prepare(owner, view, model, &|| Ok(false))?.is_none() {
+                if !field_current()
+                    || !available()?
+                    || !field_current()
+                    || prepare(owner, view, model, &field_current, &|| Ok(false))?.is_none()
+                {
                     return Ok(false);
                 }
                 (model, None, false)
@@ -685,7 +820,7 @@ impl Instance {
                 BoundInput::bound_optional(move || {
                     let owner = owner.upgrade()?;
                     owner.binding_lifetime.track();
-                    Some(Instance(owner).evaluate(&expression, &[]))
+                    Some(Instance(owner, None).evaluate(&expression, &[]))
                 })
             }
             InputSource::RowLink(field) => {
@@ -696,11 +831,13 @@ impl Instance {
                     move || {
                         let owner = owner.upgrade()?;
                         owner.binding_lifetime.track();
-                        Instance(owner).read_row_field(&read_field).transpose()
+                        Instance(owner, None)
+                            .read_row_field(&read_field)
+                            .transpose()
                     },
                     move |value| {
                         if let Some(owner) = write_owner.upgrade() {
-                            let instance = Instance(owner);
+                            let instance = Instance(owner, None);
                             if let Err(error) = value.and_then(|value| {
                                 instance.write_row_field(&write_field, None, value)
                             }) {
@@ -718,11 +855,11 @@ impl Instance {
                     move || {
                         let owner = owner.upgrade()?;
                         owner.binding_lifetime.track();
-                        Some(Instance(owner).read(&read_target))
+                        Some(Instance(owner, None).read(&read_target))
                     },
                     move |value| {
                         if let Some(owner) = write_owner.upgrade() {
-                            let instance = Instance(owner);
+                            let instance = Instance(owner, None);
                             if let Err(error) =
                                 value.and_then(|value| instance.write(&write_target, value))
                             {
@@ -733,6 +870,22 @@ impl Instance {
                 )
             }
         }
+    }
+
+    pub(crate) fn shared_global(&self, name: &str) -> Result<Instance> {
+        let registry = self.0.globals.registry()?;
+        if let Some(instance) = registry.borrow().get(name).cloned() {
+            return Ok(instance);
+        }
+        let instance = self.program().allocate(
+            name,
+            Some(Rc::downgrade(&self.0)),
+            BTreeMap::new(),
+            BTreeMap::new(),
+            &mut Vec::new(),
+        )?;
+        registry.borrow_mut().insert(name.into(), instance.clone());
+        Ok(instance)
     }
 
     fn property(&self, member: &Member) -> Result<&PropertyDef> {
@@ -754,6 +907,9 @@ impl Instance {
     }
 
     pub(crate) fn read(&self, member: &Member) -> Result<Value> {
+        if let Some(name) = member.owner.strip_prefix("__global_") {
+            return self.shared_global(name)?.read(&Member::root(&member.name));
+        }
         if let Some(child) = self.children().get(&member.owner) {
             let member = Member::root(&member.name);
             child.require_public(&member, false)?;
@@ -845,6 +1001,19 @@ impl Instance {
         })
     }
 
+    pub(crate) fn input_state_value(&self, cases: &[StateCase]) -> Result<Option<Value>> {
+        self.state_value_with(cases, |index| {
+            let selector = &self.definition().selectors[index];
+            if selector.persistent {
+                self.read_state(index)
+            } else {
+                self.0
+                    .binding_lifetime
+                    .try_input_state(&selector.owner, || self.choose_state(index))
+            }
+        })
+    }
+
     fn state_value_with(
         &self,
         cases: &[StateCase],
@@ -892,6 +1061,11 @@ impl Instance {
     }
 
     pub(crate) fn write(&self, member: &Member, value: Value) -> Result<()> {
+        if let Some(name) = member.owner.strip_prefix("__global_") {
+            return self
+                .shared_global(name)?
+                .write(&Member::root(&member.name), value);
+        }
         let value = model_value(value);
         if let Some(child) = self.children().get(&member.owner) {
             let member = Member::root(&member.name);
@@ -922,15 +1096,20 @@ impl Instance {
         }
         if let Some(input) = self.0.incoming.get(member) {
             input.set_if_changed_by(Ok(value), |left, right| {
-                matches!((left, right), (Ok(left), Ok(right)) if left.eq_with_image_assets(right))
+                matches!((left, right), (Ok(left), Ok(right)) if left.same_property_value(right))
             });
         } else {
-            self.0.values[member].set_if_changed_by(value, Value::eq_with_image_assets);
+            self.0.values[member].set_if_changed_by(value, Value::same_property_value);
         }
         Ok(())
     }
 
     pub(crate) fn reset_member(&self, member: &Member) -> Result<()> {
+        if let Some(name) = member.owner.strip_prefix("__global_") {
+            return self
+                .shared_global(name)?
+                .reset_member(&Member::root(&member.name));
+        }
         if let Some(child) = self.children().get(&member.owner) {
             return child.reset(&member.name);
         }
@@ -978,45 +1157,67 @@ impl Instance {
                     .transpose();
             };
             owner.binding_lifetime.track();
-            Instance(owner).execute(&function, args, None)
+            Instance(owner, None).execute(&function, args, None)
         })
     }
 
+    fn callback_definition(&self, member: &Member) -> Result<&Function> {
+        self.definition()
+            .callbacks
+            .get(member)
+            .ok_or_else(|| evaluation(format!("unknown callback {}.{}", member.owner, member.name)))
+    }
+
     pub(crate) fn register_callback(&self, member: &Member, callback: Callback) -> Result<()> {
-        let function = self.definition().callbacks.get(member).ok_or_else(|| {
-            evaluation(format!("unknown callback {}.{}", member.owner, member.name))
-        })?;
-        let parameters = function.parameters.clone();
-        let result_type = function.result.clone();
-        let name = member.name.clone();
-        let program = self.program().clone();
-        let invoke = move |args: &[Value]| {
-            program.validate_host_arguments(&name, &parameters, args)?;
-            let host: Vec<_> = args
-                .iter()
-                .map(|arg| match arg {
-                    Value::StringModel(model) => Value::StringList(model.snapshot_untracked()),
-                    value => value.clone(),
-                })
-                .collect();
-            let result = callback(&host).map_err(Error::Evaluation)?;
-            program.validate_host_result(&name, result_type.as_ref(), result.as_ref())?;
-            Ok(result)
-        };
-        let binding: CallbackBinding = if function.pure {
-            Rc::new(invoke)
+        if self.callback_definition(member)?.pure {
+            self.install_callback(
+                member,
+                Rc::new(move |args| {
+                    callback(&host_callback_arguments(args)).map_err(Error::Evaluation)
+                }),
+            )
         } else {
-            let handler = EffectfulCallback::new(invoke);
+            self.install_mut_callback(member, move |args| callback(args))
+        }
+    }
+
+    pub(crate) fn register_mut_callback(
+        &self,
+        member: &Member,
+        callback: impl FnMut(&[Value]) -> std::result::Result<Option<Value>, String> + 'static,
+    ) -> Result<()> {
+        if self.callback_definition(member)?.pure {
+            return Err(evaluation(format!(
+                "pure callback {}.{} requires an immutable handler",
+                member.owner, member.name
+            )));
+        }
+        self.install_mut_callback(member, callback)
+    }
+
+    fn install_mut_callback(
+        &self,
+        member: &Member,
+        callback: impl FnMut(&[Value]) -> std::result::Result<Option<Value>, String> + 'static,
+    ) -> Result<()> {
+        let handler = EffectfulCallback::new(callback);
+        self.install_callback(
+            member,
             Rc::new(move |args| {
                 handler
-                    .try_call(|invoke| invoke(args))
+                    .try_call(|callback| callback(&host_callback_arguments(args)))
                     .map_err(|error| evaluation(error.to_string()))?
-            })
-        };
-        self.install_callback(member, binding)
+                    .map_err(Error::Evaluation)
+            }),
+        )
     }
 
     fn install_callback(&self, member: &Member, callback: CallbackBinding) -> Result<()> {
+        if let Some(name) = member.owner.strip_prefix("__global_") {
+            return self
+                .shared_global(name)?
+                .install_callback(&Member::root(&member.name), callback);
+        }
         if let Some(child) = self.children().get(&member.owner) {
             return child.install_callback(&Member::root(&member.name), callback);
         }
@@ -1041,6 +1242,11 @@ impl Instance {
     }
 
     pub(crate) fn call(&self, member: &Member, arguments: Vec<Value>) -> Result<Option<Value>> {
+        if let Some(name) = member.owner.strip_prefix("__global_") {
+            return self
+                .shared_global(name)?
+                .call(&Member::root(&member.name), arguments);
+        }
         if let Some(child) = self.children().get(&member.owner) {
             return child.call(&Member::root(&member.name), arguments);
         }
@@ -1055,8 +1261,18 @@ impl Instance {
         if let Some(target) = &function.alias {
             return self.call(target, arguments);
         }
+        self.program().validate_callback_arguments(
+            &member.name,
+            &function.parameters,
+            &arguments,
+        )?;
         let slot = &self.0.callbacks[member];
         let result = self.execute(function, &arguments, Some(slot))?;
+        self.program().validate_callback_result(
+            &member.name,
+            function.result.as_ref(),
+            result.as_ref(),
+        )?;
         // A host handler can return its argument. Release the call's copies
         // before deciding whether the returned model is shared.
         drop(arguments);
@@ -1110,11 +1326,12 @@ impl Instance {
         args: &[Value],
         slot: Option<&CallbackSlot<CallbackBinding>>,
     ) -> Result<Option<Value>> {
-        if args.len() != function.parameters.len()
-            || !args
-                .iter()
-                .zip(&function.parameters)
-                .all(|(arg, ty)| ty.matches(arg))
+        if slot.is_none()
+            && (args.len() != function.parameters.len()
+                || !args
+                    .iter()
+                    .zip(&function.parameters)
+                    .all(|(arg, ty)| ty.matches(arg)))
         {
             return Err(evaluation("callback argument types do not match"));
         }
@@ -1131,6 +1348,27 @@ impl Instance {
                 }
                 Statement::Call(target, arguments) => {
                     self.call_with_operands(target, arguments, args)?;
+                }
+                Statement::Log {
+                    level,
+                    message,
+                    file,
+                    span,
+                } => {
+                    let Value::LogLevel(level) = self.evaluate(level, args)? else {
+                        return Err(evaluation("log level must be a LogLevel"));
+                    };
+                    let Value::String(message) = self.evaluate(message, args)? else {
+                        return Err(evaluation("log message must be a string"));
+                    };
+                    xrack_runtime::log_ui(
+                        level,
+                        &message,
+                        &self.0.name,
+                        file,
+                        span.line,
+                        span.column,
+                    );
                 }
                 Statement::Scroll(target, command, arguments) => {
                     self.scroll_command(target, *command, &self.arguments(arguments, args)?)?;
@@ -1169,6 +1407,15 @@ impl Instance {
                     self.tree_command(target, action)?;
                 }
                 Statement::Timer(target, command) => self.timer_command(target, *command)?,
+                Statement::Media(target, command) => {
+                    let command = command.try_evaluate(|position| {
+                        let Value::Float(seconds) = self.evaluate(position, args)? else {
+                            return Err(evaluation("MediaPlayer seek requires seconds"));
+                        };
+                        Ok(seconds)
+                    })?;
+                    self.media_slot(target).command(command);
+                }
                 Statement::StackNavigate(target, command, argument) => {
                     let argument = argument
                         .as_ref()
@@ -1187,7 +1434,7 @@ impl Instance {
                     let Value::String(serialized) = self.evaluate(state, args)? else {
                         return Err(evaluation("split state must be a string"));
                     };
-                    self.restore_split_state(target, &serialized)?;
+                    self.restore_split_state_by_key(target, &serialized)?;
                 }
                 Statement::Popup(target, open) => {
                     self.set_overlay(target, *open, None)?;
@@ -1222,6 +1469,10 @@ impl Instance {
                 .map(|expression| self.evaluate(expression, args))
                 .transpose()?,
         };
+        if slot.is_some() {
+            // Ordinary calls validate the result with the callback's name and schema.
+            return Ok(result);
+        }
         match (function.result.as_ref(), &result) {
             (None, None) => Ok(result),
             (Some(ty), Some(value)) if ty.matches(value) => Ok(result),
@@ -1236,6 +1487,15 @@ impl Instance {
             .collect()
     }
 
+    fn media_slot(&self, key: &str) -> Rc<xrack_runtime::MediaSlot> {
+        self.0
+            .media
+            .borrow_mut()
+            .entry(key.into())
+            .or_default()
+            .clone()
+    }
+
     fn playback_slot(&self, key: &str) -> Rc<ImagePlaybackSlot> {
         self.0
             .image_playback
@@ -1246,6 +1506,10 @@ impl Instance {
     }
 
     fn cached_visual(&self, slot: VisualSlot, value: &Expr) -> Result<Value> {
+        // Table commands sample expressions against the row passed to the command.
+        if self.0.row.as_ref().is_some_and(|row| row.sampled) {
+            return self.evaluate(value, &[]);
+        }
         let mut owner = self.clone();
         if slot.uses_component_scope() {
             // Repeated scopes share invariants with their owning component.
@@ -1285,14 +1549,11 @@ impl Instance {
             Read(member) => self.read(member),
             GeometryRead(target, metric) => self.geometry_read(target, *metric),
             ViewportRead(target, metric) => Ok(metric.read(&self.viewport(target)?)),
-            StackRead(target, read, route) => {
-                let route = route
-                    .as_ref()
-                    .map(|value| self.evaluate(value, args))
-                    .transpose()?;
-                read.read(self.stack_snapshot(target)?.as_ref(), route)
-            }
-            SplitSave(target) => self.save_split_state(target).map(Value::String),
+            StackRead(target, read) => Ok(crate::stack::read(
+                self.stack_snapshot_by_key(target)?.as_ref(),
+                read,
+            )),
+            SplitSave(target) => self.save_split_state_by_key(target).map(Value::String),
             SplitResizing(target) => self.split_resizing(target).map(Value::Bool),
             TreeQuery(target, query, key) => {
                 self.tree_query(target, *query, self.int_argument(key, args)?)
@@ -1305,7 +1566,7 @@ impl Instance {
                     })
                     .map(Value::Int)
             }
-            TableRead(member) => self.table_read(member),
+            TableRead(target, read) => self.table_read(target, *read),
             ScrollControlRead(member) => self.scroll_control_read(member),
             ImageDimension(input, axis) => {
                 let source = image_asset(self.evaluate(input, args)?)?;
@@ -1318,6 +1579,10 @@ impl Instance {
                     .map(Value::ImageAsset)
                     .map_err(|error| evaluation(error.to_string()))
             }
+            MediaRead(member) => self
+                .media_slot(&member.owner)
+                .read(&member.name)
+                .ok_or_else(|| evaluation("invalid MediaPlayer state property")),
             ImagePlaybackRead(member) => {
                 let slot = self.playback_slot(&member.owner);
                 let metric = match member.name.as_str() {
@@ -1374,6 +1639,82 @@ impl Instance {
                 Value::Int(v) => Ok(Value::Float(v as f64)),
                 Value::Percent(v) => Ok(Value::Float(v.0)),
                 _ => Err(evaluation("invalid cast operand")),
+            },
+            MathFunction(kind, inputs) => math_function(*kind, &self.arguments(inputs, args)?),
+            StringFunction(kind, inputs) => string_function(*kind, &self.arguments(inputs, args)?),
+            ModelCount(input) | ModelIsEmpty(input) => {
+                let count = match self.evaluate(input, args)? {
+                    Value::StringList(rows) => rows.len(),
+                    Value::StringModel(rows) => rows.len(),
+                    Value::RecordList(rows) => rows.model().len(),
+                    _ => return Err(evaluation("model count requires a model")),
+                };
+                Ok(if matches!(expression.as_ref(), ModelIsEmpty(_)) {
+                    Value::Bool(count == 0)
+                } else {
+                    Value::Int(count as i64)
+                })
+            }
+            ModelAt(model, index, fallback) => {
+                let model = self.evaluate(model, args)?;
+                let Value::Int(index) = self.evaluate(index, args)? else {
+                    return Err(evaluation("model row index requires an int"));
+                };
+                let row = match model {
+                    Value::StringList(rows) => usize::try_from(index)
+                        .ok()
+                        .and_then(|index| rows.get(index))
+                        .cloned()
+                        .map(Value::String),
+                    Value::StringModel(rows) => rows.row_at(index).map(Value::String),
+                    Value::RecordList(rows) => {
+                        self.program().record_at(&rows, index)?.map(Value::Record)
+                    }
+                    _ => return Err(evaluation("model row requires a model")),
+                };
+                row.map_or_else(|| self.evaluate(fallback, args), Ok)
+            }
+            ColorFunction(kind, inputs) => color_function(*kind, &self.arguments(inputs, args)?),
+            Locale => Ok(Value::String(
+                self.0.locale.locale(self.0.program.translations.as_deref()),
+            )),
+            FormatNumber(input, decimals) => {
+                let input = self.evaluate(input, args)?;
+                let Value::Int(decimals) = self.evaluate(decimals, args)? else {
+                    return Err(evaluation("number format precision requires an int"));
+                };
+                let locale = &self.0.locale;
+                let catalog = self.0.program.translations.as_deref();
+                let text = match input {
+                    Value::Int(value) => locale.format_number_int(catalog, value, decimals),
+                    Value::Float(value) => locale.format_number_float(catalog, value, decimals),
+                    _ => return Err(evaluation("number format requires an int or float")),
+                };
+                Ok(Value::String(text))
+            }
+            ParseNumber(input, fallback) => {
+                let Value::String(input) = self.evaluate(input, args)? else {
+                    return Err(evaluation("number parsing requires a string"));
+                };
+                let Value::Float(fallback) = self.evaluate(fallback, args)? else {
+                    return Err(evaluation("number parsing fallback requires a float"));
+                };
+                Ok(Value::Float(self.0.locale.parse_number(
+                    self.0.program.translations.as_deref(),
+                    &input,
+                    fallback,
+                )))
+            }
+            FormatFixed(input, precision) => {
+                Ok(Value::String(match self.evaluate(input, args)? {
+                    Value::Int(value) => xrack_runtime::format_fixed_int(value, *precision),
+                    Value::Float(value) => xrack_runtime::format_fixed_float(value, *precision),
+                    _ => return Err(evaluation("fixed precision requires an int or float")),
+                }))
+            }
+            Round(input) => match self.evaluate(input, args)? {
+                Value::Float(value) => Ok(Value::Int(xrack_runtime::round_to_int(value))),
+                _ => Err(evaluation("round requires a float operand")),
             },
             Stringify(input) => Ok(Value::String(match self.evaluate(input, args)? {
                 Value::Int(v) => v.to_string(),
@@ -1522,6 +1863,23 @@ impl Instance {
                 month: self.int_argument(month, args)?,
                 day: self.int_argument(day, args)?,
             })),
+            DateIsValid(date) => Ok(Value::Bool(self.date_argument(date, args)?.valid())),
+            DateWeekday(date) => Ok(Value::Int(
+                self.date_argument(date, args)?.weekday().unwrap_or(0),
+            )),
+            DateAddDays(date, offset, fallback) | DateAddMonths(date, offset, fallback) => {
+                let date = self.date_argument(date, args)?;
+                let offset = self.int_argument(offset, args)?;
+                let shifted = if matches!(expression.as_ref(), DateAddDays(..)) {
+                    date.add_days(offset)
+                } else {
+                    date.add_months_clamped(offset)
+                };
+                match shifted {
+                    Some(date) => Ok(Value::Date(date)),
+                    None => self.evaluate(fallback, args),
+                }
+            }
             MakeTime([hour, minute, second]) => Ok(Value::Time(
                 xrack_runtime::Time {
                     hour: self.int_argument(hour, args)?,
@@ -1560,6 +1918,13 @@ impl Instance {
             Call(target, arguments) => self
                 .call_with_operands(target, arguments, args)?
                 .ok_or_else(|| evaluation("expression callback must return a value")),
+        }
+    }
+
+    fn date_argument(&self, expression: &Expr, args: &[Value]) -> Result<xrack_runtime::Date> {
+        match self.evaluate(expression, args)? {
+            Value::Date(date) => Ok(date),
+            _ => Err(evaluation("date argument requires a Date")),
         }
     }
 
@@ -1643,9 +2008,7 @@ impl Instance {
                 },
             ))
         })?;
-        let index = node.int("current-index").unwrap_or(0);
-        let snapshot = items.snapshot(index, node.properties.get("current-value"));
-        node.properties.insert("model", Value::ComboModel(snapshot));
+        items.populate_scene(node);
         Ok(())
     }
 
@@ -1794,16 +2157,12 @@ impl Instance {
             return Ok(Node::hidden());
         }
         let mut node = match element.visual {
-            Visual::Builtin("StandardTableView") => Node::new("TableView", None),
-            Visual::Builtin("SplitHandle" | "DayCell") => Node::new("Rectangle", None),
-            Visual::Builtin(_) if picker_value.is_some() => Node::new("Dialog", None),
-            Visual::Builtin("StandardButton") => Node::new("Button", None),
-            Visual::Builtin("ApplicationWindow") => {
-                let mut node = Node::new("Window", None);
-                node.application_window = true;
+            Visual::Builtin(kind) => {
+                let (kind, application_window) = xrack_resources::visual::scene_element(kind);
+                let mut node = Node::new(kind, None);
+                node.application_window = application_window;
                 node
             }
-            Visual::Builtin(kind) => Node::new(kind, None),
             Visual::Instance { .. } => self.children()[&element.key]
                 .render_scene()?
                 .as_ref()
@@ -1961,6 +2320,9 @@ impl Instance {
             let enabled = enabled && node.boolean("enabled", true);
             node.properties.insert("enabled", enabled.into());
         }
+        if let Some(file) = &element.media_source_file {
+            self.media_slot(&element.key).populate(&mut node, file);
+        }
         if matches!(element.visual, Visual::Builtin("AnimatedImage")) {
             let state = Rc::downgrade(&self.0);
             let key = element.key.clone();
@@ -1968,7 +2330,7 @@ impl Instance {
                 let Some(state) = state.upgrade() else {
                     return false;
                 };
-                let owner = Instance(state);
+                let owner = Instance(state, None);
                 let Some(element) = owner.definition().root.find_key(&key) else {
                     return false;
                 };
@@ -2133,14 +2495,14 @@ impl Instance {
         Ok(())
     }
 
-    fn locate<'a>(
+    fn locate<'a, 'p>(
         &self,
         program: &'a Program,
         element: &'a Element,
         scene: &Node,
-        path: &[usize],
+        path: &'p [usize],
         mut route: TargetRoute<'_>,
-    ) -> Result<Option<(Self, &'a Element)>> {
+    ) -> Result<Option<LocatedTarget<'a, 'p>>> {
         if let Some(repeat) = &element.repeat
             && !self.in_row(element)
         {
@@ -2159,59 +2521,37 @@ impl Instance {
             else {
                 return Ok(None);
             };
-            let row_selectors = RefCell::default();
-            return row.locate(
-                program,
-                element,
-                node,
-                tail,
-                TargetRoute {
-                    row_selectors: Some(&row_selectors),
-                    ..route
-                },
-            );
+            return row.locate(program, element, node, tail, route);
         }
+        let visibility_overridden = route
+            .input
+            .is_some_and(InputRoute::root_visibility_overridden);
         if let Some(input) = route.input {
             let is_instance = matches!(element.visual, Visual::Instance { .. });
             let mut visible = None;
-            let flag = |name| {
-                self.visual_flag_value_with(element, name, |cases| {
-                    self.state_value_with(cases, |selector| {
-                        let Some(cache) = route.row_selectors else {
-                            return self.select_state(selector);
-                        };
-                        let cached = cache.borrow().get(&selector).copied();
-                        if let Some(value) = cached {
-                            return Ok(value);
-                        }
-                        let value = self.select_state(selector)?;
-                        cache.borrow_mut().insert(selector, value);
-                        Ok(value)
-                    })
-                })
-            };
+            let flag = |element, name| self.input_flag_value(element, name);
             if !input.try_available(|| -> Result<bool> {
                 if path.is_empty()
                     && scene.is_item_delegate()
                     && self.row_template().is_some()
-                    && matches!(
-                        input.event(),
-                        xrack_runtime::RoutedEvent::Dispatch("clicked" | "toggled")
-                    )
+                    && input
+                        .event()
+                        .activates_item_delegate(element.action.is_some())
                 {
                     return self.item_delegate_available(element);
                 }
-                if scene.input_requires_enabled(path.is_empty()) && flag("enabled")? == Some(false)
+                if scene.input_requires_enabled(path.is_empty())
+                    && flag(element, "enabled")? == Some(false)
                 {
                     return Ok(false);
                 }
                 if !self.element_conditions_met(element)? {
                     return Ok(false);
                 }
-                visible = if input.root_visibility_overridden() {
+                visible = if visibility_overridden {
                     Some(true)
                 } else {
-                    flag("visible")?
+                    flag(element, "visible")?
                 };
                 if !visible.unwrap_or(true) {
                     return Ok(false);
@@ -2231,7 +2571,7 @@ impl Instance {
                             element
                                 .children
                                 .iter()
-                                .map(|page| self.element_allows_editing(page)),
+                                .map(|page| self.input_element_available(page, false)),
                         )?,
                         "StackView" => self
                             .stack_snapshot_for(element)?
@@ -2249,7 +2589,7 @@ impl Instance {
                         Ok(input.can_open_drawer(scene, path.is_empty())
                             || self.control_value(element, "open")? == Some(Value::Bool(true)))
                     },
-                    || Ok(flag("checkable")?.unwrap_or(false)),
+                    || Ok(flag(element, "checkable")?.unwrap_or(false)),
                     || Ok(self.control_value(element, "checked")? != Some(Value::Bool(false))),
                     || {
                         Ok(match self.control_value(element, "open-side")? {
@@ -2260,6 +2600,9 @@ impl Instance {
                 )
             })? {
                 return Ok(None);
+            }
+            if element.table.is_some() || element.tree.is_some() {
+                input.record_root_visibility_override(&self.0.binding_lifetime);
             }
             route.input =
                 Some(input.with_root_visibility_override(visible.is_some() && is_instance));
@@ -2273,21 +2616,29 @@ impl Instance {
                 &program.definition(component)?.root,
                 scene,
                 path,
-                TargetRoute {
-                    row_selectors: None,
-                    ..route
-                },
+                route,
             );
         }
+        let target = |remaining| LocatedTarget {
+            owner: self.clone(),
+            element,
+            remaining,
+            visibility_overridden,
+        };
         let Some((&index, tail)) = path.split_first() else {
-            return Ok(Some((self.clone(), element)));
+            return Ok(Some(target(&[])));
         };
         let Some(node) = scene.child_at(index) else {
             return Ok(None);
         };
+        if picker::property(element).is_some()
+            || matches!(element.visual, Visual::Builtin("TimePicker"))
+        {
+            return Ok(Some(target(path)));
+        }
         if scene.list.is_some() {
             let Some((&0, tail)) = tail.split_first() else {
-                return Ok(Some((self.clone(), element)));
+                return Ok(Some(target(&[])));
             };
             let (Some(template), Some((index, row_key, child))) =
                 (element.view_template(), scene.list_event_row(index))
@@ -2311,12 +2662,11 @@ impl Instance {
                 )
             } else {
                 let model = self.view_model(element)?;
-                let source = match model.positions() {
-                    Some(positions) => {
-                        positions.event_source_index(scene.standard_list_stamp, index)
-                    }
-                    None => model.source_index(index),
-                };
+                let source = xrack_runtime::TableRowPositions::event_source_index_in(
+                    model.positions(),
+                    scene,
+                    index,
+                );
                 let Some(model) = model.source else {
                     return Ok(None);
                 };
@@ -2328,17 +2678,15 @@ impl Instance {
             let Some(row) = state.resolved_row(&model, source, row_key, route.follow_row) else {
                 return Ok(None);
             };
-            let row_selectors = RefCell::default();
-            return row.locate(
-                program,
-                template,
-                child,
-                tail,
-                TargetRoute {
-                    row_selectors: Some(&row_selectors),
-                    ..route
-                },
-            );
+            if child.is_item_delegate()
+                && template.action.is_some()
+                && route
+                    .input
+                    .is_some_and(|input| input.event().activates_item_delegate(true))
+            {
+                model.track_item(source);
+            }
+            return row.locate(program, template, child, tail, route);
         }
         let Some(child) = index
             .checked_sub(element.synthetic_child_count())
@@ -2354,25 +2702,39 @@ impl Instance {
         scene: &Node,
         path: &[usize],
     ) -> Result<Option<(Self, &'a Element)>> {
-        self.locate(
-            &self.0.program,
-            &self.definition().root,
-            scene,
-            path,
-            TargetRoute {
-                follow_row: false,
-                input: None,
-                row_selectors: None,
-            },
-        )
+        Ok(self
+            .locate(
+                &self.0.program,
+                &self.definition().root,
+                scene,
+                path,
+                TargetRoute {
+                    follow_row: false,
+                    input: None,
+                },
+            )?
+            .and_then(LocatedTarget::exact))
     }
 
-    pub(crate) fn input_route_target<'a>(
+    pub(crate) fn input_route_target<'a, 'i>(
         &'a self,
         scene: &Node,
         path: &[usize],
+        input: InputRoute<'i>,
+    ) -> Result<Option<(Self, &'a Element, InputRoute<'i>)>> {
+        Ok(self.locate_input(scene, path, input)?.and_then(|target| {
+            let input = input.with_root_visibility_override(target.visibility_overridden);
+            let (owner, element) = target.exact()?;
+            Some((owner, element, input))
+        }))
+    }
+
+    fn locate_input<'a, 'p>(
+        &'a self,
+        scene: &Node,
+        path: &'p [usize],
         input: InputRoute<'_>,
-    ) -> Result<Option<(Self, &'a Element)>> {
+    ) -> Result<Option<LocatedTarget<'a, 'p>>> {
         self.locate(
             &self.0.program,
             &self.definition().root,
@@ -2381,7 +2743,6 @@ impl Instance {
             TargetRoute {
                 follow_row: input.event().follows_row(scene, path),
                 input: Some(input),
-                row_selectors: None,
             },
         )
     }
@@ -2392,7 +2753,7 @@ impl Instance {
         path: &[usize],
         input: InputRoute<'_>,
     ) -> Result<bool> {
-        let Some((owner, element)) = self.input_route_target(scene, path, input)? else {
+        let Some((owner, element, input)) = self.input_route_target(scene, path, input)? else {
             return Ok(false);
         };
         if !input.is_current() {
@@ -2429,44 +2790,39 @@ impl Instance {
     }
 
     fn focus_input(&self, element: &Element, event: FocusEvent) -> Result<bool> {
-        let (name, reason) = match event {
-            FocusEvent::Gained(reason) => ("focus-gained", reason),
-            FocusEvent::Lost(reason) => ("focus-lost", reason),
-            FocusEvent::Within { focused, reason } => {
-                return self.handler(
-                    element,
-                    "focus-within-changed",
-                    &[Value::Bool(focused), Value::FocusReason(reason)],
-                );
+        event.try_deliver(|handler, focused, reason| {
+            let reason = Value::FocusReason(reason);
+            if matches!(handler, xrack_runtime::FocusHandler::Within) {
+                self.handler(element, handler.name(), &[Value::Bool(focused), reason])
+            } else {
+                self.handler(element, handler.name(), &[reason])
             }
-        };
-        let args = &[Value::FocusReason(reason)];
-        let handled = self.handler(element, name, args)?;
-        Ok(self.handler(element, "focus-changed-event", args)? || handled)
+        })
     }
 
     fn drag_input(&self, element: &Element, event: &DragEvent) -> Result<bool> {
-        let (name, args) = match event {
-            DragEvent::Started => ("drag-started", vec![]),
-            DragEvent::Finished(action) => ("drag-finished", vec![(*action).into()]),
-            DragEvent::Entered { data, action } => {
-                ("entered", vec![data.clone().into(), (*action).into()])
-            }
-            DragEvent::Dropped { data, action } => {
-                ("dropped", vec![data.clone().into(), (*action).into()])
-            }
-            DragEvent::FilesEntered(paths) => (
-                "files-entered",
-                vec![model_value(Value::StringList(paths.to_vec()))],
-            ),
-            DragEvent::FilesDropped(paths) => (
-                "files-dropped",
-                vec![model_value(Value::StringList(paths.to_vec()))],
-            ),
-            DragEvent::Moved { x, y } => ("position-changed", vec![(*x).into(), (*y).into()]),
-            DragEvent::Exited => ("exited", vec![]),
-        };
-        self.handler(element, name, &args)?;
+        // A repeated template has no drag route of its own. A component
+        // mounted in the row receives events through its own static paths.
+        if self.row_template().is_some()
+            || !matches!(element.visual, Visual::Builtin(kind) if kind == event.target_kind())
+        {
+            return Ok(false);
+        }
+        let (name, arguments) = event.notification();
+        if let Some(handler) = element.handlers.get(name) {
+            let args = match arguments {
+                xrack_runtime::DragArguments::None => vec![],
+                xrack_runtime::DragArguments::Action(action) => vec![action.into()],
+                xrack_runtime::DragArguments::Data(data, action) => {
+                    vec![data.to_owned().into(), action.into()]
+                }
+                xrack_runtime::DragArguments::Files(paths) => {
+                    vec![Value::StringModel(paths.to_vec().into())]
+                }
+                xrack_runtime::DragArguments::Position(x, y) => vec![x.into(), y.into()],
+            };
+            self.execute(handler, &args, None)?;
+        }
         Ok(true)
     }
 
@@ -2532,7 +2888,9 @@ impl Instance {
             return Ok(false);
         };
         if event == "clicked" {
-            if input.is_some() && !self.check_group_member_enabled(element)? {
+            if let Some(input) = input
+                && !input.try_available(|| self.check_group_member_enabled(element))?
+            {
                 return Ok(false);
             }
             if matches!(kind, "Button" | "ToolButton" | "RoundButton")
@@ -2621,17 +2979,18 @@ impl Instance {
                     field,
                     node.properties.get(name),
                     value,
-                    |owner, view, model, history| {
-                        xrack_runtime::ListModel::contents_stamp(model);
+                    || Ok(true),
+                    |owner, view, _, field_current, history| {
                         if let Some(tree) = view.filter(|view| view.tree.is_some()) {
                             owner.tree_projection(tree)?;
                         }
-                        xrack_runtime::try_prepare_row_toggle(
+                        xrack_runtime::try_prepare_row_toggle_matching(
                             node,
                             input,
                             check_state.then_some(|| {
                                 Ok(self.binding_value(element, "tristate")? == Some(true.into()))
                             }),
+                            field_current,
                             history,
                         )
                     },
@@ -2851,13 +3210,17 @@ impl Instance {
         }
         let member = Member::new(&element.key, name);
         if let Some(input) = self.0.incoming.get(&member) {
-            input.set_if_changed(Ok(model_value(value)));
+            input.set_if_changed_by(Ok(model_value(value)), |left, right| {
+                matches!((left, right), (Ok(left), Ok(right)) if left.same_property_value(right))
+            });
             return Ok(true);
         }
         let Some(slot) = self.0.controls.get(&member) else {
             return Ok(false);
         };
-        slot.set_if_changed(Some(value));
+        slot.set_if_changed_by(Some(value), |left, right| {
+            matches!((left, right), (Some(left), Some(right)) if left.same_property_value(right))
+        });
         Ok(true)
     }
 
@@ -2868,26 +3231,16 @@ impl Instance {
         action: ControlAction,
         route: xrack_runtime::InputRoute<'_>,
     ) -> Result<bool> {
-        use xrack_runtime::{
-            ComboEditor, ComboUpdate, combo_model_is_current, try_prepare_combo_input,
-        };
+        use xrack_runtime::{ComboEditor, ComboUpdate, try_prepare_combo_input_with_live_draft};
 
-        let input = try_prepare_combo_input(
+        let property = element.selection_property();
+        let input = try_prepare_combo_input_with_live_draft(
             node,
             action,
-            || self.element_allows_editing(element),
+            || self.element_allows_routed_input(element, route),
             || self.table_flag(element, "editable", false),
-            || {
-                if let Some(combo) = &element.record_combo {
-                    let model = self.record_combo_model(combo)?;
-                    return Ok(combo_model_is_current(node, model.model()));
-                }
-                match self.binding_value(element, "model")? {
-                    Some(Value::StringModel(model)) => Ok(combo_model_is_current(node, &model)),
-                    None => Ok(true),
-                    _ => Err(evaluation("expected a string ComboBox model")),
-                }
-            },
+            || self.combo_model_current(element, node),
+            || self.combo_draft_current(element, node, || Ok(true)),
         )?;
         if !route.is_current() {
             return Ok(false);
@@ -2895,7 +3248,6 @@ impl Instance {
         let Some(input) = input else {
             return Ok(false);
         };
-        let property = element.selection_property();
         let by_value = property == "current-value";
         let editor = match element.control("edit-text") {
             None => ComboEditor::None,
@@ -2940,6 +3292,44 @@ impl Instance {
                 }
             }
             Ok(true)
+        })
+    }
+
+    fn combo_model_current(&self, element: &Element, node: &Node) -> Result<bool> {
+        use xrack_runtime::combo_model_is_current;
+        if let Some(combo) = &element.record_combo {
+            let model = self.record_combo_model(combo)?;
+            return Ok(combo_model_is_current(node, model.model()));
+        }
+        match self.binding_value(element, "model")? {
+            Some(Value::StringModel(model)) => Ok(combo_model_is_current(node, &model)),
+            None => Ok(true),
+            _ => Err(evaluation("expected a string ComboBox model")),
+        }
+    }
+
+    fn combo_draft_current(
+        &self,
+        element: &Element,
+        node: &Node,
+        model_current: impl FnOnce() -> Result<bool>,
+    ) -> Result<bool> {
+        if element.control("edit-text").is_none() {
+            return Ok(false);
+        }
+        let draft = match self.control_value(element, "edit-text")? {
+            Some(Value::String(text)) => Some(text),
+            None => None,
+            _ => return Err(evaluation("expected ComboBox draft text")),
+        };
+        node.try_combo_draft_is_current(draft, || {
+            if !model_current()? {
+                return Ok(false);
+            }
+            let name = element.selection_property();
+            Ok(self
+                .control_value(element, name)?
+                .is_some_and(|value| node.combo_selection_is_current(name, &value)))
         })
     }
 
@@ -3053,7 +3443,7 @@ impl Component for Instance {
     fn route_input(&mut self, scene: &Node, path: &[usize], input: InputRoute<'_>) -> bool {
         match input.event() {
             RoutedEvent::Dispatch(event) => {
-                let Some((instance, element)) = self
+                let Some((instance, element, input)) = self
                     .capture_result(self.input_route_target(scene, path, input))
                     .flatten()
                 else {
@@ -3072,17 +3462,27 @@ impl Component for Instance {
                     return false;
                 };
                 self.handle_result((|| {
-                    if let Some((instance, element)) =
-                        self.input_route_target(scene, path, input)?
-                    {
-                        if !input
-                            .try_available(|| instance.live_editor_allows(element, node, text))?
-                        {
-                            return Ok(false);
-                        }
-                        return instance.edit_control(element, node, (*text).into());
+                    let Some(target) = self.locate_input(scene, path, input)? else {
+                        return Ok(false);
+                    };
+                    if !target.remaining.is_empty() {
+                        return target.owner.edit_picker_hex(
+                            target.element,
+                            target.remaining,
+                            node,
+                            text,
+                            input,
+                        );
                     }
-                    self.edit_picker_hex(scene, path, node, text, input)
+                    if !target
+                        .owner
+                        .live_editor_allows(target.element, node, text, input)?
+                    {
+                        return Ok(false);
+                    }
+                    target
+                        .owner
+                        .edit_control(target.element, node, (*text).into())
                 })())
             }
             RoutedEvent::Control(action) => self.route_control(scene, path, *action, input),
@@ -3097,7 +3497,8 @@ impl Component for Instance {
                 let Some(model) = scene.table_edit_history_model(path) else {
                     return Ok(false);
                 };
-                let Some((owner, view)) = self.input_route_target(scene, path, input)? else {
+                let Some((owner, view, input)) = self.input_route_target(scene, path, input)?
+                else {
                     return Ok(false);
                 };
                 owner.replay_table_from_view(view, model, *redo, input)
@@ -3194,7 +3595,7 @@ impl Component for Instance {
             return None;
         };
         let node = scene.at_path(path)?;
-        let (owner, element) = self
+        let (owner, element, input) = self
             .capture_result(self.input_route_target(scene, path, input))
             .flatten()?;
         element.table.as_ref()?;
@@ -3217,22 +3618,7 @@ impl Component for Instance {
         row: usize,
         columns: Vec<usize>,
     ) -> Option<xrack_runtime::TablePaste> {
-        let stamp = self.table_paste_stamp(scene, path)?;
-        let weak = Rc::downgrade(&self.0);
-        let scene = scene.clone();
-        let path = path.to_vec();
-        Some(Box::new(move |text| {
-            let Some(mut ui) = weak.upgrade().map(Instance) else {
-                return false;
-            };
-            xrack_runtime::RoutedEvent::PasteTable(xrack_runtime::TablePasteInput {
-                stamp,
-                row,
-                columns: &columns,
-                text,
-            })
-            .deliver_input(&mut ui, &scene, &path)
-        }))
+        xrack_runtime::prepare_table_paste(self, || self.as_weak(), scene, path, row, columns)
     }
 
     fn table_paste_stamp(&self, scene: &Node, path: &[usize]) -> Option<(u64, u64)> {
@@ -3299,28 +3685,29 @@ impl Instance {
             && let Some(table) = scene.at_path(table_path)
             && table.boolean("__standard-table", false)
         {
-            let Some((owner, view)) = self.input_route_target(scene, table_path, input)? else {
+            let Some((owner, view, input)) = self.input_route_target(scene, table_path, input)?
+            else {
                 return Ok(false);
             };
             return owner.commit_projected_cell(view, table, *slot, *column, input);
         }
-        let Some((owner, element)) = self.input_route_target(scene, path, input)? else {
+        let Some((owner, element, input)) = self.input_route_target(scene, path, input)? else {
             return Ok(false);
         };
         let Some(field) = element.row_links.get("text") else {
             return Ok(false);
         };
-        if !input.try_available(|| -> Result<bool> {
-            Ok(!owner.visual_flag(element, "read-only", false)?
-                && owner.visual_flag(element, "editable", true)?)
-        })? {
-            return Ok(false);
-        }
         owner.prepare_row_field_write(
             field,
             node.properties.get("text"),
             Value::String(text.into()),
-            |_, _, _, history| input.try_prepare(|| Ok(true), || history().map(Some)),
+            || {
+                input.try_available(|| {
+                    Ok(!owner.visual_flag(element, "read-only", false)?
+                        && owner.visual_flag(element, "editable", true)?)
+                })
+            },
+            |_, _, _, _, history| input.try_prepare(|| Ok(true), || history().map(Some)),
         )
     }
 
@@ -3339,20 +3726,33 @@ impl Instance {
                 let Some((&handle, parent)) = path.split_last() else {
                     return Ok(false);
                 };
-                let Some((instance, element)) = self.input_route_target(scene, parent, input)?
-                else {
+                let Some(target) = self.locate_input(scene, parent, input)? else {
+                    return Ok(false);
+                };
+                let input = input.with_root_visibility_override(target.visibility_overridden);
+                let Some((instance, element)) = target.exact() else {
                     return Ok(false);
                 };
                 return instance.interval_action(element, node, handle, action, input);
             }
-            let Some((instance, element)) = self.input_route_target(scene, path, input)? else {
-                return self.picker_child_input(
-                    scene,
-                    path,
+            let Some(target) = self.locate_input(scene, path, input)? else {
+                return Ok(false);
+            };
+            let LocatedTarget {
+                owner: instance,
+                element,
+                remaining,
+                visibility_overridden,
+            } = target;
+            let input = input.with_root_visibility_override(visibility_overridden);
+            if !remaining.is_empty() {
+                return instance.picker_child_input(
+                    element,
+                    remaining,
                     node,
                     picker::Input::Range(action, input),
                 );
-            };
+            }
             match node.kind {
                 "Slider" | "Dial" => instance.range_action(element, node, action, input),
                 "ScrollBar"
@@ -3375,29 +3775,29 @@ impl Instance {
         let Some(node) = scene.at_path(path) else {
             return false;
         };
-        let Some(target) = self.capture_result(self.locate(
-            &self.0.program,
-            &self.definition().root,
-            scene,
-            path,
-            TargetRoute {
-                follow_row: false,
-                input: Some(input),
-                row_selectors: None,
-            },
-        )) else {
+        let Some(target) = self
+            .capture_result(self.locate_input(scene, path, input))
+            .flatten()
+        else {
             return false;
         };
-        let Some((instance, element)) = target else {
-            return self.handle_result(self.picker_child_input(
-                scene,
-                path,
+        let LocatedTarget {
+            owner: instance,
+            element,
+            remaining,
+            visibility_overridden,
+        } = target;
+        let input = input.with_root_visibility_override(visibility_overridden);
+        if !input.is_current() {
+            return false;
+        }
+        if !remaining.is_empty() {
+            return self.handle_result(instance.picker_child_input(
+                element,
+                remaining,
                 node,
                 picker::Input::Control(action, input),
             ));
-        };
-        if !input.is_current() {
-            return false;
         }
         if picker::property(element).is_some() {
             return self.handle_result(instance.picker_control(element, node, action, input));
@@ -3438,13 +3838,25 @@ impl Instance {
                 )
             }
             ControlAction::SwipeDelegate(side) if node.kind == "SwipeDelegate" => (|| {
-                let Value::SwipeSide(current) = instance
-                    .control_value(element, "open-side")?
-                    .unwrap_or(Value::SwipeSide(xrack_runtime::SwipeSide::Closed))
-                else {
-                    return Ok(false);
-                };
-                if !input.is_current() || !node.accepts_swipe_side(current, side) {
+                if !xrack_runtime::try_prepare_swipe_side(
+                    node,
+                    side,
+                    input,
+                    || {
+                        Ok(match instance.control_value(element, "open-side")? {
+                            Some(Value::SwipeSide(side)) => side,
+                            _ => xrack_runtime::SwipeSide::Closed,
+                        })
+                    },
+                    |kind| {
+                        let Some(panel) = element.children.iter().find(
+                            |child| matches!(child.visual, Visual::Builtin(name) if name == kind),
+                        ) else {
+                            return Ok(false);
+                        };
+                        Ok(instance.input_flag_value(panel, "visible")?.unwrap_or(true))
+                    },
+                )? {
                     return Ok(false);
                 }
                 let next = Value::SwipeSide(side);
@@ -3487,7 +3899,7 @@ impl Instance {
             ControlAction::Select(index) if element.is_list_view() => (|| {
                 let selected = xrack_runtime::try_prepare_index_selection(
                     index,
-                    || instance.element_allows_editing(element),
+                    || instance.element_allows_routed_input(element, input),
                     |_| {
                         let model = instance.view_model(element)?;
                         Ok(xrack_runtime::ListMetrics::has_row_in_model(
@@ -3520,7 +3932,7 @@ impl Instance {
                 let applicable = xrack_runtime::try_delay_button_transition_is_current(
                     node,
                     checked,
-                    || instance.element_allows_editing(element),
+                    || instance.element_allows_routed_input(element, input),
                     || {
                         Ok(match instance.binding_value(element, "delay")? {
                             Some(Value::Int(delay)) => Some(delay),
@@ -3565,7 +3977,8 @@ impl Instance {
                 (|| {
                     let target = node.try_prepare_text_link(index, input, || {
                         if let Some(cases) = element.state_bindings.get("text")
-                            && let Some(Value::StyledText(text)) = instance.state_value(cases)?
+                            && let Some(Value::StyledText(text)) =
+                                instance.input_state_value(cases)?
                         {
                             return Ok(text);
                         }
@@ -3605,25 +4018,47 @@ impl Instance {
         })
     }
 
-    fn live_editor_allows(&self, element: &Element, node: &Node, text: &str) -> Result<bool> {
+    fn live_editor_allows(
+        &self,
+        element: &Element,
+        node: &Node,
+        text: &str,
+        input: InputRoute<'_>,
+    ) -> Result<bool> {
         if node.kind == "ComboBox" {
-            return self.visual_flag(element, "editable", false);
+            return node.try_prepare_combo_edit(
+                input,
+                || self.visual_flag(element, "editable", false),
+                || {
+                    self.combo_draft_current(element, node, || {
+                        self.combo_model_current(element, node)
+                    })
+                },
+            );
         }
-        if !xrack_runtime::is_text_input(node.kind)
-            || self.visual_flag(element, "read-only", false)?
-        {
+        if !xrack_runtime::is_text_input(node.kind) {
             return Ok(false);
         }
-        let mode = if matches!(node.kind, "TextInput" | "LineEdit") {
-            self.editor_input_type(element)?
-        } else {
-            xrack_runtime::InputType::Text
-        };
-        node.try_allows_text_edit_with(
-            text,
-            mode,
-            || self.editor_decimal_separator(element),
-            || self.editor_maximum_length(element),
+        node.try_prepare_text_edit(
+            input,
+            || Ok(!self.visual_flag(element, "read-only", false)?),
+            || match self.control_value(element, "text")? {
+                Some(Value::String(text)) => Ok(text),
+                _ => Err(evaluation("expected text editor value")),
+            },
+            || {
+                let mode = if matches!(node.kind, "TextInput" | "LineEdit") {
+                    self.editor_input_type(element)?
+                } else {
+                    xrack_runtime::InputType::Text
+                };
+                node.try_allows_text_edit_with(
+                    text,
+                    mode,
+                    || self.editor_decimal_separator(element),
+                    || self.editor_maximum_length(element),
+                )
+            },
         )
     }
 
@@ -3637,7 +4072,7 @@ impl Instance {
         let input = xrack_runtime::SearchInput::try_from_control(
             node,
             action,
-            || self.element_allows_editing(element),
+            || self.element_allows_routed_input(element, route),
             || Ok(!self.table_flag(element, "read-only", false)?),
             || match self.control_value(element, "text")? {
                 Some(Value::String(text)) => Ok(text),
@@ -3788,6 +4223,7 @@ impl ValueType {
                 | (Self::InputType, Value::InputType(_))
                 | (Self::DialInputMode, Value::DialInputMode(_))
                 | (Self::Image, Value::Image(_) | Value::ImageAsset(_))
+                | (Self::LogLevel, Value::LogLevel(_))
                 | (Self::ImageFit, Value::ImageFit(_))
                 | (Self::ImageTileMode, Value::ImageTileMode(_))
                 | (
@@ -3935,4 +4371,123 @@ fn binary(program: &Program, operator: BinaryOperator, lhs: Value, rhs: Value) -
         }
         _ => Err(evaluation("invalid binary operands")),
     }
+}
+
+fn math_function(kind: xrack_syntax::builtins::MathFunction, inputs: &[Value]) -> Result<Value> {
+    use xrack_syntax::builtins::MathFunction::*;
+
+    let invalid = || evaluation("invalid math function operands");
+    if let [Value::Int(a), rest @ ..] = inputs {
+        return Ok(Value::Int(match (kind, rest) {
+            (Min, [Value::Int(b)]) => (*a).min(*b),
+            (Max, [Value::Int(b)]) => (*a).max(*b),
+            (Clamp, [Value::Int(b), Value::Int(c)]) => xrack_runtime::clamp_int(*a, *b, *c),
+            (Abs, []) => a.saturating_abs(),
+            (Mod, [Value::Int(b)]) => xrack_runtime::modulo_int(*a, *b),
+            _ => return Err(invalid()),
+        }));
+    }
+    let float = |value: &Value| match value {
+        Value::Float(value) => Ok(*value),
+        Value::Length(value) => Ok(value.0),
+        Value::Percent(value) => Ok(value.0),
+        _ => Err(invalid()),
+    };
+    let [first, rest @ ..] = inputs else {
+        return Err(invalid());
+    };
+    let a = float(first)?;
+    let value = match (kind, rest) {
+        (Min, [b]) => xrack_runtime::min_float(a, float(b)?),
+        (Max, [b]) => xrack_runtime::max_float(a, float(b)?),
+        (Clamp, [b, c]) => xrack_runtime::clamp_float(a, float(b)?, float(c)?),
+        (Abs, []) => a.abs(),
+        (Mod, [b]) => a.rem_euclid(float(b)?),
+        (Sign, []) => xrack_runtime::number_sign(a),
+        (Sqrt, []) => a.sqrt(),
+        (Pow, [b]) => a.powf(float(b)?),
+        (Exp, []) => a.exp(),
+        (Ln, []) => a.ln(),
+        (Log, [b]) => a.log(float(b)?),
+        (Sin, []) => a.sin(),
+        (Cos, []) => a.cos(),
+        (Tan, []) => a.tan(),
+        (Asin, []) => a.asin(),
+        (Acos, []) => a.acos(),
+        (Atan, []) => a.atan(),
+        (Atan2, [b]) => a.atan2(float(b)?),
+        (Hypot, [b]) => a.hypot(float(b)?),
+        (ToRadians, []) => a.to_radians(),
+        (ToDegrees, []) => a.to_degrees(),
+        (IsFinite, []) => return Ok(Value::Bool(a.is_finite())),
+
+        (Floor, []) => return Ok(Value::Int(xrack_runtime::floor_to_int(a))),
+        (Ceil, []) => return Ok(Value::Int(xrack_runtime::ceil_to_int(a))),
+        _ => return Err(invalid()),
+    };
+    Ok(match first {
+        Value::Length(_) => Value::Length(Length(value)),
+        Value::Percent(_) => Value::Percent(xrack_runtime::Percent(value)),
+        _ => Value::Float(value),
+    })
+}
+
+fn string_function(
+    kind: xrack_syntax::builtins::StringFunction,
+    inputs: &[Value],
+) -> Result<Value> {
+    use xrack_syntax::builtins::StringFunction::*;
+    match (kind, inputs) {
+        (Trim, [Value::String(text)]) => Ok(Value::String(text.trim().to_owned())),
+        (IsEmpty, [Value::String(text)]) => Ok(Value::Bool(text.is_empty())),
+        (Contains, [Value::String(text), Value::String(part)]) => {
+            Ok(Value::Bool(text.contains(part.as_str())))
+        }
+        (StartsWith, [Value::String(text), Value::String(prefix)]) => {
+            Ok(Value::Bool(text.starts_with(prefix.as_str())))
+        }
+        (EndsWith, [Value::String(text), Value::String(suffix)]) => {
+            Ok(Value::Bool(text.ends_with(suffix.as_str())))
+        }
+        (ReplaceAll, [Value::String(text), Value::String(from), Value::String(to)]) => {
+            Ok(Value::String(text.replace(from.as_str(), to)))
+        }
+        (Lowercase, [Value::String(text)]) => Ok(Value::String(text.to_lowercase())),
+        (Uppercase, [Value::String(text)]) => Ok(Value::String(text.to_uppercase())),
+        (IsInt, [Value::String(text)]) => Ok(Value::Bool(xrack_runtime::parse_int(text).is_some())),
+        (IsFloat, [Value::String(text)]) => {
+            Ok(Value::Bool(xrack_runtime::parse_float(text).is_some()))
+        }
+        (ToInt, [Value::String(text), Value::Int(fallback)]) => Ok(Value::Int(
+            xrack_runtime::parse_int(text).unwrap_or(*fallback),
+        )),
+        (ToFloat, [Value::String(text), Value::Float(fallback)]) => Ok(Value::Float(
+            xrack_runtime::parse_float(text).unwrap_or(*fallback),
+        )),
+        (CharacterCount, [Value::String(text)]) => {
+            Ok(Value::Int(xrack_runtime::character_count(text)))
+        }
+        _ => Err(evaluation("invalid string function operands")),
+    }
+}
+
+fn color_function(kind: xrack_syntax::builtins::ColorFunction, inputs: &[Value]) -> Result<Value> {
+    use xrack_runtime::Color;
+    use xrack_syntax::builtins::ColorFunction::*;
+    Ok(Value::Color(match (kind, inputs) {
+        (Rgb, [Value::Int(r), Value::Int(g), Value::Int(b)]) => Color::from_rgba(*r, *g, *b, 1.0),
+        (Rgba, [Value::Int(r), Value::Int(g), Value::Int(b), Value::Float(a)]) => {
+            Color::from_rgba(*r, *g, *b, *a)
+        }
+        (WithAlpha, [Value::Color(color), Value::Float(alpha)]) => color.with_alpha(*alpha),
+        (
+            Mix,
+            [
+                Value::Color(first),
+                Value::Color(second),
+                Value::Float(amount),
+            ],
+        ) => first.mix(*second, *amount),
+        _ => return Err(evaluation("invalid color function operands")),
+    }))
 }

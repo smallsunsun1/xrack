@@ -268,18 +268,28 @@ impl<'a> Source<'a> {
         let start = self.offset(error.span);
         let rest = &self.text[start..];
         // The compiler supplies a start point. Highlight the identifier or one character.
-        let word = rest
+        let intrinsic_prefix = usize::from(rest.starts_with('@'));
+        let word = rest[intrinsic_prefix..]
             .bytes()
             .take_while(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-'))
             .count();
-        let width = if word > 0 {
-            word
+        let mut width = if word > 0 {
+            intrinsic_prefix + word
         } else {
             rest.chars()
                 .next()
                 .filter(|c| !matches!(c, '\r' | '\n'))
                 .map_or(0, char::len_utf8)
         };
+        if phase == "semantic"
+            && xrack_parser::builtins::NAMESPACES.contains(&&rest[..width])
+            && let Some(member) = rest[width..].strip_prefix('.')
+        {
+            width += 1 + member
+                .bytes()
+                .take_while(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-'))
+                .count();
+        }
         let mut diagnostic = json!({
             "range": self.range(start, start + width),
             "severity": 1,
@@ -301,7 +311,12 @@ impl<'a> Source<'a> {
         if exported {
             header = skip_trivia(header.strip_prefix("export").unwrap_or(header));
         }
-        let name = skip_trivia(header.strip_prefix("component").unwrap_or(header));
+        let name = skip_trivia(
+            header
+                .strip_prefix("component")
+                .or_else(|| header.strip_prefix("global"))
+                .unwrap_or(header),
+        );
         self.text.len() - name.len()
     }
 }

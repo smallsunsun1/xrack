@@ -1,44 +1,18 @@
 use crate::{Element, Error, Instance, Result};
 use std::sync::Arc;
+use xrack_mlir::StackRead;
 use xrack_runtime::{
     StackEvent, StackNavigation, StackNavigationArgument, StackNavigationMethod, StackSnapshot,
     Value,
 };
 
-#[derive(Clone, Copy)]
-pub(crate) enum Read {
-    Current,
-    Depth,
-    CanGoBack,
-    Active,
-    Index,
-}
-
-impl Read {
-    pub(crate) fn parse(name: &str) -> Option<Self> {
-        Some(match name {
-            "current-page" => Self::Current,
-            "depth" => Self::Depth,
-            "can-go-back" => Self::CanGoBack,
-            "active" => Self::Active,
-            "stack-index" => Self::Index,
-            _ => return None,
-        })
-    }
-
-    pub(crate) fn read(self, snapshot: &StackSnapshot, route: Option<Value>) -> Result<Value> {
-        Ok(match (self, route) {
-            (Self::Current, None) => Value::String(snapshot.current().unwrap_or("").to_owned()),
-            (Self::Depth, None) => Value::Int(snapshot.depth() as i64),
-            (Self::CanGoBack, None) => Value::Bool(snapshot.depth() > 1),
-            (Self::Active, Some(Value::String(route))) => {
-                Value::Bool(snapshot.current() == Some(route.as_str()))
-            }
-            (Self::Index, Some(Value::String(route))) => {
-                Value::Int(snapshot.index_of(&route).map_or(-1, |index| index as i64))
-            }
-            _ => return Err(Error::Evaluation("invalid stack property arguments".into())),
-        })
+pub(crate) fn read(snapshot: &StackSnapshot, read: &StackRead) -> Value {
+    match read {
+        StackRead::CurrentPage => snapshot.current_page().into(),
+        StackRead::Depth => (snapshot.depth() as i64).into(),
+        StackRead::CanGoBack => snapshot.can_go_back().into(),
+        StackRead::PageActive(route) => snapshot.page_active(route).into(),
+        StackRead::PageIndex(route) => snapshot.page_index(route).into(),
     }
 }
 
@@ -50,13 +24,18 @@ fn routes(view: &Element) -> Result<&[String]> {
 
 impl Instance {
     pub fn stack_snapshot(&self, id: &str) -> Result<Arc<StackSnapshot>> {
-        let (owner, view) = self.element_owner(id)?;
-        owner.stack_snapshot_for(view)
+        let view = self.host_element(id, |view| view.stack_routes.is_some())?;
+        self.stack_snapshot_for(view)
     }
 
     pub fn navigate_stack(&mut self, id: &str, action: StackNavigation<'_>) -> Result<bool> {
-        let (owner, view) = self.element_owner(id)?;
-        owner.navigate_stack_view(view, None, action, None)
+        let view = self.host_element(id, |view| view.stack_routes.is_some())?;
+        self.navigate_stack_view(view, None, action, None)
+    }
+
+    pub(crate) fn stack_snapshot_by_key(&self, key: &str) -> Result<Arc<StackSnapshot>> {
+        let (owner, view) = self.element_owner(key)?;
+        owner.stack_snapshot_for(view)
     }
 
     fn initial_route(&self, view: &Element) -> Result<String> {

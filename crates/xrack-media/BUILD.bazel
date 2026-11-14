@@ -1,0 +1,212 @@
+load("@rules_cc//cc:defs.bzl", "cc_binary", "cc_library")
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+load("@rules_rust_bindgen//:defs.bzl", "rust_bindgen")
+load("//bazel:xrack.bzl", "rust_generated_source")
+load("@bazel_skylib//rules:common_settings.bzl", "bool_flag")
+
+bool_flag(
+    name = "enabled",
+    build_setting_default = False,
+    visibility = ["//visibility:public"],
+)
+
+config_setting(
+    name = "enabled_config",
+    flag_values = {":enabled": "true"},
+    visibility = ["//visibility:public"],
+)
+
+cc_library(
+    name = "audio_device",
+    srcs = ["audio_device.c"],
+    linkopts = select({
+        "@platforms//os:macos": [
+            "-framework CoreAudio",
+            "-framework AudioToolbox",
+        ],
+        "@platforms//os:linux": [
+            "-ldl",
+            "-lpthread",
+            "-lm",
+        ],
+        "//conditions:default": [],
+    }),
+    tags = ["manual"],
+    deps = ["@miniaudio//:headers"],
+)
+
+MEDIA_FEATURES = [
+    "bazel_bindings",
+    "ffmpeg",
+]
+
+cc_library(
+    name = "ffmpeg_api",
+    hdrs = [
+        "ffmpeg.h",
+        "native_api.h",
+    ],
+    tags = ["manual"],
+    deps = [
+        "@ffmpeg//:avcodec",
+        "@ffmpeg//:avformat",
+        "@ffmpeg//:avutil",
+        "@ffmpeg//:swresample",
+        "@ffmpeg//:swscale",
+    ],
+)
+
+HLS_DEFINES = select({
+    "@ffmpeg//:enable_hls_demuxer_is_true": ["XRACK_ENABLE_HLS=1"],
+    "//conditions:default": ["XRACK_ENABLE_HLS=0"],
+})
+
+cc_binary(
+    name = "libxrack_media_ffmpeg.dylib",
+    srcs = ["native_api.c"],
+    defines = HLS_DEFINES,
+    linkshared = True,
+    linkstatic = True,
+    tags = ["manual"],
+    deps = [
+        ":audio_device",
+        ":ffmpeg_api",
+    ],
+)
+
+cc_binary(
+    name = "libxrack_media_ffmpeg.so",
+    srcs = ["native_api.c"],
+    defines = HLS_DEFINES,
+    linkshared = True,
+    linkstatic = True,
+    tags = ["manual"],
+    deps = [
+        ":audio_device",
+        ":ffmpeg_api",
+    ],
+)
+
+cc_binary(
+    name = "xrack_media_ffmpeg.dll",
+    srcs = ["native_api.c"],
+    defines = HLS_DEFINES,
+    linkshared = True,
+    linkstatic = True,
+    tags = ["manual"],
+    deps = [
+        ":audio_device",
+        ":ffmpeg_api",
+    ],
+)
+
+alias(
+    name = "native_payload",
+    actual = select({
+        "@platforms//os:macos": ":libxrack_media_ffmpeg.dylib",
+        "@platforms//os:linux": ":libxrack_media_ffmpeg.so",
+        "@platforms//os:windows": ":xrack_media_ffmpeg.dll",
+    }),
+    tags = ["manual"],
+    visibility = ["//visibility:public"],
+)
+
+rust_bindgen(
+    name = "ffmpeg_bindings",
+    bindgen_flags = [
+        "--allowlist-var",
+        "XRACK_FFMPEG_.*",
+        "--allowlist-type",
+        "XrackMediaApi|AVStream|AVProgram|AVInputFormat|AVIOContext|AVIOInterruptCB|AVSampleFormat|SwsFlags",
+        "--no-include-path-detection",
+        "--no-layout-tests",
+        "--no-doc-comments",
+        "--rust-edition",
+        "2024",
+    ],
+    cc_lib = ":ffmpeg_api",
+    clang_flags = [
+        "-x",
+        "c",
+        "-std=c11",
+    ] + select({
+        "@platforms//os:windows": ["-nostdlibinc"],
+        "//conditions:default": [],
+    }),
+    header = "native_api.h",
+    merge_cc_lib_objects_into_rlib = False,
+    tags = ["manual"],
+    visibility = ["//visibility:public"],
+)
+
+rust_generated_source(
+    name = "ffmpeg_bindings_src",
+    src = ":ffmpeg_bindings.rs",
+)
+
+rust_library(
+    name = "xrack_ffmpeg_sys",
+    srcs = [":ffmpeg_bindings_src"],
+    crate_root = ":ffmpeg_bindings.rs",
+    edition = "2024",
+    rustc_flags = [
+        "--allow=nonstandard_style",
+        "--allow=unsafe_op_in_unsafe_fn",
+        "--allow=unnecessary_transmutes",
+    ],
+    tags = [
+        "manual",
+        "no-clippy",
+        "no-rustfmt",
+    ],
+)
+
+rust_library(
+    name = "xrack_media",
+    srcs = [
+        "src/decoder.rs",
+        "src/lib.rs",
+        "src/native.rs",
+        "src/player.rs",
+        "src/subtitles.rs",
+    ],
+    crate_features = MEDIA_FEATURES,
+    crate_root = "src/lib.rs",
+    data = [":native_payload"],
+    edition = "2024",
+    rustc_env = {"XRACK_MEDIA_RUNFILE": "$(rlocationpath :native_payload)"},
+    tags = ["manual"],
+    visibility = ["//visibility:public"],
+    deps = [
+        ":xrack_ffmpeg_sys",
+        "//crates/xrack-runtime:xrack_runtime",
+        "@crates//:libloading",
+        "@rules_rust//rust/runfiles",
+    ],
+)
+
+rust_test(
+    name = "media_test",
+    size = "small",
+    compile_data = glob([
+        "tests/*.mp4",
+        "tests/hls/**",
+    ]),
+    crate = ":xrack_media",
+    crate_features = MEDIA_FEATURES,
+    data = [":native_payload"],
+    env = {"XRACK_MEDIA_TEST_AUDIO": "1"},
+    rustc_env = {"XRACK_MEDIA_RUNFILE": "$(rlocationpath :native_payload)"},
+    tags = ["manual"],
+)
+
+exports_files(
+    ["tests/sync.mp4"],
+    visibility = ["//examples/video:__pkg__"],
+)
+
+filegroup(
+    name = "hls_test_fixtures",
+    srcs = glob(["tests/hls/**"]),
+    visibility = ["//tests:__pkg__"],
+)

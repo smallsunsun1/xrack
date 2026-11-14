@@ -416,6 +416,18 @@ fn completion_offers_contextual_properties_types_and_events() {
             "@linear-gradient",
         ),
         (
+            "component Demo inherits Window { Button { clicked => { Log.deb|",
+            "debug",
+        ),
+        (
+            "component Demo inherits Window { title: Strings.for|",
+            "format",
+        ),
+        (
+            "component Demo inherits Window { Button { clicked => { Log.write(LogLevel.in|",
+            "info",
+        ),
+        (
             "component Demo inherits Window { for item in 3 : Tex|",
             "Text",
         ),
@@ -492,6 +504,368 @@ fn location_at(uri: &str, marker: &str, name: &str) -> Value {
     let text = format!("{before}{after}");
     let range = analysis::Source::new(&text).range(before.len(), before.len() + name.len());
     json!({ "uri": uri, "range": range })
+}
+
+#[test]
+fn builtin_functions_expose_documentation_and_contextual_completions() {
+    const SOURCE: &str = r#"component Demo inherits Window {
+        callback log();
+        log => {}
+        title: Strings.format("{}", 1);
+        button := Button {
+            clicked => {
+                root.log();
+                Log.debug(Strings.format("{}", 2));
+                Log.write(LogLevel.info, "first");
+                Log.write(LogLevel.warn, "second");
+            }
+        }
+    }"#;
+    assert!(analysis::analyze(URI, SOURCE, None).diagnostics.is_empty());
+    let hover = |from, to| {
+        request_at(
+            "textDocument/hover",
+            URI,
+            &SOURCE.replacen(from, to, 1),
+            None,
+        )["contents"]["value"]
+            .as_str()
+            .unwrap()
+            .to_owned()
+    };
+    assert!(hover("title: Strings.format", "title: Strings.for|mat").contains("sequential"));
+    assert!(hover("Log.debug(", "Log.de|bug(").contains("Log.write(LogLevel.debug, message)"));
+    assert!(hover("LogLevel.info", "LogLevel.in|fo").contains("selects the info level"));
+    assert!(hover("root.log()", "root.lo|g()").contains("callback log"));
+    assert_eq!(
+        request_at(
+            "textDocument/definition",
+            URI,
+            &SOURCE.replace("root.log()", "root.lo|g()"),
+            None
+        ),
+        location_at(URI, &SOURCE.replace("callback log", "callback |log"), "log"),
+    );
+    assert!(
+        request_at(
+            "textDocument/definition",
+            URI,
+            &SOURCE.replace("Log.write(LogLevel.info", "Log.wr|ite(LogLevel.info"),
+            None
+        )
+        .is_null()
+    );
+    let highlights = request_at(
+        "textDocument/documentHighlight",
+        URI,
+        &SOURCE.replace("Log.write(LogLevel.info", "Log.wr|ite(LogLevel.info"),
+        None,
+    );
+    assert_eq!(highlights.as_array().unwrap().len(), 2);
+
+    let binding = complete_at("component Demo inherits Window { title: Strings.| }");
+    assert!(
+        binding.iter().any(|item| item["label"] == "format"
+            && item["detail"].as_str().unwrap().ends_with("-> string"))
+    );
+    assert!(!binding.iter().any(|item| item["label"] == "debug"));
+    let argument =
+        complete_at("component Demo inherits Window { Button { clicked => { Log.debug(Strings.|");
+    assert!(argument.iter().any(|item| item["label"] == "format"));
+    assert!(!argument.iter().any(|item| item["label"] == "write"));
+    let level =
+        complete_at("component Demo inherits Window { Button { clicked => { Log.write(LogLevel.|");
+    assert_eq!(level.len(), 5);
+}
+
+#[test]
+fn global_properties_are_completed_and_resolve_to_their_declarations() {
+    let source = "export global Session { in-out property <int> count: 1; private property <int> hidden: 0; } component App inherits Window { out property <int> seen: Session.|; }";
+    let items = complete_at(source);
+    assert!(items.iter().any(|item| item["label"] == "count"));
+    assert!(!items.iter().any(|item| item["label"] == "hidden"));
+    let source = source.replace("Session.|", "Session.co|unt");
+    let result = request_at("textDocument/definition", URI, &source, None);
+    assert_eq!(result["uri"], URI);
+    let invalid = source.replace("co|unt", "hidden");
+    assert!(
+        analysis::analyze(URI, &invalid, None).diagnostics[URI][0]["message"]
+            .as_str()
+            .unwrap()
+            .contains("private")
+    );
+}
+
+#[test]
+fn content_slot_and_control_parts_offer_contextual_completion() {
+    for (text, expected) in [
+        (
+            "component Panel inherits VerticalLayout { @ch|",
+            "@children",
+        ),
+        (
+            "component Demo inherits Window { Button { ButtonCo|",
+            "ButtonContent",
+        ),
+        (
+            "component Demo inherits Window { Slider { SliderHa|",
+            "SliderHandle",
+        ),
+    ] {
+        assert!(
+            complete_at(text)
+                .iter()
+                .any(|item| item["label"] == expected),
+            "{text}"
+        );
+    }
+    let hover = request_at(
+        "textDocument/hover",
+        URI,
+        "component Panel inherits VerticalLayout { @child|ren }",
+        None,
+    );
+    assert!(
+        hover["contents"]["value"]
+            .as_str()
+            .unwrap()
+            .contains("caller's scope")
+    );
+    let invalid = "component Panel inherits VerticalLayout { @children @children }";
+    assert!(
+        analysis::analyze(URI, invalid, None).diagnostics[URI][0]["message"]
+            .as_str()
+            .unwrap()
+            .contains("only once")
+    );
+}
+
+#[test]
+fn standard_library_completion_and_signature_help_use_the_shared_catalog() {
+    for &namespace in xrack_parser::builtins::NAMESPACES {
+        let items = complete_at(&format!(
+            "component App inherits Window {{ title: {namespace}.|"
+        ));
+        for function in xrack_parser::builtins::FUNCTIONS
+            .iter()
+            .filter(|function| function.namespace == namespace && function.result.is_some())
+        {
+            assert!(
+                items.iter().any(|item| item["label"] == function.member
+                    && item["detail"] == function.signature()),
+                "missing {}.{}",
+                function.namespace,
+                function.member
+            );
+        }
+    }
+
+    let source =
+        "component App inherits Window { title: Strings.format(\"{}\", Math.clamp(2px, 0px, ";
+    let hint = completion::signature_help(source, (0, source.len()), None);
+    assert_eq!(
+        hint["signatures"][0]["label"],
+        "Math.clamp(value: T, min: T, max: T) -> T"
+    );
+    assert_eq!(hint["activeParameter"], 2);
+
+    let source = "component App inherits Window { background: Colors.rgba(255, 0, 32, ";
+    let hint = completion::signature_help(source, (0, source.len()), None);
+    assert_eq!(
+        hint["signatures"][0]["label"],
+        "Colors.rgba(red: int, green: int, blue: int, alpha: float) -> color"
+    );
+    assert_eq!(hint["activeParameter"], 3);
+
+    let source = "component App inherits Window { width: I18n.parse-number(root.input, ";
+    let hint = completion::signature_help(source, (0, source.len()), None);
+    assert_eq!(
+        hint["signatures"][0]["label"],
+        "I18n.parse-number(text: string, fallback: float) -> float"
+    );
+    assert_eq!(hint["activeParameter"], 1);
+
+    let source = "component App inherits Window { out property <Date> result: Dates.add-months(root.input, -1, ";
+    let hint = completion::signature_help(source, (0, source.len()), None);
+    assert_eq!(
+        hint["signatures"][0]["label"],
+        "Dates.add-months(date: Date, months: int, fallback: Date) -> Date"
+    );
+    assert_eq!(hint["activeParameter"], 2);
+
+    let weekday = request_at(
+        "textDocument/hover",
+        URI,
+        "component App inherits Window { out property <int> weekday: Dates.week|day(Date { year: 2024, month: 2, day: 29 }); }",
+        None,
+    );
+    assert!(
+        weekday["contents"]["value"]
+            .as_str()
+            .unwrap()
+            .contains("Monday (1) through Sunday (7)")
+    );
+
+    let invalid = "component App inherits Window { out property <bool> valid: Dates.is-valid(2); }";
+    let diagnostics = analysis::analyze(URI, invalid, None).diagnostics;
+    assert!(
+        diagnostics[URI][0]["message"]
+            .as_str()
+            .unwrap()
+            .contains("expected date, found int")
+    );
+
+    let locale = request_at(
+        "textDocument/hover",
+        URI,
+        "component App inherits Window { title: I18n.lo|cale(); }",
+        None,
+    );
+    assert!(
+        locale["contents"]["value"]
+            .as_str()
+            .unwrap()
+            .contains("negotiated catalog locale")
+    );
+
+    let invalid = "component App inherits Window { title: I18n.locale(1); }";
+    let diagnostic = &analysis::analyze(URI, invalid, None).diagnostics[URI][0];
+    let start = invalid.find("I18n.locale").unwrap();
+    assert_eq!(
+        diagnostic["range"],
+        analysis::Source::new(invalid).range(start, start + "I18n.locale".len())
+    );
+    assert!(
+        diagnostic["message"]
+            .as_str()
+            .unwrap()
+            .contains("expects 0 arguments")
+    );
+
+    let hover = request_at(
+        "textDocument/hover",
+        URI,
+        "component App inherits Window { title: Strings.character-co|unt(\"👩‍💻\"); }",
+        None,
+    );
+    assert!(
+        hover["contents"]["value"]
+            .as_str()
+            .unwrap()
+            .contains("Unicode grapheme")
+    );
+
+    let argument = complete_at(
+        "component App inherits Window { button := Button { clicked => { Log.write((LogLe|",
+    );
+    assert!(argument.iter().any(|item| item["label"] == "LogLevel"));
+    let shadowed =
+        complete_at("component App inherits Window { Model := Rectangle {} title: Model.|");
+    assert!(!shadowed.iter().any(|item| item["label"] == "count"));
+}
+
+#[test]
+fn element_receivers_shadow_builtin_namespaces() {
+    let source = r#"component Operations inherits Rectangle {
+        pure callback round(value: int) -> int;
+        round(value) => { value + 1 }
+    }
+    export component App inherits Window {
+        Math := Operations {}
+        title: Strings.format("{}", Math.round(2));
+    }"#;
+    assert!(analysis::analyze(URI, source, None).diagnostics.is_empty());
+    assert_eq!(
+        request_at(
+            "textDocument/definition",
+            URI,
+            &source.replace("Math.round", "Math.ro|und"),
+            None,
+        ),
+        location_at(
+            URI,
+            &source.replace("callback round", "callback |round"),
+            "round"
+        ),
+    );
+    let items = complete_at(&source.replace("Math.round(2)", "Math.|"));
+    assert!(items.iter().any(|item| item["label"] == "round"));
+    assert!(!items.iter().any(|item| item["label"] == "pi"));
+    let offset = source.find("Math.round(2)").unwrap() + "Math.round(".len();
+    let hint = completion::signature_help(
+        source,
+        analysis::Source::new(source).coordinates(offset),
+        None,
+    );
+    assert_eq!(hint["signatures"][0]["label"], "round(value: int) -> int");
+    let invalid = source.replace("Math.round(2)", "Math.pi");
+    assert!(
+        !analysis::analyze(URI, &invalid, None)
+            .diagnostics
+            .is_empty()
+    );
+}
+
+#[test]
+fn builtin_signatures_work_in_incomplete_buffers_and_diagnostics_cover_function_names() {
+    for (call, parameter, signature) in [
+        (
+            "Log.write(LogLevel.debug, ",
+            1,
+            "Log.write(level: LogLevel, message: string)",
+        ),
+        (
+            "Log.debug(Strings.format(\"{}\", ",
+            1,
+            "Strings.format(template: string literal, values...) -> string",
+        ),
+        ("Log.info(", 0, "Log.info(message: string)"),
+        ("Math.round(", 0, "Math.round(value: int | float) -> int"),
+        (
+            "@tr(\"welcome\", ",
+            1,
+            "@tr(id: string literal, named arguments...) -> string",
+        ),
+        (
+            "@linear-gradient(90deg, ",
+            1,
+            "@linear-gradient(angle: degrees, color stops...) -> brush",
+        ),
+        (
+            "@image-url(",
+            0,
+            "@image-url(path: string literal, nine-slice(...) (optional)) -> image",
+        ),
+    ] {
+        let text =
+            format!("component Demo inherits Window {{ button := Button {{ clicked => {{ {call}");
+        let source = analysis::Source::new(&text);
+        let hint = completion::signature_help(&text, source.coordinates(text.len()), None);
+        assert_eq!(hint["signatures"][0]["label"], signature);
+        assert_eq!(hint["activeParameter"], parameter);
+        assert_eq!(hint["signatures"][0]["documentation"]["kind"], "markdown");
+    }
+
+    for (call, expected) in [
+        (
+            r#"Log.write("missing level");"#,
+            "expects a level and a message",
+        ),
+        (r#"Log.unknown("message");"#, "unknown built-in function"),
+    ] {
+        let text = format!(
+            "component Demo inherits Window {{ button := Button {{ clicked => {{ {call} }} }} }}"
+        );
+        let diagnostic = &analysis::analyze(URI, &text, None).diagnostics[URI][0];
+        let start = text.find("Log.").unwrap();
+        let end = start + call.find('(').unwrap();
+        assert_eq!(diagnostic["code"], "semantic");
+        assert_eq!(
+            diagnostic["range"],
+            analysis::Source::new(&text).range(start, end)
+        );
+        assert!(diagnostic["message"].as_str().unwrap().contains(expected));
+    }
 }
 
 #[test]
@@ -649,6 +1023,7 @@ fn semantic_tokens_report_context_and_utf16_deltas() {
         "  pure callback format(value: address) -> string;\n",
         "  format(value) => { \"🙂\" + value.city }\n",
         "  Text { wrap: TextWrap.word-wrap; text: \"people\"; } // Window\n",
+        "  Button { clicked => { Log.write(LogLevel.info, Strings.format(\"{}\", 1)); } }\n",
     );
     let legend = completion::legend();
     let response = completion::query("textDocument/semanticTokens/full", URI, text, None, None);
@@ -688,6 +1063,10 @@ fn semantic_tokens_report_context_and_utf16_deltas() {
         ("city", "property", 0),
         ("TextWrap", "enum", 4),
         ("word-wrap", "enumMember", 4),
+        ("write", "function", 4),
+        ("format", "function", 4),
+        ("LogLevel", "enum", 4),
+        ("info", "enumMember", 4),
     ] {
         assert!(
             tokens.contains(&expected),
@@ -1566,6 +1945,7 @@ component Demo inherits Window{
 property<[Entry]> rows:[Entry{label:"a",count:1}];
 property<float> ratio:root.count%2+1.5e-2;
 property<brush> ink:@linear-gradient(-90 deg,#111 0%,#fff);
+button:=Button{clicked=>{Log.write(LogLevel.info,Strings.format("{{{}}}",1));}}
 for row[i] in root.rows:Text{text: i>0?row.label:"🙂";}
 states[active when true:{width:20 px;in{animate width{duration:2 ms;}}}]
 }"#;
@@ -1594,6 +1974,10 @@ states[active when true:{width:20 px;in{animate width{duration:2 ms;}}}]
     );
     assert!(
         formatted.contains("\n\tstates [\n\t\tactive when true: {"),
+        "{formatted}"
+    );
+    assert!(
+        formatted.contains(r#"Log.write(LogLevel.info, Strings.format("{{{}}}", 1));"#),
         "{formatted}"
     );
     assert!(!formatted.ends_with('\n'));
@@ -1739,4 +2123,55 @@ fn consecutive_edits_publish_the_latest_version_before_an_index_query() {
             .iter()
             .all(|item| item["range"]["start"]["line"] == 1)
     );
+}
+
+#[test]
+fn virtual_item_delegate_completes_its_action_binding() {
+    let items = complete_at(
+        "component App inherits Window { run := Action {} ListView { for label in [\"A\"]: ItemDelegate { | } } }",
+    );
+    assert!(items.iter().any(|item| item["label"] == "action"));
+}
+
+#[test]
+fn media_player_completion_and_seek_signature() {
+    let receiver = "component App inherits Window { movie := MediaPlayer {} Button { clicked => { movie.| } } }";
+    let items = complete_at(receiver);
+    for expected in [
+        "seek",
+        "pause",
+        "play",
+        "stop",
+        "duration",
+        "position",
+        "ready",
+        "status",
+        "seekable",
+        "live",
+        "seek-start",
+        "seek-end",
+        "at-live-edge",
+        "go-live",
+    ] {
+        assert!(
+            items.iter().any(|item| item["label"] == expected),
+            "{expected}: {items:?}"
+        );
+    }
+    let binding = complete_at("component App inherits Window { MediaPlayer { | } }");
+    assert!(binding.iter().any(|item| item["label"] == "volume"));
+    assert!(
+        binding
+            .iter()
+            .any(|item| item["label"] == "network-bandwidth")
+    );
+    assert!(!binding.iter().any(|item| item["label"] == "duration"));
+    assert!(!binding.iter().any(|item| item["label"] == "seek-start"));
+    let line =
+        "component App inherits Window { movie := MediaPlayer {} Button { clicked => { movie.seek(";
+    let signature = completion::signature_help(line, (0, line.len()), None);
+    assert_eq!(signature["signatures"][0]["label"], "seek(position: float)");
+    let line = line.replace("movie.seek(", "movie.go-live(");
+    let signature = completion::signature_help(&line, (0, line.len()), None);
+    assert_eq!(signature["signatures"][0]["label"], "go-live()");
 }

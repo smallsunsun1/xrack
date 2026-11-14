@@ -115,7 +115,7 @@ impl Element {
                 handle.bind_offset(
                     *axis,
                     move || {
-                        let Some(instance) = reader.upgrade().map(Instance) else {
+                        let Some(instance) = reader.upgrade().map(Instance::from_state) else {
                             return Length::default();
                         };
                         let read_length = |value| match value {
@@ -131,11 +131,13 @@ impl Element {
                     },
                     move |length| match &target {
                         Offset::Linked(target) => {
-                            if let Some(instance) = writer.upgrade().map(Instance) {
+                            if let Some(instance) = writer.upgrade().map(Instance::from_state) {
                                 instance.capture_result(instance.write(target, length.into()));
                             }
                         }
-                        Offset::Binding(_) => written.set_if_changed(length),
+                        Offset::Binding(_) => written.set_if_changed_by(length, |left, right| {
+                            xrack_runtime::same_float_bits(&left.0, &right.0)
+                        }),
                     },
                 );
             }

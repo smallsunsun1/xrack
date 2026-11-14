@@ -1,0 +1,171 @@
+diff --git a/LSPServer.cpp b/LSPServer.cpp
+--- a/LSPServer.cpp
++++ b/LSPServer.cpp
+@@ -250,7 +250,8 @@
+ void LSPServer::onReference(const ReferenceParams &params,
+                             Callback<std::vector<Location>> reply) {
+   std::vector<Location> locations;
+-  server.findReferencesOf(params.textDocument.uri, params.position, locations);
++  server.findReferencesOf(params.textDocument.uri, params.position,
++                          params.context.includeDeclaration, locations);
+   reply(std::move(locations));
+ }
+ 
+diff --git a/MLIRServer.cpp b/MLIRServer.cpp
+--- a/MLIRServer.cpp
++++ b/MLIRServer.cpp
+@@ -7,7 +7,9 @@
+ //===----------------------------------------------------------------------===//
+ 
+ #include "MLIRServer.h"
++#include "Lexer.h"
+ #include "Protocol.h"
++#include "mlir/xrack_lsp_document.h"
+ #include "mlir/AsmParser/AsmParser.h"
+ #include "mlir/AsmParser/AsmParserState.h"
+ #include "mlir/AsmParser/CodeComplete.h"
+@@ -283,7 +285,7 @@
+   void getLocationsOf(const lsp::URIForFile &uri, const lsp::Position &defPos,
+                       std::vector<lsp::Location> &locations);
+   void findReferencesOf(const lsp::URIForFile &uri, const lsp::Position &pos,
+-                        std::vector<lsp::Location> &references);
++                        bool includeDeclaration, std::vector<lsp::Location> &references);
+ 
+   //===--------------------------------------------------------------------===//
+   // Hover
+@@ -360,6 +362,8 @@
+ 
+   /// The workspace root of the server.
+   std::string workspaceRoot;
++
++  xrack::lsp::Document xrackDocument;
+ };
+ } // namespace
+ 
+@@ -390,6 +394,7 @@
+     fallbackResourceMap = FallbackAsmResourceMap();
+     return;
+   }
++  xrackDocument.index(parsedIR, asmState, sourceMgr);
+ }
+ 
+ //===----------------------------------------------------------------------===//
+@@ -400,6 +405,11 @@
+                                   const lsp::Position &defPos,
+                                   std::vector<lsp::Location> &locations) {
+   SMLoc posLoc = defPos.getAsSMLoc(sourceMgr);
++  if (auto *symbol = xrackDocument.lookup(posLoc)) {
++    locations.emplace_back(uri, sourceMgr, symbol->definition);
++    return collectLocationsFromLoc(symbol->op->getLoc(), locations, uri,
++                                   workspaceRoot);
++  }
+ 
+   // Functor used to check if an SM definition contains the position.
+   auto containsPosition = [&](const AsmParserState::SMDefinition &def) {
+@@ -451,6 +461,7 @@
+ 
+ void MLIRDocument::findReferencesOf(const lsp::URIForFile &uri,
+                                     const lsp::Position &pos,
++                                    bool includeDeclaration,
+                                     std::vector<lsp::Location> &references) {
+   // Functor used to append all of the definitions/uses of the given SM
+   // definition to the reference list.
+@@ -461,6 +472,13 @@
+   };
+ 
+   SMLoc posLoc = pos.getAsSMLoc(sourceMgr);
++  if (auto *symbol = xrackDocument.lookup(posLoc)) {
++    if (includeDeclaration)
++      references.emplace_back(uri, sourceMgr, symbol->definition);
++    for (SMRange use : symbol->uses)
++      references.emplace_back(uri, sourceMgr, use);
++    return;
++  }
+ 
+   // Check all definitions related to operations.
+   for (const AsmParserState::OperationDefinition &op : asmState.getOpDefs()) {
+@@ -715,6 +733,8 @@
+ 
+   // Check for the source information of this operation.
+   if (const AsmParserState::OperationDefinition *def = asmState.getOpDef(op)) {
++    auto *xrSymbol = xrackDocument.declaration(op);
++    SMRange selection = xrSymbol ? xrSymbol->definition : def->loc;
+     // If this operation defines a symbol, record it.
+     if (SymbolOpInterface symbol = dyn_cast<SymbolOpInterface>(op)) {
+       symbols.emplace_back(symbol.getName(),
+@@ -722,9 +742,21 @@
+                                ? llvm::lsp::SymbolKind::Function
+                                : llvm::lsp::SymbolKind::Class,
+                            lsp::Range(sourceMgr, def->scopeLoc),
+-                           lsp::Range(sourceMgr, def->loc));
++                           lsp::Range(sourceMgr, selection));
+       childSymbols = &symbols.back().children;
+ 
++    } else if (xrSymbol) {
++      auto name = op->getAttrOfType<StringAttr>("name");
++      if (!name)
++        name = op->getAttrOfType<StringAttr>("id");
++      auto kind = op->getName().getStringRef();
++      symbols.emplace_back(name.getValue(),
++                           kind == "xr.callback" ? llvm::lsp::SymbolKind::Method
++                           : kind == "xr.property" ? llvm::lsp::SymbolKind::Property
++                                                   : llvm::lsp::SymbolKind::Object,
++                           lsp::Range(sourceMgr, def->scopeLoc),
++                           lsp::Range(sourceMgr, selection));
++      childSymbols = &symbols.back().children;
+     } else if (op->hasTrait<OpTrait::SymbolTable>()) {
+       // Otherwise, if this is a symbol table push an anonymous document symbol.
+       symbols.emplace_back("<" + op->getName().getStringRef() + ">",
+@@ -1041,7 +1073,7 @@
+   void getLocationsOf(const lsp::URIForFile &uri, lsp::Position defPos,
+                       std::vector<lsp::Location> &locations);
+   void findReferencesOf(const lsp::URIForFile &uri, lsp::Position pos,
+-                        std::vector<lsp::Location> &references);
++                        bool includeDeclaration, std::vector<lsp::Location> &references);
+   std::optional<lsp::Hover> findHover(const lsp::URIForFile &uri,
+                                       lsp::Position hoverPos);
+   void findDocumentSymbols(std::vector<lsp::DocumentSymbol> &symbols);
+@@ -1131,9 +1163,10 @@
+ 
+ void MLIRTextFile::findReferencesOf(const lsp::URIForFile &uri,
+                                     lsp::Position pos,
++                                    bool includeDeclaration,
+                                     std::vector<lsp::Location> &references) {
+   MLIRTextFileChunk &chunk = getChunkFor(pos);
+-  chunk.document.findReferencesOf(uri, pos, references);
++  chunk.document.findReferencesOf(uri, pos, includeDeclaration, references);
+ 
+   // Adjust any locations within this file for the offset of this chunk.
+   if (chunk.lineOffset == 0)
+@@ -1344,11 +1377,11 @@
+ }
+ 
+ void lsp::MLIRServer::findReferencesOf(
+-    const URIForFile &uri, const Position &pos,
++    const URIForFile &uri, const Position &pos, bool includeDeclaration,
+     std::vector<llvm::lsp::Location> &references) {
+   auto fileIt = impl->files.find(uri.file());
+   if (fileIt != impl->files.end())
+-    fileIt->second->findReferencesOf(uri, pos, references);
++    fileIt->second->findReferencesOf(uri, pos, includeDeclaration, references);
+ }
+ 
+ std::optional<lsp::Hover> lsp::MLIRServer::findHover(const URIForFile &uri,
+@@ -1448,3 +1481,5 @@
+ void lsp::MLIRServer::setWorkspaceRoot(StringRef root) {
+   impl->workspaceRoot = root.str();
+ }
++
++#include "mlir/xrack_lsp_lexer.inc"
+diff --git a/MLIRServer.h b/MLIRServer.h
+--- a/MLIRServer.h
++++ b/MLIRServer.h
+@@ -58,7 +58,7 @@
+                       std::vector<Location> &locations);
+ 
+   /// Find all references of the object pointed at by the given position.
+-  void findReferencesOf(const URIForFile &uri, const Position &pos,
++  void findReferencesOf(const URIForFile &uri, const Position &pos, bool includeDeclaration,
+                         std::vector<Location> &references);
+ 
+   /// Find a hover description for the given hover position, or std::nullopt if

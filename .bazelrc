@@ -38,3 +38,35 @@ build:lint --output_groups=clippy_checks
 build:lint --@rules_rust//rust/settings:clippy_flag=-Dclippy::correctness
 
 test --test_output=errors
+
+# Native playback profile. Media targets are opt-in.
+build:media --@ffmpeg//:enable_openssl=true
+build:media --@ffmpeg//:enable_http_protocol=true
+build:media --@ffmpeg//:enable_https_protocol=true
+build:media --@ffmpeg//:enable_hls_demuxer=true
+build:media --@ffmpeg//:enable_mpegts_demuxer=true
+build:media --@ffmpeg//:enable_matroska_demuxer=true
+build:media --@ffmpeg//:enable_vp8_decoder=true
+build:media --@ffmpeg//:enable_vp9_decoder=true
+build:media --@ffmpeg//:enable_wav_demuxer=true
+build:media --@ffmpeg//:enable_pcm_s16le_decoder=true
+build:media --@ffmpeg//:enable_mp3_demuxer=true
+build:media --@ffmpeg//:enable_mp3_decoder=true
+build:media --@ffmpeg//:enable_ogg_demuxer=true
+build:media --@ffmpeg//:enable_opus_decoder=true
+build:media --@ffmpeg//:enable_vorbis_decoder=true
+build:media --@ffmpeg//:enable_flac_demuxer=true
+build:media --@ffmpeg//:enable_flac_decoder=true
+build:media --@ffmpeg//:enable_subrip_decoder=true
+build:media --@ffmpeg//:enable_movtext_decoder=true
+build:media --@ffmpeg//:enable_webvtt_decoder=true
+build:media --@ffmpeg//:enable_ass_decoder=true
+build:media --@ffmpeg//:enable_file_protocol=true
+build:media --@ffmpeg//:enable_yuv4mpegpipe_demuxer=true
+build:media --@ffmpeg//:enable_rawvideo_decoder=true
+build:media --@ffmpeg//:enable_mov_demuxer=true
+build:media --@ffmpeg//:enable_h264_decoder=true
+build:media --@ffmpeg//:enable_h264_parser=true
+build:media --@ffmpeg//:enable_aac_decoder=true
+build:media --@ffmpeg//:enable_mpeg4_decoder=true
+build:media --//crates/xrack-media:enabled

@@ -37,6 +37,7 @@ impl<'a> AliasGraphs<'a> {
 pub struct AliasGraph<'a> {
     edges: BTreeMap<PropertyEndpoint<'a>, PropertyEndpoint<'a>>,
     instances: BTreeMap<&'a str, &'a str>,
+    controls: BTreeSet<PropertyEndpoint<'a>>,
 }
 
 fn property_reference(op: OperationRef<'_>) -> Result<PropertyEndpoint<'_>, String> {
@@ -50,6 +51,10 @@ fn element_key(op: OperationRef<'_>) -> Result<&str, String> {
 impl<'a> AliasGraph<'a> {
     pub fn instance(&self, owner: &str) -> Option<&'a str> {
         self.instances.get(owner).copied()
+    }
+
+    pub(crate) fn is_control(&self, endpoint: PropertyEndpoint<'_>) -> bool {
+        self.controls.contains(&endpoint)
     }
 
     /// Expand a resolved endpoint through its child components to its storage slot.
@@ -94,8 +99,11 @@ impl<'a> AliasGraph<'a> {
                     .and_then(|operand| operand.defining_operation())
                     .ok_or("property link without a reference")?;
                 if matches!(target.name(), "xr.read" | "xr.control_read") {
-                    self.edges
-                        .insert((key, member.attr("name")?), property_reference(target)?);
+                    let reference = property_reference(target)?;
+                    if target.name() == "xr.control_read" {
+                        self.controls.insert(reference);
+                    }
+                    self.edges.insert((key, member.attr("name")?), reference);
                 }
             } else {
                 self.index(member, callbacks)?;
@@ -152,9 +160,21 @@ impl<'a> AliasGraph<'a> {
 
 pub fn canonical_input<'a, 'q>(
     graphs: &BTreeMap<&'a str, AliasGraph<'a>>,
+    component: &'q str,
+    property: &'q str,
+) -> Result<Vec<PropertyEndpoint<'q>>, String>
+where
+    'a: 'q,
+{
+    canonical_input_with_storage(graphs, component, property).map(|(path, _)| path)
+}
+
+/// Resolve a public input to its storage, retaining whether it ends at a control.
+pub(crate) fn canonical_input_with_storage<'a, 'q>(
+    graphs: &BTreeMap<&'a str, AliasGraph<'a>>,
     mut component: &'q str,
     mut property: &'q str,
-) -> Result<Vec<PropertyEndpoint<'q>>, String>
+) -> Result<(Vec<PropertyEndpoint<'q>>, bool), String>
 where
     'a: 'q,
 {
@@ -170,7 +190,7 @@ where
             property = name;
         } else {
             path.push((owner, name));
-            return Ok(path);
+            return Ok((path, graph.is_control((owner, name))));
         }
     }
 }

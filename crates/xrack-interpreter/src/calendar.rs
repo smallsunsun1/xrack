@@ -144,7 +144,7 @@ impl Instance {
         let Some(index) = Tumbler::try_prepare_selection(
             node,
             action,
-            || self.element_allows_editing(element),
+            || self.element_allows_routed_input(element, input),
             || self.tumbler_items(element),
             || match self.binding_value(element, "count")? {
                 Some(Value::Int(count)) => Ok(count),

@@ -101,6 +101,7 @@ enum Request {
     },
     Activate,
     Frame,
+    Inspect,
     RestoreWindow,
     Scale {
         scale: f32,
@@ -249,6 +250,90 @@ struct Reply {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     windows: Vec<windows::Description>,
     window: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    inspection: Option<Inspection>,
+}
+
+#[derive(Debug, Serialize)]
+struct Inspection {
+    elements: Vec<InspectedElement>,
+    truncated: bool,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    properties: Vec<InspectedProperty>,
+}
+
+#[derive(Debug, Serialize)]
+struct InspectedProperty {
+    name: String,
+    kind: String,
+    writable: bool,
+}
+
+#[derive(Debug, Serialize)]
+struct InspectedElement {
+    path: Vec<usize>,
+    kind: &'static str,
+    id: Option<String>,
+    bounds: [f32; 4],
+    enabled: bool,
+    focused: bool,
+    label: Option<String>,
+}
+
+fn inspect(scene: &PreviewScene) -> Result<Inspection, PreviewError> {
+    let (scene, layout, focus) = scene
+        .inspect_frame()
+        .ok_or_else(|| failure("no preview frame"))?;
+    Ok(inspect_nodes(scene, layout, focus))
+}
+
+fn inspect_nodes(
+    scene: &xrack_runtime::Node,
+    layout: &xrack_layout::LayoutNode,
+    focus: Option<&[usize]>,
+) -> Inspection {
+    let mut elements = Vec::new();
+    let mut remaining = vec![(scene, layout, Vec::new())];
+    while let Some((node, layout, path)) = remaining.pop() {
+        if !layout.visible {
+            continue;
+        }
+        if elements.len() == 512 {
+            return Inspection {
+                elements,
+                truncated: true,
+                properties: Vec::new(),
+            };
+        }
+        let rect = layout.visible_window_bounds(layout.bounds);
+        elements.push(InspectedElement {
+            kind: node.kind,
+            id: node.element_id().map(str::to_owned),
+            bounds: [rect.x, rect.y, rect.width, rect.height],
+            enabled: layout.enabled,
+            focused: focus == Some(path.as_slice()),
+            label: (!node.is_password())
+                .then(|| {
+                    node.text("accessible-name")
+                        .or_else(|| node.text("text"))
+                        .map(|text| text.chars().take(160).collect())
+                })
+                .flatten(),
+            path: path.clone(),
+        });
+        for (index, child) in node.materialized_children().rev() {
+            if let Some(item) = layout.child_at(index) {
+                let mut path = path.clone();
+                path.push(index);
+                remaining.push((child, item, path));
+            }
+        }
+    }
+    Inspection {
+        elements,
+        truncated: false,
+        properties: Vec::new(),
+    }
 }
 
 fn is_false(value: &bool) -> bool {
@@ -506,6 +591,31 @@ impl Host {
                 Ok((reply, Vec::new()))
             }
             Request::Frame => self.render_active(true),
+            Request::Inspect => {
+                let (instance, windows) = self
+                    .active
+                    .as_ref()
+                    .ok_or_else(|| failure("no preview component is loaded"))?;
+                let mut inspection = inspect(windows.selected())?;
+                if windows.selection().is_none() {
+                    inspection.properties = instance
+                        .properties()
+                        .take(128)
+                        .map(|(name, ty, writable)| InspectedProperty {
+                            name: name.into(),
+                            kind: format!("{ty:?}"),
+                            writable,
+                        })
+                        .collect();
+                }
+                Ok((
+                    Reply {
+                        inspection: Some(inspection),
+                        ..Reply::default()
+                    },
+                    Vec::new(),
+                ))
+            }
             Request::RestoreWindow => self.interact(PreviewScene::request_window_restore),
             Request::Scale { scale } => {
                 self.scale = Some(scale);
@@ -788,6 +898,24 @@ fn failure(error: impl Into<String>) -> PreviewError {
 }
 
 fn run() -> io::Result<()> {
+    #[allow(unexpected_cfgs)] // This feature is supplied by the Bazel media profile.
+    #[cfg(feature = "media_backend")]
+    xrack_media::install();
+    #[allow(unexpected_cfgs)]
+    #[cfg(feature = "media_backend")]
+    if let Some(path) = std::env::args_os().nth(2).filter(|_| {
+        std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("--check-media"))
+    }) {
+        xrack_media::check_native_backend().map_err(io::Error::other)?;
+        let mut decoder = xrack_media::VideoDecoder::open(std::path::Path::new(&path))
+            .map_err(io::Error::other)?;
+        let frame = decoder
+            .next_frame()
+            .map_err(io::Error::other)?
+            .ok_or_else(|| io::Error::other("no media frame"))?;
+        println!("media={}x{}", frame.size[0], frame.size[1]);
+        return Ok(());
+    }
     let mut host = Host {
         check: std::env::args().any(|arg| arg == "--check"),
         ..Host::default()
@@ -819,12 +947,49 @@ fn run() -> io::Result<()> {
 }
 
 fn main() -> io::Result<()> {
-    run()
+    let subscriber = tracing_subscriber::fmt()
+        .without_time()
+        .with_ansi(false)
+        .with_max_level(tracing::Level::TRACE)
+        .with_writer(io::stderr)
+        .finish();
+    tracing::subscriber::with_default(subscriber, run)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn inspection_reports_frame_geometry_and_omits_password_text() {
+        struct Text;
+        impl xrack_layout::TextMeasurer for Text {
+            fn measure(&mut self, _: &str, _: f32, _: f32) -> xrack_layout::Size {
+                xrack_layout::Size::new(40.0, 16.0)
+            }
+        }
+        let mut scene = xrack_runtime::Node::new("Window", None);
+        let mut field = xrack_runtime::Node::new("LineEdit", Some("secret"));
+        field
+            .properties
+            .insert("input-type", xrack_runtime::InputType::Password.into());
+        field
+            .properties
+            .insert("text", "sensitive".to_owned().into());
+        scene.children.push(field);
+        let size = xrack_layout::Size::new(200.0, 120.0);
+        let layout = xrack_layout::layout(&scene, size, &mut Text);
+        let inspection = inspect_nodes(&scene, &layout, Some(&[0]));
+        assert!(!inspection.truncated);
+        let field = inspection
+            .elements
+            .iter()
+            .find(|item| item.id.as_deref() == Some("secret"))
+            .unwrap();
+        assert!(field.focused);
+        assert!(field.bounds[2] > 0.0);
+        assert!(field.label.is_none());
+    }
 
     #[test]
     fn preview_uses_compiler_catalog_for_reactive_locale_and_fallback() {

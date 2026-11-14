@@ -1,6 +1,7 @@
 use crate::{Date, Node, Orientation, Property, TableRows, Time, Value, VecModel};
 use std::{
     cell::Cell,
+    cmp::Ordering as Comparison,
     collections::HashMap,
     fmt,
     ops::Range,
@@ -537,29 +538,93 @@ pub enum TableCellEditor {
 
 impl TableCellEditor {
     pub fn parse(self, text: &str) -> Option<Value> {
-        let trimmed = text.trim();
         match self {
-            Self::String => Some(Value::String(text.into())),
-            Self::Int => trimmed.parse().ok().map(Value::Int),
-            Self::Float => trimmed
-                .parse::<f64>()
-                .ok()
-                .filter(|number| number.is_finite())
-                .map(Value::Float),
-            Self::Bool => crate::table_paste_bool(text).map(Value::Bool),
-            Self::Date => {
-                let [year, month, day] = parse_cell_parts(trimmed, '-')?;
-                Date::new(year, month, day).map(Value::Date)
-            }
-            Self::Time => {
-                let [hour, minute, second] = parse_cell_parts(trimmed, ':')?;
-                Time::new(hour, minute, second).map(Value::Time)
-            }
+            Self::String => String::parse_cell(text).map(Value::String),
+            Self::Int => i64::parse_cell(text).map(Value::Int),
+            Self::Float => f64::parse_cell(text).map(Value::Float),
+            Self::Bool => bool::parse_cell(text).map(Value::Bool),
+            Self::Date => Date::parse_cell(text).map(Value::Date),
+            Self::Time => Time::parse_cell(text).map(Value::Time),
         }
     }
 
     pub fn accepts(self, text: &str) -> bool {
         self == Self::String || self.parse(text).is_some()
+    }
+}
+
+/// The field operations used by standard tables.
+#[doc(hidden)]
+pub trait TableField: fmt::Display + Sized {
+    const EDITOR: TableCellEditor;
+
+    fn parse_cell(text: &str) -> Option<Self>;
+    fn compare_cells(&self, other: &Self) -> Comparison;
+
+    fn cell_text(&self) -> String {
+        self.to_string()
+    }
+
+    fn matches_cell_text(&self, text: &str) -> bool {
+        self.cell_text() == text
+    }
+}
+
+macro_rules! ordered_table_field {
+    ($ty:ty, $editor:ident, $parse:expr) => {
+        impl TableField for $ty {
+            const EDITOR: TableCellEditor = TableCellEditor::$editor;
+
+            fn parse_cell(text: &str) -> Option<Self> {
+                $parse(text)
+            }
+
+            fn compare_cells(&self, other: &Self) -> Comparison {
+                self.cmp(other)
+            }
+        }
+    };
+}
+
+ordered_table_field!(i64, Int, |text: &str| text.trim().parse().ok());
+ordered_table_field!(bool, Bool, crate::table_paste_bool);
+ordered_table_field!(Date, Date, |text: &str| {
+    let [year, month, day] = parse_cell_parts(text.trim(), '-')?;
+    Date::new(year, month, day)
+});
+ordered_table_field!(Time, Time, |text: &str| {
+    let [hour, minute, second] = parse_cell_parts(text.trim(), ':')?;
+    Time::new(hour, minute, second)
+});
+
+impl TableField for String {
+    const EDITOR: TableCellEditor = TableCellEditor::String;
+
+    fn parse_cell(text: &str) -> Option<Self> {
+        Some(text.to_owned())
+    }
+
+    fn compare_cells(&self, other: &Self) -> Comparison {
+        self.cmp(other)
+    }
+
+    fn matches_cell_text(&self, text: &str) -> bool {
+        self == text
+    }
+}
+
+impl TableField for f64 {
+    const EDITOR: TableCellEditor = TableCellEditor::Float;
+
+    fn parse_cell(text: &str) -> Option<Self> {
+        text.trim()
+            .parse::<Self>()
+            .ok()
+            .filter(|value| value.is_finite())
+    }
+
+    fn compare_cells(&self, other: &Self) -> Comparison {
+        self.total_cmp(other)
     }
 }
 
@@ -619,6 +684,21 @@ pub trait ListModel {
 
     fn row_count(&self) -> usize;
     fn item(&self, row: usize) -> Self::Item;
+    /// Track changes to this item when preparing an operation for a live row.
+    #[doc(hidden)]
+    fn track_item(&self, row: usize) {
+        let _ = self.item(row);
+    }
+    /// Validate the source slot before watching the item. Cleanup events can
+    /// follow the identity, while ordinary events require the original slot.
+    #[doc(hidden)]
+    fn event_row_index(&self, index: usize, key: RowKey, follow_row: bool) -> Option<usize> {
+        if follow_row {
+            self.index_of_source_key(key, index)
+        } else {
+            (self.key_at(index) == Some(key)).then_some(index)
+        }
+    }
     fn row_key(&self, row: usize) -> RowKey;
     #[doc(hidden)]
     fn key_at(&self, index: usize) -> Option<RowKey> {
@@ -673,6 +753,8 @@ impl ListModel for i64 {
         row as i64
     }
 
+    fn track_item(&self, _: usize) {}
+
     fn row_key(&self, row: usize) -> RowKey {
         RowKey {
             model: 0,
@@ -704,6 +786,10 @@ impl<T: Clone + PartialEq> ListModel for VecModel<T> {
 
     fn item(&self, row: usize) -> Self::Item {
         self.row(row).expect("row is inside the model range")
+    }
+
+    fn track_item(&self, row: usize) {
+        self.project_row(row, |_| ());
     }
 
     fn row_key(&self, row: usize) -> RowKey {

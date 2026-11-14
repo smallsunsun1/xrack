@@ -106,10 +106,9 @@ impl FocusCommandMethod {
 
 #[doc(hidden)]
 pub fn is_focus_handler(name: &str) -> bool {
-    matches!(
-        name,
-        "focus-gained" | "focus-lost" | "focus-changed-event" | "focus-within-changed"
-    )
+    FocusHandler::ALL
+        .iter()
+        .any(|handler| handler.name() == name)
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -132,10 +131,56 @@ pub enum FocusEvent {
     Within { focused: bool, reason: FocusReason },
 }
 
+#[derive(Clone, Copy, Debug)]
+#[doc(hidden)]
+pub enum FocusHandler {
+    Gained,
+    Lost,
+    Changed,
+    Within,
+}
+
+impl FocusHandler {
+    pub const ALL: [Self; 4] = [Self::Gained, Self::Lost, Self::Changed, Self::Within];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Gained => "focus-gained",
+            Self::Lost => "focus-lost",
+            Self::Changed => "focus-changed-event",
+            Self::Within => "focus-within-changed",
+        }
+    }
+}
+
 impl FocusEvent {
     #[doc(hidden)]
     pub fn is_loss(self) -> bool {
         matches!(self, Self::Lost(_) | Self::Within { focused: false, .. })
+    }
+
+    #[doc(hidden)]
+    pub fn try_deliver<E>(
+        self,
+        mut notify: impl FnMut(FocusHandler, bool, FocusReason) -> Result<bool, E>,
+    ) -> Result<bool, E> {
+        let (handler, focused, reason) = match self {
+            Self::Gained(reason) => (FocusHandler::Gained, true, reason),
+            Self::Lost(reason) => (FocusHandler::Lost, false, reason),
+            Self::Within { focused, reason } => {
+                return notify(FocusHandler::Within, focused, reason);
+            }
+        };
+        let handled = notify(handler, focused, reason)?;
+        Ok(notify(FocusHandler::Changed, focused, reason)? || handled)
+    }
+
+    #[doc(hidden)]
+    pub fn deliver(self, mut notify: impl FnMut(FocusHandler, bool, FocusReason) -> bool) -> bool {
+        self.try_deliver(|handler, focused, reason| {
+            Ok::<_, std::convert::Infallible>(notify(handler, focused, reason))
+        })
+        .unwrap_or_else(|error| match error {})
     }
 }
 

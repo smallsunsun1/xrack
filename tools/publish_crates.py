@@ -15,6 +15,7 @@ from urllib.request import urlopen
 
 import compiler_bundles as bundles
 import mlir_bundles
+import media_bundles
 
 ROOT = bundles.ROOT
 CRATES = (
@@ -22,6 +23,7 @@ CRATES = (
     "xrack-assets",
     "xrack-layout",
     "xrack-renderer-femtovg",
+    "xrack-media",
     "xrack-platform-winit",
     "xrack-syntax",
     "xrack-ir",
@@ -31,7 +33,7 @@ CRATES = (
     "xrack",
     "xrack-build",
 )
-BOOTSTRAP_CRATES = CRATES[:6]
+BOOTSTRAP_CRATES = CRATES[:4] + ("xrack-syntax",)
 
 
 def output(*args):
@@ -130,6 +132,16 @@ def pending_bundles(workspace, archives, version, commit):
     }
     (parser / "release.json").write_text(json.dumps(identity, sort_keys=True) + "\n")
     add("xrack-parser", identity)
+    for host in bundles.hosts():
+        archive = bundles.verified_archive(archives, version, host)[0]
+        media = {
+            "version": version, "host": host, "source_commit": commit,
+            "artifacts": media_bundles.stage_bundle(workspace, archive, host),
+        }
+        (workspace / "bundles/media" / host / "release.json").write_text(
+            json.dumps(media, sort_keys=True) + "\n"
+        )
+        add(f"xrack-media-bin-{host}", media)
     return pending
 
 
@@ -139,6 +151,16 @@ def cargo(workspace, target_dir, mode, packages):
         for name in packages:
             command.extend(("-p", name))
         subprocess.run(command, cwd=workspace, check=True)
+
+
+def verify_media_sources(archives, version):
+    for host in bundles.hosts():
+        name = media_bundles.source_asset(version, host)
+        with tarfile.open(archives / name, "r:gz") as source:
+            for required in ("ffmpeg/COPYING.LGPLv2.1", "miniaudio/miniaudio.h",
+                             "xrack-media/native_api.h", "xrack-build/.bazelrc"):
+                if not source.getmember(required).isfile():
+                    raise RuntimeError(f"{name}: missing {required}")
 
 
 def main():
@@ -165,7 +187,9 @@ def main():
             return
         workspace = stage / "workspace"
         bundles.stage_workspace(workspace)
-        payloads = pending_bundles(workspace, args.archives.resolve(), args.version, commit)
+        archives = args.archives.resolve()
+        verify_media_sources(archives, args.version)
+        payloads = pending_bundles(workspace, archives, args.version, commit)
         if not args.publish:
             # The platform matrix has already built and run the Cargo consumer.
             # Verify the normalized package graph before providing the registry token.

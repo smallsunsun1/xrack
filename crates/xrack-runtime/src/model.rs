@@ -210,6 +210,18 @@ impl<T> VecModel<T> {
             .map(|offset| start + offset)
     }
 
+    /// Check an editor's field against the identified row without watching other fields.
+    #[doc(hidden)]
+    pub fn row_matches(&self, index: usize, key: RowKey, matches: impl FnOnce(&T) -> bool) -> bool {
+        key.model == self.0.id
+            && self
+                .0
+                .rows
+                .borrow()
+                .get(index)
+                .is_some_and(|entry| entry.id == key.row && matches(&entry.value))
+    }
+
     pub(crate) fn project_row_untracked<R>(
         &self,
         index: usize,
@@ -430,6 +442,12 @@ impl<T> VecModel<T> {
 impl<T: Clone> VecModel<T> {
     pub fn row(&self, index: usize) -> Option<T> {
         self.project_row(index, T::clone)
+    }
+
+    /// Resolve a DSL model index with the same dependency tracking as a row read.
+    #[doc(hidden)]
+    pub fn row_at(&self, index: i64) -> Option<T> {
+        self.row(usize::try_from(index).ok()?)
     }
 
     pub fn snapshot(&self) -> Vec<T> {

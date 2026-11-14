@@ -86,6 +86,7 @@ pub struct PreviewScene {
     transition: SceneTransition,
     stack_transitions: StackTransitions,
     image_playback: ImagePlaybackQueue,
+    media: xrack_runtime::MediaQueue,
     timers: TimerQueue,
     dialogs: NativeDialogQueue,
     window_closed: bool,
@@ -133,6 +134,7 @@ impl PreviewScene {
             transition: SceneTransition::default(),
             stack_transitions: StackTransitions::default(),
             image_playback: ImagePlaybackQueue::default(),
+            media: xrack_runtime::MediaQueue::default(),
             timers: TimerQueue::default(),
             dialogs: NativeDialogQueue::default(),
             window_closed: false,
@@ -2328,6 +2330,7 @@ impl PreviewScene {
         let now = Instant::now();
         self.sampled_at = now.duration_since(self.clock);
         self.image_playback.advance(now);
+        self.media.advance(now);
         {
             let _scroll = self.scroll.enter();
             let _focus = self.focus.enter();
@@ -2344,6 +2347,20 @@ impl PreviewScene {
     #[doc(hidden)]
     pub fn draw_prepared(&mut self, renderer: &mut Renderer) -> Result<&[u8], String> {
         self.draw_prepared_scaled(renderer, 1.0)
+    }
+
+    /// The scene and layout used for the current preview frame.
+    #[doc(hidden)]
+    pub fn inspect_frame(&self) -> Option<(&Node, &LayoutNode, Option<&[usize]>)> {
+        let (scene, layout) = self.frame.as_ref()?;
+        Some((
+            scene,
+            layout,
+            self.input
+                .focused
+                .as_ref()
+                .map(|target| target.path.as_slice()),
+        ))
     }
 
     pub fn logical_size(&self) -> [u32; 2] {
@@ -2416,6 +2433,7 @@ impl PreviewScene {
         deadline
             .into_iter()
             .chain(self.image_playback.deadline())
+            .chain(self.media.deadline(now))
             .chain(self.timers.deadline())
             .chain(self.input.tooltip_deadline())
             .chain(self.direct_pointers.deadline())
@@ -2912,8 +2930,10 @@ impl PreviewScene {
         let effects = WindowEffects::collect(scene, layout);
         self.timers.sync(Instant::now(), effects.timers);
         self.dialogs.sync(&effects.dialogs);
+        let media_changed = self.media.sync(effects.media);
         self.image_playback
             .sync(self.clock + self.sampled_at, effects.playback)
+            || media_changed
     }
 }
 

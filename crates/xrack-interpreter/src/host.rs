@@ -11,6 +11,23 @@ pub(super) fn record_validator(records: Rc<RecordSchemas>) -> Rc<RecordRowValida
 }
 
 impl Program {
+    /// Observe the validity of a model returned to a reactive host reader.
+    pub(super) fn observe_host_value(
+        &self,
+        ty: &ValueType,
+        value: &Value,
+        context: impl Display,
+    ) -> Result<()> {
+        if let (ValueType::RecordList(name), Value::RecordList(list)) = (ty, value)
+            && name.as_ref() == list.name()
+        {
+            return list
+                .validate_rows(&self.record_validator)
+                .map_err(|error| Error::Evaluation(format!("{context}{error}")));
+        }
+        self.validate_host_value(ty, value, context)
+    }
+
     pub(super) fn validate_host_value(
         &self,
         ty: &ValueType,
@@ -37,7 +54,22 @@ impl Program {
             .map_err(|error| Error::Evaluation(format!("model {}{error}", list.name())))
     }
 
-    pub(super) fn validate_host_arguments(
+    /// A model lookup depends on the selected row, including its shape.
+    pub(super) fn record_at(&self, list: &RecordList, index: i64) -> Result<Option<RecordValue>> {
+        let Some(row) = list.model().row_at(index) else {
+            return Ok(None);
+        };
+        let name = list.name();
+        validate_record(
+            &self.records,
+            name,
+            &row,
+            &mut format!("model {name}[{index}]"),
+        )?;
+        Ok(Some(row))
+    }
+
+    pub(super) fn validate_callback_arguments(
         &self,
         name: &str,
         parameters: &[ValueType],
@@ -61,7 +93,7 @@ impl Program {
         Ok(())
     }
 
-    pub(super) fn validate_host_result(
+    pub(super) fn validate_callback_result(
         &self,
         name: &str,
         ty: Option<&ValueType>,

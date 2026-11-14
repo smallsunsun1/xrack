@@ -62,7 +62,7 @@ jobs:
         run: >-
           cargo package --locked
           -p xrack-runtime -p xrack-assets -p xrack-layout
-          -p xrack-renderer-femtovg -p xrack-platform-winit
+          -p xrack-renderer-femtovg
       - name: Upload Cargo packages
         if: matrix.os == 'ubuntu-24.04'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
@@ -145,9 +145,13 @@ jobs:
         run: >-
           bazel test --announce_rc --lockfile_mode=update
           //tests:compiler_test //tests:mlir_pass_test //tests:expressions_test
-          //tests:mlir_filecheck_test //tests:interpreter_parity_test
+          //tests:mlir_filecheck_test //tests:mlir_lsp_test //tests:ui_log_test //tests:interpreter_parity_test
           //crates/xrack-interpreter:interpreter_test
           //crates/xrack-preview:preview_test //crates/xrack-lsp:xrack_lsp_test
+      - name: Test media decoding, synchronization, and seeking
+        run: >-
+          bazel test --config=media --lockfile_mode=update --nocache_test_results
+          //crates/xrack-media:media_test //tests:media_player_test
       - name: Run Clippy through Bazel
         if: runner.os == 'macOS'
         run: bazel build --config=lint --lockfile_mode=error //... //tests:gpu_test
@@ -164,6 +168,10 @@ jobs:
         env:
           CARGO_TARGET_DIR: ${{ github.workspace }}/.tools/cargo-consumer
         run: python tools/test_cargo_consumer.py .tools/dist ${{ matrix.target }} --interpreter
+      - name: Run the standalone Cargo media consumer
+        env:
+          CARGO_TARGET_DIR: ${{ github.workspace }}/.tools/cargo-consumer
+        run: python tools/test_cargo_consumer.py .tools/dist ${{ matrix.target }} --media
       - name: Upload xrackc archive and checksum
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
@@ -171,6 +179,7 @@ jobs:
           path: |
             .tools/dist/xrackc-*.tar.gz
             .tools/dist/xrackc-*.sha256
+            .tools/dist/xrack-media-source-*.tar.gz
           include-hidden-files: true
           if-no-files-found: error
           compression-level: 0

@@ -75,6 +75,41 @@ impl ButtonGroupSelection {
     }
 }
 
+/// Sample the group in scene construction order.
+#[doc(hidden)]
+pub struct ButtonGroupOptions {
+    pub name: String,
+    pub selection: Option<ButtonGroupSelection>,
+    pub enabled: bool,
+}
+
+impl ButtonGroupOptions {
+    pub fn try_read<E>(
+        name: impl FnOnce() -> Result<String, E>,
+        selection: impl FnOnce() -> Result<Option<ButtonGroupSelection>, E>,
+        enabled: impl FnOnce() -> Result<bool, E>,
+    ) -> Result<Self, E> {
+        Ok(Self {
+            name: name()?,
+            selection: selection()?,
+            enabled: enabled()?,
+        })
+    }
+
+    pub fn read(
+        name: impl FnOnce() -> String,
+        selection: impl FnOnce() -> Option<ButtonGroupSelection>,
+        enabled: impl FnOnce() -> bool,
+    ) -> Self {
+        Self::try_read(
+            || Ok::<_, std::convert::Infallible>(name()),
+            || Ok(selection()),
+            || Ok(enabled()),
+        )
+        .unwrap_or_else(|error| match error {})
+    }
+}
+
 /// Recheck a distributed radio option without evaluating other members.
 #[doc(hidden)]
 pub fn try_prepare_radio_selection<E>(
@@ -138,13 +173,15 @@ pub fn bind_button_group(
     selection: ButtonGroupSelection,
     enabled: bool,
 ) {
-    bind_group(
+    bind_button_group_options(
         scene,
-        Cow::Borrowed(key),
-        name,
-        Paths::Static(paths),
-        Some(selection),
-        enabled,
+        key,
+        paths,
+        ButtonGroupOptions {
+            name,
+            selection: Some(selection),
+            enabled,
+        },
     );
 }
 
@@ -156,13 +193,32 @@ pub fn bind_check_group(
     paths: &'static [&'static [usize]],
     enabled: bool,
 ) {
+    bind_button_group_options(
+        scene,
+        key,
+        paths,
+        ButtonGroupOptions {
+            name,
+            selection: None,
+            enabled,
+        },
+    );
+}
+
+#[doc(hidden)]
+pub fn bind_button_group_options(
+    scene: &mut Node,
+    key: &'static str,
+    paths: &'static [&'static [usize]],
+    options: ButtonGroupOptions,
+) {
     bind_group(
         scene,
         Cow::Borrowed(key),
-        name,
+        options.name,
         Paths::Static(paths),
-        None,
-        enabled,
+        options.selection,
+        options.enabled,
     );
 }
 

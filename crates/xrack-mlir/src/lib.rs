@@ -22,14 +22,18 @@ pub use module::{
 
 mod visual;
 pub use visual::{
-    AnimationRef, CallbackForward, ComponentAnalysis, InstanceBinding, InstanceBindings,
-    InstanceStateInput, PropertyForward, RepeatRef, RowSceneCache, StateCaseRef, TranslationRef,
-    VisualCacheGroup, VisualCacheKey, nine_slice_edges, repeat_is_positioned, scene_children,
-    visual_cache_operand,
+    AnimationRef, CallbackForward, ClipboardParserRef, ComponentAnalysis, GradientRef,
+    InstanceBinding, InstanceBindings, InstanceStateInput, PropertyForward, RepeatRef,
+    RowSceneCache, StackRead, StateCaseRef, TableClipboardRef, TablePasteRef, TableRead,
+    TranslationRef, VisualCacheGroup, VisualCacheKey, host_element_id, nine_slice_edges,
+    repeat_is_positioned, scene_children, split_fill_slot, visual_cache_operand,
 };
 
 mod record;
-pub use record::{RecordDeclRef, record_field_path, record_role};
+pub use record::{
+    RecordComboRef, RecordDeclRef, StandardTableColumnRef, StandardTableRef, TreeViewRef,
+    record_field_path, record_role,
+};
 
 mod aliases;
 pub use aliases::{AliasGraph, AliasGraphs, PropertyEndpoint, canonical_input};

@@ -10,7 +10,11 @@ description = "Runtime types, properties, models, and controls for generated XRa
 [dependencies]
 fluent-bundle.workspace = true
 fluent-langneg.workspace = true
+icu_decimal.workspace = true
+icu_locale_core.workspace = true
+writeable.workspace = true
 unic-langid.workspace = true
 pulldown-cmark.workspace = true
 thiserror.workspace = true
+tracing.workspace = true
 unicode-segmentation.workspace = true

@@ -223,3 +223,41 @@ body.vscode-high-contrast .canvas, body.vscode-high-contrast-light .canvas {
 #snapshot[data-cursor="ns-resize"] { cursor: ns-resize; }
 #snapshot[data-cursor="zoom-in"] { cursor: zoom-in; }
 #snapshot[data-cursor="zoom-out"] { cursor: zoom-out; }
+
+
+.scene-tree {
+    color: var(--vscode-foreground);
+    border-color: var(--vscode-panel-border);
+    background: var(--toolbar);
+}
+
+#scene-elements {
+    max-height: min(28vh, 220px);
+    overflow: auto;
+    margin-top: 7px;
+}
+
+.scene-element {
+    display: block;
+    width: 100%;
+    border: 0;
+    padding-block: 3px;
+    background: transparent;
+    color: inherit;
+    font: 11px/1.5 var(--vscode-editor-font-family, monospace);
+    text-align: start;
+    overflow-wrap: anywhere;
+}
+
+.scene-element:hover, .scene-element.selected {
+    background: var(--vscode-list-activeSelectionBackground);
+    color: var(--vscode-list-activeSelectionForeground);
+}
+
+#inspect-highlight {
+    position: absolute;
+    z-index: 1;
+    pointer-events: none;
+    box-sizing: border-box;
+    border: 2px solid var(--vscode-focusBorder, #007acc);
+}

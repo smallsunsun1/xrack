@@ -2,14 +2,15 @@ use clap::{Parser, ValueEnum};
 use proc_macro2::{Group, Ident, Spacing, TokenStream, TokenTree};
 use std::{fs, io, path::PathBuf, process::ExitCode};
 use xrack_compiler::{
-    CompilerError, check_document, compile_with_inputs, generate_document, lower, mlir, parse,
-    parse_document, semantic,
+    CompilerError, check_document, compile_with_inputs, export_mlir, generate_document, mlir,
+    parse, parse_document, semantic,
 };
 
 #[derive(Clone, Copy, Debug, Default, ValueEnum)]
 enum Emit {
     #[default]
     Rust,
+    /// Print verified, optimized MLIR for loading at runtime.
     Mlir,
     /// Print the lowered MLIR before native verification and optimization.
     MlirRaw,
@@ -140,7 +141,7 @@ fn run(args: Args) -> Result<(), CompilerError> {
         Emit::Ast => serde_json::to_string_pretty(&doc)?,
         Emit::Hir => serde_json::to_string_pretty(&semantic::analyze(&doc).map_err(diagnostic)?)?,
         Emit::MlirRaw => mlir::lower(&doc, &args.input).map_err(diagnostic)?,
-        Emit::Mlir => lower(&doc, &args.input)?.to_mlir(),
+        Emit::Mlir => export_mlir(&doc, &args.input, assets)?,
         Emit::Preview => unreachable!("handled before reading the input file"),
         Emit::Rust => {
             let tokens = generate_document(&doc, &args.input, assets)?;

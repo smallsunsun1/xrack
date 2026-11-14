@@ -2,7 +2,7 @@
 
 /// Compatibility level expected by the Rust code emitted by xrackc.
 #[doc(hidden)]
-pub const CODEGEN_ABI_VERSION: u32 = 2;
+pub const CODEGEN_ABI_VERSION: u32 = 8;
 
 mod animation;
 mod arithmetic;
@@ -23,12 +23,22 @@ pub use event_loop::{EventLoopError, WeakComponent, invoke_from_event_loop};
 mod focus;
 mod font_picker;
 mod geometry;
+mod ui_log;
+pub use ui_log::LogLevel;
+#[doc(hidden)]
+pub use ui_log::log_ui;
 mod hover;
 mod image_animation;
 mod image_asset;
+mod media;
+pub use media::{
+    MediaCommand, MediaFrame, MediaOptions, MediaQueue, MediaRegistration, MediaSession, MediaSlot,
+    MediaState, MediaStatus, open_media_session, register_media_backend,
+};
 mod keyboard;
 mod list;
 mod localization;
+mod localized_number;
 mod model;
 mod native_dialog;
 mod picker;
@@ -58,12 +68,19 @@ mod viewport;
 mod window_status;
 pub use animation::{Animation, Easing, SceneTransition, StateTiming};
 #[doc(hidden)]
-pub use arithmetic::{int_divide, int_remainder, try_int_divide, try_int_remainder};
+pub use arithmetic::{
+    ceil_to_int, character_count, clamp_float, clamp_int, floor_to_int, format_fixed_float,
+    format_fixed_int, max_float, min_float, modulo_int, number_sign, parse_float, parse_int,
+    same_float_bits,
+};
+#[doc(hidden)]
+pub use arithmetic::{int_divide, int_remainder, round_to_int, try_int_divide, try_int_remainder};
 #[doc(hidden)]
 pub use button_group::{
-    ButtonGroup, ButtonGroupMembership, ButtonGroupSelection, RadioMembership, bind_button_group,
-    bind_check_group, bind_dynamic_button_group, prepare_radio_selection, radio_value,
-    summarize_checks, try_prepare_radio_selection, try_summarize_checks,
+    ButtonGroup, ButtonGroupMembership, ButtonGroupOptions, ButtonGroupSelection, RadioMembership,
+    bind_button_group, bind_button_group_options, bind_check_group, bind_dynamic_button_group,
+    prepare_radio_selection, radio_value, summarize_checks, try_prepare_radio_selection,
+    try_summarize_checks,
 };
 pub use calendar::{CalendarAction, CalendarState, Date, is_calendar_control};
 #[doc(hidden)]
@@ -86,7 +103,8 @@ pub use combo::{
 pub use combo::{
     ComboEditor, ComboInput, ComboItems, ComboModel, ComboSelection, ComboSubmission, ComboUpdate,
     combo_model_is_current, combo_submission, combo_value, prepare_combo_input,
-    try_prepare_combo_input,
+    prepare_combo_input_with_draft, prepare_combo_input_with_live_draft, try_prepare_combo_input,
+    try_prepare_combo_input_with_draft, try_prepare_combo_input_with_live_draft,
 };
 pub use controls::{
     ActionKey, ControlAction, DialogCommand, DialogRole, PopupPlacement, SpinAction, SpinRange,
@@ -97,7 +115,10 @@ pub use controls::{
     search_suggestions, spin_editable, spin_text, spin_value_after, text_input_value,
 };
 #[doc(hidden)]
-pub use controls::{DialogEvent, set_overlay_open, try_resolve_swipe_index, try_set_overlay_open};
+pub use controls::{
+    DialogEvent, TableHeaderAction, prepare_swipe_side, set_overlay_open, try_prepare_swipe_side,
+    try_resolve_swipe_index, try_set_overlay_open,
+};
 #[doc(hidden)]
 pub use controls::{
     SPIN_VIEW_PROPERTIES, prepare_spin_view, spin_view_is_current, try_prepare_spin_view,
@@ -107,10 +128,11 @@ pub use controls::{
 pub use controls::{
     delay_button_transition_is_current, group_selection_item, prepare_action_activation,
     prepare_action_view, prepare_group_box_toggle, prepare_group_selection,
-    prepare_index_selection, prepare_row_toggle, prepare_source_selection, resize_table_column,
-    table_drag_available, try_delay_button_transition_is_current, try_prepare_action_activation,
-    try_prepare_action_view, try_prepare_group_box_toggle, try_prepare_group_selection,
-    try_prepare_index_selection, try_prepare_row_toggle, try_prepare_source_selection,
+    prepare_index_selection, prepare_row_toggle, prepare_row_toggle_matching,
+    prepare_source_selection, resize_table_column, table_drag_available,
+    try_delay_button_transition_is_current, try_prepare_action_activation, try_prepare_action_view,
+    try_prepare_group_box_toggle, try_prepare_group_selection, try_prepare_index_selection,
+    try_prepare_row_toggle, try_prepare_row_toggle_matching, try_prepare_source_selection,
     try_table_drag_available,
 };
 #[doc(hidden)]
@@ -118,13 +140,15 @@ pub use delegate::{ComponentRepeater, RowContext};
 pub use double_spin::{
     DecimalSpinRange, SpinDecimal, decimal_separator, decimal_spin_value_after, spin_text_is_valid,
 };
+#[doc(hidden)]
+pub use drag::DragArguments;
 pub use drag::{DragAction, DragEvent, is_drag_area};
 pub use focus::{
     FocusAction, FocusContext, FocusEvent, FocusHandle, FocusReason, FocusRequest, FocusRequests,
     TextCommand,
 };
 #[doc(hidden)]
-pub use focus::{FocusCommandMethod, is_focus_handler};
+pub use focus::{FocusCommandMethod, FocusHandler, is_focus_handler};
 pub use font_picker::Font;
 #[doc(hidden)]
 pub use font_picker::{FontPopupState, is_font_family_choice, set_font_family_choices};
@@ -142,7 +166,7 @@ pub use list::{ListMetrics, RowKey};
 #[doc(hidden)]
 pub use list::{
     ListModel, ListRowLocator, ListRowRenderer, RowLifetime, TableCellEditor, TableColumnWindow,
-    project_standard_table_rows, standard_list_rows, standard_list_rows_in_view,
+    TableField, project_standard_table_rows, standard_list_rows, standard_list_rows_in_view,
     standard_table_rows, standard_table_rows_in_order, standard_table_rows_with_editors_in_order,
     standard_table_rows_with_header, try_project_standard_table_rows,
 };
@@ -197,17 +221,19 @@ pub use styled_text::{StyledLink, StyledRun, StyledText, StyledTextError, TextSt
 pub use swipe_gesture::{SwipeHandle, SwipeSample};
 #[doc(hidden)]
 pub use table_clipboard::{
-    TablePaste, TablePasteInput, paste_table_text, table_paste_bool, table_paste_check_state,
-    table_paste_number, try_table_paste_number,
+    TablePaste, TablePasteInput, paste_table_text, prepare_table_paste, table_paste_bool,
+    table_paste_check_state, table_paste_number, try_table_paste_number,
+    try_with_table_paste_target, with_table_paste_target,
 };
 #[doc(hidden)]
-pub use table_history::{TableEditHistory, TablePasteHistory, TableRowPatch};
+pub use table_history::{TableEditHistory, TableHistoryPayload, TablePasteHistory, TableRowPatch};
 pub use table_rows::{
     TableCellEditTarget, TableEditPosition, TableRowOrder, TableRowPositions, TableRows,
     next_table_edit_cell, next_table_edit_cell_in_view, next_table_edit_cell_in_view_if,
     next_table_edit_cell_while_current, table_cell_edit_target, table_cell_edit_target_if,
-    try_history_replay_source, try_next_table_edit_cell, try_next_table_edit_cell_in_view,
-    try_next_table_edit_cell_while_current, try_prepare_history_replay, try_table_cell_edit_target,
+    table_cell_edit_target_matching, try_history_replay_source, try_next_table_edit_cell,
+    try_next_table_edit_cell_in_view, try_next_table_edit_cell_while_current,
+    try_prepare_history_replay, try_table_cell_edit_target, try_table_cell_edit_target_matching,
 };
 pub use table_selection::{
     RowSelection, SelectionTarget, TableSelection, TableSelectionAction, TableSelectionSnapshot,
@@ -711,6 +737,24 @@ impl<'a> InputRoute<'a> {
         self
     }
 
+    pub fn record_root_visibility_override(self, lifetime: &ComponentLifetime) {
+        if self.root_visibility_overridden && self.checks_availability() {
+            lifetime.record_input_root_override();
+        }
+    }
+
+    pub fn try_visible<E>(self, visible: impl FnOnce() -> Result<bool, E>) -> Result<bool, E> {
+        if self.root_visibility_overridden {
+            Ok(true)
+        } else {
+            visible()
+        }
+    }
+
+    pub fn visible(self, visible: impl FnOnce() -> bool) -> bool {
+        self.root_visibility_overridden || visible()
+    }
+
     pub fn is_current(self) -> bool {
         self.reads.is_none_or(|reads| !reads.changed())
     }
@@ -726,7 +770,9 @@ impl<'a> InputRoute<'a> {
 
     pub fn try_available<E>(self, available: impl FnOnce() -> Result<bool, E>) -> Result<bool, E> {
         match self.reads {
-            Some(reads) => Ok(!reads.changed() && available()? && !reads.changed()),
+            Some(reads) => Ok(!reads.changed()
+                && property::track_input_availability(available)?
+                && !reads.changed()),
             None => Ok(true),
         }
     }
@@ -762,6 +808,12 @@ impl<'a> InputRoute<'a> {
 }
 
 impl RoutedEvent<'_> {
+    #[doc(hidden)]
+    pub fn activates_item_delegate(&self, has_action: bool) -> bool {
+        matches!(self, Self::Dispatch("clicked" | "toggled"))
+            || has_action && matches!(self, Self::Control(ControlAction::ActivateAction))
+    }
+
     fn is_input_cleanup(&self) -> bool {
         match self {
             Self::Focus(event) => event.is_loss(),
@@ -840,16 +892,18 @@ impl RoutedEvent<'_> {
             reads: None,
             root_visibility_overridden: false,
         };
-        if self.follows_row(scene, path) {
-            Some(route(input))
-        } else {
-            Some(property::watch_reads(|reads| {
-                route(InputRoute {
-                    reads: Some(reads),
-                    ..input
+        Some(property::with_input_path(|| {
+            if self.follows_row(scene, path) {
+                route(input)
+            } else {
+                property::watch_reads(|reads| {
+                    route(InputRoute {
+                        reads: Some(reads),
+                        ..input
+                    })
                 })
-            }))
-        }
+            }
+        }))
     }
 
     pub fn deliver_input(
@@ -897,6 +951,29 @@ pub struct Percent(pub f64);
 pub struct Color(pub u32);
 
 impl Color {
+    #[doc(hidden)]
+    pub fn from_rgba(red: i64, green: i64, blue: i64, alpha: f64) -> Self {
+        let channel = |value: i64| value.clamp(0, 255) as u32;
+        let rgb = (channel(red) << 24) | (channel(green) << 16) | (channel(blue) << 8);
+        Self(rgb).with_alpha(alpha)
+    }
+
+    #[doc(hidden)]
+    pub fn with_alpha(self, alpha: f64) -> Self {
+        let alpha = (alpha.clamp(0.0, 1.0) * 255.0).round() as u32;
+        Self((self.0 & 0xffff_ff00) | alpha)
+    }
+
+    #[doc(hidden)]
+    pub fn mix(self, other: Self, amount: f64) -> Self {
+        let amount = if amount.is_nan() {
+            0.0
+        } else {
+            amount.clamp(0.0, 1.0)
+        };
+        crate::animation::mix_color(self, other, amount)
+    }
+
     /// Decode the RGB and RGBA spellings accepted by the XR dialect.
     #[doc(hidden)]
     pub fn parse_hex_literal(spelling: &str) -> Option<Self> {
@@ -940,7 +1017,7 @@ pub enum ImageFormat {
     Svg,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default)]
 pub enum Image {
     #[default]
     Empty,
@@ -950,6 +1027,7 @@ pub enum Image {
         size: [u32; 2],
     },
     Animated(&'static ImageAnimation),
+    Loaded(LoadedImage),
     NineSliced {
         format: ImageFormat,
         bytes: &'static [u8],
@@ -978,16 +1056,59 @@ impl NineSlice {
 #[error("nine-slice edges must leave a nonempty center in the source image")]
 pub struct InvalidNineSlice;
 
+impl PartialEq for Image {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Empty, Self::Empty) => true,
+            (
+                Self::Embedded {
+                    format: a,
+                    bytes: b,
+                    size: c,
+                },
+                Self::Embedded {
+                    format: x,
+                    bytes: y,
+                    size: z,
+                },
+            ) => (a, b, c) == (x, y, z),
+            (
+                Self::NineSliced {
+                    format: a,
+                    bytes: b,
+                    size: c,
+                    edges: d,
+                },
+                Self::NineSliced {
+                    format: w,
+                    bytes: x,
+                    size: y,
+                    edges: z,
+                },
+            ) => (a, b, c, d) == (w, x, y, z),
+            (Self::Animated(left), Self::Animated(right)) => left == right,
+            (Self::Loaded(left), Self::Loaded(right)) => left == right,
+            (Self::Loaded(_), _) | (_, Self::Loaded(_)) => {
+                ImageAsset::from(self.clone()) == ImageAsset::from(other.clone())
+            }
+            _ => false,
+        }
+    }
+}
+
+impl Eq for Image {}
+
 impl Image {
-    pub fn size(self) -> [u32; 2] {
+    pub fn size(&self) -> [u32; 2] {
         match self {
+            Self::Loaded(image) => image.size(),
             Self::Empty => [0, 0],
             Self::Animated(animation) => animation.size(),
-            Self::Embedded { size, .. } | Self::NineSliced { size, .. } => size,
+            Self::Embedded { size, .. } | Self::NineSliced { size, .. } => *size,
         }
     }
 
-    pub fn frame_count(self) -> usize {
+    pub fn frame_count(&self) -> usize {
         match self {
             Self::Empty => 0,
             Self::Animated(animation) => animation.frame_count(),
@@ -1020,6 +1141,7 @@ impl Image {
                 size,
                 edges,
             }),
+            Self::Loaded(image) => image.with_nine_slice(edges).map(Self::Loaded),
             _ => Err(InvalidNineSlice),
         }
     }
@@ -1343,6 +1465,7 @@ pub enum Value {
     Brush(Brush),
     Image(Image),
     ImageAsset(ImageAsset),
+    LogLevel(LogLevel),
     ImageFit(ImageFit),
     ImageTileMode(ImageTileMode),
     ImageHorizontalAlignment(ImageHorizontalAlignment),
@@ -1387,13 +1510,24 @@ pub enum Value {
 }
 
 impl Value {
+    /// Compare scalar values when deciding whether to invalidate a property.
+    #[doc(hidden)]
+    pub fn same_property_value(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Float(left), Self::Float(right)) => same_float_bits(left, right),
+            (Self::Length(left), Self::Length(right)) => same_float_bits(&left.0, &right.0),
+            (Self::Percent(left), Self::Percent(right)) => same_float_bits(&left.0, &right.0),
+            _ => self.eq_with_image_assets(other),
+        }
+    }
+
     /// Compare a host image and an image asset using their shared image semantics.
     #[doc(hidden)]
     pub fn eq_with_image_assets(&self, other: &Self) -> bool {
         match (self, other) {
             (Self::Image(embedded), Self::ImageAsset(asset))
             | (Self::ImageAsset(asset), Self::Image(embedded)) => {
-                ImageAsset::from(*embedded) == *asset
+                ImageAsset::from(embedded.clone()) == *asset
             }
             _ => self == other,
         }
@@ -1425,6 +1559,7 @@ value_from!(Length, Length);
 value_from!(Percent, Percent);
 value_from!(Color, Color);
 value_from!(Image, Image);
+value_from!(LogLevel, LogLevel);
 value_from!(ImageFit, ImageFit);
 value_from!(ImageTileMode, ImageTileMode);
 value_from!(ImageHorizontalAlignment, ImageHorizontalAlignment);
@@ -1508,6 +1643,10 @@ pub struct NodeData {
     pub timers: Vec<TimerRegistration>,
     #[doc(hidden)]
     pub image_playback: Option<Rc<ImagePlaybackRegistration>>,
+    #[doc(hidden)]
+    pub media: Option<MediaRegistration>,
+    #[doc(hidden)]
+    pub media_frame: Option<MediaFrame>,
     #[doc(hidden)]
     pub native_dialogs: Vec<NativeDialogRegistration>,
     pub animations: BTreeMap<&'static str, Animation>,
@@ -1613,7 +1752,7 @@ impl NodeData {
         macro_rules! compare {
             ($($field:ident),+ $(,)?) => {{
                 // An exhaustive pattern makes new scene fields opt in to comparison.
-                let Self { properties: _, children: _, paint_only: _, $($field: _,)+ } = self;
+                let Self { properties: _, children: _, paint_only: _, media_frame: _, $($field: _,)+ } = self;
                 $(self.$field == other.$field)&&+
             }};
         }
@@ -1628,6 +1767,7 @@ impl NodeData {
             tumbler_items,
             timers,
             image_playback,
+            media,
             native_dialogs,
             animations,
             state_timings,
@@ -1831,6 +1971,8 @@ impl Node {
             table_column_window: TableColumnWindow::default(),
             timers: Vec::new(),
             image_playback: None,
+            media: None,
+            media_frame: None,
             native_dialogs: Vec::new(),
             animations: BTreeMap::new(),
             state_timings: None,
@@ -2064,6 +2206,7 @@ impl Node {
         let without_opacity = |(name, _): &(&&str, &Value)| **name != "opacity";
         self.shares_storage_with(other)
             || self.same_structure_and_state(other)
+                && self.media_frame == other.media_frame
                 && self
                     .properties
                     .iter()
@@ -2382,14 +2525,14 @@ impl Node {
 
     pub fn image(&self, name: &str) -> Option<Image> {
         match self.properties.get(name) {
-            Some(Value::Image(value)) => Some(*value),
+            Some(Value::Image(value)) => Some(value.clone()),
             _ => None,
         }
     }
 
     pub fn image_asset(&self, name: &str) -> Option<ImageAsset> {
         match self.properties.get(name) {
-            Some(Value::Image(value)) => Some((*value).into()),
+            Some(Value::Image(value)) => Some(value.clone().into()),
             Some(Value::ImageAsset(value)) => Some(value.clone()),
             _ => None,
         }
@@ -2443,6 +2586,16 @@ impl Node {
             .iter()
             .enumerate()
             .map(|(index, child)| (self.table_column_window.logical_index(index), child))
+    }
+
+    #[doc(hidden)]
+    pub fn control_part(&self, kind: &str) -> Option<&Self> {
+        self.children.iter().find(|child| child.kind == kind)
+    }
+
+    #[doc(hidden)]
+    pub fn is_control_part(&self) -> bool {
+        matches!(self.kind, "ButtonContent" | "SliderHandle")
     }
 
     pub fn at_path(&self, path: &[usize]) -> Option<&Self> {

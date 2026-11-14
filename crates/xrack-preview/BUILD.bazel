@@ -7,8 +7,12 @@ rust_binary(
         "src/main.rs",
         "src/windows.rs",
     ],
+    crate_features = select({
+        "//crates/xrack-media:enabled_config": ["media_backend"],
+        "//conditions:default": [],
+    }),
     edition = "2024",
-    version = "0.5.0",
+    version = "0.5.1",
     visibility = ["//visibility:public"],
     deps = [
         "//crates/xrack-compiler:xrack_compiler",
@@ -19,8 +23,13 @@ rust_binary(
         "@crates//:pollster",
         "@crates//:serde",
         "@crates//:serde_json",
+        "@crates//:tracing",
+        "@crates//:tracing-subscriber",
         "@crates//:wgpu",
-    ],
+    ] + select({
+        "//crates/xrack-media:enabled_config": ["//crates/xrack-media:xrack_media"],
+        "//conditions:default": [],
+    }),
 )
 
 rust_test(

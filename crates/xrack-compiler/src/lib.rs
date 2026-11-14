@@ -16,8 +16,16 @@ pub use xrack_ir::semantic;
 pub use xrack_mlir as mlir;
 pub use xrack_parser::{ast, parse};
 use xrack_resources::{
-    PrepareMlirError, ResolvedTranslations, prepare_mlir, resolve_assets, resolve_translations,
+    PrepareMlirError, ResolvedTranslations, prepare_mlir, prepare_module, resolve_assets,
+    resolve_translations,
 };
+
+fn prepare_error(error: PrepareMlirError) -> CompilerError {
+    match error {
+        PrepareMlirError::Mlir(message) => CompilerError::Mlir(message),
+        PrepareMlirError::Resources(message) => CompilerError::Resources(message),
+    }
+}
 
 pub struct Compilation {
     pub rust: TokenStream,
@@ -57,6 +65,7 @@ pub fn load_preview_assets(
     module: &mlir::Module,
     filename: &str,
 ) -> Result<PreviewAssets, CompilerError> {
+    module.verify().map_err(CompilerError::Mlir)?;
     let assets =
         resolve_assets(module, Path::new(filename), None).map_err(CompilerError::Resources)?;
     codegen::check_nine_slices(module, &assets.images).map_err(CompilerError::Resources)?;
@@ -89,10 +98,11 @@ pub fn prepare_preview(
         .components
         .iter()
         .filter(|component| {
-            component
-                .filename
-                .as_deref()
-                .is_none_or(|path| path == filename)
+            !component.global
+                && component
+                    .filename
+                    .as_deref()
+                    .is_none_or(|path| path == filename)
         })
         .collect();
     // Default to an exported entry component, retaining source order among peers.
@@ -115,13 +125,14 @@ pub fn prepare_preview(
 /// Prepare standalone XR dialect IR and resolve assets relative to its file.
 pub fn prepare_mlir_preview(source: &str, filename: &str) -> Result<PreviewModule, CompilerError> {
     let (module, translations) =
-        prepare_mlir(source, Path::new(filename)).map_err(|error| match error {
-            PrepareMlirError::Mlir(message) => CompilerError::Mlir(message),
-            PrepareMlirError::Resources(message) => CompilerError::Resources(message),
-        })?;
+        prepare_mlir(source, Path::new(filename)).map_err(prepare_error)?;
     let components = module
         .operations()
-        .filter(|op| op.name() == "xr.component" && op.attribute("exported") == Some("true"))
+        .filter(|op| {
+            op.name() == "xr.component"
+                && op.attribute("exported") == Some("true")
+                && op.attribute("global") != Some("true")
+        })
         .filter_map(|op| op.attribute("sym_name").map(str::to_owned))
         .collect();
     let mut inputs = BTreeSet::from([filename.into()]);
@@ -162,6 +173,7 @@ pub fn generate_rust(
     filename: &str,
     declared_assets: Option<&[PathBuf]>,
 ) -> Result<TokenStream, CompilerError> {
+    module.verify().map_err(CompilerError::Mlir)?;
     let translations = resolve_translations(
         module,
         Path::new(filename),
@@ -222,12 +234,11 @@ fn emit_with_inputs(
 ) -> Result<TokenStream, CompilerError> {
     let assets = resolve_assets(module, Path::new(filename), declared_assets)
         .map_err(CompilerError::Resources)?;
-    let rust = codegen::generate_with_translations(
+    let rust = codegen::generate_with_resolved_assets_at(
         module,
-        &assets.images,
-        &assets.fonts,
-        &assets.paths,
+        &assets,
         translations.catalog.as_ref(),
+        filename,
     )
     .map_err(CompilerError::Codegen)?;
     inputs.insert(filename.into());
@@ -241,8 +252,26 @@ pub fn check_document(
     filename: &str,
     declared_assets: Option<&[PathBuf]>,
 ) -> Result<(), CompilerError> {
+    checked_module(document, filename, declared_assets).map(|_| ())
+}
+
+/// Export optimized XR dialect text after checking the resources used at runtime.
+pub fn export_mlir(
+    document: &ast::Document,
+    filename: &str,
+    declared_assets: Option<&[PathBuf]>,
+) -> Result<String, CompilerError> {
+    checked_module(document, filename, declared_assets).map(|module| module.to_mlir())
+}
+
+fn checked_module(
+    document: &ast::Document,
+    filename: &str,
+    declared_assets: Option<&[PathBuf]>,
+) -> Result<mlir::Module, CompilerError> {
     let (module, _) = prepare(document, filename, declared_assets, &BTreeMap::new())?;
-    check_output_resources(&module, filename, declared_assets)
+    check_output_resources(&module, filename, declared_assets)?;
+    Ok(module)
 }
 
 pub fn check_resources(
@@ -250,6 +279,7 @@ pub fn check_resources(
     filename: &str,
     declared_assets: Option<&[PathBuf]>,
 ) -> Result<(), CompilerError> {
+    module.verify().map_err(CompilerError::Mlir)?;
     resolve_translations(
         module,
         Path::new(filename),
@@ -277,12 +307,13 @@ fn prepare(
     declared_assets: Option<&[PathBuf]>,
     buffers: &BTreeMap<PathBuf, String>,
 ) -> Result<(mlir::Module, ResolvedTranslations), CompilerError> {
-    let module = lower_raw(doc, filename)?;
-    // Validate every call before visual and expression passes remove unused code.
-    let translations = resolve_translations(&module, Path::new(filename), declared_assets, buffers)
-        .map_err(CompilerError::Resources)?;
-    let module = module.optimize().map_err(CompilerError::Mlir)?;
-    Ok((module, translations))
+    prepare_module(
+        lower_raw(doc, filename)?,
+        Path::new(filename),
+        declared_assets,
+        buffers,
+    )
+    .map_err(prepare_error)
 }
 
 /// Validate the source and run the native MLIR pass pipeline.

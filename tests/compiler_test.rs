@@ -931,7 +931,7 @@ fn tree_visibility_projects_a_constant_boolean_path_alongside_text_filtering() {
         }
     "#;
     let output = compile(source, "tree-visible.xr").unwrap();
-    assert!(output.rust.to_string().contains("snapshot_projected"));
+    assert!(output.rust.to_string().contains("project_model"));
     let invalid = source.replace("flags.shown", "parent");
     let error = compile(&invalid, "tree-visible.xr").err().unwrap();
     assert!(error.contains("row-visible-field requires a bool field"));
@@ -1884,7 +1884,7 @@ fn focus_reads_are_read_only_and_events_have_typed_reasons() {
     let compiled = compile(source, "focus-state.xr").unwrap();
     assert!(compiled.mlir.contains("\"xr.focus_read\""));
     assert!(compiled.mlir.contains("FocusReason"));
-    assert!(compiled.rust.to_string().contains("FocusEvent :: Within"));
+    assert!(compiled.rust.to_string().contains("FocusHandler :: Within"));
     let bad = source.replace(
         "background: self.focus-within ? #fff : #000;",
         "focus-within: false;",
@@ -2632,7 +2632,12 @@ fn drag_areas_verify_action_types_and_generate_typed_event_routes() {
     }"#;
     let compiled = compile(source, "drag.xr").unwrap();
     assert!(compiled.mlir.contains("!xr.dragaction"));
-    assert!(compiled.rust.to_string().contains("DragEvent :: Dropped"));
+    assert!(
+        compiled
+            .rust
+            .to_string()
+            .contains(r#"("dropped" , :: xrack_runtime :: DragArguments :: Data"#)
+    );
     let invalid = source.replace("drop-action: move", "drop-action: true");
     assert!(
         compile(&invalid, "drag.xr")
@@ -2671,7 +2676,7 @@ fn native_file_drop_uses_a_typed_string_list_event() {
         compiled
             .rust
             .to_string()
-            .contains("DragEvent :: FilesDropped")
+            .contains(r#"("files-dropped" , :: xrack_runtime :: DragArguments :: Files"#)
     );
     let invalid = source.replace("accept-files: true", "accept-files: 1");
     assert!(
@@ -2746,7 +2751,7 @@ fn window_and_control_fonts_keep_typed_bindings_through_mlir() {
 #[test]
 fn translation_catalogs_validate_imported_calls_and_track_build_inputs() {
     use std::{fs, path::PathBuf};
-    use xrack_compiler::compile_with_inputs;
+    use xrack_compiler::{compile_with_inputs, export_mlir, parse_document, prepare_mlir_preview};
 
     let directory = std::env::var_os("TEST_TMPDIR")
         .map(PathBuf::from)
@@ -2780,9 +2785,17 @@ fn translation_catalogs_validate_imported_calls_and_track_build_inputs() {
     for path in [&catalog, &english, &chinese, &child] {
         assert!(inputs.contains(&path.canonicalize().unwrap()), "{path:?}");
     }
+    let document = parse_document(source, filename, None).unwrap();
+    let mlir_text = export_mlir(&document, filename, Some(&assets)).unwrap();
+    let exported = prepare_mlir_preview(&mlir_text, filename).unwrap();
+    assert_eq!(exported.components, ["App"]);
+    let restricted = export_mlir(&document, filename, Some(&assets[..2]))
+        .unwrap_err()
+        .to_string();
     let error = compile_with_inputs(source, filename, None, Some(&assets[..2]))
         .unwrap_err()
         .to_string();
+    assert_eq!(restricted, error);
     assert!(
         error.contains("zh.ftl") && error.contains("not declared"),
         "{error}"
@@ -2802,6 +2815,12 @@ fn translation_catalogs_validate_imported_calls_and_track_build_inputs() {
     let error = compile_with_inputs(&unreachable, filename, None, Some(&assets))
         .unwrap_err()
         .to_string();
+    let document = parse_document(&unreachable, filename, None).unwrap();
+    let exported = export_mlir(&document, filename, Some(&assets)).unwrap_err();
+    assert_eq!(exported.to_string(), error);
+    let raw = xrack_compiler::mlir::lower(&document, filename).unwrap();
+    let from_text = prepare_mlir_preview(&raw, filename).err().unwrap();
+    assert_eq!(from_text.to_string(), error);
     assert!(
         error.contains("default language") && error.contains("'missing'"),
         "{error}"
@@ -2901,10 +2920,9 @@ fn standard_table_checks_column_fields_in_source_and_mlir() {
     let output = compile(source, "standard-table.xr").unwrap();
     assert!(output.mlir.contains("kind = \"StandardTableView\""));
     let rust = output.rust.to_string();
-    assert!(
-        rust.contains("project_standard_table_rows") && rust.contains("device_name . to_string")
-    );
-    assert!(rust.contains("header_label . to_string"));
+    assert!(rust.contains("project_standard_table_rows"));
+    assert!(rust.contains("TableField :: cell_text (& item . device_name)"));
+    assert!(rust.contains("TableField :: cell_text (& item . header_label)"));
     for (replacement, expected) in [
         ("\"missing\"", "has no field `missing`"),
         ("root.field-name", "requires a constant string field name"),
@@ -5099,7 +5117,7 @@ fn split_fill_is_a_typed_direct_pane_reference() {
     "#;
     let result = compile(source, "split-fill.xr").unwrap();
     assert!(result.mlir.contains("xr.split_fill"));
-    assert!(result.rust.to_string().contains("split_fill_pane = Some"));
+    assert!(result.rust.to_string().contains("split_fill_index = Some"));
     for target in ["outside", "inner", "missing"] {
         let error = analyze(&source.replace("fill-pane: editor", &format!("fill-pane: {target}")))
             .unwrap_err();
@@ -5369,7 +5387,7 @@ fn tree_filters_require_a_typed_record_field() {
         }
     "#;
     let output = compile(source, "tree-filter.xr").unwrap();
-    assert!(output.rust.to_string().contains("snapshot_filtered"));
+    assert!(output.rust.to_string().contains("project_model"));
     for (from, to, expected) in [
         (
             r#"filter-field: "details.label";"#,
@@ -6719,6 +6737,11 @@ fn image_and_path_bindings_report_resource_errors() {
     assert!(ir.to_mlir().contains("\"xr.image_url\""));
     assert!(ir.to_mlir().contains("!xr.imagefit"));
     assert!(ir.to_mlir().contains("!xr.image"));
+    let document = parse(source).unwrap();
+    let export = xrack_compiler::export_mlir(&document, "image.xr", None)
+        .unwrap_err()
+        .to_string();
+    assert_eq!(export, compile(source, "image.xr").err().unwrap());
     assert!(
         compile(source, "image.xr")
             .err()
@@ -7312,7 +7335,7 @@ fn auto_sort_requires_a_boolean_on_a_standard_table() {
     let output = compile(source, "view-sort.xr").unwrap();
     let rust = output.rust.to_string();
     assert!(rust.contains("sorted_rows"));
-    assert!(rust.contains("total_cmp"));
+    assert!(rust.contains("TableField :: compare_cells (& left . units , & right . units)"));
     let bad = source.replace("auto-sort: true", "auto-sort: 1");
     assert!(
         compile(&bad, "view-sort.xr")
@@ -7533,8 +7556,14 @@ fn standard_table_editable_columns_require_a_writable_record_model() {
         .unwrap()
         .rust
         .to_string();
-    for kind in ["Int", "Date", "Float"] {
-        assert!(rust.contains(&format!("TableCellEditor :: {kind}")));
+    for field_type in [
+        ":: core :: primitive :: i64",
+        ":: xrack_runtime :: Date",
+        ":: core :: primitive :: f64",
+    ] {
+        assert!(rust.contains(&format!(
+            "{field_type} as :: xrack_runtime :: TableField > :: EDITOR"
+        )));
     }
     assert!(rust.contains("TableEditHistory"));
     assert!(rust.contains("paste_in_order"));

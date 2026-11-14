@@ -1,5 +1,6 @@
 {
   "clangd.path": "clangd",
+  "mlir.server_path": "bazel-bin/mlir/xrack-mlir-lsp-server",
   "rust-analyzer.linkedProjects": ["rust-project.json"],
   "rust-analyzer.checkOnSave": false,
   "rust-analyzer.cargo.buildScripts.enable": false,

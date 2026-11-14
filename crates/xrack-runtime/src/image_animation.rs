@@ -50,17 +50,13 @@ impl ImageAnimation {
         self.size
     }
 
+    #[doc(hidden)]
+    pub fn frames(&self) -> impl ExactSizeIterator<Item = (u32, &[u8])> {
+        self.frames.iter().map(|frame| (frame.end_ms, frame.png))
+    }
+
     pub(crate) fn matches_loaded(&self, other: &LoadedAnimation) -> bool {
-        self.size == other.size
-            && self.plays == other.plays
-            && self
-                .frames
-                .iter()
-                .map(|frame| (frame.end_ms, frame.png))
-                .eq(other
-                    .frames
-                    .iter()
-                    .map(|(end, frame)| (*end, frame.bytes())))
+        self.size == other.size && self.plays == other.plays && self.frames().eq(other.frames())
     }
 }
 

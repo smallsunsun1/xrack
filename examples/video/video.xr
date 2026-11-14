@@ -1,0 +1,124 @@
+export component VideoDemo inherits Window {
+    title: "XRack MediaPlayer";
+    width: 720px;
+    height: 480px;
+    in property <string> video-source: "../../crates/xrack-media/tests/sync.mp4";
+    in property <bool> start-playing: false;
+    in property <string> subtitles-file: "";
+    in-out property <float> speed: 1;
+    in-out property <bool> muted: false;
+    in property <int> audio-track: -1;
+    in-out property <float> sound-level: 0.65;
+    in property <bool> network-controls: false;
+    private property <bool> weak-network: false;
+    out property <float> position: player.position;
+    out property <float> duration: player.duration;
+    out property <bool> playing: player.playing;
+    out property <bool> ready: player.ready;
+    out property <bool> seekable: player.seekable;
+    out property <bool> is-live: player.live;
+    out property <float> seek-start: player.seek-start;
+    out property <float> seek-end: player.seek-end;
+    out property <bool> at-live-edge: player.at-live-edge;
+    out property <int> bitrate: player.bitrate;
+    out property <string> status: player.status;
+    out property <string> error: player.error;
+    callback play();
+    callback pause();
+    callback seek(float);
+    callback stop();
+    callback go-live();
+    play => { player.play(); }
+    pause => { player.pause(); }
+    seek(seconds) => { player.seek(seconds); }
+    stop => { player.stop(); }
+    go-live => { player.go-live(); }
+
+    VerticalLayout {
+        padding: 16px;
+        spacing: 10px;
+        player := MediaPlayer {
+            source: root.video-source;
+            autoplay: root.start-playing;
+            volume: root.sound-level;
+            muted: root.muted;
+            playback-rate: root.speed;
+            audio-track: root.audio-track;
+            network-bandwidth: root.weak-network ? 180000 : 0;
+            subtitle-file: root.subtitles-file;
+            image-fit: contain;
+            vertical-stretch: 1;
+            accessible-name: "Video";
+        }
+        progress := Slider {
+            accessible-name: "Playback position";
+            minimum: player.seek-start;
+            maximum: player.seek-end;
+            step: 0.05;
+            enabled: player.ready && player.seekable && player.seek-end > player.seek-start;
+            live: false;
+            value: player.position;
+            changed(seconds) => { player.seek(seconds); }
+        }
+        Label {
+            visible: player.live;
+            text: Strings.format("{} kbps  |  {}  |  Position {} s  |  Window {}–{} s",
+                Math.round(player.bitrate / 1000), player.status, Math.round(player.position),
+                Math.round(player.seek-start), Math.round(player.seek-end));
+        }
+        HorizontalLayout {
+            spacing: 12px;
+            play-button := Button {
+                text: "Play";
+                enabled: player.ready && !player.playing;
+                clicked => { player.play(); }
+            }
+            pause-button := Button {
+                text: "Pause";
+                enabled: player.playing;
+                clicked => { player.pause(); }
+            }
+            stop-button := Button {
+                text: "Stop";
+                enabled: player.ready;
+                clicked => { player.stop(); }
+            }
+            live-button := Button {
+                text: player.at-live-edge ? "Live" : "Go live";
+                visible: player.live;
+                enabled: player.ready && (!player.at-live-edge || !player.playing);
+                clicked => { player.go-live(); }
+            }
+            Label {
+                text: player.live ? Strings.format("{} s behind", Math.round(player.seek-end - player.position)) : Strings.format("{} / {} s", Math.round(player.position), Math.round(player.duration));
+            }
+            Slider {
+                accessible-name: "Volume";
+                minimum: 0;
+                maximum: 1;
+                step: 0.05;
+                value <=> root.sound-level;
+                horizontal-stretch: 1;
+            }
+        }
+        HorizontalLayout {
+            visible: root.network-controls;
+            spacing: 12px;
+            weak-network-button := Button {
+                text: "模拟弱网";
+                enabled: player.ready && player.live && !root.weak-network;
+                clicked => { root.weak-network = true; }
+            }
+            restore-network-button := Button {
+                text: "恢复正常";
+                enabled: root.weak-network;
+                clicked => { root.weak-network = false; }
+            }
+            Label {
+                text: root.weak-network ? "已限制到 180 kbps" : "网络不限速";
+            }
+        }
+        Label { text: player.subtitle; visible: player.subtitle != ""; }
+        Label { text: player.error; visible: player.error != ""; }
+    }
+}

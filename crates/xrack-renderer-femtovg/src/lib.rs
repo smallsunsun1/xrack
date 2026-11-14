@@ -994,7 +994,17 @@ impl Renderer {
             );
             self.canvas.stroke_path(&path, &paint);
         }
-        if matches!(node.kind, "Image" | "AnimatedImage")
+        if node.kind == "MediaPlayer" {
+            if let (Some(media), Some(frame)) = (&node.media, &node.media_frame) {
+                self.images.draw_video(
+                    &mut self.canvas,
+                    media.key(),
+                    frame,
+                    bounds,
+                    ImagePresentation::for_node(node, frame.size(), in_layout),
+                )?;
+            }
+        } else if matches!(node.kind, "Image" | "AnimatedImage")
             && let Some(image) = node.image_asset("source")
         {
             let image = if node.kind == "AnimatedImage" {
@@ -1310,7 +1320,7 @@ impl Renderer {
                         .map_err(|error| format!("text drawing failed: {error}"))?;
                 }
             }
-        } else if node.kind == "Text" || is_button {
+        } else if node.kind == "Text" || is_button && node.control_part("ButtonContent").is_none() {
             let button = is_button.then(|| ButtonContent::new(node));
             let text = button
                 .as_ref()

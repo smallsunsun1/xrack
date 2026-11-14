@@ -18,6 +18,8 @@
 #include "llvm/Support/JSON.h"
 #include "llvm/Support/raw_ostream.h"
 #include <algorithm>
+#include <cmath>
+#include <limits>
 #include <optional>
 #include <string>
 #include <tuple>
@@ -351,6 +353,103 @@ struct FoldCast : OpRewritePattern<CastOp> {
   }
 };
 
+struct FoldMathFunction : OpRewritePattern<MathFunctionOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(MathFunctionOp op,
+                                PatternRewriter &rewriter) const override {
+    Type input = op.getInputs().front().getType();
+    auto operation = op.getValue();
+    if (operation != "min" && operation != "max" && operation != "clamp" &&
+        operation != "abs")
+      return failure();
+    if (isa<IntType>(input)) {
+      llvm::SmallVector<int64_t, 3> values;
+      for (Value operand : op.getInputs()) {
+        auto literal = operand.getDefiningOp<LiteralOp>();
+        int64_t value;
+        if (!literal || literal.getValue().getAsInteger(10, value))
+          return failure();
+        values.push_back(value);
+      }
+      int64_t a = values[0];
+      int64_t result;
+      if (operation == "abs") {
+        result = a == std::numeric_limits<int64_t>::min()
+                     ? std::numeric_limits<int64_t>::max()
+                     : (a < 0 ? -a : a);
+      } else if (operation == "clamp") {
+        auto [min, max] = std::minmax(values[1], values[2]);
+        result = std::clamp(a, min, max);
+      } else {
+        result = operation == "min" ? std::min(a, values[1])
+                                    : std::max(a, values[1]);
+      }
+      replaceLiteral(rewriter, op, std::to_string(result));
+      return success();
+    }
+
+    // Percent literals are stored in display units, while runtime percent
+    // operands hold ratios. Keep these operations at runtime to avoid changing
+    // precision by introducing an extra conversion.
+    if (isa<PercentType>(input))
+      return failure();
+    llvm::SmallVector<double, 3> values;
+    for (Value operand : op.getInputs()) {
+      auto literal = operand.getDefiningOp<LiteralOp>();
+      auto value = literal ? parseFloatLiteral(literal.getValue()) : std::nullopt;
+      if (!value)
+        return failure();
+      values.push_back(*value);
+    }
+    double a = values[0];
+    double result;
+    // Match the runtime helpers when numerically equal zeros have different signs.
+    auto minimum = [](double left, double right) {
+      if (left == 0.0 && right == 0.0)
+        return std::signbit(left) ? left : right;
+      return std::min(left, right);
+    };
+    auto maximum = [](double left, double right) {
+      if (left == 0.0 && right == 0.0)
+        return std::signbit(left) ? right : left;
+      return std::max(left, right);
+    };
+    if (operation == "abs") {
+      result = std::abs(a);
+    } else if (operation == "clamp") {
+      result = std::clamp(a, minimum(values[1], values[2]),
+                          maximum(values[1], values[2]));
+    } else {
+      result = operation == "min" ? minimum(a, values[1]) : maximum(a, values[1]);
+    }
+    return replaceFloatLiteral(rewriter, op, llvm::APFloat(result));
+  }
+};
+
+struct FoldRound : OpRewritePattern<RoundOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(RoundOp op,
+                                PatternRewriter &rewriter) const override {
+    auto literal = op.getInput().getDefiningOp<LiteralOp>();
+    auto value = literal ? parseFloatLiteral(literal.getValue()) : std::nullopt;
+    if (!value)
+      return failure();
+    double rounded = std::round(*value);
+    constexpr double upper = 0x1p63;
+    int64_t result;
+    if (rounded >= upper)
+      result = std::numeric_limits<int64_t>::max();
+    else if (rounded <= -upper)
+      result = std::numeric_limits<int64_t>::min();
+    else
+      result = static_cast<int64_t>(rounded);
+    replaceLiteral(rewriter, op, std::to_string(result));
+    return success();
+  }
+};
+
 struct FoldToRatio : OpRewritePattern<ToRatioOp> {
   using OpRewritePattern::OpRewritePattern;
 
@@ -451,7 +550,7 @@ LogicalResult foldConstants(ModuleOp module, const PropertyAnalysis &properties)
   auto *context = module.getContext();
   for (;;) {
     RewritePatternSet patterns(context);
-    patterns.add<FoldUnary, FoldBinary, FoldCast, FoldToRatio, FoldStringify>(context);
+    patterns.add<FoldUnary, FoldBinary, FoldCast, FoldMathFunction, FoldRound, FoldToRatio, FoldStringify>(context);
     patterns.add<FoldBuiltinField<DateFieldOp, MakeDateOp>,
                  FoldBuiltinField<TimeFieldOp, MakeTimeOp>,
                  FoldBuiltinField<FontFieldOp, MakeFontOp>>(context, properties);

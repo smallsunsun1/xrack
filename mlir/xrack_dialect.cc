@@ -41,11 +41,13 @@ void XrackDialect::initialize() {
 }
 
 bool isExpression(Operation &op) {
-  return isa<LiteralOp, ReadOp, ControlReadOp, GeometryReadOp, StackReadOp, TreeQueryOp, ViewIndexOp, TableSortReadOp, TableSelectionReadOp, TableHistoryReadOp, SplitStateReadOp, SplitResizingOp, ImagePlaybackReadOp, WindowReadOp, CheckGroupReadOp, ActionGroupReadOp, NativeDialogReadOp, FocusReadOp, ViewportReadOp, FlickMotionReadOp, ScrollControlReadOp, ScaleRotateReadOp, SwipeReadOp, HoverReadOp, TouchAreaReadOp, ParamOp, UnaryOp, CastOp,
+  return isa<LiteralOp, ReadOp, ControlReadOp, GeometryReadOp, StackReadOp, TreeQueryOp, ViewIndexOp, TableSortReadOp, TableSelectionReadOp, TableHistoryReadOp, SplitStateReadOp, SplitResizingOp, ImagePlaybackReadOp, MediaReadOp, WindowReadOp, CheckGroupReadOp, ActionGroupReadOp, NativeDialogReadOp, FocusReadOp, ViewportReadOp, FlickMotionReadOp, ScrollControlReadOp, ScaleRotateReadOp, SwipeReadOp, HoverReadOp, TouchAreaReadOp, ParamOp, UnaryOp, CastOp,
              StringifyOp, BinaryOp, SelectOp, SolidBrushOp, GradientStopOp,
-             LinearGradientOp, RadialGradientOp, ImageUrlOp, ImageDimensionOp, NineSliceOp, MarkdownOp, TranslateOp, ArrayOp, PointerButtonsOp, CallOp,
-             ToRatioOp, MakeRecordOp, DefaultRecordOp, RecordArrayOp,
-             GetFieldOp, KeyFieldOp, WheelFieldOp, PointerFieldOp, TouchPointFieldOp, MakeDateOp, DateFieldOp, MakeTimeOp, TimeFieldOp, MakeFontOp, FontFieldOp>(op);
+             LinearGradientOp, RadialGradientOp, ImageUrlOp, ImageDimensionOp, NineSliceOp, MarkdownOp, TranslateOp, LocaleOp, FormatNumberOp, ParseNumberOp, ArrayOp, PointerButtonsOp, CallOp,
+             RoundOp, MathFunctionOp, StringFunctionOp, ColorFunctionOp, ModelCountOp, ModelIsEmptyOp, ModelAtOp, FormatFixedOp, ToRatioOp, MakeRecordOp, DefaultRecordOp, RecordArrayOp,
+             GetFieldOp, KeyFieldOp, WheelFieldOp, PointerFieldOp, TouchPointFieldOp, MakeDateOp, DateFieldOp,
+             DateIsValidOp, DateAddDaysOp, DateAddMonthsOp, DateWeekdayOp,
+             MakeTimeOp, TimeFieldOp, MakeFontOp, FontFieldOp>(op);
 }
 
 LogicalResult TranslateOp::verify() {
@@ -462,11 +464,18 @@ static bool forbiddenInTooltip(llvm::StringRef kind) {
 LogicalResult ComponentOp::verify() {
   if (getExported() != "true" && getExported() != "false")
     return emitOpError("exported must be true or false");
+  if (getGlobal() && *getGlobal() != "true")
+    return emitOpError("global must be true when present");
   unsigned roots = 0;
   for (Operation &child : getBody().front()) {
-    if (isa<ElementOp>(child))
+    if (auto root = dyn_cast<ElementOp>(child)) {
+      if (getGlobal() &&
+          (root.getKind() != "Rectangle" || !llvm::hasSingleElement(root.getBody()) ||
+           !llvm::hasSingleElement(root.getBody().front()) ||
+           !isa<EndOp>(root.getBody().front().front())))
+        return child.emitOpError("global requires an empty Rectangle root");
       ++roots;
-    else if (!isa<PropertyOp, CallbackOp, EndOp>(child) && !isExpression(child))
+    } else if (!isa<PropertyOp, CallbackOp, EndOp>(child) && !isExpression(child))
       return child.emitOpError("is not valid in a component body");
   }
   if (roots != 1)
@@ -561,6 +570,19 @@ LogicalResult ElementOp::verify() {
   auto parent = dyn_cast<ElementOp>((*this)->getParentOp());
   auto parentKind = parent ? parent.getKind() : llvm::StringRef{};
   auto &body = getBody().front();
+  if (kind == "ButtonContent" || kind == "SliderHandle") {
+    auto required = kind == "ButtonContent" ? "Button" : "Slider";
+    if (parentKind != required || !body.getOps<RepeatOp>().empty() ||
+        !body.getOps<ShowIfOp>().empty())
+      return emitOpError() << "requires a static child of " << required;
+  }
+  if (kind == "Button" || kind == "Slider") {
+    auto part = kind == "Button" ? "ButtonContent" : "SliderHandle";
+    if (llvm::count_if(body.getOps<ElementOp>(), [&](ElementOp child) {
+          return child.getKind() == part;
+        }) > 1)
+      return emitOpError() << "accepts at most one " << part;
+  }
   if (kind == "MonthGrid" &&
       llvm::count_if(body.getOps<ElementOp>(), [](ElementOp child) {
         return child.getKind() == "DayCell";
@@ -680,11 +702,9 @@ LogicalResult ElementOp::verify() {
       return emitOpError("ButtonGroup accepts either current-index or current-value");
     return success();
   }
-  if (kind == "AnimatedImage") {
-    for (auto element = *this; element; element = element->getParentOfType<ElementOp>())
-      if (!element.getBody().front().getOps<RepeatOp>().empty())
-        return emitOpError("AnimatedImage in a repetition requires a component delegate");
-  }
+  if ((kind == "AnimatedImage" || kind == "MediaPlayer") &&
+      !isStaticViewport(*this))
+    return emitOpError() << kind << " in a repetition requires a component delegate";
   if (kind == "SecondaryWindow") {
     if (!isWindow(parentKind) || !isa<ComponentOp>(parent->getParentOp()) || getId().empty())
       return emitOpError("SecondaryWindow requires a named declaration at the root Window");
@@ -808,7 +828,7 @@ LogicalResult ElementOp::verify() {
        !llvm::hasSingleElement(refs)))
     return emitOpError(
         "requires one Action reference on a push button, MenuItem or Shortcut");
-  if (linkedAction)
+  if (linkedAction && !virtualDelegate)
     for (auto ancestor = *this; ancestor;
          ancestor = ancestor->getParentOfType<ElementOp>())
       if (!ancestor.getBody().empty() &&
@@ -933,6 +953,8 @@ LogicalResult ElementOp::verify() {
   llvm::StringSet<> pageSlots;
   llvm::StringSet<> swipeSlots;
   llvm::StringSet<> animations;
+  llvm::StringSet<> visualBindings;
+  llvm::StringSet<> eventHandlers;
   ReadOp intervalTarget;
   ReadOp comboTextTarget;
   ReadOp calendarTarget;
@@ -1270,6 +1292,19 @@ LogicalResult ElementOp::verify() {
         return child.emitOpError("z and opacity require a visual item and a float");
       if (!validImageBinding(kind, name, bind.getInput().getType()))
         return child.emitOpError("incorrect Image property type");
+      if (kind == "MediaPlayer") {
+        auto type = bind.getInput().getType();
+        if (((name == "source" || name == "subtitle-file") && !isa<StringType>(type)) ||
+            ((name == "autoplay" || name == "muted") && !isa<BoolType>(type)) ||
+            ((name == "volume" || name == "playback-rate") && !isa<FloatType>(type)) ||
+            ((name == "loops" || name == "audio-track" || name == "subtitle-track" ||
+              name == "network-bandwidth") && !isa<IntType>(type)) ||
+            (name == "image-fit" && !isa<ImageFitType>(type)) ||
+            llvm::StringSwitch<bool>(name)
+                .Cases({"duration", "position", "ready", "ended", "playing", "error", "status", "seekable", "has-audio", "has-video", "audio-tracks", "subtitle-tracks", "media-title", "subtitle", "audio-error", "subtitle-error", "buffer-progress", "bitrate", "live", "seek-start", "seek-end", "at-live-edge"}, true)
+                .Default(false))
+          return child.emitOpError("incorrect MediaPlayer property or type");
+      }
       if (kind == "AnimatedImage" &&
           ((name == "current-frame" || name == "frame-count") ||
            ((name == "playing" || name == "paused") && !isa<BoolType>(bind.getInput().getType())) ||
@@ -1841,6 +1876,13 @@ LogicalResult ElementOp::verify() {
              StateSetOp, StateTimingOp, FocusTargetOp, EndOp>(child) &&
         !isExpression(child))
       return child.emitOpError("is not valid in an element body");
+    if (auto name = child.getAttrOfType<StringAttr>("name")) {
+      if (isa<BindOp, ControlLinkOp, RowLinkOp>(child) &&
+          !visualBindings.insert(name.getValue()).second)
+        return child.emitOpError("duplicate visual binding ") << name.getValue();
+      if (isa<HandlerOp>(child) && !eventHandlers.insert(name.getValue()).second)
+        return child.emitOpError("duplicate event handler ") << name.getValue();
+    }
   }
   if (repeated && options != 1)
     return emitOpError() << "a repeated " << childKind
@@ -2265,6 +2307,20 @@ LogicalResult TimerCommandOp::verify() {
   return success();
 }
 
+LogicalResult MediaCommandOp::verify() {
+  auto *parent = (*this)->getParentOp();
+  if (!isa_and_nonnull<HandlerOp, CallbackOp>(parent))
+    return emitOpError("requires a handler or callback parent");
+  if (auto callback = dyn_cast<CallbackOp>(parent);
+      callback && callback.getPure().value_or("false") == "true")
+    return emitOpError("MediaPlayer commands require an impure callback");
+  auto method = getMethod();
+  if ((method == "seek" && getPosition()) ||
+      ((method == "play" || method == "pause" || method == "stop" || method == "go-live") && !getPosition()))
+    return success();
+  return emitOpError("requires play(), pause(), stop(), go-live(), or seek(float)");
+}
+
 LogicalResult PopupCommandOp::verify() {
   auto *parent = (*this)->getParentOp();
   if (!isa_and_nonnull<HandlerOp, CallbackOp>(parent))
@@ -2570,6 +2626,20 @@ LogicalResult SecondaryWindowCommandOp::verify() {
   if (getCommand() != "show" && getCommand() != "hide" && getCommand() != "close")
     return emitOpError("requires show, hide, or close");
   return success();
+}
+
+LogicalResult MediaReadOp::verify() {
+  auto name = getValue();
+  auto type = getResult().getType();
+  if (((name == "position" || name == "duration" || name == "buffer-progress" ||
+        name == "seek-start" || name == "seek-end") && isa<FloatType>(type)) ||
+      ((name == "ready" || name == "playing" || name == "ended" || name == "seekable" ||
+        name == "has-audio" || name == "has-video" || name == "live" || name == "at-live-edge") && isa<BoolType>(type)) ||
+      ((name == "audio-tracks" || name == "subtitle-tracks" || name == "bitrate") && isa<IntType>(type)) ||
+      ((name == "error" || name == "status" || name == "media-title" ||
+        name == "subtitle" || name == "audio-error" || name == "subtitle-error") && isa<StringType>(type)))
+    return success();
+  return emitOpError("incorrect MediaPlayer state property or type");
 }
 
 LogicalResult ImagePlaybackReadOp::verify() {
@@ -2997,7 +3067,7 @@ static LogicalResult verifyCallback(Operation *op, Region &body,
   for (Operation &child : body.front()) {
     if (isa<ReturnOp>(child) && !isa_and_nonnull<EndOp>(child.getNextNode()))
       return child.emitOpError("must be immediately before xr.end");
-    if (!isa<AssignOp, InvokeOp, NavigateOp, TimerCommandOp, PopupCommandOp,
+    if (!isa<AssignOp, InvokeOp, LogOp, NavigateOp, TimerCommandOp, MediaCommandOp, PopupCommandOp,
              FileDialogOpenOp, NativeDialogOpenOp, WindowCloseOp, WindowCommandOp, CheckGroupCommandOp,
              SecondaryWindowCommandOp, FocusCommandOp, SwipeCancelOp, TextCommandOp, ScrollCommandOp, SourceSelectionOp, TreeCommandOp, TableSortCommandOp, TableSelectionCommandOp, TableHistoryCommandOp, SplitRestoreOp, CancelFlickOp, ReturnToBoundsOp, MoveColumnOp, MoveRowOp,
              SetRowHeightOp, ReturnOp, EndOp>(child) &&
@@ -3024,6 +3094,98 @@ LogicalResult CallbackOp::verify() {
   return verifyCallback(*this, getBody(), getParameters());
 }
 
+LogicalResult MathFunctionOp::verify() {
+  auto operation = getValue();
+  bool scalar = llvm::StringSwitch<bool>(operation)
+                    .Cases({"sign", "sqrt", "pow", "exp", "ln", "log", "sin",
+                            "cos", "tan", "asin", "acos", "atan", "atan2",
+                            "hypot", "to-radians", "to-degrees", "is-finite"}, true)
+                    .Default(false);
+  unsigned arity = llvm::StringSwitch<unsigned>(operation)
+                       .Case("clamp", 3)
+                       .Cases({"min", "max", "mod", "pow", "log", "atan2", "hypot"}, 2)
+                       .Cases({"abs", "floor", "ceil"}, 1)
+                       .Default(scalar ? 1 : 0);
+  if (!arity || getInputs().size() != arity)
+    return emitOpError("unknown math function or wrong argument count");
+  Type input = getInputs().front().getType();
+  Type result = getResult().getType();
+  if (!llvm::all_of(getInputs(), [&](Value value) { return value.getType() == input; }))
+    return emitOpError("expected matching argument types");
+  if (operation == "floor" || operation == "ceil") {
+    if (!isa<FloatType>(input) || !isa<IntType>(result))
+      return emitOpError("expected float input and int result");
+  } else if (scalar) {
+    if (!isa<FloatType>(input) ||
+        (operation == "is-finite" ? !isa<BoolType>(result) : input != result))
+      return emitOpError("invalid scalar math argument or result type");
+  } else if (input != result) {
+    return emitOpError("expected matching argument and result types");
+  }
+  return success();
+}
+
+LogicalResult StringFunctionOp::verify() {
+  auto operation = getValue();
+  unsigned arity = llvm::StringSwitch<unsigned>(operation)
+                       .Case("replace-all", 3)
+                       .Cases({"contains", "starts-with", "ends-with", "to-int", "to-float"}, 2)
+                       .Cases({"trim", "is-empty", "character-count", "lowercase",
+                               "uppercase", "is-int", "is-float"}, 1)
+                       .Default(0);
+  if (!arity || getInputs().size() != arity)
+    return emitOpError("unknown string function or wrong argument count");
+  auto *context = getContext();
+  auto string = StringType::get(context);
+  Type result = llvm::StringSwitch<Type>(operation)
+                    .Cases({"trim", "replace-all", "lowercase", "uppercase"}, string)
+                    .Cases({"character-count", "to-int"}, IntType::get(context))
+                    .Case("to-float", FloatType::get(context))
+                    .Default(BoolType::get(context));
+  if (result != getResult().getType())
+    return emitOpError("invalid string function result type");
+  for (auto [index, input] : llvm::enumerate(getInputs())) {
+    bool fallback = index == 1 && (operation == "to-int" || operation == "to-float");
+    if (input.getType() != (fallback ? result : Type(string)))
+      return emitOpError("invalid string function operand type");
+  }
+  return success();
+}
+
+LogicalResult ColorFunctionOp::verify() {
+  auto *context = getContext();
+  auto color = ColorType::get(context);
+  auto scalar = FloatType::get(context);
+  auto integer = IntType::get(context);
+  llvm::SmallVector<Type, 4> expected;
+  auto operation = getValue();
+  if (operation == "rgb")
+    expected = {integer, integer, integer};
+  else if (operation == "rgba")
+    expected = {integer, integer, integer, scalar};
+  else if (operation == "with-alpha")
+    expected = {color, scalar};
+  else if (operation == "mix")
+    expected = {color, color, scalar};
+  if (expected.empty() || !llvm::equal(getInputs().getTypes(), expected))
+    return emitOpError("unknown color function or invalid operands");
+  return success();
+}
+
+LogicalResult FormatFixedOp::verify() {
+  unsigned precision;
+  if (getValue().getAsInteger(10, precision) || precision > 20)
+    return emitOpError("fixed precision must be between 0 and 20");
+  return success();
+}
+
+LogicalResult LogOp::verify() {
+  if (auto callback = dyn_cast<CallbackOp>((*this)->getParentOp());
+      callback && callback.getPure())
+    return emitOpError("logging is not allowed in a pure callback");
+  return success();
+}
+
 LogicalResult HandlerOp::verify() {
   return verifyCallback(*this, getBody(), getParameters());
 }
@@ -3046,6 +3208,10 @@ LogicalResult LiteralOp::verify() {
     valid = parseFloatLiteral(spelling).has_value();
   } else if (isa<BoolType>(type)) {
     valid = spelling == "true" || spelling == "false";
+  } else if (isa<LogLevelType>(type)) {
+    valid = llvm::StringSwitch<bool>(spelling)
+                .Cases({"trace", "debug", "info", "warn", "error"}, true)
+                .Default(false);
   } else if (isa<ImageFitType>(type)) {
     valid = spelling == "fill" || spelling == "contain" ||
             spelling == "cover" || spelling == "preserve";
@@ -3273,6 +3439,16 @@ LogicalResult RadialGradientOp::verify() {
 using Components = llvm::StringMap<ComponentOp>;
 using Owners = llvm::StringMap<Operation *>;
 
+llvm::StringRef scopedOwnerKey(Operation *op) {
+  if (auto element = dyn_cast<ElementOp>(op)) {
+    if (!isa_and_nonnull<ComponentOp>(op->getParentOp()))
+      return element.getKey().value_or(element.getId());
+  } else if (auto instance = dyn_cast<InstanceOp>(op)) {
+    return instance.getKey();
+  }
+  return {};
+}
+
 static bool staticPropertyOwner(Operation *op) {
   for (; op && !isa<ComponentOp>(op); op = op->getParentOp())
     if (isa<ElementOp, InstanceOp>(op) &&
@@ -3383,10 +3559,11 @@ static LogicalResult verifyReference(Operation *op, const Owners &owners,
     auto visibility = property.getVisibility();
     if (requireInOut && visibility != "in-out")
       return op->emitOpError("requires an in-out component property ") << name;
-    if (instance && visibility == "private")
+    bool external = instance || owner.starts_with("__global_");
+    if (external && visibility == "private")
       return op->emitOpError("cannot access private property ") << name;
     if (write &&
-        (instance ? !writableFromParent(visibility) : visibility == "in"))
+        (external ? !writableFromParent(visibility) : visibility == "in"))
       return op->emitOpError("cannot write read-only property ") << name;
     if (property.getInitial().getType() != type)
       return op->emitOpError("property type mismatch for ")
@@ -3452,6 +3629,108 @@ static bool matchesDeclaredType(Type type, llvm::StringRef declared) {
   else if (declared == "styled-text")
     declared = "styledtext";
   return spelling.consume_front("!xr.") && spelling == declared.lower();
+}
+
+static Type repeatedItemType(Type model) {
+  auto *context = model.getContext();
+  if (auto list = dyn_cast<RecordListType>(model))
+    return RecordType::get(context, list.getName());
+  if (isa<StringListType>(model))
+    return StringType::get(context);
+  if (isa<TouchPointsType>(model))
+    return TouchPointType::get(context);
+  return model;
+}
+
+LogicalResult ModelAtOp::verify() {
+  if (getResult().getType() != repeatedItemType(getModel().getType()))
+    return emitOpError("model row type must match the fallback and result");
+  return success();
+}
+
+
+static LogicalResult verifyParameter(ParamOp param) {
+  auto name = param.getValue();
+  auto type = param.getResult().getType();
+  auto checkType = [&](Type expected) -> LogicalResult {
+    if (type != expected)
+      return param.emitOpError("parameter type mismatch for ") << name;
+    return success();
+  };
+  auto *scope = param->getParentOp();
+  bool allowsRow = true;
+  if (isa<CallbackOp, HandlerOp>(scope)) {
+    auto parsed = llvm::json::parse(
+        scope->getAttrOfType<StringAttr>("parameters").getValue());
+    if (!parsed) {
+      llvm::consumeError(parsed.takeError());
+      return param.emitOpError("invalid parameter declaration");
+    }
+    auto *parameters = parsed->getAsArray();
+    if (!parameters)
+      return param.emitOpError("invalid parameter declaration");
+    for (auto &parameter : *parameters) {
+      auto *object = parameter.getAsObject();
+      if (!object || object->getString("name") != name)
+        continue;
+      auto declared = object->getString("ty");
+      if (!declared || !matchesDeclaredType(type, *declared))
+        return param.emitOpError("parameter type mismatch for ") << name;
+      return success();
+    }
+    auto *owner = scope->getParentOp();
+    allowsRow = isa<InstanceOp>(owner);
+    if (auto element = dyn_cast<ElementOp>(owner))
+      allowsRow = isa<HandlerOp>(scope) && isVirtualItemDelegate(element);
+  } else if (auto parser = dyn_cast<ClipboardPasteOp>(scope)) {
+    if (name == parser.getTextParameter())
+      return checkType(StringType::get(param.getContext()));
+  }
+
+  if (allowsRow) {
+    for (auto *owner = scope; owner && !isa<ComponentOp>(owner);
+         owner = owner->getParentOp()) {
+      if (!isa<ElementOp, InstanceOp>(owner))
+        continue;
+      for (auto repeat : owner->getRegion(0).front().getOps<RepeatOp>()) {
+        // The model expression is evaluated in the enclosing row, before this
+        // repeat introduces its item and index.
+        if (owner == scope && param->isBeforeInBlock(repeat.getOperation()))
+          continue;
+        if (name == repeat.getItem())
+          return checkType(repeatedItemType(repeat.getInput().getType()));
+        if (!name.empty() && name == repeat.getIndex())
+          return checkType(IntType::get(param.getContext()));
+      }
+    }
+  }
+
+  auto templateKind = visualTemplateKind(param);
+  auto *context = param.getContext();
+  Type expected;
+  if (templateKind == "SplitHandle") {
+    if (name == "handle-index")
+      expected = IntType::get(context);
+    else if (name == "handle-orientation")
+      expected = OrientationType::get(context);
+    else if (name == "handle-hovered" || name == "handle-pressed")
+      expected = BoolType::get(context);
+  } else if (templateKind == "DayCell") {
+    if (name == "cell-date")
+      expected = DateType::get(context);
+    else if (name == "cell-index" || name == "cell-weekday" || name == "cell-week" ||
+             name == "cell-week-year")
+      expected = IntType::get(context);
+    else if (name == "cell-selected" || name == "cell-today" || name == "cell-in-month" ||
+             name == "cell-enabled")
+      expected = BoolType::get(context);
+  }
+  if (!templateKind.empty()) {
+    if (type != expected)
+      return param.emitOpError("invalid ") << templateKind << " parameter or type";
+    return success();
+  }
+  return param.emitOpError("unknown parameter ") << name;
 }
 
 static LogicalResult verifyCall(Operation *op, const Owners &owners,
@@ -3579,18 +3858,13 @@ static LogicalResult verifyReferences(ComponentOp component,
   Owners owners;
   owners.try_emplace("root", component.getOperation());
   auto indexed = component.walk([&](Operation *op) -> WalkResult {
-    llvm::StringRef key;
-    if (auto element = dyn_cast<ElementOp>(op)) {
-      if (isa<ComponentOp>(op->getParentOp()))
-        return WalkResult::advance();
-      key = element.getKey().value_or(element.getId());
-    } else if (auto instance = dyn_cast<InstanceOp>(op)) {
-      if (!components.count(instance.getComponent())) {
+    if (auto instance = dyn_cast<InstanceOp>(op)) {
+      if (auto target = components.lookup(instance.getComponent()); !target || target.getGlobal()) {
         op->emitOpError("unknown component ") << instance.getComponent();
         return WalkResult::interrupt();
       }
-      key = instance.getKey();
     }
+    llvm::StringRef key = scopedOwnerKey(op);
     if (!key.empty() && !owners.try_emplace(key, op).second) {
       op->emitOpError("duplicate property owner ") << key;
       return WalkResult::interrupt();
@@ -3599,6 +3873,15 @@ static LogicalResult verifyReferences(ComponentOp component,
   });
   if (indexed.wasInterrupted())
     return failure();
+
+  llvm::SmallVector<std::string> globalKeys;
+  for (const auto &entry : components) {
+    auto target = entry.getValue();
+    if (target.getGlobal() && target != component)
+      globalKeys.push_back(("__global_" + entry.getKey()).str());
+  }
+  for (const auto &key : globalKeys)
+    owners.try_emplace(key, components.lookup(llvm::StringRef(key).drop_front(9)));
 
   for (auto &entry : owners) {
     llvm::StringMap<PropertyOp> properties;
@@ -3660,23 +3943,8 @@ static LogicalResult verifyReferences(ComponentOp component,
         if (succeeded(result) && !staticPropertyOwner(owners.lookup(owner)))
           result = op->emitOpError("property aliases require statically addressed endpoints");
       }
-    } else if (auto param = dyn_cast<ParamOp>(op);
-               param && visualTemplateKind(op) == "SplitHandle") {
-      auto name = param.getValue();
-      auto type = param.getResult().getType();
-      if (!(name == "handle-index" && isa<IntType>(type)) &&
-          !(name == "handle-orientation" && isa<OrientationType>(type)) &&
-          !((name == "handle-hovered" || name == "handle-pressed") && isa<BoolType>(type)))
-        result = op->emitOpError("invalid SplitHandle parameter or type");
-    } else if (auto param = dyn_cast<ParamOp>(op); param && visualTemplateKind(op) == "DayCell") {
-      auto name = param.getValue();
-      auto type = param.getResult().getType();
-      if (!(name == "cell-date" && isa<DateType>(type)) &&
-          !(isa<IntType>(type) && llvm::StringSwitch<bool>(name)
-              .Cases({"cell-index", "cell-weekday", "cell-week", "cell-week-year"}, true).Default(false)) &&
-          !(isa<BoolType>(type) && llvm::StringSwitch<bool>(name)
-              .Cases({"cell-selected", "cell-today", "cell-in-month", "cell-enabled"}, true).Default(false)))
-        result = op->emitOpError("invalid DayCell parameter or type");
+    } else if (auto param = dyn_cast<ParamOp>(op)) {
+      result = verifyParameter(param);
     } else if (auto control = dyn_cast<ControlReadOp>(op)) {
       if (!validControlAlias(elementOwner(control.getOwner()), control.getValue(), control.getResult().getType()))
         result = op->emitOpError("requires a supported writable control property of matching type");
@@ -3694,6 +3962,10 @@ static LogicalResult verifyReferences(ComponentOp component,
         result = op->emitOpError("requires a StackView owner");
       else if (auto route = read.getRoute())
         result = verifyStackRoute(op, view, route);
+    } else if (auto read = dyn_cast<MediaReadOp>(op)) {
+      auto target = elementOwner(read.getOwner());
+      if (!target || target.getKind() != "MediaPlayer")
+        result = op->emitOpError("requires a MediaPlayer owner");
     } else if (auto read = dyn_cast<ImagePlaybackReadOp>(op)) {
       auto target = elementOwner(read.getOwner());
       if (!target || target.getKind() != "AnimatedImage")
@@ -3927,7 +4199,11 @@ static LogicalResult verifyReferences(ComponentOp component,
         result = verifyCallbackSignature(callback,
             lookupCallback(owners, components, instance.getKey(), callback.getName()));
       } else if (auto owner = callback.getAliasOwner()) {
-        if (!staticPropertyOwner(op->getParentOp()) || !staticPropertyOwner(owners.lookup(*owner)))
+        auto *target = owners.lookup(*owner);
+        if (auto global = dyn_cast_or_null<ComponentOp>(target);
+            global && global != component && global.getGlobal())
+          result = op->emitOpError("global callbacks can be called but cannot be aliased");
+        else if (!staticPropertyOwner(op->getParentOp()) || !staticPropertyOwner(target))
           result = op->emitOpError("callback aliases require statically addressed endpoints");
         else
           result = verifyCallbackSignature(callback,
@@ -3965,6 +4241,10 @@ static LogicalResult verifyReferences(ComponentOp component,
           result = verifyStackRoute(op, view, argument);
         }
       }
+    } else if (auto command = dyn_cast<MediaCommandOp>(op)) {
+      auto target = elementOwner(command.getOwner());
+      if (!target || target.getKind() != "MediaPlayer")
+        result = op->emitOpError("requires a MediaPlayer owner in the same component");
     } else if (auto command = dyn_cast<TimerCommandOp>(op)) {
       auto timer = dyn_cast_or_null<ElementOp>(owners.lookup(command.getOwner()));
       if (!timer || timer.getKind() != "Timer")
@@ -4156,7 +4436,7 @@ static bool recordIdentifier(llvm::StringRef name) {
 static bool recordScalarType(llvm::StringRef type) {
   return llvm::StringSwitch<bool>(type)
       .Cases({"int", "float", "bool", "string", "styled-text", "length", "color", "brush",
-              "image", "ImageFit", "ImageTileMode", "ImageHorizontalAlignment", "ImageVerticalAlignment", "ImageRendering",
+              "image", "LogLevel", "ImageFit", "ImageTileMode", "ImageHorizontalAlignment", "ImageVerticalAlignment", "ImageRendering",
               "LayoutAlignment", "CrossAxisAlignment",
               "Orientation", "FlickDirection", "FlickBoundsBehavior", "FlickBoundsMovement", "FlexboxLayoutDirection", "FlexboxLayoutWrap", "DialInputMode", "ScrollBarPolicy", "ScrollSnapMode", "ScrollAlignment", "TextWrap",
               "TextHorizontalAlignment", "TextVerticalAlignment", "TextOverflow", "InputType", "CursorShape", "ColorScheme", "FileDialogMode", "MessageLevel", "MessageButtons",

@@ -1,3 +1,4 @@
+load("@rules_cc//cc:cc_binary.bzl", "cc_binary")
 load("@rules_cc//cc:cc_library.bzl", "cc_library")
 load("@rules_cc//cc:cc_static_library.bzl", "cc_static_library")
 load("@llvm-project//mlir:tblgen.bzl", "gentbl_cc_library")
@@ -58,6 +59,40 @@ cc_library(
         "@llvm-project//llvm:Support",
         "@llvm-project//mlir:IR",
         "@llvm-project//mlir:SideEffectInterfaces",
+    ],
+)
+
+cc_binary(
+    name = "xrack-mlir-lsp-server",
+    srcs = [
+        "xrack_lsp_document.cc",
+        "xrack_lsp_document.h",
+        "xrack_lsp_lexer.inc",
+        "xrack_mlir_lsp_main.cc",
+        "@llvm-project//mlir:include/mlir/Tools/mlir-lsp-server/MlirLspRegistryFunction.h",
+        "@llvm-project//mlir:include/mlir/Tools/mlir-lsp-server/MlirLspServerMain.h",
+        "@xrack_mlir_lsp_upstream//:LSPServer.cpp",
+        "@xrack_mlir_lsp_upstream//:LSPServer.h",
+        "@xrack_mlir_lsp_upstream//:Lexer.h",
+        "@xrack_mlir_lsp_upstream//:MLIRServer.cpp",
+        "@xrack_mlir_lsp_upstream//:MLIRServer.h",
+        "@xrack_mlir_lsp_upstream//:MlirLspServerMain.cpp",
+        "@xrack_mlir_lsp_upstream//:Protocol.cpp",
+        "@xrack_mlir_lsp_upstream//:Protocol.h",
+        "@xrack_mlir_lsp_upstream//:Token.h",
+    ],
+    visibility = ["//tests:__pkg__"],
+    deps = [
+        ":xrack_dialect",
+        "@llvm-project//llvm:Support",
+        "@llvm-project//mlir:AsmParser",
+        "@llvm-project//mlir:AsmParserTokenKinds",
+        "@llvm-project//mlir:BytecodeWriter",
+        "@llvm-project//mlir:FunctionInterfaces",
+        "@llvm-project//mlir:IR",
+        "@llvm-project//mlir:MlirLspServerSupportLib",
+        "@llvm-project//mlir:Parser",
+        "@llvm-project//mlir:Support",
     ],
 )
 

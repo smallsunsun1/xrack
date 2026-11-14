@@ -1,9 +1,9 @@
 [workspace]
 resolver = "2"
-members = ["crates/*", "bundles/compiler/*", "bundles/mlir/*"]
+members = ["crates/*", "bundles/compiler/*", "bundles/mlir/*", "bundles/media/*"]
 
 [workspace.package]
-version = "0.5.0"
+version = "0.5.1"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/smallsunsun1/xrack"
@@ -21,26 +21,32 @@ flate2 = "1.1"
 fluent-bundle = "0.16"
 fluent-langneg = "0.13"
 fluent-syntax = "0.12"
+icu_decimal = { version = "2.4", features = ["alloc"] }
+icu_locale_core = "2.4"
+writeable = "0.6"
 unic-langid = "0.9"
 toml = "1.0"
-xrack-parser = { path = "crates/xrack-parser", version = "0.5.0" }
-xrack-runtime = { path = "crates/xrack-runtime", version = "0.5.0" }
-xrack-assets = { path = "crates/xrack-assets", version = "0.5.0" }
-xrack-syntax = { path = "crates/xrack-syntax", version = "0.5.0" }
-xrack-ir = { path = "crates/xrack-ir", version = "0.5.0" }
-xrack-mlir = { path = "crates/xrack-mlir", version = "0.5.0" }
+xrack-parser = { path = "crates/xrack-parser", version = "0.5.1" }
+xrack-runtime = { path = "crates/xrack-runtime", version = "0.5.1" }
+xrack-assets = { path = "crates/xrack-assets", version = "0.5.1" }
+xrack-syntax = { path = "crates/xrack-syntax", version = "0.5.1" }
+xrack-ir = { path = "crates/xrack-ir", version = "0.5.1" }
+xrack-mlir = { path = "crates/xrack-mlir", version = "0.5.1" }
 xrack-codegen = { path = "crates/xrack-codegen" }
-xrack-resources = { path = "crates/xrack-resources", version = "0.5.0" }
-xrack-layout = { path = "crates/xrack-layout", version = "0.5.0" }
-xrack-renderer-femtovg = { path = "crates/xrack-renderer-femtovg", version = "0.5.0" }
-xrack-platform-winit = { path = "crates/xrack-platform-winit", version = "0.5.0" }
+xrack-resources = { path = "crates/xrack-resources", version = "0.5.1" }
+xrack-layout = { path = "crates/xrack-layout", version = "0.5.1" }
+xrack-renderer-femtovg = { path = "crates/xrack-renderer-femtovg", version = "0.5.1" }
+xrack-platform-winit = { path = "crates/xrack-platform-winit", version = "0.5.1" }
 femtovg = { version = "=0.28.0", default-features = false, features = ["wgpu", "textlayout"] }
 wgpu = { version = "=30.0.0", default-features = false, features = ["std", "wgsl", "metal", "vulkan", "dx12"] }
 winit = "=0.30.13"
 fontdb = "0.23"
 ttf-parser = "0.25"
 pollster = "1.0"
+tracing = { version = "0.1.44", default-features = false, features = ["std"] }
+tracing-subscriber = { version = "0.3.23", default-features = false, features = ["fmt"] }
 png = "0.18"
+libloading = "0.8.9"
 gif = { version = "=0.14.2", default-features = false, features = ["std"] }
 gif-dispose = "=6.0.0"
 resvg = { version = "=0.49.0", default-features = false }
