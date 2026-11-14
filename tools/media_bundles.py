@@ -9,7 +9,12 @@ import tarfile
 import compiler_bundles as bundles
 
 ROOT = bundles.ROOT
-TARGETS = ("//crates/xrack-media:native_payload", "//crates/xrack-media:ffmpeg_bindings")
+CONFIG_HEADERS = ("config.h", "config_components.h", "libavutil/avconfig.h")
+TARGETS = (
+    "//crates/xrack-media:native_payload",
+    "//crates/xrack-media:ffmpeg_bindings",
+    *(f"@ffmpeg//:{header}" for header in CONFIG_HEADERS),
+)
 BINDINGS = "ffmpeg_bindings.rs"
 
 
@@ -116,7 +121,7 @@ def source_archive(external, bin_dir, destination):
                 bundle.add(path, arcname="ffmpeg/" + path.name)
         for name in ("miniaudio.h", "LICENSE"):
             bundle.add(miniaudio / name, arcname="miniaudio/" + name)
-        for name in ("config.h", "config_components.h", "libavutil/avconfig.h"):
+        for name in CONFIG_HEADERS:
             bundle.add(native / name, arcname="build-config/" + name)
         for name in ("BUILD.bazel", "ffmpeg.h", "audio_device.c", "native_api.c", "native_api.h"):
             bundle.add(ROOT / "crates/xrack-media" / name, arcname="xrack-media/" + name)

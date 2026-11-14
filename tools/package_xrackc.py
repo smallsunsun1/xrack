@@ -96,6 +96,7 @@ def main():
     subprocess.run((bazel, "build", *BAZEL_OPTIONS, *native_options, "--config=media", *media_bundles.TARGETS),
                    cwd=ROOT, check=True)
     bin_dir = Path(output(bazel, "info", *BAZEL_OPTIONS, "bazel-bin"))
+    media_bin_dir = Path(output(bazel, "info", *BAZEL_OPTIONS, "--config=media", "bazel-bin"))
     external = Path(output(bazel, "info", *BAZEL_OPTIONS, "output_base")) / "external"
     exe = "xrackc.exe" if "windows" in host else "xrackc"
     compiler = bin_dir / "crates" / "xrack-compiler" / exe
@@ -103,7 +104,7 @@ def main():
     name = f"xrackc-{version}-{host}"
     dist = ROOT / ".tools" / "dist"
     dist.mkdir(parents=True, exist_ok=True)
-    media_bundles.source_archive(external, bin_dir, dist / media_bundles.source_asset(version, host))
+    media_bundles.source_archive(external, media_bin_dir, dist / media_bundles.source_asset(version, host))
 
     llvm = external / "llvm++llvm+llvm-project"
     rust_docs = Path(output("rustc", "--print", "sysroot")) / "share" / "doc" / "rust"
@@ -126,7 +127,7 @@ def main():
     with tempfile.TemporaryDirectory(dir=dist) as staging:
         staging = Path(staging)
         files.extend(mlir_bundles.native_inputs(bazel, BAZEL_OPTIONS, bin_dir, host, staging))
-        files.extend(media_bundles.native_inputs(bin_dir, external, host, staging))
+        files.extend(media_bundles.native_inputs(media_bin_dir, external, host, staging))
         notice = staging / "media-sources.txt"
         notice.write_text(media_bundles.source_notice(version), encoding="utf-8")
         files.append((notice, "licenses/media/sources.txt"))
