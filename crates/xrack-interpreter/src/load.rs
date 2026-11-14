@@ -642,6 +642,10 @@ impl<'m> Loader<'m> {
                         .use_visual_plan
                         .then(|| RowSceneCache::from_operation(op))
                         .flatten(),
+                    uses_row_identity: xrack_mlir::repeat_uses_row_identity(
+                        op,
+                        self.use_visual_plan,
+                    ),
                 })
             })
             .transpose()?;

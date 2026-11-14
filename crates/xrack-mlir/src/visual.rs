@@ -593,6 +593,21 @@ pub fn scene_children(op: OperationRef<'_>) -> impl Iterator<Item = OperationRef
     })
 }
 
+/// Determine whether a repeated scene needs state that follows model row keys.
+pub fn repeat_uses_row_identity(template: OperationRef<'_>, use_visual_plan: bool) -> bool {
+    if use_visual_plan
+        && (template.attribute("xr.static_subtree") == Some("true")
+            || template.children().any(|op| {
+                op.name() == "xr.repeat" && op.attribute("xr.empty_repeat") == Some("true")
+            }))
+    {
+        return false;
+    }
+    template.name() == "xr.instance"
+        || template.attribute("kind") == Some("GroupBox")
+        || scene_children(template).any(|child| repeat_uses_row_identity(child, use_visual_plan))
+}
+
 /// Return the ID used by the host view APIs, including the anonymous root.
 pub fn host_element_id<'a>(key: &str, id: &'a str) -> Option<&'a str> {
     match (key, id) {

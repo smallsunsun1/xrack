@@ -1958,7 +1958,7 @@ impl Instance {
         if template
             .repeat
             .as_ref()
-            .is_some_and(|repeat| repeat.scene_cache.is_some())
+            .is_some_and(|repeat| !repeat.uses_row_identity || repeat.scene_cache.is_some())
         {
             return self.render_element(template);
         }
@@ -2655,11 +2655,8 @@ impl Instance {
                 let Some(tree) = &scene.tree else {
                     return Ok(None);
                 };
-                let (live, records) = self.tree_projection(element)?;
-                (
-                    Model::Records(records),
-                    tree.event_source_index(&live, index, row_key),
-                )
+                let (live, model) = self.tree_projection(element)?;
+                (model, tree.event_source_index(&live, index, row_key))
             } else {
                 let model = self.view_model(element)?;
                 let source = xrack_runtime::TableRowPositions::event_source_index_in(
@@ -2675,7 +2672,8 @@ impl Instance {
             let Some(source) = source else {
                 return Ok(None);
             };
-            let Some(row) = state.resolved_row(&model, source, row_key, route.follow_row) else {
+            let Some(row) = state.resolved_row(repeat, &model, source, row_key, route.follow_row)
+            else {
                 return Ok(None);
             };
             if child.is_item_delegate()

@@ -229,7 +229,7 @@ impl Instance {
         };
         self.repeat_state(template)
             .row_model(self, repeat)
-            .map(Some)
+            .map(|model| Some(model.as_ref().clone()))
     }
 
     pub(crate) fn select_group(

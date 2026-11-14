@@ -101,7 +101,7 @@ fn replace_field(record: &RecordValue, path: &[String], value: Value) -> Option<
 }
 
 fn string_rows(model: &ViewModel) -> Option<TableRows<VecModel<String>>> {
-    let Model::Strings(strings) = model.source.as_ref()? else {
+    let Model::Strings(strings) = model.source.as_deref()? else {
         return None;
     };
     Some(TableRows::from_positions(
@@ -111,7 +111,7 @@ fn string_rows(model: &ViewModel) -> Option<TableRows<VecModel<String>>> {
 }
 
 fn edit_stamp(model: &ViewModel) -> Option<(u64, u64)> {
-    match model.source.as_ref()? {
+    match model.source.as_deref()? {
         Model::Strings(strings) => Some(strings.edit_stamp()),
         Model::Records(records) => Some(records.model().edit_stamp()),
         _ => None,
@@ -285,7 +285,7 @@ impl Instance {
         let model = self.view_source_model(view)?;
         let state = self.repeat_state(view);
         let table = state.table_state();
-        Ok(match &model {
+        Ok(match model.as_deref() {
             Some(Model::Records(records)) => table.history.can_replay(records.model(), redo),
             Some(Model::Strings(strings)) => table.string_history.can_replay(strings, redo),
             _ => false,
@@ -298,7 +298,7 @@ impl Instance {
         }
         let model = xrack_runtime::try_prepare_history_replay(
             None,
-            || self.view_source_model(view).map(|model| model.map(Rc::new)),
+            || self.view_source_model(view),
             || self.table_history_enabled(view),
         )?;
         Ok(model.is_some_and(|source| self.replay_table_source(view, &source, redo)))
@@ -320,7 +320,7 @@ impl Instance {
                 if !self.element_allows_routed_input(view, route)? {
                     return Ok(None);
                 }
-                self.view_source_model(view).map(|model| model.map(Rc::new))
+                self.view_source_model(view)
             },
             || self.table_history_enabled(view),
         )?;

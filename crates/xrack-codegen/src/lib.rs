@@ -745,6 +745,7 @@ struct RepeatScope<'a> {
     row: VisualScope<'a>,
     delegates: Vec<(Vec<usize>, OperationRef<'a>)>,
     table: bool,
+    uses_row_identity: bool,
 }
 
 impl RepeatScope<'_> {
@@ -753,9 +754,7 @@ impl RepeatScope<'_> {
     }
 
     fn uses_row_identity(&self) -> bool {
-        !self.delegates.is_empty()
-            || !self.row.row_groups.is_empty()
-            || self.row.repeats.values().any(Self::uses_row_identity)
+        self.uses_row_identity
     }
 }
 
@@ -1190,6 +1189,10 @@ impl<'a> Generator<'a> {
                     row,
                     delegates,
                     table: element.attr("kind") == Ok("TableRow"),
+                    uses_row_identity: xrack_mlir::repeat_uses_row_identity(
+                        element,
+                        self.use_visual_plan,
+                    ),
                 },
             );
         } else {

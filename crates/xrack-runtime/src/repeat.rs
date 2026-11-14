@@ -57,8 +57,8 @@ impl<Model: ListModel, State: Default> Row<Model, State> {
 }
 
 impl<Model: ListModel, State> Row<Model, State> {
-    fn sync(&self, model: &Rc<Model>, index: usize) {
-        self.context.set_key(model.row_key(index));
+    fn sync(&self, model: &Rc<Model>, index: usize, key: RowKey) {
+        self.context.set_key(key);
         self.model.set_if_changed_by(model.clone(), Rc::ptr_eq);
         self.synchronize.get(|| {
             let model = self
@@ -125,7 +125,7 @@ impl<Model: ListModel, State: Default> Repeater<Model, State> {
             .get(&index)
             .cloned()
             .unwrap_or_else(|| Rc::new(Row::new(index, key)));
-        crate::property::without_read_watches(|| row.sync(&model, index));
+        crate::property::without_read_watches(|| row.sync(&model, index, key));
         Some(read(&|| row.context.item(), &|| index as i64, &row.state))
     }
 
@@ -140,7 +140,7 @@ impl<Model: ListModel, State: Default> Repeater<Model, State> {
     ) -> Option<R> {
         let index = model.event_row_index(index, key, false)?;
         let row = self.rows.borrow().get(&index).cloned()?;
-        crate::property::without_read_watches(|| row.sync(model, index));
+        crate::property::without_read_watches(|| row.sync(model, index, key));
         Some(read(&row.state))
     }
 
@@ -172,7 +172,14 @@ impl<Model: ListModel, State: Default> Repeater<Model, State> {
         render_row: impl Fn(usize, &dyn Fn() -> Model::Item, &State) -> Node,
     ) -> Vec<Node> {
         let resolved = self.model.get(|| Rc::new(model()));
-        self.render_resolved_indices(&resolved, range, render_row)
+        let range = range.start..range.end.min(resolved.row_count());
+        self.rows
+            .borrow_mut()
+            .retain(|index, _| range.contains(index));
+        self.try_render_rows(&resolved, range, |index, context, state| {
+            Ok::<_, std::convert::Infallible>(render_row(index, &|| context.item(), state))
+        })
+        .unwrap_or_else(|error| match error {})
     }
 
     pub fn render_indices(
@@ -212,6 +219,15 @@ impl<Model: ListModel, State: Default> Repeater<Model, State> {
         self.rows
             .borrow_mut()
             .retain(|index, _| retained.contains(index));
+        self.try_render_rows(resolved, indices, render_row)
+    }
+
+    fn try_render_rows<E>(
+        &self,
+        resolved: &Rc<Model>,
+        indices: impl IntoIterator<Item = usize>,
+        render_row: impl Fn(usize, &RowContext<Model::Item>, &State) -> Result<Node, E>,
+    ) -> Result<Vec<Node>, E> {
         indices
             .into_iter()
             .map(|index| {
@@ -222,7 +238,7 @@ impl<Model: ListModel, State: Default> Repeater<Model, State> {
                     .entry(index)
                     .or_insert_with(|| Rc::new(Row::new(index, key)))
                     .clone();
-                row.sync(resolved, index);
+                row.sync(resolved, index, key);
                 let mut node = row
                     .scene
                     .try_get(|| render_row(index, &row.context, &row.state))?;

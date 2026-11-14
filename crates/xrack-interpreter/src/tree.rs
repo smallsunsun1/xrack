@@ -41,19 +41,19 @@ fn filter_field(path: Rc<[String]>) -> impl Fn(&RecordValue) -> &str + Clone {
 }
 
 impl Instance {
-    pub(crate) fn tree_projection(
-        &self,
-        view: &Element,
-    ) -> Result<(Arc<TreeSnapshot>, xrack_runtime::RecordList)> {
+    pub(crate) fn tree_projection(&self, view: &Element) -> Result<(Arc<TreeSnapshot>, Rc<Model>)> {
         let definition = view.tree.as_ref().expect("tree definition");
         let template = view
             .view_template()
             .ok_or_else(|| Error::Invalid("missing tree row template".into()))?;
         let repeat = template.repeat.as_ref().expect("tree row repeat");
         let rows = self.repeat_state(template);
-        let records = || match rows.row_model(self, repeat)? {
-            Model::Records(records) => Ok(records),
-            _ => Err(Error::Invalid("tree requires a record model".into())),
+        let source = || {
+            let model = rows.row_model(self, repeat)?;
+            if !matches!(model.as_ref(), Model::Records(_)) {
+                return Err(Error::Invalid("tree requires a record model".into()));
+            }
+            Ok(model)
         };
         let key = definition.key.clone();
         let parent = definition.parent.clone();
@@ -65,8 +65,11 @@ impl Instance {
         let state = self.repeat_state(view);
         let tree = state.tree_state();
         tree.try_project_model(
-            records,
-            xrack_runtime::RecordList::model,
+            source,
+            |model| match model.as_ref() {
+                Model::Records(records) => records.model(),
+                _ => unreachable!("verified tree model"),
+            },
             roles,
             root,
             view.visible_field.clone().map(|path| {

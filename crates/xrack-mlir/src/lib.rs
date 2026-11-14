@@ -26,7 +26,8 @@ pub use visual::{
     InstanceBinding, InstanceBindings, InstanceStateInput, PropertyForward, RepeatRef,
     RowSceneCache, StackRead, StateCaseRef, TableClipboardRef, TablePasteRef, TableRead,
     TranslationRef, VisualCacheGroup, VisualCacheKey, host_element_id, nine_slice_edges,
-    repeat_is_positioned, scene_children, split_fill_slot, visual_cache_operand,
+    repeat_is_positioned, repeat_uses_row_identity, scene_children, split_fill_slot,
+    visual_cache_operand,
 };
 
 mod record;

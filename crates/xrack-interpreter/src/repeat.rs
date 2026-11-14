@@ -2,7 +2,7 @@ use crate::*;
 use std::{cell::OnceCell, ops::Range, rc::Weak};
 use xrack_runtime::{
     ComponentRepeater, Length, ListMetrics, ListModel, ListRowLocator, ListRowRenderer, Property,
-    RecordValue, RowContext, RowHeightProjection, RowKey, RowLifetime, TableColumnWindow,
+    RecordValue, Repeater, RowContext, RowHeightProjection, RowKey, RowLifetime, TableColumnWindow,
     TableRowOrder, TableRowPositions, TableRows, VecModel,
 };
 
@@ -110,7 +110,9 @@ pub(crate) struct RowScope {
 
 #[derive(Default)]
 pub(crate) struct RepeatState {
+    model: Property<Rc<Model>>,
     rows: ComponentRepeater<Model, (), Instance>,
+    display_rows: Repeater<Model, OnceCell<Instance>>,
     scene_columns: Property<TableColumnWindow>,
     renderer: OnceCell<ListRowRenderer>,
     pub(crate) row_order: TableRowOrder,
@@ -128,24 +130,25 @@ impl RepeatState {
         self.tree.get_or_init(Default::default)
     }
 
-    fn model(&self, owner: &Instance, source: &Expr) -> Result<Model> {
-        let model = self
-            .rows
-            .try_resolve_model(|| match owner.evaluate(source, &[])? {
+    fn model(&self, owner: &Instance, source: &Expr) -> Result<Rc<Model>> {
+        let model = self.model.try_get(|| {
+            let model = match owner.evaluate(source, &[])? {
                 Value::Int(count) => Ok(Model::Count(count)),
                 Value::StringModel(model) => Ok(Model::Strings(model)),
                 Value::StringList(items) => Ok(Model::Strings(VecModel::from(items))),
                 Value::RecordList(records) => Ok(Model::Records(records)),
                 Value::TouchPoints(points) => Ok(Model::Touches(points)),
                 _ => Err(Error::Evaluation("invalid repeated model".into())),
-            })?;
+            }?;
+            Ok(Rc::new(model))
+        })?;
         if let Model::Records(records) = model.as_ref() {
             owner.program().validate_live_record_list(records)?;
         }
-        Ok(model.as_ref().clone())
+        Ok(model)
     }
 
-    pub(crate) fn row_model(&self, owner: &Instance, repeat: &Repeat) -> Result<Model> {
+    pub(crate) fn row_model(&self, owner: &Instance, repeat: &Repeat) -> Result<Rc<Model>> {
         self.model(owner, &repeat.model)
     }
 
@@ -170,11 +173,44 @@ impl RepeatState {
         &self,
         owner: &Instance,
         template: &Element,
-        model: &Model,
+        model: &Rc<Model>,
         indices: impl Iterator<Item = usize>,
         columns: &TableColumnWindow,
     ) -> Result<Vec<Node>> {
         let repeat = template.repeat.as_ref().expect("repeated template");
+        let allocate = |context| {
+            owner.allocate_row(
+                template,
+                RowScope {
+                    owner: Rc::downgrade(&owner.0),
+                    root_key: template.key.clone(),
+                    item: repeat.item.clone(),
+                    index: repeat.index.clone(),
+                    context,
+                    sampled: false,
+                },
+            )
+        };
+        if !repeat.uses_row_identity {
+            let column_window = matches!(template.visual, Visual::Builtin("TableRow"))
+                .then(|| self.display_rows.column_window(columns));
+            return self.display_rows.try_render_resolved_indices(
+                model,
+                indices,
+                |_, context, instance| {
+                    if let Some(columns_changed) = column_window {
+                        columns_changed.track();
+                    }
+                    if instance.get().is_none() {
+                        let _ = instance.set(allocate(context.clone())?);
+                    }
+                    instance
+                        .get()
+                        .expect("initialized display row")
+                        .render_template(template, columns)
+                },
+            );
+        }
         let cache_reads_index = repeat
             .scene_cache
             .map(|plan| plan == RowSceneCache::Indexed);
@@ -182,22 +218,10 @@ impl RepeatState {
             self.scene_columns.set_if_changed(columns.clone());
         }
         self.rows.try_render_resolved_indices(
-            model,
+            model.as_ref(),
             indices,
             cache_reads_index,
-            |context| {
-                owner.allocate_row(
-                    template,
-                    RowScope {
-                        owner: Rc::downgrade(&owner.0),
-                        root_key: template.key.clone(),
-                        item: repeat.item.clone(),
-                        index: repeat.index.clone(),
-                        context,
-                        sampled: false,
-                    },
-                )
-            },
+            allocate,
             |instance, _, _, _, _| {
                 if cache_reads_index.is_some() {
                     let columns = self.scene_columns.get(Default::default);
@@ -218,18 +242,25 @@ impl RepeatState {
         follow_row: bool,
     ) -> Result<Option<Instance>> {
         let model = self.model(owner, &repeat.model)?;
-        Ok(self.resolved_row(&model, index, key, follow_row))
+        Ok(self.resolved_row(repeat, &model, index, key, follow_row))
     }
 
     pub(crate) fn resolved_row(
         &self,
-        model: &Model,
+        repeat: &Repeat,
+        model: &Rc<Model>,
         index: usize,
         key: RowKey,
         follow_row: bool,
     ) -> Option<Instance> {
-        self.rows
-            .with_resolved_event_row(model, index, key, follow_row, Clone::clone)
+        if repeat.uses_row_identity {
+            self.rows
+                .with_resolved_event_row(model.as_ref(), index, key, follow_row, Clone::clone)
+        } else {
+            self.display_rows
+                .with_resolved_row(model, index, key, |slot| slot.get().cloned())
+                .flatten()
+        }
     }
 
     fn renderer(&self, owner: &Instance, view: &Element) -> ListRowRenderer {
@@ -255,7 +286,7 @@ impl RepeatState {
 
 #[derive(Clone)]
 pub(crate) struct ViewModel {
-    pub(crate) source: Option<Model>,
+    pub(crate) source: Option<Rc<Model>>,
     ordered: Option<TableRowPositions>,
     pub(crate) projected: Option<TableRows<VecModel<RecordValue>>>,
 }
@@ -276,22 +307,19 @@ impl ViewModel {
         let positions = self
             .positions()
             .ok_or_else(|| Error::Invalid("table has no row order".into()))?;
-        Ok(TableRows::from_positions(
-            Rc::new(source.clone()),
-            positions.clone(),
-        ))
+        Ok(TableRows::from_positions(source.clone(), positions.clone()))
     }
 
     pub(crate) fn row_count(&self) -> usize {
         self.positions().map_or_else(
-            || self.source.as_ref().map_or(0, ListModel::row_count),
+            || self.source.as_deref().map_or(0, ListModel::row_count),
             TableRowPositions::row_count,
         )
     }
 
     pub(crate) fn stamp(&self) -> Option<(u64, u64)> {
         self.positions().map_or_else(
-            || self.source.as_ref().map(ListModel::structure_stamp),
+            || self.source.as_deref().map(ListModel::structure_stamp),
             |positions| Some(positions.stamp()),
         )
     }
@@ -318,11 +346,10 @@ impl ViewModel {
         } else if let Some(positions) = self.ordered {
             let source = self.source?;
             Some(ListRowLocator::new(Rc::new(TableRows::from_positions(
-                Rc::new(source),
-                positions,
+                source, positions,
             ))))
         } else {
-            self.source.map(|model| ListRowLocator::new(Rc::new(model)))
+            self.source.map(ListRowLocator::new)
         }
     }
 
@@ -331,7 +358,7 @@ impl ViewModel {
             Some(Value::String(label)) => label.clone(),
             _ => String::new(),
         };
-        Ok(match (&self.source, &self.projected) {
+        Ok(match (self.source.as_deref(), &self.projected) {
             (_, Some(rows)) => xrack_runtime::standard_list_rows_in_view(rows, range, record_text),
             (Some(Model::Records(records)), None) => {
                 xrack_runtime::standard_list_rows(records.model(), range, record_text)
@@ -357,7 +384,7 @@ impl Instance {
             .ok_or_else(|| Error::Invalid(format!("unknown view {id}")))
     }
 
-    pub(crate) fn view_source_model(&self, view: &Element) -> Result<Option<Model>> {
+    pub(crate) fn view_source_model(&self, view: &Element) -> Result<Option<Rc<Model>>> {
         view.view_source()
             .map(|(element, expression)| self.repeat_state(element).model(self, expression))
             .transpose()
@@ -366,7 +393,7 @@ impl Instance {
     pub(crate) fn view_model(&self, view: &Element) -> Result<ViewModel> {
         let source = self.view_source_model(view)?;
         let state = self.repeat_state(view);
-        let projected = match (&source, &view.visible_field) {
+        let projected = match (source.as_deref(), &view.visible_field) {
             (Some(Model::Records(records)), _) if view.table.is_some() => {
                 Some(self.project_table(view, &state, records.model())?)
             }
@@ -385,7 +412,7 @@ impl Instance {
         };
         let ordered = if view.table.is_some() && projected.is_none() {
             source
-                .as_ref()
+                .as_deref()
                 .map(|source| state.row_order.positions(source))
         } else {
             None
@@ -443,7 +470,7 @@ impl Instance {
             return Ok(None);
         };
         let model = owner.repeat_state(element).model(&owner, expression)?;
-        Ok(ListModel::key_at(&model, row))
+        Ok(model.key_at(row))
     }
 
     pub(crate) fn render_view(&self, view: &Element, node: &mut Node) -> Result<()> {
@@ -464,7 +491,7 @@ impl Instance {
         let state = self.repeat_state(view);
         node.standard_list_stamp = model.stamp();
         if let Some(path) = &view.height_field
-            && let Some(Model::Records(records)) = &model.source
+            && let Some(Model::Records(records)) = model.source.as_deref()
         {
             let path = path.clone();
             let field = move |record: &RecordValue| match record.field_path(&path) {
@@ -494,9 +521,11 @@ impl Instance {
     }
 
     fn render_tree_view(&self, view: &Element, node: &mut Node) -> Result<()> {
-        let (tree, records) = self.tree_projection(view)?;
+        let (tree, model) = self.tree_projection(view)?;
         let state = self.repeat_state(view);
-        if let Some(path) = &view.height_field {
+        if let Some(path) = &view.height_field
+            && let Model::Records(records) = model.as_ref()
+        {
             let path = path.clone();
             node.row_heights = state.row_heights.tree_snapshot(
                 records.model(),
@@ -523,12 +552,13 @@ impl Instance {
             let template = view
                 .view_template()
                 .ok_or_else(|| Error::Invalid("missing tree row template".into()))?;
-            let (tree, records) = self.tree_projection(view)?;
+            let (tree, model) = self.tree_projection(view)?;
             let rows = tree.rows_in_range(range);
-            return self.repeat_state(template).render_indices(
+            let state = self.repeat_state(template);
+            return state.render_indices(
                 self,
                 template,
-                &Model::Records(records),
+                &model,
                 rows.iter().map(|row| row.model_index),
                 columns,
             );

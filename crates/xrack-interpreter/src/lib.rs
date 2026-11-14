@@ -505,6 +505,7 @@ struct Repeat {
     empty: bool,
     static_count: Option<i64>,
     scene_cache: Option<RowSceneCache>,
+    uses_row_identity: bool,
 }
 
 enum Visual {
