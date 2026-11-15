@@ -127,7 +127,8 @@ def source_archive(external, bin_dir, destination):
             bundle.add(ROOT / "crates/xrack-media" / name, arcname="xrack-media/" + name)
         for name in (".bazelrc", ".bazelversion", "MODULE.bazel", "MODULE.bazel.lock"):
             bundle.add(ROOT / name, arcname="xrack-build/" + name)
-        bundle.add(ROOT / "bazel/ffmpeg_hls_window.patch", arcname="xrack-build/bazel/ffmpeg_hls_window.patch")
+        for name in ("ffmpeg_hls_window.patch", "ffmpeg_winsock_probes.patch"):
+            bundle.add(ROOT / "bazel" / name, arcname="xrack-build/bazel/" + name)
         for name in ("zlib+", "bzip2+", "openssl+"):
             directory = external / name
             for path in sorted(directory.iterdir()):

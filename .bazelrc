@@ -22,6 +22,8 @@ build:macos --cxxopt=-std=c++20 --host_cxxopt=-std=c++20
 build:windows --cxxopt=/std:c++20 --host_cxxopt=/std:c++20
 build:windows --cxxopt=/bigobj --host_cxxopt=/bigobj
 build:windows --enable_runfiles
+# The Windows LLVM toolchain uses clang-cl and cannot assemble the MASM payload.
+build:windows --@openssl//:use-no-asm-fallback=true
 build:windows --host_platform=//bazel:windows_msvc --platforms=//bazel:windows_msvc
 build:windows --repo_env=BAZEL_MSVC_RUNTIME_VISUAL_STUDIO_EULA
 build:windows --repo_env=BAZEL_WINDOWS_SDK_EULA

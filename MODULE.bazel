@@ -14,7 +14,10 @@ bazel_dep(name = "rules_perl", version = "2.1.0")
 
 single_version_override(
     module_name = "ffmpeg",
-    patches = ["//bazel:ffmpeg_hls_window.patch"],
+    patches = [
+        "//bazel:ffmpeg_hls_window.patch",
+        "//bazel:ffmpeg_winsock_probes.patch",
+    ],
     patch_strip = 1,
 )
 
