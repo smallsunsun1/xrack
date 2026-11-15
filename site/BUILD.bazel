@@ -1,0 +1,56 @@
+load("@rules_rust//rust:defs.bzl", "rust_binary")
+
+rust_binary(
+    name = "reference_generator",
+    srcs = ["reference.rs"],
+    compile_data = [
+        "reference-template.html",
+        "//crates/xrack-lsp:src/catalog.rs",
+        "//crates/xrack-syntax:src/builtins.rs",
+        "//docs:controls.md",
+        "//docs:desktop.md",
+        "//docs:editor.md",
+        "//docs:language.md",
+        "//docs:models.md",
+    ],
+    edition = "2024",
+    deps = [
+        "//crates/xrack-ir:xrack_ir",
+        "//crates/xrack-syntax:xrack_syntax",
+        "@crates//:pulldown-cmark",
+    ],
+)
+
+genrule(
+    name = "reference",
+    outs = ["reference.html"],
+    cmd = "$(location :reference_generator) > $@",
+    tools = [":reference_generator"],
+)
+
+genrule(
+    name = "pages",
+    srcs = [
+        "assets/live-preview.png",
+        "assets/xrack.png",
+        "index.html",
+        "main.js",
+        "reference.css",
+        "reference.html",
+        "reference.js",
+        "theme.css",
+    ],
+    outs = ["xrack-pages.zip"],
+    cmd = """
+        $(location @bazel_tools//tools/zip:zipper) c $@ \\
+            index.html=$(location index.html) \\
+            main.js=$(location main.js) \\
+            reference.css=$(location reference.css) \\
+            reference.html=$(location reference.html) \\
+            reference.js=$(location reference.js) \\
+            theme.css=$(location theme.css) \\
+            assets/xrack.png=$(location assets/xrack.png) \\
+            assets/live-preview.png=$(location assets/live-preview.png)
+    """,
+    tools = ["@bazel_tools//tools/zip:zipper"],
+)

@@ -1,0 +1,165 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="XRack is a declarative native desktop UI framework powered by Rust and MLIR.">
+  <meta name="theme-color" content="#f8f6ef">
+  <meta property="og:title" content="XRack · Native desktop UI">
+  <meta property="og:description" content="Describe your interface in .xr, build it as Rust, and preview it while you edit.">
+  <meta property="og:image" content="https://smallsunsun1.github.io/xrack/assets/live-preview.png">
+  <link rel="canonical" href="https://smallsunsun1.github.io/xrack/">
+  <link rel="icon" href="./assets/xrack.png">
+  <link rel="stylesheet" href="./theme.css">
+  <script src="./main.js" defer></script>
+  <title>XRack · Native desktop UI</title>
+</head>
+<body>
+  <a class="skip" href="#main" data-zh="跳到正文">Skip to content</a>
+  <header class="topbar">
+    <div class="wrap topbar-inner">
+      <a class="brand" href="#top" aria-label="XRack">
+        <img src="./assets/xrack.png" width="32" height="32" alt="">
+        <span>XRack</span>
+      </a>
+      <nav aria-label="Main navigation">
+        <a href="#start" data-zh="学习 XRack">Learn</a>
+        <a href="./reference.html" data-zh="控件与语法">Reference</a>
+        <a href="#architecture" data-zh="架构">Architecture</a>
+      </nav>
+      <div class="topbar-actions">
+        <button type="button" id="language" lang="zh-Hans" aria-label="切换到中文">中文</button>
+        <a class="github" href="https://github.com/smallsunsun1/xrack">GitHub <span aria-hidden="true">↗</span></a>
+      </div>
+    </div>
+  </header>
+
+  <main id="main">
+    <section class="hero wrap" id="top" aria-labelledby="hero-title">
+      <img class="hero-logo" src="./assets/xrack.png" width="82" height="82" alt="">
+      <h1 id="hero-title">XRack</h1>
+      <p class="hero-tagline" data-zh="构建原生桌面界面的声明式框架">A declarative framework for native desktop UI</p>
+      <p class="hero-description" data-zh="用 .xr 组装界面，在 Rust 或 Python 中编写应用逻辑。">Compose your interface in <code>.xr</code> and write app logic in Rust or Python.</p>
+      <div class="hero-actions">
+        <a class="button button-primary" href="#start"><span data-zh="学习 XRack">Learn XRack</span><span aria-hidden="true">↘</span></a>
+        <a class="button button-secondary" href="./reference.html"><span data-zh="控件与语法参考">Controls &amp; syntax</span><span aria-hidden="true">↗</span></a>
+      </div>
+    </section>
+
+    <section class="components" id="components" aria-labelledby="components-title">
+      <div class="wrap">
+        <div class="section-title centered">
+          <h2 id="components-title" data-zh="用组件组合界面">Compose interfaces from components</h2>
+          <p data-zh="把文字、按钮和布局组成一个组件。绑定描述值之间的关系，回调响应用户操作。">Combine text, buttons, and layouts in a component. Bindings connect values, and callbacks handle user actions.</p>
+        </div>
+      <div class="demo" role="group" aria-labelledby="demo-title">
+        <div class="demo-bar">
+          <span class="demo-indicator" aria-hidden="true"><i></i><i></i><i></i></span>
+          <span class="demo-file" id="demo-title">counter.xr</span>
+          <span class="demo-label" data-zh="浏览器演示">Browser demo</span>
+        </div>
+        <div class="demo-body">
+          <div class="source">
+            <pre aria-label="XRack counter source"><code><span class="keyword">export component</span> Counter <span class="keyword">inherits</span> Window {
+  <span class="keyword">in-out property</span> &lt;int&gt; count: <span class="number">0</span>;
+  VerticalLayout {
+    Text { text: <span class="string">"Count: "</span> + root.count; }
+    Text { text: <span class="string">"Doubled: "</span> + root.count * <span class="number">2</span>; }
+    increment := Button {
+      text: <span class="string">"Increment"</span>;
+      clicked =&gt; { root.count += <span class="number">1</span>; }
+    }
+  }
+}</code></pre>
+          </div>
+          <div class="demo-preview">
+            <div class="mini-window">
+              <div class="mini-title"><span class="mini-icon" aria-hidden="true">×</span><span data-zh="计数器">Counter</span></div>
+              <div class="mini-body">
+                <div class="mini-count" aria-live="polite">
+                  <span data-zh="当前计数">Count</span>
+                  <output id="count">0</output>
+                </div>
+                <p class="mini-derived"><span data-zh="两倍计数">Doubled</span><output id="doubled">0</output></p>
+                <button class="mini-add" id="increment" type="button" data-zh="加一" disabled>Increment</button>
+                <button class="mini-reset" id="reset" type="button" data-zh="重置" disabled>Reset</button>
+              </div>
+            </div>
+          </div>
+        </div>
+        <p class="demo-caption"><span aria-hidden="true">↳</span> <span data-zh="点一下加一，观察两个文本绑定一起更新。">Click Increment to see both text bindings update.</span></p>
+      </div>
+      <a class="text-link component-reference" href="./reference.html#controls"><span data-zh="浏览全部内建控件">Browse all built-in controls</span><span aria-hidden="true">↗</span></a>
+      </div>
+    </section>
+
+    <section class="workflow" id="workflow" aria-labelledby="workflow-title">
+      <div class="wrap workflow-inner">
+        <figure class="preview-image">
+          <img src="./assets/live-preview.png" width="760" height="480" loading="lazy" alt="XRack Live Preview showing a counter in VS Code" data-alt-zh="VS Code 中的 XRack 实时预览面板正在显示计数器">
+          <figcaption data-zh="XRack 在 VS Code 中的实时预览">XRack Live Preview in VS Code</figcaption>
+        </figure>
+        <div class="workflow-copy">
+          <p class="eyebrow" data-zh="编辑器工作流">Editor workflow</p>
+          <h2 id="workflow-title" data-zh="边写边看。">See changes as you edit.</h2>
+          <p data-zh="打开 .xr 文件即可预览和操作组件。XRack 也能附加到以热重载模式启动的应用，检查组件树和属性，或从原生窗口反选源码中的控件。">Open an <code>.xr</code> file to preview and interact with a component. For apps running in live-reload mode, attach to inspect the component tree, read property values, or pick a control in its native window.</p>
+          <a class="text-link" href="https://marketplace.visualstudio.com/items?itemName=SunJiahe.xrack"><span data-zh="安装 VS Code 扩展">Install the VS Code extension</span><span aria-hidden="true">↗</span></a>
+        </div>
+      </div>
+    </section>
+
+    <section class="architecture wrap" id="architecture" aria-labelledby="architecture-title">
+      <div class="section-title">
+        <p class="eyebrow" data-zh="编译器与运行时">Compiler &amp; runtime</p>
+        <h2 id="architecture-title" data-zh="同一份界面，两条执行路径。">One interface, two execution paths.</h2>
+        <p data-zh="编译器把 .xr 降低到带类型的 xr 方言。优化后的 MLIR 可以在开发时运行，也可以提前生成 Rust。">The compiler lowers <code>.xr</code> into a typed <code>xr</code> dialect. The optimized MLIR can run interactively or be compiled to Rust ahead of time.</p>
+      </div>
+      <div class="pipeline">
+        <div class="pipeline-stage"><code>.xr</code><span data-zh="组件、属性和回调">Components, properties, callbacks</span></div>
+        <span class="pipeline-arrow" aria-hidden="true">→</span>
+        <div class="pipeline-stage pipeline-ir"><code>xr MLIR</code><span data-zh="类型校验与 UI 优化">Verification and UI optimizations</span></div>
+        <span class="pipeline-arrow" aria-hidden="true">→</span>
+        <div class="pipeline-outputs">
+          <div class="pipeline-stage"><strong data-zh="解释器">Interpreter</strong><span data-zh="预览与运行时加载">Live preview and dynamic loading</span></div>
+          <div class="pipeline-stage"><strong>Rust AOT</strong><span data-zh="为应用生成 Rust 源码">Generated source for your application</span></div>
+        </div>
+      </div>
+      <a class="text-link" href="https://github.com/smallsunsun1/xrack/blob/main/docs/architecture.md"><span data-zh="查看编译和渲染过程">Explore compilation and rendering</span><span aria-hidden="true">↗</span></a>
+    </section>
+
+    <section class="start" id="start" aria-labelledby="start-title">
+      <div class="wrap start-inner">
+        <div class="start-copy">
+          <p class="eyebrow" data-zh="快速开始">Get started</p>
+          <h2 id="start-title" data-zh="打开第一个原生窗口。">Open your first native window.</h2>
+          <p data-zh="安装 Bazel 或 Bazelisk 和 JDK 17+，然后运行仓库里的计数器。已有 Rust 应用可以直接用 Cargo 接入。">With Bazel or Bazelisk and JDK 17+, run the counter from the repository. For an existing Rust app, follow the Cargo guide.</p>
+          <p class="platforms"><span>macOS</span><span>Linux</span><span>Windows</span></p>
+          <div class="doc-links">
+            <a href="https://github.com/smallsunsun1/xrack/blob/main/docs/cargo.md"><span data-zh="Cargo 接入">Cargo guide</span> ↗</a>
+            <a href="https://github.com/smallsunsun1/xrack/tree/main/bindings/python"><span data-zh="Python 绑定">Python bindings</span> ↗</a>
+            <a href="https://github.com/smallsunsun1/xrack/tree/main/examples"><span data-zh="全部示例">All examples</span> ↗</a>
+          </div>
+        </div>
+        <div class="terminal">
+          <div class="terminal-bar">
+            <span data-zh="计数器示例">Counter example</span>
+            <button type="button" id="copy" data-zh="复制" disabled>Copy</button>
+          </div>
+          <pre><code id="commands">git clone https://github.com/smallsunsun1/xrack.git
+cd xrack
+bazel run //examples/counter:counter</code></pre>
+          <p id="copy-status" role="status"></p>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="wrap footer">
+    <a class="brand" href="#top" aria-label="XRack"><img src="./assets/xrack.png" width="27" height="27" alt=""><span>XRack</span></a>
+    <span class="license" data-zh="MIT 或 Apache-2.0 许可">MIT or Apache-2.0 license</span>
+    <a href="./reference.html"><span data-zh="参考文档">Reference</span> ↗</a>
+    <a href="https://github.com/smallsunsun1/xrack/releases"><span data-zh="发行版本">Releases</span> ↗</a>
+    <a href="https://github.com/smallsunsun1/xrack">GitHub ↗</a>
+  </footer>
+</body>
+</html>

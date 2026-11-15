@@ -1,0 +1,10 @@
+exports_files(
+    [
+        "controls.md",
+        "desktop.md",
+        "editor.md",
+        "language.md",
+        "models.md",
+    ],
+    visibility = ["//site:__pkg__"],
+)

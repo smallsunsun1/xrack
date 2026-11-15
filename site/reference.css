@@ -1,0 +1,47 @@
+.reference-layout { display: grid; grid-template-columns: 168px minmax(0, 1fr); gap: clamp(24px, 6vw, 74px); padding-block: 45px 68px; }
+.reference-nav { align-self: start; position: sticky; top: 89px; display: grid; gap: .48rem; border-inline-end: 1px solid var(--line); padding: .4rem 12px .4rem 0; }
+.reference-nav a { text-decoration: none; font-size: .91rem; padding: .28rem .4rem; border-radius: 5px; }
+.reference-nav a:hover { background: var(--alt); color: var(--accent-dark); }
+.reference-main { min-width: 0; }
+.reference-main > h1 { font-size: clamp(2.4rem, 6vw, 4.55rem); letter-spacing: -.06em; line-height: 1.07; }
+.reference-intro { color: var(--muted); margin-top: 10px; max-width: 620px; }
+.reference-main section > h2, .guide > h2 { margin: 28px 0 13px; font-size: clamp(1.8rem, 4vw, 2.65rem); }
+.reference-search { display: grid; gap: 5px; margin-bottom: 12px; }
+.reference-search label { font-size: .88rem; font-weight: 650; }
+.reference-search input {
+  max-width: 540px;
+  padding: .56rem .72rem;
+  border: 1px solid #bcbfaf;
+  border-radius: 8px;
+  font: inherit;
+  color: inherit;
+  background: var(--surface);
+}
+.reference-search p { min-height: 1.25rem; font-size: .82rem; color: var(--muted); }
+.control-list { border-block: 1px solid var(--line); }
+.control { border-bottom: 1px solid var(--line); }
+.control:last-child { border-bottom: 0; }
+.control > summary { padding: .59rem .4rem; cursor: pointer; color: var(--ink); }
+.control > summary code { font-size: .94rem; font-weight: 650; }
+.control > summary:hover { color: var(--accent); }
+.control[open] { background: var(--surface); border-radius: 8px; }
+.control-body { padding: 0 .8rem .9rem; min-width: 0; }
+.control-body h3 { font-size: .98rem; margin: .6rem 0 .3rem; }
+.control-body pre, .guide pre { overflow: auto; margin: .45rem 0; background: var(--forest); color: #eef1e8; padding: .66rem .82rem; border-radius: 8px; font-size: .87rem; }
+.control-body table, .guide table { width: 100%; border-collapse: collapse; font-size: .89rem; }
+.control-body th, .control-body td, .guide td, .guide th { text-align: start; border-bottom: 1px solid var(--line); padding: .36rem .5rem; overflow-wrap: anywhere; }
+.control-body thead { background: var(--alt); }
+.guide { border-top: 1px solid var(--line); margin-top: 32px; }
+.guide h3, .guide h4 { margin: 1.2rem 0 .5rem; }
+.guide p, .guide ol, .guide ul, .guide table { margin: .6rem 0; overflow-wrap: anywhere; }
+.guide a { color: var(--accent-dark); text-underline-offset: 3px; }
+.guide blockquote { margin: .6rem 0; padding-inline-start: 1rem; border-inline-start: 3px solid var(--line); }
+.guide :not(pre) > code { background: var(--alt); font-size: .86em; padding: .14rem .24rem; border-radius: 3px; }
+
+@media (max-width: 760px) {
+  .reference-layout { grid-template-columns: 1fr; gap: 18px; padding-block: 24px 45px; }
+  .reference-nav { position: static; display: flex; flex-wrap: wrap; border-inline-end: 0; border-bottom: 1px solid var(--line); padding-bottom: .6rem; }
+}
+@media (max-width: 530px) {
+  .topbar nav a[href="./#start"] { display: none; }
+}

@@ -12,3 +12,5 @@ rust_library(
     visibility = ["//visibility:public"],
     deps = [] + all_crate_deps(normal = True),
 )
+
+exports_files(["src/builtins.rs"], visibility = ["//site:__pkg__"])

@@ -32,3 +32,5 @@ rust_test(
     size = "small",
     crate = ":xrack-lsp",
 )
+
+exports_files(["src/catalog.rs"], visibility = ["//site:__pkg__"])

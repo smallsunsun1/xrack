@@ -38,6 +38,12 @@
 - 布局、命中测试、绘制和无障碍使用同一份准备好的场景，布局使用逻辑像素。组件状态和绘制留在 UI 线程。应用可用 Tokio 执行异步 I/O，再通过 `spawn_local` 等待或使用 `invoke_from_event_loop` 投递结果。
 - 保留 `.bazelrc` 的磁盘缓存并用 `bazel info bazel-bin` 定位产物。Cargo 作为依赖管理、打包或静态检查入口时沿用 `.tools/cargo-build/`，避免根目录 `target/`。Bazel 报告模块锁的隔离模式不一致时，核对记录并按需传 `--repo_env=CARGO_BAZEL_ISOLATED=false`。
 
+## 项目网站
+
+- GitHub Pages 首页源码在 `site/`，用 `bazel build //site:pages` 构建。参考页从内建控件定义、补全候选和仓库 Markdown 生成。
+- 新增、删除或修改控件时，同步更新受影响的属性、回调、命令和使用示例。将说明写入 `docs/controls.md`、`docs/models.md`、`docs/desktop.md` 或 `docs/language.md`，并更新对应的补全候选。涉及首页演示的改动也要同步更新 `site/index.html`。
+- 完成控件或语法改动后，构建 `//site:pages`，检查参考页能搜索到相应控件、显示正确的类型与回调签名，并能找到相关用法。
+
 ## 验证
 
 按改动运行对应目标。常规全量验证、Rust 格式和 Clippy 命令见 [项目构建与验证](docs/development.md)。

@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="zh-Hans">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="XRack 内建控件、属性、回调和 .xr 语法参考。">
+  <meta name="theme-color" content="#f8f6ef">
+  <link rel="canonical" href="https://smallsunsun1.github.io/xrack/reference.html">
+  <link rel="icon" href="./assets/xrack.png">
+  <link rel="stylesheet" href="./theme.css">
+  <link rel="stylesheet" href="./reference.css">
+  <script src="./reference.js" defer></script>
+  <title>控件与语法参考 · XRack</title>
+</head>
+<body>
+  <a class="skip" href="#main">跳到正文</a>
+  <header class="topbar">
+    <div class="wrap topbar-inner">
+      <a class="brand" href="./" aria-label="XRack 首页">
+        <img src="./assets/xrack.png" width="32" height="32" alt=""><span>XRack</span>
+      </a>
+      <nav aria-label="主导航">
+        <a href="./#start">学习 XRack</a>
+        <a href="#controls" aria-current="page">控件与语法</a>
+      </nav>
+      <a class="github" href="https://github.com/smallsunsun1/xrack">GitHub <span aria-hidden="true">↗</span></a>
+    </div>
+  </header>
+
+  <main id="main" class="wrap reference-layout">
+    <aside class="reference-nav" aria-label="参考文档目录">
+      <a href="#controls">内建控件</a>
+      <a href="#language">.xr 语言</a>
+      <a href="#controls-guide">控件用法</a>
+      <a href="#models">列表、表格与树</a>
+      <a href="#desktop">桌面应用</a>
+      <a href="#editor">VS Code 与预览</a>
+    </aside>
+    <div class="reference-main">
+      <h1>控件与语法参考</h1>
+      <p class="reference-intro">查找内建元素的属性、类型和回调。完整用法和示例在目录中的各篇指南。</p>
+      <section id="controls" aria-labelledby="controls-title">
+        <h2 id="controls-title">内建控件</h2>
+        <div class="reference-search">
+          <label for="control-filter">搜索控件、属性或回调</label>
+          <input id="control-filter" type="search" placeholder="Button、text、clicked" autocomplete="off">
+          <p id="search-status" role="status"></p>
+        </div>
+        <!-- XRACK_CONTROLS -->
+      </section>
+      <!-- XRACK_GUIDES -->
+    </div>
+  </main>
+  <footer class="wrap footer">
+    <a class="brand" href="./"><img src="./assets/xrack.png" width="27" height="27" alt=""><span>XRack</span></a>
+    <span class="license">MIT 或 Apache-2.0 许可</span>
+    <a href="https://github.com/smallsunsun1/xrack">GitHub ↗</a>
+  </footer>
+</body>
+</html>

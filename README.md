@@ -2,6 +2,8 @@
 
 XRack 是受 Slint 启发的声明式 UI 框架。用 `.xr` 定义组件、属性绑定和回调，用 Rust 编写应用逻辑。ANTLR4 前端将界面降低到 MLIR 的 `xr` 方言，同一份优化后的 IR 可交给解释器运行或生成 Rust。桌面宿主使用 winit，FemtoVG 通过 wgpu 绘制。
 
+[项目网站](https://smallsunsun1.github.io/xrack/) · [控件与语法参考](https://smallsunsun1.github.io/xrack/reference.html)
+
 ## 快速开始
 
 在已有 Rust 项目中，用 `xrack-build` 在构建时编译 `.xr`。需要在运行时加载 `.mlir` 时，启用 `xrack` 的 `interpreter` feature。 [Cargo 完整用例](docs/cargo.md) · [可运行示例](examples/cargo-consumer)
