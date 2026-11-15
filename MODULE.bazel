@@ -21,6 +21,12 @@ single_version_override(
     patch_strip = 1,
 )
 
+single_version_override(
+    module_name = "openssl",
+    patches = ["//bazel:openssl_windows_ssize_max.patch"],
+    patch_strip = 1,
+)
+
 register_toolchains("@llvm//toolchain:all")
 
 single_version_override(

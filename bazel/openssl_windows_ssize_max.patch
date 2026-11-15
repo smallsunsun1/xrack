@@ -1,0 +1,11 @@
+--- a/include/openssl/e_os2.h
++++ b/include/openssl/e_os2.h
+@@ -13,2 +13,3 @@
+ 
++#include <limits.h>
+ #include <openssl/macros.h>
+@@ -189,3 +190,3 @@
+ #define ossl_ssize_t __int64
+-#define OSSL_SSIZE_MAX _I64_MAX
++#define OSSL_SSIZE_MAX LLONG_MAX
+ #else
