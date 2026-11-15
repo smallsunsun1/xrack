@@ -105,6 +105,23 @@ fn main() {
             )
 
 
+@contextmanager
+def media_server(directory):
+    class Handler(SimpleHTTPRequestHandler):
+        def log_message(self, *_args):
+            pass
+
+    handler = partial(Handler, directory=directory)
+    with ThreadingHTTPServer(("127.0.0.1", 0), handler) as server:
+        thread = Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            yield f"http://127.0.0.1:{server.server_port}/live.m3u8"
+        finally:
+            server.shutdown()
+            thread.join()
+
+
 def prepare_media(app):
     (app / "src").mkdir(parents=True)
     (app / "Cargo.toml").write_text(f"""[package]
