@@ -3017,6 +3017,7 @@ mod tests {
             .update(&scene, &frame, &Interaction::default(), 1.0, None)
             .unwrap();
         let (id, selected) = named(&update, "2021-01-08");
+        let selected_id = id;
         assert_eq!(selected.toggled(), Some(Toggled::True));
         assert_eq!(selected.description(), Some("Today. Release review"));
         assert!(
@@ -3043,6 +3044,35 @@ mod tests {
                     .any(|(_, node)| node.role() == Role::Label && node.value() == Some(value))
             );
         }
+
+        let mut rtl = scene.as_ref().clone();
+        rtl.properties.insert(
+            "layout-direction",
+            xrack_runtime::LayoutDirection::RightToLeft.into(),
+        );
+        let scene = Rc::new(rtl);
+        let frame = Rc::new(layout(&scene, Size::new(324.0, 244.0), &mut Text));
+        let update = projection
+            .update(&scene, &frame, &Interaction::default(), 1.0, None)
+            .unwrap();
+        let (id, selected) = named(&update, "2021-01-08");
+        assert_eq!(id, selected_id);
+        let geometry =
+            CalendarGeometry::for_layout(scene.child_at(0).unwrap(), frame.child_at(0).unwrap());
+        let day = geometry.days().find(|day| day.selected).unwrap();
+        assert_eq!(frame.at_path(&[0, 0, day.slot]).unwrap().bounds, day.bounds);
+        assert_eq!(selected.bounds().unwrap().x0, f64::from(day.bounds.x));
+        let x = |label| {
+            update
+                .nodes
+                .iter()
+                .find_map(|(_, node)| {
+                    (node.value() == Some(label)).then(|| node.bounds().unwrap().x0)
+                })
+                .unwrap()
+        };
+        assert!(x("Sun") > x("Mon"));
+        assert_eq!(selected.description(), Some("Today. Release review"));
     }
 
     #[test]

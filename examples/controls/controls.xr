@@ -1339,6 +1339,7 @@ export component DirectionalCalendarDemo inherits Window {
             weekday-labels: root.weekdays;
             accept-text: "应用日期";
             cancel-text: "取消";
+            accepted(date) => { root.calendar-month = date; }
         }
         status := Text {
             x: 190px; y: 252px;

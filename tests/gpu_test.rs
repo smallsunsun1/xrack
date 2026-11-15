@@ -11053,6 +11053,7 @@ fn rtl_menus_paint_mirrored_icons_and_cascades_in_both_backends() {
 
 #[test]
 fn rtl_calendar_templates_paint_the_same_day_on_the_mirrored_cell() {
+    use xrack_layout::CalendarGeometry;
     let mut renderer = pollster::block_on(Renderer::new(
         wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
         None,
