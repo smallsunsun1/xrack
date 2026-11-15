@@ -131,6 +131,7 @@ def source_archive(external, bin_dir, destination):
             "ffmpeg_hls_window.patch",
             "ffmpeg_winsock_probes.patch",
             "openssl_windows_ssize_max.patch",
+            "openssl_windows_winstore.patch",
         ):
             bundle.add(ROOT / "bazel" / name, arcname="xrack-build/bazel/" + name)
         for name in ("zlib+", "bzip2+", "openssl+"):

@@ -1,0 +1,25 @@
+--- a/BUILD.bazel
++++ b/BUILD.bazel
+@@ -245,6 +245,12 @@
+     name = "use-no-asm-fallback",
+     build_setting_default = False,
+     visibility = ["//visibility:public"],
++)
++
++config_setting(
++    name = "windows_no_asm_fallback",
++    constraint_values = ["@platforms//os:windows"],
++    flag_values = {":use-no-asm-fallback": "true"},
+ )
+ 
+ pregen_overlay_targets()
+@@ -677,6 +683,9 @@
+         # Unknown platforms
+         "//conditions:default": NO_ASM_CRYPTO_EXTRA_SRCS,
+     }) + select({
++        ":windows_no_asm_fallback": ["providers/implementations/storemgmt/winstore_store.c"],
++        "//conditions:default": [],
++    }) + select({
+         "//configs:_pregen_enabled": [":pregen_srcs"],
+         "//conditions:default": [":perl_generated_srcs"],
+     }),

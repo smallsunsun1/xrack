@@ -23,7 +23,10 @@ single_version_override(
 
 single_version_override(
     module_name = "openssl",
-    patches = ["//bazel:openssl_windows_ssize_max.patch"],
+    patches = [
+        "//bazel:openssl_windows_ssize_max.patch",
+        "//bazel:openssl_windows_winstore.patch",
+    ],
     patch_strip = 1,
 )
 
