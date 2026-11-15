@@ -4,7 +4,7 @@ exports_files([
     "bindgen_toolchain_headers.patch",
     "bindgen_windows_imports.patch",
     "ffmpeg_hls_window.patch",
-    "ffmpeg_winsock_probes.patch",
+    "ffmpeg_windows_probes.patch",
     "openssl_windows_ssize_max.patch",
     "openssl_windows_winstore.patch",
     "rust_llvm_msvc_linker.patch",

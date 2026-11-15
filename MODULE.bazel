@@ -16,7 +16,7 @@ single_version_override(
     module_name = "ffmpeg",
     patches = [
         "//bazel:ffmpeg_hls_window.patch",
-        "//bazel:ffmpeg_winsock_probes.patch",
+        "//bazel:ffmpeg_windows_probes.patch",
     ],
     patch_strip = 1,
 )

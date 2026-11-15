@@ -129,7 +129,7 @@ def source_archive(external, bin_dir, destination):
             bundle.add(ROOT / name, arcname="xrack-build/" + name)
         for name in (
             "ffmpeg_hls_window.patch",
-            "ffmpeg_winsock_probes.patch",
+            "ffmpeg_windows_probes.patch",
             "openssl_windows_ssize_max.patch",
             "openssl_windows_winstore.patch",
         ):
