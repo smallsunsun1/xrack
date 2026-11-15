@@ -407,6 +407,8 @@ fn generated_and_interpreted_video_rewind_real_hls() {
                 thread::sleep(Duration::from_millis(2));
                 continue;
             };
+            // Winsock inherits the listener's nonblocking mode on accept.
+            connection.set_nonblocking(false).unwrap();
             connection
                 .set_read_timeout(Some(Duration::from_secs(1)))
                 .unwrap();

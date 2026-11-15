@@ -928,6 +928,8 @@ mod tests {
                     thread::sleep(Duration::from_millis(4));
                     continue;
                 };
+                // Winsock inherits the listener's nonblocking mode on accept.
+                socket.set_nonblocking(false).unwrap();
                 socket
                     .set_read_timeout(Some(Duration::from_secs(1)))
                     .unwrap();
