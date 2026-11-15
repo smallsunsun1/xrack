@@ -670,10 +670,10 @@ window.addEventListener('message', ({data}) => {
         });
         sceneElements.replaceChildren(...rows);
         const properties = data.inspection.properties ?? [];
-        sceneProperties.textContent = (data.inspection.truncated ? 'Showing the first 512 elements.\n' : '')
-            + (properties.length ? 'Public properties\n' + properties.map(property =>
+        sceneProperties.textContent = (data.inspection.truncated ? 'Showing the first 512 elements.\\n' : '')
+            + (properties.length ? 'Public properties\\n' + properties.map(property =>
                 property.name + ' · ' + property.kind + (property.writable ? ' · writable' : '')
-            ).join('\n') : '');
+            ).join('\\n') : '');
         sceneProperties.hidden = !sceneProperties.textContent;
         positionInspection();
     }

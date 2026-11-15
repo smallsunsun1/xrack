@@ -5,6 +5,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { test } = require('node:test');
 const { pathToFileURL } = require('node:url');
+const { runInNewContext } = require('node:vm');
 
 test('keeps the activated frame interactive when a newer edit fails', { timeout: 5000 }, async () => {
     const events = new EventEmitter();
@@ -86,7 +87,14 @@ test('keeps the activated frame interactive when a newer edit fails', { timeout:
     await openPreview();
     try {
         const activating = once(events, 'activating');
-        events.emit('incoming', { type: 'ready' });
+        const script = panel.webview.html.match(/<script[^>]*>([\s\S]*?)<\/script>/)[1];
+        runInNewContext(script, {
+            acquireVsCodeApi: () => ({ postMessage: message => events.emit('incoming', message) }),
+            document: { getElementById: () => ({ addEventListener() {} }) },
+            navigator: { platform: 'MacIntel' },
+            ResizeObserver: class { observe() {} },
+            window: { addEventListener() {}, matchMedia: () => ({ addEventListener() {} }) },
+        }, { filename: 'xrack-preview-webview.js', timeout: 1000 });
         const [activate] = await activating;
         assert.equal(messages.some(message => message.image), false);
 
