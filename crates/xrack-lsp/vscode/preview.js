@@ -828,31 +828,36 @@ function registerPreview(context) {
                     if (!reply.unsupported) {
                         if (reply.error) throw new Error(reply.error);
                         if (!reply.image) throw new Error('Preview interpreter returned no image');
-                        const activation = renderer.request({ type: 'activate' });
-                        if (session?.renderer !== renderer) void session?.renderer.stop();
-                        component = reply.component;
-                        dependencies = new Set(reply.inputs.map(canonical));
-                        pointerSessions.clear();
-                        const active = session = {
-                            renderer, image: reply.image, component, dynamic: true, cwd, window: reply.window ?? null,
-                            size: reply.size, scale: requestedScale, windowMinimized: reply.window_minimized,
-                        };
-                        showFrame(reply.image, {
-                            status: 'Live preview', phase: 'live',
-                            components: reply.components, component,
-                            windows: reply.windows, window: reply.window,
-                            imeArea: reply.ime_area,
-                            windowMinimized: reply.window_minimized,
-                        });
-                        const activated = await activation;
-                        if (activated.error) throw new Error(activated.error);
-                        if (isCurrent()) {
+                        const activate = interactions.then(async () => {
+                            if (!isCurrent()) return;
+                            const activated = await renderer.request({ type: 'activate' });
+                            if (disposed) return;
+                            if (activated.error) throw new Error(activated.error);
+                            // This frame is now active in the host, even if another edit is queued.
+                            const selected = reply.component;
+                            if (session?.renderer !== renderer) void session?.renderer.stop();
+                            if (isCurrent()) component = selected;
+                            dependencies = new Set(reply.inputs.map(canonical));
+                            pointerSessions.clear();
+                            const active = session = {
+                                renderer, image: reply.image, component: selected, dynamic: true, cwd, window: reply.window ?? null,
+                                size: reply.size, scale: requestedScale, windowMinimized: reply.window_minimized,
+                            };
+                            showFrame(reply.image, {
+                                status: 'Live preview', phase: 'live',
+                                components: reply.components, component: selected,
+                                windows: reply.windows, window: reply.window,
+                                imeArea: reply.ime_area,
+                                windowMinimized: reply.window_minimized,
+                            });
                             if (activated.window_closed) closePreviewWindow(active);
                             else {
                                 scheduleNativeDialog(active, activated.native_dialog);
                                 scheduleAnimation(active, reply.next_frame_ms);
                             }
-                        }
+                        });
+                        interactions = activate.catch(() => {});
+                        await activate;
                         return;
                     }
                     post({ status: 'Building preview for this component…', phase: 'busy' });
@@ -942,7 +947,9 @@ function registerPreview(context) {
             if (session !== active || disposed) return;
             active.closed = true;
             clearTimeout(animationTimer);
-            post({ status: 'Preview window closed', phase: 'waiting', windowClosed: true });
+            void panel.webview.postMessage({
+                status: 'Preview window closed', phase: 'waiting', windowClosed: true,
+            });
         }
         let pendingUpdate;
         let updatingScale = false;

@@ -191,6 +191,7 @@ fn starts_with<'input>(ctx: &impl ParserRuleContext<'input>, text: &str) -> bool
 
 fn document(ctx: &DocumentContextAll<'_>) -> Document {
     Document {
+        source_files: Vec::new(),
         imports: ctx
             .importDecl_all()
             .iter()

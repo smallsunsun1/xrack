@@ -5,7 +5,7 @@ use std::borrow::Cow;
 pub struct Span {
     pub line: usize,
     pub column: usize,
-    /// One-based index into the source table when resolving an editor document.
+    /// One-based index into the source table after resolving imports.
     #[serde(skip)]
     pub source: usize,
 }
@@ -28,6 +28,8 @@ impl std::fmt::Display for Diagnostic {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Document {
+    #[serde(skip)]
+    pub source_files: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub imports: Vec<Import>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]

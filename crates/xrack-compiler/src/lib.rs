@@ -90,7 +90,7 @@ pub fn prepare_preview(
 ) -> Result<PreviewModule, CompilerError> {
     let buffers = buffers
         .into_iter()
-        .filter_map(|(path, text)| Some((path.canonicalize().ok()?, text)))
+        .map(|(path, text)| (ir::modules::normalize_source_path(&path), text))
         .collect();
     let (doc, mut inputs) =
         modules::parse_document_with_overrides(source, filename, None, &buffers)?;
@@ -262,6 +262,92 @@ pub fn export_mlir(
     declared_assets: Option<&[PathBuf]>,
 ) -> Result<String, CompilerError> {
     checked_module(document, filename, declared_assets).map(|module| module.to_mlir())
+}
+
+/// Export optimized MLIR with file resources relative to its output location.
+pub fn export_mlir_to(
+    document: &ast::Document,
+    filename: &str,
+    declared_assets: Option<&[PathBuf]>,
+    output: &Path,
+) -> Result<String, CompilerError> {
+    fn directory(file: &Path) -> Result<PathBuf, CompilerError> {
+        let parent = file
+            .parent()
+            .filter(|path| !path.as_os_str().is_empty())
+            .unwrap_or(Path::new("."));
+        parent.canonicalize().map_err(|source| CompilerError::Io {
+            path: parent.into(),
+            source,
+        })
+    }
+
+    fn relative_path(from: &Path, to: &Path) -> Option<PathBuf> {
+        from.ancestors()
+            .take_while(|ancestor| ancestor.has_root())
+            .enumerate()
+            .find_map(|(levels, ancestor)| {
+                let suffix = to.strip_prefix(ancestor).ok()?;
+                let mut relative: PathBuf = std::iter::repeat_n("..", levels).collect();
+                relative.push(suffix);
+                Some(relative)
+            })
+    }
+
+    fn resource_path(path: &Path) -> Result<String, String> {
+        let text = path.to_str().ok_or_else(|| {
+            format!(
+                "resource path {} cannot be written as UTF-8",
+                path.display()
+            )
+        })?;
+        #[cfg(windows)]
+        if path.is_relative() {
+            return Ok(text.replace('\\', "/"));
+        }
+        Ok(text.to_owned())
+    }
+
+    let module = checked_module(document, filename, declared_assets)?;
+    let input_dir = directory(Path::new(filename))?;
+    let output_dir = directory(output)?;
+    let module = if input_dir == output_dir {
+        module
+    } else {
+        let prefix = relative_path(&output_dir, &input_dir);
+        module
+            .map_file_resource_paths(|path| {
+                let prefix = prefix.as_ref().ok_or_else(|| {
+                    format!(
+                        "cannot reference resource {path:?} from {}",
+                        output.display()
+                    )
+                })?;
+                resource_path(&prefix.join(path))
+            })
+            .map_err(CompilerError::Resources)?
+    };
+    let module = module
+        .map_media_source_files(|op| {
+            let source = Path::new(xrack_resources::visual::media_declaration_file(
+                op, filename,
+            ));
+            let name = source.file_name().ok_or_else(|| {
+                format!("media declaration {} has no file name", source.display())
+            })?;
+            let path = directory(source)
+                .map(|parent| parent.join(name))
+                .or_else(|_| {
+                    std::path::absolute(source).map_err(|source_error| CompilerError::Io {
+                        path: source.into(),
+                        source: source_error,
+                    })
+                })
+                .map_err(|error| error.to_string())?;
+            resource_path(&relative_path(&output_dir, &path).unwrap_or(path))
+        })
+        .map_err(CompilerError::Resources)?;
+    Ok(module.to_mlir())
 }
 
 fn checked_module(

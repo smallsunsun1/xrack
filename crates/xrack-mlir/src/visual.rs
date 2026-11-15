@@ -629,6 +629,21 @@ pub fn split_fill_slot(view: OperationRef<'_>) -> Result<Option<usize>, String> 
         .ok_or_else(|| format!("split fill target {target} must be a direct pane"))
 }
 
+/// Names used in a SplitView's serialized state, including anonymous panes.
+pub fn split_pane_names(view: OperationRef<'_>) -> Result<Vec<String>, String> {
+    scene_children(view)
+        .enumerate()
+        .map(|(index, pane)| {
+            let id = pane.attr("id")?;
+            Ok(if id.is_empty() {
+                format!("@{index}")
+            } else {
+                id.to_owned()
+            })
+        })
+        .collect()
+}
+
 /// The expression that supplies clipboard text for a direct TableRow cell.
 pub enum TableClipboardRef<'m> {
     Value(OperationRef<'m>),

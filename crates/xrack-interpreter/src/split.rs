@@ -1,21 +1,10 @@
 use crate::*;
-use std::sync::Arc;
-use xrack_runtime::{
-    Property, SplitHandleInput, SplitResizeHandle, decode_split_sizes, decode_split_state,
-    encode_split_sizes, encode_split_state,
-};
+use xrack_runtime::SplitHandleInput;
 
 pub(crate) struct Definition {
     pub(crate) fill: Option<usize>,
+    pub(crate) panes: Box<[String]>,
     pub(crate) handle: Option<Box<Element>>,
-}
-
-type Panes = Arc<[Option<f32>]>;
-
-#[derive(Default)]
-pub(crate) struct State {
-    values: Property<Option<Panes>>,
-    handle: SplitResizeHandle,
 }
 
 #[derive(Clone, Copy)]
@@ -47,22 +36,6 @@ impl Parameter {
     }
 }
 
-impl Element {
-    fn pane_names(&self) -> Vec<std::borrow::Cow<'_, str>> {
-        self.children
-            .iter()
-            .enumerate()
-            .map(|(index, pane)| {
-                if pane.id.is_empty() {
-                    format!("@{index}").into()
-                } else {
-                    pane.id.as_ref().into()
-                }
-            })
-            .collect()
-    }
-}
-
 impl Instance {
     pub(crate) fn populate_split(
         &self,
@@ -71,18 +44,10 @@ impl Instance {
         node: &mut Node,
     ) -> Result<()> {
         let state = self.split_state(&element.key);
-        let values = state.values.get(|| None);
-        if let Some(fill) = definition.fill {
-            node.split_fill_index = Some(fill);
-            node.split_sizes = values;
-        } else {
-            node.split_weights = values;
-        }
-        node.split_resize_handle = Some(state.handle.clone());
-        node.add_split_handles();
+        state.populate(node, definition.fill);
         if let Some(template) = &definition.handle {
             state
-                .handle
+                .handle()
                 .try_decorate(node, |input| self.render_split_handle(template, input))?;
         }
         Ok(())
@@ -90,7 +55,7 @@ impl Instance {
 
     pub(crate) fn split_resizing(&self, key: &str) -> Result<bool> {
         let (owner, element) = self.element_owner(key)?;
-        Ok(owner.split_state(&element.key).handle.resizing())
+        Ok(owner.split_state(&element.key).handle().resizing())
     }
 
     /// Serialize a split view's pane weights or fixed sizes.
@@ -109,14 +74,10 @@ impl Instance {
             .split
             .as_ref()
             .ok_or_else(|| Error::Invalid("invalid SplitView target".into()))?;
-        let names = element.pane_names();
-        let names: Vec<_> = names.iter().map(|name| name.as_ref()).collect();
-        let values = self.split_state(&element.key).values.get(|| None);
-        Ok(if definition.fill.is_some() {
-            encode_split_sizes(&names, values.as_deref())
-        } else {
-            encode_split_state(&names, values.as_deref())
-        })
+        let names: Vec<_> = definition.panes.iter().map(String::as_str).collect();
+        Ok(self
+            .split_state(&element.key)
+            .save(&names, definition.fill.is_some()))
     }
 
     /// Restore pane state. Returns false for an invalid payload and true for a valid no-op.
@@ -135,30 +96,16 @@ impl Instance {
             .split
             .as_ref()
             .ok_or_else(|| Error::Invalid("invalid SplitView target".into()))?;
-        let names = element.pane_names();
-        let names: Vec<_> = names.iter().map(|name| name.as_ref()).collect();
-        let decoded = if definition.fill.is_some() {
-            decode_split_sizes(&names, serialized)
-        } else {
-            decode_split_state(&names, serialized)
-        };
-        let Some(values) = decoded else {
+        let names: Vec<_> = definition.panes.iter().map(String::as_str).collect();
+        let Some(changed) =
+            self.split_state(&element.key)
+                .restore(&names, definition.fill.is_some(), serialized)
+        else {
             return Ok(false);
         };
-        self.update_split(
-            element,
-            values.iter().any(Option::is_some).then_some(values),
-        )?;
-        Ok(true)
-    }
-
-    fn update_split(&self, element: &Element, next: Option<Panes>) -> Result<bool> {
-        let state = self.split_state(&element.key);
-        if state.values.get(|| None) == next {
-            return Ok(false);
+        if changed {
+            self.handler(element, "resized", &[])?;
         }
-        state.values.set(next);
-        self.handler(element, "resized", &[])?;
         Ok(true)
     }
 
@@ -177,11 +124,10 @@ impl Instance {
         if element.split.is_none() {
             return Ok(false);
         }
-        let current = owner.split_state(&element.key).values.get(|| None);
-        let next = node.prepare_split_resize(input, current.as_deref());
-        match next {
-            Some(next) => owner.update_split(element, Some(next)),
-            None => Ok(false),
+        if !owner.split_state(&element.key).resize(node, input) {
+            return Ok(false);
         }
+        owner.handler(element, "resized", &[])?;
+        Ok(true)
     }
 }

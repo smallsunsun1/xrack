@@ -1,6 +1,7 @@
 use crate::{
     ListModel, Node, Property, RowKey, RowLifetime, TableCellEditTarget, TableEditHistory,
     TableRowPatch, TableRows, VecModel,
+    list::try_render_rows_from_source,
     table_rows::{prepare_matching_table_edit, try_prepare_table_write},
 };
 use std::{
@@ -358,13 +359,18 @@ impl<Model: ListModel, State: Default, Ui> ComponentRepeater<Model, State, Ui> {
         create: impl Fn(RowContext<Model::Item>) -> Ui,
         render: impl Fn(&Ui, usize, &dyn Fn() -> Model::Item, &dyn Fn() -> i64, &State) -> Node,
     ) -> Vec<Node> {
-        self.try_render_rows(
-            &self.resolve_model(model),
-            indices,
-            cache_reads_index,
-            |input| Ok(create(input)),
-            |ui, index, item, row_index, state| {
-                Ok::<_, std::convert::Infallible>(render(ui, index, item, row_index, state))
+        try_render_rows_from_source(
+            || Ok(self.resolve_model(model)),
+            |resolved| {
+                self.try_render_rows(
+                    &resolved,
+                    indices,
+                    cache_reads_index,
+                    |input| Ok(create(input)),
+                    |ui, index, item, row_index, state| {
+                        Ok::<_, std::convert::Infallible>(render(ui, index, item, row_index, state))
+                    },
+                )
             },
         )
         .unwrap_or_else(|error| match error {})
@@ -386,12 +392,17 @@ impl<Model: ListModel, State: Default, Ui> ComponentRepeater<Model, State, Ui> {
             &State,
         ) -> Result<Node, E>,
     ) -> Result<Vec<Node>, E> {
-        self.try_render_rows(
-            &self.resolve_model(model),
-            |count| indices.into_iter().filter(move |&index| index < count),
-            cache_reads_index,
-            |input| Ok(create(input)),
-            render,
+        try_render_rows_from_source(
+            || Ok(self.resolve_model(model)),
+            |resolved| {
+                self.try_render_resolved_indices(
+                    &resolved,
+                    indices,
+                    cache_reads_index,
+                    |input| Ok(create(input)),
+                    render,
+                )
+            },
         )
     }
 
@@ -465,49 +476,47 @@ impl<Model: ListModel, State: Default, Ui> ComponentRepeater<Model, State, Ui> {
                 .retain(|key, _| rows.contains_key(key));
         }
         let mut visible = BTreeSet::new();
-        let nodes = indices(count)
-            .map(|index| {
-                let key = model.row_key(index);
-                let row = match self.rows.borrow_mut().entry(key) {
-                    std::collections::btree_map::Entry::Occupied(row) => row.get().clone(),
-                    std::collections::btree_map::Entry::Vacant(row) => {
-                        let input = RowContext::new(key, index);
-                        row.insert(Rc::new(Delegate {
-                            synchronize: Property::default(),
-                            lifetime: model.row_lifetime(key),
-                            state: State::default(),
-                            ui: create(input.clone())?,
-                            input,
-                        }))
-                        .clone()
-                    }
-                };
-                row.sync(index, || model.item(index));
-                let draw = || {
-                    let mut node = render(
-                        &row.ui,
-                        index,
-                        &|| row.input.item(),
-                        &|| row.input.index(),
-                        &row.state,
-                    )?;
-                    node.set_row_key(Some(key));
-                    Ok(node)
-                };
-                if let Some(reads_index) = cache_reads_index {
-                    visible.insert(key);
-                    let scene = self.scenes.borrow_mut().entry(key).or_default().clone();
-                    scene.try_get(|| {
-                        if reads_index {
-                            row.input.index();
-                        }
-                        draw().map(Node::into_shared)
-                    })
-                } else {
-                    draw()
+        let nodes = crate::list::try_render_stable_rows(model, stamp, indices(count), |index| {
+            let key = model.row_key(index);
+            let row = match self.rows.borrow_mut().entry(key) {
+                std::collections::btree_map::Entry::Occupied(row) => row.get().clone(),
+                std::collections::btree_map::Entry::Vacant(row) => {
+                    let input = RowContext::new(key, index);
+                    row.insert(Rc::new(Delegate {
+                        synchronize: Property::default(),
+                        lifetime: model.row_lifetime(key),
+                        state: State::default(),
+                        ui: create(input.clone())?,
+                        input,
+                    }))
+                    .clone()
                 }
-            })
-            .collect();
+            };
+            row.sync(index, || model.item(index));
+            let draw = || {
+                let mut node = render(
+                    &row.ui,
+                    index,
+                    &|| row.input.item(),
+                    &|| row.input.index(),
+                    &row.state,
+                )?;
+                node.set_row_key(Some(key));
+                Ok(node)
+            };
+            if let Some(reads_index) = cache_reads_index {
+                visible.insert(key);
+                let scene = self.scenes.borrow_mut().entry(key).or_default().clone();
+                scene.try_get(|| {
+                    if reads_index {
+                        row.input.index();
+                    }
+                    draw().map(Node::into_shared)
+                })
+            } else {
+                draw()
+            }
+        });
         self.scenes
             .borrow_mut()
             .retain(|key, _| visible.contains(key));
@@ -547,7 +556,19 @@ impl<Model: ListModel, State: Default, Ui> ComponentRepeater<Model, State, Ui> {
         key: RowKey,
         read: impl FnOnce(&dyn Fn() -> Model::Item, &dyn Fn() -> i64, &State) -> T,
     ) -> Option<T> {
-        self.with_event_row_state(model, index, key, false, |_, item, index, state| {
+        let model = self.resolve_model(model);
+        self.with_resolved_row_state(&model, index, key, read)
+    }
+
+    #[doc(hidden)]
+    pub fn with_resolved_row_state<T>(
+        &self,
+        model: &Rc<Model>,
+        index: usize,
+        key: RowKey,
+        read: impl FnOnce(&dyn Fn() -> Model::Item, &dyn Fn() -> i64, &State) -> T,
+    ) -> Option<T> {
+        self.with_resolved_event_row_state(model, index, key, false, |_, item, index, state| {
             read(item, index, state)
         })
     }
@@ -562,7 +583,20 @@ impl<Model: ListModel, State: Default, Ui> ComponentRepeater<Model, State, Ui> {
         read: impl FnOnce(&Ui, &dyn Fn() -> Model::Item, &dyn Fn() -> i64, &State) -> T,
     ) -> Option<T> {
         let model = self.resolve_model(model);
-        let row = self.event_row(&model, index, key, follow_row)?;
+        self.with_resolved_event_row_state(&model, index, key, follow_row, read)
+    }
+
+    /// Route through the same source model that resolved a projected row.
+    #[doc(hidden)]
+    pub fn with_resolved_event_row_state<T>(
+        &self,
+        model: &Model,
+        index: usize,
+        key: RowKey,
+        follow_row: bool,
+        read: impl FnOnce(&Ui, &dyn Fn() -> Model::Item, &dyn Fn() -> i64, &State) -> T,
+    ) -> Option<T> {
+        let row = self.event_row(model, index, key, follow_row)?;
         Some(read(
             &row.ui,
             &|| row.input.item(),
@@ -580,8 +614,7 @@ impl<Model: ListModel, State: Default, Ui> ComponentRepeater<Model, State, Ui> {
         follow_row: bool,
         action: impl FnOnce(&Ui) -> T,
     ) -> Option<T> {
-        self.event_row(model, index, key, follow_row)
-            .map(|row| action(&row.ui))
+        self.with_resolved_event_row_state(model, index, key, follow_row, |ui, _, _, _| action(ui))
     }
 
     fn event_row(

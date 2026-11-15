@@ -190,6 +190,8 @@ pub struct LayoutNode {
     horizontal_scroll: Option<ScrollLayout>,
     viewport_handle: Option<xrack_runtime::ViewportHandle>,
     nested_list: Option<xrack_runtime::ListRowRenderer>,
+    missing_list_rows: bool,
+    missing_descendant_list_rows: bool,
     attached_scroll_bar: Option<Box<scroll_bar::AttachedScrollBar>>,
     mouse_drag_pan: bool,
     middle_mouse_pan: bool,
@@ -273,6 +275,11 @@ impl<'a> WindowEffects<'a> {
 }
 
 impl LayoutNode {
+    #[doc(hidden)]
+    pub fn has_missing_list_rows(&self) -> bool {
+        self.missing_list_rows || self.missing_descendant_list_rows
+    }
+
     #[doc(hidden)]
     pub fn timer_registrations<'a>(
         &self,
@@ -856,6 +863,7 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
             let scope = renderer
                 .filter(|_| self.row_key.is_some())
                 .map_or(0, xrack_runtime::ListRowRenderer::scope);
+            let expects_rows = !range.is_empty();
             let delegates = if let Some(renderer) = renderer {
                 let columns = layout
                     .table
@@ -863,10 +871,11 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
                     .map_or_else(xrack_runtime::TableColumnWindow::default, |table| {
                         table.column_window(layout.clip_rect(table.body))
                     });
-                renderer.render_in_columns(range, &columns)
+                renderer.render_in_scene(node, range, &columns)
             } else {
                 component.list_rows(&self.path, range)
             };
+            let missing_list_rows = expects_rows && delegates.is_empty();
             node.children = delegates
                 .into_iter()
                 .enumerate()
@@ -985,6 +994,7 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
                 None,
             );
             layout.table_pane = pane;
+            layout.missing_list_rows = missing_list_rows;
             self.ancestor_shapes = shapes;
             self.space = space;
         }
@@ -997,6 +1007,7 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
         {
             self.path.push(columns.logical_index(index));
             self.populate_lists(component, child, item);
+            layout.missing_descendant_list_rows |= item.has_missing_list_rows();
             self.path.pop();
         }
         self.row_key = previous_row;
@@ -1179,6 +1190,8 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
                 horizontal_scroll: None,
                 viewport_handle: None,
                 nested_list: None,
+                missing_list_rows: false,
+                missing_descendant_list_rows: false,
                 attached_scroll_bar: None,
                 mouse_drag_pan: false,
                 middle_mouse_pan: false,
@@ -1282,6 +1295,8 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
                 horizontal_scroll: None,
                 viewport_handle: None,
                 nested_list: None,
+                missing_list_rows: false,
+                missing_descendant_list_rows: false,
                 attached_scroll_bar: None,
                 mouse_drag_pan: false,
                 middle_mouse_pan: false,
@@ -1691,6 +1706,8 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
                 .list_row_renderer
                 .clone()
                 .filter(|_| self.row_key.is_some()),
+            missing_list_rows: false,
+            missing_descendant_list_rows: false,
             attached_scroll_bar: None,
             mouse_drag_pan: node.boolean("mouse-drag-pan-enabled", node.kind == "Flickable"),
             middle_mouse_pan: node.kind != "Flickable"
@@ -1755,17 +1772,11 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
         let anchor = self
             .input
             .and_then(|input| {
-                if let Some(renderer) = nested {
-                    input
-                        .scroll_anchors
-                        .values()
-                        .find(|anchor| anchor.scope == Some(renderer.scope()))
-                } else {
-                    input
-                        .scroll_anchors
-                        .get(&self.path)
-                        .filter(|anchor| anchor.scope.is_none())
-                }
+                list_anchor::ListAnchor::find(
+                    &input.scroll_anchors,
+                    &self.path,
+                    nested.map(xrack_runtime::ListRowRenderer::scope),
+                )
             })
             .filter(|_| {
                 node.boolean("preserve-scroll-anchor", false) && !self.tree_root_changed(node)

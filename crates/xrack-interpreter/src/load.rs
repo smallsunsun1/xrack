@@ -1050,35 +1050,6 @@ impl<'m> Loader<'m> {
                 }
                 "xr.control_link" => {
                     let name = property_name(child)?;
-                    if !matches!(
-                        name,
-                        "text"
-                            | "checked"
-                            | "current-index"
-                            | "current-row"
-                            | "current-key"
-                            | "running"
-                            | "open-side"
-                            | "current-value"
-                            | "value"
-                            | "check-state"
-                            | "edit-text"
-                            | "position"
-                            | "open"
-                            | "lower-value"
-                            | "upper-value"
-                            | "date"
-                            | "display-month"
-                            | "time"
-                            | "color"
-                            | "font"
-                    ) && !(name == "visible" && op.attribute("kind") == Some("SecondaryWindow"))
-                    {
-                        return Err(unsupported(
-                            child,
-                            &format!("two-way control property {name}"),
-                        ));
-                    }
                     links.insert(name, reference(child, operand(child, 0)?)?);
                 }
                 "xr.row_link" => {
@@ -1143,6 +1114,9 @@ impl<'m> Loader<'m> {
         let split = if matches!(visual, Visual::Builtin("SplitView")) {
             Some(split::Definition {
                 fill: xrack_mlir::split_fill_slot(op).map_err(|error| invalid(op, error))?,
+                panes: xrack_mlir::split_pane_names(op)
+                    .map_err(|error| invalid(op, error))?
+                    .into_boxed_slice(),
                 handle: split_handle,
             })
         } else {
@@ -1162,7 +1136,7 @@ impl<'m> Loader<'m> {
         Ok(Element {
             key: key.into(),
             media_source_file: matches!(visual, Visual::Builtin("MediaPlayer")).then(|| {
-                xrack_resources::visual::media_source_file(op, &self.assets.entry_file).to_owned()
+                xrack_resources::visual::media_source_file(op, &self.assets.entry_file).into_owned()
             }),
             id: id.into(),
             repeat,

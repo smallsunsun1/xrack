@@ -3,6 +3,7 @@ load("//bazel:xrack.bzl", "xr_ui_library")
 
 exports_files(
     [
+        "live.xr",
         "video.xr",
     ],
     visibility = [
@@ -33,6 +34,7 @@ xr_ui_library(
     name = "live_ui",
     src = "live.xr",
     sources = ["video.xr"],
+    visibility = ["//tests:__pkg__"],
 )
 
 rust_binary(

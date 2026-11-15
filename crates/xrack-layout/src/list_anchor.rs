@@ -6,6 +6,7 @@ use xrack_runtime::{ListMetrics, Node, Orientation, RowKey};
 pub(crate) struct ListAnchor {
     pub offset: f32,
     pub scope: Option<u64>,
+    tree_root: Option<(i64, Option<RowKey>)>,
     cells: ViewCells,
     selection: Option<i64>,
     rows: Vec<(RowKey, usize)>,
@@ -13,7 +14,24 @@ pub(crate) struct ListAnchor {
 }
 
 impl ListAnchor {
-    fn capture(node: &Node, layout: &LayoutNode) -> Option<Self> {
+    pub(crate) fn find<'a>(
+        anchors: &'a BTreeMap<Vec<usize>, Self>,
+        path: &[usize],
+        scope: Option<u64>,
+    ) -> Option<&'a Self> {
+        if scope.is_some() {
+            anchors.values().find(|anchor| anchor.scope == scope)
+        } else {
+            anchors.get(path).filter(|anchor| anchor.scope.is_none())
+        }
+    }
+
+    fn capture(
+        node: &Node,
+        layout: &LayoutNode,
+        path: &[usize],
+        previous: &BTreeMap<Vec<usize>, Self>,
+    ) -> Option<Self> {
         let list = node.list?;
         if !layout.visible
             || !node.boolean("preserve-scroll-anchor", false)
@@ -26,6 +44,17 @@ impl ListAnchor {
             return None;
         }
         let offset = layout.scroll?.offset;
+        let scope = layout
+            .nested_list
+            .as_ref()
+            .map(xrack_runtime::ListRowRenderer::scope);
+        let tree_root = node.tree.as_ref().map(|tree| tree.root_identity());
+        if layout.missing_list_rows {
+            // A cancelled row request leaves no new anchor to capture.
+            return Self::find(previous, path, scope)
+                .filter(|anchor| anchor.offset == offset && anchor.tree_root == tree_root)
+                .cloned();
+        }
         let width = layout
             .table
             .as_ref()
@@ -53,10 +82,8 @@ impl ListAnchor {
         };
         Some(Self {
             offset,
-            scope: layout
-                .nested_list
-                .as_ref()
-                .map(xrack_runtime::ListRowRenderer::scope),
+            scope,
+            tree_root,
             cells: ViewCells::new(node, width),
             selection: ListMetrics::selection(node),
             rows,
@@ -99,11 +126,13 @@ impl ListAnchor {
 pub(crate) fn capture_list_anchors(
     scene: &Node,
     layout: &LayoutNode,
+    previous: &BTreeMap<Vec<usize>, ListAnchor>,
 ) -> BTreeMap<Vec<usize>, ListAnchor> {
     fn visit(
         scene: &Node,
         layout: &LayoutNode,
         path: &mut Vec<usize>,
+        previous: &BTreeMap<Vec<usize>, ListAnchor>,
         anchors: &mut BTreeMap<Vec<usize>, ListAnchor>,
     ) {
         if scene.list.is_some() {
@@ -132,18 +161,18 @@ pub(crate) fn capture_list_anchors(
                     }
                 }
             }
-            if let Some(anchor) = ListAnchor::capture(scene, layout) {
+            if let Some(anchor) = ListAnchor::capture(scene, layout, path, previous) {
                 anchors.insert(path.clone(), anchor);
             }
         }
         for (index, child, item) in layout.children_in_scene_order(scene) {
             path.push(index);
-            visit(child, item, path, anchors);
+            visit(child, item, path, previous, anchors);
             path.pop();
         }
     }
 
     let mut anchors = BTreeMap::new();
-    visit(scene, layout, &mut Vec::new(), &mut anchors);
+    visit(scene, layout, &mut Vec::new(), previous, &mut anchors);
     anchors
 }

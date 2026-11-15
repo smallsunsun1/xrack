@@ -2920,7 +2920,7 @@ fn standard_table_checks_column_fields_in_source_and_mlir() {
     let output = compile(source, "standard-table.xr").unwrap();
     assert!(output.mlir.contains("kind = \"StandardTableView\""));
     let rust = output.rust.to_string();
-    assert!(rust.contains("project_standard_table_rows"));
+    assert!(rust.contains("render_standard_table_rows"));
     assert!(rust.contains("TableField :: cell_text (& item . device_name)"));
     assert!(rust.contains("TableField :: cell_text (& item . header_label)"));
     for (replacement, expected) in [
@@ -3868,7 +3868,8 @@ fn grid_view_checks_geometry_and_repeated_template_in_source_and_mlir() {
     "#;
     let output = compile(source, "grid.xr").unwrap();
     assert!(output.mlir.contains("kind = \"GridView\""));
-    assert!(output.rust.to_string().contains("render_cached_rows"));
+    assert!(output.mlir.contains("xr.row_scene_cache"));
+    assert!(output.rust.to_string().contains("render_resolved_indices"));
     let malformed = source.replace("100px", "true");
     assert!(
         compile(&malformed, "grid.xr")
@@ -5117,7 +5118,16 @@ fn split_fill_is_a_typed_direct_pane_reference() {
     "#;
     let result = compile(source, "split-fill.xr").unwrap();
     assert!(result.mlir.contains("xr.split_fill"));
-    assert!(result.rust.to_string().contains("split_fill_index = Some"));
+    let rust = result.rust.to_string();
+    assert!(rust.contains(":: xrack_runtime :: SplitState"));
+    assert!(
+        rust.match_indices(". populate (& mut ").any(|(start, _)| {
+            rust[start..]
+                .split_once(';')
+                .is_some_and(|(call, _)| call.trim_end().ends_with(", Some (1usize))"))
+        }),
+        "{rust}"
+    );
     for target in ["outside", "inner", "missing"] {
         let error = analyze(&source.replace("fill-pane: editor", &format!("fill-pane: {target}")))
             .unwrap_err();
@@ -7653,27 +7663,43 @@ fn editor_preview_compiles_open_buffers_and_reports_import_dependencies() {
     std::fs::create_dir_all(&dir).unwrap();
     let entry = dir.join("editor.xr");
     let imported = dir.join("widget.xr");
+    let new_import = dir.join("new.xr");
     std::fs::write(&entry, "unparseable saved entry").unwrap();
     std::fs::write(&imported, "unparseable saved import").unwrap();
     let preview = xrack_compiler::compile_preview(
         r#"import { Card as Tile } from "widget.xr";
+        import { NewItem } from "new.xr";
         component Internal inherits Rectangle {}
-        export component App inherits Window { Tile {} }"#,
+        export component App inherits Window { Tile {} NewItem {} }"#,
         entry.to_str().unwrap(),
-        [(
-            imported.clone(),
-            "export component Card inherits Rectangle { width: 37px; }".into(),
-        )]
+        [
+            (
+                imported.clone(),
+                "export component Card inherits Rectangle { width: 37px; }".into(),
+            ),
+            (
+                new_import.clone(),
+                "export component NewItem inherits Rectangle { width: 41px; }".into(),
+            ),
+        ]
         .into(),
     )
     .unwrap();
     assert_eq!(preview.components, ["App", "Internal"]);
     assert_eq!(
         preview.inputs,
-        [entry.clone(), imported.canonicalize().unwrap()].into()
+        [
+            entry,
+            imported.canonicalize().unwrap(),
+            dir.canonicalize().unwrap().join("new.xr"),
+        ]
+        .into()
     );
     let rust = preview.rust.to_string();
-    assert!(rust.contains("__xrack_preview_component") && rust.contains("37"));
+    assert!(
+        rust.contains("__xrack_preview_component") && rust.contains("37") && rust.contains("41")
+    );
+    assert!(!new_import.exists());
     assert_eq!(
         std::fs::read_to_string(imported).unwrap(),
         "unparseable saved import"

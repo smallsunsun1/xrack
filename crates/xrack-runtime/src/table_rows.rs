@@ -418,6 +418,8 @@ struct ProjectionObservation {
 pub struct TableRowOrder {
     state: RefCell<State>,
     changed: ChangeSignal,
+    projection_options: Property<(Option<TableSort>, Rc<str>)>,
+    active_projection_options: Property<(Option<TableSort>, Rc<str>)>,
     projection: Property<Option<ProjectedOrder>>,
     projection_source: Property<u64>,
     observation: RefCell<Option<ProjectionObservation>>,
@@ -520,21 +522,53 @@ impl TableRowOrder {
         query: impl FnOnce() -> Result<String, E>,
         visible: Option<impl Fn(&T) -> bool + Clone + 'static>,
     ) -> Result<TableRows<VecModel<T>>, E> {
+        self.try_project_model(
+            || Ok(source()),
+            Rc::clone,
+            sort,
+            compare,
+            field,
+            query,
+            visible,
+        )
+        .map(|(rows, _)| rows)
+    }
+
+    /// Read sort and filter bindings before resolving the source used for positions.
+    #[doc(hidden)]
+    pub fn try_project_model<T: Clone + PartialEq + 'static, M, E>(
+        &self,
+        resolve: impl FnOnce() -> Result<M, E>,
+        model: impl FnOnce(&M) -> Rc<VecModel<T>>,
+        sort: impl FnOnce() -> Result<Option<TableSort>, E>,
+        compare: impl Fn(usize, &T, &T) -> Ordering + Clone + 'static,
+        field: Option<impl Fn(&T) -> &str + Clone + 'static>,
+        query: impl FnOnce() -> Result<String, E>,
+        visible: Option<impl Fn(&T) -> bool + Clone + 'static>,
+    ) -> Result<(TableRows<VecModel<T>>, M), E> {
         self.changed.track();
-        let source = source();
-        let stamp = source.structure_stamp();
-        self.projection_source.set_if_changed(stamp.0);
-        let projection = self.projection.try_get(|| {
-            self.projection_source.get(|| stamp.0);
+        let (sort, query) = self.projection_options.try_get(|| {
             let sort = sort()?;
             let query: Rc<str> = if field.is_some() {
                 query()?.trim().to_lowercase().into()
             } else {
                 Rc::from("")
             };
+            Ok((sort, query))
+        })?;
+        let resolved = resolve()?;
+        let source = model(&resolved);
+        let stamp = source.structure_stamp();
+        self.projection_source.set_if_changed(stamp.0);
+        self.active_projection_options
+            .set_if_changed((sort, query.clone()));
+        let projection = self.projection.get(|| {
+            self.projection_source.get(|| stamp.0);
+            self.active_projection_options
+                .get(|| unreachable!("projection options are initialized"));
             if sort.is_none() && query.is_empty() && visible.is_none() {
                 self.observation.borrow_mut().take();
-                return Ok(None);
+                return None;
             }
             let stamp = source.structure_stamp();
             let column = sort.map(|sort| sort.column);
@@ -612,18 +646,18 @@ impl TableRowOrder {
                 sorter,
             );
             if sort.is_none() && query.is_empty() && order.len() == count {
-                return Ok(None);
+                return None;
             }
-            Ok(Some(ProjectedOrder {
+            Some(ProjectedOrder {
                 order: Rc::new(Permutation::new(order, count)),
                 sorted: sort.is_some(),
-            }))
-        })?;
+            })
+        });
         let mut state = self.state.borrow_mut();
         state.reconcile(stamp);
         state.use_projection(projection);
         let positions = state.positions(stamp, source.row_count());
-        Ok(TableRows { source, positions })
+        Ok((TableRows { source, positions }, resolved))
     }
 
     /// Move a row using one source snapshot and keep the cursor on its source row.

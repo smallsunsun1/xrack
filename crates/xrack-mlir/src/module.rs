@@ -9,6 +9,8 @@ use std::{
 };
 use xrack_syntax::ast::{Parameter, Span, Type};
 
+const MEDIA_SOURCE_FILE: &str = "xr.media_source_file";
+
 struct Context(ffi::MlirContext);
 
 impl Context {
@@ -223,6 +225,84 @@ impl Module {
             owner: PhantomData,
         }
         .operations()
+    }
+
+    fn visit_operations(
+        &self,
+        mut visitor: impl FnMut(OperationRef<'_>) -> Result<(), String>,
+    ) -> Result<(), String> {
+        fn visit(
+            op: OperationRef<'_>,
+            visitor: &mut impl FnMut(OperationRef<'_>) -> Result<(), String>,
+        ) -> Result<(), String> {
+            visitor(op)?;
+            for child in op.children() {
+                visit(child, visitor)?;
+            }
+            Ok(())
+        }
+
+        self.verified.set(false);
+        for op in self.operations() {
+            visit(op, &mut visitor)?;
+        }
+        Ok(())
+    }
+
+    /// Rewrite the file-relative paths carried by fonts, images and catalogs.
+    pub fn map_file_resource_paths(
+        self,
+        mut map: impl FnMut(&str) -> Result<String, String>,
+    ) -> Result<Self, String> {
+        self.visit_operations(|op| {
+            let attribute = match op.name() {
+                "xr.font" | "xr.translation_catalog" => Some("path"),
+                "xr.image_url" => Some("value"),
+                _ => None,
+            };
+            if let Some(attribute) = attribute {
+                let path = op.attr(attribute)?;
+                if !path.is_empty() {
+                    let mapped = map(path)?;
+                    if mapped != path {
+                        // The consumed module owns the operation and its context.
+                        unsafe {
+                            let value = ffi::mlirStringAttrGet(self.context.0, string_ref(&mapped));
+                            ffi::mlirOperationSetInherentAttributeByName(
+                                op.raw,
+                                string_ref(attribute),
+                                value,
+                            );
+                        }
+                    }
+                }
+            }
+            Ok(())
+        })?;
+        Ok(self)
+    }
+
+    /// Record each media declaration's path relative to the exported MLIR file.
+    pub fn map_media_source_files(
+        self,
+        mut map: impl FnMut(OperationRef<'_>) -> Result<String, String>,
+    ) -> Result<Self, String> {
+        self.visit_operations(|op| {
+            if op.name() == "xr.element" && op.attribute("kind") == Some("MediaPlayer") {
+                let path = map(op)?;
+                // The module owns the operation and string attribute.
+                unsafe {
+                    let value = ffi::mlirStringAttrGet(self.context.0, string_ref(&path));
+                    ffi::mlirOperationSetDiscardableAttributeByName(
+                        op.raw,
+                        string_ref(MEDIA_SOURCE_FILE),
+                        value,
+                    );
+                }
+            }
+            Ok(())
+        })?;
+        Ok(self)
     }
 
     pub fn to_mlir(&self) -> String {
@@ -496,6 +576,11 @@ impl<'m> OperationRef<'m> {
             column: 1,
             source: 0,
         }
+    }
+
+    /// The declaration path recorded relative to an exported MLIR file.
+    pub fn exported_media_source_file(self) -> Option<&'m str> {
+        self.attribute(MEDIA_SOURCE_FILE)
     }
 
     pub fn source_file(self) -> Option<&'m str> {

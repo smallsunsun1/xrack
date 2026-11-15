@@ -896,6 +896,75 @@ fn preview_window_commands_update_bindings_and_restore_a_minimized_window() {
 }
 
 #[test]
+fn preview_retries_cancelled_visible_rows_when_the_base_scene_is_clean() {
+    use std::{cell::Cell, rc::Rc};
+    use xrack_renderer_femtovg::preview::PreviewScene;
+    use xrack_runtime::{
+        Component, Length, ListMetrics, ListRowRenderer, Node, Repeater, VecModel,
+    };
+
+    struct ListUi(Rc<Node>);
+
+    impl Component for ListUi {
+        fn render(&self) -> Node {
+            self.0.as_ref().clone()
+        }
+
+        fn render_shared(&self) -> Rc<Node> {
+            self.0.clone()
+        }
+
+        fn dispatch(&mut self, _: &str, _: &str) -> bool {
+            false
+        }
+    }
+
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))
+    .unwrap();
+    let rows = VecModel::from(vec!["first".to_owned(), "second".to_owned()]);
+    let repeater = Repeater::<_, ()>::default();
+    let pending = Cell::new(true);
+    let mut list = Node::new("ListView", None);
+    list.list = Some(ListMetrics {
+        row_count: 2,
+        first_row: 0,
+    });
+    list.properties.insert("width", Length(160.0).into());
+    list.properties.insert("height", Length(60.0).into());
+    list.properties.insert("row-height", Length(24.0).into());
+    list.list_row_renderer = Some(ListRowRenderer::new(move |range| {
+        repeater.render_range(
+            || rows.clone(),
+            range,
+            |_, item, _| {
+                let text = item();
+                if text == "second" && pending.replace(false) {
+                    assert!(rows.set_row(0, "updated".into()));
+                }
+                let mut label = Node::new("Text", None);
+                label.properties.insert("text", text.into());
+                label
+            },
+        )
+    }));
+    let mut window = Node::new("Window", None);
+    window.properties.insert("width", Length(160.0).into());
+    window.properties.insert("height", Length(60.0).into());
+    window.children.push(list);
+    let mut preview = PreviewScene::new(Box::new(ListUi(Rc::new(window))));
+    preview.render_animated(&mut renderer).unwrap();
+    let (scene, layout, _) = preview.inspect_frame().unwrap();
+    let rows = &scene.children[0].children;
+    assert!(!layout.has_missing_list_rows());
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0].children[0].text("text"), Some("updated"));
+    assert_eq!(rows[1].children[0].text("text"), Some("second"));
+}
+
+#[test]
 fn preview_renders_at_display_density_and_keeps_logical_hit_testing() {
     use xrack_renderer_femtovg::preview::PreviewScene;
 

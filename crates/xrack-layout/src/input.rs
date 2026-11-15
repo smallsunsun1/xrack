@@ -9056,7 +9056,7 @@ impl Interaction {
                 ))
             })
             .collect();
-        self.scroll_anchors = capture_list_anchors(scene, layout);
+        self.scroll_anchors = capture_list_anchors(scene, layout, &self.scroll_anchors);
         for (path, anchor) in &self.scroll_anchors {
             if anchor.scope.is_none()
                 && anchor.offset > 0.0

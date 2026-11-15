@@ -163,8 +163,7 @@ jobs:
         env:
           CARGO_TARGET_DIR: ${{ github.workspace }}/.tools/cargo-consumer
         run: python tools/test_cargo_consumer.py .tools/dist ${{ matrix.target }}
-      - name: Load MLIR from a standalone Cargo consumer
-        if: hashFiles('bundles/mlir/build.rs') != ''
+      - name: Compare interpreted MLIR and generated Rust in a standalone Cargo consumer
         env:
           CARGO_TARGET_DIR: ${{ github.workspace }}/.tools/cargo-consumer
         run: python tools/test_cargo_consumer.py .tools/dist ${{ matrix.target }} --interpreter
@@ -188,9 +187,9 @@ jobs:
         with:
           node-version: '22'
           package-manager-cache: false
-      - name: Test the VS Code preview queue
+      - name: Test the VS Code preview
         if: env.PACKAGE_VSIX == 'true'
-        run: node --test crates/xrack-lsp/vscode/preview-queue.test.js
+        run: node --test crates/xrack-lsp/vscode/preview-queue.test.js crates/xrack-lsp/vscode/preview.test.js
       - name: Package and smoke-test the native VSIX
         if: env.PACKAGE_VSIX == 'true'
         run: >-

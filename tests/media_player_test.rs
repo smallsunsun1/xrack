@@ -321,6 +321,86 @@ fn standalone_mlir_resolves_media_sources_and_subtitles_without_locations() {
         }
         assert_eq!(ui.take_error(), None);
     }
+
+    let original = directory.join("before");
+    let library = original.join("src/players/player.xr");
+    let assets = library.parent().unwrap().join("assets");
+    fs::create_dir_all(&assets).unwrap();
+    fs::create_dir_all(original.join("build")).unwrap();
+    fs::write(
+        &library,
+        source.replace("component App", "component Player")
+            + r#"export component Clip inherits MediaPlayer { source: "assets/clip.mp4"; }"#,
+    )
+    .unwrap();
+    for asset in ["clip.mp4", "captions.vtt"] {
+        fs::write(assets.join(asset), []).unwrap();
+    }
+    let app = r#"
+        import { Player, Clip } from "players/player.xr";
+        export component App inherits Player {}
+        export component InheritedClip inherits Clip {}
+    "#;
+    let filename = original.join("src/app.xr");
+    let filename = filename.to_str().unwrap();
+    let document = xrack_compiler::parse_document(app, filename, None).unwrap();
+    let exports = [
+        ("build/app.mlir", "../src/players/player.xr"),
+        ("src/app.mlir", "players/player.xr"),
+    ];
+    for (file, _) in exports {
+        let path = original.join(file);
+        let text = xrack_compiler::export_mlir_to(&document, filename, None, &path).unwrap();
+        assert!(text.contains("player.xr"));
+        fs::write(path, text).unwrap();
+    }
+    let moved = directory.join("after");
+    fs::rename(&original, &moved).unwrap();
+    for (file, declaration) in exports {
+        let file = moved.join(file);
+        let text = fs::read_to_string(&file).unwrap();
+        let module = xrack_compiler::mlir::process(&text).unwrap();
+        for (component, id) in [("App", "player"), ("InheritedClip", "root")] {
+            let root = module
+                .operations()
+                .find(|op| op.attribute("sym_name") == Some(component))
+                .and_then(|op| op.children().find(|child| child.name() == "xr.element"))
+                .unwrap();
+            let player = std::iter::once(root)
+                .chain(root.children())
+                .find(|op| op.attribute("id") == Some(id))
+                .unwrap();
+            assert_eq!(player.attribute("kind"), Some("MediaPlayer"));
+            assert_eq!(player.exported_media_source_file(), Some(declaration));
+            assert!(Path::new(player.source_file().unwrap()).ends_with("src/players/player.xr"));
+        }
+        let rust = xrack_compiler::generate_rust(&module, file.to_str().unwrap(), None)
+            .unwrap()
+            .to_string();
+        let expected_file = std::path::absolute(file.parent().unwrap().join(declaration)).unwrap();
+        assert!(rust.contains(&format!("{:?}", expected_file.to_str().unwrap())));
+        let ui = xrack_interpreter::load_mlir_file(&file)
+            .unwrap()
+            .create("App")
+            .unwrap();
+        let mut queue = MediaQueue::default();
+        tick(&mut queue, &ui);
+        for (property, asset) in [
+            ("opened-source", "clip.mp4"),
+            ("opened-subtitle", "captions.vtt"),
+        ] {
+            let Value::String(path) = ui.get(property).unwrap() else {
+                panic!("expected the path for {property}");
+            };
+            let expected = moved.join("src/players/assets").join(asset);
+            assert_eq!(
+                fs::canonicalize(&path)
+                    .unwrap_or_else(|error| panic!("cannot resolve {path:?} ({error})")),
+                fs::canonicalize(expected).unwrap()
+            );
+        }
+        assert_eq!(ui.take_error(), None);
+    }
     fs::remove_dir_all(directory).unwrap();
 }
 
@@ -381,7 +461,7 @@ fn repeated_media_requires_a_component_for_both_source_and_text_mlir() {
 
 #[cfg(feature = "media_backend")]
 #[test]
-fn generated_and_interpreted_video_rewind_real_hls() {
+fn generated_and_interpreted_live_example_rewind_real_hls() {
     use std::{
         io::{BufRead, BufReader, Write},
         net::TcpListener,
@@ -467,14 +547,26 @@ fn generated_and_interpreted_video_rewind_real_hls() {
 
     let result = std::panic::catch_unwind(|| {
         xrack_media::install();
-        let source = include_str!("../examples/video/video.xr");
-        let document = xrack_compiler::parse(source).unwrap();
-        let module = xrack_compiler::lower(&document, "examples/video/video.xr").unwrap();
-        let mut interpreted = xrack_interpreter::load_mlir(&module.to_mlir())
+        let filename = "examples/video/live.xr";
+        let source = std::fs::read_to_string(filename).unwrap();
+        let preview =
+            xrack_compiler::prepare_preview(&source, filename, Default::default()).unwrap();
+        let mut interpreted = xrack_interpreter::load_mlir(&preview.module.to_mlir())
             .unwrap()
-            .create("VideoDemo")
+            .create("LocalLiveDemo")
             .unwrap();
-        let mut compiled = video_ui::VideoDemo::new();
+        let mut compiled = live_ui::LocalLiveDemo::new();
+        for (name, compiled_default) in [
+            ("start-playing", compiled.get_start_playing()),
+            ("muted", compiled.get_muted()),
+            ("network-controls", compiled.get_network_controls()),
+        ] {
+            assert!(compiled_default, "{name}");
+            assert_eq!(interpreted.get(name), Ok(compiled_default.into()), "{name}");
+        }
+        // Hold both players at their first frame for a deterministic seek and return to live.
+        compiled.set_start_playing(false);
+        interpreted.set("start-playing", false.into()).unwrap();
         let url = format!("http://{address}/test.m3u8");
         compiled.set_video_source(url.clone());
         interpreted.set("video-source", Value::String(url)).unwrap();

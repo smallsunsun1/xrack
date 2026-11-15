@@ -1,4 +1,5 @@
 //! Describe the visual bindings and control storage shared by both backends.
+use std::{borrow::Cow, path::Path};
 use xrack_mlir::{OperationRef, ValueRef, scene_children};
 use xrack_runtime::{MediaCommand, is_text_input, is_toggle};
 use xrack_syntax::ast::Type;
@@ -10,13 +11,24 @@ fn children<'m, 'n>(
     op.children().filter(move |child| child.name() == name)
 }
 
-/// Runtime media paths use the declaration's file, or the entry file when
-/// standalone MLIR has no source locations.
-pub fn media_source_file<'a>(op: OperationRef<'a>, entry: &'a str) -> &'a str {
+/// The declaration file used for media paths in source modules.
+pub fn media_declaration_file<'a>(op: OperationRef<'a>, entry: &'a str) -> &'a str {
     // MLIR gives an unnamed parser buffer the filename "-".
     op.source_file()
         .filter(|file| !matches!(*file, "" | "-"))
         .unwrap_or(entry)
+}
+
+/// Resolve the media declaration in a source or file-backed MLIR module.
+pub fn media_source_file<'a>(op: OperationRef<'a>, entry: &'a str) -> Cow<'a, str> {
+    if let Some(file) = op.exported_media_source_file()
+        && let Some(directory) = Path::new(entry).parent()
+    {
+        let path = directory.join(file);
+        let path = std::path::absolute(&path).unwrap_or(path);
+        return Cow::Owned(path.to_string_lossy().into_owned());
+    }
+    Cow::Borrowed(media_declaration_file(op, entry))
 }
 
 /// A media effect whose seek position has yet to be evaluated.

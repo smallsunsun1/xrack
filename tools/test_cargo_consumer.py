@@ -21,6 +21,7 @@ import media_bundles
 
 def check_interpreter(app, compiler, env):
     (app / "src").mkdir(parents=True)
+    shutil.copytree(bundles.ROOT / "examples/cargo-consumer/ui", app / "ui")
     (app / "Cargo.toml").write_text(f"""[package]
 name = "xrack-mlir-consumer"
 version = "0.0.0"
@@ -29,44 +30,79 @@ edition = "2024"
 [dependencies]
 xrack = {{ version = "={bundles.workspace_version()}", features = ["interpreter"] }}
 """)
-    (app / "src/main.rs").write_text("""fn main() {
-    use xrack::interpreter::{HostValue, load_mlir_file};
+    (app / "src/main.rs").write_text("""extern crate xrack as xrack_runtime;
+
+mod compiled;
+mod compiled_split;
+
+use xrack::{Component, interpreter::{HostValue, load_mlir_file}};
+
+fn main() {
     let program = load_mlir_file("counter.mlir").unwrap();
-    let ui = program.create("Counter").unwrap();
-    ui.set("count", HostValue::Int(21)).unwrap();
-    assert_eq!(ui.get("doubled").unwrap(), HostValue::Int(42));
-    assert_eq!(ui.try_render().unwrap().kind, "Window");
-    println!("interpreted count=21, doubled=42");
+    let mut interpreted = program.create("Counter").unwrap();
+    let mut compiled = compiled::Counter::new();
+    let check = |interpreted: &xrack::interpreter::Instance, compiled: &compiled::Counter, count| {
+        assert_eq!(compiled.get_count(), count);
+        assert_eq!(compiled.get_doubled(), count * 2);
+        assert_eq!(interpreted.get("count"), Ok(HostValue::Int(compiled.get_count())));
+        assert_eq!(interpreted.get("doubled"), Ok(HostValue::Int(compiled.get_doubled())));
+        let interpreted_scene = interpreted.try_render().unwrap();
+        let compiled_scene = compiled.render();
+        assert_eq!(interpreted_scene.kind, "Window");
+        let expected = format!("Count: {count}");
+        for scene in [&*interpreted_scene, &compiled_scene] {
+            assert_eq!(scene.at_path(&[0, 0]).unwrap().text("text"), Some(expected.as_str()));
+        }
+    };
+
+    check(&interpreted, &compiled, 0);
+    assert!(interpreted.dispatch("increment", "clicked"));
+    assert!(compiled.dispatch("increment", "clicked"));
+    check(&interpreted, &compiled, 1);
+    interpreted.set("count", HostValue::Int(21)).unwrap();
+    compiled.set_count(21);
+    check(&interpreted, &compiled, 21);
+    interpreted.reset("count").unwrap();
+    compiled.reset_count();
+    check(&interpreted, &compiled, 0);
+    assert_eq!(interpreted.take_error(), None);
+
+    let program = load_mlir_file("split.mlir").unwrap();
+    let interpreted = program.create("SplitProbe").unwrap();
+    let mut compiled = compiled_split::SplitProbe::new();
+    let initial = compiled.save_split_state("work").unwrap();
+    assert_eq!(interpreted.save_split_state("work").unwrap(), initial);
+    let saved = "xrack-split/2;sidebar=90;body=-";
+    assert!(compiled.restore_split_state("work", saved));
+    let saved = compiled.save_split_state("work").unwrap();
+    assert_eq!(interpreted.restore_split_state("work", &saved), Ok(true));
+    assert_eq!(interpreted.restore_split_state("work", &saved), Ok(true));
+    assert_eq!(interpreted.get("edits"), Ok(HostValue::Int(1)));
+    assert_eq!(compiled.get_edits(), 1);
+    assert_eq!(interpreted.restore_split_state("work", &initial), Ok(true));
+    let reset = interpreted.save_split_state("work").unwrap();
+    assert!(compiled.restore_split_state("work", &reset));
+    assert_eq!(interpreted.get("edits"), Ok(HostValue::Int(compiled.get_edits())));
+    println!("interpreted and compiled counter and split layout agree");
 }
 """)
-    source = app / "counter.xr"
-    source.write_text("""export component Counter inherits Window {
-    in-out property <int> count: 0;
-    out property <int> doubled: count * 2;
-    Text { text: "" + root.doubled; }
+    (app / "ui/split.xr").write_text("""export component SplitProbe inherits Window {
+    out property <int> edits: 0;
+    work := SplitView {
+        fill-pane: body;
+        resized() => { root.edits += 1; }
+        sidebar := Rectangle {}
+        body := Rectangle {}
+    }
 }
-""")
-    subprocess.run(
-        (compiler, source, "--emit", "mlir", "-o", app / "counter.mlir"),
-        cwd=app, env=env, check=True,
-    )
-
-
-@contextmanager
-def media_server(directory):
-    class Handler(SimpleHTTPRequestHandler):
-        def log_message(self, *_args):
-            pass
-
-    handler = partial(Handler, directory=directory)
-    with ThreadingHTTPServer(("127.0.0.1", 0), handler) as server:
-        thread = Thread(target=server.serve_forever, daemon=True)
-        thread.start()
-        try:
-            yield f"http://127.0.0.1:{server.server_port}/live.m3u8"
-        finally:
-            server.shutdown()
-            thread.join()
+""", encoding="utf-8")
+    for fixture, rust in (("counter", "compiled"), ("split", "compiled_split")):
+        source = app / f"ui/{fixture}.xr"
+        for mode, output in (("mlir", f"{fixture}.mlir"), ("rust", f"src/{rust}.rs")):
+            subprocess.run(
+                (compiler, source, "--emit", mode, "-o", app / output),
+                cwd=app, env=env, check=True,
+            )
 
 
 def prepare_media(app):
@@ -182,7 +218,7 @@ def main():
             mlir_bundles.stage_bundle(workspace, archive, args.host)
             compiler = bundles.extract_compiler(archive, stage)
             check_interpreter(app, compiler, env)
-            expected = "interpreted count=21, doubled=42"
+            expected = "interpreted and compiled counter and split layout agree"
         elif args.media:
             prepare_media(app)
             env["XRACK_MEDIA_TEST_AUDIO"] = "1"

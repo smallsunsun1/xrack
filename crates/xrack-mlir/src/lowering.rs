@@ -8,21 +8,27 @@ use xrack_syntax::ast::{Component, Diagnostic, Document, Span, Type};
 
 type BuildResult<T> = Result<T, Diagnostic>;
 
-struct Builder {
+struct Builder<'a> {
     context: ffi::MlirContext,
     blocks: Vec<(ffi::MlirBlock, Span)>,
     filename: String,
+    source_files: &'a [String],
     state_selectors: BTreeMap<String, ffi::MlirValue>,
 }
 
-impl Builder {
+impl Builder<'_> {
     fn location(&self, span: Span) -> ffi::MlirLocation {
         let coordinate = |value: usize| u32::try_from(value.max(1)).unwrap_or(u32::MAX);
+        let filename = span
+            .source
+            .checked_sub(1)
+            .and_then(|index| self.source_files.get(index))
+            .unwrap_or(&self.filename);
         // The context interns the filename. MLIR borrows it only during the call.
         unsafe {
             ffi::mlirLocationFileLineColGet(
                 self.context,
-                string_ref(&self.filename),
+                string_ref(filename),
                 coordinate(span.line),
                 coordinate(span.column),
             )
@@ -632,6 +638,7 @@ pub fn lower_module(doc: &Document, filename: &str) -> Result<Module, Vec<Diagno
         context,
         blocks: vec![(body, Span::default())],
         filename: filename.into(),
+        source_files: &doc.source_files,
         state_selectors: BTreeMap::new(),
     };
     for font in &doc.fonts {

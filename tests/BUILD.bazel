@@ -229,14 +229,10 @@ xr_ui_library(
 rust_test(
     name = "interpreter_parity_test",
     size = "small",
-    srcs = ["interpreter_examples.rs", "interpreter_parity_test.rs", "ui_driver.rs"],
-    data = [
-        "//examples/cargo-consumer:ui/label.xr",
-        "//examples/form:widgets.xr",
-        "//examples/layout:bundled_sources",
-        "//examples/media:media_sources",
-        "//examples/menu:assets/grid.svg",
-        "//examples/tray:tray_sources",
+    srcs = [
+        "interpreter_examples.rs",
+        "interpreter_parity_test.rs",
+        "ui_driver.rs",
     ],
     compile_data = [
         "expressions.xr",
@@ -266,6 +262,16 @@ rust_test(
         "//examples/tooltip:tooltip.xr",
         "//examples/tray:tray_sources",
         "//examples/tree:tree.xr",
+        "//examples/video:live.xr",
+        "//examples/video:video.xr",
+    ],
+    data = [
+        "//examples/cargo-consumer:ui/label.xr",
+        "//examples/form:widgets.xr",
+        "//examples/layout:bundled_sources",
+        "//examples/media:media_sources",
+        "//examples/menu:assets/grid.svg",
+        "//examples/tray:tray_sources",
         "//examples/video:video.xr",
     ],
     edition = "2024",
@@ -302,6 +308,7 @@ rust_test(
         "//examples/tooltip:tooltip_ui",
         "//examples/tray:tray_ui",
         "//examples/tree:tree_ui",
+        "//examples/video:live_ui",
         "//examples/video:video_ui",
     ],
 )
@@ -318,6 +325,10 @@ rust_test(
         "//crates/xrack-media:enabled_config": ["media_backend"],
         "//conditions:default": [],
     }),
+    data = [
+        "//examples/video:live.xr",
+        "//examples/video:video.xr",
+    ],
     edition = "2024",
     env = {"XRACK_MEDIA_TEST_AUDIO": "1"},
     deps = [
@@ -327,7 +338,10 @@ rust_test(
         "//crates/xrack-runtime:xrack_runtime",
         "//examples/video:video_ui",
     ] + select({
-        "//crates/xrack-media:enabled_config": ["//crates/xrack-media:xrack_media"],
+        "//crates/xrack-media:enabled_config": [
+            "//crates/xrack-media:xrack_media",
+            "//examples/video:live_ui",
+        ],
         "//conditions:default": [],
     }),
 )

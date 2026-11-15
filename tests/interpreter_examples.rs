@@ -478,6 +478,7 @@ fn all_example_exports_match_generated_scenes_layout_and_input_routes() {
         ]
     );
     check!("video/video.xr", video_ui, [VideoDemo]);
+    check!("video/live.xr", live_ui, [LocalLiveDemo]);
     assert!(failures.is_empty(), "{}", failures.join("\n\n"));
     println!("Compared {activated} pointer activations across source and text MLIR inputs");
 }

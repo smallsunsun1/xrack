@@ -37,7 +37,7 @@ pub(crate) struct State {
     name: String,
     row: Option<RowScope>,
     repeats: RefCell<BTreeMap<String, Rc<RepeatState>>>,
-    splits: RefCell<BTreeMap<String, Rc<split::State>>>,
+    splits: RefCell<BTreeMap<String, Rc<xrack_runtime::SplitState>>>,
     stacks: RefCell<BTreeMap<String, Rc<xrack_runtime::StackState>>>,
     timers: BTreeMap<String, xrack_runtime::TimerSlot>,
     focus: BTreeMap<String, xrack_runtime::FocusHandle>,
@@ -2028,7 +2028,7 @@ impl Instance {
             .ok_or_else(|| evaluation(format!("unknown timer {key}")))
     }
 
-    pub(crate) fn split_state(&self, key: &str) -> Rc<split::State> {
+    pub(crate) fn split_state(&self, key: &str) -> Rc<xrack_runtime::SplitState> {
         self.0
             .splits
             .borrow_mut()
@@ -2455,11 +2455,11 @@ impl Instance {
         if node.kind == "SwipeView" {
             return self.render_swipe_pages(element, node);
         }
-        if matches!(node.kind, "RadioGroup" | "TabBar")
-            && let Some(model) = self.group_option_model(element)?
-        {
-            node.snapshot_group_options(&model);
-        }
+        let option_repeat = if matches!(node.kind, "RadioGroup" | "TabBar") {
+            element.group_option_repeat()
+        } else {
+            None
+        };
         let active = match node.kind {
             "StackView" if node.is_visible() => node
                 .stack
@@ -2475,6 +2475,24 @@ impl Instance {
             _ => None,
         };
         for (index, child) in element.children.iter().enumerate() {
+            if index == 0
+                && let Some(repeat) = option_repeat
+            {
+                let state = self.repeat_state(child);
+                node.try_append_group_options(
+                    || state.row_model(self, repeat),
+                    |model| {
+                        state.render_indices(
+                            self,
+                            child,
+                            model,
+                            0..4096,
+                            &xrack_runtime::TableColumnWindow::default(),
+                        )
+                    },
+                )?;
+                continue;
+            }
             let page = matches!(node.kind, "TabWidget" | "StackView");
             let child_node =
                 self.render_element_with_content(child, !page || Some(index) == active)?;
@@ -2948,23 +2966,26 @@ impl Instance {
             "checked"
         };
         let row = node.filter(|_| element.row_links.contains_key(name));
-        let current = match row {
-            Some(node) => node.check_state(),
-            None if check_state => match self.control_value(element, name)? {
-                Some(Value::CheckState(state)) => state,
-                _ => CheckState::Unchecked,
-            },
-            None => CheckState::from(self.control_value(element, name)? == Some(Value::Bool(true))),
-        };
-        let tristate = check_state
-            && match row {
-                Some(node) => node.boolean("tristate", false),
-                None => self.binding_value(element, "tristate")? == Some(Value::Bool(true)),
+        let state = if let Some(node) = row {
+            node.check_state()
+                .next(check_state && node.boolean("tristate", false))
+        } else {
+            let current = || {
+                Ok(match self.control_value(element, name)? {
+                    Some(Value::CheckState(state)) => state,
+                    Some(Value::Bool(checked)) => checked.into(),
+                    _ => CheckState::Unchecked,
+                })
             };
-        let state = current.next(tristate);
-        if input.is_some_and(|input| !input.is_current()) {
-            return Ok(false);
-        }
+            let tristate = || {
+                Ok(check_state
+                    && self.binding_value(element, "tristate")? == Some(Value::Bool(true)))
+            };
+            let Some(state) = CheckState::try_prepare_toggle(input, current, tristate)? else {
+                return Ok(false);
+            };
+            state
+        };
         let value = if check_state {
             Value::CheckState(state)
         } else {

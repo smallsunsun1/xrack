@@ -124,10 +124,17 @@ fn resolve(
                 .collect::<Result<BTreeSet<_>, _>>()
         })
         .transpose()?;
+    let locations = source_files
+        .as_deref()
+        .into_iter()
+        .flatten()
+        .map(|path| path.to_string_lossy().into_owned())
+        .collect();
     let mut loader = Loader {
         buffers,
         inputs,
         source_files,
+        locations,
         parsed,
         base,
         declared,
@@ -144,6 +151,7 @@ fn resolve(
     let translations = entry.translations.clone();
     loader.resolve(entry, file, None)?;
     Ok(ast::Document {
+        source_files: loader.locations,
         imports: Vec::new(),
         fonts: loader.fonts,
         translations,
@@ -172,6 +180,7 @@ struct Loader<'a> {
     buffers: &'a BTreeMap<PathBuf, &'a str>,
     inputs: &'a mut BTreeMap<PathBuf, ast::Span>,
     source_files: Option<&'a mut Vec<PathBuf>>,
+    locations: Vec<String>,
     parsed: Option<&'a BTreeMap<PathBuf, &'a ast::Document>>,
     base: PathBuf,
     declared: Option<BTreeSet<PathBuf>>,
@@ -324,10 +333,11 @@ impl Loader<'_> {
             })?;
             relative_directory(&self.base, &actual)
         };
-        let source = self.source_files.as_mut().map_or(0, |files| {
+        if let Some(files) = &mut self.source_files {
             files.push(normalize_source_path(file));
-            files.len()
-        });
+        }
+        self.locations.push(file.to_string_lossy().into_owned());
+        let source = self.locations.len();
         for mut font in doc.fonts {
             rebase_asset(&mut font.path, &asset_prefix);
             font.filename = Some(file.to_string_lossy().into_owned());

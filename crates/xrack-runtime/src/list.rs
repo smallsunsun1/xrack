@@ -1,3 +1,4 @@
+use crate::property::{ReadWatch, with_read_watch};
 use crate::{Date, Node, Orientation, Property, TableRows, Time, Value, VecModel};
 use std::{
     cell::Cell,
@@ -10,6 +11,74 @@ use std::{
 };
 
 pub(crate) const MAX_ROWS: usize = 1_000_000;
+
+thread_local! {
+    static ROW_SOURCE_WATCH: Cell<Option<Rc<ReadWatch>>> = const { Cell::new(None) };
+}
+
+fn with_row_source_watch<T>(render: impl FnOnce(&ReadWatch) -> T) -> T {
+    struct Restore(Option<Rc<ReadWatch>>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            ROW_SOURCE_WATCH.set(self.0.take());
+        }
+    }
+
+    let watch = Rc::new(ReadWatch::default());
+    let _restore = Restore(ROW_SOURCE_WATCH.replace(Some(watch.clone())));
+    with_read_watch(&watch, || render(&watch))
+}
+
+/// Sample an ordinary repeat's model once, then reject writes to that model source during rendering.
+#[doc(hidden)]
+pub fn try_render_rows_from_source<M, E>(
+    source: impl FnOnce() -> Result<M, E>,
+    render: impl FnOnce(M) -> Result<Vec<Node>, E>,
+) -> Result<Vec<Node>, E> {
+    with_row_source_watch(|watch| {
+        let model = source()?;
+        watch.clear_changes();
+        watch.freeze();
+        let rows = render(model)?;
+        Ok(if watch.changed() { Vec::new() } else { rows })
+    })
+}
+
+/// Stop before another lookup if rendering changed the order or an already sampled item.
+pub(crate) fn try_render_stable_rows<M: ListModel, E>(
+    model: &M,
+    stamp: (u64, u64),
+    indices: impl IntoIterator<Item = usize>,
+    mut render: impl FnMut(usize) -> Result<Node, E>,
+) -> Result<Vec<Node>, E> {
+    let watch = ROW_SOURCE_WATCH.with(|slot| {
+        let watch = slot.take();
+        slot.set(watch.clone());
+        watch
+    });
+    if let Some(watch) = &watch {
+        // Row synchronization and row content bindings have their own cache dependencies.
+        watch.freeze();
+        if watch.changed() {
+            return Ok(Vec::new());
+        }
+    }
+    crate::property::watch_reads(|items| {
+        let mut nodes = Vec::new();
+        for index in indices {
+            // Observe model rows while allowing delegates to synchronize their own caches.
+            model.track_item(index);
+            nodes.push(items.without_new_reads(|| render(index))?);
+            if items.changed()
+                || model.structure_stamp() != stamp
+                || watch.as_ref().is_some_and(|watch| watch.changed())
+            {
+                return Ok(Vec::new());
+            }
+        }
+        Ok(nodes)
+    })
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct RowKey {
@@ -67,7 +136,7 @@ impl RowKey {
     }
 }
 
-type RenderRows = dyn Fn(Range<usize>, &TableColumnWindow) -> Vec<Node>;
+type RenderRows = dyn Fn(Range<usize>, &TableColumnWindow, Option<&Node>) -> Vec<Node>;
 
 struct RowRenderer {
     scope: u64,
@@ -94,7 +163,9 @@ impl Node {
             .map_or(rows.end, |list| rows.end.min(list.row_count));
         node.list_row_renderer
             .as_ref()
-            .map_or_else(Vec::new, |renderer| renderer.render(rows.start..end))
+            .map_or_else(Vec::new, |renderer| {
+                renderer.render_in_scene(node, rows.start..end, &TableColumnWindow::default())
+            })
     }
 
     /// Recover the visual index, source key and delegate from a prepared row.
@@ -114,6 +185,26 @@ impl ListRowRenderer {
     pub fn with_columns(
         rows: impl Fn(Range<usize>, &TableColumnWindow) -> Vec<Node> + 'static,
     ) -> Self {
+        Self::with_columns_in_scene(move |range, columns, _| rows(range, columns))
+    }
+
+    #[doc(hidden)]
+    pub fn with_columns_and_stamp(
+        rows: impl Fn(Range<usize>, &TableColumnWindow, Option<(u64, u64)>) -> Vec<Node> + 'static,
+    ) -> Self {
+        Self::with_columns_in_scene(move |range, columns, scene| {
+            rows(
+                range,
+                columns,
+                scene.and_then(|node| node.standard_list_stamp),
+            )
+        })
+    }
+
+    #[doc(hidden)]
+    pub fn with_columns_in_scene(
+        rows: impl Fn(Range<usize>, &TableColumnWindow, Option<&Node>) -> Vec<Node> + 'static,
+    ) -> Self {
         static NEXT_VIEW: AtomicU64 = AtomicU64::new(1);
         let scope = NEXT_VIEW
             .try_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
@@ -132,7 +223,21 @@ impl ListRowRenderer {
     }
 
     pub fn render_in_columns(&self, rows: Range<usize>, columns: &TableColumnWindow) -> Vec<Node> {
-        (self.0.rows)(rows, columns)
+        (self.0.rows)(rows, columns, None)
+    }
+
+    /// Materialize against the projection recorded by the scene that requested the rows.
+    #[doc(hidden)]
+    pub fn render_in_scene(
+        &self,
+        scene: &Node,
+        rows: Range<usize>,
+        columns: &TableColumnWindow,
+    ) -> Vec<Node> {
+        with_row_source_watch(|watch| {
+            let rows = (self.0.rows)(rows, columns, Some(scene));
+            if watch.changed() { Vec::new() } else { rows }
+        })
     }
 
     pub fn scope(&self) -> u64 {
@@ -268,6 +373,12 @@ pub struct ListMetrics {
 }
 
 impl ListMetrics {
+    /// Validate a row request against the model order used for layout.
+    #[doc(hidden)]
+    pub fn matches_scene_order(scene: Option<&Node>, stamp: Option<(u64, u64)>) -> bool {
+        scene.is_none_or(|node| node.standard_list_stamp == stamp)
+    }
+
     pub fn row_height(node: &Node) -> f32 {
         Self::clamp_row_height(node.length("row-height").unwrap_or(32.0))
     }
@@ -476,7 +587,7 @@ pub fn standard_table_rows_with_editors_in_order<T, const COLUMNS: usize>(
 
 /// Build only the visible cells and retain their declaration-order addresses.
 #[doc(hidden)]
-pub fn project_standard_table_rows<T>(
+pub fn project_standard_table_rows<T: Clone + PartialEq>(
     rows: &TableRows<VecModel<T>>,
     range: Range<usize>,
     columns: &TableColumnWindow,
@@ -492,7 +603,7 @@ pub fn project_standard_table_rows<T>(
 }
 
 #[doc(hidden)]
-pub fn try_project_standard_table_rows<T, E>(
+pub fn try_project_standard_table_rows<T: Clone + PartialEq, E>(
     rows: &TableRows<VecModel<T>>,
     range: Range<usize>,
     columns: &TableColumnWindow,
@@ -501,12 +612,87 @@ pub fn try_project_standard_table_rows<T, E>(
     cell: impl Fn(&T, usize) -> String,
     editor: impl Fn(usize) -> Result<Option<TableCellEditor>, E>,
 ) -> Result<Vec<Node>, E> {
+    try_render_standard_table_rows(
+        || Ok(rows.clone()),
+        range,
+        columns,
+        None,
+        column_count,
+        header,
+        cell,
+        editor,
+    )
+}
+
+/// Resolve the row order and abandon it if an editor binding invalidates a dependency.
+#[doc(hidden)]
+pub fn render_standard_table_rows<T: Clone + PartialEq>(
+    rows: impl FnOnce() -> TableRows<VecModel<T>>,
+    range: Range<usize>,
+    columns: &TableColumnWindow,
+    expected_stamp: Option<(u64, u64)>,
+    column_count: usize,
+    header: impl Fn(&T) -> Option<String>,
+    cell: impl Fn(&T, usize) -> String,
+    editor: impl Fn(usize) -> Option<TableCellEditor>,
+) -> Vec<Node> {
+    try_render_standard_table_rows(
+        || Ok::<_, std::convert::Infallible>(rows()),
+        range,
+        columns,
+        expected_stamp,
+        column_count,
+        header,
+        cell,
+        |column| Ok(editor(column)),
+    )
+    .unwrap_or_else(|error| match error {})
+}
+
+#[doc(hidden)]
+pub fn try_render_standard_table_rows<T: Clone + PartialEq, E>(
+    rows: impl FnOnce() -> Result<TableRows<VecModel<T>>, E>,
+    range: Range<usize>,
+    columns: &TableColumnWindow,
+    expected_stamp: Option<(u64, u64)>,
+    column_count: usize,
+    header: impl Fn(&T) -> Option<String>,
+    cell: impl Fn(&T, usize) -> String,
+    editor: impl Fn(usize) -> Result<Option<TableCellEditor>, E>,
+) -> Result<Vec<Node>, E> {
+    crate::property::watch_reads(|reads| {
+        let rows = rows()?;
+        if expected_stamp.is_some_and(|stamp| stamp != rows.positions().stamp()) {
+            return Ok(Vec::new());
+        }
+        let row_count = rows.row_count();
+        let range = range.start..range.end.min(row_count);
+        if range.is_empty() || reads.changed() {
+            return Ok(Vec::new());
+        }
+        let mut visible = Vec::new();
+        for column in columns.columns(column_count) {
+            visible.push((column, editor(column)?));
+            if reads.changed() {
+                return Ok(Vec::new());
+            }
+        }
+        Ok(materialize_standard_table_rows(
+            &rows, range, columns, &visible, header, cell,
+        ))
+    })
+}
+
+fn materialize_standard_table_rows<T>(
+    rows: &TableRows<VecModel<T>>,
+    range: Range<usize>,
+    columns: &TableColumnWindow,
+    visible: &[(usize, Option<TableCellEditor>)],
+    header: impl Fn(&T) -> Option<String>,
+    cell: impl Fn(&T, usize) -> String,
+) -> Vec<Node> {
     let model = rows.source();
-    let visible: Vec<_> = columns
-        .columns(column_count)
-        .map(|column| editor(column).map(|editor| (column, editor)))
-        .collect::<Result<_, E>>()?;
-    Ok(range
+    range
         .filter_map(|index| {
             let index = rows.positions().source_index(index)?;
             let key = model.row_key(index)?;
@@ -521,7 +707,7 @@ pub fn try_project_standard_table_rows<T, E>(
                 row
             })
         })
-        .collect())
+        .collect()
 }
 
 /// The model field type used to validate a projected cell's text draft.

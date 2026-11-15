@@ -36,10 +36,14 @@ pub(crate) struct ReadWatch {
     sources: RefCell<HashMap<*const DependencyNode, Weak<DependencyNode>>>,
     next_prune: Cell<usize>,
     changed: Cell<bool>,
+    frozen: Cell<bool>,
 }
 
 impl ReadWatch {
     fn observe(&self, node: &Rc<DependencyNode>) {
+        if self.frozen.get() {
+            return;
+        }
         let mut sources = self.sources.borrow_mut();
         if sources.contains_key(&Rc::as_ptr(node)) {
             return;
@@ -73,6 +77,26 @@ impl ReadWatch {
     pub(crate) fn changed(&self) -> bool {
         self.changed.get()
     }
+
+    pub(crate) fn clear_changes(&self) {
+        self.changed.set(false);
+    }
+
+    // Continue tracking writes to the existing dependencies without observing new reads.
+    pub(crate) fn freeze(&self) {
+        self.frozen.set(true);
+    }
+
+    pub(crate) fn without_new_reads<T>(&self, operation: impl FnOnce() -> T) -> T {
+        struct Restore<'a>(&'a Cell<bool>, bool);
+        impl Drop for Restore<'_> {
+            fn drop(&mut self) {
+                self.0.set(self.1);
+            }
+        }
+        let _restore = Restore(&self.frozen, self.frozen.replace(true));
+        operation()
+    }
 }
 
 pub(crate) fn watch_reads<T>(operation: impl FnOnce(&ReadWatch) -> T) -> T {
@@ -80,7 +104,7 @@ pub(crate) fn watch_reads<T>(operation: impl FnOnce(&ReadWatch) -> T) -> T {
     with_read_watch(&watch, || operation(&watch))
 }
 
-fn with_read_watch<T>(watch: &Rc<ReadWatch>, operation: impl FnOnce() -> T) -> T {
+pub(crate) fn with_read_watch<T>(watch: &Rc<ReadWatch>, operation: impl FnOnce() -> T) -> T {
     struct Scope;
     impl Drop for Scope {
         fn drop(&mut self) {

@@ -159,17 +159,21 @@ impl RepeatState {
         range: Range<usize>,
     ) -> Result<Vec<Node>> {
         let repeat = template.repeat.as_ref().expect("repeated template");
-        let model = self.row_model(owner, repeat)?;
-        self.render_indices(
-            owner,
-            template,
-            &model,
-            range,
-            &TableColumnWindow::default(),
+        xrack_runtime::try_render_rows_from_source(
+            || self.row_model(owner, repeat),
+            |model| {
+                self.render_indices(
+                    owner,
+                    template,
+                    &model,
+                    range,
+                    &TableColumnWindow::default(),
+                )
+            },
         )
     }
 
-    fn render_indices(
+    pub(crate) fn render_indices(
         &self,
         owner: &Instance,
         template: &Element,
@@ -268,7 +272,7 @@ impl RepeatState {
             .get_or_init(|| {
                 let owner = Rc::downgrade(&owner.0);
                 let key = view.key.clone();
-                ListRowRenderer::with_columns(move |range, columns| {
+                ListRowRenderer::with_columns_in_scene(move |range, columns, scene| {
                     let Some(owner) = owner.upgrade().map(Instance::from_state) else {
                         return Vec::new();
                     };
@@ -276,7 +280,7 @@ impl RepeatState {
                         return Vec::new();
                     };
                     owner
-                        .capture_result(owner.view_rows(view, range, columns))
+                        .capture_result(owner.view_rows(view, range, columns, scene))
                         .unwrap_or_default()
                 })
             })
@@ -391,11 +395,23 @@ impl Instance {
     }
 
     pub(crate) fn view_model(&self, view: &Element) -> Result<ViewModel> {
-        let source = self.view_source_model(view)?;
         let state = self.repeat_state(view);
+        if view
+            .table
+            .as_ref()
+            .is_some_and(|table| table.model.is_some() || view.visible_field.is_some())
+        {
+            let (projected, source) = self.project_table(view, &state)?;
+            return Ok(ViewModel {
+                source: Some(source),
+                projected: Some(projected),
+                ordered: None,
+            });
+        }
+        let source = self.view_source_model(view)?;
         let projected = match (source.as_deref(), &view.visible_field) {
             (Some(Model::Records(records)), _) if view.table.is_some() => {
-                Some(self.project_table(view, &state, records.model())?)
+                Some(state.row_order.rows(Rc::new(records.model().clone())))
             }
             (Some(Model::Records(records)), Some(path)) => {
                 let path = path.clone();
@@ -547,12 +563,16 @@ impl Instance {
         view: &Element,
         range: Range<usize>,
         columns: &TableColumnWindow,
+        scene: Option<&Node>,
     ) -> Result<Vec<Node>> {
         if view.tree.is_some() {
             let template = view
                 .view_template()
                 .ok_or_else(|| Error::Invalid("missing tree row template".into()))?;
             let (tree, model) = self.tree_projection(view)?;
+            if !tree.matches_scene_order(scene) {
+                return Ok(Vec::new());
+            }
             let rows = tree.rows_in_range(range);
             let state = self.repeat_state(template);
             return state.render_indices(
@@ -563,16 +583,24 @@ impl Instance {
                 columns,
             );
         }
-        let model = self.view_model(view)?;
-        if let Some(list) = &view.standard_list {
-            return model.standard_rows(&list.label, range);
-        }
         if view
             .table
             .as_ref()
             .is_some_and(|table| table.model.is_some())
         {
-            return self.standard_table_rows(view, &model, range, columns);
+            return self.standard_table_rows(
+                view,
+                range,
+                columns,
+                scene.and_then(|node| node.standard_list_stamp),
+            );
+        }
+        let model = self.view_model(view)?;
+        if !ListMetrics::matches_scene_order(scene, model.stamp()) {
+            return Ok(Vec::new());
+        }
+        if let Some(list) = &view.standard_list {
+            return model.standard_rows(&list.label, range);
         }
         let template = view
             .view_template()

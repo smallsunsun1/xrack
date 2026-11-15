@@ -1,6 +1,70 @@
 use crate::{InputRoute, Node, Orientation, Property, RoutedEvent, Value, is_window_overlay};
 use std::{cell::RefCell, collections::BTreeMap, fmt, fmt::Write, rc::Rc, sync::Arc};
 
+/// Reactive pane state shared by compiled and interpreted SplitViews.
+#[doc(hidden)]
+#[derive(Default)]
+pub struct SplitState {
+    values: Property<Option<Arc<[Option<f32>]>>>,
+    handle: SplitResizeHandle,
+}
+
+impl SplitState {
+    pub fn handle(&self) -> &SplitResizeHandle {
+        &self.handle
+    }
+
+    pub fn populate(&self, node: &mut Node, fill: Option<usize>) {
+        let values = self.values.get(|| None);
+        if fill.is_some() {
+            node.split_fill_index = fill;
+            node.split_sizes = values;
+        } else {
+            node.split_weights = values;
+        }
+        node.split_resize_handle = Some(self.handle.clone());
+        node.add_split_handles();
+    }
+
+    pub fn save(&self, panes: &[&str], fixed_sizes: bool) -> String {
+        let values = self.values.get(|| None);
+        if fixed_sizes {
+            encode_split_sizes(panes, values.as_deref())
+        } else {
+            encode_split_state(panes, values.as_deref())
+        }
+    }
+
+    /// Return whether the layout changed, or None if the state is invalid.
+    pub fn restore(&self, panes: &[&str], fixed_sizes: bool, state: &str) -> Option<bool> {
+        let values = if fixed_sizes {
+            decode_split_sizes(panes, state)
+        } else {
+            decode_split_state(panes, state)
+        }?;
+        let next = values.iter().any(Option::is_some).then_some(values);
+        Some(self.update(self.values.get(|| None), next))
+    }
+
+    pub fn resize(&self, node: &Node, input: InputRoute<'_>) -> bool {
+        let current = self.values.get(|| None);
+        node.prepare_split_resize(input, current.as_deref())
+            .is_some_and(|next| self.update(current, Some(next)))
+    }
+
+    fn update(
+        &self,
+        current: Option<Arc<[Option<f32>]>>,
+        next: Option<Arc<[Option<f32>]>>,
+    ) -> bool {
+        if current == next {
+            return false;
+        }
+        self.values.set(next);
+        true
+    }
+}
+
 #[doc(hidden)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SplitHandleInput {

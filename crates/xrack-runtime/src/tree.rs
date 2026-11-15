@@ -318,6 +318,16 @@ pub struct TreeSnapshot {
 }
 
 impl TreeSnapshot {
+    /// Match the visible identities, source positions and tree presentation used for layout.
+    #[doc(hidden)]
+    pub fn matches_scene_order(&self, scene: Option<&Node>) -> bool {
+        scene.is_none_or(|node| {
+            node.tree.as_deref().is_some_and(|old| {
+                std::ptr::eq(self, old) || (self.same_model(old) && self.rows() == old.rows())
+            })
+        })
+    }
+
     fn new(
         topology: Arc<Topology>,
         expanded: Arc<BTreeMap<i64, RowKey>>,

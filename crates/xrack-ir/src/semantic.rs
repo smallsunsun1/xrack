@@ -1880,6 +1880,7 @@ fn inherit<'a>(
     let base = inherit(base, definitions, expanded, active, references)?;
     let mut result = component.clone();
     result.base = base.base;
+    result.base_span = base.base_span;
     result.members = base.members;
     let mut bindings = BTreeSet::new();
     let mut handlers = BTreeSet::new();
@@ -5243,8 +5244,13 @@ fn component<'a>(c: &'a ast::Component, scope: Scope<'a>) -> Result<Vec<LoweredM
         }
     }
     lower_local_callbacks(&c.members, &scope, "root", &mut lowered)?;
+    let root_span = if c.base == "MediaPlayer" {
+        c.base_span
+    } else {
+        c.span
+    };
     element(
-        (&c.base, Some("root"), c.span),
+        (&c.base, Some("root"), root_span),
         &c.members,
         &scope,
         "root",

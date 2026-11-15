@@ -2,7 +2,7 @@
 
 /// Compatibility level expected by the Rust code emitted by xrackc.
 #[doc(hidden)]
-pub const CODEGEN_ABI_VERSION: u32 = 8;
+pub const CODEGEN_ABI_VERSION: u32 = 12;
 
 mod animation;
 mod arithmetic;
@@ -128,12 +128,12 @@ pub use controls::{
 pub use controls::{
     delay_button_transition_is_current, group_selection_item, prepare_action_activation,
     prepare_action_view, prepare_group_box_toggle, prepare_group_selection,
-    prepare_index_selection, prepare_row_toggle, prepare_row_toggle_matching,
-    prepare_source_selection, resize_table_column, table_drag_available,
-    try_delay_button_transition_is_current, try_prepare_action_activation, try_prepare_action_view,
-    try_prepare_group_box_toggle, try_prepare_group_selection, try_prepare_index_selection,
-    try_prepare_row_toggle, try_prepare_row_toggle_matching, try_prepare_source_selection,
-    try_table_drag_available,
+    prepare_group_selection_with_model, prepare_index_selection, prepare_row_toggle,
+    prepare_row_toggle_matching, prepare_source_selection, resize_table_column,
+    table_drag_available, try_delay_button_transition_is_current, try_prepare_action_activation,
+    try_prepare_action_view, try_prepare_group_box_toggle, try_prepare_group_selection,
+    try_prepare_group_selection_with_model, try_prepare_index_selection, try_prepare_row_toggle,
+    try_prepare_row_toggle_matching, try_prepare_source_selection, try_table_drag_available,
 };
 #[doc(hidden)]
 pub use delegate::{ComponentRepeater, RowContext};
@@ -166,9 +166,10 @@ pub use list::{ListMetrics, RowKey};
 #[doc(hidden)]
 pub use list::{
     ListModel, ListRowLocator, ListRowRenderer, RowLifetime, TableCellEditor, TableColumnWindow,
-    TableField, project_standard_table_rows, standard_list_rows, standard_list_rows_in_view,
-    standard_table_rows, standard_table_rows_in_order, standard_table_rows_with_editors_in_order,
-    standard_table_rows_with_header, try_project_standard_table_rows,
+    TableField, project_standard_table_rows, render_standard_table_rows, standard_list_rows,
+    standard_list_rows_in_view, standard_table_rows, standard_table_rows_in_order,
+    standard_table_rows_with_editors_in_order, standard_table_rows_with_header,
+    try_project_standard_table_rows, try_render_rows_from_source, try_render_standard_table_rows,
 };
 pub use localization::LocaleContext;
 #[doc(hidden)]
@@ -210,7 +211,7 @@ pub use scene_plan::{
 };
 #[doc(hidden)]
 pub use split::{
-    SplitHandleInput, SplitResizeHandle, decode_split_sizes, decode_split_state,
+    SplitHandleInput, SplitResizeHandle, SplitState, decode_split_sizes, decode_split_state,
     encode_split_sizes, encode_split_state,
 };
 #[doc(hidden)]

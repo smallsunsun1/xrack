@@ -1,4 +1,7 @@
-use crate::{ChangeSignal, ListModel, Node, Property, RowContext, RowKey, TableColumnWindow};
+use crate::{
+    ChangeSignal, ListModel, Node, Property, RowContext, RowKey, TableColumnWindow,
+    list::{try_render_rows_from_source, try_render_stable_rows},
+};
 use std::{
     cell::RefCell,
     collections::{BTreeMap, BTreeSet},
@@ -118,6 +121,17 @@ impl<Model: ListModel, State: Default> Repeater<Model, State> {
         read: impl FnOnce(&dyn Fn() -> Model::Item, &dyn Fn() -> i64, &State) -> R,
     ) -> Option<R> {
         let model = self.resolve_model(model);
+        self.with_resolved_row_state(&model, index, key, read)
+    }
+
+    #[doc(hidden)]
+    pub fn with_resolved_row_state<R>(
+        &self,
+        model: &Rc<Model>,
+        index: usize,
+        key: RowKey,
+        read: impl FnOnce(&dyn Fn() -> Model::Item, &dyn Fn() -> i64, &State) -> R,
+    ) -> Option<R> {
         let index = model.event_row_index(index, key, false)?;
         let row = self
             .rows
@@ -125,7 +139,7 @@ impl<Model: ListModel, State: Default> Repeater<Model, State> {
             .get(&index)
             .cloned()
             .unwrap_or_else(|| Rc::new(Row::new(index, key)));
-        crate::property::without_read_watches(|| row.sync(&model, index, key));
+        crate::property::without_read_watches(|| row.sync(model, index, key));
         Some(read(&|| row.context.item(), &|| index as i64, &row.state))
     }
 
@@ -171,14 +185,18 @@ impl<Model: ListModel, State: Default> Repeater<Model, State> {
         range: Range<usize>,
         render_row: impl Fn(usize, &dyn Fn() -> Model::Item, &State) -> Node,
     ) -> Vec<Node> {
-        let resolved = self.model.get(|| Rc::new(model()));
-        let range = range.start..range.end.min(resolved.row_count());
-        self.rows
-            .borrow_mut()
-            .retain(|index, _| range.contains(index));
-        self.try_render_rows(&resolved, range, |index, context, state| {
-            Ok::<_, std::convert::Infallible>(render_row(index, &|| context.item(), state))
-        })
+        try_render_rows_from_source(
+            || Ok(self.resolve_model(model)),
+            |resolved| {
+                let range = range.start..range.end.min(resolved.row_count());
+                self.rows
+                    .borrow_mut()
+                    .retain(|index, _| range.contains(index));
+                self.try_render_rows(&resolved, range, |index, context, state| {
+                    Ok::<_, std::convert::Infallible>(render_row(index, &|| context.item(), state))
+                })
+            },
+        )
         .unwrap_or_else(|error| match error {})
     }
 
@@ -188,8 +206,11 @@ impl<Model: ListModel, State: Default> Repeater<Model, State> {
         indices: impl IntoIterator<Item = usize>,
         render_row: impl Fn(usize, &dyn Fn() -> Model::Item, &State) -> Node,
     ) -> Vec<Node> {
-        let resolved = self.model.get(|| Rc::new(model()));
-        self.render_resolved_indices(&resolved, indices, render_row)
+        try_render_rows_from_source(
+            || Ok::<_, std::convert::Infallible>(self.resolve_model(model)),
+            |resolved| Ok(self.render_resolved_indices(&resolved, indices, render_row)),
+        )
+        .unwrap_or_else(|error| match error {})
     }
 
     #[doc(hidden)]
@@ -228,9 +249,11 @@ impl<Model: ListModel, State: Default> Repeater<Model, State> {
         indices: impl IntoIterator<Item = usize>,
         render_row: impl Fn(usize, &RowContext<Model::Item>, &State) -> Result<Node, E>,
     ) -> Result<Vec<Node>, E> {
-        indices
-            .into_iter()
-            .map(|index| {
+        try_render_stable_rows(
+            resolved.as_ref(),
+            resolved.structure_stamp(),
+            indices,
+            |index| {
                 let key = resolved.row_key(index);
                 let row = self
                     .rows
@@ -244,7 +267,7 @@ impl<Model: ListModel, State: Default> Repeater<Model, State> {
                     .try_get(|| render_row(index, &row.context, &row.state))?;
                 node.set_row_key(Some(key));
                 Ok(node)
-            })
-            .collect()
+            },
+        )
     }
 }

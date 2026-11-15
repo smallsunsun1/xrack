@@ -1,6 +1,6 @@
-use crate::{Element, Error, Instance, Member, Result, Visual};
+use crate::{Element, Error, Instance, Member, Repeat, Result, Visual};
 use std::{collections::BTreeMap, rc::Rc};
-use xrack_runtime::{ButtonGroupOptions, ButtonGroupSelection, CheckState, ListModel, Node, Value};
+use xrack_runtime::{ButtonGroupOptions, ButtonGroupSelection, CheckState, Node, Value};
 
 pub(crate) struct Membership {
     pub(crate) key: String,
@@ -10,6 +10,16 @@ pub(crate) struct Membership {
 pub(crate) struct Members {
     paths: Rc<[Vec<usize>]>,
     keys: Vec<String>,
+}
+
+impl Element {
+    pub(crate) fn group_option_repeat(&self) -> Option<&Repeat> {
+        self.children
+            .first()?
+            .repeat
+            .as_ref()
+            .filter(|repeat| !repeat.empty && repeat.static_count.is_none())
+    }
 }
 
 pub(crate) fn members(root: &Element) -> BTreeMap<String, Members> {
@@ -216,20 +226,13 @@ impl Instance {
     pub(crate) fn group_option_model(
         &self,
         element: &Element,
-    ) -> Result<Option<crate::repeat::Model>> {
-        let Some(template) = element.children.first() else {
+    ) -> Result<Option<Rc<crate::repeat::Model>>> {
+        let Some(repeat) = element.group_option_repeat() else {
             return Ok(None);
         };
-        let Some(repeat) = template
-            .repeat
-            .as_ref()
-            .filter(|repeat| !repeat.empty && repeat.static_count.is_none())
-        else {
-            return Ok(None);
-        };
-        self.repeat_state(template)
+        self.repeat_state(&element.children[0])
             .row_model(self, repeat)
-            .map(|model| Some(model.as_ref().clone()))
+            .map(Some)
     }
 
     pub(crate) fn select_group(
@@ -240,8 +243,7 @@ impl Instance {
         input: xrack_runtime::InputRoute<'_>,
     ) -> Result<bool> {
         let property = element.selection_property();
-        let model = std::cell::OnceCell::new();
-        let Some(label) = xrack_runtime::try_prepare_group_selection(
+        let Some(label) = xrack_runtime::try_prepare_group_selection_with_model(
             node,
             index,
             input,
@@ -249,24 +251,20 @@ impl Instance {
                 let source = self.group_option_model(element)?;
                 let current = source
                     .as_ref()
-                    .is_none_or(|source| node.group_options_are_current(source));
-                let _ = model.set(source);
-                Ok::<_, Error>(current)
+                    .is_none_or(|source| node.group_options_are_current(source.as_ref()));
+                Ok::<_, Error>(current.then_some(source))
             },
             || self.group_selection(element),
-            |index, label| {
-                if let Some(source) = model.get().and_then(Option::as_ref) {
+            |source, index, label| {
+                if let Some(source) = source {
                     let Some(key) = node.child_at(index).and_then(|item| item.row_key) else {
                         return Ok(None);
                     };
-                    if index >= source.row_count() || source.row_key(index) != key {
-                        return Ok(None);
-                    }
                     let template = &element.children[0];
                     let repeat = template.repeat.as_ref().expect("repeated group option");
                     let Some(row) = self
                         .repeat_state(template)
-                        .row(self, repeat, index, key, false)?
+                        .resolved_row(repeat, source, index, key, false)
                     else {
                         return Ok(None);
                     };

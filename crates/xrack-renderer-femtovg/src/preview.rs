@@ -2557,7 +2557,13 @@ impl PreviewScene {
                     changed |= event.apply(&mut self.component, &scene);
                 }
             }
-            if !changed && !self.component.scene_dirty() && self.scroll.is_empty() {
+            // A row-only mutation can cancel materialization without invalidating the base scene.
+            let retry_missing_rows = pass == 0 && layout.has_missing_list_rows();
+            if !changed
+                && !retry_missing_rows
+                && !self.component.scene_dirty()
+                && self.scroll.is_empty()
+            {
                 break;
             }
             previous = Some(scene.clone());

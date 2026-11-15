@@ -2,6 +2,7 @@
 """Package native XRack VSIX files and publish a complete Marketplace release."""
 
 import argparse
+import io
 import json
 import os
 from pathlib import Path, PurePosixPath
@@ -45,7 +46,14 @@ EXTENSION_FILES = (
     "preview-process.js",
     "preview-queue.js",
 )
-SAMPLE = "export component PreviewProbe inherits Window { width: 120px; height: 80px; }"
+SAMPLE = """export component PreviewProbe inherits Window {
+    width: 120px;
+    height: 80px;
+    in-out property <int> count: 21;
+    out property <int> doubled: count * 2;
+    Text { text: "Count: " + root.doubled; }
+}
+"""
 SERVER_TARGETS = {
     "xrack-lsp": "crates/xrack-lsp",
     "xrack-preview": "crates/xrack-preview",
@@ -169,6 +177,33 @@ def lsp_message(method, **fields):
     return f"Content-Length: {len(body)}\r\n\r\n".encode() + body
 
 
+def check_preview_protocol(package, preview, source, mlir):
+    requests = [
+        ({"type": "load", "filename": str(source), "text": SAMPLE}, "PreviewProbe"),
+        ({"type": "activate"}, None),
+        ({"type": "load_mlir", "filename": str(mlir), "component": "PreviewProbe"}, "PreviewProbe"),
+        ({"type": "activate"}, None),
+    ]
+    output = subprocess.run(
+        (preview, "--check"),
+        input="".join(json.dumps(request) + "\n" for request, _ in requests).encode(),
+        stdout=subprocess.PIPE,
+        check=True,
+        timeout=60,
+    ).stdout
+    replies = io.BytesIO(output)
+    for request, component in requests:
+        length = int.from_bytes(replies.read(4), "big")
+        header = replies.read(length)
+        if not header or len(header) != length:
+            raise ValueError(f"{package}: incomplete preview reply to {request['type']}")
+        reply = json.loads(header)
+        if reply["error"] or reply["unsupported"] or reply["component"] != component or reply["image_length"]:
+            raise ValueError(f"{package}: interpreter smoke test for {request['type']} failed: {reply}")
+    if replies.read(1):
+        raise ValueError(f"{package}: trailing data after preview replies")
+
+
 def smoke_test(package, directory, suffix):
     with zipfile.ZipFile(package) as archive:
         compiler, lsp, preview = (
@@ -190,8 +225,9 @@ def smoke_test(package, directory, suffix):
                                     env=media_env, timeout=30)
     if media.strip() != "media=160x90":
         raise ValueError(f"{package}: bundled media smoke test failed: {media}")
+    probe = directory / "probe.xr"
     compiled = json.loads(subprocess.run(
-        (compiler, directory / "probe.xr", "--emit", "preview"),
+        (compiler, probe, "--emit", "preview"),
         input=json.dumps({"text": SAMPLE}).encode(),
         stdout=subprocess.PIPE,
         check=True,
@@ -199,15 +235,10 @@ def smoke_test(package, directory, suffix):
     ).stdout)
     if compiled["components"] != ["PreviewProbe"] or "__xrack_preview_component" not in compiled["rust"]:
         raise ValueError(f"{package}: preview compiler smoke test failed")
-    request = {"type": "load", "filename": str(directory / "probe.xr"), "text": SAMPLE}
-    frame = subprocess.run(
-        (preview, "--check"), input=(json.dumps(request) + "\n").encode(),
-        stdout=subprocess.PIPE, check=True, timeout=60,
-    ).stdout
-    size = int.from_bytes(frame[:4], "big")
-    response = json.loads(frame[4:4 + size])
-    if response["error"] or response["component"] != "PreviewProbe":
-        raise ValueError(f"{package}: interpreter smoke test failed: {response}")
+    probe.write_text(SAMPLE, encoding="utf-8")
+    mlir = probe.with_suffix(".mlir")
+    subprocess.run((compiler, probe, "--emit", "mlir", "-o", mlir), check=True, timeout=60)
+    check_preview_protocol(package, preview, probe, mlir)
     messages = (
         lsp_message("initialize", id=1, params={})
         + lsp_message("shutdown", id=2)

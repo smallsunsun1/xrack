@@ -149,6 +149,57 @@ impl TimePickerOptions {
             _ => unreachable!(),
         })
     }
+
+    /// Resolve a wheel selection before either backend writes the time.
+    pub fn try_select_input<E>(
+        node: &Node,
+        slot: usize,
+        action: ControlAction,
+        input: InputRoute<'_>,
+        options: impl FnOnce() -> Result<Self, E>,
+        time: impl FnOnce() -> Result<Option<Time>, E>,
+    ) -> Result<Option<Time>, E> {
+        let ControlAction::PickTumbler { index, row } = action else {
+            return Ok(None);
+        };
+        if node.kind != "Tumbler"
+            || Tumbler::from_node(node).row_key(index) != Some(row)
+            || !input.is_current()
+        {
+            return Ok(None);
+        }
+        crate::property::watch_reads(|reads| {
+            let options = options()?;
+            if reads.changed() || !input.is_current() {
+                return Ok(None);
+            }
+            let Some(time) = time()? else {
+                return Ok(None);
+            };
+            Ok(options
+                .select(time, slot, node, action)
+                .filter(|_| !reads.changed() && input.is_current()))
+        })
+    }
+
+    pub fn select_input(
+        node: &Node,
+        slot: usize,
+        action: ControlAction,
+        input: InputRoute<'_>,
+        options: impl FnOnce() -> Self,
+        time: impl FnOnce() -> Time,
+    ) -> Option<Time> {
+        Self::try_select_input(
+            node,
+            slot,
+            action,
+            input,
+            || Ok::<_, std::convert::Infallible>(options()),
+            || Ok(Some(time())),
+        )
+        .unwrap_or_else(|error| match error {})
+    }
 }
 
 #[doc(hidden)]
@@ -203,6 +254,42 @@ impl TimePopupState {
         };
         self.0.set(next);
         true
+    }
+
+    pub fn try_edit_input<E>(
+        &self,
+        node: &Node,
+        slot: usize,
+        action: ControlAction,
+        input: InputRoute<'_>,
+        options: impl FnOnce() -> Result<TimePickerOptions, E>,
+    ) -> Result<bool, E> {
+        if !self.accepts_input(node, input) {
+            return Ok(false);
+        }
+        let Some(next) =
+            TimePickerOptions::try_select_input(node, slot, action, input, options, || {
+                Ok(self.0.current(node))
+            })?
+        else {
+            return Ok(false);
+        };
+        self.0.set(next);
+        Ok(true)
+    }
+
+    pub fn edit_input(
+        &self,
+        node: &Node,
+        slot: usize,
+        action: ControlAction,
+        input: InputRoute<'_>,
+        options: impl FnOnce() -> TimePickerOptions,
+    ) -> bool {
+        self.try_edit_input(node, slot, action, input, || {
+            Ok::<_, std::convert::Infallible>(options())
+        })
+        .unwrap_or_else(|error| match error {})
     }
 
     /// Confirm only the draft displayed with the current options.

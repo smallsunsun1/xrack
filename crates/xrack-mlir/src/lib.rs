@@ -27,7 +27,7 @@ pub use visual::{
     RowSceneCache, StackRead, StateCaseRef, TableClipboardRef, TablePasteRef, TableRead,
     TranslationRef, VisualCacheGroup, VisualCacheKey, host_element_id, nine_slice_edges,
     repeat_is_positioned, repeat_uses_row_identity, scene_children, split_fill_slot,
-    visual_cache_operand,
+    split_pane_names, visual_cache_operand,
 };
 
 mod record;

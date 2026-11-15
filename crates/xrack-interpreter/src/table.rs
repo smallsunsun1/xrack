@@ -166,15 +166,22 @@ impl Instance {
         &self,
         view: &Element,
         state: &RepeatState,
-        model: &VecModel<RecordValue>,
-    ) -> Result<TableRows<VecModel<RecordValue>>> {
+    ) -> Result<(TableRows<VecModel<RecordValue>>, Rc<Model>)> {
         let definition = view.table_definition();
-        if definition.model.is_none() && view.visible_field.is_none() {
-            return Ok(state.row_order.rows(Rc::new(model.clone())));
-        }
         let columns = definition.columns.clone();
-        state.row_order.try_project_rows_by(
-            || Rc::new(model.clone()),
+        state.row_order.try_project_model(
+            || {
+                let source = self.view_source_model(view)?;
+                source
+                    .filter(|source| matches!(source.as_ref(), Model::Records(_)))
+                    .ok_or_else(|| Error::Invalid("expected a record table model".into()))
+            },
+            |source| {
+                let Model::Records(records) = source.as_ref() else {
+                    unreachable!("validated record table model");
+                };
+                Rc::new(records.model().clone())
+            },
             || {
                 if definition.model.is_some() && self.table_flag(view, "auto-sort", false)? {
                     Ok(state.table_state().sort.get(|| None))
@@ -240,21 +247,22 @@ impl Instance {
     pub(crate) fn standard_table_rows(
         &self,
         view: &Element,
-        model: &ViewModel,
         range: Range<usize>,
         window: &TableColumnWindow,
+        stamp: Option<(u64, u64)>,
     ) -> Result<Vec<Node>> {
-        let rows = model
-            .projected
-            .as_ref()
-            .ok_or_else(|| Error::Invalid("standard table needs records".into()))?;
         let definition = view.table_definition();
         let columns = &definition.columns;
         let header = definition.row_header.as_deref();
-        xrack_runtime::try_project_standard_table_rows(
-            rows,
+        xrack_runtime::try_render_standard_table_rows(
+            || {
+                self.view_model(view)?
+                    .projected
+                    .ok_or_else(|| Error::Invalid("standard table needs records".into()))
+            },
             range,
             window,
+            stamp,
             columns.len(),
             |record| header.map(|path| field_text(record.field_path(path))),
             |record, column| field_text(record.field_path(&columns[column].path)),
@@ -352,7 +360,11 @@ impl Instance {
     ) -> Result<bool> {
         use xrack_runtime::TableSelectionEvent;
 
-        let notify_cell = notify_cell && view.handlers.contains_key("current-cell-changed");
+        let notify_cell = notify_cell
+            && view
+                .handlers
+                .get("current-cell-changed")
+                .is_some_and(|handler| !handler.body.is_empty());
         change.try_notify(notify_cell, |event| match event {
             TableSelectionEvent::CurrentRowChanged(row) => self.update_current_row(view, row),
             TableSelectionEvent::CurrentCellChanged => {

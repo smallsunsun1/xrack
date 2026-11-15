@@ -94,12 +94,18 @@ impl Instance {
                 Ok(true)
             },
             || {
+                let Some(handler) = element
+                    .handlers
+                    .get("released")
+                    .filter(|handler| !handler.body.is_empty())
+                else {
+                    return Ok(());
+                };
                 let value = self
                     .range_with_live_bounds(element, range)?
                     .with_value(self.range_value(element, "value")?)
                     .value();
-                self.handler(element, "released", &[value.into()])
-                    .map(|_| ())
+                self.execute(handler, &[value.into()], None).map(|_| ())
             },
         )
     }
@@ -167,12 +173,19 @@ impl Instance {
         }
         let interval = SliderInterval::from_values(node, lower, upper);
         let dispatch = |event| {
+            let Some(handler) = element
+                .handlers
+                .get(event)
+                .filter(|handler| !handler.body.is_empty())
+            else {
+                return Ok(());
+            };
             let range = self.range_with_live_bounds(element, SliderRange::from_node(node))?;
             let [lower, upper] = values()?;
             let values = SliderInterval::from_range(range, lower, upper)
                 .values()
                 .map(Value::Float);
-            self.handler(element, event, &values)
+            self.execute(handler, &values, None).map(|_| ())
         };
         action.try_deliver(
             interval.changed_values(handle, action, [lower, upper]),
@@ -186,7 +199,7 @@ impl Instance {
                 dispatch("changed")?;
                 Ok(true)
             },
-            || dispatch("released").map(|_| ()),
+            || dispatch("released"),
         )
     }
 

@@ -2,9 +2,12 @@ use crate::{
     DecimalSpinRange, InputRoute, ListModel, Node, Property, RoutedEvent, RowKey, SpinDecimal,
     TableRows, Value,
 };
-use std::sync::{
-    Arc,
-    atomic::{AtomicU64, Ordering},
+use std::{
+    rc::Rc,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
 };
 
 /// Identity shared by all presentations of one component instance's Action.
@@ -131,6 +134,43 @@ pub fn try_prepare_action_view<T, E>(
 pub fn prepare_action_view<T>(read: impl FnOnce() -> Option<T>) -> Option<T> {
     try_prepare_action_view(|| Ok::<_, std::convert::Infallible>(read()))
         .unwrap_or_else(|error| match error {})
+}
+
+impl crate::CheckState {
+    /// Compute a toggle while its state and settings still describe the same input.
+    #[doc(hidden)]
+    pub fn try_prepare_toggle<E>(
+        input: Option<InputRoute<'_>>,
+        current: impl FnOnce() -> Result<Self, E>,
+        tristate: impl FnOnce() -> Result<bool, E>,
+    ) -> Result<Option<Self>, E> {
+        let route_current = || input.is_none_or(InputRoute::is_current);
+        if !route_current() {
+            return Ok(None);
+        }
+        crate::property::watch_reads(|reads| {
+            let current = current()?;
+            if reads.changed() || !route_current() {
+                return Ok(None);
+            }
+            let tristate = tristate()?;
+            Ok((!reads.changed() && route_current()).then(|| current.next(tristate)))
+        })
+    }
+
+    #[doc(hidden)]
+    pub fn prepare_toggle(
+        input: Option<InputRoute<'_>>,
+        current: impl FnOnce() -> Self,
+        tristate: impl FnOnce() -> bool,
+    ) -> Option<Self> {
+        Self::try_prepare_toggle(
+            input,
+            || Ok::<_, std::convert::Infallible>(current()),
+            || Ok(tristate()),
+        )
+        .unwrap_or_else(|error| match error {})
+    }
 }
 
 /// Sample toggle settings before history, with the same input guard as the write.
@@ -391,15 +431,21 @@ pub fn try_prepare_swipe_side<E>(
     current: impl FnOnce() -> Result<SwipeSide, E>,
     panel_visible: impl FnOnce(&str) -> Result<bool, E>,
 ) -> Result<bool, E> {
-    if !input.is_current() || !node.accepts_swipe_side(current()?, side) || !input.is_current() {
-        return Ok(false);
-    }
-    if let Some(panel) = side.panel()
-        && !panel_visible(panel)?
-    {
-        return Ok(false);
-    }
-    Ok(input.is_current())
+    crate::property::watch_reads(|reads| {
+        if !input.is_current()
+            || !node.accepts_swipe_side(current()?, side)
+            || reads.changed()
+            || !input.is_current()
+        {
+            return Ok(false);
+        }
+        if let Some(panel) = side.panel()
+            && !panel_visible(panel)?
+        {
+            return Ok(false);
+        }
+        Ok(!reads.changed() && input.is_current())
+    })
 }
 
 #[doc(hidden)]
@@ -428,7 +474,11 @@ pub fn try_set_overlay_open<E>(
     set_open: impl FnOnce(bool) -> Result<(), E>,
     notify: impl FnOnce(bool) -> Result<(), E>,
 ) -> Result<bool, E> {
-    if current()? == open || input.is_some_and(|input| !input.is_current()) {
+    let route_current = || input.is_none_or(InputRoute::is_current);
+    let should_set = crate::property::watch_reads(|reads| {
+        Ok(route_current() && current()? != open && !reads.changed() && route_current())
+    })?;
+    if !should_set {
         return Ok(false);
     }
     set_open(open)?;
@@ -1299,13 +1349,43 @@ pub fn try_prepare_group_selection<E>(
     current: impl FnOnce() -> Result<crate::ButtonGroupSelection, E>,
     mut option: impl FnMut(usize, bool) -> Result<Option<String>, E>,
 ) -> Result<Option<String>, E> {
+    try_prepare_group_selection_with_model(
+        node,
+        index,
+        route,
+        || Ok((!route.checks_availability() || model_current()?).then_some(())),
+        current,
+        |_, slot, label| option(slot, label),
+    )
+}
+
+/// Validate the model once and use that sample for every option read.
+#[doc(hidden)]
+pub fn try_prepare_group_selection_with_model<M, E>(
+    node: &Node,
+    index: usize,
+    route: crate::InputRoute<'_>,
+    model: impl FnOnce() -> Result<Option<M>, E>,
+    current: impl FnOnce() -> Result<crate::ButtonGroupSelection, E>,
+    mut option: impl FnMut(&M, usize, bool) -> Result<Option<String>, E>,
+) -> Result<Option<String>, E> {
     let Some(shown) = group_item(node, index) else {
         return Ok(None);
     };
     let radio = node.kind == "RadioGroup";
-    if !route.try_available(model_current)? {
+    let mut sample = None;
+    if !route.checks_availability() {
+        sample = model()?;
+    } else if !route.try_available(|| {
+        sample = model()?;
+        Ok(sample.is_some())
+    })? {
         return Ok(None);
     }
+    let Some(sample) = sample else {
+        return Ok(None);
+    };
+    let mut option = |slot, label| option(&sample, slot, label);
     let Some(label) = option(index, radio)? else {
         return Ok(None);
     };
@@ -1348,6 +1428,26 @@ pub fn try_prepare_group_selection<E>(
 }
 
 #[doc(hidden)]
+pub fn prepare_group_selection_with_model<M>(
+    node: &Node,
+    index: usize,
+    route: crate::InputRoute<'_>,
+    model: impl FnOnce() -> Option<M>,
+    current: impl FnOnce() -> crate::ButtonGroupSelection,
+    mut option: impl FnMut(&M, usize, bool) -> Option<String>,
+) -> Option<String> {
+    try_prepare_group_selection_with_model(
+        node,
+        index,
+        route,
+        || Ok::<_, std::convert::Infallible>(model()),
+        || Ok(current()),
+        |model, slot, label| Ok(option(model, slot, label)),
+    )
+    .unwrap_or_else(|error| match error {})
+}
+
+#[doc(hidden)]
 pub fn prepare_group_selection(
     node: &Node,
     index: usize,
@@ -1368,6 +1468,37 @@ pub fn prepare_group_selection(
 }
 
 impl Node {
+    #[doc(hidden)]
+    pub fn try_append_group_options<M: ListModel, E>(
+        &mut self,
+        source: impl FnOnce() -> Result<Rc<M>, E>,
+        render: impl FnOnce(&Rc<M>) -> Result<Vec<Node>, E>,
+    ) -> Result<(), E> {
+        let options = crate::try_render_rows_from_source(
+            || {
+                let model = source()?;
+                self.snapshot_group_options(&*model);
+                Ok(model)
+            },
+            |model| render(&model),
+        )?;
+        self.children.extend(options);
+        Ok(())
+    }
+
+    #[doc(hidden)]
+    pub fn append_group_options<M: ListModel>(
+        &mut self,
+        source: impl FnOnce() -> Rc<M>,
+        render: impl FnOnce(&Rc<M>) -> Vec<Node>,
+    ) {
+        self.try_append_group_options(
+            || Ok::<_, std::convert::Infallible>(source()),
+            |model| Ok(render(model)),
+        )
+        .unwrap_or_else(|error| match error {});
+    }
+
     #[doc(hidden)]
     pub fn snapshot_group_options(&mut self, model: &impl ListModel) {
         self.standard_list_stamp = Some(model.contents_stamp());

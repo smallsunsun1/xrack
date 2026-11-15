@@ -170,15 +170,17 @@ impl Instance {
             let ([slot], Input::Control(action, route)) = (tail, input) else {
                 return Ok(false);
             };
-            let Some(time) =
-                self.time_options(element)?
-                    .select(self.time_value(element)?, *slot, node, action)
+            let Some(time) = TimePickerOptions::try_select_input(
+                node,
+                *slot,
+                action,
+                route,
+                || self.time_options(element),
+                || self.time_value(element).map(Some),
+            )?
             else {
                 return Ok(false);
             };
-            if !route.is_current() {
-                return Ok(false);
-            }
             self.set_control_value(element, "time", time.into())?;
             self.handler(element, "changed", &[time.into()])?;
             return Ok(true);
@@ -193,11 +195,8 @@ impl Instance {
                 let bounds = self.date_bounds(element)?;
                 route.is_current() && picker.edit(bounds, node, action)
             }
-            (State::Time(picker), Input::Control(action, route), [0, slot])
-                if picker.accepts_input(node, route) =>
-            {
-                let options = self.time_options(element)?;
-                route.is_current() && picker.edit(options, *slot, node, action)
+            (State::Time(picker), Input::Control(action, route), [0, slot]) => {
+                picker.try_edit_input(node, *slot, action, route, || self.time_options(element))?
             }
             (State::Font(picker), Input::Control(action, route), [0, ..]) => {
                 route.is_current() && picker.edit(node, action)
