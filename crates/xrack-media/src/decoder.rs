@@ -904,7 +904,7 @@ mod tests {
     fn plays_live_hls_and_seeks_hls_vod_over_http() {
         use std::{
             io::{BufRead, BufReader, Write},
-            net::TcpListener,
+            net::{Shutdown, TcpListener},
             thread,
             time::Duration,
         };
@@ -955,16 +955,20 @@ mod tests {
                     Some("/segment1.ts") => include_bytes!("../tests/hls/segment1.ts"),
                     Some("/segment2.ts") => include_bytes!("../tests/hls/segment2.ts"),
                     _ => {
-                        let _ = socket.write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+                        let _ = socket.write_all(b"HTTP/1.0 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+                        let _ = socket.shutdown(Shutdown::Write);
                         continue;
                     }
                 };
-                let _ = write!(
-                    socket,
-                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                // This fixture handles one request per connection.
+                let mut response = format!(
+                    "HTTP/1.0 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
                     data.len()
                 )
-                .and_then(|_| socket.write_all(data));
+                .into_bytes();
+                response.extend_from_slice(data);
+                let _ = socket.write_all(&response);
+                let _ = socket.shutdown(Shutdown::Write);
             }
         });
         let result = (|| {
