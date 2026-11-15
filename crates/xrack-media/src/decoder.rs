@@ -931,8 +931,15 @@ mod tests {
                 socket
                     .set_read_timeout(Some(Duration::from_secs(1)))
                     .unwrap();
-                let mut request = String::new();
-                if BufReader::new(&socket).read_line(&mut request).is_err() {
+                // Drain the request headers before closing the socket.
+                let mut headers = BufReader::new(&socket).lines();
+                let Some(Ok(request)) = headers.next() else {
+                    continue;
+                };
+                if !matches!(
+                    headers.find(|line| line.as_ref().map_or(true, String::is_empty)),
+                    Some(Ok(_))
+                ) {
                     continue;
                 }
                 let data: &[u8] = match request.split_whitespace().nth(1) {

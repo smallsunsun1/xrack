@@ -253,6 +253,15 @@ pub fn install() {
 }
 
 fn open(path: &Path, autoplay: bool, volume: f64) -> Result<Box<dyn MediaSession>, String> {
+    let (session, _worker) = start_session(path, autoplay, volume)?;
+    Ok(Box::new(session))
+}
+
+fn start_session(
+    path: &Path,
+    autoplay: bool,
+    volume: f64,
+) -> Result<(Session, std::thread::JoinHandle<()>), String> {
     let shared = Arc::new(Shared {
         state: Mutex::new(Playback {
             requested_play: autoplay,
@@ -271,7 +280,7 @@ fn open(path: &Path, autoplay: bool, volume: f64) -> Result<Box<dyn MediaSession
     });
     let producer = shared.clone();
     let path = path.to_path_buf();
-    std::thread::Builder::new()
+    let worker = std::thread::Builder::new()
         .name("xrack-media".into())
         .spawn(move || {
             if let Err(error) = decode(path, &producer) {
@@ -288,7 +297,7 @@ fn open(path: &Path, autoplay: bool, volume: f64) -> Result<Box<dyn MediaSession
             }
         })
         .map_err(|error| error.to_string())?;
-    Ok(Box::new(Session(shared)))
+    Ok((Session(shared), worker))
 }
 
 impl Drop for Session {
@@ -1378,7 +1387,7 @@ mod tests {
         wav.extend(bytes.to_le_bytes());
         wav.resize(44 + bytes as usize, 0);
         std::fs::write(&path, wav).unwrap();
-        let mut player = open(&path, true, 0.0).unwrap();
+        let (mut player, worker) = start_session(&path, true, 0.0).unwrap();
         let until = Instant::now() + Duration::from_secs(3);
         loop {
             let state = player.sample(Instant::now());
@@ -1397,13 +1406,14 @@ mod tests {
         player.command(MediaCommand::Stop);
         assert_eq!(player.sample(Instant::now()).position, 0.0);
         drop(player);
-        let _ = std::fs::remove_file(path);
+        worker.join().unwrap();
+        std::fs::remove_file(path).unwrap();
     }
 
     #[test]
     fn audio_backend_advances_the_session_and_preserves_pause_and_seek() {
         let fixture = fixture_path("device");
-        let mut session = open(&fixture, true, 0.0).unwrap();
+        let (mut session, worker) = start_session(&fixture, true, 0.0).unwrap();
         let wait = |session: &mut dyn MediaSession, condition: fn(&MediaState) -> bool| {
             let deadline = Instant::now() + Duration::from_secs(4);
             loop {
@@ -1417,22 +1427,18 @@ mod tests {
                 std::thread::sleep(Duration::from_millis(10));
             }
         };
-        let before = wait(session.as_mut(), |state| {
-            state.playing && state.position > 0.07
-        });
+        let before = wait(&mut session, |state| state.playing && state.position > 0.07);
         assert!(before.frame.is_some());
         session.command(MediaCommand::Pause);
-        let paused = wait(session.as_mut(), |state| state.ready && !state.playing);
+        let paused = wait(&mut session, |state| state.ready && !state.playing);
         std::thread::sleep(Duration::from_millis(50));
         assert_eq!(session.sample(Instant::now()).position, paused.position);
         session.command(MediaCommand::Seek(2.1));
-        let sought = wait(session.as_mut(), |state| {
-            state.ready && state.position == 2.1
-        });
+        let sought = wait(&mut session, |state| state.ready && state.position == 2.1);
         assert!(!sought.playing);
         session.command(MediaCommand::Play);
-        wait(session.as_mut(), |state| state.position > 2.2);
-        let after_flash = wait(session.as_mut(), |state| state.position > 2.55);
+        wait(&mut session, |state| state.position > 2.2);
+        let after_flash = wait(&mut session, |state| state.position > 2.55);
         let green = |frame: Option<MediaFrame>| frame.unwrap().rgba()[(45 * 160 + 80) * 4 + 1];
         assert!(
             green(before.frame) > 180,
@@ -1443,6 +1449,7 @@ mod tests {
             "the post-seek clock must present the dark frame"
         );
         drop(session);
+        worker.join().unwrap();
         std::fs::remove_file(fixture).unwrap();
     }
 }
