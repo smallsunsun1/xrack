@@ -1,6 +1,7 @@
 --- a/ffmpeg_config_checks.bzl
 +++ b/ffmpeg_config_checks.bzl
-@@ -173,20 +173,13 @@
+@@ -172,22 +172,15 @@
+     # warn, C++ compilers reject it outright.
      #
      # Getting this one wrong is not a missing feature but a silent miscompile:
 -    # av_malloc() falls through to plain malloc() (libavutil/mem.c:110), which
@@ -28,10 +29,32 @@
 +    checks.AC_TRY_COMPILE(define = "HAVE_CLOSESOCKET", code = "(void)sizeof(&closesocket);", includes = _WINSOCK_INCLUDES),
      # AC_CHECK_LIB rather than AC_TRY_LINK because the symbol needs a library
      # named: CommandLineToArgvW lives in shell32.dll and shellapi.h carries no
-@@ -200,5 +193,5 @@
+     # `#pragma comment(lib, "shell32.lib")`, so an AC_TRY_LINK probe is a false
+@@ -199,7 +192,7 @@
+     checks.AC_CHECK_LIB("shell32", "CommandLineToArgvW", define = "HAVE_COMMANDLINETOARGVW"),
      checks.AC_TRY_LINK(define = "HAVE_ELF_AUX_INFO", code = "long x = (long)elf_aux_info; (void)x;", includes = ["#include <sys/auxv.h>"]),
      checks.AC_CHECK_FUNC("fcntl", define = "HAVE_FCNTL"),
 -    checks.AC_TRY_LINK(define = "HAVE_GETADDRINFO", code = "long x = (long)getaddrinfo; (void)x;", includes = _net_includes(["#include <sys/types.h>", "#include <sys/socket.h>", "#include <netdb.h>"])),
 +    checks.AC_TRY_COMPILE(define = "HAVE_GETADDRINFO", code = "(void)sizeof(&getaddrinfo);", includes = _net_includes(["#include <sys/types.h>", "#include <sys/socket.h>", "#include <netdb.h>"])),
      checks.AC_TRY_LINK(define = "HAVE_GETAUXVAL", code = "long x = (long)getauxval; (void)x;", includes = ["#include <sys/auxv.h>"]),
      checks.AC_TRY_LINK(define = "HAVE_GETENV", code = "long x = (long)getenv; (void)x;", includes = ["#include <stdlib.h>"]),
+     checks.AC_CHECK_FUNC("gethrtime", define = "HAVE_GETHRTIME"),
+@@ -210,7 +203,8 @@
+     checks.AC_TRY_LINK(define = "HAVE_GETPROCESSTIMES", code = "long x = (long)GetProcessTimes; (void)x;", includes = ["#include <windows.h>"]),
+     checks.AC_CHECK_FUNC("getrusage", define = "HAVE_GETRUSAGE"),
+     checks.AC_TRY_LINK(define = "HAVE_GETSTDHANDLE", code = "long x = (long)GetStdHandle; (void)x;", includes = ["#include <windows.h>"]),
+-    checks.AC_TRY_LINK(define = "HAVE_GETSYSTEMTIMEASFILETIME", code = "long x = (long)GetSystemTimeAsFileTime; (void)x;", includes = ["#include <windows.h>"]),
++    # Both this clock and Sleep are provided by the Windows system libraries.
++    checks.AC_TRY_COMPILE(define = "HAVE_GETSYSTEMTIMEASFILETIME", code = "(void)sizeof(&GetSystemTimeAsFileTime);", includes = ["#include <windows.h>"]),
+     checks.AC_CHECK_FUNC("gettimeofday", define = "HAVE_GETTIMEOFDAY"),
+     checks.AC_TRY_LINK(define = "HAVE_GLOB", code = "long x = (long)glob; (void)x;", includes = ["#include <glob.h>"]),
+     checks.AC_TRY_LINK(define = "HAVE_GLXGETPROCADDRESS", code = "long x = (long)glXGetProcAddress; (void)x;", includes = ["#include <GL/glx.h>"]),
+@@ -245,7 +239,7 @@
+     checks.AC_CHECK_FUNC("setrlimit", define = "HAVE_SETRLIMIT"),
+     checks.AC_TRY_LINK(define = "HAVE_SIGACTION", code = "long x = (long)sigaction; (void)x;", includes = ["#include <signal.h>"]),
+     checks.AC_TRY_LINK(define = "HAVE_SIGLONGJMP", code = "long x = (long)siglongjmp; (void)x;", includes = ["#include <setjmp.h>"]),
+-    checks.AC_TRY_LINK(define = "HAVE_SLEEP", code = "long x = (long)Sleep; (void)x;", includes = ["#include <windows.h>"]),
++    checks.AC_TRY_COMPILE(define = "HAVE_SLEEP", code = "(void)sizeof(&Sleep);", includes = ["#include <windows.h>"]),
+     checks.AC_CHECK_FUNC("strerror_r", define = "HAVE_STRERROR_R"),
+     checks.AC_CHECK_FUNC("sysconf", define = "HAVE_SYSCONF"),
+     # configure's check_func sysctl links the bare symbol, but libavutil/cpu.c
