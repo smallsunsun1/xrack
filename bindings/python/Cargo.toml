@@ -1,0 +1,25 @@
+[package]
+name = "xrack-python"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+publish = false
+
+[lib]
+name = "_native"
+crate-type = ["cdylib"]
+
+[dependencies]
+pyo3 = { version = "=0.29.0", features = ["abi3-py311", "extension-module", "experimental-inspect"] }
+pyo3-async-runtimes = { version = "=0.29.0", features = ["tokio-runtime"] }
+tokio = { version = "=1.54.1", features = ["sync"] }
+xrack-compiler = { path = "../../crates/xrack-compiler" }
+xrack-assets.workspace = true
+xrack-interpreter = { workspace = true, features = ["live-reload"] }
+xrack-platform-winit.workspace = true
+xrack-runtime.workspace = true
+
+[dev-dependencies]
+pyo3-introspection = "=0.29.0"

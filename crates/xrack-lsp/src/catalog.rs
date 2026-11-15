@@ -1,6 +1,6 @@
 // Enumerate candidate spellings. The compiler decides whether each is available in context.
-pub(crate) const ELEMENTS: &str = "Action ActionGroup AnimatedImage ApplicationWindow MediaPlayer BusyIndicator Button ButtonGroup Calendar CheckBox CheckDelegate ColorPickerPopup ComboBox ContextMenuArea DatePickerPopup DelayButton Dial Dialog ControlFrame Pane
-    ButtonContent SliderHandle DayCell DayOfWeekRow DialogButton DialogButtonBox DoubleSpinBox DragArea Drawer DropArea FileDialog FontPickerPopup Flickable FlexboxLayout FlowLayout FocusScope GridLayout GridView GroupBox HorizontalBox HorizontalLayout Image Label LineEdit
+pub(crate) const ELEMENTS: &str = "Action ActionGroup AnimatedImage ApplicationWindow MediaPlayer SoundEffect BusyIndicator Button ButtonGroup Calendar CheckBox CheckDelegate ColorPickerPopup ComboBox ContextMenuArea DatePickerPopup DelayButton Dial Dialog ControlFrame Pane EmptyState
+    ButtonContent SliderHandle RangeLowerHandle RangeUpperHandle ToggleIndicator SwitchThumb SpinUpIndicator SpinDownIndicator DayCell DayOfWeekRow DialogButton DialogButtonBox DoubleSpinBox DragArea Drawer DropArea FileDialog FontPickerPopup Flickable FlexboxLayout FlowLayout FocusScope GridLayout GridView GroupBox HorizontalBox HorizontalLayout Image Label LineEdit
     HoverHandler ItemDelegate ListView Menu MenuBar MenuItem MenuSeparator MessageDialog MonthGrid Page PageFooter PageHeader PageIndicator Path PopupWindow ProgressIndicator RadioButton RadioDelegate
     RadioGroup RangeSlider Rectangle RoundButton Row ScaleRotateGestureHandler ScrollBar ScrollIndicator ScrollView SearchField SecondaryWindow Shortcut Slider SpinBox Spinner SplitView StackPage StackView
     StyledText StandardButton StandardListView StandardTableView SwipeContent SwipeDelegate SwipeGestureHandler SwipeLeft SwipePage SwipeRight SwipeView Switch SwitchDelegate Tab TabBar TabButton TabWidget TableCell TableColumn TableRow TableView Text TextArea
@@ -17,11 +17,11 @@ pub(crate) const PROPERTIES: &str = "autoplay duration volume ready ended error 
     current-frame current-page current-row current-value date decimal-separator decimals delay depth dim directory display-month dot-size data drag-key drag-margin drag-select drop-action drop-shadow-blur drop-shadow-color drop-shadow-offset-x drop-shadow-offset-y drop-shadow-spread edge edit-text editable
     default-font default-font-family default-font-italic default-font-size default-font-weight enabled end-angle exclusive field flick-direction file-extensions file-name fill filter-field filter-text fit flex-direction flex-wrap frame-count frozen-columns focus focus-on-click focus-on-tab-navigation focus-within follow-current font preview-text group has-focus font-family font-italic font-size font-weight handle-color handle-hit-size handle-size header-height height
     highlighted horizontal-alignment horizontal-scroll-bar-policy horizontal-spacing horizontal-stretch horizontal-tile-mode icon icon-only icon-size icon-template tooltip
-    image-fit image-rendering indentation indeterminate informative-text inner-shadow-blur inner-shadow-color inner-shadow-offset-x inner-shadow-offset-y inner-shadow-spread initial-focus initial-page input-mode input-type interactive interval key keys kind layout-height layout-order layout-ready layout-width layout-x layout-y level link-color live loops
-    lower-value max-height max-lines max-width maximum maximum-date maximum-length min-height min-width minimum minimum-date minimum-size modal mode model mouse-drag-pan-enabled movable-columns movable-rows multi-select multi-touch name-filters no-frame open open-side opacity overflow placement playing resize-border-width
+    image-fit image-rendering indentation indeterminate informative-text inner-shadow-blur inner-shadow-color inner-shadow-offset-x inner-shadow-offset-y inner-shadow-spread initial-focus initial-page input-mode input-type interactive interval key keys kind layout-height layout-direction layout-order layout-ready layout-width layout-x layout-y level link-color live loops
+    lower-value max-height max-lines max-width maximum maximum-date maximum-length maximum-value minimum-length minimum-value submit-when min-height min-width minimum minimum-date minimum-size modal mode model mouse-drag-pan-enabled movable-columns movable-rows multi-select multi-touch name-filters no-frame open open-side opacity overflow placement playing resize-border-width
     orientation padding padding-bottom padding-left padding-right padding-top parent-key policy position size
     context-menu-enabled password-visible pasteable undoable paused placeholder-text preferred-height preferred-width preserve-scroll-anchor press-and-hold-interval primary progress progress-color read-only rebound-duration resizable resizable-columns resizable-rows restore-focus
-    radius repeat role root-key row row-height row-height-field row-header-width row-header-text row-header-field row-visible-field rowspan running selection-target sequence sequences shortcut sortable source source-clip-x source-clip-y source-clip-width source-clip-height speed spacing spacing-horizontal spacing-vertical start-angle step
+    radius repeat role root-key row row-height row-height-field row-header-width row-header-text row-header-field row-key-field row-visible-field rowspan running selected-view-index selection-target sequence sequences shortcut sortable source source-clip-x source-clip-y source-clip-width source-clip-height speed spacing spacing-horizontal spacing-vertical start-angle step
     enabled-role show-alpha show-color-plane show-seconds snap-mode stack-index step-size stroke stroke-width suggestions suggestions-for text text-role time timeout title today track-color transform-origin-x transform-origin-y transform-rotation transform-scale transform-scale-x transform-scale-y transition-duration upper-value use-24-hour-format value value-role
     vertical-alignment vertical-scroll-bar-policy vertical-spacing vertical-stretch vertical-tile-mode viewbox-height viewbox-width
     triggered-on-start tristate viewbox-x viewbox-y viewport-height visible visible-item-count week-start weekday-labels wheel-enabled width window-bounds-height window-bounds-width window-bounds-x window-bounds-y wrap z";
@@ -31,7 +31,7 @@ pub(crate) const EVENTS: &str = "accepted activated activated-ambiguously applie
     double-clicked ended flicked moved press-and-hold scroll-event scrolled sort-ascending sort-descending started swiped toggled triggered updated value-selected";
 
 pub(crate) const TYPES: &str = "int float bool string styled-text length percent color brush image [string] WheelEvent CursorShape PointerEvent PointerEventKind PointerButton PointerButtons TouchPoint TouchPoints [TouchPoint]
-    ImageFit ImageTileMode ImageHorizontalAlignment ImageVerticalAlignment ImageRendering LayoutAlignment CrossAxisAlignment Orientation FlickDirection FlickBoundsBehavior FlickBoundsMovement FlexboxLayoutDirection FlexboxLayoutWrap DialInputMode ScrollBarPolicy ScrollSnapMode ScrollAlignment TextWrap TextHorizontalAlignment TextVerticalAlignment TextOverflow InputType
+    ImageFit ImageTileMode ImageHorizontalAlignment ImageVerticalAlignment ImageRendering LayoutAlignment CrossAxisAlignment Orientation FlickDirection FlickBoundsBehavior FlickBoundsMovement LayoutDirection FlexboxLayoutDirection FlexboxLayoutWrap DialInputMode ScrollBarPolicy ScrollSnapMode ScrollAlignment TextWrap TextHorizontalAlignment TextVerticalAlignment TextOverflow InputType
     CheckState ColorScheme Date DialogRole DragAction DrawerEdge EventResult FocusReason Font KeyEvent KeyModifiers FileDialogMode LogLevel MessageButtons MessageLevel PopupPlacement SelectionTarget StandardButtonKind SwipeSide Time";
 
 pub(crate) struct BuiltinFunction {
@@ -91,7 +91,41 @@ pub(crate) const FUNCTIONS: &[BuiltinFunction] = &[
 
 pub(crate) const CHILDREN_DOC: &str = "Places the caller's child elements at this point in a component. Their bindings still use the caller's scope.";
 
-pub(crate) const MEDIA_METHODS: &[BuiltinFunction] = &[
+pub(crate) fn list_key_methods(kind: &str) -> &'static [BuiltinFunction] {
+    if xrack_ir::semantic::selection_list(kind) {
+        &[
+            BuiltinFunction {
+                name: "select-key",
+                parameters: &["key: int"],
+                result: None,
+                documentation: "Selects a visible record by business key. Requires row-key-field.",
+            },
+            BuiltinFunction {
+                name: "position-view-at-key",
+                parameters: &["key: int", "alignment: ScrollAlignment"],
+                result: None,
+                documentation: "Positions a visible record by business key in the current model. Requires row-key-field.",
+            },
+        ]
+    } else {
+        &[]
+    }
+}
+
+pub(crate) fn media_methods(kind: &str) -> &'static [BuiltinFunction] {
+    match kind {
+        "MediaPlayer" => MEDIA_METHODS,
+        "SoundEffect" => &[BuiltinFunction {
+            name: "play",
+            parameters: &[],
+            result: None,
+            documentation: "Plays the preloaded WAV from the start. Calls before ready are ignored.",
+        }],
+        _ => &[],
+    }
+}
+
+const MEDIA_METHODS: &[BuiltinFunction] = &[
     BuiltinFunction {
         name: "go-live",
         parameters: &[],

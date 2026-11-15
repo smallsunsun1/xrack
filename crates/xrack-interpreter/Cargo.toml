@@ -8,6 +8,8 @@ repository.workspace = true
 description = "XRack interpreter support"
 
 [dependencies]
+serde = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }
 thiserror.workspace = true
 xrack-mlir.workspace = true
 xrack-runtime.workspace = true
@@ -19,3 +21,4 @@ xrack-parser.workspace = true
 
 [features]
 bundled = ["xrack-mlir/bundled"]
+live-reload = ["dep:serde", "dep:serde_json"]

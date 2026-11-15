@@ -168,6 +168,7 @@ rust_library(
         "src/lib.rs",
         "src/native.rs",
         "src/player.rs",
+        "src/sound.rs",
         "src/subtitles.rs",
     ],
     crate_features = MEDIA_FEATURES,

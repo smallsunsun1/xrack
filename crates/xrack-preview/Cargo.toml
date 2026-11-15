@@ -14,7 +14,7 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 wgpu.workspace = true
 xrack-compiler = { path = "../xrack-compiler" }
-xrack-interpreter = { path = "../xrack-interpreter" }
+xrack-interpreter = { workspace = true, features = ["live-reload"] }
 xrack-layout.workspace = true
 xrack-renderer-femtovg.workspace = true
 xrack-runtime.workspace = true

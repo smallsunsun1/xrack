@@ -60,6 +60,10 @@
 
 回调可以对当前聚焦的文本框调用 `select-all()`、`clear-selection()`、`set-selection-offsets(anchor, caret)`、`cut()`、`copy()`、`paste()`、`undo()` 和 `redo()`。目标可以是单行、多行编辑器、`SearchField` 或可编辑的 `ComboBox`。偏移以 UTF-8 字节计，超界会裁剪，落在字素内部会移到其起点。先调用 `entry.focus()` 再发选择命令，窗口会按顺序应用；工具栏按钮也可用 `focus-on-click: false;` 保留当前选区。剪切和粘贴异步等待系统剪贴板，回执仍须匹配编辑目标、文字和选区。运行 `bazel run //examples/form:form -- --editor-commands` 体验。
 
+自定义工具栏可用 `enabled: entry.can-undo;` 绑定撤销按钮，也可绑定 `can-redo`、`can-cut` 和 `can-copy`。这些只读状态与右键菜单共用规则。历史已失效或处于只读状态时不能撤销和重做，只读字段仍可复制选区。密码框不允许剪切和复制，IME 组合期间暂停这四个命令。工具栏按钮可设置 `focus-on-click: false;`，点击时保留编辑器焦点。
+
+用 `cursor-offset`、`selection-start-offset`、`selection-end-offset` 和 `selected-text` 可将聚焦编辑器的选区绑定到状态栏或工具栏。偏移沿用命令的 UTF-8 字节单位，选区起止为半开区间，反向选择的光标可在区间起点。窗口应用鼠标、键盘或程序化选区后更新这些只读值。目标未聚焦时返回零和空字符串，密码模式始终返回空的 `selected-text`。运行 `bazel run //examples/form:form -- --editor-selection` 体验。
+
 混排希伯来文、阿拉伯文、拉丁字母和数字时，点击、左右方向键、选区高亮和 IME 光标都使用实际排字的字形位置。一个逻辑偏移在方向边界可以有两个视觉位置，连续的逻辑选区也可以分成多个高亮段。编辑和剪贴板继续使用原文顺序。多行编辑器上下移动保留屏幕横坐标，软换行后的方向解析以单个视觉行为单位。运行 `bazel run //examples/form:form -- --bidi` 体验。
 
 `Dialog` 是同一窗口内的模态弹层。用 `open <=> root.dialog-open;` 双向绑定打开状态。窗口居中显示对话框，内容按垂直布局排列。`DialogButton` 的 `role` 取 `accept` 或 `reject`，关闭后分别触发 `accepted()` 或 `rejected()`。Escape 默认取消，也可通过 `close-on-escape` 关闭此行为。启用 `close-on-outside` 后，在遮罩上按下并松开会取消。最近打开的对话框接收输入，Tab 在其中循环，关闭后恢复原焦点。
@@ -89,6 +93,16 @@
 `ListView` 接收一个 `for` 模板，支持整数计数、`[string]` 和命名记录列表，最多寻址 100 万行。固定的 `row-height` 决定滚动位置与行索引，只有与视口相交的行才会生成。`current-index` 可双向绑定，鼠标选择和键盘方向键、Home、End、PageUp、PageDown 会更新索引。选择按位置解释，插入或删除行后仍使用当前索引。
 
 `ListView`、`GridView` 和 `StandardListView` 支持 `row-visible-field: "flags.shown";`。布尔字段为 `false` 的记录退出视图，网格用剩下的记录重新排列。视图的 `current-index` 和滚动命令使用显示索引，`for entry[source]` 中的 `source` 仍是源模型索引。编辑和行组件状态按记录标识定位，开启 `preserve-scroll-anchor` 时可在隐藏视口前的记录后保持锚点。运行 `bazel run //examples/list:list -- --visibility` 体验三个共享模型的视图。
+
+`ListView`、`GridView`、`StandardListView`、`TableView`、`StandardTableView` 和 `TreeView` 都可读取两个行数。`source-row-count` 是源模型行数，`row-count` 是经过可见性过滤、搜索和树的根节点范围及展开状态之后的行数，包含当前滚动范围外的行。网格按模型项计数。可绑定 `view.row-count == 0` 显示空状态，再用 `view.source-row-count` 区分空模型和筛选无匹配项。运行 `bazel run //examples/list:list -- --row-counts` 体验。
+
+列表、网格和标准列表可用 `row-key-field: "id";` 配合 `current-key <=> root.selected;` 按业务键选中记录。字段名须为常量，支持点分路径，键须为唯一的非负整数。`-1` 清除选中。有同一键的记录移动或暂时被过滤时，应用保存的键不变。记录重新出现时自动恢复高亮，替换整个模型也能按相同的键恢复。鼠标、键盘或 `select-source-index()` 选中记录时写回业务键，并继续向 `changed(index)` 传递显示索引。运行 `--row-counts` 示例，选中记录后点击「交换记录」可看到它跟随数据移动。
+
+业务键索引在首次查找时建立。修改记录只检查该记录的键，重排复用已提取的键并更新位置。选中状态的绑定只跟踪所查询的键及模型结构。
+
+列表、网格和标准列表的只读 `selected-view-index` 返回当前显示索引，选中项不在视图的投影结果中时为 `-1`。配置业务键后，可用 `select-key(key)` 选中可见记录，或用 `position-view-at-key(key, alignment)` 单独滚动视口。滚动请求在应用到布局时解析键，即使同一回调随后替换模型，也会定位新模型中同键的记录。缺失、重复或被过滤的键不会产生选中或滚动。运行 `bazel run //examples/list:list -- --key-navigation` 体验。
+
+这六种视图均可直接声明一个 `EmptyState { … }`。当投影行数为零时，视图把它布置在正文区域，表格仍显示表头。槽里可以放文本、布局、输入框或带回调的组件。计数恢复后内容退出焦点、命中和无障碍遍历，组件状态随所属视图实例保留。`--row-counts` 示例可在列表和表格的空状态里直接恢复数据。
 
 `ItemDelegate`、`CheckDelegate`、`RadioDelegate` 和 `SwitchDelegate` 可作为 `ListView` 或 `GridView` 的直接行模板。整行可点击，默认高亮当前项，也可显式绑定 `highlighted`。聚焦列表后用方向键选行，按 Enter 或空格触发当前委托。`ItemDelegate.clicked()` 可读取重复项和索引，`RadioDelegate` 的勾选由列表的 `current-index` 派生。
 

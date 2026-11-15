@@ -76,7 +76,9 @@ pub use input::{
     TableSelectionKey, Target, TextLinkTarget, WheelAdjustment, WheelRoute,
 };
 pub use keyboard::KeyRoute;
-pub use label::{LabelLayout, LabelLine, LabelPlan, PlannedLabelLine, uses_label_layout};
+pub use label::{
+    LabelLayout, LabelLine, LabelPlan, PlannedLabelLine, TextAlignment, uses_label_layout,
+};
 pub use menu::{MenuEntry, MenuKey, MenuPanel, MenuRow};
 pub use modal::{dialog_title_height, drawer_grip};
 pub use overscroll::OverscrollFrame;
@@ -111,8 +113,9 @@ pub use viewport::{LayoutObservers, ScrollDelivery, ViewportObservers};
 pub use visual_text::{VisualGrapheme, VisualTextLine};
 pub use window_chrome::WindowResizeEdge;
 use xrack_runtime::{
-    Component, ListMetrics, Node, Orientation, RowKey, SelectionTarget, group_index,
-    is_font_family_choice, is_modal_overlay, is_window_overlay, set_font_family_choices,
+    Component, LayoutDirection, ListMetrics, Node, Orientation, RowKey, SelectionTarget,
+    group_index, is_font_family_choice, is_modal_overlay, is_window_overlay,
+    set_font_family_choices,
 };
 
 #[cfg(test)]
@@ -185,6 +188,8 @@ pub struct LayoutNode {
     pub clip: Rect,
     pub visible: bool,
     pub enabled: bool,
+    pub layout_direction: LayoutDirection,
+    direction_override: Option<LayoutDirection>,
     pub(crate) content_bounds: Option<Box<Rect>>,
     pub scroll: Option<ScrollLayout>,
     horizontal_scroll: Option<ScrollLayout>,
@@ -202,6 +207,8 @@ pub struct LayoutNode {
     /// Header hit box of a tab, independent of the page visibility.
     pub tab_header: Option<Rect>,
     pub tumbler: Option<Box<TumblerGeometry>>,
+    /// Logical thumb position while a switch gesture is active.
+    pub switch_position: Option<f32>,
     pub swipe_delegate: Option<Box<SwipeDelegateGeometry>>,
     pub styled_text: Option<Box<StyledTextLayout>>,
     font_size: f32,
@@ -268,6 +275,7 @@ impl<'a> WindowEffects<'a> {
         if layout.visible {
             self.media.extend(node.media.as_ref());
         }
+        self.media.extend(&node.sound_effects);
         for (child, item) in node.children.iter().zip(&layout.children) {
             self.extend(child, item);
         }
@@ -275,6 +283,11 @@ impl<'a> WindowEffects<'a> {
 }
 
 impl LayoutNode {
+    /// The nearest explicit direction, including an inherited declaration.
+    pub fn layout_direction_override(&self) -> Option<LayoutDirection> {
+        self.direction_override
+    }
+
     #[doc(hidden)]
     pub fn has_missing_list_rows(&self) -> bool {
         self.missing_list_rows || self.missing_descendant_list_rows
@@ -529,6 +542,110 @@ fn dimension(node: &Node, name: &str) -> Option<f32> {
     node.length(name).map(|n| n.max(0.0))
 }
 
+fn default_toggle_indicator_size(node: &Node) -> Size {
+    match node.kind {
+        "Switch" => Size::new(36.0, 18.0),
+        "RadioButton" => Size::new(16.0, 16.0),
+        _ => Size::new(18.0, 18.0),
+    }
+}
+
+fn toggle_indicator_size(node: &Node) -> Option<Size> {
+    let indicator = node.control_part("ToggleIndicator")?;
+    let default = default_toggle_indicator_size(node);
+    Some(Size::new(
+        dimension(indicator, "width").unwrap_or(default.width),
+        dimension(indicator, "height").unwrap_or(default.height),
+    ))
+}
+
+/// Bounds shared by the built-in indicator, its replacement and the label.
+#[doc(hidden)]
+pub struct ToggleGeometry {
+    pub indicator: Rect,
+    pub label: Rect,
+    direction: LayoutDirection,
+    thumb_size: Size,
+}
+
+impl ToggleGeometry {
+    pub fn new(node: &Node, bounds: Rect, direction: LayoutDirection) -> Self {
+        let replacement = toggle_indicator_size(node);
+        let size = replacement.unwrap_or_else(|| {
+            let preferred = default_toggle_indicator_size(node);
+            let scale = (bounds.height / preferred.height).clamp(0.0, 1.0);
+            Size::new(preferred.width * scale, preferred.height * scale)
+        });
+        let delegate = node.is_item_delegate();
+        let inset = (if delegate { 12.0_f32 } else { 6.0 }).min(bounds.width);
+        let width = size.width.min((bounds.width - inset).max(0.0));
+        let height = size.height.min(bounds.height);
+        let x = if delegate {
+            bounds.x + bounds.width - inset - width
+        } else {
+            bounds.x + inset
+        };
+        let indicator = Rect::new(x, bounds.y + (bounds.height - height) * 0.5, width, height);
+        let (left, right) = if delegate {
+            (bounds.x + 12.0, x - 10.0)
+        } else if node.kind == "RadioButton" && replacement.is_none() {
+            (bounds.x + 28.0, bounds.x + bounds.width)
+        } else {
+            (x + width + 7.0, bounds.x + bounds.width)
+        };
+        let label = Rect::new(left, bounds.y, (right - left).max(0.0), bounds.height);
+        let thumb = node.control_part("SwitchThumb");
+        let diameter = (width.min(height) - 4.0).max(0.0);
+        let dimension = |name, available| {
+            thumb
+                .and_then(|thumb| thumb.relative_length(name, available))
+                .unwrap_or(diameter)
+                .clamp(0.0, available)
+        };
+        Self {
+            indicator: place_in_direction(indicator, bounds, direction),
+            label: place_in_direction(label, bounds, direction),
+            direction,
+            thumb_size: Size::new(dimension("width", width), dimension("height", height)),
+        }
+    }
+
+    pub fn switch_travel(&self) -> f32 {
+        (self.indicator.width - self.indicator.height.max(self.thumb_size.width)).max(0.0)
+    }
+
+    pub fn switch_thumb(&self, checked: bool, preview: Option<f32>) -> Rect {
+        let logical = preview.unwrap_or(if checked { 1.0 } else { 0.0 });
+        let visual = if self.direction == LayoutDirection::RightToLeft {
+            1.0 - logical
+        } else {
+            logical
+        };
+        let travel = self.switch_travel();
+        let bounds = self.indicator;
+        Rect::new(
+            bounds.x + (bounds.width - travel - self.thumb_size.width) * 0.5 + travel * visual,
+            bounds.y + (bounds.height - self.thumb_size.height) * 0.5,
+            self.thumb_size.width,
+            self.thumb_size.height,
+        )
+    }
+}
+
+/// Bounds of a supplied replacement indicator.
+#[doc(hidden)]
+pub fn toggle_indicator_rect(node: &Node, bounds: Rect) -> Option<Rect> {
+    node.control_part("ToggleIndicator")?;
+    Some(ToggleGeometry::new(node, bounds, node.layout_direction().unwrap_or_default()).indicator)
+}
+
+fn place_in_direction(mut rect: Rect, content: Rect, direction: LayoutDirection) -> Rect {
+    if direction == LayoutDirection::RightToLeft {
+        rect.x = content.x + content.width - (rect.x - content.x) - rect.width;
+    }
+    rect
+}
+
 fn participates_in_flow(node: &Node) -> bool {
     !is_window_overlay(node.kind)
         && !matches!(node.kind, "Menu" | "Tooltip" | "Shortcut")
@@ -635,6 +752,7 @@ fn layout_current_window(
     let bounds = Rect::new(0.0, 0.0, viewport.width.max(0.0), viewport.height.max(0.0));
     let mut layout = LayoutContext {
         text,
+        layout_direction: None,
         offsets,
         input,
         path: Vec::new(),
@@ -729,6 +847,7 @@ fn prepare_scene_with_offsets(
         let viewport = Rect::new(0.0, 0.0, viewport.width.max(0.0), viewport.height.max(0.0));
         LayoutContext {
             text,
+            layout_direction: None,
             offsets,
             input,
             path: Vec::new(),
@@ -764,6 +883,7 @@ fn populate_font_choices(node: &Node, families: &[String]) -> Option<Node> {
 
 struct LayoutContext<'a, T> {
     text: &'a mut T,
+    layout_direction: Option<LayoutDirection>,
     offsets: &'a BTreeMap<Vec<usize>, f32>,
     input: Option<&'a Interaction>,
     path: Vec<usize>,
@@ -827,8 +947,16 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
             return;
         }
         let previous_row = self.row_key;
+        let previous_direction = self.layout_direction;
         self.row_key = node.routing_row_key().or(previous_row);
-        if let Some(mut list) = node.list {
+        self.layout_direction = layout.direction_override;
+        if let Some(mut list) = node.list
+            && !(list.row_count == 0
+                && node
+                    .children
+                    .first()
+                    .is_some_and(|child| child.kind == "EmptyState"))
+        {
             let viewport = layout
                 .table
                 .as_ref()
@@ -1011,6 +1139,7 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
             self.path.pop();
         }
         self.row_key = previous_row;
+        self.layout_direction = previous_direction;
     }
 
     fn place(
@@ -1023,10 +1152,12 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
         row_children: Option<Vec<grid::CellPlacement>>,
     ) -> LayoutNode {
         let outer_key = self.row_key;
+        let outer_direction = self.layout_direction;
         let outer_anchor = self.anchor;
         let outer_shapes = self.ancestor_shapes.clone();
         let outer_space = self.space.clone();
         self.row_key = node.routing_row_key().or(outer_key);
+        self.layout_direction = node.layout_direction().or(outer_direction);
         let row_cache = node.kind == "ListRow"
             && row_children.is_none()
             && self.space.is_none()
@@ -1038,6 +1169,7 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
                 size: Size::new(bounds.width, bounds.height),
                 visible: parent_visible,
                 enabled: parent_enabled,
+                layout_direction: self.layout_direction,
             };
             self.place_cached_content(node, bounds, clip, inputs, slot)
         } else {
@@ -1051,6 +1183,7 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
             )
         };
         self.row_key = outer_key;
+        self.layout_direction = outer_direction;
         self.anchor = outer_anchor;
         self.ancestor_shapes = outer_shapes;
         self.space = outer_space;
@@ -1065,6 +1198,12 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
         inputs: row_layout::RowInputs,
         slot: row_layout::Slot,
     ) -> LayoutNode {
+        if self
+            .input
+            .is_some_and(|input| input.contains_switch_preview(&self.path))
+        {
+            return self.place_node(node, bounds, clip, inputs.visible, inputs.enabled, None);
+        }
         let depth = if slot.column.is_some() { 3 } else { 1 };
         let path_len = self.path.len().saturating_sub(depth);
         let path = &self.path[..path_len];
@@ -1185,6 +1324,8 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
                 clip,
                 visible: visible && node.kind != "Tooltip",
                 enabled,
+                layout_direction: self.layout_direction.unwrap_or_default(),
+                direction_override: self.layout_direction,
                 content_bounds: None,
                 scroll: None,
                 horizontal_scroll: None,
@@ -1201,6 +1342,7 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
                 split: None,
                 tab_header: None,
                 tumbler: None,
+                switch_position: None,
                 swipe_delegate: None,
                 styled_text: None,
                 font_size,
@@ -1247,8 +1389,13 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
             clip.intersect(clipping.map_or(viewport, |shape| shape.bounds))
         };
         if matches!(node.kind, "TabWidget" | "SwipeView" | "StackView") && visible {
-            let tabs = (node.kind == "TabWidget")
-                .then(|| selection::TabGeometry::new(bounds, node.orientation()));
+            let tabs = (node.kind == "TabWidget").then(|| {
+                selection::TabGeometry::new(
+                    bounds,
+                    node.orientation(),
+                    self.layout_direction.unwrap_or_default(),
+                )
+            });
             let page_bounds = tabs.as_ref().map_or(bounds, |geometry| geometry.content);
             let selected = if node.kind == "StackView" {
                 node.stack_page_index()
@@ -1290,6 +1437,8 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
                 clip,
                 visible,
                 enabled,
+                layout_direction: self.layout_direction.unwrap_or_default(),
+                direction_override: self.layout_direction,
                 content_bounds: None,
                 scroll: None,
                 horizontal_scroll: None,
@@ -1306,6 +1455,7 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
                 split: None,
                 tab_header: None,
                 tumbler: None,
+                switch_position: None,
                 swipe_delegate: None,
                 styled_text: None,
                 font_size,
@@ -1344,6 +1494,19 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
             }
             Box::new(geometry)
         });
+        let switch_position = if enabled && visible && node.kind == "Switch" {
+            self.input.and_then(|input| {
+                input.switch_position(
+                    node,
+                    bounds,
+                    self.layout_direction.unwrap_or_default(),
+                    &self.path,
+                    self.row_key,
+                )
+            })
+        } else {
+            None
+        };
         let placements = if !visible {
             (0..node.children.len())
                 .map(|_| grid::Placement::plain(Rect::new(bounds.x, bounds.y, 0.0, 0.0)))
@@ -1362,7 +1525,11 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
                 })
                 .collect()
         } else if node.control_part("SliderHandle").is_some() {
-            let geometry = SliderGeometry::for_node(bounds, node);
+            let geometry = SliderGeometry::with_layout_direction(
+                bounds,
+                node,
+                self.layout_direction.unwrap_or_default(),
+            );
             let range = xrack_runtime::SliderRange::from_node(node);
             let fraction = self
                 .input
@@ -1372,28 +1539,47 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
                         .flatten()
                 })
                 .map_or_else(|| range.fraction(), |value| range.preview_fraction(value));
-            let center = geometry.position(fraction);
             node.children
                 .iter()
                 .map(|child| {
-                    let extent = geometry.radius * 2.0;
                     let rect = if child.kind == "SliderHandle" {
-                        let width = dimension(child, "width")
-                            .unwrap_or(extent)
-                            .min(bounds.width);
-                        let height = dimension(child, "height")
-                            .unwrap_or(extent)
-                            .min(bounds.height);
-                        Rect::new(
-                            center.x - width * 0.5,
-                            center.y - height * 0.5,
-                            width,
-                            height,
-                        )
+                        geometry.thumb_bounds(0, fraction)
                     } else {
                         self.absolute_child(child, bounds)
                     };
                     grid::Placement::plain(rect)
+                })
+                .collect()
+        } else if xrack_runtime::is_spin_box(node.kind) && !node.children.is_empty() {
+            let geometry = SpinGeometry::with_layout_direction(
+                bounds,
+                node,
+                self.layout_direction.unwrap_or_default(),
+            );
+            node.children
+                .iter()
+                .map(|child| {
+                    grid::Placement::plain(match child.kind {
+                        "SpinUpIndicator" => geometry.up,
+                        "SpinDownIndicator" => geometry.down,
+                        _ => self.absolute_child(child, bounds),
+                    })
+                })
+                .collect()
+        } else if node.control_part("ToggleIndicator").is_some()
+            || node.control_part("SwitchThumb").is_some()
+        {
+            let geometry =
+                ToggleGeometry::new(node, bounds, self.layout_direction.unwrap_or_default());
+            let checked = node.boolean("checked", false);
+            node.children
+                .iter()
+                .map(|child| {
+                    grid::Placement::plain(match child.kind {
+                        "ToggleIndicator" => geometry.indicator,
+                        "SwitchThumb" => geometry.switch_thumb(checked, switch_position),
+                        _ => self.absolute_child(child, bounds),
+                    })
                 })
                 .collect()
         } else if node.control_part("ButtonContent").is_some() {
@@ -1416,7 +1602,11 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
         } else if node.kind == "CalendarCells" {
             (0..node.children.len())
                 .map(|slot| {
-                    let bounds = calendar::month_cell(bounds, slot);
+                    let bounds = calendar::month_cell(
+                        bounds,
+                        slot,
+                        self.layout_direction.unwrap_or_default(),
+                    );
                     grid::Placement {
                         bounds,
                         clip: Some(Arc::new(table::PaneClip {
@@ -1448,7 +1638,19 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
                 .iter()
                 .enumerate()
                 .map(|(slot, row)| {
+                    if list.row_count == 0 && row.kind == "EmptyState" {
+                        return grid::Placement::plain(viewport);
+                    }
                     let bounds = cells.bounds(list.first_row + slot, viewport, axis.offset);
+                    let bounds = if node.kind == "GridView" {
+                        place_in_direction(
+                            bounds,
+                            viewport,
+                            self.layout_direction.unwrap_or_default(),
+                        )
+                    } else {
+                        bounds
+                    };
                     let delegate = if row.kind == "ListRow" {
                         row.children.first()
                     } else {
@@ -1483,23 +1685,35 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
                 })
                 .collect()
         } else if node.kind == "RangeSlider" {
-            let geometry = SliderGeometry::for_node(bounds, node);
-            let fractions = xrack_runtime::SliderInterval::from_node(node).fractions();
+            let geometry = SliderGeometry::with_layout_direction(
+                bounds,
+                node,
+                self.layout_direction.unwrap_or_default(),
+            );
+            let interval = xrack_runtime::SliderInterval::from_node(node);
+            let preview = self
+                .input
+                .filter(|_| enabled)
+                .and_then(|input| input.interval_preview(node, &self.path));
+            let fractions = preview.map_or_else(
+                || interval.fractions(),
+                |(index, fraction)| interval.preview_fractions(index, fraction),
+            );
             node.children
                 .iter()
                 .enumerate()
-                .map(|(index, _)| {
-                    let bounds = fractions.get(index).map_or(Rect::default(), |&fraction| {
-                        let center = geometry.position(fraction);
-                        let radius = geometry.radius;
-                        Rect::new(
-                            center.x - radius,
-                            center.y - radius,
-                            radius * 2.0,
-                            radius * 2.0,
-                        )
+                .map(|(index, child)| {
+                    let index = if index < Node::RANGE_THUMBS {
+                        Some(index)
+                    } else {
+                        Node::RANGE_HANDLE_PARTS
+                            .iter()
+                            .position(|kind| *kind == child.kind)
+                    };
+                    let rect = index.map_or(Rect::default(), |index| {
+                        geometry.thumb_bounds(index, fractions[index])
                     });
-                    grid::Placement::plain(bounds)
+                    grid::Placement::plain(rect)
                 })
                 .collect()
         } else if node.kind == "ListRow" {
@@ -1513,21 +1727,22 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
                 })
                 .collect()
         } else if node.kind == "GridLayout" {
-            grid::children(node, bounds, self.text)
-        } else if node.kind == "TabBar" {
-            let orientation = node.orientation();
-            let requested = self.scroll_request(node, orientation);
-            let reveal = requested.is_none()
-                || self
-                    .input
-                    .is_some_and(|input| input.scroll_selection_changed(node, &self.path, 1));
-            let (rects, axis) = selection::tab_bar(
+            grid::children(
                 node,
                 bounds,
+                self.layout_direction.unwrap_or_default(),
                 self.text,
-                requested.unwrap_or_default(),
-                reveal,
-            );
+            )
+        } else if node.kind == "TabBar" {
+            let orientation = node.orientation();
+            let direction = self.layout_direction.unwrap_or_default();
+            let requested = self.scroll_request(node, orientation);
+            let reveal = requested.is_none()
+                || self.input.is_some_and(|input| {
+                    input.scroll_selection_changed(node, &self.path, 1, direction)
+                });
+            let (rects, axis) =
+                selection::tab_bar(node, bounds, self.text, direction, requested, reveal);
             match orientation {
                 Orientation::Horizontal => horizontal_scroll = Some(axis),
                 Orientation::Vertical => scroll = Some(axis),
@@ -1573,9 +1788,20 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
                     })
                     .collect()
             } else if flow::uses_flow(node) {
-                flow::children(node, content, self.text)
+                flow::children(
+                    node,
+                    content,
+                    self.layout_direction.unwrap_or_default(),
+                    self.text,
+                )
             } else if let Some(axis) = linear::Axis::for_node(node) {
-                linear::children(node, axis, content, self.text)
+                linear::children(
+                    node,
+                    axis,
+                    content,
+                    self.layout_direction.unwrap_or_default(),
+                    self.text,
+                )
             } else {
                 self.absolute_children(node, content)
             };
@@ -1642,10 +1868,13 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
                     && let Some(row) = self.row_key
                 {
                     let outer_anchor = self.anchor;
+                    let outer_direction = self.layout_direction;
+                    self.layout_direction = child.layout_direction().or(outer_direction);
                     let inputs = row_layout::RowInputs {
                         size: Size::new(placement.bounds.width, placement.bounds.height),
                         visible,
                         enabled,
+                        layout_direction: self.layout_direction,
                     };
                     let slot = row_layout::Slot {
                         row,
@@ -1654,6 +1883,7 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
                     let child =
                         self.place_cached_content(child, placement.bounds, clip, inputs, slot);
                     self.anchor = outer_anchor;
+                    self.layout_direction = outer_direction;
                     child
                 } else {
                     self.place(
@@ -1696,6 +1926,8 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
             clip,
             visible,
             enabled,
+            layout_direction: self.layout_direction.unwrap_or_default(),
+            direction_override: self.layout_direction,
             content_bounds: page
                 .filter(|_| node.application_window)
                 .map(|page| Box::new(page.body)),
@@ -1727,11 +1959,17 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
             split,
             tab_header: None,
             tumbler,
+            switch_position,
             swipe_delegate,
             styled_text: if visible && node.kind == "StyledText" {
                 self.text
                     .layout_styled_text(node, Size::new(bounds.width, bounds.height))
-                    .map(Box::new)
+                    .map(|mut plan| {
+                        if let Some(direction) = self.layout_direction {
+                            plan.align_in_direction(node, bounds.width, direction);
+                        }
+                        Box::new(plan)
+                    })
             } else {
                 None
             },
@@ -1792,7 +2030,12 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
                             renderer.selection_changed(input::scroll_selection(node), cells.columns)
                         } else {
                             self.input.is_some_and(|input| {
-                                input.scroll_selection_changed(node, &self.path, cells.columns)
+                                input.scroll_selection_changed(
+                                    node,
+                                    &self.path,
+                                    cells.columns,
+                                    self.layout_direction.unwrap_or_default(),
+                                )
                             })
                         }
                 },

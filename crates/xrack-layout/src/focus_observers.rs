@@ -1,5 +1,7 @@
 use crate::{Interaction, LayoutNode, Target};
-use xrack_runtime::{Component, FocusEvent, FocusHandle, FocusReason, Node};
+use xrack_runtime::{
+    Component, FocusEvent, FocusHandle, FocusReason, Node, combo_editable, is_text_input,
+};
 
 pub(crate) struct FocusEntry {
     pub target: Target,
@@ -62,6 +64,7 @@ impl FocusObservers {
         for old in previous.iter().rev() {
             let replacement = self.entries.iter().find(|entry| entry.handle == old.handle);
             if old.direct && !replacement.is_some_and(|entry| entry.direct) {
+                old.handle.clear_text_state();
                 send(replacement.unwrap_or(old), FocusEvent::Lost(reason));
             }
             if replacement.is_none() {
@@ -91,12 +94,56 @@ impl FocusObservers {
                 send(entry, FocusEvent::Gained(reason));
             }
         }
+        self.sync_text_editor(input, scene);
         events
+    }
+
+    #[doc(hidden)]
+    pub fn sync_text_editor(&self, input: &Interaction, scene: &Node) {
+        let Some(entry) = self.entries.iter().find(|entry| {
+            entry.direct
+                && (entry.handle.observes_text_selection() || entry.handle.observes_text_commands())
+        }) else {
+            return;
+        };
+        let Some(node) = entry
+            .target
+            .node_in(scene)
+            .filter(|node| is_text_input(node.kind) || combo_editable(node))
+        else {
+            entry.handle.clear_text_state();
+            return;
+        };
+        let text = input.editor_value(node);
+        let (caret, range) = input.editor.as_ref().map_or_else(
+            || (text.len(), text.len()..text.len()),
+            |editor| (editor.caret(&text), editor.selection(&text)),
+        );
+        if entry.handle.observes_text_commands() {
+            entry
+                .handle
+                .publish_text_commands(input.text_command_availability(
+                    scene,
+                    &entry.target,
+                    node,
+                    &text,
+                    !range.is_empty(),
+                ));
+        }
+        if entry.handle.observes_text_selection() {
+            let selected = if node.is_password() {
+                ""
+            } else {
+                &text[range.clone()]
+            };
+            entry.handle.publish_text_selection(caret, range, selected);
+        }
     }
 
     pub fn clear(&mut self) {
         for entry in self.entries.drain(..) {
             entry.handle.publish(false, false);
+            entry.handle.clear_text_state();
         }
         self.active = false;
     }

@@ -7706,3 +7706,362 @@ fn editor_preview_compiles_open_buffers_and_reports_import_dependencies() {
     );
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+#[test]
+fn sound_effect_accepts_only_nonvisual_bindings_and_play() {
+    let source = r#"
+        export component App inherits Window {
+            out property <bool> loaded: chime.ready;
+            chime := SoundEffect { source: "click.wav"; volume: 0.5; }
+            confirm := Button { clicked => { chime.play(); } }
+        }
+    "#;
+    let compiled = compile(source, "sound-effect.xr").unwrap();
+    assert!(compiled.mlir.contains("\"xr.media_command\""));
+    assert!(compiled.mlir.contains("\"xr.media_read\""));
+    for (from, to) in [
+        ("volume: 0.5", "width: 10px"),
+        ("volume: 0.5", "ready: true"),
+        ("chime.play()", "chime.seek(0)"),
+        ("chime.play()", "chime.play(1)"),
+    ] {
+        assert!(
+            compile(&source.replace(from, to), "sound-effect.xr").is_err(),
+            "{to}"
+        );
+    }
+
+    let invalid = compiled
+        .mlir
+        .replace("method = \"play\"", "method = \"pause\"");
+    assert_ne!(compiled.mlir, invalid);
+    let error = mlir::Module::parse(&invalid).err().unwrap();
+    assert!(error.contains("supporting this command"), "{error}");
+}
+
+#[test]
+fn text_submission_status_is_read_only_and_cannot_feed_its_own_rule() {
+    let source = r#"
+        export component App inherits Window {
+            in-out property <string> code: "";
+            entry := LineEdit {
+                minimum-length: 4;
+                submit-when: root.code != "0000";
+                text <=> root.code;
+            }
+            send := Button { enabled: entry.acceptable-input; }
+        }
+    "#;
+    let compiled = compile(source, "text_submission.xr").unwrap();
+    assert!(compiled.mlir.contains("\"xr.text_accepts\""));
+
+    let writable = source.replace("minimum-length: 4", "acceptable-input: true");
+    let error = compile(&writable, "text_submission.xr").err().unwrap();
+    assert!(error.contains("read-only"), "{error}");
+
+    let assignment = source.replace(
+        "enabled: entry.acceptable-input;",
+        "clicked => { entry.acceptable-input = true; }",
+    );
+    let error = compile(&assignment, "text_submission.xr").err().unwrap();
+    assert!(error.contains("read-only"), "{error}");
+
+    let cyclic = source.replace("root.code != \"0000\"", "self.acceptable-input");
+    let error = compile(&cyclic, "text_submission.xr").err().unwrap();
+    assert!(error.contains("cycl"), "{error}");
+
+    let invalid = compiled
+        .mlir
+        .replace("value = \"acceptable-input\"", "value = \"invalid\"");
+    assert_ne!(compiled.mlir, invalid);
+    let error = mlir::Module::parse(&invalid).err().unwrap();
+    assert!(
+        error.contains("statically addressed text editor"),
+        "{error}"
+    );
+}
+
+#[test]
+fn text_editor_numeric_limits_are_typed_in_source_and_mlir() {
+    let source = r#"
+        export component App inherits Window {
+            entry := TextInput { input-type: decimal; minimum-value: -1; decimals: 2; }
+            send := Button { enabled: entry.acceptable-input; }
+        }
+    "#;
+    let compiled = compile(source, "numeric_validation.xr").unwrap();
+    for (old, new) in [
+        ("minimum-value: -1", "minimum-value: false"),
+        ("decimals: 2", "decimals: 2.5"),
+        ("minimum-value: -1", "maximum-value: \"100\""),
+    ] {
+        assert!(compile(&source.replace(old, new), "numeric_validation.xr").is_err());
+    }
+    let animation = source.replace(
+        "decimals: 2;",
+        "decimals: 2; animate decimals { duration: 1ms; }",
+    );
+    let error = compile(&animation, "numeric_validation.xr").err().unwrap();
+    assert!(error.contains("cannot animate"), "{error}");
+
+    let invalid = compiled
+        .mlir
+        .replace("name = \"decimals\"", "name = \"maximum-value\"");
+    assert_ne!(compiled.mlir, invalid);
+    let error = mlir::Module::parse(&invalid).err().unwrap();
+    assert!(error.contains("requires a float"), "{error}");
+
+    let cyclic = source.replace(
+        "minimum-value: -1",
+        "minimum-value: self.acceptable-input ? -1 : 0",
+    );
+    let error = compile(&cyclic, "numeric_validation.xr").err().unwrap();
+    assert!(error.contains("cycl"), "{error}");
+}
+
+#[test]
+fn text_selection_reads_verify_type_owner_and_read_only_access() {
+    let source = r#"
+        export component App inherits Window {
+            out property <int> caret: entry.cursor-offset;
+            out property <string> selection: entry.selected-text;
+            entry := TextArea {}
+            panel := Rectangle {}
+            run := Button {}
+        }
+    "#;
+    let compiled = compile(source, "editor_selection.xr").unwrap();
+    assert!(compiled.mlir.contains("\"xr.text_selection_read\""));
+
+    for invalid in [
+        source.replace("entry.selected-text", "panel.selected-text"),
+        source.replace("TextArea {}", "TextArea { cursor-offset: 0; }"),
+        source.replace(
+            "Button {}",
+            "Button { clicked => { entry.selected-text = \"x\"; } }",
+        ),
+    ] {
+        assert!(
+            compile(&invalid, "editor_selection.xr").is_err(),
+            "{invalid}"
+        );
+    }
+    let wrong_type = compiled.mlir.replace(
+        "value = \"selected-text\"",
+        "value = \"selection-end-offset\"",
+    );
+    assert_ne!(compiled.mlir, wrong_type);
+    let error = mlir::Module::parse(&wrong_type).err().unwrap();
+    assert!(error.contains("matching type"), "{error}");
+}
+
+#[test]
+fn text_command_availability_is_read_only_and_lowers_to_a_boolean() {
+    let source = r#"
+        export component App inherits Window {
+            document := TextEdit {}
+            undo-button := Button { enabled: document.can-undo; }
+            copy-button := Button { enabled: document.can-copy; }
+        }
+    "#;
+    let compiled = compile(source, "edit_commands.xr").unwrap();
+    assert!(compiled.mlir.contains("\"xr.text_command_available\""));
+    let invalid = compiled
+        .mlir
+        .replace("value = \"can-copy\"", "value = \"can-paste\"");
+    assert_ne!(compiled.mlir, invalid);
+    let error = mlir::Module::parse(&invalid).err().unwrap();
+    assert!(
+        error.contains("requires a text command property"),
+        "{error}"
+    );
+    let writable = source.replace("TextEdit {}", "TextEdit { can-undo: true; }");
+    let error = compile(&writable, "edit_commands.xr").err().unwrap();
+    assert!(error.contains("read-only"), "{error}");
+}
+
+#[test]
+fn view_counts_are_read_only_and_check_projection_dependencies() {
+    let source = r#"
+        export component App inherits Window {
+            out property <int> rows: list.row-count;
+            list := ListView { for item in 3 : Text { text: "" + item; } }
+        }
+    "#;
+    let built = compile(source, "view_counts.xr").unwrap();
+    assert!(built.mlir.contains("\"xr.view_count\""));
+    let write = source.replace("for item", "row-count: 3; for item");
+    assert!(
+        compile(&write, "view_counts.xr")
+            .err()
+            .unwrap()
+            .contains("read-only")
+    );
+    let cycle = source.replace("in 3 :", "in root.rows :");
+    assert!(
+        compile(&cycle, "view_counts.xr")
+            .err()
+            .unwrap()
+            .contains("cycl")
+    );
+
+    let cyclic_mlir = built.mlir.replace(
+        r#""xr.literal"() <{value = "3"}>"#,
+        r#""xr.view_count"() <{owner = "list", value = "source-row-count"}>"#,
+    );
+    assert_ne!(built.mlir, cyclic_mlir);
+    let error = mlir::Module::parse(&cyclic_mlir).err().unwrap();
+    assert!(error.contains("cyclic"), "{error}");
+
+    let invalid = built
+        .mlir
+        .replace("value = \"row-count\"", "value = \"invalid\"");
+    assert_ne!(built.mlir, invalid);
+    let error = mlir::Module::parse(&invalid).err().unwrap();
+    assert!(error.contains("requires a row count property"), "{error}");
+}
+
+#[test]
+fn empty_state_is_a_single_static_part_of_a_virtual_view() {
+    let source = r#"
+        export component App inherits Window {
+            ListView {
+                empty := EmptyState { Text { text: "No rows"; } }
+                for index in 1 : Text { text: "" + index; }
+            }
+        }
+    "#;
+    let compiled = compile(source, "empty_state.xr").unwrap();
+    assert!(compiled.mlir.contains("kind = \"EmptyState\""));
+    for bad in [
+        source.replace("ListView", "Rectangle"),
+        source.replace("empty := EmptyState", "if true : empty := EmptyState"),
+        source.replace("for index", "EmptyState {} for index"),
+    ] {
+        assert!(compile(&bad, "empty_state.xr").is_err(), "{bad}");
+    }
+    let bad_mlir = compiled
+        .mlir
+        .replace("kind = \"ListView\"", "kind = \"Rectangle\"");
+    let error = mlir::Module::parse(&bad_mlir).err().unwrap();
+    assert!(error.contains("static child of virtual view"), "{error}");
+}
+
+#[test]
+fn list_selection_by_key_checks_model_field_and_control_mode() {
+    let valid = r#"
+        struct Record { id: int, text: string }
+        export component App inherits Window {
+            in-out property <int> selection: -1;
+            in property <[Record]> records: [];
+            StandardListView {
+                current-key <=> root.selection;
+                row-key-field: "id";
+                model: root.records;
+            }
+        }
+    "#;
+    let compiled = compile(valid, "keyed_selection.xr").unwrap();
+    assert!(compiled.mlir.contains("name = \"row-key-field\""));
+    for invalid in [
+        valid.replace("row-key-field: \"id\";", ""),
+        valid.replace("row-key-field: \"id\";", "row-key-field: \"text\";"),
+        valid.replace(
+            "row-key-field: \"id\";",
+            "row-key-field: \"id\"; current-index: 0;",
+        ),
+    ] {
+        assert!(
+            compile(&invalid, "keyed_selection.xr").is_err(),
+            "{invalid}"
+        );
+    }
+}
+
+#[test]
+fn key_navigation_has_typed_commands_and_read_only_selection_position() {
+    let source = r#"
+        struct Record { id: int, text: string }
+        export component App inherits Window {
+            in property <[Record]> records: [];
+            out property <int> position: rows.selected-view-index;
+            rows := StandardListView { model: root.records; row-key-field: "id"; }
+            go := Button {
+                clicked => { rows.select-key(8); rows.position-view-at-key(8, center); }
+            }
+        }
+    "#;
+    let compiled = compile(source, "key_navigation.xr").unwrap();
+    assert!(compiled.mlir.contains("\"xr.list_selection_read\""));
+    assert!(compiled.mlir.contains("method = \"select-key\""));
+    assert!(compiled.mlir.contains("method = \"position-view-at-key\""));
+
+    for bad in [
+        source.replace("row-key-field: \"id\";", ""),
+        source.replace("at-key(8, center)", "at-key(8, false)"),
+        source.replace(
+            "model: root.records;",
+            "model: root.records; selected-view-index: 8;",
+        ),
+        source
+            .replace("row-key-field: \"id\";", "current-index: root.position;")
+            .replace(
+                "rows.select-key(8); rows.position-view-at-key(8, center);",
+                "",
+            ),
+    ] {
+        assert!(compile(&bad, "key_navigation.xr").is_err(), "{bad}");
+    }
+    let raw = compiled
+        .mlir
+        .replace("name = \"row-key-field\"", "name = \"ignored-field\"");
+    let error = mlir::Module::parse(&raw).err().unwrap();
+    assert!(error.contains("with row-key-field"), "{error}");
+}
+
+#[test]
+fn layout_direction_is_typed_on_windows_and_component_instances() {
+    let source = r#"
+        component Pair inherits HorizontalLayout { Text { text: "item"; } }
+        export component App inherits Window {
+            in property <LayoutDirection> direction: right-to-left;
+            layout-direction: root.direction;
+            Pair { layout-direction: left-to-right; }
+        }
+    "#;
+    let compiled = compile(source, "layout_direction.xr").unwrap();
+    assert!(compiled.mlir.contains("!xr.layoutdirection"));
+    assert!(compiled.mlir.contains("\"xr.layout_bind\""));
+    assert!(
+        compile(
+            &source.replace("layout-direction: root.direction", "layout-direction: 3"),
+            "layout_direction.xr"
+        )
+        .is_err()
+    );
+    let raw = compiled
+        .mlir
+        .replace("value = \"right-to-left\"", "value = \"sideways\"");
+    assert_ne!(compiled.mlir, raw);
+    assert!(mlir::Module::parse(&raw).is_err());
+}
+
+#[test]
+fn editor_horizontal_alignment_is_typed_through_mlir() {
+    let source = r#"
+        export component App inherits Window {
+            layout-direction: right-to-left;
+            LineEdit { horizontal-alignment: start; }
+            TextArea { horizontal-alignment: end; }
+        }
+    "#;
+    let compiled = compile(source, "rtl_text.xr").unwrap();
+    assert!(compiled.mlir.contains("!xr.texthorizontalalignment"));
+    assert!(
+        compile(
+            &source.replace("horizontal-alignment: start", "horizontal-alignment: false"),
+            "rtl_text.xr"
+        )
+        .is_err()
+    );
+}

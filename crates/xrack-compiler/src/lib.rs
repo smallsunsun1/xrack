@@ -225,6 +225,21 @@ pub fn compile_with_inputs(
     Ok((rust, inputs))
 }
 
+pub fn compile_live_with_inputs(
+    source: &str,
+    filename: &str,
+    declared_sources: Option<&[PathBuf]>,
+    declared_assets: Option<&[PathBuf]>,
+) -> Result<(TokenStream, BTreeSet<PathBuf>), CompilerError> {
+    let (document, mut inputs) =
+        modules::parse_document_with_inputs(source, filename, declared_sources)?;
+    let (module, translations) = prepare(&document, filename, declared_assets, &BTreeMap::new())?;
+    inputs.extend(translations.inputs);
+    inputs.extend(check_output_resources(&module, filename, declared_assets)?);
+    let rust = codegen::generate_live(&module, filename, true).map_err(CompilerError::Codegen)?;
+    Ok((rust, inputs))
+}
+
 fn emit_with_inputs(
     module: &mlir::Module,
     filename: &str,
@@ -350,6 +365,15 @@ pub fn export_mlir_to(
     Ok(module.to_mlir())
 }
 
+pub fn generate_live_document(
+    document: &ast::Document,
+    filename: &str,
+    declared_assets: Option<&[PathBuf]>,
+) -> Result<TokenStream, CompilerError> {
+    let module = checked_module(document, filename, declared_assets)?;
+    codegen::generate_live(&module, filename, false).map_err(CompilerError::Codegen)
+}
+
 fn checked_module(
     document: &ast::Document,
     filename: &str,
@@ -373,18 +397,19 @@ pub fn check_resources(
         &BTreeMap::new(),
     )
     .map_err(CompilerError::Resources)?;
-    check_output_resources(module, filename, declared_assets)
+    check_output_resources(module, filename, declared_assets).map(|_| ())
 }
 
 fn check_output_resources(
     module: &mlir::Module,
     filename: &str,
     declared_assets: Option<&[PathBuf]>,
-) -> Result<(), CompilerError> {
+) -> Result<BTreeSet<PathBuf>, CompilerError> {
     let assets = resolve_assets(module, Path::new(filename), declared_assets)
         .map_err(CompilerError::Resources)?;
     codegen::check_nine_slices(module, &assets.images).map_err(CompilerError::Resources)?;
-    codegen::check_markdown(module).map_err(CompilerError::Codegen)
+    codegen::check_markdown(module).map_err(CompilerError::Codegen)?;
+    Ok(assets.inputs)
 }
 
 fn prepare(

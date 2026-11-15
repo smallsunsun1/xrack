@@ -520,6 +520,10 @@ struct StaticSceneAnalysis {
         observe(op, geometry.getOwner());
       if (auto focus = dyn_cast<FocusReadOp>(op))
         observe(op, focus.getOwner());
+      if (auto selection = dyn_cast<TextSelectionReadOp>(op))
+        observe(op, selection.getOwner());
+      if (auto command = dyn_cast<TextCommandAvailableOp>(op))
+        observe(op, command.getOwner());
       if (auto command = dyn_cast<FocusCommandOp>(op))
         observe(op, command.getTarget());
       if (auto target = dyn_cast<FocusTargetOp>(op))

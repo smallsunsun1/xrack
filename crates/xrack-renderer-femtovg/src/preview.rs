@@ -317,7 +317,7 @@ impl PreviewScene {
         if self.range_key(&event.key, true) || self.spin_key(&event.key) {
             return true;
         }
-        if event.key == "ArrowRight"
+        if navigation_key(&event.key).is_some_and(|key| self.input.combo_completion_accepts(key))
             && !event.repeat
             && !(modifiers.shift || modifiers.control || modifiers.alt || modifiers.meta)
             && let Some((scene, _)) = &self.frame
@@ -2148,7 +2148,7 @@ impl PreviewScene {
         let Some((scene, layout)) = &self.frame else {
             return false;
         };
-        if self.input.cancel_table_edit() {
+        if self.input.cancel_table_edit() || self.input.dismiss_combo_completion(scene) {
             return true;
         }
         let was_open = self.input.menu_open() || self.input.choice_open();
@@ -2202,7 +2202,7 @@ impl PreviewScene {
         }
         let action = if self.input.menu_press(scene, layout) {
             self.input.menu_release(scene, layout)
-        } else if self.input.choice_open() {
+        } else if self.input.choice_press(scene, layout) {
             self.input.choice_release(scene, layout)
         } else if self.input.dialog_pointer_press(layout) {
             self.input.dialog_pointer_release(scene, layout)
@@ -2398,6 +2398,8 @@ impl PreviewScene {
         self.renderer_needs_redraw = renderer.needs_redraw();
         self.png.clear();
         snapshot.write_png(&mut self.png)?;
+        self.input
+            .set_painted_combo_completion(renderer.take_painted_combo_completion());
         self.frame = Some((scene, snapshot.layout));
         Ok(&self.png)
     }
@@ -2691,7 +2693,13 @@ impl PreviewScene {
         self.renderer_needs_redraw = false;
         self.dimensions = (width, height);
         self.frame = Some((scene, layout));
-        self.flush_pointer_carets(renderer);
+        if self.flush_pointer_carets(renderer) {
+            let (scene, _) = self.frame.as_ref().unwrap();
+            self.focus_observers.sync_text_editor(&self.input, scene);
+            if self.component.scene_dirty() {
+                self.refresh_input_frame(renderer);
+            }
+        }
         let (scene, layout) = self.frame.as_ref().unwrap();
         self.ime_area = renderer.text.editor_ime_area(
             &mut self.input,
@@ -2701,16 +2709,19 @@ impl PreviewScene {
         );
     }
 
-    fn flush_pointer_carets(&mut self, renderer: &Renderer) {
+    fn flush_pointer_carets(&mut self, renderer: &Renderer) -> bool {
         let Some((scene, layout)) = &self.frame else {
             self.pointer_carets.clear();
-            return;
+            return false;
         };
+        let mut placed = false;
         for caret in self.pointer_carets.drain(..) {
             if caret.place(&renderer.text, &mut self.input, scene, layout) {
                 self.clipboard_edit = None;
+                placed = true;
             }
         }
+        placed
     }
 
     fn refresh_input_frame(&mut self, renderer: &mut Renderer) {

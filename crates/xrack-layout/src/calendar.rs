@@ -1,5 +1,5 @@
-use crate::{Point, Rect};
-use xrack_runtime::{CalendarAction, CalendarState, Date, Node};
+use crate::{LayoutNode, Point, Rect, place_in_direction};
+use xrack_runtime::{CalendarAction, CalendarState, Date, LayoutDirection, Node};
 
 const WEEKDAYS: [&str; 7] = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 
@@ -12,7 +12,14 @@ enum CalendarPart {
 }
 
 impl CalendarPart {
-    fn cell(self, bounds: Rect, column: usize, row: usize, span: usize) -> Rect {
+    fn cell(
+        self,
+        bounds: Rect,
+        column: usize,
+        row: usize,
+        span: usize,
+        direction: LayoutDirection,
+    ) -> Rect {
         let (columns, rows) = match self {
             Self::Calendar => (7.0, 8.0),
             Self::MonthGrid => (7.0, 6.0),
@@ -21,23 +28,25 @@ impl CalendarPart {
         };
         let width = bounds.width / columns;
         let height = bounds.height / rows;
-        Rect::new(
+        let rect = Rect::new(
             bounds.x + width * column as f32,
             bounds.y + height * row as f32,
             width * span as f32,
             height,
-        )
+        );
+        place_in_direction(rect, bounds, direction)
     }
 }
 
-pub(crate) fn month_cell(bounds: Rect, slot: usize) -> Rect {
-    CalendarPart::MonthGrid.cell(bounds, slot % 7, slot / 7, 1)
+pub(crate) fn month_cell(bounds: Rect, slot: usize, direction: LayoutDirection) -> Rect {
+    CalendarPart::MonthGrid.cell(bounds, slot % 7, slot / 7, 1, direction)
 }
 
 pub struct CalendarGeometry {
     bounds: Rect,
     part: CalendarPart,
     pub state: CalendarState,
+    pub layout_direction: LayoutDirection,
     cells: [Option<Date>; 42],
     week_start: usize,
     today: Option<Date>,
@@ -63,6 +72,14 @@ pub struct CalendarWeek {
 
 impl CalendarGeometry {
     pub fn new(node: &Node, bounds: Rect) -> Self {
+        Self::with_layout_direction(node, bounds, node.layout_direction().unwrap_or_default())
+    }
+
+    pub fn for_layout(node: &Node, layout: &LayoutNode) -> Self {
+        Self::with_layout_direction(node, layout.bounds, layout.layout_direction)
+    }
+
+    fn with_layout_direction(node: &Node, bounds: Rect, direction: LayoutDirection) -> Self {
         let state = CalendarState::from_node(node);
         let week_start = node.int("week-start").unwrap_or(1).clamp(1, 7);
         let part = match node.kind {
@@ -75,6 +92,7 @@ impl CalendarGeometry {
             bounds,
             part,
             state,
+            layout_direction: direction,
             cells: if part == CalendarPart::DayOfWeekRow {
                 [None; 42]
             } else {
@@ -86,7 +104,8 @@ impl CalendarGeometry {
     }
 
     fn cell(&self, column: usize, row: usize, span: usize) -> Rect {
-        self.part.cell(self.bounds, column, row, span)
+        self.part
+            .cell(self.bounds, column, row, span, self.layout_direction)
     }
 
     pub fn has_header(&self) -> bool {
@@ -144,7 +163,11 @@ impl CalendarGeometry {
                 Some(CalendarDay {
                     date,
                     slot: index,
-                    bounds: self.cell(index % 7, 2 * usize::from(self.has_header()) + index / 7, 1),
+                    bounds: if self.part == CalendarPart::MonthGrid {
+                        month_cell(self.bounds, index, self.layout_direction)
+                    } else {
+                        self.cell(index % 7, 2 + index / 7, 1)
+                    },
                     enabled: self.state.allows(date),
                     selected: self.state.selected == date,
                     in_month: self.state.month == date.first_of_month(),

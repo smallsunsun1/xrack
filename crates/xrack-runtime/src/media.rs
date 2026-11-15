@@ -145,12 +145,20 @@ pub trait MediaSession {
 }
 
 type Factory = fn(&Path, bool, f64) -> Result<Box<dyn MediaSession>, String>;
+type SoundFactory = fn(&Path, f64) -> Result<Box<dyn MediaSession>, String>;
 thread_local! {
     static FACTORY: Cell<Option<Factory>> = const { Cell::new(None) };
+    static SOUND_FACTORY: Cell<Option<SoundFactory>> = const { Cell::new(None) };
 }
 
 pub fn register_media_backend(factory: Factory) {
     FACTORY.set(Some(factory));
+}
+
+/// Register the preloaded sound effect backend for this UI thread.
+#[doc(hidden)]
+pub fn register_sound_backend(factory: SoundFactory) {
+    SOUND_FACTORY.set(Some(factory));
 }
 
 /// Open a media session using the backend installed for this UI thread.
@@ -291,6 +299,7 @@ impl MediaSlot {
         node.media = Some(MediaRegistration {
             slot: self.clone(),
             path,
+            sound_effect: false,
             autoplay: node.boolean("autoplay", false),
             options: MediaOptions {
                 playback_rate: if rate.is_finite() {
@@ -309,14 +318,33 @@ impl MediaSlot {
                     .text("subtitle-file")
                     .and_then(|source| local_source(file, source)),
             },
-            volume: if node.boolean("muted", false) {
-                0.0
-            } else if volume.is_finite() {
-                volume.clamp(0.0, 1.0)
-            } else {
-                0.0
-            },
+            volume: effective_volume(volume, node.boolean("muted", false)),
         });
+    }
+
+    pub fn sound_effect(
+        self: &Rc<Self>,
+        file: &str,
+        source: &str,
+        volume: f64,
+        muted: bool,
+    ) -> MediaRegistration {
+        MediaRegistration {
+            slot: self.clone(),
+            path: local_source(file, source),
+            sound_effect: true,
+            autoplay: false,
+            volume: effective_volume(volume, muted),
+            options: MediaOptions::default(),
+        }
+    }
+}
+
+fn effective_volume(volume: f64, muted: bool) -> f64 {
+    if muted || !volume.is_finite() {
+        0.0
+    } else {
+        volume.clamp(0.0, 1.0)
     }
 }
 
@@ -333,12 +361,24 @@ fn local_source(file: &str, source: &str) -> Option<PathBuf> {
 pub struct MediaRegistration {
     slot: Rc<MediaSlot>,
     path: Option<PathBuf>,
+    sound_effect: bool,
     autoplay: bool,
     volume: f64,
     options: MediaOptions,
 }
 
 impl MediaRegistration {
+    fn open(&self, path: &Path) -> Result<Box<dyn MediaSession>, String> {
+        if self.sound_effect {
+            let open = SOUND_FACTORY
+                .get()
+                .ok_or_else(|| "SoundEffect requires a media-enabled host".to_owned())?;
+            open(path, self.volume)
+        } else {
+            open_media_session(path, self.autoplay, self.volume)
+        }
+    }
+
     pub fn key(&self) -> usize {
         Rc::as_ptr(&self.slot) as usize
     }
@@ -348,6 +388,7 @@ impl PartialEq for MediaRegistration {
     fn eq(&self, other: &Self) -> bool {
         Rc::ptr_eq(&self.slot, &other.slot)
             && self.path == other.path
+            && self.sound_effect == other.sound_effect
             && self.autoplay == other.autoplay
             && self.volume == other.volume
             && self.options == other.options
@@ -385,25 +426,33 @@ impl MediaQueue {
             let key = Rc::as_ptr(&registration.slot) as usize;
             let previous = old.remove(&key);
             let mut entry = match previous {
-                Some(entry) if entry.registration.path == registration.path => entry,
-                _ => {
+                Some(entry)
+                    if entry.registration.path == registration.path
+                        && entry.registration.sound_effect == registration.sound_effect =>
+                {
+                    entry
+                }
+                previous => {
+                    if previous.is_some() && registration.sound_effect {
+                        registration.slot.commands.take();
+                    }
                     let mut state = MediaState::default();
-                    let session = registration.path.as_ref().and_then(|path| {
-                        let result =
-                            open_media_session(path, registration.autoplay, registration.volume);
-                        match result {
-                            Ok(mut session) => {
-                                state.status = MediaStatus::Loading;
-                                session.configure(&registration.options);
-                                Some(session)
-                            }
-                            Err(error) => {
-                                state.error = error;
-                                state.status = MediaStatus::Failed;
-                                None
-                            }
-                        }
-                    });
+                    let session =
+                        registration
+                            .path
+                            .as_ref()
+                            .and_then(|path| match registration.open(path) {
+                                Ok(mut session) => {
+                                    state.status = MediaStatus::Loading;
+                                    session.configure(&registration.options);
+                                    Some(session)
+                                }
+                                Err(error) => {
+                                    state.error = error;
+                                    state.status = MediaStatus::Failed;
+                                    None
+                                }
+                            });
                     changed |= publish(&registration.slot, state);
                     Entry {
                         registration: registration.clone(),

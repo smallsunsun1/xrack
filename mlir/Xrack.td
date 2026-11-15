@@ -42,6 +42,7 @@ def XR_Orientation : XR_Type<"Orientation", "orientation">;
 def XR_FlickDirection : XR_Type<"FlickDirection", "flickdirection">;
 def XR_FlickBoundsBehavior : XR_Type<"FlickBoundsBehavior", "flickboundsbehavior">;
 def XR_FlickBoundsMovement : XR_Type<"FlickBoundsMovement", "flickboundsmovement">;
+def XR_LayoutDirection : XR_Type<"LayoutDirection", "layoutdirection">;
 def XR_FlexboxLayoutDirection : XR_Type<"FlexboxLayoutDirection", "flexboxlayoutdirection">;
 def XR_FlexboxLayoutWrap : XR_Type<"FlexboxLayoutWrap", "flexboxlayoutwrap">;
 def XR_DialInputMode : XR_Type<"DialInputMode", "dialinputmode">;
@@ -86,7 +87,7 @@ def XR_Value : AnyTypeOf<[XR_Int, XR_Float, XR_Bool, XR_String, XR_StyledText, X
                          XR_PointerEvent, XR_PointerEventKind, XR_PointerButton, XR_PointerButtons, XR_TouchPoint, XR_TouchPoints,
                          XR_Brush, XR_Image, XR_LogLevel, XR_ImageFit, XR_ImageTileMode,
                          XR_ImageHorizontalAlignment, XR_ImageVerticalAlignment, XR_ImageRendering, XR_LayoutAlignment, XR_CrossAxisAlignment,
-                         XR_Orientation, XR_FlickDirection, XR_FlickBoundsBehavior, XR_FlickBoundsMovement, XR_FlexboxLayoutDirection, XR_FlexboxLayoutWrap, XR_DialInputMode, XR_ScrollBarPolicy, XR_ScrollSnapMode, XR_ScrollAlignment, XR_TextWrap, XR_TextHorizontalAlignment, XR_TextVerticalAlignment, XR_TextOverflow, XR_InputType, XR_CursorShape, XR_ColorScheme, XR_FileDialogMode, XR_MessageLevel, XR_MessageButtons, XR_CheckState, XR_DialogRole, XR_StandardButtonKind, XR_SwipeSide, XR_DragAction, XR_DrawerEdge, XR_PopupPlacement, XR_SelectionTarget, XR_Date, XR_Time, XR_Font]>;
+                         XR_Orientation, XR_FlickDirection, XR_FlickBoundsBehavior, XR_FlickBoundsMovement, XR_LayoutDirection, XR_FlexboxLayoutDirection, XR_FlexboxLayoutWrap, XR_DialInputMode, XR_ScrollBarPolicy, XR_ScrollSnapMode, XR_ScrollAlignment, XR_TextWrap, XR_TextHorizontalAlignment, XR_TextVerticalAlignment, XR_TextOverflow, XR_InputType, XR_CursorShape, XR_ColorScheme, XR_FileDialogMode, XR_MessageLevel, XR_MessageButtons, XR_CheckState, XR_DialogRole, XR_StandardButtonKind, XR_SwipeSide, XR_DragAction, XR_DrawerEdge, XR_PopupPlacement, XR_SelectionTarget, XR_Date, XR_Time, XR_Font]>;
 def XR_Stringifiable : AnyTypeOf<[XR_Int, XR_Float, XR_Bool, XR_Date, XR_Time]>;
 
 class XR_Op<string mnemonic, list<Trait> traits = []> : Op<Xrack_Dialect, mnemonic, traits>;
@@ -410,6 +411,8 @@ def XR_SplitResizingOp : XR_ExpressionOp<"split_resizing", (ins StrAttr:$owner),
 def XR_TreeQueryOp : XR_ExpressionOp<"tree_query", (ins XR_Int:$key, StrAttr:$owner), AnyTypeOf<[XR_Bool, XR_Int]>> {
   let hasVerifier = 1;
 }
+def XR_ListSelectionReadOp : XR_ExpressionOp<"list_selection_read", (ins StrAttr:$owner), XR_Int>;
+def XR_ViewCountOp : XR_ExpressionOp<"view_count", (ins StrAttr:$owner), XR_Int>;
 def XR_ViewIndexOp : XR_ExpressionOp<"view_index", (ins XR_Int:$index, StrAttr:$owner), XR_Int> {
   let hasVerifier = 1;
 }
@@ -422,6 +425,7 @@ def XR_ImagePlaybackReadOp : XR_ExpressionOp<"image_playback_read", (ins StrAttr
 def XR_MediaReadOp : XR_ExpressionOp<"media_read", (ins StrAttr:$owner), AnyTypeOf<[XR_Float, XR_Bool, XR_String, XR_Int]>> {
   let hasVerifier = 1;
 }
+def XR_TextAcceptsOp : XR_ExpressionOp<"text_accepts", (ins StrAttr:$owner), XR_Bool>;
 def XR_WindowReadOp : XR_ExpressionOp<"window_read", (ins), XR_Bool, [Pure]> {
   let hasVerifier = 1;
 }
@@ -432,6 +436,8 @@ def XR_NativeDialogReadOp : XR_ExpressionOp<"native_dialog_read", (ins StrAttr:$
 def XR_FocusReadOp : XR_ExpressionOp<"focus_read", (ins StrAttr:$owner), XR_Bool, [Pure]> {
   let hasVerifier = 1;
 }
+def XR_TextSelectionReadOp : XR_ExpressionOp<"text_selection_read", (ins StrAttr:$owner), AnyTypeOf<[XR_Int, XR_String]>>;
+def XR_TextCommandAvailableOp : XR_ExpressionOp<"text_command_available", (ins StrAttr:$owner), XR_Bool>;
 def XR_ControlReadOp : XR_ExpressionOp<"control_read", (ins StrAttr:$owner), XR_Value, [Pure]> {
   let hasVerifier = 1;
 }

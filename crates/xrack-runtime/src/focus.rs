@@ -1,5 +1,5 @@
 use crate::Property;
-use std::{cell::RefCell, fmt, rc::Rc};
+use std::{cell::RefCell, fmt, ops::Range, rc::Rc};
 
 /// Identity of a focus target in one component instance.
 #[derive(Clone, Default)]
@@ -9,6 +9,32 @@ pub struct FocusHandle(Rc<FocusSignals>);
 struct FocusSignals {
     direct: Property<bool>,
     within: Property<bool>,
+    text: Option<Box<TextSelectionSignals>>,
+    commands: Option<Box<TextCommandSignals>>,
+}
+
+#[derive(Default)]
+struct TextSelectionSignals {
+    offsets: [Property<i64>; 3],
+    selected: Property<Rc<str>>,
+}
+
+#[derive(Default)]
+struct TextCommandSignals {
+    undo: Property<bool>,
+    redo: Property<bool>,
+    cut: Property<bool>,
+    copy: Property<bool>,
+}
+
+/// Availability of commands on the active text editor.
+#[doc(hidden)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct TextCommandAvailability {
+    pub undo: bool,
+    pub redo: bool,
+    pub cut: bool,
+    pub copy: bool,
 }
 
 impl fmt::Debug for FocusHandle {
@@ -220,6 +246,116 @@ impl Drop for FocusContext {
 }
 
 impl FocusHandle {
+    #[doc(hidden)]
+    pub fn with_text_selection() -> Self {
+        Self::with_text_state(true, false)
+    }
+
+    #[doc(hidden)]
+    pub fn with_text_state(selection: bool, commands: bool) -> Self {
+        Self(Rc::new(FocusSignals {
+            text: selection.then(Box::default),
+            commands: commands.then(Box::default),
+            ..FocusSignals::default()
+        }))
+    }
+
+    #[doc(hidden)]
+    pub fn observes_text_commands(&self) -> bool {
+        self.0.commands.is_some()
+    }
+
+    #[doc(hidden)]
+    pub fn publish_text_commands(&self, commands: TextCommandAvailability) {
+        if let Some(signals) = &self.0.commands {
+            signals.undo.set_if_changed(commands.undo);
+            signals.redo.set_if_changed(commands.redo);
+            signals.cut.set_if_changed(commands.cut);
+            signals.copy.set_if_changed(commands.copy);
+        }
+    }
+
+    #[doc(hidden)]
+    pub fn clear_text_state(&self) {
+        self.publish_text_selection(0, 0..0, "");
+        self.publish_text_commands(TextCommandAvailability::default());
+    }
+
+    pub fn can_undo(&self) -> bool {
+        self.0
+            .commands
+            .as_ref()
+            .is_some_and(|signals| signals.undo.get(|| false))
+    }
+
+    pub fn can_redo(&self) -> bool {
+        self.0
+            .commands
+            .as_ref()
+            .is_some_and(|signals| signals.redo.get(|| false))
+    }
+
+    pub fn can_cut(&self) -> bool {
+        self.0
+            .commands
+            .as_ref()
+            .is_some_and(|signals| signals.cut.get(|| false))
+    }
+
+    pub fn can_copy(&self) -> bool {
+        self.0
+            .commands
+            .as_ref()
+            .is_some_and(|signals| signals.copy.get(|| false))
+    }
+
+    #[doc(hidden)]
+    pub fn observes_text_selection(&self) -> bool {
+        self.0.text.is_some()
+    }
+
+    #[doc(hidden)]
+    pub fn publish_text_selection(&self, caret: usize, selection: Range<usize>, text: &str) {
+        if let Some(signals) = &self.0.text {
+            for (offset, value) in
+                signals
+                    .offsets
+                    .iter()
+                    .zip([caret, selection.start, selection.end])
+            {
+                offset.set_if_changed(value as i64);
+            }
+            if signals.selected.explicit_value().as_deref() != Some(text) {
+                signals.selected.set(Rc::from(text));
+            }
+        }
+    }
+
+    fn text_offset(&self, index: usize) -> i64 {
+        self.0
+            .text
+            .as_ref()
+            .map_or(0, |signals| signals.offsets[index].get(|| 0))
+    }
+
+    pub fn cursor_offset(&self) -> i64 {
+        self.text_offset(0)
+    }
+
+    pub fn selection_start_offset(&self) -> i64 {
+        self.text_offset(1)
+    }
+
+    pub fn selection_end_offset(&self) -> i64 {
+        self.text_offset(2)
+    }
+
+    pub fn selected_text(&self) -> String {
+        self.0.text.as_ref().map_or_else(String::new, |signals| {
+            signals.selected.get(|| Rc::from("")).to_string()
+        })
+    }
+
     pub fn has_focus(&self) -> bool {
         self.0.direct.get(|| false)
     }
@@ -249,6 +385,25 @@ impl FocusHandle {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn selection_start_and_selected_text_track_independently() {
+        let handle = FocusHandle::with_text_selection();
+        let start = Property::default();
+        let selected = Property::default();
+        handle.publish_text_selection(3, 1..3, "bc");
+        assert_eq!(start.get(|| handle.selection_start_offset()), 1);
+        assert_eq!(selected.get(|| handle.selected_text()), "bc");
+
+        handle.publish_text_selection(4, 1..4, "bcd");
+        assert!(!start.is_dirty());
+        assert!(selected.is_dirty());
+        assert_eq!(selected.get(|| handle.selected_text()), "bcd");
+
+        handle.publish_text_selection(1, 1..4, "bcd");
+        assert!(!start.is_dirty());
+        assert!(!selected.is_dirty());
+    }
 
     #[test]
     fn direct_and_within_focus_have_independent_dependencies() {

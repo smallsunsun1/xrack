@@ -24,6 +24,41 @@ fn button(id: &'static str) -> Node {
 }
 
 #[test]
+fn inspector_picks_a_disabled_front_element_and_the_view_over_its_virtual_rows() {
+    let mut root = node("Window", "root");
+    let mut field = button("back");
+    field.kind = "SearchField";
+    root.children.push(field);
+    let mut front = button("front");
+    boolean(&mut front, "enabled", false);
+    root.children.push(front);
+    let mut view = node("ListView", "results");
+    length(&mut view, "y", 30.0);
+    length(&mut view, "width", 80.0);
+    length(&mut view, "height", 55.0);
+    view.list = Some(xrack_runtime::ListMetrics {
+        row_count: 1,
+        first_row: 0,
+    });
+    view.children.push(button("materialized-row"));
+    root.children.push(view);
+    let frame = layout(&root, Size::new(120.0, 100.0), &mut Text);
+    let input = Interaction::default();
+    assert_eq!(
+        input.inspection_path(&root, &frame, Point { x: 12.0, y: 8.0 }),
+        Some(vec![1])
+    );
+    assert_eq!(
+        input.inspection_path(&root, &frame, Point { x: 12.0, y: 42.0 }),
+        Some(vec![2])
+    );
+    assert_eq!(
+        input.inspection_path(&root, &frame, Point { x: 132.0, y: 42.0 }),
+        None
+    );
+}
+
+#[test]
 fn fixed_plain_text_boxes_skip_intrinsic_text_measurement() {
     #[derive(Default)]
     struct Measure(usize);
@@ -142,9 +177,23 @@ fn scrolling_reuses_unchanged_row_layouts_and_recomputes_entering_rows() {
     assert!(records.set_row(1, "Updated".into()));
     let (_, actual) =
         prepare_scene_with_row_cache(&view, base.clone(), viewport, &mut text, &input, &mut cache);
-    let (_, expected) = prepare_scene_with_input(&view, base, viewport, &mut baseline, &input);
+    let (_, expected) =
+        prepare_scene_with_input(&view, base.clone(), viewport, &mut baseline, &input);
     assert_eq!(actual, expected);
     assert_eq!(cache.stats().calculated, 7);
+
+    let mut rtl = (*base).clone();
+    rtl.properties.insert(
+        "layout-direction",
+        xrack_runtime::LayoutDirection::RightToLeft.into(),
+    );
+    let rtl = std::rc::Rc::new(rtl);
+    let (_, cached) =
+        prepare_scene_with_row_cache(&view, rtl.clone(), viewport, &mut text, &input, &mut cache);
+    let (_, expected) = prepare_scene_with_input(&view, rtl, viewport, &mut baseline, &input);
+    assert_eq!(cached, expected);
+    let row = cached.at_path(&[0, 0]).unwrap();
+    assert!(row.children[0].bounds.x > row.children[1].bounds.x);
 }
 
 #[test]
@@ -2700,4 +2749,117 @@ fn rotating_a_scroll_view_maps_pan_and_inertia_to_its_local_axis() {
     assert!(input.scroll_offsets().get(&[0][..]).copied().unwrap() > offset);
     let frame = layout_with_input(&root, viewport, &mut Text, &input);
     assert_eq!(input.take_scroll_events(&root, &frame).len(), 1);
+}
+
+#[test]
+fn logical_text_alignment_preserves_natural_direction_and_aligns_editor_geometry() {
+    use xrack_runtime::{LayoutDirection, TextHorizontalAlignment};
+
+    let measure = |text: &str| text.chars().count() as f32 * 10.0;
+    let mut label = node("Label", "label");
+    label.properties.insert("text", "abc".to_owned().into());
+    let size = Size::new(100.0, 40.0);
+    let rtl = Some(LayoutDirection::RightToLeft);
+    assert_eq!(
+        LabelLayout::in_direction(&label, size, 12.0, rtl, measure).lines[0]
+            .origin
+            .x,
+        70.0
+    );
+    label
+        .properties
+        .insert("horizontal-alignment", TextHorizontalAlignment::Left.into());
+    assert_eq!(
+        LabelLayout::in_direction(&label, size, 12.0, rtl, measure).lines[0]
+            .origin
+            .x,
+        0.0
+    );
+    label.properties.remove("horizontal-alignment");
+    label.properties.insert("text", "שלום".to_owned().into());
+    assert_eq!(
+        LabelLayout::in_direction(&label, size, 12.0, None, measure).lines[0]
+            .origin
+            .x,
+        60.0
+    );
+
+    let editor = node("TextArea", "editor");
+    let text = "abc\nx";
+    let geometry = TextAreaLayout::new(
+        text,
+        Rect::new(0.0, 0.0, 100.0, 40.0),
+        20.0,
+        xrack_runtime::TextWrap::NoWrap,
+        measure,
+        str::len,
+    )
+    .aligned(text, TextAlignment::editor(&editor, rtl), measure);
+    let mut caret = TextEdit::default();
+    caret.place_caret(
+        text,
+        TextPosition {
+            offset: 1,
+            trailing: false,
+        },
+        false,
+    );
+    assert_eq!(
+        geometry.caret_point(text, caret.position(text), measure).x,
+        79.0
+    );
+    assert_eq!(
+        geometry
+            .hit(text, Point { x: 45.0, y: 6.0 }, Point::default(), measure)
+            .offset,
+        0
+    );
+    geometry.move_caret(text, &mut caret, TextAreaMotion::Down, false, measure);
+    assert_eq!(caret.caret(text), 4);
+    let left = geometry.aligned(text, TextAlignment::editor(&editor, None), measure);
+    assert_eq!(left.caret_point(text, caret.position(text), measure).x, 0.0);
+}
+
+#[test]
+fn rtl_tab_bar_reveals_the_leading_edge_of_an_oversized_tab() {
+    use xrack_runtime::LayoutDirection;
+
+    let mut bar = node("TabBar", "bar");
+    bar.properties
+        .insert("layout-direction", LayoutDirection::RightToLeft.into());
+    let mut tab = node("TabButton", "oversized");
+    length(&mut tab, "width", 180.0);
+    bar.children.push(tab);
+    let frame = layout(&bar, Size::new(100.0, 40.0), &mut Text);
+    assert_eq!(
+        frame.scroll_on(Orientation::Horizontal).unwrap().offset,
+        80.0
+    );
+    assert_eq!(
+        frame.child_at(0).unwrap().bounds,
+        Rect::new(-80.0, 0.0, 180.0, 40.0)
+    );
+}
+
+#[test]
+fn vertical_touch_on_a_switch_track_scrolls_the_viewport() {
+    use std::time::{Duration, Instant};
+
+    let mut view = node("ScrollView", "viewport");
+    length(&mut view, "content-height", 300.0);
+    let mut toggle = node("Switch", "wifi");
+    length(&mut toggle, "width", 100.0);
+    length(&mut toggle, "height", 32.0);
+    view.children.push(toggle);
+    let frame = layout(&view, Size::new(140.0, 100.0), &mut Text);
+    let mut input = Interaction::default();
+    let start = Point { x: 24.0, y: 16.0 };
+    let end = Point { x: 24.0, y: -24.0 };
+    let now = Instant::now();
+    assert!(input.begin_scroll_gesture(&view, &frame, start, now, ScrollGestureKind::Touch));
+    assert!(input.move_scroll_gesture(&view, &frame, end, now + Duration::from_millis(30)));
+    assert!(!input.has_switch_preview());
+    let release = input.end_scroll_gesture(&view, &frame, end, now + Duration::from_millis(60));
+    assert!(release.control.is_none() && !release.tap);
+    assert!(input.scroll_offsets().values().any(|offset| *offset > 0.0));
 }

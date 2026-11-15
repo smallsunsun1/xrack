@@ -303,7 +303,10 @@ fn all_example_exports_match_generated_scenes_layout_and_input_routes() {
             TimerDemo,
             PaneFrameDemo,
             WheelControlsDemo,
-            SnapSlidersDemo
+            SnapSlidersDemo,
+            DirectionalSlidersDemo,
+            DirectionalFeedbackDemo,
+            DirectionalCalendarDemo
         ]
     );
     check!(
@@ -334,6 +337,10 @@ fn all_example_exports_match_generated_scenes_layout_and_input_routes() {
             FormDemo,
             PasswordDemo,
             ValidationDemo,
+            SubmissionValidationDemo,
+            NumericValidationDemo,
+            EditorSelectionDemo,
+            TextAlignmentDemo,
             DragDropDemo,
             VirtualDragDemo,
             FileDropDemo
@@ -347,6 +354,7 @@ fn all_example_exports_match_generated_scenes_layout_and_input_routes() {
         layout_ui,
         [
             LayoutDemo,
+            LayoutDirectionDemo,
             FlowDemo,
             FlexDemo,
             LabelsDemo,
@@ -377,6 +385,8 @@ fn all_example_exports_match_generated_scenes_layout_and_input_routes() {
         list_ui,
         [
             ListVisibilityDemo,
+            ViewCountsDemo,
+            KeyNavigationDemo,
             NestedListsDemo,
             NestedDataDemo,
             ItemDelegatesDemo,
@@ -414,6 +424,7 @@ fn all_example_exports_match_generated_scenes_layout_and_input_routes() {
             StackDemo,
             StackGuardDemo,
             TabBarDemo,
+            DirectionalTabsDemo,
             ApplicationWindowDemo,
             PageDemo
         ]
@@ -427,10 +438,22 @@ fn all_example_exports_match_generated_scenes_layout_and_input_routes() {
             SelectionDemo,
             RecordComboDemo,
             GroupedRadiosDemo,
-            EditableChoiceDemo
+            EditableChoiceDemo,
+            DirectionalChoiceDemo
         ]
     );
-    check!("slots/slots.xr", slots_ui, [SlotDemo, GlobalDemo]);
+    check!(
+        "slots/slots.xr",
+        slots_ui,
+        [
+            SlotDemo,
+            GlobalDemo,
+            ToggleIndicatorDemo,
+            SpinIndicatorDemo,
+            RangeHandleDemo,
+            TabContentDemo
+        ]
+    );
     check!(
         "split/split.xr",
         split_ui,

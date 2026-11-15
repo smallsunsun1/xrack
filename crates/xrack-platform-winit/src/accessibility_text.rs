@@ -4,12 +4,13 @@ use std::ops::Range;
 use unicode_segmentation::UnicodeSegmentation;
 use xrack_layout::Affine;
 use xrack_layout::{
-    ComboGeometry, Interaction, PasswordMask, Point, Rect, TextAreaLayout, TextEdit, TextMeasurer,
-    TextPosition, VisualTextLine, font_size,
+    ComboGeometry, Interaction, PasswordMask, Point, Rect, TextAlignment, TextAreaLayout, TextEdit,
+    TextMeasurer, TextPosition, VisualTextLine, font_size,
 };
 use xrack_renderer_femtovg::TextSystem;
 use xrack_runtime::{
-    Node, TextWrap, combo_editable, is_multiline_text_input, is_text_input, text_input_value,
+    LayoutDirection, Node, TextWrap, combo_editable, is_multiline_text_input, is_text_input,
+    text_input_value,
 };
 
 // AccessKit represents word start indices with u8. Runs on the same visual
@@ -131,7 +132,7 @@ pub(crate) fn project_text(
     rect: Rect,
     path: &[usize],
     input: &Interaction,
-    (scale, transform): (f64, Affine),
+    (scale, transform, direction, clip): (f64, Affine, Option<LayoutDirection>, Rect),
     text_system: Option<&TextSystem>,
     mut allocate_id: impl FnMut(usize, &str) -> NodeId,
 ) -> (TextDocument, Vec<(NodeId, AccessibleNode)>) {
@@ -150,9 +151,10 @@ pub(crate) fn project_text(
     let scroll = input.text_scroll(path);
     let size = text_system.map_or_else(|| font_size(node), |system| system.font_size(node));
     let rect = if combo_editable(node) {
-        ComboGeometry::new(rect).entry
+        ComboGeometry::with_layout_direction(rect, direction.unwrap_or_default()).entry
     } else if node.kind == "SearchField" {
-        xrack_layout::SearchGeometry::new(rect).entry
+        xrack_layout::SearchGeometry::with_layout_direction(rect, direction.unwrap_or_default())
+            .entry
     } else {
         rect
     };
@@ -170,7 +172,7 @@ pub(crate) fn project_text(
                     str::len,
                 )
             },
-            |text_system| text_system.text_area_layout(node, rect, value),
+            |text_system| text_system.text_area_layout_in_direction(node, rect, value, direction),
         )
     });
     let single = 0..value.len();
@@ -193,18 +195,39 @@ pub(crate) fn project_text(
         )
     } else {
         let height = size * 1.4;
-        let x_scroll = if let (Some(editor), Some(visual)) = (editor, &single_geometry) {
-            let mut caret = editor.position(source);
-            if let Some(mask) = mask.as_ref().filter(|_| node.password_masked()) {
-                caret.offset = mask.display_offset(caret.offset);
-            }
-            (visual.caret_x(caret) + 1.0 - viewport.width).max(0.0)
-        } else {
-            0.0
-        };
+        let alignment = TextAlignment::editor(node, direction);
+        let offset = single_geometry.as_ref().map_or(0.0, |visual| {
+            let caret = editor.map(|editor| {
+                let mut caret = editor.position(source);
+                if let Some(mask) = mask.as_ref().filter(|_| node.password_masked()) {
+                    caret.offset = mask.display_offset(caret.offset);
+                }
+                visual.caret_x(caret)
+            });
+            let aligned_x = viewport.x
+                + alignment.single_line_offset(
+                    viewport.width,
+                    visual.width(),
+                    visual.is_rtl(),
+                    caret,
+                );
+            let draft_x = (|| {
+                let completion = input.combo_completion(node, path)?;
+                let (draft, _) = text_system?.inline_completion_positions(
+                    node,
+                    viewport,
+                    visual,
+                    aligned_x,
+                    (completion.suffix(), clip),
+                )?;
+                Some(draft)
+            })()
+            .unwrap_or(aligned_x);
+            draft_x - viewport.x
+        });
         (
             Point {
-                x: viewport.x - x_scroll,
+                x: viewport.x + offset,
                 y: rect.y + ((rect.height - height) * 0.5).max(0.0),
             },
             height,
@@ -279,7 +302,13 @@ pub(crate) fn project_text(
                 publish_geometry(
                     &mut run,
                     &positions[first..end],
-                    Point { x: origin.x, y },
+                    Point {
+                        x: origin.x
+                            + layout
+                                .as_ref()
+                                .map_or(0.0, |layout| layout.line_offset(index)),
+                        y,
+                    },
                     height,
                     scale,
                     transform,
@@ -488,7 +517,12 @@ mod tests {
             Rect::new(0.0, 0.0, 800.0, 32.0),
             &[],
             &Interaction::default(),
-            (1.0, Affine::IDENTITY),
+            (
+                1.0,
+                Affine::IDENTITY,
+                None,
+                Rect::new(0.0, 0.0, 800.0, 32.0),
+            ),
             None,
             |_, _| {
                 id += 1;

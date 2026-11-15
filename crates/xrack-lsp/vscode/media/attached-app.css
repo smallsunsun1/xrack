@@ -1,0 +1,72 @@
+body {
+    margin: 16px;
+    color: var(--vscode-foreground);
+    font: var(--vscode-font-size) var(--vscode-font-family);
+}
+
+header { display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 12px; }
+h1 { font-size: 1.35em; margin: 0; }
+h2 { font-size: 1em; margin: 0 0 8px; }
+h3 { font-size: .95em; margin: 12px 0 6px; }
+small, #status, #truncated { color: var(--vscode-descriptionForeground); }
+#error { white-space: pre-wrap; overflow-wrap: anywhere; color: var(--vscode-errorForeground); }
+
+main {
+    display: grid;
+    grid-template-columns: minmax(140px, 2fr) minmax(155px, 3fr);
+    align-items: start;
+    gap: 14px;
+    margin-top: 14px;
+}
+
+main:has(#tree-section[hidden]) { grid-template-columns: minmax(0, 1fr); }
+section { min-width: 0; }
+.tree, .tree ul { list-style: none; margin: 0; padding: 0; }
+.tree ul { padding-inline-start: 10px; }
+.tree-row { display: flex; align-items: start; padding-inline-start: 17px; position: relative; }
+button {
+    font: inherit;
+    cursor: pointer;
+    border: 1px solid transparent;
+    color: inherit;
+}
+
+button:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: -1px; }
+.tree button { background: transparent; }
+.tree button:hover { background: var(--vscode-list-hoverBackground); }
+.tree .select[aria-pressed="true"] {
+    background: var(--vscode-list-inactiveSelectionBackground);
+    color: var(--vscode-list-inactiveSelectionForeground);
+}
+.toggle { width: 17px; padding: 3px 0; position: absolute; left: 0; }
+.select { min-width: 0; width: 100%; text-align: left; padding: 3px 4px; overflow-wrap: anywhere; }
+.select small { display: block; }
+
+#sources button, #pick {
+    padding: 3px 7px;
+    margin: 0 4px 5px 0;
+    color: var(--vscode-button-secondaryForeground);
+    background: var(--vscode-button-secondaryBackground);
+}
+#sources button:hover, #pick:hover { background: var(--vscode-button-secondaryHoverBackground); }
+#pick[aria-pressed="true"] {
+    color: var(--vscode-button-foreground);
+    background: var(--vscode-button-background);
+}
+#tree-header { margin-bottom: 2px; }
+dl { display: grid; grid-template-columns: minmax(76px, 2fr) minmax(0, 3fr); margin: 0; }
+dt, dd {
+    min-width: 0;
+    margin: 0;
+    padding: 7px 4px;
+    border-top: 1px solid var(--vscode-panel-border);
+    overflow-wrap: anywhere;
+}
+dt small { display: block; margin-top: 3px; }
+dd { font-family: var(--vscode-editor-font-family); }
+ol { margin: 6px 0; padding-left: 18px; }
+
+@media (max-width: 355px) {
+    main { grid-template-columns: minmax(0, 1fr); }
+    .tree { max-height: 220px; overflow: auto; }
+}

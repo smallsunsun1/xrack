@@ -272,6 +272,11 @@ export component ItemDelegatesDemo inherits Window {
                     for setting in root.settings : SwitchDelegate {
                         text: setting.label;
                         checked <=> setting.enabled;
+                        SwitchThumb {
+                            width: 14px; height: 14px;
+                            background: setting.enabled ? #67d4cf : #c3ccd8;
+                            border-radius: 4px;
+                        }
                         toggled => { root.edits += 1; }
                     }
                 }
@@ -733,6 +738,221 @@ export component GridDemo inherits Window {
             cross-axis-alignment: center;
             jump-grid := Button { text: "跳到目标"; clicked() => { root.current = root.jump-index; } }
             Text { text: "索引 " + root.current + " · 用户选择 " + root.selections + " 次"; color: #acc0db; }
+        }
+    }
+}
+
+export struct ViewCountRow {
+    key: int,
+    parent: int,
+    title: string,
+    shown: bool,
+}
+
+component EmptyTableContent inherits Rectangle {
+    callback recovered();
+    Text { x: 12px; y: 12px; text: "没有匹配的表格记录"; }
+    retry-table := Button {
+        x: 12px; y: 45px; width: 136px; text: "清除筛选";
+        clicked => { root.recovered(); }
+    }
+}
+
+export component ViewCountsDemo inherits Window {
+    title: "XRack · 数据视图行数";
+    width: 780px; height: 422px;
+    background: #182331;
+
+    in property <[ViewCountRow]> sample: [
+        ViewCountRow { key: 1, parent: -1, title: "文档", shown: true },
+        ViewCountRow { key: 2, parent: 1, title: "计划", shown: false },
+        ViewCountRow { key: 3, parent: -1, title: "图片", shown: true },
+    ];
+    in-out property <[ViewCountRow]> records: root.sample;
+    in-out property <string> query: "";
+    in-out property <int> selected-key: -1;
+    out property <int> selection-events: 0;
+    out property <int> row-activations: 0;
+    out property <int> retry-count: 0;
+    out property <int> search-source-count: search.source-row-count;
+    out property <int> search-match-count: search.row-count;
+    callback select-source(int);
+    select-source(row) => { summary.select-source-index(row); }
+    pure callback table-query() -> string;
+    table-query => { root.query }
+
+    HorizontalLayout {
+        x: 12px; y: 8px; width: 756px; height: 34px; spacing: 8px;
+        hide := Button {
+            text: "筛选无结果";
+            clicked => {
+                root.records = [ViewCountRow { key: 1, parent: -1, title: "文档", shown: false }];
+                root.query = "missing";
+            }
+        }
+        clear := Button { text: "清空模型"; clicked => { root.records = []; } }
+        restore := Button { text: "恢复"; clicked => { root.records = root.sample; root.query = ""; } }
+        expand := Button { text: "展开文档"; clicked => { folders.expand(1); } }
+        reorder := Button {
+            text: "交换记录";
+            clicked => {
+                root.records = [
+                    ViewCountRow { key: 3, parent: -1, title: "图片", shown: true },
+                    ViewCountRow { key: 2, parent: 1, title: "计划", shown: false },
+                    ViewCountRow { key: 1, parent: -1, title: "文档", shown: true },
+                ];
+            }
+        }
+        selection-label := Label { text: "选中键 " + root.selected-key; }
+    }
+
+    entries := ListView {
+        row-key-field: "key";
+        current-key <=> root.selected-key;
+        changed(index) => { root.selection-events += 1; }
+        x: 12px; y: 72px; width: 242px; height: 132px;
+        row-height: 28px; row-visible-field: "shown";
+        for row in root.records : ItemDelegate {
+            text: row.title;
+            clicked => { root.row-activations += 1; }
+        }
+        list-empty := EmptyState {
+            retry-list := Button {
+                x: 12px; y: 50px; width: 128px;
+                text: "恢复记录";
+                clicked => { root.records = root.sample; root.query = ""; root.retry-count += 1; }
+            }
+            empty-note := Text {
+                x: 12px; y: 12px;
+                text: entries.source-row-count == 0 ? "暂无记录" : "没有符合条件的记录";
+            }
+        }
+    }
+    list-count := Text {
+        x: 12px; y: 49px;
+        text: "列表 " + entries.row-count + " / " + entries.source-row-count;
+    }
+    tiles := GridView {
+        row-key-field: "key";
+        current-key <=> root.selected-key;
+        changed(index) => { root.selection-events += 1; }
+        x: 268px; y: 72px; width: 242px; height: 132px;
+        cell-width: 108px; cell-height: 32px; row-visible-field: "shown";
+        for row in root.records : Text { text: row.title; }
+        grid-empty := EmptyState {
+            Text { x: 12px; y: 12px; text: "网格无结果"; }
+        }
+    }
+    grid-count := Text {
+        x: 268px; y: 49px;
+        text: "网格 " + tiles.row-count + " / " + tiles.source-row-count;
+    }
+    summary := StandardListView {
+        row-key-field: "key";
+        current-key <=> root.selected-key;
+        changed(index) => { root.selection-events += 1; }
+        x: 524px; y: 72px; width: 242px; height: 132px;
+        model: root.records; text-role: "title"; row-visible-field: "shown";
+        standard-empty := EmptyState {
+            Text { x: 12px; y: 12px; text: "标准列表无结果"; }
+        }
+    }
+    standard-count := Text {
+        x: 524px; y: 49px;
+        text: "标准列表 " + summary.row-count + " / " + summary.source-row-count;
+    }
+
+    table := TableView {
+        x: 12px; y: 246px; width: 242px; height: 158px;
+        row-height: 28px; row-visible-field: "shown";
+        TableColumn { title: "名称"; width: 220px; }
+        for row in root.records : TableRow { Text { text: row.title; } }
+        table-empty := EmptyState {
+            Text { x: 12px; y: 12px; text: "表格无结果"; }
+        }
+    }
+    table-count := Text {
+        x: 12px; y: 223px;
+        text: "表格 " + table.row-count + " / " + table.source-row-count;
+    }
+    search := StandardTableView {
+        x: 268px; y: 246px; width: 242px; height: 158px;
+        model: root.records; filter-field: "title"; filter-text: root.table-query();
+        TableColumn { title: "名称"; field: "title"; width: 220px; }
+        search-empty := EmptyState {
+            recover-table := EmptyTableContent {
+                width: 100%; height: 100%;
+                recovered => { root.query = ""; root.records = root.sample; root.retry-count += 1; }
+            }
+        }
+    }
+    search-count := Text {
+        x: 268px; y: 223px;
+        text: "搜索表格 " + search.row-count + " / " + search.source-row-count;
+    }
+    folders := TreeView {
+        x: 524px; y: 246px; width: 242px; height: 158px;
+        row-height: 28px; filter-field: "title"; filter-text: root.query;
+        for row in root.records : TreeRow {
+            key: row.key;
+            parent-key: row.parent;
+            Text { text: row.title; }
+        }
+        tree-empty := EmptyState {
+            Text { x: 12px; y: 12px; text: "目录无结果"; }
+        }
+    }
+    tree-count := Text {
+        x: 524px; y: 223px;
+        text: "目录 " + folders.row-count + " / " + folders.source-row-count;
+    }
+}
+
+
+export component KeyNavigationDemo inherits Window {
+    title: "XRack · 按键定位记录";
+    width: 480px; height: 260px;
+    background: #182331;
+    in-out property <[ViewCountRow]> records: [
+        ViewCountRow { key: 10, parent: -1, title: "启动界面", shown: true },
+        ViewCountRow { key: 20, parent: -1, title: "载入配置", shown: true },
+        ViewCountRow { key: 30, parent: -1, title: "打开工作区", shown: true },
+        ViewCountRow { key: 40, parent: -1, title: "读取记录", shown: true },
+        ViewCountRow { key: 50, parent: -1, title: "更新索引", shown: true },
+        ViewCountRow { key: 60, parent: -1, title: "请求数据", shown: true },
+        ViewCountRow { key: 70, parent: -1, title: "读取缓存", shown: true },
+        ViewCountRow { key: 80, parent: -1, title: "检查条目", shown: true },
+        ViewCountRow { key: 90, parent: -1, title: "提交更改", shown: true },
+        ViewCountRow { key: 100, parent: -1, title: "保存状态", shown: true },
+        ViewCountRow { key: 110, parent: -1, title: "同步界面", shown: true },
+        ViewCountRow { key: 120, parent: -1, title: "准备就绪", shown: true },
+    ];
+    in-out property <int> selected-key: -1;
+    out property <int> selection-position: entries.selected-view-index;
+    out property <int> changed-count: 0;
+
+    callback select-target(int);
+    select-target(key) => { entries.select-key(key); }
+    callback reveal-target(int);
+    reveal-target(key) => { entries.position-view-at-key(key, beginning); }
+
+    HorizontalLayout {
+        x: 12px; y: 12px; width: 456px; height: 34px; spacing: 10px;
+        select-button := Button { text: "选中记录 80"; clicked => { root.select-target(80); } }
+        reveal-button := Button { text: "滚动到记录 80"; clicked => { root.reveal-target(80); } }
+    }
+    status := Label {
+        x: 12px; y: 56px;
+        text: "选中键 " + root.selected-key + " · 显示索引 " + root.selection-position;
+    }
+    entries := ListView {
+        x: 12px; y: 90px; width: 456px; height: 154px; row-height: 28px;
+        row-key-field: "key";
+        row-visible-field: "shown";
+        current-key <=> root.selected-key;
+        changed(index) => { root.changed-count += 1; }
+        for row in root.records : ItemDelegate {
+            text: row.key + " · " + row.title;
         }
     }
 }

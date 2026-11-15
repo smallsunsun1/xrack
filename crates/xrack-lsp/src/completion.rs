@@ -19,8 +19,9 @@ use xrack_ir::semantic::{
     builtin_event, builtin_property, content_viewport, control_alias_type, focus_property,
     geometry_owner, geometry_property, hover_property, is_builtin, layout_item_property,
     scale_rotate_property, state_property, swipe_property, table_history_property,
-    table_selection_property, table_sort_property, touch_area_property, viewport_kind,
-    viewport_offset_property, window_status_property,
+    table_selection_property, table_sort_property, text_command_property, text_selection_property,
+    touch_area_property, view_count_property, viewport_kind, viewport_offset_property,
+    window_status_property,
 };
 use xrack_parser::{ast::Type, builtins};
 
@@ -704,7 +705,7 @@ impl<'a> Items<'a> {
     fn elements(&mut self, index: &Index<'a>) {
         self.import_kind = Some(CLASS);
         for kind in catalog::ELEMENTS.split_ascii_whitespace().filter(|kind| {
-            is_builtin(kind) && xrack_ir::semantic::control_part_parent(kind).is_none()
+            is_builtin(kind) && xrack_ir::semantic::control_part_parents(kind).is_empty()
         }) {
             self.add(kind, CLASS, "built-in element");
         }
@@ -1150,10 +1151,15 @@ fn suggest<'a>(index: &Index<'a>, scope: usize, head: &[&Token<'a>], items: &mut
     if !kind.is_empty() {
         let animation = first == "animate";
         for property in catalog::PROPERTIES.split_ascii_whitespace() {
-            if kind == "MediaPlayer" && xrack_ir::semantic::media_read_type(property).is_some()
+            if xrack_ir::semantic::media_object_read_type(kind, property).is_some()
+                || (builtins::text_submission_editor(kind) && property == "acceptable-input")
+                || (animation && builtins::text_submission_rule(kind, property))
                 || matches!(property, "content-x" | "content-y")
                     && (animation || !viewport_offset_property(kind, property))
                 || focus_property(kind, property)
+                || view_count_property(kind, property)
+                || xrack_ir::semantic::list_selection_property(kind, property)
+                || text_command_property(kind, property)
                 || hover_property(kind, property).is_some()
                 || touch_area_property(kind, property).is_some()
                 || kind == "ButtonGroup" && property == "check-state"
@@ -1262,11 +1268,17 @@ fn suggest<'a>(index: &Index<'a>, scope: usize, head: &[&Token<'a>], items: &mut
                 items.elements(index);
                 return;
             }
-            if kind == "Button" {
-                items.add("ButtonContent", CLASS, "replacement button content");
-            }
-            if kind == "Slider" {
-                items.add("SliderHandle", CLASS, "replacement slider handle");
+            for part in catalog::ELEMENTS.split_ascii_whitespace() {
+                if xrack_ir::semantic::control_part_parents(part)
+                    .contains(&xrack_ir::semantic::delegate_base(kind).unwrap_or(kind))
+                {
+                    let detail = match part {
+                        "EmptyState" => "content shown when the view has no rows",
+                        "SwitchThumb" => "switch thumb laid out at the current drag position",
+                        _ => "replacement control part",
+                    };
+                    items.add(part, CLASS, detail);
+                }
             }
             items.add("@children", KEYWORD, catalog::CHILDREN_DOC);
             for event in catalog::EVENTS
@@ -1504,6 +1516,28 @@ fn qualified<'a>(index: &Index<'a>, scope: usize, head: &[&Token<'a>], items: &m
                 items.add(property, PROPERTY, "read-only bool");
             }
         }
+        if xrack_ir::semantic::list_selection_property(kind, "selected-view-index") {
+            items.add(
+                "selected-view-index",
+                PROPERTY,
+                "read-only int · displayed selection position",
+            );
+        }
+        for property in builtins::VIEW_COUNT_PROPERTIES {
+            if view_count_property(kind, property) {
+                items.add(property, PROPERTY, "read-only int");
+            }
+        }
+        for property in builtins::TEXT_COMMAND_PROPERTIES {
+            if text_command_property(kind, property) {
+                items.add(property, PROPERTY, "read-only bool");
+            }
+        }
+        for property in builtins::TEXT_SELECTION_PROPERTIES {
+            if let Some(ty) = text_selection_property(kind, property) {
+                items.add(property, PROPERTY, &format!("read-only {}", ty.name()));
+            }
+        }
         if xrack_ir::semantic::is_window(kind) {
             items.words(
                 "window-active minimized minimized-known maximized full-screen",
@@ -1563,7 +1597,15 @@ fn qualified<'a>(index: &Index<'a>, scope: usize, head: &[&Token<'a>], items: &m
             Role::Element { kind, .. } | Role::Component { base: kind, .. } => kind,
             _ => "",
         };
-        if kind == "MediaPlayer" {
+        if builtins::text_submission_editor(kind) {
+            items.add(
+                "acceptable-input",
+                PROPERTY,
+                "read-only bool · valid for submission",
+            );
+        }
+        let media_methods = catalog::media_methods(kind);
+        if !media_methods.is_empty() {
             for property in [
                 "position",
                 "duration",
@@ -1588,11 +1630,11 @@ fn qualified<'a>(index: &Index<'a>, scope: usize, head: &[&Token<'a>], items: &m
                 "buffer-progress",
                 "bitrate",
             ] {
-                if let Some(ty) = xrack_ir::semantic::media_read_type(property) {
+                if let Some(ty) = xrack_ir::semantic::media_object_read_type(kind, property) {
                     items.add(property, PROPERTY, &format!("read-only {}", ty.name()));
                 }
             }
-            for method in catalog::MEDIA_METHODS {
+            for method in media_methods {
                 items.add(method.name, FUNCTION, &method.signature());
             }
         }
@@ -1714,6 +1756,9 @@ fn qualified<'a>(index: &Index<'a>, scope: usize, head: &[&Token<'a>], items: &m
             }
             if matches!(role, Role::Handler) {
                 items.add("scroll-to", FUNCTION, "(length, length)");
+                for method in catalog::list_key_methods(kind) {
+                    items.add(method.name, FUNCTION, &method.signature());
+                }
                 if !content_viewport(kind) {
                     items.add("select-source-index", FUNCTION, "(source: int)");
                     items.add("position-view-at-index", FUNCTION, "(int, ScrollAlignment)");

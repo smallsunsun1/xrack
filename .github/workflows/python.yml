@@ -1,0 +1,129 @@
+name: Python wheels
+
+on:
+  push:
+    branches: [main]
+    tags: ['v[0-9]*']
+  pull_request:
+    paths:
+      - '.github/workflows/python.yml'
+      - 'bindings/python/**'
+      - 'crates/**'
+      - 'grammar/**'
+      - 'mlir/**'
+      - 'bazel/**'
+      - '.bazelrc'
+      - '.bazelversion'
+      - 'MODULE.bazel*'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'rust-toolchain.toml'
+      - 'examples/async_demo/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  wheel:
+    name: Wheel (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 180
+    env:
+      CARGO_BAZEL_ISOLATED: "false"
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-26
+            target: aarch64-apple-darwin
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+          - os: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+          - os: windows-2025
+            target: x86_64-pc-windows-msvc
+          - os: windows-11-arm
+            target: aarch64-pc-windows-msvc
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - name: Configure the Windows LLVM toolchain
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          BAZEL_MSVC_RUNTIME_VISUAL_STUDIO_EULA: ${{ vars.BAZEL_MSVC_RUNTIME_VISUAL_STUDIO_EULA }}
+          BAZEL_WINDOWS_SDK_EULA: ${{ vars.BAZEL_WINDOWS_SDK_EULA }}
+        run: |
+          if ($env:BAZEL_MSVC_RUNTIME_VISUAL_STUDIO_EULA -ne '1' -or $env:BAZEL_WINDOWS_SDK_EULA -ne '1') {
+            throw 'Set the two Windows LLVM toolchain license variables first.'
+          }
+          "BAZEL_SH=C:/msys64/usr/bin/bash.exe" >> $env:GITHUB_ENV
+          "BAZEL_MSVC_RUNTIME_VISUAL_STUDIO_EULA=$env:BAZEL_MSVC_RUNTIME_VISUAL_STUDIO_EULA" >> $env:GITHUB_ENV
+          "BAZEL_WINDOWS_SDK_EULA=$env:BAZEL_WINDOWS_SDK_EULA" >> $env:GITHUB_ENV
+      - name: Select native Rust on Windows ARM64
+        if: matrix.os == 'windows-11-arm'
+        run: rustup set default-host aarch64-pc-windows-msvc
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
+          architecture: ${{ runner.arch == 'ARM64' && 'arm64' || 'x64' }}
+      - uses: bazel-contrib/setup-bazel@c5acdfb288317d0b5c0bbd7a396a3dc868bb0f86 # 0.19.0
+        with:
+          bazelisk-cache: true
+          repository-cache: |
+            - .bazelversion
+            - MODULE.bazel
+            - Cargo.lock
+          disk-cache: true
+          cache-save: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+          bazelrc: |
+            build --jobs=${{ runner.os == 'macOS' && '3' || '4' }}
+      - name: Install Linux wheel repair tools
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y patchelf
+          python -m pip install auditwheel==6.8.2
+      - name: Test the Bazel Python bindings
+        run: bazel test --lockfile_mode=update --repo_env=CARGO_BAZEL_ISOLATED=false //bindings/python:binding_test
+      - name: Build and smoke-test the installed wheel
+        run: python bindings/python/package_wheel.py build --target ${{ matrix.target }} --output .tools/python-dist
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: xrack-python-${{ matrix.target }}
+          path: .tools/python-dist/*.whl
+          include-hidden-files: true
+          if-no-files-found: error
+          compression-level: 0
+
+  publish:
+    if: >-
+      github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') &&
+      !contains(github.ref_name, '-') && !contains(github.ref_name, '+')
+    needs: wheel
+    runs-on: ubuntu-24.04
+    environment: pypi
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Require a release commit on main
+        run: git merge-base --is-ancestor "$GITHUB_SHA" origin/main
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          pattern: xrack-python-*
+          merge-multiple: true
+          path: .tools/python-dist
+      - name: Verify the release version and all six wheels
+        run: python3 bindings/python/package_wheel.py verify-release --artifacts .tools/python-dist --tag "$GITHUB_REF_NAME"
+      - uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # release/v1
+        with:
+          packages-dir: .tools/python-dist/

@@ -100,6 +100,174 @@ fn slotted_content_and_replacement_controls_paint_identically_in_both_backends()
 }
 
 #[test]
+fn custom_spin_indicators_paint_identically_and_keep_the_other_default_arrow() {
+    use xrack_runtime::Component;
+
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))
+    .unwrap();
+    let size = Size::new(440.0, 250.0);
+    let mut aot = slots_ui::SpinIndicatorDemo::new();
+    let interpreter = interpret_example("examples/slots/slots.xr")
+        .create("SpinIndicatorDemo")
+        .unwrap();
+    let text = xrack_renderer_femtovg::TextSystem::system().unwrap();
+
+    for rtl in [false, true] {
+        aot.set_rtl(rtl);
+        interpreter.set("rtl", rtl.into()).unwrap();
+        let mut input = Interaction::default();
+        let (scene, layout) = renderer.prepare_scene(&aot, aot.render_shared(), size, &input);
+        let path = [0, 2];
+        let price = layout.at_path(&path).unwrap();
+        let node = scene.at_path(&path).unwrap();
+        let geometry = SpinGeometry::for_layout(price, node);
+        let snapshot = renderer.snapshot(&scene, 440, 250, 1.0, &input).unwrap();
+        let (interpreted_scene, _) =
+            renderer.prepare_scene(&interpreter, interpreter.render_shared(), size, &input);
+        let interpreted = renderer
+            .snapshot(&interpreted_scene, 440, 250, 1.0, &input)
+            .unwrap();
+        assert_same_pixels(&interpreted, &snapshot);
+
+        let paint_at = |rect: xrack_layout::Rect| {
+            snapshot.pixel((rect.x + 10.0) as u32, (rect.y + 8.0) as u32)
+        };
+        assert_eq!(paint_at(geometry.up), Some([0x26, 0x3d, 0x50, 0xff]));
+        assert_ne!(paint_at(geometry.down), paint_at(geometry.up));
+        let target = input.accessibility_target(&scene, &layout, &path).unwrap();
+        input.accessibility_focus(target.clone());
+        input.sync_editor(&scene);
+        let caret = text
+            .editor_ime_area(&mut input, &scene, &layout, true)
+            .unwrap();
+        assert_eq!(caret.x > geometry.text.x + geometry.text.width * 0.5, rtl);
+        assert!(
+            caret.x >= geometry.text.x
+                && caret.x + caret.width <= geometry.text.x + geometry.text.width
+        );
+        let button = Point {
+            x: geometry.up.x + 4.0,
+            y: geometry.up.y + 4.0,
+        };
+        assert!(
+            xrack_renderer_femtovg::PointerCaret::new(
+                &input, &scene, &layout, &target, button, button, false
+            )
+            .is_none()
+        );
+        let entry = Point {
+            x: caret.x,
+            y: caret.y + caret.height * 0.5,
+        };
+        let caret_hit = xrack_renderer_femtovg::PointerCaret::new(
+            &input, &scene, &layout, &target, entry, entry, false,
+        )
+        .unwrap();
+        assert!(caret_hit.place(&text, &mut input, &scene, &layout));
+    }
+}
+
+#[test]
+fn custom_range_handle_follows_the_same_rendered_preview_in_both_backends() {
+    use xrack_runtime::Component;
+
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))
+    .unwrap();
+    let size = Size::new(440.0, 300.0);
+    let aot = slots_ui::RangeHandleDemo::new();
+    let interpreter = interpret_example("examples/slots/slots.xr")
+        .create("RangeHandleDemo")
+        .unwrap();
+    let mut input = Interaction::default();
+    let (scene, layout) = renderer.prepare_scene(&aot, aot.render_shared(), size, &input);
+    let original = layout.at_path(&[0, 1, 0]).unwrap().bounds;
+    let track = SliderGeometry::for_node(
+        layout.at_path(&[0, 1]).unwrap().bounds,
+        scene.find("band").unwrap(),
+    );
+    input.pointer_move(&scene, &layout, track.position(0.2));
+    input.pointer_press_in_scene(&scene, &layout);
+    assert!(input.slider_press(&scene, &layout).is_none());
+    input.pointer_move(&scene, &layout, track.position(0.48));
+    assert!(input.slider_drag(&scene, &layout).is_none());
+
+    let (scene, layout) = renderer.prepare_scene(&aot, aot.render_shared(), size, &input);
+    let moved = layout.at_path(&[0, 1, 0]).unwrap().bounds;
+    let expected = track.position(0.48);
+    assert!((moved.x + moved.width * 0.5 - expected.x).abs() < 0.01);
+    assert!(moved.x > original.x);
+    let painted = renderer
+        .snapshot_prepared(&scene, layout, 440, 300, 1.0, &input)
+        .unwrap();
+    let (scene, layout) =
+        renderer.prepare_scene(&interpreter, interpreter.render_shared(), size, &input);
+    let interpreted = renderer
+        .snapshot_prepared(&scene, layout, 440, 300, 1.0, &input)
+        .unwrap();
+    assert_same_pixels(&interpreted, &painted);
+
+    let center = |rect: xrack_layout::Rect| {
+        painted.pixel(
+            (rect.x + rect.width * 0.5) as u32,
+            (rect.y + rect.height * 0.5) as u32,
+        )
+    };
+    let custom = Some([0xd7, 0x7d, 0x4d, 0xff]);
+    assert_eq!(center(moved), custom);
+    let old_edge = Point {
+        x: original.x + 6.0,
+        y: original.y + original.height * 0.5,
+    };
+    assert!(!moved.contains(old_edge));
+    assert_ne!(painted.pixel(old_edge.x as u32, old_edge.y as u32), custom);
+}
+
+#[test]
+fn repeated_tab_content_paints_the_revealed_selection_identically_in_both_backends() {
+    use xrack_runtime::{Component, Value};
+
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))
+    .unwrap();
+    let size = Size::new(432.0, 246.0);
+    let input = Interaction::default();
+    let mut aot = slots_ui::TabContentDemo::new();
+    aot.set_selected(2);
+    let interpreter = interpret_example("examples/slots/slots.xr")
+        .create("TabContentDemo")
+        .unwrap();
+    interpreter.set("selected", Value::Int(2)).unwrap();
+
+    let (scene, layout) = renderer.prepare_scene(&aot, aot.render_shared(), size, &input);
+    let bar = layout.at_path(&[0]).unwrap();
+    let art = layout.at_path(&[0, 2, 0, 0]).unwrap().bounds;
+    assert_eq!(art.intersect(bar.bounds), art);
+    assert_eq!(art.width, 100.0);
+    let compiled = renderer
+        .snapshot_prepared(&scene, layout, 432, 246, 1.0, &input)
+        .unwrap();
+    assert_eq!(
+        compiled.pixel((art.x + 9.0) as u32, (art.y + art.height * 0.5) as u32),
+        Some([0x20, 0x8c, 0x78, 0xff]),
+    );
+
+    let (scene, layout) =
+        renderer.prepare_scene(&interpreter, interpreter.render_shared(), size, &input);
+    let interpreted = renderer
+        .snapshot_prepared(&scene, layout, 432, 246, 1.0, &input)
+        .unwrap();
+    assert_same_pixels(&interpreted, &compiled);
+}
+
+#[test]
 fn disabled_touch_area_keeps_its_border_and_the_child_buttons_enabled_style() {
     use layout_ui::PointerPassThroughDemo;
     use xrack_runtime::Component;
@@ -10299,4 +10467,627 @@ fn media_texture_updates_pixels_without_affecting_layout() {
     let next = renderer.snapshot(&root, 320, 180, 1.0, &input).unwrap();
     assert_eq!(first.pixel(160, 90), Some([255, 0, 0, 255]));
     assert_eq!(next.pixel(160, 90), Some([0, 255, 0, 255]));
+}
+
+#[test]
+fn inherited_text_alignment_keeps_drawn_text_links_and_editor_hits_in_sync() {
+    use xrack_layout::{Interaction, Point, Size};
+    use xrack_renderer_femtovg::PointerCaret;
+    use xrack_runtime::Component;
+
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))
+    .unwrap();
+
+    fn exercise(renderer: &mut Renderer, ui: &mut impl Component) -> [Vec<u8>; 2] {
+        let size = Size::new(500.0, 300.0);
+        let mut images = [Vec::new(), Vec::new()];
+        for (iteration, rtl) in [true, false].into_iter().enumerate() {
+            let input = Interaction::default();
+            let (scene, layout) = renderer.prepare_scene(ui, ui.render_shared(), size, &input);
+            let slot = |id| {
+                scene
+                    .children
+                    .iter()
+                    .position(|node| node.element_id() == Some(id))
+                    .unwrap()
+            };
+            let details = layout.at_path(&[slot("details")]).unwrap();
+            let (_, link) = details.text_link_regions().next().unwrap();
+            assert_eq!(link.x > details.bounds.x + details.bounds.width * 0.5, rtl);
+
+            for id in ["line-edit", "notes-edit"] {
+                let path = [slot(id)];
+                let item = layout.at_path(&path).unwrap();
+                let mut input = Interaction::default();
+                let target = input.accessibility_target(&scene, &layout, &path).unwrap();
+                input.accessibility_focus(target.clone());
+                input.sync_editor(&scene);
+                let point = Point {
+                    x: item.bounds.x + 80.0,
+                    y: item.bounds.y + 10.0,
+                };
+                let pointer =
+                    PointerCaret::new(&input, &scene, &layout, &target, point, point, false)
+                        .unwrap();
+                assert!(pointer.place(&renderer.text, &mut input, &scene, &layout));
+                let value = scene.at_path(&path).unwrap().text("text").unwrap();
+                assert_eq!(
+                    input.editor.as_ref().unwrap().caret(value),
+                    if rtl { 0 } else { 3 }
+                );
+                let ime = renderer
+                    .text
+                    .editor_ime_area(&mut input, &scene, &layout, true)
+                    .unwrap();
+                assert_eq!(ime.x > item.bounds.x + item.bounds.width * 0.5, rtl);
+
+                if id == "line-edit" {
+                    let before = renderer.snapshot(&scene, 500, 300, 1.0, &input).unwrap();
+                    input.apply_text_selection(&scene, xrack_runtime::TextCommand::SelectAll);
+                    let selected = renderer.snapshot(&scene, 500, 300, 1.0, &input).unwrap();
+                    let mut changed = 0;
+                    for y in (item.bounds.y as u32 + 6)
+                        ..((item.bounds.y + item.bounds.height) as u32 - 6)
+                    {
+                        for x in (item.bounds.x as u32 + 6)
+                            ..((item.bounds.x + item.bounds.width) as u32 - 6)
+                        {
+                            if before.pixel(x, y) != selected.pixel(x, y) {
+                                assert_eq!(x as f32 > item.bounds.x + item.bounds.width * 0.5, rtl);
+                                changed += 1;
+                            }
+                        }
+                    }
+                    assert!(changed > 0);
+                }
+            }
+
+            images[iteration] = renderer
+                .snapshot(&scene, 500, 300, 1.0, &input)
+                .unwrap()
+                .rgba;
+            if rtl {
+                assert!(ui.dispatch("toggle-direction", "clicked"));
+            }
+        }
+        assert_ne!(images[0], images[1]);
+        images
+    }
+
+    let mut native = form_ui::TextAlignmentDemo::new();
+    let mut interpreted = interpret_example("examples/form/form.xr")
+        .create("TextAlignmentDemo")
+        .unwrap();
+    let expected = exercise(&mut renderer, &mut native);
+    assert_eq!(exercise(&mut renderer, &mut interpreted), expected);
+    assert_eq!(interpreted.take_error(), None);
+}
+
+#[test]
+fn inherited_rtl_mirrors_slider_fill_and_preserves_interval_fill() {
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))
+    .unwrap();
+    let mut native = controls_ui::DirectionalSlidersDemo::new();
+    let source = include_str!("../examples/controls/controls.xr");
+    let compiled =
+        xrack_compiler::prepare_preview(source, "controls.xr", Default::default()).unwrap();
+    let interpreter = xrack_interpreter::Program::from_module(&compiled.module)
+        .unwrap()
+        .create("DirectionalSlidersDemo")
+        .unwrap();
+    let input = Interaction::default();
+    let fill = Some([0x53, 0x6d, 0xfe, 0xff]);
+    let rail = Some([0x35, 0x41, 0x5b, 0xff]);
+
+    for rtl in [true, false] {
+        native.set_rtl(rtl);
+        interpreter.set("rtl", rtl.into()).unwrap();
+        let native = renderer
+            .snapshot(&native.render(), 400, 260, 1.0, &input)
+            .unwrap();
+        let interpreter = renderer
+            .snapshot(&interpreter.render(), 400, 260, 1.0, &input)
+            .unwrap();
+        assert_same_pixels(&interpreter, &native);
+        let sample = |path: &[usize], fraction: f64| {
+            let bounds = native.layout.at_path(path).unwrap().bounds;
+            let physical = SliderGeometry::new(bounds, Orientation::Horizontal);
+            let point = physical.position(fraction);
+            native.pixel(point.x as u32, point.y as u32)
+        };
+        assert_eq!(sample(&[1, 0], 0.08), if rtl { rail } else { fill });
+        assert_eq!(sample(&[1, 0], 0.92), if rtl { fill } else { rail });
+        assert_eq!(sample(&[1, 1], 0.5), fill);
+        assert_eq!(sample(&[1, 1], 0.08), rail);
+        assert_eq!(sample(&[1, 1], 0.92), rail);
+    }
+}
+
+#[test]
+fn rtl_tab_headers_paint_on_the_selected_logical_side_in_both_backends() {
+    use xrack_runtime::Orientation;
+
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))
+    .unwrap();
+    let mut native = navigation_ui::DirectionalTabsDemo::new();
+    let filename = "examples/navigation/navigation.xr";
+    let source = include_str!("../examples/navigation/navigation.xr");
+    let preview = xrack_compiler::prepare_preview(source, filename, Default::default()).unwrap();
+    let interpreted = xrack_interpreter::Program::from_module(&preview.module)
+        .unwrap()
+        .create("DirectionalTabsDemo")
+        .unwrap();
+    let input = Interaction::default();
+    for (page, vertical) in [(0_i64, false), (5, true)] {
+        native.set_page(page);
+        native.set_vertical(vertical);
+        interpreted.set("page", page.into()).unwrap();
+        interpreted.set("vertical", vertical.into()).unwrap();
+        let actual = renderer
+            .snapshot(&interpreted.render(), 624, 264, 1.0, &input)
+            .unwrap();
+        let expected = renderer
+            .snapshot(&native.render(), 624, 264, 1.0, &input)
+            .unwrap();
+        assert_same_pixels(&actual, &expected);
+        let bar = actual.layout.child_at(2).unwrap();
+        let scroll = bar.scroll_on(Orientation::Horizontal).unwrap();
+        let header = bar.child_at(page as usize).unwrap().bounds;
+        assert_eq!(header.intersect(bar.bounds), header);
+        let scrolled = if page == 0 { scroll.max_offset } else { 0.0 };
+        assert_eq!(scroll.offset, scrolled);
+        let widget = actual.layout.child_at(4).unwrap();
+        let selected = widget.child_at(0).unwrap().tab_header.unwrap();
+        assert!((selected.x + selected.width - widget.bounds.x - widget.bounds.width).abs() < 0.01);
+        assert_ne!(
+            actual.pixel(selected.x as u32 + 5, selected.y as u32 + 5),
+            actual.pixel(
+                widget.bounds.x as u32 + 5,
+                (widget.bounds.y + widget.bounds.height - 5.0) as u32
+            ),
+        );
+    }
+}
+
+#[test]
+fn rtl_feedback_mirrors_default_and_custom_indicators_in_both_backends() {
+    use xrack_layout::{PageIndicatorGeometry, ToggleGeometry};
+
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))
+    .unwrap();
+    let mut native = controls_ui::DirectionalFeedbackDemo::new();
+    let source = include_str!("../examples/controls/controls.xr");
+    let compiled =
+        xrack_compiler::prepare_preview(source, "controls.xr", Default::default()).unwrap();
+    let interpreter = xrack_interpreter::Program::from_module(&compiled.module)
+        .unwrap()
+        .create("DirectionalFeedbackDemo")
+        .unwrap();
+    let input = Interaction::default();
+
+    let mut knobs = Vec::new();
+    for rtl in [true, false] {
+        native.set_rtl(rtl);
+        interpreter.set("rtl", rtl.into()).unwrap();
+        let scene = native.render();
+        let native = renderer.snapshot(&scene, 464, 310, 1.0, &input).unwrap();
+        let interpreted = renderer
+            .snapshot(&interpreter.render(), 464, 310, 1.0, &input)
+            .unwrap();
+        assert_same_pixels(&interpreted, &native);
+        let sample = |x: f32, y: f32| native.pixel(x as u32, y as u32);
+        let toggle = |path: &[usize]| {
+            let item = native.layout.at_path(path).unwrap();
+            ToggleGeometry::new(
+                scene.at_path(path).unwrap(),
+                item.bounds,
+                item.layout_direction,
+            )
+        };
+
+        let check = toggle(&[1, 0]);
+        assert_eq!(check.indicator.x > check.label.x, rtl);
+        assert_eq!(
+            sample(check.indicator.x + 9.0, check.indicator.y + 9.0),
+            Some([0x38, 0x47, 0x61, 0xff])
+        );
+
+        let wifi = toggle(&[1, 1]);
+        let bounds = wifi.indicator;
+        assert_eq!(bounds.x > wifi.label.x, rtl);
+        let (left, right) = (
+            sample(bounds.x + 9.0, bounds.y + 9.0),
+            sample(bounds.x + bounds.width - 9.0, bounds.y + 9.0),
+        );
+        assert_ne!(left, right);
+        knobs.push((left, right));
+
+        let share = toggle(&[1, 2]);
+        let part = native.layout.at_path(&[1, 2, 0]).unwrap().bounds;
+        assert_eq!(part, share.indicator);
+        assert_eq!(share.label.x > part.x, rtl);
+        assert_eq!(
+            sample(part.x + 13.0, part.y + 10.0),
+            Some([0x78, 0x50, 0x75, 0xff])
+        );
+
+        let path = [1, 4];
+        let indicator = native.layout.at_path(&path).unwrap();
+        let markers: Vec<_> = PageIndicatorGeometry::with_layout_direction(
+            scene.at_path(&path).unwrap(),
+            indicator.bounds,
+            indicator.layout_direction,
+        )
+        .unwrap()
+        .markers()
+        .collect();
+        assert_eq!(markers[0].center.x > markers[3].center.x, rtl);
+        assert_eq!(
+            sample(markers[0].center.x, markers[0].center.y),
+            Some([0xf6, 0xad, 0x55, 0xff])
+        );
+
+        let meter = native.layout.at_path(&[1, 5]).unwrap().bounds;
+        let foreground = Some([0x67, 0xd4, 0xcf, 0xff]);
+        let track = Some([0x35, 0x41, 0x5b, 0xff]);
+        assert_eq!(
+            sample(meter.x + meter.width * 0.12, meter.y + 6.0),
+            if rtl { track } else { foreground },
+        );
+        assert_eq!(
+            sample(meter.x + meter.width * 0.88, meter.y + 6.0),
+            if rtl { foreground } else { track },
+        );
+    }
+    assert_eq!(knobs[0], (knobs[1].1, knobs[1].0));
+}
+
+#[test]
+fn switch_thumb_follows_the_drag_before_the_bound_value_changes() {
+    use std::time::{Duration, Instant};
+    use xrack_layout::{ScrollGestureKind, ToggleGeometry};
+
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))
+    .unwrap();
+    let native = controls_ui::DirectionalFeedbackDemo::new();
+    let source = include_str!("../examples/controls/controls.xr");
+    let compiled =
+        xrack_compiler::prepare_preview(source, "controls.xr", Default::default()).unwrap();
+    let interpreted = xrack_interpreter::Program::from_module(&compiled.module)
+        .unwrap()
+        .create("DirectionalFeedbackDemo")
+        .unwrap();
+    let mut input = Interaction::default();
+    let scene = native.render();
+    let before = renderer.snapshot(&scene, 464, 310, 1.0, &input).unwrap();
+    let path = [1, 1];
+    let item = before.layout.at_path(&path).unwrap();
+    let track = ToggleGeometry::new(
+        scene.at_path(&path).unwrap(),
+        item.bounds,
+        item.layout_direction,
+    )
+    .indicator;
+    let y = track.y + track.height * 0.5;
+    let start = Point {
+        x: track.x + 18.0,
+        y,
+    };
+    let moved = Point {
+        x: start.x + 13.5,
+        y,
+    };
+    let now = Instant::now();
+    assert!(input.begin_scroll_gesture(
+        &scene,
+        &before.layout,
+        start,
+        now,
+        ScrollGestureKind::MouseControl
+    ));
+    assert!(input.move_scroll_gesture(
+        &scene,
+        &before.layout,
+        moved,
+        now + Duration::from_millis(30)
+    ));
+
+    let preview = renderer.snapshot(&scene, 464, 310, 1.0, &input).unwrap();
+    let counterpart = renderer
+        .snapshot(&interpreted.render(), 464, 310, 1.0, &input)
+        .unwrap();
+    assert_same_pixels(&counterpart, &preview);
+    assert_eq!(
+        preview.layout.at_path(&path).unwrap().switch_position,
+        Some(0.25)
+    );
+    assert!(native.get_wireless());
+    assert_eq!(native.get_wireless_changes(), 0);
+    let initial = (track.x + 9.0) as u32;
+    let shifted = (track.x + 22.5) as u32;
+    assert_eq!(
+        before.pixel(initial, y as u32),
+        preview.pixel(shifted, y as u32)
+    );
+    assert_ne!(
+        before.pixel(initial, y as u32),
+        preview.pixel(initial, y as u32)
+    );
+    input.cancel_scroll_gesture();
+    let restored = renderer.snapshot(&scene, 464, 310, 1.0, &input).unwrap();
+    assert_same_pixels(&restored, &before);
+}
+
+#[test]
+fn switch_thumb_paints_above_its_custom_track_in_both_backends() {
+    use std::time::{Duration, Instant};
+    use xrack_layout::ScrollGestureKind;
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))
+    .unwrap();
+    let native = controls_ui::DirectionalFeedbackDemo::new();
+    let source = include_str!("../examples/controls/controls.xr");
+    let compiled =
+        xrack_compiler::prepare_preview(source, "controls.xr", Default::default()).unwrap();
+    let interpreted = xrack_interpreter::Program::from_module(&compiled.module)
+        .unwrap()
+        .create("DirectionalFeedbackDemo")
+        .unwrap();
+    let mut input = Interaction::default();
+    let scene = native.render();
+    let before = renderer.snapshot(&scene, 464, 310, 1.0, &input).unwrap();
+    let thumb = [1, 7, 0];
+    let bounds = before.layout.at_path(&thumb).unwrap().bounds;
+    let start = Point {
+        x: bounds.x + bounds.width * 0.5,
+        y: bounds.y + bounds.height * 0.5,
+    };
+    let end = Point {
+        x: start.x - 24.0,
+        ..start
+    };
+    let now = Instant::now();
+    assert!(input.begin_scroll_gesture(
+        &scene,
+        &before.layout,
+        start,
+        now,
+        ScrollGestureKind::MouseControl
+    ));
+    assert!(input.move_scroll_gesture(
+        &scene,
+        &before.layout,
+        end,
+        now + Duration::from_millis(30)
+    ));
+    let moved = renderer.snapshot(&scene, 464, 310, 1.0, &input).unwrap();
+    let interpreted = renderer
+        .snapshot(&interpreted.render(), 464, 310, 1.0, &input)
+        .unwrap();
+    assert_same_pixels(&interpreted, &moved);
+    assert_eq!(
+        moved.layout.at_path(&thumb).unwrap().bounds.x,
+        bounds.x - 24.0
+    );
+    let thumb_fill = Some([0xf6, 0xad, 0x55, 0xff]);
+    let track_fill = Some([0x41, 0x4f, 0x65, 0xff]);
+    assert_eq!(before.pixel(start.x as u32, start.y as u32), thumb_fill);
+    assert_eq!(moved.pixel(end.x as u32, end.y as u32), thumb_fill);
+    assert_eq!(moved.pixel(start.x as u32, start.y as u32), track_fill);
+    assert!(!native.get_custom_enabled());
+
+    input.cancel_scroll_gesture();
+    let restored = renderer.snapshot(&scene, 464, 310, 1.0, &input).unwrap();
+    assert_same_pixels(&restored, &before);
+}
+
+#[test]
+fn a_virtual_switch_thumb_drag_bypasses_cached_geometry_for_its_row() {
+    use std::time::{Duration, Instant};
+    use xrack_layout::ScrollGestureKind;
+
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))
+    .unwrap();
+    let ui = ItemDelegatesDemo::new();
+    let mut input = Interaction::default();
+    let size = Size::new(644.0, 398.0);
+    let root = ui.render_shared();
+    let path = [0, 1, 1, 1, 0, 0];
+    let thumb = [0, 1, 1, 1, 0, 0, 0];
+
+    let (scene, before) = renderer.prepare_scene(&ui, root.clone(), size, &input);
+    let bounds = before.at_path(&thumb).unwrap().bounds;
+    let start = Point {
+        x: bounds.x + bounds.width * 0.5,
+        y: bounds.y + bounds.height * 0.5,
+    };
+    let checked = scene.at_path(&path).unwrap().boolean("checked", false);
+    let dx = if checked { -12.0 } else { 12.0 };
+    let end = Point {
+        x: start.x + dx,
+        ..start
+    };
+    let now = Instant::now();
+    assert!(input.begin_scroll_gesture(&scene, &before, start, now, ScrollGestureKind::Touch));
+    assert!(input.move_scroll_gesture(&scene, &before, end, now + Duration::from_millis(30)));
+    let (_, preview) = renderer.prepare_scene(&ui, root.clone(), size, &input);
+    assert!(preview.at_path(&path).unwrap().switch_position.is_some());
+    let moved = preview.at_path(&thumb).unwrap().bounds;
+    assert!((moved.x - bounds.x - dx).abs() < 0.01);
+
+    input.cancel_scroll_gesture();
+    let (_, restored) = renderer.prepare_scene(&ui, root, size, &input);
+    assert_eq!(restored.at_path(&thumb).unwrap().bounds, bounds);
+}
+
+#[test]
+fn rtl_combo_paints_inline_completions_on_each_drafts_visual_side() {
+    use xrack_layout::TextEdit;
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))
+    .unwrap();
+    let mut native = selection_ui::DirectionalChoiceDemo::new();
+    let interpreted = interpret_example("examples/selection/selection.xr")
+        .create("DirectionalChoiceDemo")
+        .unwrap();
+    let size = Size::new(464.0, 284.0);
+    let path = [1, 0];
+    for (draft, suffix, key) in [
+        ("Al", "pha", NavigationKey::Right),
+        ("של", "ום", NavigationKey::Left),
+    ] {
+        native.set_draft(draft.into());
+        interpreted.set("draft", draft.to_owned().into()).unwrap();
+        let scene = native.render_shared();
+        let mut input = Interaction::default();
+        let layout = renderer.layout_with_input(&scene, size, &input);
+        let target = input.accessibility_target(&scene, &layout, &path).unwrap();
+        input.accessibility_focus(target);
+        input.editor = Some(TextEdit::at_end(draft));
+        let frame = renderer.snapshot(&scene, 464, 284, 1.0, &input).unwrap();
+        let painted = renderer.take_painted_combo_completion().unwrap();
+        assert_eq!(painted.suffix(), suffix);
+        let interpreted = renderer
+            .snapshot(&interpreted.render(), 464, 284, 1.0, &input)
+            .unwrap();
+        assert_same_pixels(&interpreted, &frame);
+        input.set_painted_combo_completion(Some(painted));
+        assert!(input.combo_completion_accepts(key));
+        let opposite = if key == NavigationKey::Left {
+            NavigationKey::Right
+        } else {
+            NavigationKey::Left
+        };
+        assert!(!input.combo_completion_accepts(opposite));
+        assert!(input.accept_combo_completion(&mut native, &scene, std::time::Instant::now()));
+        assert_eq!(native.get_draft(), format!("{draft}{suffix}"));
+    }
+}
+
+#[test]
+fn rtl_menus_paint_mirrored_icons_and_cascades_in_both_backends() {
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))
+    .unwrap();
+    let size = Size::new(620.0, 366.0);
+    let text = xrack_renderer_femtovg::TextSystem::system().unwrap();
+    let mut native = MenuDemo::new();
+    native.set_rtl(true);
+    native.set_show_grid(true);
+    let interpreted = interpret_example("examples/menu/menu.xr")
+        .create("MenuDemo")
+        .unwrap();
+    interpreted.set("rtl", true.into()).unwrap();
+    interpreted.set("show-grid", true.into()).unwrap();
+    let mut aot = UiDriver::new(
+        native,
+        xrack_renderer_femtovg::TextSystem::system().unwrap(),
+        size,
+    );
+    let mut interpreter = UiDriver::new(interpreted, text, size);
+    aot.click("view-menu");
+    interpreter.click("view-menu");
+    let aot_frame = renderer
+        .snapshot(aot.scene(), 620, 366, 1.0, aot.input())
+        .unwrap();
+    let interpreted_frame = renderer
+        .snapshot(interpreter.scene(), 620, 366, 1.0, interpreter.input())
+        .unwrap();
+    assert_same_pixels(&interpreted_frame, &aot_frame);
+    let panels = aot.menus();
+    let panel = &panels[0];
+    let icon = panel.icon_bounds(0);
+    assert!(icon.x > panel.bounds.x + panel.bounds.width * 0.5);
+    assert_eq!(panel.rows[0].checked, Some(true));
+    assert!((icon.x as u32..(icon.x + icon.width) as u32).any(|x| {
+        (icon.y as u32..(icon.y + icon.height) as u32)
+            .any(|y| aot_frame.pixel(x, y) == Some([0xff, 0xb4, 0x54, 255]))
+    }));
+
+    aot.menu_key(MenuKey::Escape);
+    interpreter.menu_key(MenuKey::Escape);
+    aot.click("file-menu");
+    interpreter.click("file-menu");
+    for key in [MenuKey::Down, MenuKey::Left] {
+        aot.menu_key(key);
+        interpreter.menu_key(key);
+    }
+    let panels = aot.menus();
+    assert_eq!(panels.len(), 2);
+    assert_eq!(
+        panels[1].bounds.x + panels[1].bounds.width,
+        panels[0].bounds.x
+    );
+    let aot_frame = renderer
+        .snapshot(aot.scene(), 620, 366, 1.0, aot.input())
+        .unwrap();
+    let interpreted_frame = renderer
+        .snapshot(interpreter.scene(), 620, 366, 1.0, interpreter.input())
+        .unwrap();
+    assert_same_pixels(&interpreted_frame, &aot_frame);
+}
+
+#[test]
+fn rtl_calendar_templates_paint_the_same_day_on_the_mirrored_cell() {
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))
+    .unwrap();
+    let mut native = controls_ui::DirectionalCalendarDemo::new();
+    let source = include_str!("../examples/controls/controls.xr");
+    let preview =
+        xrack_compiler::prepare_preview(source, "controls.xr", Default::default()).unwrap();
+    let interpreted = xrack_interpreter::Program::from_module(&preview.module)
+        .unwrap()
+        .create("DirectionalCalendarDemo")
+        .unwrap();
+    let input = Interaction::default();
+    let path = [1, 1, 1, 1];
+    for rtl in [false, true] {
+        native.set_rtl(rtl);
+        interpreted.set("rtl", rtl.into()).unwrap();
+        let scene = native.render();
+        let frame = renderer.snapshot(&scene, 724, 362, 1.0, &input).unwrap();
+        let interpreted = renderer
+            .snapshot(&interpreted.render(), 724, 362, 1.0, &input)
+            .unwrap();
+        assert_same_pixels(&interpreted, &frame);
+        let item = frame.layout.at_path(&path).unwrap();
+        let geometry = CalendarGeometry::for_layout(scene.at_path(&path).unwrap(), item);
+        let today = geometry.days().find(|day| day.selected).unwrap();
+        assert_eq!(item.at_path(&[0, today.slot]).unwrap().bounds, today.bounds);
+        assert_eq!(
+            today.bounds.x > item.bounds.x + item.bounds.width * 0.5,
+            rtl
+        );
+        assert_eq!(
+            frame.pixel((today.bounds.x + 7.0) as u32, (today.bounds.y + 7.0) as u32),
+            Some([0xd1, 0x7e, 0x42, 0xff]),
+        );
+    }
 }

@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/*", "bundles/compiler/*", "bundles/mlir/*", "bundles/media/*"]
+members = ["crates/*", "bundles/compiler/*", "bundles/mlir/*", "bundles/media/*", "bindings/python"]
 
 [workspace.package]
 version = "0.5.1"
@@ -32,6 +32,7 @@ xrack-assets = { path = "crates/xrack-assets", version = "0.5.1" }
 xrack-syntax = { path = "crates/xrack-syntax", version = "0.5.1" }
 xrack-ir = { path = "crates/xrack-ir", version = "0.5.1" }
 xrack-mlir = { path = "crates/xrack-mlir", version = "0.5.1" }
+xrack-interpreter = { path = "crates/xrack-interpreter", version = "=0.5.1" }
 xrack-codegen = { path = "crates/xrack-codegen" }
 xrack-resources = { path = "crates/xrack-resources", version = "0.5.1" }
 xrack-layout = { path = "crates/xrack-layout", version = "0.5.1" }

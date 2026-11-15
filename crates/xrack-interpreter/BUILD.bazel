@@ -1,5 +1,13 @@
 load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
 
+_DEPS = [
+    "//crates/xrack-mlir:xrack_mlir",
+    "//crates/xrack-resources:xrack_resources",
+    "//crates/xrack-runtime:xrack_runtime",
+    "//crates/xrack-syntax:xrack_syntax",
+    "@crates//:thiserror",
+]
+
 rust_library(
     name = "xrack_interpreter",
     srcs = glob(["src/*.rs"]),
@@ -7,13 +15,19 @@ rust_library(
     edition = "2024",
     version = "0.5.1",
     visibility = ["//visibility:public"],
-    deps = [
-        "//crates/xrack-mlir:xrack_mlir",
-        "//crates/xrack-resources:xrack_resources",
-        "//crates/xrack-runtime:xrack_runtime",
-        "//crates/xrack-syntax:xrack_syntax",
-        "@crates//:thiserror",
-    ],
+    deps = _DEPS,
+)
+
+rust_library(
+    name = "xrack_interpreter_live",
+    srcs = glob(["src/*.rs"]),
+    crate_features = ["live-reload"],
+    crate_name = "xrack_interpreter",
+    crate_root = "src/lib.rs",
+    edition = "2024",
+    version = "0.5.1",
+    visibility = ["//visibility:public"],
+    deps = _DEPS + ["@crates//:serde", "@crates//:serde_json"],
 )
 
 rust_test(

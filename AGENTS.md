@@ -28,6 +28,9 @@
 ## 构建与代码约定
 
 - 使用 Bazel 构建和测试。Rust 使用 edition 2024，C++ 使用 C++20。工具链版本以 `.bazelversion`、`rust-toolchain.toml`、`Cargo.toml` 和 `MODULE.bazel` 为准，升级时同步检查两个锁文件和相关 `BUILD.bazel`。
+- Python 源码中的函数、方法和需要显式声明的变量使用类型标注，覆盖绑定、示例、测试和构建脚本。
+- Python 原生绑定的 `.pyi` 由 Bazel 从 PyO3 元数据自动生成，随 wheel 分发。接口变更写在绑定源码上。
+- Python 格式化使用 Aspect rules_lint 的 Ruff 目标 `bazel run //bindings/python:format -- <files>`。
 - MLIR、TableGen、clang/libclang 和 SDK 由 Bazel LLVM 模块提供。目标和执行阶段使用 `@llvm//toolchain:all`。增加 macOS framework 时检查 `MODULE.bazel` 的 framework 和 re-export 依赖。
 - 修改 ANTLR、ODS 或 C 接口时改源定义，由 Bazel 生成 Rust parser、TableGen 输出和 C bindings。Bazel Rust 目标依赖 `//grammar:xrack_antlr_rust` 与 `//mlir:xrack_mlir_bindings`。诊断保留源码位置，CLI 参数用 `clap` derive，编译错误用 `thiserror`。
 - 手写 Rust 模块通过 `mod` 和 crate 根的公开接口组织。手写模块禁止用 `#[path]` 或 `include!` 引入。生成代码可按构建系统的入口引入。保持 Bazel `srcs` 与模块路径同步。生成代码使用标准库和运行时绝对路径，以覆盖 DSL 声明与 Rust 类型同名的情况。

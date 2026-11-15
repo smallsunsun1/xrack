@@ -1,4 +1,17 @@
-load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_test")
+load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library", "rust_test")
+
+rust_library(
+    name = "xrack_preview_live",
+    srcs = ["src/lib.rs"],
+    crate_name = "xrack_preview",
+    edition = "2024",
+    version = "0.5.1",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//crates/xrack-compiler:xrack_compiler",
+        "//crates/xrack-interpreter:xrack_interpreter_live",
+    ],
+)
 
 rust_binary(
     name = "xrack-preview",

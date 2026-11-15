@@ -1,6 +1,8 @@
 use form_ui::{
     BidiEditorDemo, CloseGuardDemo, DragDropDemo, EditorCommandsDemo, EditorMenuDemo,
-    FileDialogDemo, FileDropDemo, FormDemo, MessageDialogDemo, PasswordDemo, ValidationDemo,
+    EditorSelectionDemo, FileDialogDemo, FileDropDemo, FormDemo, MessageDialogDemo,
+    NumericValidationDemo, PasswordDemo, SubmissionValidationDemo, TextAlignmentDemo,
+    ValidationDemo,
 };
 use std::{cell::OnceCell, rc::Rc};
 use xrack_platform_winit::{DesktopWindow, run_desktop};
@@ -26,6 +28,10 @@ fn main() -> std::process::ExitCode {
         Some("--drag") => xrack_platform_winit::run(DragDropDemo::new()),
         Some("--drop-files") => xrack_platform_winit::run(FileDropDemo::new()),
         Some("--validation") => xrack_platform_winit::run(ValidationDemo::new()),
+        Some("--rtl-text") => xrack_platform_winit::run(TextAlignmentDemo::new()),
+        Some("--editor-selection") => xrack_platform_winit::run(EditorSelectionDemo::new()),
+        Some("--numeric-validation") => xrack_platform_winit::run(NumericValidationDemo::new()),
+        Some("--submission") => xrack_platform_winit::run(SubmissionValidationDemo::new()),
         Some("--editor-commands") => xrack_platform_winit::run(EditorCommandsDemo::new()),
         Some("--editor-menus") => xrack_platform_winit::run(EditorMenuDemo::new()),
         Some("--bidi") => xrack_platform_winit::run(BidiEditorDemo::new()),

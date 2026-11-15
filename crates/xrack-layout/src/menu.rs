@@ -1,9 +1,13 @@
 use crate::input::ElementId;
 use crate::{
-    ControlInput, LayoutNode, MenuShortcut, Point, Rect, Target, edit::SelectionState, input::valid,
+    ControlInput, LayoutNode, MenuShortcut, Point, Rect, Target, edit::SelectionState,
+    input::valid, place_in_direction,
 };
 use std::sync::atomic::{AtomicU64, Ordering};
-use xrack_runtime::{ControlAction, ImageAsset, Node, TextCommand, is_window_overlay};
+use xrack_runtime::{
+    ControlAction, ImageAsset, LayoutDirection, Node, TextCommand, TextCommandAvailability,
+    is_window_overlay,
+};
 
 const ROW_HEIGHT: f32 = 28.0;
 const MAX_VISIBLE_ROWS: usize = 14;
@@ -35,6 +39,7 @@ pub struct MenuRow<'a> {
 pub struct MenuPanel<'a> {
     pub menu: &'a Node,
     pub bounds: Rect,
+    pub layout_direction: LayoutDirection,
     pub rows: Vec<MenuRow<'a>>,
     pub highlighted: Option<usize>,
     icon_column: bool,
@@ -80,10 +85,17 @@ impl MenuPanel<'_> {
         if self.icon_column { 48.0 } else { 26.0 }
     }
 
+    pub fn row_content_bounds(&self, slot: usize, start: f32, width: f32) -> Rect {
+        let row = self.row_bounds(slot);
+        let item = Rect::new(row.x + start, row.y, width.max(0.0), row.height);
+        place_in_direction(item, row, self.layout_direction)
+    }
+
     pub fn icon_bounds(&self, slot: usize) -> Rect {
         let row = self.row_bounds(slot);
         let size = 16.0_f32.min(row.height).min((row.width - 26.0).max(0.0));
-        Rect::new(row.x + 24.0, row.y + (row.height - size) * 0.5, size, size)
+        let column = self.row_content_bounds(slot, 24.0, size);
+        Rect::new(column.x, row.y + (row.height - size) * 0.5, size, size)
     }
     pub fn row_highlighted(&self, slot: usize) -> bool {
         self.highlighted == Some(self.rows[slot].index)
@@ -143,6 +155,7 @@ pub(crate) struct TextMenu {
     pub kind: &'static str,
     pub writable: bool,
     pub password: bool,
+    pub commands: TextCommandAvailability,
 }
 
 const TEXT_ENTRIES: [Option<(TextCommand, &str, &str)>; 8] = [
@@ -161,12 +174,10 @@ impl TextMenu {
         node: &Node,
         value: String,
         selection: SelectionState,
-        undo: bool,
-        redo: bool,
+        commands: TextCommandAvailability,
     ) -> Self {
         let writable = !node.boolean("read-only", false);
         let password = node.is_password();
-        let selected = !selection.collapsed();
         let mut menu = Node::new("Menu", None);
         menu.properties
             .insert("title", "Text editing".to_owned().into());
@@ -176,10 +187,10 @@ impl TextMenu {
                 continue;
             };
             let enabled = match command {
-                TextCommand::Undo => writable && undo,
-                TextCommand::Redo => writable && redo,
-                TextCommand::Cut => writable && selected && !password,
-                TextCommand::Copy => selected && !password,
+                TextCommand::Undo => commands.undo,
+                TextCommand::Redo => commands.redo,
+                TextCommand::Cut => commands.cut,
+                TextCommand::Copy => commands.copy,
                 TextCommand::Paste => writable,
                 TextCommand::SelectAll => !value.is_empty(),
                 _ => unreachable!(),
@@ -198,6 +209,7 @@ impl TextMenu {
             kind: node.kind,
             writable,
             password,
+            commands,
         }
     }
 }
@@ -313,23 +325,36 @@ pub(crate) fn visit_shortcut_presentations(
     }
 }
 
-fn panel_bounds(anchor: Rect, viewport: Rect, width: f32, height: f32, submenu: bool) -> Rect {
+fn panel_bounds(
+    anchor: Rect,
+    viewport: Rect,
+    width: f32,
+    height: f32,
+    submenu: bool,
+    direction: LayoutDirection,
+) -> Rect {
     let right = viewport.x + viewport.width;
     let bottom = viewport.y + viewport.height;
+    let rtl = direction == LayoutDirection::RightToLeft;
     let (x, y) = if submenu {
-        let next = anchor.x + anchor.width;
-        (
-            if next + width <= right {
-                next
-            } else {
-                anchor.x - width
-            },
-            anchor.y,
-        )
+        let edges = [anchor.x - width, anchor.x + anchor.width];
+        let spaces = [anchor.x - viewport.x, right - anchor.x - anchor.width];
+        let preferred = usize::from(!rtl);
+        let opposite = 1 - preferred;
+        let side = if spaces[preferred] < width && spaces[opposite] > spaces[preferred] {
+            opposite
+        } else {
+            preferred
+        };
+        (edges[side], anchor.y)
     } else {
         let next = anchor.y + anchor.height;
         (
-            anchor.x,
+            if rtl {
+                anchor.x + anchor.width - width
+            } else {
+                anchor.x
+            },
             if next + height <= bottom || next - viewport.y <= bottom - anchor.y {
                 next
             } else {
@@ -377,6 +402,26 @@ impl MenuPopup {
         self.levels.len() == 1
     }
 
+    fn trigger_direction(&self, layout: &LayoutNode) -> LayoutDirection {
+        layout
+            .at_path(&self.trigger.path)
+            .map_or(LayoutDirection::LeftToRight, |item| item.layout_direction)
+    }
+
+    pub fn forward_key(&self, scene: &Node, layout: &LayoutNode) -> MenuKey {
+        let direction = self
+            .levels
+            .iter()
+            .rev()
+            .find_map(|level| menu_at(scene, self.text.as_ref(), &level.path)?.layout_direction())
+            .unwrap_or_else(|| self.trigger_direction(layout));
+        if direction == LayoutDirection::RightToLeft {
+            MenuKey::Left
+        } else {
+            MenuKey::Right
+        }
+    }
+
     fn visible_count(viewport: Rect, count: usize) -> usize {
         ((viewport.height / ROW_HEIGHT) as usize)
             .clamp(1, MAX_VISIBLE_ROWS)
@@ -396,6 +441,7 @@ impl MenuPopup {
             |point| Rect::new(point.x, point.y, 0.0, 0.0),
         );
         let mut panels = Vec::new();
+        let mut parent_direction = self.trigger_direction(layout);
         for (index, level) in self.levels.iter().enumerate() {
             let menu = self.text.as_ref().map_or_else(
                 || scene.interactive_at_path(&level.path),
@@ -425,16 +471,23 @@ impl MenuPopup {
                 })
                 .fold(174.0, f32::max)
                 .min(viewport.width);
+            let direction = menu.layout_direction().unwrap_or(parent_direction);
             let bounds = panel_bounds(
                 anchor,
                 viewport,
                 width,
                 (visible as f32 * ROW_HEIGHT).min(viewport.height),
                 index > 0,
+                if index == 0 {
+                    direction
+                } else {
+                    parent_direction
+                },
             );
             let panel = MenuPanel {
                 menu,
                 bounds,
+                layout_direction: direction,
                 highlighted: level.highlight,
                 icon_column,
                 path: level.path.clone(),
@@ -470,6 +523,7 @@ impl MenuPopup {
                 anchor = panel.row_bounds(slot);
             }
             panels.push(panel);
+            parent_direction = direction;
             if slot.is_none() {
                 break;
             }
@@ -676,6 +730,7 @@ impl MenuPopup {
 
     pub fn key(&mut self, scene: &Node, layout: &LayoutNode, key: MenuKey) -> Option<Vec<usize>> {
         let depth = self.levels.len().checked_sub(1)?;
+        let forward = self.forward_key(scene, layout);
         let level = &mut self.levels[depth];
         let menu = menu_at(scene, self.text.as_ref(), &level.path)?;
         match key {
@@ -683,7 +738,7 @@ impl MenuPopup {
                 let index = level.highlight?;
                 return self.activate(scene, layout, depth, index);
             }
-            MenuKey::Left | MenuKey::Escape if depth > 0 => {
+            MenuKey::Left | MenuKey::Right | MenuKey::Escape if depth > 0 && key != forward => {
                 self.levels.pop();
             }
             MenuKey::Up | MenuKey::Down | MenuKey::Home | MenuKey::End => {
@@ -764,5 +819,37 @@ impl MenuPopup {
         let mut path = self.trigger.path.clone();
         path.push(index);
         self.input(path)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_cascading_menu_prefers_the_inherited_side_and_fits_at_the_edge() {
+        let viewport = Rect::new(4.0, 4.0, 420.0, 250.0);
+        let rtl = LayoutDirection::RightToLeft;
+        let ltr = LayoutDirection::LeftToRight;
+        let width = 174.0;
+        let middle = Rect::new(207.0, 40.0, 14.0, 28.0);
+        assert_eq!(
+            panel_bounds(middle, viewport, width, 56.0, true, rtl).x,
+            33.0
+        );
+        assert_eq!(
+            panel_bounds(middle, viewport, width, 56.0, true, ltr).x,
+            221.0
+        );
+        let edge = Rect::new(6.0, 40.0, 174.0, 28.0);
+        assert_eq!(
+            panel_bounds(edge, viewport, width, 56.0, true, rtl).x,
+            180.0
+        );
+        let far_edge = Rect::new(243.0, 40.0, 174.0, 28.0);
+        assert_eq!(
+            panel_bounds(far_edge, viewport, width, 56.0, true, ltr).x,
+            69.0
+        );
     }
 }

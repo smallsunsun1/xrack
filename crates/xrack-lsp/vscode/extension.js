@@ -1,6 +1,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const vscode = require('vscode');
+const { registerAttach } = require('./attach');
 const { registerPreview } = require('./preview');
 const { LanguageClient, TransportKind } = require('vscode-languageclient/node');
 
@@ -35,6 +36,7 @@ function serverCommand(context) {
 
 async function activate(context) {
     registerPreview(context);
+    registerAttach(context);
     const command = serverCommand(context);
     const watcher = vscode.workspace.createFileSystemWatcher('**/*.xr');
     context.subscriptions.push(watcher);

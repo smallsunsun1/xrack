@@ -3,8 +3,10 @@ use crate::{
     theme::{Palette, PaletteRole as Role},
 };
 use femtovg::{Canvas, LineCap, Paint, Path, Solidity, renderer::WGPURenderer};
-use xrack_layout::{DialGeometry, Point, Rect, ScrollBarGeometry, SliderGeometry};
-use xrack_runtime::{Color, IndicatorState, Node, Orientation, SliderInterval, SliderRange};
+use xrack_layout::{DialGeometry, LayoutNode, Point, Rect, ScrollBarGeometry, SliderGeometry};
+use xrack_runtime::{
+    Color, IndicatorState, LayoutDirection, Node, Orientation, SliderInterval, SliderRange,
+};
 
 fn capsule(canvas: &mut Canvas<WGPURenderer>, bounds: Rect, tint: Color) {
     painted_capsule(canvas, bounds, &Paint::color(color(tint)));
@@ -56,14 +58,17 @@ pub(crate) fn scroll_bar(
 fn track(from: Point, to: Point, width: f32, orientation: Orientation) -> Rect {
     match orientation {
         Orientation::Horizontal => Rect::new(
-            from.x,
+            from.x.min(to.x),
             from.y - width * 0.5,
-            (to.x - from.x).max(0.0),
+            (to.x - from.x).abs(),
             width,
         ),
-        Orientation::Vertical => {
-            Rect::new(from.x - width * 0.5, to.y, width, (from.y - to.y).max(0.0))
-        }
+        Orientation::Vertical => Rect::new(
+            from.x - width * 0.5,
+            from.y.min(to.y),
+            width,
+            (from.y - to.y).abs(),
+        ),
     }
 }
 
@@ -71,13 +76,14 @@ pub(crate) fn slider(
     canvas: &mut Canvas<WGPURenderer>,
     theme: Palette,
     node: &Node,
-    bounds: Rect,
-    enabled: bool,
+    layout: &LayoutNode,
     pressed: bool,
     preview: Option<f64>,
 ) {
+    let enabled = layout.enabled;
     let orientation = node.orientation();
-    let geometry = SliderGeometry::for_node(bounds, node);
+    let geometry =
+        SliderGeometry::with_layout_direction(layout.bounds, node, layout.layout_direction);
     let start = geometry.position(0.0);
     let end = geometry.position(1.0);
     let range = SliderRange::from_node(node);
@@ -104,7 +110,7 @@ pub(crate) fn slider(
     }
 }
 
-fn knob(
+pub(crate) fn knob(
     canvas: &mut Canvas<WGPURenderer>,
     theme: Palette,
     thumb: Point,
@@ -128,13 +134,14 @@ pub(crate) fn interval(
     canvas: &mut Canvas<WGPURenderer>,
     theme: Palette,
     node: &Node,
-    bounds: Rect,
-    enabled: bool,
+    layout: &LayoutNode,
     active: [bool; 2],
     preview: Option<(usize, f64)>,
 ) {
+    let enabled = layout.enabled;
     let orientation = node.orientation();
-    let geometry = SliderGeometry::new(bounds, orientation);
+    let geometry =
+        SliderGeometry::with_layout_direction(layout.bounds, node, layout.layout_direction);
     let interval = SliderInterval::from_node(node);
     let fractions = preview.map_or_else(
         || interval.fractions(),
@@ -161,6 +168,13 @@ pub(crate) fn interval(
             theme.disabled
         },
     );
+    // With replacements, the renderer paints both thumbs in one stacking order.
+    if Node::RANGE_HANDLE_PARTS
+        .iter()
+        .any(|kind| node.control_part(kind).is_some())
+    {
+        return;
+    }
     let order = if active[0] { [1, 0] } else { [0, 1] };
     for index in order {
         knob(
@@ -234,17 +248,17 @@ pub(crate) fn indicator(
     canvas: &mut Canvas<WGPURenderer>,
     theme: Palette,
     node: &Node,
-    bounds: Rect,
+    layout: &LayoutNode,
     state: IndicatorState,
     phase: Option<f32>,
-    enabled: bool,
 ) -> bool {
+    let bounds = layout.bounds;
     let (progress, motion) = match state {
         IndicatorState::Hidden => return false,
         IndicatorState::Determinate(progress) => (progress as f32, None),
         IndicatorState::Indeterminate => (0.27, phase),
     };
-    let foreground = if enabled {
+    let foreground = if layout.enabled {
         node.color("color").unwrap_or(theme.button)
     } else {
         theme.disabled
@@ -263,6 +277,11 @@ pub(crate) fn indicator(
             motion.map_or(0.5, |phase| 1.0 - (2.0 * phase - 1.0).abs())
         } else {
             0.0
+        };
+        let position = if layout.layout_direction == LayoutDirection::RightToLeft {
+            1.0 - position
+        } else {
+            position
         };
         capsule(
             canvas,

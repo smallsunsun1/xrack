@@ -10,9 +10,14 @@ rust_test(
         "ui_driver.rs",
     ],
     data = [
+        "//examples/form:form.xr",
+        "//examples/form:widgets.xr",
         "//examples/layout:bundled_sources",
         "//examples/list:list.xr",
         "//examples/media:media_sources",
+        "//examples/menu:menu.xr",
+        "//examples/menu:assets/grid.svg",
+        "//examples/selection:selection.xr",
         "//examples/slots:slots.xr",
     ],
     edition = "2024",
@@ -319,6 +324,7 @@ rust_test(
     srcs = ["media_player_test.rs"],
     compile_data = [
         "//crates/xrack-media:hls_test_fixtures",
+        "//examples/sound_effect:sound_effect.xr",
         "//examples/video:video.xr",
     ],
     crate_features = select({
@@ -326,6 +332,8 @@ rust_test(
         "//conditions:default": [],
     }),
     data = [
+        "//examples/sound_effect:click.wav",
+        "//examples/sound_effect:sound_effect.xr",
         "//examples/video:live.xr",
         "//examples/video:video.xr",
     ],
@@ -340,6 +348,7 @@ rust_test(
     ] + select({
         "//crates/xrack-media:enabled_config": [
             "//crates/xrack-media:xrack_media",
+            "//examples/sound_effect:sound_ui",
             "//examples/video:live_ui",
         ],
         "//conditions:default": [],

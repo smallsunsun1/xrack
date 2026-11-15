@@ -891,25 +891,37 @@ impl<'a, 'w> Symbols<'a, 'w> {
             Role::Component { base, .. } | Role::Element { kind: base, .. } => base,
             _ => return None,
         };
-        if kind == "MediaPlayer" {
-            if call
-                && catalog::MEDIA_METHODS
-                    .iter()
-                    .any(|method| method.name == name)
-            {
-                return Some(Symbol::builtin(Kind::Function, None));
-            }
-            if let Some(ty) = xrack_ir::semantic::media_read_type(name) {
-                let mut symbol = Symbol::builtin(Kind::Property, Some(ty));
-                symbol.modifiers |= READONLY;
-                return Some(symbol);
-            }
+        if call
+            && catalog::media_methods(kind)
+                .iter()
+                .chain(catalog::list_key_methods(kind))
+                .any(|method| method.name == name)
+        {
+            return Some(Symbol::builtin(Kind::Function, None));
+        }
+        if let Some(ty) = (xrack_ir::semantic::view_count_property(kind, name)
+            || xrack_ir::semantic::list_selection_property(kind, name))
+        .then_some(Type::Int)
+        .or_else(|| xrack_ir::semantic::text_selection_property(kind, name))
+        .or_else(|| xrack_ir::semantic::text_command_property(kind, name).then_some(Type::Bool))
+        .or_else(|| xrack_ir::semantic::media_object_read_type(kind, name))
+        .or_else(|| {
+            (builtins::text_submission_editor(kind) && name == "acceptable-input")
+                .then_some(Type::Bool)
+        }) {
+            let mut symbol = Symbol::builtin(Kind::Property, Some(ty));
+            symbol.modifiers |= READONLY;
+            return Some(symbol);
         }
         if call && builtin_event(kind, name) {
             return Some(Symbol::builtin(Kind::Event, None));
         }
         builtin_property(kind, name)
-            .or_else(|| layout_item_property(name))
+            .or_else(|| {
+                (kind != "SoundEffect")
+                    .then(|| layout_item_property(name))
+                    .flatten()
+            })
             .map(|ty| Symbol::builtin(Kind::Property, Some(ty)))
     }
 
@@ -967,26 +979,22 @@ impl<'a, 'w> Symbols<'a, 'w> {
     fn builtin_signature(&self, i: usize) -> Option<(String, Vec<&'static str>, &'static str)> {
         if i >= 2 && self.text(i - 1) == "." {
             let scope = self.index.scope_at(self.code[i].range.start);
-            if let Some(owner) = self.owner(scope, self.text(i - 2))
-                && matches!(
-                    self.index.scopes[owner].role,
-                    Role::Element {
-                        kind: "MediaPlayer",
-                        ..
-                    } | Role::Component {
-                        base: "MediaPlayer",
-                        ..
-                    }
-                )
-                && let Some(method) = catalog::MEDIA_METHODS
+            if let Some(owner) = self.owner(scope, self.text(i - 2)) {
+                let kind = match self.index.scopes[owner].role {
+                    Role::Element { kind, .. } | Role::Component { base: kind, .. } => kind,
+                    _ => "",
+                };
+                if let Some(method) = catalog::media_methods(kind)
                     .iter()
+                    .chain(catalog::list_key_methods(kind))
                     .find(|method| method.name == self.text(i))
-            {
-                return Some((
-                    method.signature(),
-                    method.parameters.to_vec(),
-                    method.documentation,
-                ));
+                {
+                    return Some((
+                        method.signature(),
+                        method.parameters.to_vec(),
+                        method.documentation,
+                    ));
+                }
             }
         }
         if let Some(form) = catalog::builtin_function(self.text(i)) {

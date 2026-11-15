@@ -9,6 +9,7 @@ description = "Compile XRack UI files from a Cargo build script"
 
 [features]
 default = ["bundled"]
+live-reload = []
 bundled = [
     "dep:flate2",
     "dep:xrackc-bin-aarch64-apple-darwin",

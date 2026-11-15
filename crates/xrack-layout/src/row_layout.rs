@@ -18,6 +18,7 @@ pub(super) struct RowInputs {
     pub size: Size,
     pub visible: bool,
     pub enabled: bool,
+    pub layout_direction: Option<xrack_runtime::LayoutDirection>,
 }
 
 struct Row {
@@ -131,6 +132,8 @@ pub(super) fn cacheable(node: &Node) -> bool {
             | "Button"
             | "CheckBox"
             | "Switch"
+            | "SwitchThumb"
+            | "ToggleIndicator"
     ) && node.list.is_none()
         && !node.boolean("clip", false)
         && node

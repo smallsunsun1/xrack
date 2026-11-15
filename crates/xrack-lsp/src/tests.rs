@@ -611,6 +611,46 @@ fn content_slot_and_control_parts_offer_contextual_completion() {
             "component Demo inherits Window { Slider { SliderHa|",
             "SliderHandle",
         ),
+        (
+            "component Demo inherits Window { CheckBox { ToggleInd|",
+            "ToggleIndicator",
+        ),
+        (
+            "component Demo inherits Window { RadioGroup { RadioButton { ToggleInd|",
+            "ToggleIndicator",
+        ),
+        (
+            "component Demo inherits Window { Switch { ToggleInd|",
+            "ToggleIndicator",
+        ),
+        (
+            "component Demo inherits Window { Switch { SwitchTh|",
+            "SwitchThumb",
+        ),
+        (
+            "component Demo inherits Window { ListView { for name in [\"one\"] : SwitchDelegate { SwitchTh|",
+            "SwitchThumb",
+        ),
+        (
+            "component Demo inherits Window { SpinBox { SpinUpInd|",
+            "SpinUpIndicator",
+        ),
+        (
+            "component Demo inherits Window { DoubleSpinBox { SpinDownInd|",
+            "SpinDownIndicator",
+        ),
+        (
+            "component Demo inherits Window { RangeSlider { RangeLowerH|",
+            "RangeLowerHandle",
+        ),
+        (
+            "component Demo inherits Window { RangeSlider { RangeUpperH|",
+            "RangeUpperHandle",
+        ),
+        (
+            "component Demo inherits Window { TabBar { TabButton { ButtonCo|",
+            "ButtonContent",
+        ),
     ] {
         assert!(
             complete_at(text)
@@ -630,6 +670,11 @@ fn content_slot_and_control_parts_offer_contextual_completion() {
             .as_str()
             .unwrap()
             .contains("caller's scope")
+    );
+    assert!(
+        !complete_at("component Demo inherits Window { CheckBox { SwitchTh|")
+            .iter()
+            .any(|item| item["label"] == "SwitchThumb")
     );
     let invalid = "component Panel inherits VerticalLayout { @children @children }";
     assert!(
@@ -2174,4 +2219,208 @@ fn media_player_completion_and_seek_signature() {
     let line = line.replace("movie.seek(", "movie.go-live(");
     let signature = completion::signature_help(&line, (0, line.len()), None);
     assert_eq!(signature["signatures"][0]["label"], "go-live()");
+}
+
+#[test]
+fn sound_effect_completes_its_bindings_and_play_signature() {
+    let bindings = complete_at("component App inherits Window { chime := SoundEffect { | } }");
+    for expected in ["source", "volume", "muted"] {
+        assert!(
+            bindings.iter().any(|item| item["label"] == expected),
+            "{expected}: {bindings:?}"
+        );
+    }
+    for unavailable in ["ready", "width", "autoplay"] {
+        assert!(!bindings.iter().any(|item| item["label"] == unavailable));
+    }
+    let items = complete_at(
+        "component App inherits Window { chime := SoundEffect {} button := Button { clicked => { chime.| } } }",
+    );
+    for expected in ["play", "ready", "playing", "error"] {
+        assert!(
+            items.iter().any(|item| item["label"] == expected),
+            "{expected}: {items:?}"
+        );
+    }
+    assert!(!items.iter().any(|item| item["label"] == "seek"));
+    let line = "component App inherits Window { chime := SoundEffect {} button := Button { clicked => { chime.play(";
+    let signature = completion::signature_help(line, (0, line.len()), None);
+    assert_eq!(signature["signatures"][0]["label"], "play()");
+}
+
+#[test]
+fn text_submission_completes_rules_and_read_only_status() {
+    let items = complete_at("component App inherits Window { entry := LineEdit { | } }");
+    for property in ["minimum-length", "submit-when"] {
+        assert!(
+            items.iter().any(|item| item["label"] == property),
+            "{items:?}"
+        );
+    }
+    assert!(!items.iter().any(|item| item["label"] == "acceptable-input"));
+
+    let items = complete_at(
+        "component App inherits Window { entry := LineEdit {} Button { enabled: entry.| } }",
+    );
+    let status = items
+        .iter()
+        .find(|item| item["label"] == "acceptable-input")
+        .unwrap();
+    assert!(
+        status["detail"]
+            .as_str()
+            .unwrap()
+            .contains("read-only bool")
+    );
+
+    let items = complete_at("component App inherits Window { Rectangle { | } }");
+    assert!(!items.iter().any(|item| item["label"] == "submit-when"));
+}
+
+#[test]
+fn single_line_editors_complete_numeric_validation_bindings() {
+    let items = complete_at("component App inherits Window { TextInput { | } }");
+    for (property, ty) in [
+        ("minimum-value", "float"),
+        ("maximum-value", "float"),
+        ("decimals", "int"),
+    ] {
+        let binding = items.iter().find(|item| item["label"] == property).unwrap();
+        assert_eq!(binding["detail"], ty);
+    }
+    let items = complete_at("component App inherits Window { TextArea { | } }");
+    assert!(
+        !items
+            .iter()
+            .any(|item| item["label"] == "minimum-value" || item["label"] == "decimals")
+    );
+}
+
+#[test]
+fn editor_selection_completions_offer_read_only_offsets_and_text() {
+    let items = complete_at(
+        "component App inherits Window { entry := LineEdit {} Text { text: entry.| } }",
+    );
+    for (property, ty) in [
+        ("cursor-offset", "int"),
+        ("selection-start-offset", "int"),
+        ("selection-end-offset", "int"),
+        ("selected-text", "string"),
+    ] {
+        let item = items.iter().find(|item| item["label"] == property).unwrap();
+        assert_eq!(item["detail"], format!("read-only {ty}"));
+    }
+    let items = complete_at("component App inherits Window { LineEdit { | } }");
+    assert!(!items.iter().any(|item| item["label"] == "selected-text"));
+}
+
+#[test]
+fn editor_command_availability_completes_as_read_only() {
+    let items = complete_at(
+        "component App inherits Window { entry := TextEdit {} Button { enabled: entry.| } }",
+    );
+    for property in ["can-undo", "can-redo", "can-copy", "can-cut"] {
+        let item = items.iter().find(|item| item["label"] == property).unwrap();
+        assert_eq!(item["detail"], "read-only bool");
+    }
+    let items = complete_at("component App inherits Window { TextEdit { | } }");
+    assert!(!items.iter().any(|item| item["label"] == "can-undo"));
+}
+
+#[test]
+fn virtual_views_complete_source_and_projected_row_counts_as_read_only() {
+    let items = complete_at(
+        "component App inherits Window { rows := ListView { for item in 1 : Text {} } Label { text: rows.| } }",
+    );
+    for property in ["row-count", "source-row-count"] {
+        let item = items.iter().find(|item| item["label"] == property).unwrap();
+        assert_eq!(item["detail"], "read-only int");
+    }
+    let items = complete_at("component App inherits Window { ListView { | } }");
+    assert!(!items.iter().any(|item| item["label"] == "row-count"));
+}
+
+#[test]
+fn empty_state_is_suggested_inside_data_views() {
+    for kind in [
+        "ListView",
+        "GridView",
+        "StandardListView",
+        "TableView",
+        "StandardTableView",
+        "TreeView",
+    ] {
+        let source = format!("component App inherits Window {{ {kind} {{ | }} }}");
+        let items = complete_at(&source);
+        assert!(
+            items.iter().any(|item| item["label"] == "EmptyState"),
+            "{kind}: {items:?}"
+        );
+    }
+    let items = complete_at("component App inherits Window { Rectangle { | } }");
+    assert!(!items.iter().any(|item| item["label"] == "EmptyState"));
+}
+
+#[test]
+fn list_selection_key_bindings_are_available_on_the_three_list_controls() {
+    for kind in ["ListView", "GridView", "StandardListView"] {
+        let completion = complete_at(&format!(
+            "component App inherits Window {{ {kind} {{ | }} }}"
+        ));
+        for (name, ty) in [("row-key-field", "string"), ("current-key", "int")] {
+            let item = completion
+                .iter()
+                .find(|item| item["label"] == name)
+                .unwrap();
+            assert_eq!(item["detail"], ty);
+        }
+    }
+}
+
+#[test]
+fn keyed_navigation_completes_and_shows_scroll_signature() {
+    let members = complete_at(
+        "component App inherits Window { rows := GridView {} Button { clicked => { rows.| } } }",
+    );
+    for name in ["selected-view-index", "select-key", "position-view-at-key"] {
+        assert!(
+            members.iter().any(|item| item["label"] == name),
+            "{name}: {members:?}"
+        );
+    }
+    let source = "component App inherits Window { rows := GridView {} Button { clicked => { rows.position-view-at-key(";
+    let info = completion::signature_help(source, (0, source.len()), None);
+    assert_eq!(
+        info["signatures"][0]["label"],
+        "position-view-at-key(key: int, alignment: ScrollAlignment)"
+    );
+}
+
+#[test]
+fn layout_direction_completes_direction_names_for_nested_bindings() {
+    let items = complete_at("component App inherits Window { HorizontalLayout { | } }");
+    let item = items
+        .iter()
+        .find(|item| item["label"] == "layout-direction")
+        .unwrap();
+    assert_eq!(item["detail"], "layoutdirection");
+    let items = complete_at("component App inherits Window { layout-direction: | }");
+    for name in ["left-to-right", "right-to-left"] {
+        assert!(
+            items.iter().any(|item| item["label"] == name),
+            "{name}: {items:?}"
+        );
+    }
+}
+
+#[test]
+fn editors_offer_logical_and_physical_horizontal_alignment() {
+    let items =
+        complete_at("component App inherits Window { LineEdit { horizontal-alignment: | } }");
+    for alignment in ["start", "end", "left", "center", "right"] {
+        assert!(
+            items.iter().any(|item| item["label"] == alignment),
+            "{alignment}: {items:?}"
+        );
+    }
 }

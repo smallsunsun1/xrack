@@ -7,6 +7,7 @@ fn main() -> std::process::ExitCode {
         Some("--stack") => xrack_platform_winit::run(StackDemo::new()),
         Some("--stack-guard") => xrack_platform_winit::run(StackGuardDemo::new()),
         Some("--tab-bar") => xrack_platform_winit::run(TabBarDemo::new()),
+        Some("--rtl-tabs") => xrack_platform_winit::run(navigation_ui::DirectionalTabsDemo::new()),
         Some("--page") => xrack_platform_winit::run(PageDemo::new()),
         Some("--application-window") => xrack_platform_winit::run(ApplicationWindowDemo::new()),
         _ => xrack_platform_winit::run(NavigationDemo::new()),

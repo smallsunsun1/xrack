@@ -39,6 +39,18 @@
         "command": "xrack.openPreview",
         "title": "XRack: Open Live Preview",
         "icon": { "light": "./media/preview-light.svg", "dark": "./media/preview-dark.svg" }
+      },
+      {
+        "command": "xrack.attachRunningApp",
+        "title": "XRack: Attach to Running App"
+      },
+      {
+        "command": "xrack.syncRunningAppEditor",
+        "title": "XRack: Sync Editor to Running App"
+      },
+      {
+        "command": "xrack.detachRunningApp",
+        "title": "XRack: Detach from Running App"
       }
     ],
     "menus": {

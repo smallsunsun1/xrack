@@ -6,11 +6,12 @@ use femtovg::{Canvas, Color, Paint, Path, renderer::WGPURenderer};
 use std::{borrow::Cow, ops::Range};
 use xrack_layout::{
     ComboGeometry, Interaction, LayoutNode, PasswordMask, Point, Rect, SearchGeometry,
-    SpinGeometry, Target, TextAreaLayout, TextAreaMotion, TextEdit, TextMeasurer, TextPosition,
+    SpinGeometry, Target, TextAlignment, TextAreaLayout, TextAreaMotion, TextEdit, TextMeasurer,
+    TextPosition, ToggleGeometry, VisualTextLine,
 };
 use xrack_runtime::{
-    CheckState, Color as UiColor, Node, combo_editable, is_multiline_text_input, is_spin_box,
-    spin_editable, text_input_value,
+    CheckState, Color as UiColor, LayoutDirection, Node, combo_editable, is_multiline_text_input,
+    is_spin_box, spin_editable, text_input_value,
 };
 
 fn editor_text<'a>(input: &Interaction, node: &'a Node) -> Cow<'a, str> {
@@ -21,13 +22,13 @@ fn editor_text<'a>(input: &Interaction, node: &'a Node) -> Cow<'a, str> {
     }
 }
 
-fn editor_part(node: &Node, bounds: Rect) -> Option<Rect> {
+fn editor_part(node: &Node, layout: &LayoutNode) -> Option<Rect> {
     if is_spin_box(node.kind) {
-        Some(SpinGeometry::new(bounds).text)
+        Some(SpinGeometry::for_layout(layout, node).text)
     } else if combo_editable(node) {
-        Some(ComboGeometry::new(bounds).entry)
+        Some(ComboGeometry::for_layout(layout).entry)
     } else if node.kind == "SearchField" {
-        Some(SearchGeometry::new(bounds).entry)
+        Some(SearchGeometry::for_layout(layout).entry)
     } else {
         None
     }
@@ -82,7 +83,7 @@ impl PointerCaret {
         input: &Interaction,
         scene: &'a Node,
         layout: &LayoutNode,
-    ) -> Option<(&'a Node, Rect, Point)> {
+    ) -> Option<(&'a Node, Rect, Point, Option<LayoutDirection>)> {
         let path = &self.target.path;
         let node = scene.interactive_at_path(path)?;
         if node.element_id() != self.target.element_id()
@@ -95,14 +96,19 @@ impl PointerCaret {
             .at_path(path)
             .filter(|item| item.visible && item.enabled)?;
         let point = item.map_from_window(self.point)?;
-        let part = editor_part(node, item.bounds);
+        let part = editor_part(node, item);
         if let Some(bounds) = part {
             let origin = item.map_from_window(self.origin)?;
             if !bounds.contains(origin) {
                 return None;
             }
         }
-        Some((node, part.unwrap_or(item.bounds), point))
+        Some((
+            node,
+            part.unwrap_or(item.bounds),
+            point,
+            item.layout_direction_override(),
+        ))
     }
 
     pub fn place(
@@ -115,26 +121,34 @@ impl PointerCaret {
         if input.focused.as_ref() != Some(&self.target) {
             return false;
         }
-        let Some((node, bounds, point)) = self.hit(input, scene, layout) else {
+        let Some((node, bounds, point, direction)) = self.hit(input, scene, layout) else {
             return false;
         };
         input.sync_editor(scene);
         let value = editor_text(input, node);
         let (position, reveal) = if is_multiline_text_input(node.kind) {
-            let geometry = text_system.text_area_layout(node, bounds, &value);
+            let geometry =
+                text_system.text_area_layout_in_direction(node, bounds, &value, direction);
             let scroll = geometry.clamp_scroll(input.text_scroll(&self.target.path));
             let advance = |text: &str| text_system.advance_node(node, text);
             let position = geometry.hit(&value, point, scroll, advance);
             let caret = geometry.caret_point(&value, position, advance);
             (position, Some(geometry.keep_visible(scroll, caret)))
         } else {
+            let hint = input
+                .painted_combo_completion_for(node, &self.target.path)
+                .and_then(|completion| {
+                    let item = layout.at_path(&self.target.path)?;
+                    Some((completion.suffix(), item.clip))
+                });
             (
-                text_system.single_line_hit_with_text(
+                text_system.single_line_hit_in_direction(
                     node,
                     bounds,
                     point,
                     input.editor.as_ref(),
                     &value,
+                    (direction, hint),
                 ),
                 None,
             )
@@ -155,6 +169,7 @@ pub(crate) struct EntryText<'a> {
     pub value: &'a str,
     pub editor: Option<&'a TextEdit>,
     pub scroll: Point,
+    pub direction: Option<LayoutDirection>,
     pub completion: Option<(&'a str, Rect)>,
 }
 
@@ -244,7 +259,12 @@ impl TextSystem {
             return false;
         };
         if is_multiline_text_input(node.kind) {
-            let geometry = self.text_area_layout(node, item.bounds, &value);
+            let geometry = self.text_area_layout_in_direction(
+                node,
+                item.bounds,
+                &value,
+                item.layout_direction_override(),
+            );
             let advance = |text: &str| self.advance_node(node, text);
             geometry.move_caret(&value, editor, motion, selecting, advance);
             let caret = geometry.caret_point(&value, editor.position(&value), advance);
@@ -303,7 +323,12 @@ impl TextSystem {
             .editor
             .as_ref()
             .filter(|_| input.focused.as_ref() == Some(&target));
-        let (geometry, _) = self.text_area_caret(node, item.bounds, editor);
+        let (geometry, _) = self.text_area_caret_in_direction(
+            node,
+            item.bounds,
+            editor,
+            item.layout_direction_override(),
+        );
         let old = geometry.clamp_scroll(input.text_scroll(&target.path));
         let scroll = geometry.clamp_scroll(Point {
             x: old.x + delta.x,
@@ -339,18 +364,43 @@ impl TextSystem {
         editor: Option<&TextEdit>,
         value: &str,
     ) -> TextPosition {
+        self.single_line_hit_in_direction(
+            node,
+            bounds,
+            point,
+            editor,
+            value,
+            (node.layout_direction(), None),
+        )
+    }
+
+    fn single_line_hit_in_direction(
+        &self,
+        node: &Node,
+        bounds: Rect,
+        point: Point,
+        editor: Option<&TextEdit>,
+        value: &str,
+        (direction, completion): (Option<LayoutDirection>, Option<(&str, Rect)>),
+    ) -> TextPosition {
         let area = bounds.inset(node.length("padding").unwrap_or(6.0).max(0.0));
         let mask = node.password_masked().then(|| PasswordMask::new(value));
         let display = mask.as_ref().map_or(value, PasswordMask::display);
         let layout = self.single_line_layout(node, display);
-        let scroll = editor.map_or(0.0, |edit| {
+        let caret = editor.map(|edit| {
             let mut caret = edit.position(value);
             if let Some(mask) = &mask {
                 caret.offset = mask.display_offset(caret.offset);
             }
-            entry_scroll(layout.caret_x(caret), area.width)
+            caret
         });
-        let mut position = layout.hit(point.x - area.x + scroll);
+        let (mut x, _) = entry_origin(node, area, &layout, caret, false, direction);
+        if let Some((draft, _)) = completion
+            .and_then(|hint| self.inline_completion_positions(node, area, &layout, x, hint))
+        {
+            x = draft;
+        }
+        let mut position = layout.hit(point.x - x);
         if let Some(mask) = &mask {
             position.offset = mask.source_offset(position.offset);
         }
@@ -364,16 +414,66 @@ impl TextSystem {
         value: &str,
         editor: Option<&TextEdit>,
     ) -> f32 {
+        self.single_line_caret_in_direction(
+            node,
+            bounds,
+            value,
+            editor,
+            (node.layout_direction(), None),
+        )
+    }
+
+    fn single_line_caret_in_direction(
+        &self,
+        node: &Node,
+        bounds: Rect,
+        value: &str,
+        editor: Option<&TextEdit>,
+        (direction, completion): (Option<LayoutDirection>, Option<(&str, Rect)>),
+    ) -> f32 {
         let display = display_text(node, value, editor);
         let area = bounds.inset(node.length("padding").unwrap_or(6.0).max(0.0));
-        let advance = display
-            .caret
-            .filter(|_| !display.placeholder)
-            .map_or(0.0, |caret| {
-                self.single_line_layout(node, &display.content)
-                    .caret_x(caret)
-            });
-        area.x + (advance - entry_scroll(advance, area.width)).clamp(0.0, area.width)
+        let layout = self.single_line_layout(node, &display.content);
+        let (x, caret) = entry_origin(
+            node,
+            area,
+            &layout,
+            display.caret,
+            display.placeholder,
+            direction,
+        );
+        let shift = completion
+            .and_then(|hint| self.inline_completion_positions(node, area, &layout, x, hint))
+            .map_or(0.0, |(draft, _)| draft - x);
+        (caret.unwrap_or(x) + shift).clamp(area.x, area.x + area.width)
+    }
+
+    /// Keep the suffix on the draft's visual continuation side.
+    #[doc(hidden)]
+    pub fn inline_completion_positions(
+        &self,
+        node: &Node,
+        area: Rect,
+        draft: &VisualTextLine,
+        aligned_x: f32,
+        (suffix, clip): (&str, Rect),
+    ) -> Option<(f32, f32)> {
+        let visible = area.intersect(clip);
+        let gap = 2.0;
+        let suffix_width = self.advance_node(node, suffix);
+        let capacity = visible.width - draft.width() - gap - 1.0;
+        if visible.height <= 0.0 || suffix_width <= 0.0 || capacity < suffix_width.min(8.0) {
+            return None;
+        }
+        let reserve = suffix_width.min(capacity) + gap;
+        let end = visible.x + visible.width - draft.width() - 1.0;
+        Some(if draft.is_rtl() {
+            let draft_x = aligned_x.clamp(visible.x + reserve, end.max(visible.x + reserve));
+            (draft_x, draft_x - suffix_width - gap)
+        } else {
+            let draft_x = aligned_x.clamp(visible.x, (end - reserve).max(visible.x));
+            (draft_x, draft_x + draft.width() + gap)
+        })
     }
 
     pub fn text_area_caret(
@@ -382,8 +482,18 @@ impl TextSystem {
         bounds: Rect,
         editor: Option<&TextEdit>,
     ) -> (TextAreaLayout, Option<Point>) {
+        self.text_area_caret_in_direction(node, bounds, editor, node.layout_direction())
+    }
+
+    fn text_area_caret_in_direction(
+        &self,
+        node: &Node,
+        bounds: Rect,
+        editor: Option<&TextEdit>,
+        direction: Option<LayoutDirection>,
+    ) -> (TextAreaLayout, Option<Point>) {
         let display = display_text(node, node.text("text").unwrap_or(""), editor);
-        let layout = self.text_area_layout(node, bounds, &display.content);
+        let layout = self.text_area_layout_in_direction(node, bounds, &display.content, direction);
         let caret = display.caret.map(|position| {
             layout.caret_point(&display.content, position, |text| {
                 self.advance_node(node, text)
@@ -406,9 +516,14 @@ impl TextSystem {
             return None;
         }
         let layout = layout.at_path(&target.path)?;
-        let bounds = editor_part(node, layout.bounds).unwrap_or(layout.bounds);
+        let bounds = editor_part(node, layout).unwrap_or(layout.bounds);
         if is_multiline_text_input(node.kind) {
-            let (geometry, caret) = self.text_area_caret(node, bounds, input.editor.as_ref());
+            let (geometry, caret) = self.text_area_caret_in_direction(
+                node,
+                bounds,
+                input.editor.as_ref(),
+                layout.layout_direction_override(),
+            );
             let mut scroll = geometry.clamp_scroll(input.text_scroll(&target.path));
             let rect = caret.map(|caret| {
                 if follow_caret {
@@ -428,14 +543,45 @@ impl TextSystem {
             rect
         } else {
             let text = input.editor_value(node);
-            let x = self.single_line_caret_x(node, bounds, &text, input.editor.as_ref());
+            let completion = input.combo_completion(node, &target.path);
+            let hint = completion
+                .as_ref()
+                .map(|completion| (completion.suffix(), layout.clip));
+            let x = self.single_line_caret_in_direction(
+                node,
+                bounds,
+                &text,
+                input.editor.as_ref(),
+                (layout.layout_direction_override(), hint),
+            );
             Some(layout.window_bounds(Rect::new(x, bounds.y, 1.0, bounds.height.max(1.0))))
         }
     }
 }
 
-fn entry_scroll(advance: f32, width: f32) -> f32 {
-    (advance + 1.0 - width).max(0.0)
+fn entry_origin(
+    node: &Node,
+    area: Rect,
+    line: &VisualTextLine,
+    caret: Option<TextPosition>,
+    placeholder: bool,
+    direction: Option<LayoutDirection>,
+) -> (f32, Option<f32>) {
+    let alignment = TextAlignment::editor(node, direction);
+    let advance = if placeholder {
+        None
+    } else {
+        caret.map(|position| line.caret_x(position))
+    };
+    let x = area.x + alignment.single_line_offset(area.width, line.width(), line.is_rtl(), advance);
+    let caret_x = if placeholder {
+        caret.map(|_| {
+            area.x + alignment.single_line_offset(area.width, 0.0, line.is_rtl(), Some(0.0))
+        })
+    } else {
+        advance.map(|advance| x + advance)
+    };
+    (x, caret_x)
 }
 
 pub(crate) fn draw(
@@ -462,14 +608,15 @@ pub(crate) fn draw(
     let height = size * 1.4;
     let y = bounds.y + ((bounds.height - height) * 0.5).max(0.0);
     let layout = text_system.single_line_layout(node, &content);
-    let advance = caret.map(|caret| {
-        if placeholder {
-            0.0
-        } else {
-            layout.caret_x(caret)
-        }
+    let (aligned_x, caret_x) =
+        entry_origin(node, area, &layout, caret, placeholder, text.direction);
+    let hint = text.completion.and_then(|(suffix, clip)| {
+        text_system
+            .inline_completion_positions(node, area, &layout, aligned_x, (suffix, clip))
+            .map(|(draft, ghost)| (draft, ghost, suffix))
     });
-    let x = area.x - advance.map_or(0.0, |advance| entry_scroll(advance, area.width));
+    let x = hint.map_or(aligned_x, |(draft, _, _)| draft);
+    let caret_x = caret_x.map(|caret| caret + x - aligned_x);
     canvas.intersect_scissor(area.x, bounds.y, area.width, bounds.height);
     let mut rect = |x: f32, y: f32, width: f32, height: f32, tint: Color| {
         let mut path = Path::new();
@@ -494,9 +641,9 @@ pub(crate) fn draw(
             color(theme.focus),
         );
     }
-    if let Some(advance) = advance {
+    if let Some(caret_x) = caret_x {
         rect(
-            x + advance,
+            caret_x,
             y + 1.0,
             1.0,
             (height - 2.0).max(0.0),
@@ -512,27 +659,16 @@ pub(crate) fn draw(
     canvas
         .fill_text(x, y, &content, &paint)
         .map_err(|error| format!("text input drawing failed: {error}"))?;
-    if let Some((suffix, clip)) = text.completion {
-        let start = x + layout.width() + 2.0;
-        let clip = clip.intersect(Rect::new(area.x, bounds.y, area.width, bounds.height));
-        let width = text_system.advance_node(node, suffix);
-        if width > 0.0
-            && clip.contains(Point {
-                x: start,
-                y: y + height * 0.5,
-            })
-            && clip.x + clip.width - start >= width.min(8.0)
-        {
-            canvas
-                .fill_text(
-                    start,
-                    y,
-                    suffix,
-                    &text_system.paint_node(node, color(theme.disabled_text), false),
-                )
-                .map_err(|error| format!("completion drawing failed: {error}"))?;
-            return Ok(true);
-        }
+    if let Some((_, ghost, suffix)) = hint {
+        canvas
+            .fill_text(
+                ghost,
+                y,
+                suffix,
+                &text_system.paint_node(node, color(theme.disabled_text), false),
+            )
+            .map_err(|error| format!("completion drawing failed: {error}"))?;
+        return Ok(true);
     }
     Ok(false)
 }
@@ -553,7 +689,8 @@ pub(crate) fn draw_area(
     enabled: bool,
 ) -> Result<(), String> {
     let display = display_text(node, text.value, text.editor);
-    let layout = text_system.text_area_layout(node, bounds, &display.content);
+    let layout =
+        text_system.text_area_layout_in_direction(node, bounds, &display.content, text.direction);
     let area = layout.area;
     if area.width <= 0.0 || area.height <= 0.0 {
         return Ok(());
@@ -561,7 +698,7 @@ pub(crate) fn draw_area(
     let scroll = layout.clamp_scroll(text.scroll);
     let size = text_system.font_size(node);
     let height = layout.line_height;
-    let x = area.x - scroll.x;
+    let origin = area.x - scroll.x;
     let advance = |text: &str| text_system.advance_node(node, text);
     let foreground = if display.placeholder || !enabled {
         theme.disabled_text
@@ -571,6 +708,7 @@ pub(crate) fn draw_area(
     let paint = text_system.paint_node(node, color(foreground), false);
     canvas.intersect_scissor(area.x, area.y, area.width, area.height);
     for index in layout.visible_lines(scroll) {
+        let x = origin + layout.line_offset(index);
         let line = &layout.lines[index];
         let visual = layout
             .visual_line(index)
@@ -625,7 +763,7 @@ pub(crate) fn draw_area(
         fill_rect(
             canvas,
             Rect::new(
-                x + caret.x,
+                origin + caret.x,
                 area.y + caret.y - scroll.y + 1.0,
                 1.0,
                 height - 2.0,
@@ -653,10 +791,60 @@ pub(crate) fn toggle(
     theme: Palette,
     node: &Node,
     bounds: Rect,
-    enabled: bool,
+    layout: &LayoutNode,
 ) -> Result<(), String> {
-    let box_size = 18.0_f32.min(bounds.height);
-    let y = bounds.y + (bounds.height - box_size) * 0.5;
+    let direction = layout.layout_direction;
+    let enabled = layout.enabled;
+    let geometry = ToggleGeometry::new(node, bounds, direction);
+    if node.control_part("ToggleIndicator").is_none() {
+        if node.kind == "RadioButton" {
+            crate::controls::radio_indicator(canvas, theme, node, geometry.indicator, enabled);
+        } else {
+            let thumb =
+                (node.kind == "Switch" && node.control_part("SwitchThumb").is_none()).then(|| {
+                    geometry.switch_thumb(node.boolean("checked", false), layout.switch_position)
+                });
+            toggle_indicator(canvas, theme, node, geometry.indicator, thumb, enabled);
+        }
+    }
+    crate::controls::leading_label(
+        canvas,
+        text_system,
+        node,
+        geometry.label,
+        node.text(if node.kind == "GroupBox" {
+            "title"
+        } else {
+            "text"
+        })
+        .unwrap_or(""),
+        if enabled {
+            node.color("color").unwrap_or(theme.text)
+        } else {
+            theme.disabled_text
+        },
+        direction,
+    )
+}
+
+fn toggle_indicator(
+    canvas: &mut Canvas<WGPURenderer>,
+    theme: Palette,
+    node: &Node,
+    bounds: Rect,
+    thumb: Option<Rect>,
+    enabled: bool,
+) {
+    let Rect {
+        x,
+        y,
+        width,
+        height,
+    } = bounds;
+    if width <= 0.0 || height <= 0.0 {
+        return;
+    }
+    let box_size = height.min(width);
     let state = if node.kind == "GroupBox" {
         node.boolean("checked", true).into()
     } else {
@@ -670,23 +858,12 @@ pub(crate) fn toggle(
     } else {
         theme.role(Role::Control)
     };
-    let width = if node.kind == "Switch" {
-        box_size * 2.0
-    } else {
-        box_size
-    };
-    let item_delegate = node.is_item_delegate();
-    let x = if item_delegate {
-        bounds.x + (bounds.width - width - 12.0).max(0.0)
-    } else {
-        bounds.x + 6.0
-    };
     let mut frame = Path::new();
     frame.rounded_rect(
         x,
         y,
         width,
-        box_size,
+        height,
         if node.kind == "Switch" {
             box_size * 0.5
         } else {
@@ -694,15 +871,13 @@ pub(crate) fn toggle(
         },
     );
     canvas.fill_path(&frame, &Paint::color(color(background)));
-    if node.kind == "Switch" {
-        let radius = (box_size * 0.5 - 2.0).max(0.0);
-        let offset = if checked {
-            width - box_size * 0.5
-        } else {
-            box_size * 0.5
-        };
+    if let Some(thumb) = thumb {
         let mut knob = Path::new();
-        knob.circle(x + offset, y + box_size * 0.5, radius);
+        knob.circle(
+            thumb.x + thumb.width * 0.5,
+            thumb.y + thumb.height * 0.5,
+            thumb.width * 0.5,
+        );
         canvas.fill_path(
             &knob,
             &Paint::color(color(if enabled {
@@ -715,7 +890,8 @@ pub(crate) fn toggle(
                 theme.disabled_text
             })),
         );
-    } else if state != CheckState::Unchecked {
+    } else if node.kind != "Switch" && state != CheckState::Unchecked {
+        let y = y + (height - box_size) * 0.5;
         let mut mark = Path::new();
         mark.move_to(x + box_size * 0.20, y + box_size * 0.50);
         if checked {
@@ -733,41 +909,4 @@ pub(crate) fn toggle(
         paint.set_line_width(2.0);
         canvas.stroke_path(&mark, &paint);
     }
-    let size = text_system.font_size(node);
-    let tint = if enabled {
-        node.color("color").unwrap_or(theme.text)
-    } else {
-        theme.disabled_text
-    };
-    if item_delegate {
-        return crate::controls::label(
-            canvas,
-            text_system,
-            node,
-            Rect::new(
-                bounds.x + 12.0,
-                bounds.y,
-                (x - bounds.x - 22.0).max(0.0),
-                bounds.height,
-            ),
-            node.text("text").unwrap_or(""),
-            size,
-            tint,
-        );
-    }
-    let paint = text_system.paint_node(node, color(tint), false);
-    canvas
-        .fill_text(
-            x + width + 7.0,
-            bounds.y + ((bounds.height - size * 1.4) * 0.5).max(0.0),
-            node.text(if node.kind == "GroupBox" {
-                "title"
-            } else {
-                "text"
-            })
-            .unwrap_or(""),
-            &paint,
-        )
-        .map_err(|error| format!("checkbox label drawing failed: {error}"))?;
-    Ok(())
 }

@@ -1,7 +1,7 @@
 use list_ui::{
-    AnchoredListDemo, DirectoryItem, GridDemo, ItemDelegatesDemo, LinkedScrollDemo, ListDemo,
-    ListVisibilityDemo, NestedDataDemo, NestedListsDemo, ScrollBarsDemo, ScrollPositionDemo,
-    StandaloneScrollDemo, StandardListDemo,
+    AnchoredListDemo, DirectoryItem, GridDemo, ItemDelegatesDemo, KeyNavigationDemo,
+    LinkedScrollDemo, ListDemo, ListVisibilityDemo, NestedDataDemo, NestedListsDemo,
+    ScrollBarsDemo, ScrollPositionDemo, StandaloneScrollDemo, StandardListDemo, ViewCountsDemo,
 };
 
 fn records() -> Vec<DirectoryItem> {
@@ -20,6 +20,8 @@ fn main() -> std::process::ExitCode {
         Some("--scroll-bars") => xrack_platform_winit::run(ScrollBarsDemo::new()),
         Some("--standalone-scroll") => xrack_platform_winit::run(StandaloneScrollDemo::new()),
         Some("--item-delegates") => xrack_platform_winit::run(ItemDelegatesDemo::new()),
+        Some("--key-navigation") => xrack_platform_winit::run(KeyNavigationDemo::new()),
+        Some("--row-counts") => xrack_platform_winit::run(ViewCountsDemo::new()),
         Some("--visibility") => {
             let mut ui = ListVisibilityDemo::new();
             let records = ui.model_records();

@@ -1,11 +1,12 @@
-use crate::{LayoutNode, Point, Rect, Target, input::valid};
+use crate::{LayoutNode, Point, Rect, Target, input::valid, place_in_direction};
 use std::borrow::Cow;
 use std::time::{Duration, Instant};
+use unicode_bidi::BidiInfo;
 use unicode_segmentation::UnicodeSegmentation;
 use xrack_runtime::{
-    ChoiceIdentity, Node, RowKey, choice_enabled, choice_identity, combo_count, combo_editable,
-    combo_find_enabled_label, combo_index, combo_label, combo_labels, combo_row_index,
-    combo_row_key, combo_text, search_suggestion, search_suggestions,
+    ChoiceIdentity, LayoutDirection, Node, RowKey, choice_enabled, choice_identity, combo_count,
+    combo_editable, combo_find_enabled_label, combo_index, combo_label, combo_labels,
+    combo_row_index, combo_row_key, combo_text, search_suggestion, search_suggestions,
 };
 
 const ROW_HEIGHT: f32 = 28.0;
@@ -22,6 +23,13 @@ pub struct ComboCompletion {
 impl ComboCompletion {
     pub fn suffix(&self) -> &str {
         &self.value[self.draft_len..]
+    }
+
+    pub(crate) fn continues_left(&self) -> bool {
+        BidiInfo::new(&self.value[..self.draft_len], None)
+            .paragraphs
+            .first()
+            .is_some_and(|paragraph| paragraph.level.is_rtl())
     }
 }
 
@@ -155,11 +163,25 @@ pub struct ComboGeometry {
 
 impl ComboGeometry {
     pub fn new(bounds: Rect) -> Self {
+        Self::with_layout_direction(bounds, LayoutDirection::LeftToRight)
+    }
+
+    pub fn for_layout(layout: &LayoutNode) -> Self {
+        Self::with_layout_direction(layout.bounds, layout.layout_direction)
+    }
+
+    pub fn with_layout_direction(bounds: Rect, direction: LayoutDirection) -> Self {
         let trigger = bounds.width.min(28.0);
         let entry = bounds.width - trigger;
+        let mirror = |rect| place_in_direction(rect, bounds, direction);
         Self {
-            entry: Rect::new(bounds.x, bounds.y, entry, bounds.height),
-            trigger: Rect::new(bounds.x + entry, bounds.y, trigger, bounds.height),
+            entry: mirror(Rect::new(bounds.x, bounds.y, entry, bounds.height)),
+            trigger: mirror(Rect::new(
+                bounds.x + entry,
+                bounds.y,
+                trigger,
+                bounds.height,
+            )),
         }
     }
 }
@@ -167,6 +189,7 @@ impl ComboGeometry {
 pub struct ChoiceMenu<'a> {
     pub control: &'a Node,
     pub bounds: Rect,
+    pub layout_direction: LayoutDirection,
     pub rows: Cow<'a, [String]>,
     pub first: usize,
     pub highlighted: Option<usize>,
@@ -192,9 +215,15 @@ impl ChoiceMenu<'_> {
 pub(crate) struct ChoiceGeometry {
     bounds: Rect,
     visible: usize,
+    direction: LayoutDirection,
 }
 
-fn geometry(anchor: Rect, viewport: Rect, len: usize) -> Option<ChoiceGeometry> {
+fn geometry(
+    anchor: Rect,
+    viewport: Rect,
+    len: usize,
+    direction: LayoutDirection,
+) -> Option<ChoiceGeometry> {
     if len == 0 || viewport.width <= 0.0 || viewport.height <= 0.0 {
         return None;
     }
@@ -206,9 +235,12 @@ fn geometry(anchor: Rect, viewport: Rect, len: usize) -> Option<ChoiceGeometry> 
     let visible = ((space / ROW_HEIGHT) as usize).clamp(1, len.min(MAX_ROWS));
     let height = (visible as f32 * ROW_HEIGHT).min(viewport.height);
     let width = anchor.width.max(96.0).min(viewport.width);
-    let x = anchor
-        .x
-        .clamp(viewport.x, viewport.x + viewport.width - width);
+    let x = if direction == LayoutDirection::RightToLeft {
+        anchor.x + anchor.width - width
+    } else {
+        anchor.x
+    };
+    let x = x.clamp(viewport.x, viewport.x + viewport.width - width);
     let y = if down {
         anchor.y + anchor.height
     } else {
@@ -218,6 +250,7 @@ fn geometry(anchor: Rect, viewport: Rect, len: usize) -> Option<ChoiceGeometry> 
     Some(ChoiceGeometry {
         bounds: Rect::new(x, y, width, height),
         visible,
+        direction,
     })
 }
 
@@ -285,7 +318,15 @@ impl ChoicePopup {
         let node = self.node(scene, layout)?;
         let item = layout.at_path(&self.target.path)?;
         let anchor = item.window_bounds(item.bounds);
-        Some((node, geometry(anchor, layout.bounds, choice_count(node))?))
+        Some((
+            node,
+            geometry(
+                anchor,
+                layout.bounds,
+                choice_count(node),
+                item.layout_direction,
+            )?,
+        ))
     }
 
     pub fn view<'a>(&self, scene: &'a Node, layout: &LayoutNode) -> Option<ChoiceMenu<'a>> {
@@ -295,6 +336,7 @@ impl ChoicePopup {
         Some(ChoiceMenu {
             control: node,
             bounds: geo.bounds,
+            layout_direction: geo.direction,
             rows: if node.kind == "SearchField" {
                 Cow::Borrowed(&search_suggestions(node)[range])
             } else {

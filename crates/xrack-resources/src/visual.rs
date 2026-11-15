@@ -229,7 +229,7 @@ pub fn controlled_property(element: OperationRef<'_>) -> Option<(&'static str, T
         Some(("open-side", Type::SwipeSide))
     } else if matches!(element.attr("kind"), Ok("TableView" | "StandardTableView")) {
         Some(("current-row", Type::Int))
-    } else if element.attr("kind") == Ok("TreeView") {
+    } else if element.attr("kind") == Ok("TreeView") || keyed_list(element) {
         Some(("current-key", Type::Int))
     } else if matches!(element.attr("kind"), Ok("PageIndicator" | "Tumbler")) {
         Some(("current-index", Type::Int))
@@ -261,6 +261,14 @@ pub fn controlled_property(element: OperationRef<'_>) -> Option<(&'static str, T
     } else {
         None
     }
+}
+
+pub fn keyed_list(element: OperationRef<'_>) -> bool {
+    matches!(
+        element.attribute("kind"),
+        Some("ListView" | "GridView" | "StandardListView")
+    ) && children(element, "xr.bind")
+        .any(|binding| binding.attribute("name") == Some("row-key-field"))
 }
 
 pub fn controlled_properties(

@@ -1451,3 +1451,76 @@ export component PointerPassThroughDemo inherits Window {
         checked <=> root.secondary-only;
     }
 }
+
+component DirectionExamplePair inherits HorizontalLayout {
+    alignment: start;
+    spacing: 8px;
+    physical-first := Label { text: "L"; width: 24px; }
+    physical-second := Label { text: "R"; width: 24px; }
+}
+
+export component LayoutDirectionDemo inherits Window {
+    title: "XRack · 双向布局";
+    width: 560px; height: 380px;
+    background: #182331;
+    in-out property <LayoutDirection> direction: right-to-left;
+    in-out property <int> grid-index: 0;
+    out property <int> presses: 0;
+    layout-direction: root.direction;
+
+    toggle-direction := Button {
+        x: 18px; y: 12px; width: 168px; height: 32px;
+        text: root.direction == LayoutDirection.right-to-left ? "切换到 LTR" : "切换到 RTL";
+        clicked => {
+            root.direction = root.direction == LayoutDirection.right-to-left
+                ? LayoutDirection.left-to-right : LayoutDirection.right-to-left;
+        }
+    }
+    ordinary := HorizontalLayout {
+        x: 18px; y: 62px; width: 200px; height: 40px;
+        padding-left: 11px; padding-right: 23px;
+        spacing: 7px; alignment: start;
+        first := Button { text: "一"; width: 48px; clicked => { root.presses += 1; } }
+        second := Button { text: "二"; width: 48px; clicked => { root.presses += 10; } }
+    }
+    vertical := VerticalLayout {
+        x: 240px; y: 62px; width: 150px; height: 40px;
+        padding-left: 11px; padding-right: 23px; cross-axis-alignment: start;
+        item := Button { text: "首项"; width: 50px; }
+    }
+    fixed := DirectionExamplePair {
+        x: 416px; y: 62px; width: 120px; height: 40px;
+        layout-direction: left-to-right;
+    }
+    tracks := GridLayout {
+        x: 18px; y: 124px; width: 170px; height: 34px;
+        Row {
+            col-zero := Button { text: "列 0"; }
+            col-one := Button { text: "列 1"; }
+        }
+    }
+    flow := FlowLayout {
+        x: 205px; y: 124px; width: 157px; height: 72px;
+        horizontal-spacing: 7px; vertical-spacing: 4px;
+        flow-one := Label { text: "一"; width: 64px; height: 27px; }
+        flow-two := Label { text: "二"; width: 64px; height: 27px; }
+        flow-three := Label { text: "三"; width: 64px; height: 27px; }
+    }
+    flex := FlexboxLayout {
+        x: 376px; y: 124px; width: 160px; height: 40px;
+        flex-direction: row-reverse;
+        alignment: start; spacing-horizontal: 6px;
+        flex-one := Label { text: "A"; width: 34px; }
+        flex-two := Label { text: "B"; width: 34px; }
+    }
+    grid := GridView {
+        x: 18px; y: 216px; width: 310px; height: 150px;
+        cell-width: 88px; cell-height: 33px; spacing: 6px;
+        current-index <=> root.grid-index;
+        for index in 18 : ItemDelegate { text: "记录 " + index; }
+    }
+    selected-cell := Label {
+        x: 351px; y: 234px; width: 181px;
+        text: "当前索引 " + root.grid-index;
+    }
+}

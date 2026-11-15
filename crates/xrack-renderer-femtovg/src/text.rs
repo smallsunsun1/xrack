@@ -2,9 +2,10 @@ use femtovg::{Align, Baseline, Color, FontId, Paint, TextContext, TextDecoration
 use fontdb::{Database, Family, Query, Style, Weight};
 use std::{cell::RefCell, collections::HashMap, ops::Range, rc::Rc, sync::Arc};
 use xrack_layout::{
-    LabelLayout, Rect, Size, StyledTextLayout, TextAreaLayout, TextMeasurer, VisualTextLine,
+    LabelLayout, Rect, Size, StyledTextLayout, TextAlignment, TextAreaLayout, TextMeasurer,
+    VisualTextLine,
 };
-use xrack_runtime::{EmbeddedFonts, Node, TextStyle, TextWrap};
+use xrack_runtime::{EmbeddedFonts, LayoutDirection, Node, TextStyle, TextWrap};
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 struct FontRequest {
@@ -213,6 +214,7 @@ struct EditLayout {
     size: f32,
     face: Option<StyledFace>,
     wrap: TextWrap,
+    alignment: TextAlignment,
     layout: TextAreaLayout,
 }
 
@@ -628,6 +630,18 @@ impl TextSystem {
     }
 
     pub fn text_area_layout(&self, node: &Node, bounds: Rect, text: &str) -> TextAreaLayout {
+        self.text_area_layout_in_direction(node, bounds, text, node.layout_direction())
+    }
+
+    #[doc(hidden)]
+    pub fn text_area_layout_in_direction(
+        &self,
+        node: &Node,
+        bounds: Rect,
+        text: &str,
+        direction: Option<LayoutDirection>,
+    ) -> TextAreaLayout {
+        let alignment = TextAlignment::editor(node, direction);
         let area = bounds.inset(node.length("padding").unwrap_or(6.0).max(0.0));
         let size = self.font_size(node);
         let face = self.face(Some(node), TextStyle::default());
@@ -637,6 +651,7 @@ impl TextSystem {
             && last.size == size
             && last.face == face
             && last.wrap == wrap
+            && last.alignment == alignment
             && last.text == text
         {
             return last.layout.clone().with_viewport(area);
@@ -654,12 +669,14 @@ impl TextSystem {
                     .unwrap_or(text.len())
             },
             |text| self.shape_visual_line(text, &paint),
-        );
+        )
+        .aligned(text, alignment, |text| self.advance_painted(text, &paint));
         self.edit_layout.replace(Some(EditLayout {
             text: text.into(),
             size,
             face,
             wrap,
+            alignment,
             layout: layout.clone(),
         }));
         layout
@@ -674,10 +691,15 @@ impl TextSystem {
             .unwrap_or_else(|_| std::iter::once(0..text.len()).collect())
     }
 
-    pub(crate) fn label_layout<'a>(&self, node: &'a Node, available: Size) -> LabelLayout<'a> {
+    pub(crate) fn label_layout<'a>(
+        &self,
+        node: &'a Node,
+        available: Size,
+        direction: Option<LayoutDirection>,
+    ) -> LabelLayout<'a> {
         let size = self.font_size(node);
         let paint = self.paint_node_at_size(node, size, Color::white(), false);
-        LabelLayout::with_font_size(node, available, size, |value| {
+        LabelLayout::in_direction(node, available, size, direction, |value| {
             self.advance_painted(value, &paint)
         })
     }
@@ -722,8 +744,13 @@ impl TextMeasurer for TextSystem {
 
     fn measure_label(&mut self, node: &Node, max_width: f32) -> Size {
         let available = Size::new(max_width, f32::INFINITY);
-        self.layout_styled_text(node, available)
-            .map_or_else(|| self.label_layout(node, available).size, |plan| plan.size)
+        self.layout_styled_text(node, available).map_or_else(
+            || {
+                self.label_layout(node, available, node.layout_direction())
+                    .size
+            },
+            |plan| plan.size,
+        )
     }
 
     fn measure_node(&mut self, node: &Node, text: &str, max_width: f32) -> Size {

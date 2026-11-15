@@ -268,6 +268,27 @@ fn collect_dependencies<'m>(
     let owner = op.attribute("owner").unwrap_or("root");
     match op.name() {
         "xr.read" => dependencies.push(qualify(owner, op.attr("value")?)),
+        "xr.view_count" => dependencies.push(qualify(
+            owner,
+            if op.attr("value")? == "source-row-count" {
+                "@view-source"
+            } else {
+                "@view-rows"
+            },
+        )),
+        "xr.list_selection_read" => dependencies.extend(
+            [
+                "@view-rows",
+                "@control:current-index",
+                "@control:current-key",
+            ]
+            .map(|name| qualify(owner, name)),
+        ),
+        "xr.text_accepts" => dependencies.extend(
+            xrack_syntax::builtins::TEXT_SUBMISSION_INPUTS
+                .iter()
+                .map(|name| qualify(owner, &format!("@control:{name}"))),
+        ),
         "xr.control_read" => {
             dependencies.push(qualify(owner, &format!("@control:{}", op.attr("value")?)))
         }
@@ -450,6 +471,33 @@ impl<'m> ComponentDependencies<'m> {
                 format!("{prefix}{owner}.{member}")
             }
         };
+        if scope.name() == "xr.element"
+            && scope
+                .attribute("kind")
+                .is_some_and(|kind| xrack_ir::semantic::view_count_property(kind, "row-count"))
+        {
+            let mut source = Vec::new();
+            let mut rows = vec![qualify(owner, "@view-source")];
+            for member in scope.children() {
+                if member.name() == "xr.bind" {
+                    match member.attr("name")? {
+                        "model" => source.extend(member_dependencies(member, &qualify)?),
+                        "root-key" | "filter-text" | "auto-sort" => {
+                            rows.extend(member_dependencies(member, &qualify)?)
+                        }
+                        _ => {}
+                    }
+                } else if let Some(repeat) = member.children().find(|op| op.name() == "xr.repeat") {
+                    source.extend(member_dependencies(repeat, &qualify)?);
+                }
+            }
+            bindings
+                .edges
+                .insert(qualify(owner, "@view-source"), (scope, source));
+            bindings
+                .edges
+                .insert(qualify(owner, "@view-rows"), (scope, rows));
+        }
         for member in scope.children() {
             match member.name() {
                 "xr.element" | "xr.instance" => {
@@ -583,6 +631,7 @@ pub fn scene_children(op: OperationRef<'_>) -> impl Iterator<Item = OperationRef
                         | "ActionGroup"
                         | "ButtonGroup"
                         | "Timer"
+                        | "SoundEffect"
                         | "SecondaryWindow"
                         | "DayCell"
                         | "SplitHandle"

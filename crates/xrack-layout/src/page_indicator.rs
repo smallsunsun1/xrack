@@ -1,5 +1,7 @@
 use crate::{Point, Rect, Size};
-use xrack_runtime::{Node, Orientation, page_indicator_count, page_indicator_index};
+use xrack_runtime::{
+    LayoutDirection, Node, Orientation, page_indicator_count, page_indicator_index,
+};
 
 const MAX_MARKERS: usize = 64;
 
@@ -16,6 +18,7 @@ pub struct PageMarker {
 pub struct PageIndicatorGeometry {
     track: Rect,
     orientation: Orientation,
+    mirrored: bool,
     first: usize,
     len: usize,
     count: usize,
@@ -26,6 +29,14 @@ pub struct PageIndicatorGeometry {
 
 impl PageIndicatorGeometry {
     pub fn new(node: &Node, bounds: Rect) -> Option<Self> {
+        Self::with_layout_direction(node, bounds, node.layout_direction().unwrap_or_default())
+    }
+
+    pub fn with_layout_direction(
+        node: &Node,
+        bounds: Rect,
+        direction: LayoutDirection,
+    ) -> Option<Self> {
         let count = page_indicator_count(node);
         if count == 0
             || !bounds.width.is_finite()
@@ -65,6 +76,8 @@ impl PageIndicatorGeometry {
         Some(Self {
             track,
             orientation,
+            mirrored: orientation == Orientation::Horizontal
+                && direction == LayoutDirection::RightToLeft,
             first,
             len,
             count,
@@ -82,13 +95,22 @@ impl PageIndicatorGeometry {
             Orientation::Horizontal => point.x - self.track.x,
             Orientation::Vertical => point.y - self.track.y,
         };
-        Some(self.first + ((distance / self.step) as usize).min(self.len - 1))
+        let physical_slot = ((distance / self.step) as usize).min(self.len - 1);
+        Some(self.first + self.project_slot(physical_slot))
+    }
+
+    fn project_slot(&self, slot: usize) -> usize {
+        if self.mirrored {
+            self.len - 1 - slot
+        } else {
+            slot
+        }
     }
 
     pub fn markers(&self) -> impl Iterator<Item = PageMarker> + '_ {
         (0..self.len).map(|slot| {
             let index = self.first + slot;
-            let distance = self.step * (slot as f32 + 0.5);
+            let distance = self.step * (self.project_slot(slot) as f32 + 0.5);
             let center = match self.orientation {
                 Orientation::Horizontal => Point {
                     x: self.track.x + distance,

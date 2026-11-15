@@ -1,0 +1,17 @@
+[package]
+name = "xrack-cargo-live-reload"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[features]
+live-ui = ["xrack/live-reload", "xrack-build/live-reload"]
+
+[dependencies]
+xrack = "=0.5.1"
+tokio = { version = "1.54", features = ["rt-multi-thread", "time"] }
+
+[build-dependencies]
+xrack-build = "=0.5.1"

@@ -145,6 +145,7 @@ pub struct Renderer {
     clock: Instant,
     needs_redraw: bool,
     painted_combo_completion: Option<ComboCompletion>,
+    inspection_outline: Option<Rect>,
     pub text: TextSystem,
     pub theme: Theme,
     system_color_scheme: ColorScheme,
@@ -240,6 +241,7 @@ impl Renderer {
             clock: Instant::now(),
             needs_redraw: false,
             painted_combo_completion: None,
+            inspection_outline: None,
             text,
             theme: Theme::default(),
             system_color_scheme: ColorScheme::System,
@@ -378,6 +380,12 @@ impl Renderer {
         )
     }
 
+    /// Set the development overlay for the next frame in window coordinates.
+    #[doc(hidden)]
+    pub fn set_inspection_outline(&mut self, bounds: Option<Rect>) {
+        self.inspection_outline = bounds;
+    }
+
     fn paint_frame(
         &mut self,
         scene: &Node,
@@ -385,6 +393,7 @@ impl Renderer {
         target: &wgpu::Texture,
         frame: PaintFrame<'_>,
     ) -> Result<(), String> {
+        let inspection_outline = self.inspection_outline.take();
         let PaintFrame {
             input,
             scale,
@@ -471,6 +480,20 @@ impl Renderer {
                 },
                 false,
             )?;
+        }
+        if let Some(bounds) =
+            inspection_outline.filter(|rect| rect.width >= 3.0 && rect.height >= 3.0)
+        {
+            let rect = bounds.inset(1.5);
+            let mut outline = Path::new();
+            outline.rect(rect.x, rect.y, rect.width, rect.height);
+            self.canvas.fill_path(
+                &outline,
+                &Paint::color(femtovg::Color::rgba(55, 186, 255, 32)),
+            );
+            let mut stroke = Paint::color(femtovg::Color::rgb(83, 205, 255));
+            stroke.set_line_width(3.0);
+            self.canvas.stroke_path(&outline, &stroke);
         }
         self.queue.submit(self.canvas.flush_to_output(target));
         self.images.end_frame(&mut self.canvas);
@@ -768,8 +791,7 @@ impl Renderer {
                 &self.text,
                 theme,
                 node,
-                bounds,
-                layout.enabled,
+                layout,
                 input.menu_header_open(path) || input.is_hovered(path) || input.is_focused(path),
             );
         }
@@ -914,14 +936,7 @@ impl Renderer {
             self.canvas
                 .intersect_scissor(header.x, header.y, header.width, header.height);
             let result = if node.group_checkable() {
-                entry::toggle(
-                    &mut self.canvas,
-                    &self.text,
-                    theme,
-                    node,
-                    header,
-                    layout.enabled,
-                )
+                entry::toggle(&mut self.canvas, &self.text, theme, node, header, layout)
             } else {
                 let size = self.text.font_size(node);
                 let foreground = if layout.enabled {
@@ -1087,7 +1102,7 @@ impl Renderer {
                 &self.text,
                 theme,
                 node,
-                &xrack_layout::CalendarGeometry::new(node, bounds),
+                &xrack_layout::CalendarGeometry::for_layout(node, layout),
                 layout.enabled,
             )?;
         } else if node.kind == "Slider" {
@@ -1095,8 +1110,7 @@ impl Renderer {
                 &mut self.canvas,
                 theme,
                 node,
-                bounds,
-                layout.enabled,
+                layout,
                 input
                     .pressed
                     .as_ref()
@@ -1117,30 +1131,18 @@ impl Renderer {
                 input.is_focused(path) || input.is_pressed(path),
             );
         } else if node.kind == "RangeSlider" {
-            let mut preview = None;
-            let active = [0, 1].map(|index| {
-                path.push(index);
-                let active = input.is_focused(path) || input.is_pressed(path);
-                if layout.enabled
-                    && !node.boolean("live", true)
-                    && let Some(fraction) = input.slider_preview(path)
-                {
-                    preview = Some((index, fraction));
-                }
-                path.pop();
-                active
-            });
-            range::interval(
-                &mut self.canvas,
-                theme,
+            let preview = layout
+                .enabled
+                .then(|| input.interval_preview(node, path))
+                .flatten();
+            let active = Self::range_thumb_activity(path, input);
+            range::interval(&mut self.canvas, theme, node, layout, active, preview);
+        } else if node.kind == "PageIndicator" {
+            if let Some(geometry) = xrack_layout::PageIndicatorGeometry::with_layout_direction(
                 node,
                 bounds,
-                layout.enabled,
-                active,
-                preview,
-            );
-        } else if node.kind == "PageIndicator" {
-            if let Some(geometry) = xrack_layout::PageIndicatorGeometry::new(node, bounds) {
+                layout.layout_direction,
+            ) {
                 controls::page_indicator(
                     &mut self.canvas,
                     theme,
@@ -1153,15 +1155,8 @@ impl Renderer {
         } else if let Some(indicator) = xrack_runtime::indicator_state(node) {
             let phase =
                 indicator_phase.filter(|_| layout.enabled && node.boolean("animated", true));
-            self.needs_redraw |= range::indicator(
-                &mut self.canvas,
-                theme,
-                node,
-                bounds,
-                indicator,
-                phase,
-                layout.enabled,
-            );
+            self.needs_redraw |=
+                range::indicator(&mut self.canvas, theme, node, layout, indicator, phase);
         } else if node.kind == "StandardListItem" {
             controls::label(
                 &mut self.canvas,
@@ -1181,61 +1176,44 @@ impl Renderer {
                     theme.disabled_text
                 },
             )?;
-        } else if node.kind == "RadioButton" {
-            controls::radio(
-                &mut self.canvas,
-                &self.text,
-                theme,
-                node,
-                bounds,
-                layout.enabled,
-            )?;
-        } else if is_toggle(node.kind) {
-            entry::toggle(
-                &mut self.canvas,
-                &self.text,
-                theme,
-                node,
-                bounds,
-                layout.enabled,
-            )?;
+        } else if node.kind == "RadioButton" || is_toggle(node.kind) {
+            entry::toggle(&mut self.canvas, &self.text, theme, node, bounds, layout)?;
         } else if node.kind == "ComboBox" && !editable_combo {
             controls::combo(
                 &mut self.canvas,
                 &self.text,
                 theme,
                 node,
-                bounds,
-                layout.enabled,
+                layout,
                 input.choice_is_open_for(path),
             )?;
         } else if is_input || is_cell || is_spin_box(node.kind) {
             let (area, value) = if editable_combo {
-                controls::combo(
+                let geometry = controls::combo(
                     &mut self.canvas,
                     &self.text,
                     theme,
                     node,
-                    bounds,
-                    layout.enabled,
+                    layout,
                     input.choice_is_open_for(path),
                 )?;
                 (
-                    xrack_layout::ComboGeometry::new(bounds).entry,
+                    geometry.entry,
                     std::borrow::Cow::Borrowed(text_input_value(node)),
                 )
             } else if node.kind == "SearchField" {
-                let geometry = xrack_layout::SearchGeometry::new(bounds);
+                let geometry = xrack_layout::SearchGeometry::for_layout(layout);
                 controls::search_icons(&mut self.canvas, theme, node, &geometry, layout.enabled);
                 (
                     geometry.entry,
                     std::borrow::Cow::Borrowed(text_input_value(node)),
                 )
             } else if is_spin_box(node.kind) {
-                let geometry = SpinGeometry::new(bounds);
+                let geometry = SpinGeometry::for_layout(layout, node);
                 controls::spin_buttons(
                     &mut self.canvas,
                     &geometry,
+                    node,
                     theme,
                     layout.enabled && !node.boolean("read-only", false),
                 );
@@ -1266,11 +1244,14 @@ impl Renderer {
                 value: &value,
                 editor,
                 scroll: input.text_scroll(path),
+                direction: layout.layout_direction_override(),
                 completion: completion
                     .as_ref()
                     .map(|candidate| (candidate.suffix(), layout.clip)),
             };
-            if is_multiline_text_input(node.kind) {
+            // Text editing clips to the entry, which must not clip sibling control parts.
+            self.canvas.save();
+            let drawn = if is_multiline_text_input(node.kind) {
                 entry::draw_area(
                     &mut self.canvas,
                     &self.text,
@@ -1279,16 +1260,21 @@ impl Renderer {
                     area,
                     entry,
                     layout.enabled,
-                )?;
-            } else if entry::draw(
-                &mut self.canvas,
-                &self.text,
-                theme,
-                node,
-                area,
-                entry,
-                layout.enabled,
-            )? {
+                )
+                .map(|()| false)
+            } else {
+                entry::draw(
+                    &mut self.canvas,
+                    &self.text,
+                    theme,
+                    node,
+                    area,
+                    entry,
+                    layout.enabled,
+                )
+            };
+            self.canvas.restore();
+            if drawn? {
                 self.painted_combo_completion = completion;
             }
         } else if node.kind == "StyledText" {
@@ -1305,9 +1291,11 @@ impl Renderer {
                 theme.disabled_text
             };
             let paint = self.text.paint_node(node, color(tint), false);
-            let label = self
-                .text
-                .label_layout(node, Size::new(bounds.width, bounds.height));
+            let label = self.text.label_layout(
+                node,
+                Size::new(bounds.width, bounds.height),
+                layout.layout_direction_override(),
+            );
             for line in label.lines {
                 if !line.text.is_empty() {
                     self.canvas
@@ -1436,6 +1424,52 @@ impl Renderer {
         Ok(())
     }
 
+    fn range_thumb_activity(path: &mut Vec<usize>, input: &Interaction) -> [bool; 2] {
+        [0, 1].map(|index| {
+            path.push(index);
+            let active = input.is_focused(path) || input.is_pressed(path);
+            path.pop();
+            active
+        })
+    }
+
+    fn paint_custom_range_thumbs(
+        &mut self,
+        node: &Node,
+        layout: &LayoutNode,
+        path: &mut Vec<usize>,
+        frame: PaintFrame<'_>,
+    ) -> Result<(), String> {
+        let active = Self::range_thumb_activity(path, frame.input);
+        let order = if active[0] { [1, 0] } else { [0, 1] };
+        for index in order {
+            let kind = Node::RANGE_HANDLE_PARTS[index];
+            if let Some((slot, part, item)) = layout
+                .children_in_paint_order(node)
+                .find(|(_, child, _)| child.kind == kind)
+            {
+                path.push(slot);
+                let result = self.paint(part, item, path, frame, false);
+                path.pop();
+                result?;
+            } else if let Some(thumb) = layout.child_at(index) {
+                let bounds = thumb.bounds;
+                range::knob(
+                    &mut self.canvas,
+                    frame.theme,
+                    Point {
+                        x: bounds.x + bounds.width * 0.5,
+                        y: bounds.y + bounds.height * 0.5,
+                    },
+                    bounds.width.min(bounds.height) * 0.5,
+                    layout.enabled,
+                    active[index],
+                );
+            }
+        }
+        Ok(())
+    }
+
     fn paint_children(
         &mut self,
         node: &Node,
@@ -1443,6 +1477,13 @@ impl Renderer {
         path: &mut Vec<usize>,
         frame: PaintFrame<'_>,
     ) -> Result<(), String> {
+        if node.kind == "RangeSlider"
+            && Node::RANGE_HANDLE_PARTS
+                .iter()
+                .any(|kind| node.control_part(kind).is_some())
+        {
+            return self.paint_custom_range_thumbs(node, layout, path, frame);
+        }
         let PaintFrame {
             transitions,
             scale,
@@ -1481,7 +1522,19 @@ impl Renderer {
                 result?;
             }
         }
-        for (i, node, layout) in layout.children_in_paint_order(node) {
+        let thumb = if node.kind == "Switch" {
+            layout
+                .children_in_paint_order(node)
+                .find(|(_, child, _)| child.kind == "SwitchThumb")
+        } else {
+            None
+        };
+        let thumb_index = thumb.map(|(index, _, _)| index);
+        let children = layout
+            .children_in_paint_order(node)
+            .filter(|(index, _, _)| Some(*index) != thumb_index)
+            .chain(thumb);
+        for (i, node, layout) in children {
             if is_window_overlay(node.kind) {
                 continue;
             }

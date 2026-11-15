@@ -64,6 +64,10 @@ fn boundary(text: &str, position: usize) -> usize {
 }
 
 impl TextEdit {
+    pub(crate) fn is_composing(&self) -> bool {
+        self.composition.is_some() || !self.preedit.is_empty()
+    }
+
     pub fn at_end(text: &str) -> Self {
         Self {
             caret: text.len(),
@@ -293,7 +297,7 @@ impl TextEditContext {
 
     pub fn capture(input: &Interaction, scene: &Node) -> Option<Self> {
         let editor = input.editor.as_ref()?;
-        if !editor.preedit.is_empty() || editor.composition.is_some() {
+        if editor.is_composing() {
             return None;
         }
         let (target, text, selection, caret) = current(input, scene)?;
@@ -314,7 +318,7 @@ impl TextEditContext {
         input
             .editor
             .as_ref()
-            .is_some_and(|editor| editor.preedit.is_empty() && editor.composition.is_none())
+            .is_some_and(|editor| !editor.is_composing())
             && self.matches(input, scene)
     }
 

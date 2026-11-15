@@ -12,6 +12,12 @@ pub use xrack_renderer_femtovg as renderer;
 pub use xrack_runtime as runtime;
 pub use xrack_runtime::*;
 
+#[doc(hidden)]
+pub mod __live {
+    #[cfg(feature = "live-reload")]
+    pub use xrack_interpreter::live::*;
+}
+
 /// Enable media sessions on the current thread for a custom host.
 #[cfg(feature = "media")]
 pub use xrack_platform_winit::install_media;
@@ -20,6 +26,8 @@ pub use xrack_platform_winit::install_media;
 #[macro_export]
 macro_rules! include_modules {
     () => {
+        #[allow(unused_imports)]
+        use $crate::__live as __xrack_live;
         #[doc(hidden)]
         use $crate::runtime as __xrack_runtime;
         include!(concat!(env!("OUT_DIR"), "/xrack_ui.rs"));

@@ -20,8 +20,8 @@ use xrack_runtime::{
     MediaCommand, MediaFrame, MediaOptions, MediaSession, MediaState, MediaStatus,
 };
 
-const RATE: u32 = 48_000;
-const CHANNELS: usize = 2;
+pub(super) const RATE: u32 = 48_000;
+pub(super) const CHANNELS: usize = 2;
 const AUDIO_AHEAD: u64 = RATE as u64 / 3;
 const VIDEO_AHEAD: f64 = 0.25;
 const VIDEO_BYTES_AHEAD: usize = 64 * 1024 * 1024;
@@ -61,9 +61,9 @@ impl Drop for Device {
     }
 }
 
-struct AudioBlock {
+pub(super) struct AudioBlock {
     start: u64,
-    samples: Vec<f32>,
+    pub(super) samples: Vec<f32>,
 }
 
 impl AudioBlock {
@@ -250,6 +250,7 @@ struct Session(Arc<Shared>);
 
 pub fn install() {
     xrack_runtime::register_media_backend(open);
+    xrack_runtime::register_sound_backend(crate::sound::open);
 }
 
 fn open(path: &Path, autoplay: bool, volume: f64) -> Result<Box<dyn MediaSession>, String> {
@@ -1171,7 +1172,7 @@ fn decode(path: PathBuf, shared: &Arc<Shared>) -> Result<(), MediaError> {
     }
 }
 
-struct AudioDecoder {
+pub(super) struct AudioDecoder {
     decoder: VideoDecoder,
     resample: *mut ff::SwrContext,
     cursor: u64,
@@ -1179,7 +1180,7 @@ struct AudioDecoder {
 }
 
 impl AudioDecoder {
-    fn new(decoder: VideoDecoder) -> Self {
+    pub(super) fn new(decoder: VideoDecoder) -> Self {
         Self {
             decoder,
             resample: ptr::null_mut(),
@@ -1196,7 +1197,7 @@ impl AudioDecoder {
         Ok(())
     }
 
-    fn next(&mut self) -> Result<Option<AudioBlock>, MediaError> {
+    pub(super) fn next(&mut self) -> Result<Option<AudioBlock>, MediaError> {
         loop {
             let has_frame = self.decoder.receive()?;
             if !has_frame && self.resample.is_null() {

@@ -200,7 +200,12 @@ pub(crate) struct CellPlacement {
     pub(crate) clip: Option<std::sync::Arc<crate::table::PaneClip>>,
 }
 
-pub(crate) fn children(node: &Node, bounds: Rect, text: &mut impl TextMeasurer) -> Vec<Placement> {
+pub(crate) fn children(
+    node: &Node,
+    bounds: Rect,
+    direction: xrack_runtime::LayoutDirection,
+    text: &mut impl TextMeasurer,
+) -> Vec<Placement> {
     let inner = Padding::read(node).inner_rect(bounds);
     let size = Size::new(inner.width, inner.height);
     let cells = cells(node);
@@ -248,6 +253,7 @@ pub(crate) fn children(node: &Node, bounds: Rect, text: &mut impl TextMeasurer) 
             info.x.clamp(width),
             info.y.clamp(height),
         );
+        let rect = crate::place_in_direction(rect, inner, direction);
         let placement = &mut placements[cell.index];
         if let Some(child) = cell.child_index {
             placement.row_children.as_mut().unwrap()[child].bounds = rect;

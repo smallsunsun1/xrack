@@ -188,6 +188,7 @@ fn kind(op: Op<'_>, ty: &Type) -> Result<ValueType> {
         Type::FlickBoundsBehavior => ValueType::FlickBoundsBehavior,
         Type::FlickBoundsMovement => ValueType::FlickBoundsMovement,
         Type::PopupPlacement => ValueType::PopupPlacement,
+        Type::LayoutDirection => ValueType::LayoutDirection,
         Type::FlexboxLayoutDirection => ValueType::FlexboxLayoutDirection,
         Type::FlexboxLayoutWrap => ValueType::FlexboxLayoutWrap,
         Type::CrossAxisAlignment => ValueType::CrossAxisAlignment,
@@ -276,7 +277,10 @@ struct Loader<'m> {
     geometry_targets: BTreeSet<String>,
     viewport_targets: BTreeSet<String>,
     source_scroll_targets: BTreeSet<String>,
+    key_scroll_targets: BTreeSet<String>,
     focus_targets: BTreeSet<String>,
+    text_selection_targets: BTreeSet<String>,
+    text_command_targets: BTreeSet<String>,
     row_parameters: Vec<(String, Option<String>)>,
     in_split_handle: bool,
     in_day_cell: bool,
@@ -345,6 +349,8 @@ impl<'m> Loader<'m> {
         let root = root.ok_or_else(|| invalid(op, "component has no root element"))?;
         let button_groups = group::members(&root);
         Ok(Definition {
+            #[cfg(all(feature = "live-reload", unix))]
+            source: crate::live_inspect::Source::from_operation(op),
             properties: loader.properties,
             callbacks: loader.callbacks,
             callback_defaults: loader
@@ -362,7 +368,10 @@ impl<'m> Loader<'m> {
             geometry_targets: loader.geometry_targets,
             viewport_targets: loader.viewport_targets,
             source_scroll_targets: loader.source_scroll_targets,
+            key_scroll_targets: loader.key_scroll_targets,
             focus_targets: loader.focus_targets,
+            text_selection_targets: loader.text_selection_targets,
+            text_command_targets: loader.text_command_targets,
             timer_order: loader.timer_order,
             action_keys: loader.action_keys,
             native_dialog_keys: loader.native_dialog_keys,
@@ -444,17 +453,23 @@ impl<'m> Loader<'m> {
                     if command.uses_source_row() {
                         self.source_scroll_targets.insert(target.clone());
                     }
+                    if command.uses_business_key() {
+                        self.key_scroll_targets.insert(target.clone());
+                    }
                     body.push(Statement::Scroll(target, command, arguments));
                 }
                 "xr.source_selection" => {
-                    let column = (attribute(statement, "method")? == "select-source-cell")
-                        .then(|| expression(self, 1))
-                        .transpose()?;
-                    body.push(Statement::SelectSource(
-                        attribute(statement, "owner")?.into(),
-                        expression(self, 0)?,
-                        column,
-                    ));
+                    let method = attribute(statement, "method")?;
+                    let target = attribute(statement, "owner")?.into();
+                    let argument = expression(self, 0)?;
+                    if method == "select-key" {
+                        body.push(Statement::SelectKey(target, argument));
+                    } else {
+                        let column = (method == "select-source-cell")
+                            .then(|| expression(self, 1))
+                            .transpose()?;
+                        body.push(Statement::SelectSource(target, argument, column));
+                    }
                 }
                 "xr.set_row_height"
                 | "xr.move_column"
@@ -882,6 +897,7 @@ impl<'m> Loader<'m> {
         let mut row_links = BTreeMap::new();
         let mut children = Vec::new();
         let mut timers = Vec::new();
+        let mut sound_effects = Vec::new();
         let mut commands = Vec::new();
         let mut native_dialogs = Vec::new();
         let mut secondary_windows = Vec::new();
@@ -911,6 +927,9 @@ impl<'m> Loader<'m> {
                 }
                 "xr.element" if child.attribute("kind") == Some("Timer") => {
                     timers.push(self.element(child)?)
+                }
+                "xr.element" if child.attribute("kind") == Some("SoundEffect") => {
+                    sound_effects.push(self.element(child)?);
                 }
                 "xr.element"
                     if matches!(
@@ -993,6 +1012,7 @@ impl<'m> Loader<'m> {
                     self.viewport_targets.insert(key.into());
                     offsets.push((axis, offset));
                 }
+                "xr.bind" if child.attribute("name") == Some("row-key-field") => {}
                 "xr.bind"
                     if child.attribute("name") == Some("row-visible-field")
                         && visible_field.is_some() => {}
@@ -1135,9 +1155,13 @@ impl<'m> Loader<'m> {
             .collect::<Result<_>>()?;
         Ok(Element {
             key: key.into(),
-            media_source_file: matches!(visual, Visual::Builtin("MediaPlayer")).then(|| {
-                xrack_resources::visual::media_source_file(op, &self.assets.entry_file).into_owned()
-            }),
+            #[cfg(all(feature = "live-reload", unix))]
+            source: crate::live_inspect::Source::from_operation(op),
+            media_source_file: matches!(visual, Visual::Builtin("MediaPlayer" | "SoundEffect"))
+                .then(|| {
+                    xrack_resources::visual::media_source_file(op, &self.assets.entry_file)
+                        .into_owned()
+                }),
             id: id.into(),
             repeat,
             delegate: op.attribute("delegate").is_some(),
@@ -1156,6 +1180,7 @@ impl<'m> Loader<'m> {
                     .any(|child| child.repeat.is_none() && child.contains_delegate),
             visible_field,
             height_field,
+            list_key_field: field("row-key-field")?,
             instance_handlers,
             visual,
             grid_plan: scene_plan.grid.map(Arc::from),
@@ -1188,6 +1213,7 @@ impl<'m> Loader<'m> {
             row_links,
             children,
             timers,
+            sound_effects,
             commands,
             native_dialogs,
             secondary_windows,
@@ -1438,6 +1464,18 @@ impl<'m> Loader<'m> {
                     .ok_or_else(|| invalid(op, format_args!("unknown pointer property {name}")))?;
                 Expression::PointerRead(attribute(op, "owner")?.into(), read)
             }
+            "xr.text_command_available" => {
+                let member = member(op, "value")?;
+                self.focus_targets.insert(member.owner.clone());
+                self.text_command_targets.insert(member.owner.clone());
+                Expression::TextCommandAvailable(member)
+            }
+            "xr.text_selection_read" => {
+                let member = member(op, "value")?;
+                self.focus_targets.insert(member.owner.clone());
+                self.text_selection_targets.insert(member.owner.clone());
+                Expression::TextSelectionRead(member)
+            }
             "xr.focus_read" => {
                 let owner = attribute(op, "owner")?;
                 self.focus_targets.insert(owner.into());
@@ -1454,6 +1492,13 @@ impl<'m> Loader<'m> {
                 let query = tree::Query::parse(method).ok_or_else(|| unsupported(op, method))?;
                 Expression::TreeQuery(attribute(op, "owner")?.into(), query, argument(self, 0)?)
             }
+            "xr.list_selection_read" => {
+                Expression::ListSelectionRead(attribute(op, "owner")?.into())
+            }
+            "xr.view_count" => Expression::ViewCount {
+                owner: attribute(op, "owner")?.into(),
+                source: spelling()? == "source-row-count",
+            },
             "xr.view_index" => {
                 let method = spelling()?;
                 let direction = runtime::ViewIndex::parse(method).ok_or_else(|| {
@@ -1495,6 +1540,7 @@ impl<'m> Loader<'m> {
                 Expression::ImageDimension(argument(self, 0)?, axis)
             }
             "xr.media_read" => Expression::MediaRead(member(op, "value")?),
+            "xr.text_accepts" => Expression::TextAccepts(attribute(op, "owner")?.into()),
             "xr.image_playback_read" => Expression::ImagePlaybackRead(member(op, "value")?),
             "xr.nine_slice" => {
                 let edges =
@@ -1812,6 +1858,7 @@ fn runtime_default(kind: &ValueType) -> Option<Value> {
         FlickBoundsBehavior,
         FlickBoundsMovement,
         PopupPlacement,
+        LayoutDirection,
         FlexboxLayoutDirection,
         FlexboxLayoutWrap,
         CrossAxisAlignment,
@@ -2051,6 +2098,10 @@ const PROPERTIES: &[&str] = &[
     "press-and-hold-interval",
     "password-visible",
     "maximum-length",
+    "minimum-length",
+    "minimum-value",
+    "maximum-value",
+    "submit-when",
     "suggestions",
     "suggestions-for",
     "step",
@@ -2060,6 +2111,7 @@ const PROPERTIES: &[&str] = &[
     "current-value",
     "cross-axis-alignment",
     "cross-axis-self-alignment",
+    "layout-direction",
     "horizontal-alignment",
     "vertical-alignment",
     "wrap",

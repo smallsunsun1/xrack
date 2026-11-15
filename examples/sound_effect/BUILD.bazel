@@ -1,0 +1,26 @@
+load("@rules_rust//rust:defs.bzl", "rust_binary")
+load("//bazel:xrack.bzl", "xr_ui_library")
+
+exports_files(
+    ["click.wav", "sound_effect.xr"],
+    visibility = ["//tests:__pkg__"],
+)
+
+xr_ui_library(
+    name = "sound_ui",
+    src = "sound_effect.xr",
+    assets = ["click.wav"],
+    visibility = ["//tests:__pkg__"],
+)
+
+rust_binary(
+    name = "sound_effect",
+    srcs = ["main.rs"],
+    data = ["click.wav"],
+    edition = "2024",
+    tags = ["manual"],
+    deps = [
+        ":sound_ui",
+        "//crates/xrack-platform-winit:xrack_platform_winit",
+    ],
+)

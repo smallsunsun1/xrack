@@ -4,6 +4,9 @@ fn main() -> std::process::ExitCode {
     let result = match std::env::args().nth(1).as_deref() {
         Some("--radio-groups") => xrack_platform_winit::run(GroupedRadiosDemo::new()),
         Some("--editable-combo") => xrack_platform_winit::run(EditableChoiceDemo::new()),
+        Some("--rtl-choice") => {
+            xrack_platform_winit::run(selection_ui::DirectionalChoiceDemo::new())
+        }
         Some("--record-combo") => {
             let mut ui = RecordComboDemo::new();
             let options = ui.model_options();

@@ -75,3 +75,228 @@ export component GlobalDemo inherits Window {
     SettingsReadout {}
     update := Button { clicked => { SharedSettings.increment(); } }
 }
+
+component IndicatorMark inherits Rectangle {
+    in property <string> symbol;
+    background: #263d50;
+    border-radius: 6px;
+    Text { width: 100%; height: 100%; text: root.symbol; color: #fff; horizontal-alignment: center; vertical-alignment: center; }
+}
+
+export component ToggleIndicatorDemo inherits Window {
+    title: "XRack — custom toggle indicators";
+    width: 420px;
+    height: 260px;
+    in-out property <CheckState> tri: CheckState.unchecked;
+    in-out property <bool> option-enabled: true;
+    in-out property <bool> network: false;
+    in-out property <int> profile: 0;
+
+    VerticalLayout {
+        padding: 18px;
+        spacing: 10px;
+        master := CheckBox {
+            text: "Include optional settings";
+            check-state <=> root.tri;
+            tristate: true;
+            ToggleIndicator {
+                width: 34px; height: 26px;
+                IndicatorMark {
+                    width: 100%; height: 100%;
+                    symbol: root.tri == CheckState.checked ? "✓"
+                        : root.tri == CheckState.partially-checked ? "–" : "○";
+                }
+            }
+        }
+        profiles := RadioGroup {
+            current-index <=> root.profile;
+            personal := RadioButton {
+                text: "Personal";
+                ToggleIndicator {
+                    width: 34px; height: 24px;
+                    IndicatorMark { width: 100%; height: 100%; symbol: root.profile == 0 ? "P" : "○"; }
+                }
+            }
+            shared := RadioButton {
+                text: "Shared";
+                ToggleIndicator {
+                    width: 34px; height: 24px;
+                    IndicatorMark { width: 100%; height: 100%; symbol: root.profile == 1 ? "S" : "○"; }
+                }
+            }
+        }
+        online := Switch {
+            text: "Connect automatically";
+            enabled: root.option-enabled;
+            checked <=> root.network;
+            ToggleIndicator {
+                width: 54px; height: 28px;
+                IndicatorMark { width: 100%; height: 100%; symbol: root.network ? "ON" : "OFF"; }
+            }
+        }
+    }
+}
+
+export component SpinIndicatorDemo inherits Window {
+    title: "XRack — custom stepper indicators";
+    width: 440px;
+    height: 250px;
+    in-out property <int> quantity: 2;
+    in-out property <float> price: 1.25;
+    in-out property <bool> rtl: false;
+    in-out property <bool> locked: false;
+    out property <int> edits: 0;
+
+    VerticalLayout {
+        padding: 16px;
+        spacing: 8px;
+        layout-direction: root.rtl ? LayoutDirection.right-to-left : LayoutDirection.left-to-right;
+        amounts := Label { text: "Quantity " + root.quantity + " · Price " + root.price; }
+        quantity-field := SpinBox {
+            accessible-name: "Quantity";
+            value <=> root.quantity;
+            minimum: 0;
+            maximum: 10;
+            read-only: root.locked;
+            edited(value) => { root.edits += 1; }
+            SpinUpIndicator {
+                width: 52px; height: 23px;
+                IndicatorMark { width: 100%; height: 100%; symbol: "+1"; }
+            }
+            SpinDownIndicator {
+                IndicatorMark { width: 100%; height: 100%; symbol: "−1"; }
+            }
+        }
+        price-field := DoubleSpinBox {
+            accessible-name: "Price";
+            value <=> root.price;
+            minimum: 0;
+            maximum: 10;
+            decimals: 2;
+            step-size: 0.25;
+            edited(value) => { root.edits += 1; }
+            SpinUpIndicator {
+                width: 64px; height: 24px;
+                IndicatorMark { width: 100%; height: 100%; symbol: "+0.25"; }
+            }
+        }
+        lock := CheckBox {
+            text: "Quantity is read-only";
+            checked <=> root.locked;
+        }
+        direction := Button {
+            text: root.rtl ? "RTL" : "LTR";
+            clicked => { root.rtl = !root.rtl; }
+        }
+    }
+}
+
+export component RangeHandleDemo inherits Window {
+    title: "XRack — custom range handles";
+    width: 440px;
+    height: 300px;
+    in-out property <float> low: 20;
+    in-out property <float> high: 80;
+    in-out property <float> vertical-high: 70;
+    out property <int> changes: 0;
+    out property <int> releases: 0;
+
+    VerticalLayout {
+        padding: 18px;
+        spacing: 12px;
+        Label { text: "Budget: " + root.low + " – " + root.high; }
+        band := RangeSlider {
+            height: 40px;
+            accessible-name: "Budget";
+            minimum: 0;
+            maximum: 100;
+            step: 10;
+            snap-mode: ScrollSnapMode.on-release;
+            live: false;
+            lower-value <=> root.low;
+            upper-value <=> root.high;
+            changed(lower, upper) => { root.changes += 1; }
+            released(lower, upper) => { root.releases += 1; }
+            RangeLowerHandle {
+                width: 42px; height: 24px;
+                background: #d77d4d;
+                border-radius: 5px;
+            }
+        }
+        column := RangeSlider {
+            width: 46px;
+            height: 142px;
+            orientation: vertical;
+            accessible-name: "Vertical limit";
+            lower-value: 20;
+            upper-value <=> root.vertical-high;
+            RangeUpperHandle {
+                width: 28px; height: 38px;
+                background: #277f93;
+                border-radius: 5px;
+            }
+        }
+    }
+}
+
+component NavigationBadge inherits Rectangle {
+    in property <string> caption;
+    in property <bool> marked: false;
+    width: 100px;
+    height: 24px;
+    border-radius: 6px;
+    background: root.marked ? #208c78 : #5a5389;
+    Text {
+        width: 100%; height: 100%;
+        horizontal-alignment: center; vertical-alignment: center;
+        color: #fff; text: root.caption;
+    }
+}
+
+export component TabContentDemo inherits Window {
+    title: "XRack — custom tab content";
+    width: 432px;
+    height: 246px;
+    in-out property <int> selected: 0;
+    in property <[string]> sections: ["Overview", "Reports", "Settings"];
+
+    tabs := TabBar {
+        x: 18px; y: 18px; width: 192px; height: 48px;
+        spacing: 6px;
+        accessible-name: "Sections";
+        current-index <=> root.selected;
+        for name[index] in root.sections : TabButton {
+            text: name;
+            enabled: index != 1;
+            ButtonContent {
+                NavigationBadge { caption: name; marked: index == root.selected; }
+            }
+        }
+    }
+    jump := Button {
+        x: 18px; y: 82px; width: 160px; height: 46px;
+        text: "Go to settings";
+        clicked => { root.selected = 2; }
+        ButtonContent {
+            NavigationBadge { caption: "Jump to settings"; }
+        }
+    }
+    Label {
+        x: 18px; y: 146px;
+        text: "Selected section: " + root.selected;
+    }
+    vertical-tabs := TabBar {
+        x: 240px; y: 18px; width: 160px; height: 118px;
+        orientation: vertical;
+        spacing: 4px;
+        accessible-name: "Vertical sections";
+        current-index <=> root.selected;
+        for name[index] in root.sections : TabButton {
+            text: name;
+            enabled: index != 1;
+            ButtonContent {
+                NavigationBadge { caption: name; marked: index == root.selected; }
+            }
+        }
+    }
+}

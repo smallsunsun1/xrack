@@ -5,6 +5,7 @@ export component MenuDemo inherits Window {
     background: #182331;
 
     in-out property <bool> show-grid: false;
+    in-out property <bool> rtl: false;
     in-out property <bool> grid-enabled: true;
     in-out property <bool> dialog-open: false;
     in-out property <string> new-shortcut: "Primary+N";
@@ -28,6 +29,7 @@ export component MenuDemo inherits Window {
     VerticalLayout {
         padding: 16px;
         spacing: 10px;
+        layout-direction: root.rtl ? LayoutDirection.right-to-left : LayoutDirection.left-to-right;
         MenuBar {
             file-menu := Menu {
                 title: "文件";
@@ -82,6 +84,10 @@ export component MenuDemo inherits Window {
                 Menu { MenuItem { text: "检查属性"; shortcut: "Primary+R"; activated() => { root.command = "已检查属性"; } } }
             }
             DialogButton { text: "关闭"; role: reject; }
+        }
+        direction := Button {
+            text: root.rtl ? "RTL · 切换方向" : "LTR · 切换方向";
+            clicked => { root.rtl = !root.rtl; }
         }
     }
 }

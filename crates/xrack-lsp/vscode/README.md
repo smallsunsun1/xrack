@@ -35,7 +35,7 @@ Type `Math.`, `Strings.`, `Model.`, or `Log.` for built-in functions and constan
 
 ## Live preview
 
-The platform VSIX includes the FFmpeg media library used by `MediaPlayer`. Open an `.xr` file with a local video, then use **XRack: Open Live Preview** to play, pause, or seek. Relative media paths are resolved from the `.xr` file. FFmpeg source and build inputs are available with each XRack release. [XRack releases](https://github.com/smallsunsun1/xrack/releases)
+The platform VSIX includes the media backend for `MediaPlayer` and `SoundEffect`. Use **XRack: Open Live Preview** to play or seek a video, or trigger a preloaded WAV from a `SoundEffect` callback. In a source checkout, build the media-enabled host with `bazel build --config=media //crates/xrack-preview`. Relative media paths are resolved from the `.xr` file. FFmpeg source and build inputs are available with each XRack release. [XRack releases](https://github.com/smallsunsun1/xrack/releases)
 
 Open a saved `.xr` file and choose **XRack: Open Live Preview** from the Command Palette or use the preview button in the editor title bar. The side panel follows edits to that file and its open imports, including unsaved edits. Use the component dropdown to choose an entry component. Click buttons in the preview to run their XRack handlers and see the updated component state. While a new frame is building, the previous frame stays visible. Compiler errors appear above it and clear automatically after the next successful render.
 

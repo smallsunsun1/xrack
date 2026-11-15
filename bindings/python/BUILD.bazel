@@ -1,0 +1,164 @@
+load("@aspect_rules_lint//format:defs.bzl", "format_multirun")
+load("@rules_python//python:defs.bzl", "py_binary", "py_library", "py_test")
+load("@rules_python//python:packaging.bzl", "py_wheel")
+load("@rules_rust_pyo3//:defs.bzl", "pyo3_extension", "rust_pyo3_toolchain")
+
+exports_files(["ruff.lock.json"])
+
+rust_pyo3_toolchain(
+    name = "pyo3_deps",
+    pyo3 = "@crates//:pyo3",
+    pyo3_introspection = "@crates//:pyo3-introspection",
+)
+
+toolchain(
+    name = "rust_pyo3_toolchain",
+    toolchain = ":pyo3_deps",
+    toolchain_type = "@rules_rust_pyo3//:rust_toolchain_type",
+)
+
+pyo3_extension(
+    name = "native",
+    srcs = glob(["src/*.rs"]),
+    crate_root = "src/lib.rs",
+    edition = "2024",
+    module_name = "xrack._native",
+    stubs = True,
+    deps = [
+        "//crates/xrack-assets:xrack_assets",
+        "//crates/xrack-compiler:xrack_compiler",
+        "//crates/xrack-interpreter:xrack_interpreter_live",
+        "//crates/xrack-platform-winit:xrack_platform_winit",
+        "//crates/xrack-runtime:xrack_runtime",
+        "@crates//:pyo3-async-runtimes",
+        "@crates//:tokio",
+    ],
+)
+
+filegroup(
+    name = "native_type_stubs",
+    srcs = [":native"],
+    output_group = "pyo3_type_stubs",
+)
+
+filegroup(
+    name = "python_types",
+    srcs = ["xrack/py.typed", ":native_type_stubs"],
+)
+
+py_library(
+    name = "xrack",
+    srcs = ["xrack/__init__.py", "xrack/stubgen.py", "xrack/values.py"],
+    data = [":python_types"],
+    imports = ["."],
+    visibility = ["//visibility:public"],
+    deps = [":native"],
+)
+
+format_multirun(
+    name = "format",
+    python = "@xrack_python_tools//tools/ruff",
+)
+
+py_binary(
+    name = "async_demo",
+    srcs = ["async_demo.py"],
+    args = ["$(location //examples/async_demo:async.xr)"],
+    data = ["//examples/async_demo:async.xr"],
+    env = {"PYTHONDONTWRITEBYTECODE": "1"},
+    python_version = "3.11",
+    deps = [":xrack"],
+)
+
+py_test(
+    name = "binding_test",
+    srcs = ["binding_test.py"],
+    args = ["$(location //examples/async_demo:async.xr)"],
+    data = ["//examples/async_demo:async.xr"],
+    env = {"PYTHONDONTWRITEBYTECODE": "1"},
+    python_version = "3.11",
+    deps = [":xrack"],
+)
+
+py_test(
+    name = "window_test",
+    srcs = ["window_test.py"],
+    args = ["$(location //examples/async_demo:async.xr)"],
+    data = ["//examples/async_demo:async.xr"],
+    env = {"PYTHONDONTWRITEBYTECODE": "1"},
+    python_version = "3.11",
+    tags = ["manual"],
+    deps = [":xrack"],
+)
+
+py_test(
+    name = "live_test",
+    srcs = ["live_test.py"],
+    args = ["$(location //examples/async_demo:async.xr)"],
+    data = ["//examples/async_demo:async.xr"],
+    env = {"PYTHONDONTWRITEBYTECODE": "1"},
+    python_version = "3.11",
+    tags = ["manual"],
+    target_compatible_with = select({
+        "@platforms//os:windows": ["@platforms//:incompatible"],
+        "//conditions:default": [],
+    }),
+    deps = [":xrack"],
+)
+
+py_wheel(
+    name = "wheel",
+    abi = "abi3",
+    description_file = "README.md",
+    distribution = "xrack",
+    extra_distinfo_files = {
+        "//:LICENSE-APACHE": "licenses/LICENSE-APACHE",
+        "//:LICENSE-MIT": "licenses/LICENSE-MIT",
+    },
+    license = "MIT OR Apache-2.0",
+    platform = select({
+        ":linux_arm64": "linux_aarch64",
+        ":linux_x64": "linux_x86_64",
+        ":macos_arm64": "macosx_13_0_arm64",
+        ":macos_x64": "macosx_13_0_x86_64",
+        ":windows_arm64": "win_arm64",
+        ":windows_x64": "win_amd64",
+    }),
+    python_requires = ">=3.11",
+    python_tag = "cp311",
+    project_urls = {"Repository": "https://github.com/smallsunsun1/xrack"},
+    strip_path_prefixes = ["bindings/python"],
+    summary = "Declarative native UI for Python with XRack",
+    version = "0.5.1",
+    deps = [":native", ":python_types", ":xrack"],
+)
+
+config_setting(
+    name = "linux_arm64",
+    constraint_values = ["@platforms//os:linux", "@platforms//cpu:aarch64"],
+)
+
+config_setting(
+    name = "linux_x64",
+    constraint_values = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
+)
+
+config_setting(
+    name = "macos_arm64",
+    constraint_values = ["@platforms//os:macos", "@platforms//cpu:aarch64"],
+)
+
+config_setting(
+    name = "macos_x64",
+    constraint_values = ["@platforms//os:macos", "@platforms//cpu:x86_64"],
+)
+
+config_setting(
+    name = "windows_arm64",
+    constraint_values = ["@platforms//os:windows", "@platforms//cpu:aarch64"],
+)
+
+config_setting(
+    name = "windows_x64",
+    constraint_values = ["@platforms//os:windows", "@platforms//cpu:x86_64"],
+)

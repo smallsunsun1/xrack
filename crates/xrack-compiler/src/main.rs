@@ -2,14 +2,17 @@ use clap::{Parser, ValueEnum};
 use proc_macro2::{Group, Ident, Spacing, TokenStream, TokenTree};
 use std::{fs, io, path::PathBuf, process::ExitCode};
 use xrack_compiler::{
-    CompilerError, check_document, compile_with_inputs, export_mlir, export_mlir_to,
-    generate_document, mlir, parse, parse_document, semantic,
+    CompilerError, check_document, compile_live_with_inputs, compile_with_inputs, export_mlir,
+    export_mlir_to, generate_document, generate_live_document, mlir, parse, parse_document,
+    semantic,
 };
 
 #[derive(Clone, Copy, Debug, Default, ValueEnum)]
 enum Emit {
     #[default]
     Rust,
+    /// Generate the Rust API backed by the development interpreter and file watcher.
+    RustLive,
     /// Print verified, optimized MLIR for loading at runtime.
     Mlir,
     /// Print the lowered MLIR before native verification and optimization.
@@ -20,6 +23,8 @@ enum Emit {
     Hir,
     /// Read editor buffers as JSON on stdin and emit snapshot host source.
     Preview,
+    /// Read saved source buffers as JSON on stdin and emit optimized MLIR and source paths.
+    LiveModule,
 }
 
 #[derive(Debug, Parser)]
@@ -49,6 +54,10 @@ struct Args {
     #[arg(long, requires = "output", conflicts_with_all = ["emit", "check"])]
     cargo: bool,
 
+    /// Generate a hot-reloadable component API for a Cargo development build.
+    #[arg(long, requires = "cargo")]
+    live_reload: bool,
+
     /// Resolve runtime symbols through the alias supplied by xrack::include_modules!().
     #[arg(long, requires = "cargo")]
     cargo_facade: bool,
@@ -71,7 +80,7 @@ struct Args {
 }
 
 fn run(args: Args) -> Result<(), CompilerError> {
-    if matches!(args.emit, Emit::Preview) && !args.check {
+    if matches!(args.emit, Emit::Preview | Emit::LiveModule) && !args.check {
         let input: serde_json::Value = serde_json::from_reader(io::stdin().lock())?;
         let text = input["text"].as_str().ok_or_else(|| CompilerError::Io {
             path: args.input.clone().into(),
@@ -83,6 +92,16 @@ fn run(args: Args) -> Result<(), CompilerError> {
             .map(serde_json::from_value)
             .transpose()?
             .unwrap_or_default();
+        if matches!(args.emit, Emit::LiveModule) {
+            let module = xrack_compiler::prepare_preview(text, &args.input, buffers)?;
+            return write_output(
+                args.output,
+                serde_json::to_string(&serde_json::json!({
+                    "mlir": module.module.to_mlir(),
+                    "inputs": module.inputs,
+                }))?,
+            );
+        }
         let preview = xrack_compiler::compile_preview(text, &args.input, buffers)?;
         return write_output(
             args.output,
@@ -108,7 +127,12 @@ fn run(args: Args) -> Result<(), CompilerError> {
     let sources =
         (args.restrict_sources || !args.sources.is_empty()).then_some(args.sources.as_slice());
     if args.cargo {
-        let (rust, inputs) = compile_with_inputs(&source, &args.input, sources, assets)?;
+        let compile = if args.live_reload {
+            compile_live_with_inputs
+        } else {
+            compile_with_inputs
+        };
+        let (rust, inputs) = compile(&source, &args.input, sources, assets)?;
         let directives = inputs
             .iter()
             .map(|path| {
@@ -145,11 +169,12 @@ fn run(args: Args) -> Result<(), CompilerError> {
             Some(output) => export_mlir_to(&doc, &args.input, assets, output)?,
             None => export_mlir(&doc, &args.input, assets)?,
         },
-        Emit::Preview => unreachable!("handled before reading the input file"),
+        Emit::Preview | Emit::LiveModule => unreachable!("handled before reading the input file"),
         Emit::Rust => {
             let tokens = generate_document(&doc, &args.input, assets)?;
             rust_source(tokens)
         }
+        Emit::RustLive => rust_source(generate_live_document(&doc, &args.input, assets)?),
     };
     write_output(args.output, text)
 }
@@ -172,11 +197,11 @@ fn use_facade_runtime(tokens: TokenStream) -> TokenStream {
                     matches!(next, TokenTree::Punct(punctuation) if punctuation.as_char() == ':')
                 });
                 if let Some(second) = second {
-                    if let Some(runtime) = tokens.next_if(
-                        |next| matches!(next, TokenTree::Ident(name) if name == "xrack_runtime"),
+                    if let Some(TokenTree::Ident(runtime)) = tokens.next_if(
+                        |next| matches!(next, TokenTree::Ident(name) if name == "xrack_runtime" || name == "xrack_preview"),
                     ) {
                         result.extend([TokenTree::Ident(Ident::new(
-                            "__xrack_runtime",
+                            if runtime == "xrack_runtime" { "__xrack_runtime" } else { "__xrack_live" },
                             runtime.span(),
                         ))]);
                     } else {

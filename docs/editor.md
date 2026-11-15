@@ -35,6 +35,8 @@ bazel run //:xrackc -- --emit mlir examples/counter/counter.xr -o .tools/ir/coun
 
 在仓库中用 `bazel build //crates/xrack-preview` 构建预览宿主，或安装平台 VSIX。打开 `.xr` 文件后运行 **XRack: Open Live Preview**。宿主会读取当前编辑缓冲区和打开的导入文件，执行校验及优化，再由解释器创建组件。可点击按钮，也可点击文本框后输入或粘贴。预览支持 PNG、SVG、九宫格图像和 GIF 播放。后续编辑复用宿主和 GPU 渲染器，语法错误时保留上一个可交互的画面。使用解释器尚未覆盖的控件、资源或操作时，扩展使用生成 Rust 的预览路径。
 
+预览 `SoundEffect` 或 `MediaPlayer` 时，从源码用 `bazel build --config=media //crates/xrack-preview` 构建宿主。平台 VSIX 已内置媒体后端。打开 [SoundEffect 示例](../examples/sound_effect/sound_effect.xr)，等待音效加载后点击按钮，或聚焦预览面板并按 F2。
+
 解释器预览提供 **Inspect** 按钮。点击可查看当前窗口的场景树、元素 ID、可见边界、禁用状态、当前焦点和主组件的公开属性清单。密码控件的文字不会包含在检查结果中。
 
 Rust 宿主可用 `xrack_interpreter::load_mlir_file` 加载文本 MLIR。图片、字体和翻译清单按 MLIR 文件所在目录解析，Fluent 文件按清单所在目录解析。用 `Program::create` 创建独立实例，再通过 `Instance::get`、`set`、`on`、`invoke` 操作公开接口。动态实例实现 `xrack_runtime::Component`。宿主回调需要访问组件时，可捕获 `Instance::as_weak()` 返回的弱引用，并在执行时用 `upgrade()` 获取仍存活的实例。宿主已有资源时可通过 `Program::from_module_with_assets` 提供。 用 `Program::create_with_locale` 可在创建时传入共享语言环境。

@@ -2,8 +2,9 @@ use bundled_ui::BundledFontsDemo;
 use layout_ui::{
     AnimationsDemo, ClippingDemo, ComponentStatesDemo, CompositingDemo, FlexDemo, FlickableDemo,
     FlowDemo, FocusScopesDemo, FontsDemo, FramelessDemo, GeometryDemo, HoverDemo, LabelsDemo,
-    LayoutDemo, PointerDemo, PointerPassThroughDemo, RectangleShadowDemo, ScaleRotateDemo,
-    ScopedKeysDemo, StatesDemo, StyledTextDemo, SwipeGestureDemo, TransformDemo, WheelDemo,
+    LayoutDemo, LayoutDirectionDemo, PointerDemo, PointerPassThroughDemo, RectangleShadowDemo,
+    ScaleRotateDemo, ScopedKeysDemo, StatesDemo, StyledTextDemo, SwipeGestureDemo, TransformDemo,
+    WheelDemo,
 };
 
 fn main() -> std::process::ExitCode {
@@ -21,6 +22,7 @@ fn main() -> std::process::ExitCode {
         Some("--shadows") => xrack_platform_winit::run(RectangleShadowDemo::new()),
         Some("--compositing") => xrack_platform_winit::run(CompositingDemo::new()),
         Some("--flow") => xrack_platform_winit::run(FlowDemo::new()),
+        Some("--rtl") => xrack_platform_winit::run(LayoutDirectionDemo::new()),
         Some("--flex") => xrack_platform_winit::run(FlexDemo::new()),
         Some("--styled-text") => xrack_platform_winit::run(StyledTextDemo::new()),
         Some("--labels") => xrack_platform_winit::run(LabelsDemo::new()),

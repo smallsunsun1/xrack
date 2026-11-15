@@ -40,6 +40,7 @@ EXTENSION_FILES = (
     "package.json",
     "package-lock.json",
     "extension.js",
+    "attach.js",
     "language-configuration.json",
     "preview.js",
     "preview-host.rs",

@@ -3,6 +3,10 @@ module(name = "xrack", version = "0.5.1")
 bazel_dep(name = "llvm", version = "0.8.26")
 bazel_dep(name = "rules_rust", version = "0.75.0")
 bazel_dep(name = "rules_rust_bindgen", version = "0.75.0")
+bazel_dep(name = "rules_rust_pyo3", version = "0.75.0")
+bazel_dep(name = "rules_python", version = "1.8.0")
+bazel_dep(name = "aspect_rules_lint", version = "2.9.1")
+bazel_dep(name = "rules_multitool", version = "0.11.0")
 bazel_dep(name = "rules_cc", version = "0.2.27")
 bazel_dep(name = "rules_java", version = "9.3.0")
 bazel_dep(name = "platforms", version = "1.1.0")
@@ -108,6 +112,18 @@ rust.toolchain(
 use_repo(rust, "rust_toolchains")
 register_toolchains("@rust_toolchains//:all")
 
+python = use_extension("@rules_python//python/extensions:python.bzl", "python")
+python.toolchain(python_version = "3.11")
+use_repo(python, "python_3_11")
+register_toolchains(
+    "@rules_rust_pyo3//toolchains:toolchain",
+    "//bindings/python:rust_pyo3_toolchain",
+)
+
+python_tools = use_extension("//bindings/python:ruff_repositories.bzl", "python_tools")
+use_repo(python_tools, "xrack_python_tools")
+register_toolchains("@xrack_python_tools//toolchains:all")
+
 rust_host_tools = use_extension("@rules_rust//rust:extensions.bzl", "rust_host_tools")
 rust_host_tools.host_tools(
     name = "xrack_rust_host_tools",
@@ -117,6 +133,26 @@ rust_host_tools.host_tools(
 use_repo(rust_host_tools, "xrack_rust_host_tools")
 
 crate = use_extension("@rules_rust//crate_universe:extensions.bzl", "crate")
+# Share the same PyO3 instance between the extension and the asyncio bridge.
+inject_repo(crate, rules_rust_pyo3 = "rules_rust_pyo3")
+python_abi_toolchain = "@rules_rust_pyo3//:current_pyo3_toolchain"
+[
+    crate.annotation(
+        crate = name,
+        version = "0.29.0",
+        build_script_data = [python_abi_toolchain],
+        build_script_env = {
+            "PYO3_CROSS": "$(PYO3_CROSS)",
+            "PYO3_CROSS_LIB_DIR": "$(PYO3_CROSS_LIB_DIR)",
+            "PYO3_CROSS_PYTHON_IMPLEMENTATION": "$(PYO3_CROSS_PYTHON_IMPLEMENTATION)",
+            "PYO3_CROSS_PYTHON_VERSION": "$(PYO3_CROSS_PYTHON_VERSION)",
+            "PYO3_NO_PYTHON": "$(PYO3_NO_PYTHON)",
+            "PYO3_PYTHON": "$(PYO3_PYTHON)",
+        },
+        build_script_toolchains = [python_abi_toolchain],
+    )
+    for name in ["pyo3-build-config", "pyo3-ffi"]
+]
 # Preserve the native AppKit mixed value for tri-state check boxes.
 crate.annotation(
     crate = "accesskit_macos",
@@ -136,6 +172,7 @@ crate.from_cargo(
         "aarch64-unknown-linux-gnu",
         "wasm32-unknown-unknown",
         "wasm32-wasip1",
+        "x86_64-apple-darwin",
         "x86_64-pc-windows-msvc",
         "x86_64-unknown-linux-gnu",
         "x86_64-unknown-nixos-gnu",

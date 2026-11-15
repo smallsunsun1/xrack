@@ -153,8 +153,15 @@ impl crate::CheckState {
             if reads.changed() || !route_current() {
                 return Ok(None);
             }
-            let tristate = tristate()?;
-            Ok((!reads.changed() && route_current()).then(|| current.next(tristate)))
+            let next = if let Some(crate::RoutedEvent::Control(ControlAction::SetSwitch(checked))) =
+                input.map(InputRoute::event)
+            {
+                let desired = Self::from(*checked);
+                (desired != current).then_some(desired)
+            } else {
+                Some(current.next(tristate()?))
+            };
+            Ok(next.filter(|_| !reads.changed() && route_current()))
         })
     }
 
@@ -364,6 +371,7 @@ impl SpinAction {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ControlAction {
     Spin(SpinAction),
+    SetSwitch(bool),
     Calendar(crate::CalendarAction),
     Select(usize),
     ActivateRadioOption,

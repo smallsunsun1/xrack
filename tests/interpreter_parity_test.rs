@@ -14690,25 +14690,34 @@ fn focus_commands_queue_operands_in_source_order() {
 fn interpreted_text_commands_use_the_same_selection_and_undo_history() {
     use form_ui::EditorCommandsDemo;
     use std::time::Instant;
-    use xrack_layout::{EditAction, EditSource, Interaction, Size};
+    use xrack_layout::{EditAction, EditSource, FocusObservers, Interaction, Size};
     use xrack_runtime::{FocusRequests, TextCommand};
 
-    let mut actual = interpret_form_fixture("EditorCommandsDemo");
-    let mut expected = EditorCommandsDemo::new();
+    fn buttons(ui: &impl Component) -> [bool; 4] {
+        let scene = ui.render_shared();
+        ["undo-tool", "redo-tool", "cut-selection", "copy-selection"]
+            .map(|id| scene.find(id).unwrap().boolean("enabled", true))
+    }
 
     fn exercise<T: Component>(
         ui: &mut T,
         select: impl FnOnce(&mut T),
         undo: impl FnOnce(&mut T),
         paste: impl FnOnce(&mut T),
+        lock: impl Fn(&mut T, bool),
+        replace: impl FnOnce(&mut T),
     ) {
         let queue = FocusRequests::default();
         let _context = queue.enter();
         let mut input = Interaction::default();
+        let mut observations = FocusObservers::default();
         let size = Size::new(620.0, 240.0);
         let (scene, layout) = prepare_list(ui, &input, size);
+        assert_eq!(buttons(ui), [false; 4]);
         select(ui);
         input.apply_focus_requests(&scene, &layout, queue.drain());
+        observations.sync(&input, &scene, &layout, true);
+        assert_eq!(buttons(ui), [false, false, true, true]);
         let target = input.focused.clone().unwrap();
         let original = scene.at_path(&target.path).unwrap().text("text").unwrap();
         assert_eq!(input.editor.as_ref().unwrap().selection(original), 0..9);
@@ -14723,13 +14732,15 @@ fn interpreted_text_commands_use_the_same_selection_and_undo_history() {
             &scene,
             EditAction::Insert("新："),
             EditSource::Atomic,
-            Instant::now()
+            Instant::now(),
         ));
         let (scene, layout) = prepare_list(ui, &input, size);
         assert_eq!(
             scene.at_path(&target.path).unwrap().text("text").unwrap(),
             "新：在这里编辑文本"
         );
+        observations.sync(&input, &scene, &layout, true);
+        assert_eq!(buttons(ui), [true, false, false, false]);
         undo(ui);
         let request = queue.drain().pop().unwrap();
         assert_eq!(
@@ -14737,14 +14748,47 @@ fn interpreted_text_commands_use_the_same_selection_and_undo_history() {
             Some(TextCommand::Undo)
         );
         assert!(input.replay_text_edit(ui, &scene, false));
-        let scene = ui.render_shared();
+        let (scene, layout) = prepare_list(ui, &input, size);
         assert_eq!(
             scene.at_path(&target.path).unwrap().text("text").unwrap(),
             original
         );
         assert_eq!(input.editor.as_ref().unwrap().selection(original), 0..9);
+        observations.sync(&input, &scene, &layout, true);
+        assert_eq!(buttons(ui), [false, true, true, true]);
+
+        assert!(input.begin_text_composition(&scene, 42));
+        observations.sync(&input, &scene, &layout, true);
+        assert_eq!(buttons(ui), [false; 4]);
+        assert!(!input.replay_text_edit(ui, &scene, true));
+        input.cancel_text_composition(Some(42));
+        observations.sync(&input, &scene, &layout, true);
+        assert_eq!(buttons(ui), [false, true, true, true]);
+
+        lock(ui, true);
+        let (scene, layout) = prepare_list(ui, &input, size);
+        observations.sync(&input, &scene, &layout, true);
+        assert_eq!(buttons(ui), [false, false, false, true]);
+        assert!(!input.replay_text_edit(ui, &scene, true));
+        lock(ui, false);
+        let (scene, layout) = prepare_list(ui, &input, size);
+        observations.sync(&input, &scene, &layout, true);
+        assert_eq!(buttons(ui), [false, true, true, true]);
+
+        assert!(input.replay_text_edit(ui, &scene, true));
+        let (scene, layout) = prepare_list(ui, &input, size);
+        observations.sync(&input, &scene, &layout, true);
+        assert_eq!(buttons(ui), [true, false, false, false]);
+
+        replace(ui);
+        let (scene, layout) = prepare_list(ui, &input, size);
+        observations.sync(&input, &scene, &layout, true);
+        assert_eq!(buttons(ui), [false; 4]);
+        assert!(!input.replay_text_edit(ui, &scene, false));
     }
 
+    let mut actual = interpret_form_fixture("EditorCommandsDemo");
+    let mut expected = EditorCommandsDemo::new();
     exercise(
         &mut actual,
         |ui| {
@@ -14756,12 +14800,20 @@ fn interpreted_text_commands_use_the_same_selection_and_undo_history() {
         |ui| {
             ui.invoke("paste-selected", &[]).unwrap();
         },
+        |ui, locked| {
+            ui.set("locked", locked.into()).unwrap();
+        },
+        |ui| {
+            ui.set("document", "新文档".to_owned().into()).unwrap();
+        },
     );
     exercise(
         &mut expected,
         EditorCommandsDemo::invoke_select_prefix,
         EditorCommandsDemo::invoke_undo_edit,
         EditorCommandsDemo::invoke_paste_selected,
+        |ui, locked| ui.set_locked(locked),
+        |ui| ui.set_document("新文档".into()),
     );
     assert_same_scene(&actual.render(), &expected.render());
     assert_eq!(actual.take_error(), None);
@@ -25754,4 +25806,1788 @@ fn picker_confirmation_preserves_a_draft_edited_while_reading_options() {
         }),
         Some(Some(Color(0x12ab349a)))
     );
+}
+
+#[test]
+fn form_submission_shares_validation_between_the_button_and_enter() {
+    let mut interpreted = interpret_form_fixture("SubmissionValidationDemo");
+    let mut compiled = form_ui::SubmissionValidationDemo::new();
+    let mut expected_submissions = 0;
+    for (code, accepting, valid) in [
+        ("", true, false),
+        ("123", true, false),
+        ("0000", true, false),
+        ("12a4", true, false),
+        ("12345", true, false),
+        ("1234", true, true),
+        ("1234", false, false),
+        ("5678", true, true),
+    ] {
+        interpreted.set("code", code.to_owned().into()).unwrap();
+        interpreted.set("accepting", accepting.into()).unwrap();
+        compiled.set_code(code.into());
+        compiled.set_accepting(accepting);
+        assert_eq!(interpreted.get("can-send"), Ok(valid.into()));
+        assert_eq!(compiled.get_can_send(), valid);
+        for ui in [&mut interpreted as &mut dyn Component, &mut compiled] {
+            let scene = ui.render_shared();
+            assert_eq!(scene.find("send").unwrap().boolean("enabled", true), valid);
+            assert_eq!(ui.dispatch_at(&scene, &[0, 0], "accepted"), valid);
+            assert_eq!(ui.dispatch_at(&scene, &[0, 3], "clicked"), valid);
+        }
+        expected_submissions += if valid { 2 } else { 0 };
+        assert_eq!(
+            interpreted.get("submissions"),
+            Ok(expected_submissions.into())
+        );
+        assert_eq!(compiled.get_submissions(), expected_submissions);
+    }
+
+    let actual = interpreted.render_shared();
+    let expected = compiled.render_shared();
+    interpreted.set("accepting", false.into()).unwrap();
+    compiled.set_accepting(false);
+    assert!(!interpreted.dispatch_at(&actual, &[0, 0], "accepted"));
+    assert!(!compiled.dispatch_at(&expected, &[0, 0], "accepted"));
+
+    for (note, valid) in [("e\u{301}", false), ("e\u{301}👩‍💻", true)] {
+        interpreted.set("note", note.to_owned().into()).unwrap();
+        compiled.set_note(note.into());
+        assert_eq!(interpreted.get("note-ready"), Ok(valid.into()));
+        assert_eq!(compiled.get_note_ready(), valid);
+    }
+    assert_eq!(interpreted.take_error(), None);
+}
+
+#[test]
+fn numeric_submission_applies_live_range_and_precision_in_both_backends() {
+    use xrack_runtime::InputType;
+
+    let mut interpreted = interpret_form_fixture("NumericValidationDemo");
+    let mut compiled = form_ui::NumericValidationDemo::new();
+    let editor = [0, 1];
+    let button = [0, 2];
+
+    for (draft, valid) in [
+        ("-", false),
+        ("-20,51", false),
+        ("-20,50", true),
+        ("100,25", true),
+        ("100,26", false),
+        ("1,005", false),
+        ("1,5", true),
+    ] {
+        for ui in [&mut interpreted as &mut dyn Component, &mut compiled] {
+            assert!(ui.edit_at(&ui.render_shared(), &editor, draft.into()));
+            let scene = ui.render_shared();
+            assert_eq!(scene.find("send").unwrap().boolean("enabled", true), valid);
+            assert_eq!(ui.dispatch_at(&scene, &editor, "accepted"), valid);
+            assert_eq!(ui.dispatch_at(&scene, &button, "clicked"), valid);
+        }
+        assert_eq!(compiled.get_draft(), draft);
+        assert_eq!(interpreted.get("draft"), Ok(draft.to_owned().into()));
+        assert_eq!(compiled.get_can_submit(), valid);
+        assert_eq!(interpreted.get("can-submit"), Ok(valid.into()));
+        let submitted = compiled.get_submitted();
+        assert_eq!(interpreted.get("submitted"), Ok(submitted.clone().into()));
+        if valid {
+            assert_eq!(submitted, draft);
+        }
+    }
+
+    let actual = interpreted.render_shared();
+    let expected = compiled.render_shared();
+    interpreted.set("fraction-digits", 0_i64.into()).unwrap();
+    compiled.set_fraction_digits(0);
+    assert!(!interpreted.dispatch_at(&actual, &editor, "accepted"));
+    assert!(!compiled.dispatch_at(&expected, &editor, "accepted"));
+
+    for (draft, mode, upper, valid) in [
+        (
+            "9007199254740993",
+            InputType::Number,
+            9007199254740992.0,
+            false,
+        ),
+        (
+            "9007199254740992",
+            InputType::Number,
+            9007199254740992.0,
+            true,
+        ),
+        ("0", InputType::Number, -1.0, false),
+        ("unrestricted", InputType::Text, -1.0, true),
+    ] {
+        interpreted.set("mode", mode.into()).unwrap();
+        interpreted.set("upper", upper.into()).unwrap();
+        interpreted.set("draft", draft.to_owned().into()).unwrap();
+        compiled.set_mode(mode);
+        compiled.set_upper(upper);
+        compiled.set_draft(draft.to_owned());
+        assert_eq!(compiled.get_can_submit(), valid);
+        assert_eq!(interpreted.get("can-submit"), Ok(valid.into()));
+    }
+    assert_eq!(interpreted.take_error(), None);
+}
+
+#[test]
+fn text_selection_bindings_follow_the_active_editor_in_both_backends() {
+    use form_ui::EditorSelectionDemo;
+    use std::time::Instant;
+    use xrack_layout::{EditAction, EditSource, FocusObservers, Interaction, Size};
+    use xrack_runtime::FocusRequests;
+
+    fn exercise<C: Component>(
+        ui: &mut C,
+        select: impl Fn(&mut C),
+        conceal: impl Fn(&mut C),
+        read: impl Fn(&C) -> (i64, i64, i64, String),
+    ) {
+        let queue = FocusRequests::default();
+        let _context = queue.enter();
+        let mut input = Interaction::default();
+        let mut observations = FocusObservers::default();
+        let size = Size::new(456.0, 220.0);
+
+        assert_eq!(read(ui), (0, 0, 0, String::new()));
+        let (scene, layout) = prepare_list(ui, &input, size);
+        select(ui);
+        input.apply_focus_requests(&scene, &layout, queue.drain());
+        observations.sync(&input, &scene, &layout, true);
+        assert_eq!(read(ui), (0, 0, 9, "任务：".into()));
+
+        assert!(!input.edit_text(
+            ui,
+            &scene,
+            EditAction::Right(false),
+            EditSource::Keyboard,
+            Instant::now(),
+        ));
+        observations.sync(&input, &scene, &layout, true);
+        assert_eq!(read(ui), (9, 9, 9, String::new()));
+
+        assert!(!input.edit_text(
+            ui,
+            &scene,
+            EditAction::Right(true),
+            EditSource::Keyboard,
+            Instant::now(),
+        ));
+        observations.sync(&input, &scene, &layout, true);
+        assert_eq!(read(ui), (12, 9, 12, "e\u{301}".into()));
+
+        conceal(ui);
+        let (scene, layout) = prepare_list(ui, &input, size);
+        observations.sync(&input, &scene, &layout, true);
+        assert_eq!(read(ui), (12, 9, 12, String::new()));
+
+        observations.sync(&input, &scene, &layout, false);
+        assert_eq!(read(ui), (0, 0, 0, String::new()));
+    }
+
+    let mut native = EditorSelectionDemo::new();
+    exercise(
+        &mut native,
+        EditorSelectionDemo::invoke_select_prefix,
+        |ui| ui.set_concealed(true),
+        |ui| {
+            (
+                ui.get_caret(),
+                ui.get_selection_start(),
+                ui.get_selection_end(),
+                ui.get_selected(),
+            )
+        },
+    );
+    let mut interpreted = interpret_form_fixture("EditorSelectionDemo");
+    exercise(
+        &mut interpreted,
+        |ui| {
+            ui.invoke("select-prefix", &[]).unwrap();
+        },
+        |ui| {
+            ui.set("concealed", true.into()).unwrap();
+        },
+        |ui| {
+            let read_offset = |name| match ui.get(name).unwrap() {
+                Value::Int(offset) => offset,
+                other => panic!("expected selection offset, got {other:?}"),
+            };
+            let Value::String(selected) = ui.get("selected").unwrap() else {
+                panic!("expected selected text");
+            };
+            (
+                read_offset("caret"),
+                read_offset("selection-start"),
+                read_offset("selection-end"),
+                selected,
+            )
+        },
+    );
+    assert_eq!(interpreted.take_error(), None);
+}
+
+#[test]
+fn row_counts_reuse_live_projections_and_distinguish_empty_models_in_both_backends() {
+    fn counts(ui: &impl Component) -> [String; 6] {
+        let scene = ui.render_shared();
+        [
+            "list-count",
+            "grid-count",
+            "standard-count",
+            "table-count",
+            "search-count",
+            "tree-count",
+        ]
+        .map(|id| scene.find(id).unwrap().text("text").unwrap().to_owned())
+    }
+
+    let mut interpreter = interpret_list_fixture("ViewCountsDemo");
+    let mut compiled = list_ui::ViewCountsDemo::new();
+    assert_eq!(
+        counts(&compiled),
+        [
+            "列表 2 / 3",
+            "网格 2 / 3",
+            "标准列表 2 / 3",
+            "表格 2 / 3",
+            "搜索表格 3 / 3",
+            "目录 2 / 3",
+        ]
+    );
+    assert_eq!(counts(&interpreter), counts(&compiled));
+
+    for (command, empty) in [
+        ("expand", ""),
+        ("hide", "没有符合条件的记录"),
+        ("clear", "暂无记录"),
+        ("restore", ""),
+    ] {
+        for ui in [&mut interpreter as &mut dyn Component, &mut compiled] {
+            assert!(ui.dispatch(command, "clicked"));
+            let scene = ui.render_shared();
+            let message = scene
+                .find("empty-note")
+                .and_then(|node| node.text("text"))
+                .unwrap_or("");
+            assert_eq!(message, empty);
+        }
+        let values = counts(&compiled);
+        assert_eq!(counts(&interpreter), values);
+        match command {
+            "expand" => assert_eq!(values[5], "目录 3 / 3"),
+            "hide" => assert!(values.iter().all(|label| label.ends_with("0 / 1"))),
+            "clear" => assert!(values.iter().all(|label| label.ends_with("0 / 0"))),
+            "restore" => assert!(values.iter().all(|label| label.ends_with("/ 3"))),
+            _ => unreachable!(),
+        }
+    }
+    let Value::RecordList(records) = interpreter.get("records").unwrap() else {
+        panic!("expected the source records");
+    };
+    let updated = records
+        .model()
+        .row(1)
+        .unwrap()
+        .with_field(&["shown".into()], true.into())
+        .unwrap();
+    assert!(records.model().set_row(1, updated));
+    let model = compiled.model_records();
+    let mut updated = model.row(1).unwrap();
+    updated.shown = true;
+    assert!(model.set_row(1, updated));
+    let values = counts(&compiled);
+    assert_eq!(counts(&interpreter), values);
+    assert!(values.iter().all(|label| label.ends_with("3 / 3")));
+    assert_eq!(interpreter.take_error(), None);
+}
+
+#[test]
+fn source_row_count_does_not_evaluate_view_filters() {
+    use std::{cell::Cell, rc::Rc};
+
+    let mut interpreter = interpret_list_fixture("ViewCountsDemo");
+    let mut compiled = list_ui::ViewCountsDemo::new();
+    let interpreted_calls = Rc::new(Cell::new(0));
+    let compiled_calls = interpreted_calls.clone();
+    interpreter
+        .on(
+            "table-query",
+            Rc::new({
+                let calls = interpreted_calls.clone();
+                move |_| {
+                    calls.set(calls.get() + 1);
+                    Ok(Some("missing".to_owned().into()))
+                }
+            }),
+        )
+        .unwrap();
+    compiled.on_table_query(move || {
+        compiled_calls.set(compiled_calls.get() + 1);
+        "missing".into()
+    });
+
+    assert_eq!(interpreter.get("search-source-count"), Ok(3_i64.into()));
+    assert_eq!(compiled.get_search_source_count(), 3);
+    assert_eq!(interpreted_calls.get(), 0);
+    assert_eq!(interpreter.get("search-match-count"), Ok(0_i64.into()));
+    assert_eq!(compiled.get_search_match_count(), 0);
+    assert_eq!(interpreted_calls.get(), 2);
+    assert_eq!(interpreter.take_error(), None);
+}
+
+#[test]
+fn empty_state_parts_share_view_layout_and_route_actions_in_both_backends() {
+    use crate::ui_driver::UiDriver;
+    use xrack_layout::{Interaction, Size};
+
+    fn exercise<C: Component>(ui: C, counts: impl Fn(&C) -> (i64, i64)) {
+        let viewport = Size::new(780.0, 422.0);
+        let mut driver = UiDriver::new(ui, FixedText, viewport);
+        driver.click("hide");
+
+        let (empty_scene, layout) = prepare_list(driver.component(), driver.input(), viewport);
+        for name in ["entries", "tiles", "summary", "table", "search", "folders"] {
+            let index = empty_scene
+                .children
+                .iter()
+                .position(|node| node.element_id() == Some(name))
+                .unwrap();
+            let view = &empty_scene.children[index];
+            assert_eq!(view.list.unwrap().row_count, 0);
+            assert_eq!(view.children.len(), 1);
+            assert_eq!(view.children[0].kind, "EmptyState");
+
+            let view_layout = layout.at_path(&[index]).unwrap();
+            if matches!(name, "table" | "search") {
+                let table = view_layout
+                    .table
+                    .as_ref()
+                    .expect("empty tables retain their header");
+                assert!(table.body.y > view_layout.bounds.y);
+            }
+            let body = view_layout
+                .table
+                .as_ref()
+                .map_or(view_layout.bounds, |table| table.body);
+            assert_eq!(view_layout.child_at(0).unwrap().bounds, body);
+        }
+        let retry_is_focused = |driver: &UiDriver<C, FixedText>| {
+            driver
+                .input()
+                .focused
+                .as_ref()
+                .and_then(|target| target.element_id())
+                == Some("retry-list")
+        };
+        for _ in 0..16 {
+            driver.tab();
+            if retry_is_focused(&driver) {
+                break;
+            }
+        }
+        assert!(retry_is_focused(&driver));
+        driver.click("retry-list");
+        assert_eq!(counts(driver.component()), (1, 0));
+        assert!(!retry_is_focused(&driver));
+
+        // The first virtual delegate occupies the same position as the empty
+        // action, but gets the event through its own row identity.
+        driver.click_at_path(&[1, 0, 0]);
+        assert_eq!(counts(driver.component()), (1, 1));
+
+        driver.click("hide");
+        driver.click("retry-table");
+        assert_eq!(counts(driver.component()), (2, 1));
+        driver.update(|ui| {
+            let view = empty_scene
+                .children
+                .iter()
+                .position(|node| node.element_id() == Some("entries"))
+                .unwrap();
+            assert!(!ui.dispatch_at(&empty_scene, &[view, 0, 0], "clicked"));
+        });
+        assert_eq!(counts(driver.component()), (2, 1));
+
+        let (populated, _) = prepare_list(driver.component(), &Interaction::default(), viewport);
+        assert!(populated.find("retry-list").is_none());
+        assert!(populated.find("retry-table").is_none());
+    }
+
+    exercise(list_ui::ViewCountsDemo::new(), |ui| {
+        (ui.get_retry_count(), ui.get_row_activations())
+    });
+    exercise(interpret_list_fixture("ViewCountsDemo"), |ui| {
+        let value = |name| match ui.get(name).unwrap() {
+            Value::Int(value) => value,
+            other => panic!("expected count, got {other:?}"),
+        };
+        assert_eq!(ui.take_error(), None);
+        (value("retry-count"), value("row-activations"))
+    });
+}
+
+#[test]
+fn keyed_selection_survives_model_replacement_filtering_and_row_moves() {
+    use xrack_runtime::ControlAction;
+
+    fn positions(ui: &impl Component) -> [i64; 3] {
+        let scene = ui.render_shared();
+        ["entries", "tiles", "summary"]
+            .map(|name| scene.find(name).unwrap().int("current-index").unwrap())
+    }
+
+    fn choose(ui: &mut dyn Component, view: &str, index: usize) -> bool {
+        let scene = ui.render_shared();
+        let position = scene
+            .children
+            .iter()
+            .position(|node| node.element_id() == Some(view))
+            .unwrap();
+        ui.control_at(&scene, &[position], ControlAction::Select(index))
+    }
+
+    let mut interpreted = interpret_list_fixture("ViewCountsDemo");
+    let mut generated = list_ui::ViewCountsDemo::new();
+    for ui in [&mut interpreted as &mut dyn Component, &mut generated] {
+        assert!(choose(ui, "entries", 0));
+    }
+    let check = |actual: &Instance,
+                 expected: &list_ui::ViewCountsDemo,
+                 key: i64,
+                 index: i64,
+                 events: i64| {
+        assert_eq!(actual.get("selected-key"), Ok(key.into()));
+        assert_eq!(actual.get("selection-events"), Ok(events.into()));
+        assert_eq!(expected.get_selected_key(), key);
+        assert_eq!(expected.get_selection_events(), events);
+        assert_eq!(positions(actual), [index; 3]);
+        assert_eq!(positions(expected), [index; 3]);
+    };
+    check(&interpreted, &generated, 1, 0, 1);
+
+    for (command, index) in [("reorder", 1), ("hide", -1), ("restore", 0)] {
+        for ui in [&mut interpreted as &mut dyn Component, &mut generated] {
+            let stale = ui.render_shared();
+            assert!(ui.dispatch(command, "clicked"));
+            assert!(!ui.control_at(&stale, &[1], ControlAction::Select(0)));
+        }
+        check(&interpreted, &generated, 1, index, 1);
+    }
+
+    let Value::RecordList(actual_model) = interpreted.get("records").unwrap() else {
+        panic!("expected a record model");
+    };
+    let actual_model = actual_model.model();
+    let expected_model = generated.model_records();
+    let key = |row: &xrack_runtime::RecordValue| match row.field("key") {
+        Some(Value::Int(key)) => *key,
+        _ => panic!("expected a business key"),
+    };
+    actual_model.sort_by(|a, b| key(b).cmp(&key(a)));
+    expected_model.sort_by(|a, b| b.key.cmp(&a.key));
+    check(&interpreted, &generated, 1, 1, 1);
+
+    actual_model.push(actual_model.row(2).unwrap());
+    expected_model.push(expected_model.row(2).unwrap());
+    check(&interpreted, &generated, 1, -1, 1);
+    assert!(!choose(&mut interpreted, "tiles", 1));
+    assert!(!choose(&mut generated, "tiles", 1));
+    actual_model.remove(3).unwrap();
+    expected_model.remove(3).unwrap();
+    check(&interpreted, &generated, 1, 1, 1);
+
+    let inserted = actual_model
+        .row(0)
+        .unwrap()
+        .with_field(&["key".into()], 4_i64.into())
+        .unwrap();
+    assert!(actual_model.insert(0, inserted));
+    let mut inserted = expected_model.row(0).unwrap();
+    inserted.key = 4;
+    assert!(expected_model.insert(0, inserted));
+    check(&interpreted, &generated, 1, 2, 1);
+    actual_model.remove(0).unwrap();
+    expected_model.remove(0).unwrap();
+
+    interpreted
+        .invoke("select-source", &[0_i64.into()])
+        .unwrap();
+    generated.invoke_select_source(0);
+    check(&interpreted, &generated, 3, 0, 2);
+    for ui in [&mut interpreted as &mut dyn Component, &mut generated] {
+        assert!(choose(ui, "tiles", 1));
+    }
+    check(&interpreted, &generated, 1, 1, 3);
+    assert_eq!(interpreted.take_error(), None);
+}
+
+#[test]
+fn keyed_view_scroll_resolves_the_latest_model_and_selection_is_independent() {
+    use xrack_layout::{Interaction, Size};
+    use xrack_runtime::{ScrollAction, ScrollAlignment, ScrollRequests};
+
+    fn exercise<C: Component>(
+        ui: &mut C,
+        reveal: impl Fn(&mut C),
+        select: impl Fn(&mut C),
+        replace: impl FnOnce(&mut C),
+        hide: impl FnOnce(&mut C),
+        status: impl Fn(&C) -> (i64, i64, i64),
+    ) {
+        let mut input = Interaction::default();
+        let size = Size::new(480.0, 260.0);
+        let queue = ScrollRequests::default();
+        let _context = queue.enter();
+
+        assert_eq!(status(ui), (-1, -1, 0));
+        reveal(ui);
+        let requests = queue.drain();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(
+            requests[0].action,
+            ScrollAction::ToBusinessKey {
+                key: 80,
+                alignment: ScrollAlignment::Beginning,
+            }
+        );
+
+        replace(ui);
+        let (scene, layout) = prepare_list(ui, &input, size);
+        assert!(input.apply_scroll_requests(&scene, &layout, requests));
+        let (scene, layout) = prepare_list(ui, &input, size);
+        let view = scene
+            .children
+            .iter()
+            .position(|node| node.element_id() == Some("entries"))
+            .unwrap();
+        assert_eq!(
+            layout.at_path(&[view]).unwrap().scroll.unwrap().offset,
+            84.0
+        );
+        assert_eq!(scene.children[view].list.unwrap().first_row, 3);
+        assert_eq!(status(ui), (-1, -1, 0));
+
+        select(ui);
+        assert_eq!(status(ui), (80, 3, 1));
+        select(ui);
+        assert_eq!(status(ui), (80, 3, 1));
+
+        hide(ui);
+        let (scene, layout) = prepare_list(ui, &input, size);
+        assert_eq!(status(ui), (80, -1, 1));
+        reveal(ui);
+        assert!(!input.apply_scroll_requests(&scene, &layout, queue.drain()));
+        select(ui);
+        assert_eq!(status(ui), (80, -1, 1));
+    }
+
+    let mut compiled = list_ui::KeyNavigationDemo::new();
+    exercise(
+        &mut compiled,
+        |ui| ui.invoke_reveal_target(80),
+        |ui| ui.invoke_select_target(80),
+        |ui| {
+            let source = ui.model_records();
+            let mut rows = (0..source.len())
+                .map(|index| source.row(index).unwrap())
+                .collect::<Vec<_>>();
+            rows.rotate_left(4);
+            ui.set_records(rows);
+        },
+        |ui| {
+            let model = ui.model_records();
+            let mut row = model.row(3).unwrap();
+            row.shown = false;
+            assert!(model.set_row(3, row));
+        },
+        |ui| {
+            (
+                ui.get_selected_key(),
+                ui.get_selection_position(),
+                ui.get_changed_count(),
+            )
+        },
+    );
+    let mut interpreter = interpret_list_fixture("KeyNavigationDemo");
+    exercise(
+        &mut interpreter,
+        |ui| {
+            ui.invoke("reveal-target", &[80_i64.into()]).unwrap();
+        },
+        |ui| {
+            ui.invoke("select-target", &[80_i64.into()]).unwrap();
+        },
+        |ui| {
+            let Value::RecordList(source) = ui.get("records").unwrap() else {
+                panic!("expected a record model");
+            };
+            let model = source.model();
+            let mut rows = (0..model.len())
+                .map(|index| model.row(index).unwrap())
+                .collect::<Vec<_>>();
+            rows.rotate_left(4);
+            ui.set(
+                "records",
+                Value::RecordList(xrack_runtime::RecordList::new("ViewCountRow", rows)),
+            )
+            .unwrap();
+        },
+        |ui| {
+            let Value::RecordList(source) = ui.get("records").unwrap() else {
+                panic!("expected a record model");
+            };
+            let model = source.model();
+            let row = model
+                .row(3)
+                .unwrap()
+                .with_field(&["shown".into()], false.into())
+                .unwrap();
+            assert!(model.set_row(3, row));
+        },
+        |ui| {
+            let read = |name| match ui.get(name).unwrap() {
+                Value::Int(value) => value,
+                other => panic!("expected integer selection data, got {other:?}"),
+            };
+            (
+                read("selected-key"),
+                read("selection-position"),
+                read("changed-count"),
+            )
+        },
+    );
+    assert_eq!(interpreter.take_error(), None);
+}
+
+#[test]
+fn inherited_layout_direction_mirrors_positions_and_grid_navigation_in_both_backends() {
+    use crate::ui_driver::UiDriver;
+    use xrack_layout::{Interaction, LayoutNode, NavigationKey, Rect, Size};
+    use xrack_runtime::{ControlAction, LayoutDirection};
+
+    fn path_to(node: &Node, id: &str) -> Vec<usize> {
+        if node.element_id() == Some(id) {
+            return vec![];
+        }
+        for (index, child) in node.materialized_children() {
+            if child.find(id).is_some() {
+                let mut path = vec![index];
+                path.extend(path_to(child, id));
+                return path;
+            }
+        }
+        panic!("missing {id}");
+    }
+
+    fn exercise<C: Component>(mut ui: C, presses: impl Fn(&C) -> i64) {
+        let size = Size::new(560.0, 380.0);
+        for rtl in [true, false] {
+            let input = Interaction::default();
+            let (scene, layout) = prepare_list(&ui, &input, size);
+            let geometry = |id| layout.at_path(&path_to(&scene, id)).unwrap().bounds;
+            let direction = if rtl {
+                LayoutDirection::RightToLeft
+            } else {
+                LayoutDirection::LeftToRight
+            };
+            assert_eq!(layout.layout_direction, direction);
+            assert_eq!(geometry("first").x, if rtl { 147.0 } else { 29.0 });
+            assert_eq!(geometry("item").x, if rtl { 317.0 } else { 251.0 });
+            assert_eq!(geometry("toggle-direction").x, 18.0);
+            assert!(geometry("physical-first").x < geometry("physical-second").x);
+            assert_eq!(geometry("col-zero").x > geometry("col-one").x, rtl);
+            assert_eq!(geometry("flow-one").x > geometry("flow-two").x, rtl);
+            assert!(geometry("flow-three").y > geometry("flow-one").y);
+            assert_eq!(geometry("flex-one").x < geometry("flex-two").x, rtl);
+
+            let path = path_to(&scene, "grid");
+            let grid = layout.at_path(&path).unwrap();
+            let x = |layout: &LayoutNode, slot| -> Rect { layout.child_at(slot).unwrap().bounds };
+            assert_eq!(x(grid, 0).x > x(grid, 1).x, rtl);
+            let mut input = Interaction::default();
+            let target = input.accessibility_target(&scene, &layout, &path).unwrap();
+            input.accessibility_focus(target);
+            let arrow = if rtl {
+                NavigationKey::Left
+            } else {
+                NavigationKey::Right
+            };
+            let next = input.list_key(&scene, &layout, arrow).unwrap();
+            assert_eq!(next.action, ControlAction::Select(1));
+
+            if rtl {
+                assert!(ui.dispatch("toggle-direction", "clicked"));
+            }
+        }
+
+        let mut driver = UiDriver::new(ui, FixedText, size);
+        driver.click("first");
+        assert_eq!(presses(driver.component()), 1);
+        driver.click("toggle-direction");
+        driver.click("first");
+        assert_eq!(presses(driver.component()), 2);
+    }
+
+    exercise(layout_ui::LayoutDirectionDemo::new(), |ui| ui.get_presses());
+    exercise(interpret_layout_fixture("LayoutDirectionDemo"), |ui| {
+        let Value::Int(presses) = ui.get("presses").unwrap() else {
+            panic!("expected click count");
+        };
+        assert_eq!(ui.take_error(), None);
+        presses
+    });
+}
+
+#[test]
+fn horizontal_sliders_inherit_the_layout_direction_in_both_backends() {
+    use xrack_layout::{Interaction, Point, Size, SliderKey, WheelAdjustment};
+    use xrack_runtime::{LayoutDirection, Length, WheelEvent};
+
+    fn exercise<C: Component>(mut ui: C, values: impl Fn(&C) -> [f64; 4], rtl: bool) {
+        if !rtl {
+            assert!(ui.dispatch("flip", "clicked"));
+        }
+        let size = Size::new(400.0, 260.0);
+        let level = [1, 0];
+        let band = [1, 1];
+        let lower = [1, 1, 0];
+        let upper = [1, 1, 1];
+        let vertical = [1, 2];
+        let mut input = Interaction::default();
+        let (scene, layout) = prepare_list(&ui, &input, size);
+        let slider = layout.at_path(&level).unwrap();
+        let handle = slider.child_at(0).unwrap().bounds;
+        let thumb = Point {
+            x: handle.x + handle.width * 0.5,
+            y: handle.y + handle.height * 0.5,
+        };
+        assert_eq!(
+            slider.layout_direction,
+            if rtl {
+                LayoutDirection::RightToLeft
+            } else {
+                LayoutDirection::LeftToRight
+            }
+        );
+        assert_eq!(thumb.x > slider.bounds.x + slider.bounds.width * 0.5, rtl);
+        let minimum_side = if rtl {
+            SliderKey::Right
+        } else {
+            SliderKey::Left
+        };
+        let beyond_maximum = Point {
+            x: if rtl {
+                slider.bounds.x - 5.0
+            } else {
+                slider.bounds.x + slider.bounds.width + 5.0
+            },
+            y: thumb.y,
+        };
+        assert!(input.range_pointer_press(&scene, &layout, thumb));
+        assert!(input.slider_press(&scene, &layout).is_none());
+        input.pointer_move(&scene, &layout, beyond_maximum);
+        let drag = input.slider_drag(&scene, &layout).unwrap();
+        assert_eq!(drag.path, level);
+        assert!(ui.adjust_range_at(&scene, &drag.path, drag.action));
+        assert_eq!(values(&ui)[0], 100.0);
+        input.slider_release(&scene, &layout).unwrap();
+
+        let (scene, layout) = prepare_list(&ui, &input, size);
+        let key = input
+            .slider_key(&scene, &layout, minimum_side, true)
+            .unwrap();
+        assert_eq!(key.path, level);
+        assert!(ui.adjust_range_at(&scene, &key.path, key.action));
+        input
+            .slider_key(&scene, &layout, minimum_side, false)
+            .unwrap();
+        assert_eq!(values(&ui)[0], 90.0);
+
+        let (scene, layout) = prepare_list(&ui, &input, size);
+        let bounds = layout.at_path(&band).unwrap().bounds;
+        let low_handle = layout.at_path(&lower).unwrap().bounds;
+        let high_handle = layout.at_path(&upper).unwrap().bounds;
+        assert_eq!(low_handle, layout.at_path(&[1, 1, 2]).unwrap().bounds);
+        assert_eq!(low_handle.x > high_handle.x, rtl);
+        let thumb = Point {
+            x: low_handle.x + low_handle.width * 0.5,
+            y: low_handle.y + low_handle.height * 0.5,
+        };
+        let midpoint = Point {
+            x: bounds.x + bounds.width * 0.5,
+            y: thumb.y,
+        };
+        input.pointer_move(&scene, &layout, thumb);
+        let Some(WheelAdjustment::Range(wheel)) = input.wheel_adjustment(
+            &scene,
+            &layout,
+            WheelEvent {
+                delta_y: Length(-28.0),
+                lines_y: -1.0,
+                is_line: true,
+                ..Default::default()
+            },
+            std::time::Instant::now(),
+        ) else {
+            panic!("expected the lower handle to receive the wheel");
+        };
+        assert_eq!(wheel.path, lower);
+        assert!(input.range_pointer_press(&scene, &layout, thumb));
+        assert!(input.slider_press(&scene, &layout).is_none());
+        input.pointer_move(&scene, &layout, midpoint);
+        assert!(input.slider_drag(&scene, &layout).is_none());
+        assert_eq!(&values(&ui)[1..3], &[20.0, 70.0]);
+        let (scene, layout) = prepare_list(&ui, &input, size);
+        let preview = layout.at_path(&lower).unwrap().bounds;
+        assert!((preview.x + preview.width * 0.5 - midpoint.x).abs() < 0.01);
+        assert_eq!(layout.at_path(&upper).unwrap().bounds, high_handle);
+        let commit = input.slider_release(&scene, &layout).unwrap();
+        assert_eq!(commit.path, lower);
+        assert!(ui.adjust_range_at(&scene, &commit.path, commit.action));
+        assert_eq!(&values(&ui)[1..3], &[50.0, 70.0]);
+
+        let (scene, layout) = prepare_list(&ui, &input, size);
+        assert_eq!(input.focused.as_ref().unwrap().path, lower);
+        input.focus_next(&scene, &layout, false);
+        assert_eq!(input.focused.as_ref().unwrap().path, upper);
+        let key = input
+            .slider_key(&scene, &layout, minimum_side, true)
+            .unwrap();
+        assert_eq!(key.path, upper);
+        assert!(ui.adjust_range_at(&scene, &key.path, key.action));
+        assert_eq!(&values(&ui)[1..3], &[50.0, 60.0]);
+
+        let (scene, layout) = prepare_list(&ui, &input, size);
+        let target = input
+            .accessibility_target(&scene, &layout, &vertical)
+            .unwrap();
+        input.accessibility_focus(target);
+        let key = input
+            .slider_key(&scene, &layout, SliderKey::Up, true)
+            .unwrap();
+        assert_eq!(key.path, vertical);
+        assert!(ui.adjust_range_at(&scene, &key.path, key.action));
+        assert_eq!(values(&ui)[3], 50.0);
+    }
+
+    for rtl in [true, false] {
+        exercise(
+            controls_ui::DirectionalSlidersDemo::new(),
+            |ui| {
+                [
+                    ui.get_level(),
+                    ui.get_lower(),
+                    ui.get_upper(),
+                    ui.get_vertical_value(),
+                ]
+            },
+            rtl,
+        );
+        exercise(
+            interpret_controls_fixture("DirectionalSlidersDemo"),
+            |ui| {
+                let values = ["level", "lower", "upper", "vertical-value"].map(|name| {
+                    let Value::Float(value) = ui.get(name).unwrap() else {
+                        panic!("expected numeric {name}");
+                    };
+                    value
+                });
+                assert_eq!(ui.take_error(), None);
+                values
+            },
+            rtl,
+        );
+    }
+}
+
+#[test]
+fn mirrored_tabs_and_swipes_preserve_logical_selection_in_both_backends() {
+    use crate::ui_driver::UiDriver;
+    use std::time::{Duration, Instant};
+    use xrack_layout::{NavigationKey, Point, ScrollGestureKind, Size};
+    use xrack_runtime::{ControlAction, Orientation};
+
+    fn exercise<C: Component>(
+        ui: C,
+        state: impl Fn(&C) -> (i64, i64),
+        select_page: impl Fn(&mut C, i64),
+    ) {
+        let size = Size::new(624.0, 264.0);
+        let mut driver = UiDriver::new(ui, FixedText, size);
+        let forward = NavigationKey::Left;
+        for control in ["flip", "turn", "first-tab"] {
+            driver.tab();
+            assert_eq!(driver.focused(), Some(control));
+        }
+        assert!(driver.group_key(forward));
+        assert_eq!(state(driver.component()), (3, 0));
+        assert!(driver.can_hit("records-tab"));
+        assert!(driver.group_key(NavigationKey::End));
+        assert_eq!(state(driver.component()), (5, 0));
+        assert!(driver.can_hit("last-tab"));
+        assert!(driver.group_key(NavigationKey::Home));
+        assert_eq!(state(driver.component()), (0, 0));
+        assert!(driver.can_hit("first-tab"));
+
+        let (scene, frame) = prepare_list(driver.component(), driver.input(), size);
+        let bar = frame.at_path(&[2]).unwrap();
+        let scroll = bar.scroll_on(Orientation::Horizontal).unwrap();
+        assert_eq!(scroll.offset, scroll.max_offset);
+        let scrollbar = bar
+            .scroll_bars(scene.at_path(&[2]).unwrap())
+            .next()
+            .unwrap();
+        assert!(
+            (scrollbar.thumb.x + scrollbar.thumb.width - scrollbar.track.x - scrollbar.track.width)
+                .abs()
+                < 0.01
+        );
+        assert!(driver.scroll("tabs", Point { x: -50.0, y: 0.0 }));
+        let (scene, frame) = prepare_list(driver.component(), driver.input(), size);
+        let bar = frame.at_path(&[2]).unwrap();
+        assert_eq!(
+            bar.scroll_on(Orientation::Horizontal).unwrap().offset,
+            scroll.max_offset - 50.0
+        );
+        assert_eq!(state(driver.component()), (0, 0));
+        assert!(!scene.at_path(&[3, 0]).unwrap().children.is_empty());
+
+        driver.update(|ui| select_page(ui, 5));
+        assert!(driver.can_hit("last-tab"));
+        driver.click("history-tab");
+        assert_eq!(state(driver.component()), (4, 0));
+
+        // The same pages are reached by their physical arrow or touch direction.
+        driver.update(|ui| select_page(ui, 0));
+        driver.tab();
+        assert_eq!(driver.focused(), Some("workspace"));
+        let (scene, frame) = prepare_list(driver.component(), driver.input(), size);
+        let mut input = driver.input().clone();
+        let key = input.swipe_key(&scene, &frame, forward).unwrap();
+        assert_eq!(key.action, ControlAction::Select(3));
+        let now = Instant::now();
+        let start = Point { x: 100.0, y: 175.0 };
+        let end = Point { x: 200.0, y: 175.0 };
+        assert!(input.begin_scroll_gesture(&scene, &frame, start, now, ScrollGestureKind::Touch));
+        input.move_scroll_gesture(&scene, &frame, end, now + Duration::from_millis(60));
+        let swipe = input
+            .end_scroll_gesture(&scene, &frame, end, now + Duration::from_millis(120))
+            .control
+            .unwrap();
+        assert_eq!(swipe, key);
+        driver.update(|ui| assert!(ui.control_at(&scene, &swipe.path, swipe.action)));
+        assert_eq!(state(driver.component()), (3, 0));
+
+        driver.tab();
+        assert_eq!(driver.focused(), Some("general"));
+        assert!(driver.group_key(forward));
+        assert_eq!(state(driver.component()), (3, 1));
+        driver.click("turn");
+        let (_, frame) = prepare_list(driver.component(), driver.input(), size);
+        let widget = frame.at_path(&[4]).unwrap();
+        let page = widget.child_at(1).unwrap();
+        assert!(page.tab_header.unwrap().x > page.bounds.x);
+        driver.click("flip");
+        let (_, frame) = prepare_list(driver.component(), driver.input(), size);
+        let widget = frame.at_path(&[4]).unwrap();
+        let page = widget.child_at(1).unwrap();
+        assert!(page.tab_header.unwrap().x < page.bounds.x);
+        assert_eq!(state(driver.component()), (3, 1));
+    }
+
+    exercise(
+        navigation_ui::DirectionalTabsDemo::new(),
+        |ui| (ui.get_page(), ui.get_detail()),
+        |ui, page| ui.set_page(page),
+    );
+    exercise(
+        interpret_navigation_fixture("DirectionalTabsDemo"),
+        |ui| {
+            let integer = |name| {
+                let Value::Int(value) = ui.get(name).unwrap() else {
+                    panic!("expected tab index {name}");
+                };
+                value
+            };
+            assert_eq!(ui.take_error(), None);
+            (integer("page"), integer("detail"))
+        },
+        |ui, page| ui.set("page", page.into()).unwrap(),
+    );
+}
+
+#[test]
+fn indicators_follow_inherited_direction_without_changing_control_state_semantics() {
+    use crate::ui_driver::UiDriver;
+    use xrack_layout::{ActivationKey, Interaction, NavigationKey, PageIndicatorGeometry, Size};
+    use xrack_runtime::ControlAction;
+
+    fn exercise<C: Component>(
+        ui: C,
+        flags: impl Fn(&C) -> [bool; 3],
+        indices: impl Fn(&C) -> [i64; 2],
+        rtl: bool,
+    ) {
+        let size = Size::new(464.0, 310.0);
+        let mut driver = UiDriver::new(ui, FixedText, size);
+        if !rtl {
+            driver.click("flip");
+        }
+        let forward = if rtl {
+            NavigationKey::Left
+        } else {
+            NavigationKey::Right
+        };
+        driver.click("check");
+        driver.click("share");
+        assert_eq!(flags(driver.component()), [true, true, true]);
+        driver.tab();
+        assert_eq!(driver.focused(), Some("standard"));
+        assert!(driver.group_key(forward));
+        assert_eq!(driver.focused(), Some("advanced"));
+        assert_eq!(indices(driver.component()), [1, 0]);
+
+        let mut input = Interaction::default();
+        let (scene, frame) = prepare_list(driver.component(), &input, size);
+        let switch = input.accessibility_target(&scene, &frame, &[1, 1]).unwrap();
+        input.accessibility_focus(switch);
+        input.key_press_with_scene(&scene, ActivationKey::Space);
+        let toggle = input
+            .key_release_with_scene(&scene, ActivationKey::Space)
+            .unwrap();
+        assert_eq!(toggle.element_id(), Some("wifi"));
+        driver.update(|ui| assert!(ui.dispatch_at(&scene, &toggle.path, "clicked")));
+        assert_eq!(flags(driver.component()), [true, false, true]);
+
+        let path = [1, 4];
+        let (scene, frame) = prepare_list(driver.component(), &input, size);
+        let item = frame.at_path(&path).unwrap();
+        let geometry = PageIndicatorGeometry::with_layout_direction(
+            scene.at_path(&path).unwrap(),
+            item.bounds,
+            item.layout_direction,
+        )
+        .unwrap();
+        let markers: Vec<_> = geometry.markers().collect();
+        assert_eq!(markers[0].center.x > markers[3].center.x, rtl);
+        assert!(markers[0].selected);
+        input.pointer_move(&scene, &frame, markers[2].center);
+        input.pointer_press_in_scene(&scene, &frame);
+        let next = input.page_marker_release(&scene, &frame).unwrap();
+        assert_eq!(next.action, ControlAction::Select(2));
+        driver.update(|ui| assert!(ui.control_at(&scene, &next.path, next.action)));
+        assert_eq!(indices(driver.component()), [1, 2]);
+
+        let (scene, frame) = prepare_list(driver.component(), &input, size);
+        let next = input.page_indicator_key(&scene, &frame, forward).unwrap();
+        assert_eq!(next.action, ControlAction::Select(3));
+        driver.update(|ui| assert!(ui.control_at(&scene, &next.path, next.action)));
+        assert_eq!(indices(driver.component()), [1, 3]);
+    }
+
+    for rtl in [true, false] {
+        exercise(
+            controls_ui::DirectionalFeedbackDemo::new(),
+            |ui| [ui.get_checked(), ui.get_wireless(), ui.get_shared()],
+            |ui| [ui.get_profile(), ui.get_page()],
+            rtl,
+        );
+        exercise(
+            interpret_controls_fixture("DirectionalFeedbackDemo"),
+            |ui| {
+                ["checked", "wireless", "shared"].map(|name| {
+                    let Value::Bool(value) = ui.get(name).unwrap() else {
+                        panic!("expected toggle state {name}");
+                    };
+                    value
+                })
+            },
+            |ui| {
+                ["profile", "page"].map(|name| {
+                    let Value::Int(value) = ui.get(name).unwrap() else {
+                        panic!("expected index {name}");
+                    };
+                    assert_eq!(ui.take_error(), None);
+                    value
+                })
+            },
+            rtl,
+        );
+    }
+}
+
+#[test]
+fn switch_drag_previews_then_commits_one_change_in_both_backends() {
+    use std::time::{Duration, Instant};
+    use xrack_layout::{Interaction, Point, ScrollGestureKind, Size, ToggleGeometry};
+    use xrack_runtime::ControlAction;
+
+    fn exercise<C: Component>(
+        mut ui: C,
+        state: impl Fn(&C) -> (bool, i64),
+        enable: impl Fn(&mut C, bool),
+        rtl: bool,
+    ) {
+        if !rtl {
+            assert!(ui.dispatch("flip", "clicked"));
+        }
+        let size = Size::new(464.0, 310.0);
+        let path = [1, 1];
+        let mut input = Interaction::default();
+        let (scene, frame) = prepare_list(&ui, &input, size);
+        let item = frame.at_path(&path).unwrap();
+        let geometry = ToggleGeometry::new(
+            scene.at_path(&path).unwrap(),
+            item.bounds,
+            item.layout_direction,
+        );
+        let start = Point {
+            x: geometry.indicator.x + geometry.indicator.width * 0.5,
+            y: geometry.indicator.y + geometry.indicator.height * 0.5,
+        };
+        let now = Instant::now();
+        let off = if rtl { 1.0 } else { -1.0 };
+        let toward_off = Point {
+            x: start.x + off * 13.5,
+            ..start
+        };
+        let toward_on = Point {
+            x: start.x - off * 13.5,
+            ..start
+        };
+        assert!(input.begin_scroll_gesture(
+            &scene,
+            &frame,
+            start,
+            now,
+            ScrollGestureKind::MouseControl
+        ));
+        assert!(input.move_scroll_gesture(
+            &scene,
+            &frame,
+            toward_off,
+            now + Duration::from_millis(40)
+        ));
+        assert_eq!(state(&ui), (true, 0));
+        let (_, preview) = prepare_list(&ui, &input, size);
+        assert_eq!(preview.at_path(&path).unwrap().switch_position, Some(0.25));
+        let release =
+            input.end_scroll_gesture(&scene, &frame, toward_off, now + Duration::from_millis(80));
+        assert!(!release.tap);
+        let action = release.control.unwrap();
+        assert_eq!(action.action, ControlAction::SetSwitch(false));
+        assert!(ui.control_at(&scene, &action.path, action.action));
+        assert_eq!(state(&ui), (false, 1));
+        assert!(!ui.control_at(&scene, &action.path, action.action));
+        assert_eq!(state(&ui), (false, 1));
+        assert!(!input.has_switch_preview());
+
+        let (scene, frame) = prepare_list(&ui, &input, size);
+        let now = now + Duration::from_millis(100);
+        assert!(input.begin_scroll_gesture(&scene, &frame, start, now, ScrollGestureKind::Touch));
+        let no_change =
+            input.end_scroll_gesture(&scene, &frame, toward_off, now + Duration::from_millis(40));
+        assert!(!no_change.tap && no_change.control.is_none());
+
+        let now = now + Duration::from_millis(80);
+        assert!(input.begin_scroll_gesture(&scene, &frame, start, now, ScrollGestureKind::Touch));
+        assert!(input.move_scroll_gesture(
+            &scene,
+            &frame,
+            toward_on,
+            now + Duration::from_millis(20)
+        ));
+        input.cancel_scroll_gesture();
+        assert!(!input.has_switch_preview());
+        assert!(
+            input
+                .end_scroll_gesture(&scene, &frame, toward_on, now + Duration::from_millis(40))
+                .control
+                .is_none()
+        );
+
+        let now = now + Duration::from_millis(80);
+        assert!(input.begin_scroll_gesture(&scene, &frame, start, now, ScrollGestureKind::Touch));
+        assert!(input.move_scroll_gesture(
+            &scene,
+            &frame,
+            toward_on,
+            now + Duration::from_millis(20)
+        ));
+        enable(&mut ui, false);
+        let (scene, frame) = prepare_list(&ui, &input, size);
+        input.reconcile(&scene, &frame);
+        assert!(!input.has_switch_preview());
+        enable(&mut ui, true);
+        let (scene, frame) = prepare_list(&ui, &input, size);
+        let cancelled =
+            input.end_scroll_gesture(&scene, &frame, toward_on, now + Duration::from_millis(40));
+        assert!(!cancelled.tap && cancelled.control.is_none());
+        assert_eq!(state(&ui), (false, 1));
+
+        let now = now + Duration::from_millis(80);
+        assert!(input.begin_scroll_gesture(&scene, &frame, start, now, ScrollGestureKind::Touch));
+        let release =
+            input.end_scroll_gesture(&scene, &frame, toward_on, now + Duration::from_millis(40));
+        let action = release.control.unwrap();
+        assert_eq!(action.action, ControlAction::SetSwitch(true));
+        assert!(ui.control_at(&scene, &action.path, action.action));
+        assert_eq!(state(&ui), (true, 2));
+    }
+
+    for rtl in [true, false] {
+        exercise(
+            controls_ui::DirectionalFeedbackDemo::new(),
+            |ui| (ui.get_wireless(), ui.get_wireless_changes()),
+            |ui, enabled| ui.set_wireless_enabled(enabled),
+            rtl,
+        );
+        exercise(
+            interpret_controls_fixture("DirectionalFeedbackDemo"),
+            |ui| {
+                let wireless = ui.get("wireless").unwrap() == Value::Bool(true);
+                let Value::Int(changes) = ui.get("wireless-changes").unwrap() else {
+                    panic!("expected switch change count");
+                };
+                assert_eq!(ui.take_error(), None);
+                (wireless, changes)
+            },
+            |ui, enabled| ui.set("wireless-enabled", enabled.into()).unwrap(),
+            rtl,
+        );
+    }
+}
+
+#[test]
+fn switch_delegate_drag_updates_the_bound_model_row_in_both_backends() {
+    use std::time::{Duration, Instant};
+    use xrack_layout::{Interaction, Point, ScrollGestureKind, Size, ToggleGeometry};
+    use xrack_runtime::ControlAction;
+
+    fn exercise<C: Component>(mut ui: C, edits: impl Fn(&C) -> i64) {
+        let mut input = Interaction::default();
+        let size = Size::new(644.0, 398.0);
+        let path = [0, 1, 1, 1, 0, 0];
+        let (scene, frame) = prepare_list(&ui, &input, size);
+        let node = scene.at_path(&path).unwrap();
+        assert_eq!(node.kind, "Switch");
+        let item = frame.at_path(&path).unwrap();
+        let geometry = ToggleGeometry::new(node, item.bounds, item.layout_direction);
+        let start = Point {
+            x: geometry.indicator.x + geometry.indicator.width * 0.5,
+            y: geometry.indicator.y + geometry.indicator.height * 0.5,
+        };
+        let before = node.boolean("checked", false);
+        let end = Point {
+            x: start.x + if before { -16.0 } else { 16.0 },
+            ..start
+        };
+        let now = Instant::now();
+        assert!(input.begin_scroll_gesture(&scene, &frame, start, now, ScrollGestureKind::Touch));
+        let release =
+            input.end_scroll_gesture(&scene, &frame, end, now + Duration::from_millis(30));
+        let action = release.control.unwrap();
+        assert_eq!(action.path, path);
+        assert_eq!(action.action, ControlAction::SetSwitch(!before));
+        assert!(ui.control_at(&scene, &action.path, action.action));
+        assert_eq!(edits(&ui), 1);
+        let (scene, _) = prepare_list(&ui, &input, size);
+        assert_eq!(
+            scene.at_path(&path).unwrap().boolean("checked", false),
+            !before
+        );
+        assert!(!ui.control_at(&scene, &action.path, action.action));
+        assert_eq!(edits(&ui), 1);
+    }
+
+    exercise(list_ui::ItemDelegatesDemo::new(), |ui| ui.get_edits());
+    exercise(interpret_list_fixture("ItemDelegatesDemo"), |ui| {
+        let Value::Int(edits) = ui.get("edits").unwrap() else {
+            panic!("expected model edits");
+        };
+        assert_eq!(ui.take_error(), None);
+        edits
+    });
+}
+
+#[test]
+fn custom_switch_thumb_tracks_the_gesture_and_keeps_the_switch_as_input_owner() {
+    use std::time::{Duration, Instant};
+    use xrack_layout::{Interaction, Point, ScrollGestureKind, Size};
+    use xrack_runtime::ControlAction;
+
+    fn exercise<C: Component>(mut ui: C, state: impl Fn(&C) -> (bool, i64), rtl: bool) {
+        if !rtl {
+            assert!(ui.dispatch("flip", "clicked"));
+        }
+        let size = Size::new(464.0, 310.0);
+        let path = [1, 7];
+        let mut input = Interaction::default();
+        let (scene, frame) = prepare_list(&ui, &input, size);
+        let item = frame.at_path(&path).unwrap();
+        let track = item.child_at(1).unwrap().bounds;
+        let thumb = item.child_at(0).unwrap().bounds;
+        assert_eq!(track.width, 64.0);
+        assert_eq!(thumb.width, 32.0);
+        assert_eq!(thumb.height, 18.0);
+        let start = Point {
+            x: thumb.x + thumb.width * 0.5,
+            y: thumb.y + thumb.height * 0.5,
+        };
+        input.pointer_move(&scene, &frame, start);
+        let pressed = input.hovered.as_ref().unwrap();
+        assert_eq!(pressed.path, path);
+        assert_eq!(pressed.element_id(), Some("custom"));
+
+        let now = Instant::now();
+        let dx = if rtl { -24.0 } else { 24.0 };
+        let end = Point {
+            x: start.x + dx,
+            ..start
+        };
+        assert!(input.begin_scroll_gesture(&scene, &frame, start, now, ScrollGestureKind::Touch));
+        assert!(input.move_scroll_gesture(&scene, &frame, end, now + Duration::from_millis(25)));
+        let (_, preview) = prepare_list(&ui, &input, size);
+        let preview = preview.at_path(&path).unwrap();
+        assert_eq!(preview.switch_position, Some(0.75));
+        assert_eq!(preview.child_at(0).unwrap().bounds.x, thumb.x + dx);
+        assert_eq!(preview.child_at(1).unwrap().bounds, track);
+        assert_eq!(state(&ui), (false, 0));
+
+        let action = input
+            .end_scroll_gesture(&scene, &frame, end, now + Duration::from_millis(50))
+            .control
+            .unwrap();
+        assert_eq!(action.path, path);
+        assert_eq!(action.action, ControlAction::SetSwitch(true));
+        assert!(ui.control_at(&scene, &action.path, action.action));
+        assert_eq!(state(&ui), (true, 1));
+        let (_, committed) = prepare_list(&ui, &input, size);
+        let committed = committed.at_path(&path).unwrap();
+        assert_eq!(committed.switch_position, None);
+        assert_eq!(
+            committed.child_at(0).unwrap().bounds.x,
+            thumb.x + dx.signum() * 32.0
+        );
+    }
+
+    for rtl in [true, false] {
+        exercise(
+            controls_ui::DirectionalFeedbackDemo::new(),
+            |ui| (ui.get_custom_enabled(), ui.get_custom_changes()),
+            rtl,
+        );
+        exercise(
+            interpret_controls_fixture("DirectionalFeedbackDemo"),
+            |ui| {
+                let checked = ui.get("custom-enabled").unwrap() == Value::Bool(true);
+                let Value::Int(changes) = ui.get("custom-changes").unwrap() else {
+                    panic!("expected switch change count");
+                };
+                assert_eq!(ui.take_error(), None);
+                (checked, changes)
+            },
+            rtl,
+        );
+    }
+}
+
+#[test]
+fn rtl_choice_controls_share_button_hits_and_popup_anchor_in_both_backends() {
+    use xrack_layout::{
+        ChoiceKey, ComboGeometry, Interaction, LayoutNode, Point, Rect, SearchGeometry, Size,
+    };
+    use xrack_runtime::{ControlAction, LayoutDirection};
+
+    fn center(rect: Rect) -> Point {
+        Point {
+            x: rect.x + rect.width * 0.5,
+            y: rect.y + rect.height * 0.5,
+        }
+    }
+
+    fn press(input: &mut Interaction, scene: &Node, layout: &LayoutNode, point: Point) {
+        input.pointer_move(scene, layout, point);
+        input.pointer_press_in_scene(scene, layout);
+    }
+
+    fn exercise<C: Component>(mut ui: C, state: impl Fn(&C) -> (i64, String, String), rtl: bool) {
+        if !rtl {
+            assert!(ui.dispatch("flip", "clicked"));
+        }
+        let size = Size::new(464.0, 284.0);
+        let mut input = Interaction::default();
+        let (scene, frame) = prepare_list(&ui, &input, size);
+        let path = [1, 0];
+        let item = frame.at_path(&path).unwrap();
+        let combo = ComboGeometry::for_layout(item);
+        assert_eq!(combo.trigger.x < combo.entry.x, rtl);
+        press(&mut input, &scene, &frame, center(combo.entry));
+        let target = input.pointer_release_target().unwrap();
+        assert!(!input.open_choice_at_pointer(&scene, &frame, target));
+        press(&mut input, &scene, &frame, center(combo.trigger));
+        let target = input.pointer_release_target().unwrap();
+        assert!(input.open_choice_at_pointer(&scene, &frame, target));
+        input.dismiss_choice();
+
+        let item = frame.at_path(&[1, 1]).unwrap();
+        press(&mut input, &scene, &frame, center(item.bounds));
+        let target = input.pointer_release_target().unwrap();
+        assert!(input.open_choice_at_pointer(&scene, &frame, target));
+        let popup = input.choice_menu(&scene, &frame).unwrap();
+        assert_eq!(popup.bounds.width, 96.0);
+        assert_eq!(
+            popup.layout_direction,
+            if rtl {
+                LayoutDirection::RightToLeft
+            } else {
+                LayoutDirection::LeftToRight
+            }
+        );
+        assert_eq!(
+            popup.bounds.x,
+            if rtl {
+                item.bounds.x + item.bounds.width - 96.0
+            } else {
+                item.bounds.x
+            }
+        );
+        let row = center(popup.row_bounds(1));
+        input.pointer_move(&scene, &frame, row);
+        assert!(input.choice_press(&scene, &frame));
+        let action = input.choice_release(&scene, &frame).unwrap();
+        assert_eq!(action.action, ControlAction::Select(1));
+        assert!(ui.control_at(&scene, &action.path, action.action));
+        assert_eq!(state(&ui).0, 1);
+
+        let (scene, frame) = prepare_list(&ui, &input, size);
+        let path = [1, 2];
+        let geometry = SearchGeometry::for_layout(frame.at_path(&path).unwrap());
+        assert_eq!(geometry.clear.x < geometry.submit.x, rtl);
+        press(&mut input, &scene, &frame, center(geometry.submit));
+        let action = input.control_part_release(&scene, &frame).unwrap();
+        assert_eq!(action.action, ControlAction::SubmitSearch);
+        assert!(ui.control_at(&scene, &action.path, action.action));
+        assert_eq!(state(&ui), (1, "rep".into(), "rep".into()));
+
+        let (scene, frame) = prepare_list(&ui, &input, size);
+        assert!(input.choice_key(&scene, &frame, ChoiceKey::Open).is_none());
+        let suggestions = input.choice_menu(&scene, &frame).unwrap();
+        assert_eq!(suggestions.rows.as_ref(), ["report", "repair"]);
+        input.choice_key(&scene, &frame, ChoiceKey::Down);
+        let action = input.choice_key(&scene, &frame, ChoiceKey::Accept).unwrap();
+        assert_eq!(action.action, ControlAction::Select(0));
+        assert!(ui.control_at(&scene, &action.path, action.action));
+        assert_eq!(state(&ui).1, "report");
+
+        let (scene, frame) = prepare_list(&ui, &input, size);
+        press(&mut input, &scene, &frame, center(geometry.clear));
+        let action = input.control_part_release(&scene, &frame).unwrap();
+        assert_eq!(action.action, ControlAction::ClearSearch);
+        assert!(ui.control_at(&scene, &action.path, action.action));
+        assert_eq!(state(&ui).1, "");
+    }
+
+    for rtl in [true, false] {
+        exercise(
+            selection_ui::DirectionalChoiceDemo::new(),
+            |ui| (ui.get_mode(), ui.get_query(), ui.get_submitted()),
+            rtl,
+        );
+        let program = xrack_compiler::prepare_preview(
+            include_str!("../examples/selection/selection.xr"),
+            "selection.xr",
+            Default::default(),
+        )
+        .unwrap();
+        let ui = Program::from_module(&program.module)
+            .unwrap()
+            .create("DirectionalChoiceDemo")
+            .unwrap();
+        exercise(
+            ui,
+            |ui| {
+                let Value::Int(mode) = ui.get("mode").unwrap() else {
+                    panic!("expected mode");
+                };
+                let string = |name| {
+                    let Value::String(value) = ui.get(name).unwrap() else {
+                        panic!("expected {name}");
+                    };
+                    value
+                };
+                assert_eq!(ui.take_error(), None);
+                (mode, string("query"), string("submitted"))
+            },
+            rtl,
+        );
+    }
+}
+
+#[test]
+fn menu_bar_and_cascades_follow_the_layout_direction_in_both_backends() {
+    use crate::ui_driver::UiDriver;
+    use xrack_layout::{MenuKey, Size};
+    use xrack_runtime::LayoutDirection;
+
+    fn exercise<C: Component>(mut ui: C, rtl: bool) {
+        if rtl {
+            assert!(ui.dispatch("direction", "clicked"));
+        }
+        let size = Size::new(620.0, 366.0);
+        let mut driver = UiDriver::new(ui, FixedText, size);
+        let (next, back) = if rtl {
+            (MenuKey::Left, MenuKey::Right)
+        } else {
+            (MenuKey::Right, MenuKey::Left)
+        };
+        let (_, frame) = prepare_list(driver.component(), driver.input(), size);
+        let bar = frame.at_path(&[0, 0]).unwrap();
+        let file = bar.child_at(0).unwrap().bounds;
+        let view = bar.child_at(1).unwrap().bounds;
+        assert_eq!(file.x > view.x, rtl);
+        driver.tab();
+        assert_eq!(driver.focused(), Some("file-menu"));
+        driver.menu_key(next);
+        assert_eq!(driver.focused(), Some("view-menu"));
+        driver.menu_key(back);
+        assert_eq!(driver.focused(), Some("file-menu"));
+        driver.menu_key(MenuKey::Down);
+
+        let panel = &driver.menus()[0];
+        assert_eq!(panel.layout_direction == LayoutDirection::RightToLeft, rtl);
+        if rtl {
+            assert_eq!(panel.bounds.x + panel.bounds.width, file.x + file.width);
+        } else {
+            assert_eq!(panel.bounds.x, file.x);
+        }
+        driver.menu_key(MenuKey::Down);
+        driver.menu_key(next);
+        let panels = driver.menus();
+        assert_eq!(panels.len(), 2);
+        if rtl {
+            assert_eq!(
+                panels[1].bounds.x + panels[1].bounds.width,
+                panels[0].bounds.x
+            );
+        } else {
+            assert_eq!(
+                panels[1].bounds.x,
+                panels[0].bounds.x + panels[0].bounds.width
+            );
+        }
+        driver.menu_key(back);
+        assert_eq!(driver.menus().len(), 1);
+        driver.click_menu_row("导出为");
+        assert!(driver.click_menu_row("图像"));
+        assert_eq!(driver.node("status").text("text"), Some("已导出图像"));
+        assert!(driver.menus().is_empty());
+
+        let (_, frame) = prepare_list(driver.component(), driver.input(), size);
+        let workspace = frame.at_path(&[0, 1]).unwrap().bounds;
+        driver.tab();
+        driver.tab();
+        assert_eq!(driver.focused(), Some("workspace"));
+        assert!(driver.keyboard_context_menu());
+        let keyboard_panel = driver.menus()[0].bounds;
+        if rtl {
+            assert_eq!(
+                keyboard_panel.x + keyboard_panel.width,
+                workspace.x + workspace.width
+            );
+        } else {
+            assert_eq!(keyboard_panel.x, workspace.x);
+        }
+        driver.menu_key(MenuKey::Escape);
+        assert!(driver.context_menu("workspace"));
+        let panel = &driver.menus()[0];
+        assert_eq!(panel.layout_direction == LayoutDirection::RightToLeft, rtl);
+        let point = workspace.x + workspace.width * 0.5;
+        assert_eq!(
+            if rtl {
+                panel.bounds.x + panel.bounds.width
+            } else {
+                panel.bounds.x
+            },
+            point
+        );
+        assert!(driver.click_menu_row("刷新"));
+        assert_eq!(driver.node("status").text("text"), Some("已刷新工作区"));
+    }
+
+    for rtl in [false, true] {
+        exercise(menu_ui::MenuDemo::new(), rtl);
+        exercise(interpret_menu_fixture("MenuDemo"), rtl);
+    }
+}
+
+#[test]
+fn rtl_calendars_share_geometry_and_date_actions_in_both_backends() {
+    use crate::ui_driver::UiDriver;
+    use xrack_layout::{
+        CalendarGeometry, Interaction, LayoutNode, NavigationKey, Point, Rect, Size,
+    };
+    use xrack_runtime::{CalendarAction, ControlAction, Date};
+
+    fn calendar(scene: &Node, frame: &LayoutNode, path: &[usize]) -> CalendarGeometry {
+        CalendarGeometry::for_layout(scene.at_path(path).unwrap(), frame.at_path(path).unwrap())
+    }
+
+    fn click(
+        ui: &mut impl Component,
+        input: &mut Interaction,
+        scene: &Node,
+        frame: &LayoutNode,
+        rect: Rect,
+        expected: CalendarAction,
+    ) {
+        let point = Point {
+            x: rect.x + rect.width * 0.5,
+            y: rect.y + rect.height * 0.5,
+        };
+        input.pointer_move(scene, frame, point);
+        input.pointer_press_in_scene(scene, frame);
+        let selected = input.control_part_release(scene, frame).unwrap();
+        assert_eq!(selected.action, ControlAction::Calendar(expected));
+        assert!(ui.control_at(scene, &selected.path, selected.action));
+    }
+
+    fn exercise<C: Component>(mut ui: C, state: impl Fn(&C) -> ([Date; 3], i64), rtl: bool) {
+        if !rtl {
+            assert!(ui.dispatch("flip", "clicked"));
+        }
+        let size = Size::new(724.0, 362.0);
+        let mut input = Interaction::default();
+        let inline = [1, 0];
+        let header = [1, 1, 0, 1];
+        let weeks = [1, 1, 1, 0];
+        let grid = [1, 1, 1, 1];
+        let (scene, frame) = prepare_list(&ui, &input, size);
+        let strip = frame.at_path(&header).unwrap().bounds;
+        let week_column = frame.at_path(&weeks).unwrap().bounds;
+        let grid_item = frame.at_path(&grid).unwrap();
+        assert_eq!(
+            (strip.x, strip.width),
+            (grid_item.bounds.x, grid_item.bounds.width)
+        );
+        assert_eq!(
+            (week_column.y, week_column.height),
+            (grid_item.bounds.y, grid_item.bounds.height)
+        );
+        assert_eq!(week_column.x > grid_item.bounds.x, rtl);
+        assert_eq!(
+            calendar(&scene, &frame, &weeks)
+                .weeks()
+                .map(|week| (week.year, week.number))
+                .next(),
+            Some((2020, 53))
+        );
+        let weekday = calendar(&scene, &frame, &header);
+        let (sunday, name) = weekday
+            .weekdays(scene.at_path(&header).unwrap())
+            .next()
+            .unwrap();
+        let dates = calendar(&scene, &frame, &grid);
+        let first = dates.days().next().unwrap();
+        assert_eq!(name, "日");
+        assert_eq!(sunday.x, first.bounds.x);
+        assert_eq!(
+            first.bounds.x > grid_item.bounds.x + grid_item.bounds.width * 0.5,
+            rtl
+        );
+        for day in dates.days() {
+            assert_eq!(
+                grid_item.at_path(&[0, day.slot]).unwrap().bounds,
+                day.bounds
+            );
+        }
+
+        let next = if rtl {
+            NavigationKey::Left
+        } else {
+            NavigationKey::Right
+        };
+        let target = input.accessibility_target(&scene, &frame, &inline).unwrap();
+        input.accessibility_focus(target);
+        let day = input.calendar_key(&scene, &frame, next).unwrap();
+        let leap_day = Date::new(2024, 2, 29).unwrap();
+        assert_eq!(
+            day.action,
+            ControlAction::Calendar(CalendarAction::Select(leap_day))
+        );
+        assert!(ui.control_at(&scene, &day.path, day.action));
+        assert_eq!(state(&ui).0[0], leap_day);
+
+        let (scene, frame) = prepare_list(&ui, &input, size);
+        let [previous, next_month] = calendar(&scene, &frame, &inline).navigation();
+        assert_eq!(previous.0.x > next_month.0.x, rtl);
+        click(
+            &mut ui,
+            &mut input,
+            &scene,
+            &frame,
+            previous.0,
+            CalendarAction::Browse(Date::new(2024, 1, 1).unwrap()),
+        );
+        assert_eq!(state(&ui).0[0], leap_day);
+
+        let (scene, frame) = prepare_list(&ui, &input, size);
+        let adjacent = Date::new(2020, 12, 28).unwrap();
+        let day = CalendarAction::Activate(adjacent);
+        let rect = calendar(&scene, &frame, &grid).action_bounds(day).unwrap();
+        click(&mut ui, &mut input, &scene, &frame, rect, day);
+        assert_eq!(
+            state(&ui),
+            ([leap_day, adjacent, Date::new(2021, 1, 1).unwrap()], 1)
+        );
+
+        let mut driver = UiDriver::new(ui, FixedText, size);
+        driver.click("open-picker");
+        let mut input = driver.input().clone();
+        let (scene, frame) = prepare_list(driver.component(), &input, size);
+        let popup = [1, 3, 0];
+        input.reconcile(&scene, &frame);
+        assert!(input.is_focused(&popup));
+        let [previous, following] = calendar(&scene, &frame, &popup).navigation();
+        assert_eq!(previous.0.x > following.0.x, rtl);
+        let change = input.calendar_key(&scene, &frame, next).unwrap();
+        driver.update(|ui| assert!(ui.control_at(&scene, &change.path, change.action)));
+        assert_eq!(state(driver.component()).0[0], leap_day);
+        driver.click_at_path(&[1, 3, 1, 1]);
+        assert_eq!(
+            state(driver.component()).0[0],
+            Date::new(2024, 3, 1).unwrap()
+        );
+    }
+
+    for rtl in [true, false] {
+        exercise(
+            controls_ui::DirectionalCalendarDemo::new(),
+            |ui| {
+                (
+                    [ui.get_selected(), ui.get_grid_date(), ui.get_grid_month()],
+                    ui.get_activations(),
+                )
+            },
+            rtl,
+        );
+        exercise(
+            interpret_controls_fixture("DirectionalCalendarDemo"),
+            |ui| {
+                let dates = ["selected", "grid-date", "grid-month"].map(|name| {
+                    let Value::Date(value) = ui.get(name).unwrap() else {
+                        panic!("expected {name}");
+                    };
+                    value
+                });
+                let Value::Int(activations) = ui.get("activations").unwrap() else {
+                    panic!("expected activations");
+                };
+                assert_eq!(ui.take_error(), None);
+                (dates, activations)
+            },
+            rtl,
+        );
+    }
 }

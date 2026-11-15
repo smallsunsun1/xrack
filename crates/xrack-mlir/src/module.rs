@@ -288,7 +288,9 @@ impl Module {
         mut map: impl FnMut(OperationRef<'_>) -> Result<String, String>,
     ) -> Result<Self, String> {
         self.visit_operations(|op| {
-            if op.name() == "xr.element" && op.attribute("kind") == Some("MediaPlayer") {
+            if op.name() == "xr.element"
+                && matches!(op.attribute("kind"), Some("MediaPlayer" | "SoundEffect"))
+            {
                 let path = map(op)?;
                 // The module owns the operation and string attribute.
                 unsafe {

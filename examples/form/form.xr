@@ -183,6 +183,7 @@ export component EditorCommandsDemo inherits Window {
     title: "XRack · 编辑命令";
     width: 620px;
     height: 240px;
+    in property <bool> locked: false;
     in-out property <string> document: "任务：在这里编辑文本";
     callback select-prefix;
     select-prefix => { entry.focus(); entry.set-selection-offsets(0, 9); }
@@ -200,14 +201,15 @@ export component EditorCommandsDemo inherits Window {
             prefix-tool := Button { text: "选前缀"; focus-on-click: false; clicked => { root.select-prefix(); } }
             select-tool := Button { text: "全选"; focus-on-click: false; clicked => { entry.select-all(); } }
             clear-tool := Button { text: "取消选区"; focus-on-click: false; clicked => { entry.clear-selection(); } }
-            cut-selection := Button { text: "剪切"; focus-on-click: false; clicked => { entry.cut(); } }
-            copy-selection := Button { text: "复制"; focus-on-click: false; clicked => { entry.copy(); } }
+            cut-selection := Button { text: "剪切"; focus-on-click: false; enabled: entry.can-cut; clicked => { entry.cut(); } }
+            copy-selection := Button { text: "复制"; focus-on-click: false; enabled: entry.can-copy; clicked => { entry.copy(); } }
             paste-tool := Button { text: "粘贴"; focus-on-click: false; clicked => { root.paste-selected(); } }
-            undo-tool := Button { text: "撤销"; focus-on-click: false; clicked => { root.undo-edit(); } }
-            redo-tool := Button { text: "重做"; focus-on-click: false; clicked => { root.redo-edit(); } }
+            undo-tool := Button { text: "撤销"; focus-on-click: false; enabled: entry.can-undo; clicked => { root.undo-edit(); } }
+            redo-tool := Button { text: "重做"; focus-on-click: false; enabled: entry.can-redo; clicked => { root.redo-edit(); } }
         }
         entry := TextEdit {
             accessible-name: "正文";
+            read-only: root.locked;
             vertical-stretch: 1;
             text <=> root.document;
         }
@@ -405,6 +407,122 @@ export component ValidationDemo inherits Window {
     }
 }
 
+export component SubmissionValidationDemo inherits Window {
+    title: "XRack · 提交校验";
+    width: 420px; height: 300px;
+    background: #162034;
+
+    in-out property <string> code: "";
+    in-out property <string> note: "";
+    in-out property <bool> accepting: true;
+    out property <bool> can-send: entry.acceptable-input;
+    out property <bool> note-ready: note-field.acceptable-input;
+    out property <int> submissions: 0;
+
+    callback submit();
+    submit => { root.submissions += 1; }
+
+    VerticalLayout {
+        padding: 24px;
+        spacing: 12px;
+        entry := LineEdit {
+            accessible-name: "验证码";
+            placeholder-text: "输入 4 位验证码，不能全为 0";
+            input-type: number;
+            minimum-length: 4;
+            maximum-length: 4;
+            submit-when: root.accepting && root.code != "0000";
+            text <=> root.code;
+            accepted => { root.submit(); }
+        }
+        note-field := TextArea {
+            accessible-name: "备注";
+            placeholder-text: "备注（至少两个字素簇）";
+            minimum-length: 2;
+            text <=> root.note;
+        }
+        permission := CheckBox { text: "允许提交验证码"; checked <=> root.accepting; }
+        send := Button {
+            text: "提交验证码";
+            enabled: root.can-send;
+            clicked => { root.submit(); }
+        }
+        Label { text: "已提交 " + root.submissions + " 次"; }
+    }
+}
+
+export component NumericValidationDemo inherits Window {
+    title: "XRack · 数值校验";
+    width: 440px; height: 260px;
+    background: #162034;
+
+    in-out property <string> draft: "";
+    in-out property <InputType> mode: decimal;
+    in-out property <float> lower: -20.50;
+    in-out property <float> upper: 100.25;
+    in-out property <int> fraction-digits: 2;
+    out property <bool> can-submit: field.acceptable-input;
+    out property <string> submitted: "";
+
+    VerticalLayout {
+        padding: 24px;
+        spacing: 12px;
+        Label { text: "金额范围：-20,50 到 100,25，最多两位小数"; }
+        field := TextInput {
+            accessible-name: "金额";
+            placeholder-text: "使用逗号作为小数点";
+            input-type: root.mode;
+            decimal-separator: ",";
+            minimum-value: root.lower;
+            maximum-value: root.upper;
+            decimals: root.fraction-digits;
+            text <=> root.draft;
+            accepted => { root.submitted = root.draft; }
+        }
+        send := Button {
+            text: "提交金额";
+            enabled: root.can-submit;
+            clicked => { root.submitted = root.draft; }
+        }
+        Label { text: "已提交：" + root.submitted; }
+    }
+}
+
+export component EditorSelectionDemo inherits Window {
+    title: "XRack · 文本选区";
+    width: 456px; height: 220px;
+    background: #162034;
+
+    in-out property <string> document: "任务：é👩‍💻";
+    in-out property <bool> concealed: false;
+    out property <int> caret: entry.cursor-offset;
+    out property <int> selection-start: entry.selection-start-offset;
+    out property <int> selection-end: entry.selection-end-offset;
+    out property <string> selected: entry.selected-text;
+
+    callback select-prefix;
+    select-prefix => { entry.focus(); entry.set-selection-offsets(9, 0); }
+
+    VerticalLayout {
+        padding: 24px;
+        spacing: 12px;
+        entry := LineEdit {
+            accessible-name: "正文";
+            input-type: root.concealed ? password : text;
+            text <=> root.document;
+        }
+        select-prefix-tool := Button {
+            text: "向左选择前缀";
+            focus-on-click: false;
+            clicked => { root.select-prefix(); }
+        }
+        selection-info := Label {
+            text: "光标 " + root.caret + " · 选区 [" + root.selection-start + ", " + root.selection-end + ")";
+        }
+        selection-text := Label { text: "选中文字：" + root.selected; }
+    }
+}
+
 export component DragDropDemo inherits Window {
     title: "XRack · 拖放";
     width: 560px; height: 258px;
@@ -553,5 +671,52 @@ export component FileDropDemo inherits Window {
             alignment: start;
             for path in root.paths : Label { text: path; height: 24px; }
         }
+    }
+}
+
+export component TextAlignmentDemo inherits Window {
+    title: "XRack · 文字起止对齐";
+    width: 500px; height: 300px;
+    background: #162034;
+
+    in-out property <LayoutDirection> direction: right-to-left;
+    in-out property <string> line: "abc";
+    in-out property <string> notes: "abc\nxyz";
+    out property <int> line-offset: line-edit.cursor-offset;
+    out property <int> notes-offset: notes-edit.cursor-offset;
+    layout-direction: root.direction;
+
+    toggle-direction := Button {
+        x: 18px; y: 14px; width: 152px; height: 34px; text: "切换方向";
+        clicked => {
+            root.direction = root.direction == LayoutDirection.right-to-left
+                ? LayoutDirection.left-to-right : LayoutDirection.right-to-left;
+        }
+    }
+    heading := Label {
+        x: 18px; y: 58px; width: 330px; height: 30px;
+        horizontal-alignment: start;
+        text: "Start · البداية";
+    }
+    details := StyledText {
+        x: 18px; y: 94px; width: 330px; height: 30px;
+        horizontal-alignment: start;
+        text: @markdown("[Details](#details) · **تفاصيل**");
+    }
+    line-edit := LineEdit {
+        x: 18px; y: 137px; width: 232px; height: 36px;
+        horizontal-alignment: start;
+        placeholder-text: "输入一行文本";
+        text <=> root.line;
+    }
+    notes-edit := TextArea {
+        x: 18px; y: 188px; width: 232px; height: 88px;
+        horizontal-alignment: start;
+        text <=> root.notes;
+    }
+    caret-info := Label {
+        x: 275px; y: 145px; width: 200px; height: 34px;
+        horizontal-alignment: left;
+        text: "单行 " + root.line-offset + " · 多行 " + root.notes-offset;
     }
 }

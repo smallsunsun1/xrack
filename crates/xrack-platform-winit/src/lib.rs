@@ -90,6 +90,7 @@ struct WindowState {
     applied_cursor: Cell<Option<CursorIcon>>,
     frame: FrameCache,
     presentation: WindowPresentation,
+    inspection_revision: Option<u64>,
 }
 
 fn activation_key_value(key: &Key) -> Option<ActivationKey> {
@@ -188,6 +189,7 @@ impl WindowState {
             applied_cursor: Cell::new(None),
             frame: FrameCache::default(),
             presentation: WindowPresentation::default(),
+            inspection_revision: None,
         })
     }
 
@@ -397,6 +399,7 @@ struct Application<C> {
     focus_active: bool,
     scroll_contact: Option<ScrollContact>,
     modifiers: ModifiersState,
+    inspection_press: bool,
     state: Option<WindowState>,
     error: Option<String>,
     tasks: Rc<LocalExecutor>,
@@ -436,6 +439,7 @@ impl<C: Component> Application<C> {
             focus_active: false,
             scroll_contact: None,
             modifiers: ModifiersState::default(),
+            inspection_press: false,
             state: None,
             error: None,
             tasks,
@@ -681,7 +685,7 @@ impl<C: Component> Application<C> {
                     && let Some(item) = layout.at_path(&target.path)
                     && match action {
                         ControlAction::Calendar(action) if is_calendar_control(node.kind) => {
-                            xrack_layout::CalendarGeometry::new(node, item.bounds)
+                            xrack_layout::CalendarGeometry::for_layout(node, item)
                                 .action_bounds(action)
                         }
                         ControlAction::PickTumbler { .. } if node.kind == "Tumbler" => {
@@ -707,7 +711,7 @@ impl<C: Component> Application<C> {
                         ControlAction::SubmitSearch | ControlAction::ClearSearch
                             if node.kind == "SearchField" =>
                         {
-                            xrack_layout::SearchGeometry::new(item.bounds)
+                            xrack_layout::SearchGeometry::for_layout(item)
                                 .actions(node)
                                 .find_map(|(rect, candidate)| (candidate == action).then_some(rect))
                         }
@@ -1193,9 +1197,9 @@ impl<C: Component> Application<C> {
             return false;
         };
         let entry = match node.kind {
-            "ComboBox" => ComboGeometry::new(item.bounds).entry,
-            "SearchField" => xrack_layout::SearchGeometry::new(item.bounds).entry,
-            _ => SpinGeometry::new(item.bounds).text,
+            "ComboBox" => ComboGeometry::for_layout(item).entry,
+            "SearchField" => xrack_layout::SearchGeometry::for_layout(item).entry,
+            _ => SpinGeometry::for_layout(item, node).text,
         };
         item.map_from_window(point)
             .is_some_and(|point| entry.contains(point))
@@ -1508,9 +1512,6 @@ impl<C: Component> Application<C> {
         let events = self
             .focus_observers
             .sync(&self.input, &self.scene, layout, self.focus_active);
-        if events.is_empty() {
-            return;
-        }
         for event in events {
             event.apply(&mut self.component, &self.scene);
         }
@@ -2011,7 +2012,12 @@ impl<C: Component> Application<C> {
             return false;
         }
         if combo_editable(node)
-            && event.logical_key == Key::Named(NamedKey::ArrowRight)
+            && (match event.logical_key {
+                Key::Named(NamedKey::ArrowLeft) => Some(NavigationKey::Left),
+                Key::Named(NamedKey::ArrowRight) => Some(NavigationKey::Right),
+                _ => None,
+            })
+            .is_some_and(|key| self.input.combo_completion_accepts(key))
             && self.modifiers.is_empty()
             && !event.repeat
             && self
@@ -3061,6 +3067,7 @@ impl<C: Component> Application<C> {
                 return true;
             }
             if self.input.cancel_slider_preview()
+                || self.input.has_switch_preview()
                 || self.input.cancel_table_drag_selection()
                 || self.input.cancel_table_row_move()
                 || self.input.cancel_delay()
@@ -3760,6 +3767,7 @@ impl<C: Component> Application<C> {
         };
         self.scroll_contact = None;
         let preview = self.input.tumbler_preview().is_some()
+            || self.input.has_switch_preview()
             || self.input.has_swipe_preview()
             || self.input.has_overscroll();
         let table_drag = self.input.cancel_table_touch_drag();
@@ -4197,7 +4205,13 @@ impl<C: Component> Application<C> {
                     .advance_table_drag_selection(&self.scene, layout, now)
         }) {
             self.relayout_after_scroll();
-        } else if animating || self.layout.is_none() {
+        } else if animating
+            || self.layout.is_none()
+            || self
+                .state
+                .as_ref()
+                .is_some_and(|state| state.frame.slider_preview_changed(&self.input))
+        {
             self.prepare_frame(elapsed);
         }
         let Some(state) = &mut self.state else {
@@ -4243,6 +4257,14 @@ impl<C: Component> Application<C> {
         if pointer_changed {
             self.input.reconcile(&self.scene, layout);
         }
+        let outline = self
+            .component
+            .window_inspector(&self.base_scene)
+            .and_then(|inspector| inspector.selected_path())
+            .and_then(|path| layout.at_path(&path))
+            .filter(|item| item.visible)
+            .map(|item| item.visible_window_bounds(item.bounds));
+        state.renderer.set_inspection_outline(outline);
         state.renderer.draw_with_transitions(
             &self.scene,
             layout,
@@ -4288,6 +4310,16 @@ impl<C: Component> HostedWindow for Application<C> {
         let _focus = self.focus_requests.enter();
         let _scroll = self.scroll_requests.enter();
         self.refresh_after_update(false);
+        if let Some(state) = &mut self.state {
+            let revision = self
+                .component
+                .window_inspector(&self.base_scene)
+                .map(|inspector| inspector.revision());
+            if state.inspection_revision != revision {
+                state.inspection_revision = revision;
+                state.window.request_redraw();
+            }
+        }
     }
 
     fn user_event(&mut self, event: UserEvent) {
@@ -4544,6 +4576,29 @@ impl<C: Component> HostedWindow for Application<C> {
                 }
             })
             .or_else(|| self.input.pointer_position());
+        if let WindowEvent::MouseInput {
+            button: MouseButton::Left,
+            state: button,
+            ..
+        } = &event
+        {
+            if std::mem::take(&mut self.inspection_press) && *button == ElementState::Released {
+                return;
+            }
+            if *button == ElementState::Pressed
+                && self.scroll_contact.is_none()
+                && self.pointer_capture.is_none()
+                && let Some((layout, point)) = self.layout.as_ref().zip(point)
+                && let Some(inspector) = self.component.window_inspector(&self.base_scene)
+                && (inspector.picking() || self.modifiers.alt_key())
+            {
+                let path = self.input.inspection_path(&self.scene, layout, point);
+                inspector.pick(path.as_deref());
+                self.inspection_press = true;
+                state.window.request_redraw();
+                return;
+            }
+        }
         let mouse = match &event {
             WindowEvent::MouseInput { button, state, .. }
                 if !matches!(self.scroll_contact, Some(ScrollContact::Touch(..))) =>

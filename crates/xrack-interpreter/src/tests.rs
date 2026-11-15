@@ -8,6 +8,95 @@ fn compile(source: &str) -> xrack_mlir::Module {
 }
 
 #[test]
+fn reload_keeps_in_flight_host_state_and_does_not_restart_named_one_shot() {
+    use std::time::{Duration, Instant};
+    use xrack_runtime::{TimerQueue, VecModel};
+
+    let source = r#"
+        export component App inherits Window {
+            title: "Before";
+            in-out property <string> query: "XRack";
+            in-out property <[string]> results: [];
+            out property <string> heading: "Count " + Model.count(root.results);
+            callback search(string);
+            startup := Timer {
+                interval: 1; running: true; repeat: false;
+                triggered => { root.search(root.query); }
+            }
+        }
+    "#;
+    let program = |source: &str| load_mlir(&compile(source).to_mlir()).unwrap();
+    let ui = ReloadableInstance::new(program(source).create("App").unwrap());
+    let weak = ui.as_weak();
+    let calls = Rc::new(Cell::new(0));
+    ui.on("search", {
+        let calls = calls.clone();
+        Rc::new(move |args| {
+            assert_eq!(args, &[Value::String("edited".into())]);
+            calls.set(calls.get() + 1);
+            Ok(None)
+        })
+    })
+    .unwrap();
+    ui.current()
+        .set("query", Value::String("edited".into()))
+        .unwrap();
+    let model = VecModel::from(vec![String::from("pending")]);
+    ui.current()
+        .set("results", Value::StringModel(model.clone()))
+        .unwrap();
+    let now = Instant::now();
+    let mut timers = TimerQueue::default();
+    timers.sync(now, &ui.render_shared().timers);
+    assert!(
+        timers
+            .next_due(now + Duration::from_millis(1))
+            .unwrap()
+            .fire()
+    );
+    assert_eq!(calls.get(), 1);
+
+    let revised = source
+        .replace("Before", "After")
+        .replace("Count ", "New count ");
+    assert_eq!(
+        ui.reload_if_current(&program(&revised), || false),
+        Ok(false)
+    );
+    assert_eq!(ui.render_shared().text("title"), Some("Before"));
+    ui.reload(&program(&revised)).unwrap();
+    assert!(ui.scene_dirty());
+    let frame = ui.render_shared();
+    assert_eq!(frame.text("title"), Some("After"));
+    assert!(frame.timers.is_empty());
+    assert_eq!(calls.get(), 1);
+
+    // The weak handle captured before reload resolves the new instance.
+    let current = weak.upgrade().unwrap().current();
+    assert_eq!(current.get("query"), Ok(Value::String("edited".into())));
+    model.push("result".into());
+    assert_eq!(
+        current.get("heading"),
+        Ok(Value::String("New count 2".into()))
+    );
+    current
+        .invoke("search", &[Value::String("edited".into())])
+        .unwrap();
+    assert_eq!(calls.get(), 2);
+
+    let incompatible = revised.replace(
+        "callback search(string);",
+        "callback search(string); in property <bool> extra;",
+    );
+    assert!(ui.reload(&program(&incompatible)).is_err());
+    assert_eq!(ui.render_shared().text("title"), Some("After"));
+    assert_eq!(
+        ui.current().get("heading"),
+        Ok(Value::String("New count 2".into()))
+    );
+}
+
+#[test]
 fn execute_mlir_bindings_and_callbacks_after_releasing_module() {
     let source = r#"
         export component Counter inherits Window {

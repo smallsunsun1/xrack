@@ -99,6 +99,14 @@ pub fn viewport_kind(kind: &str) -> bool {
     )
 }
 
+pub fn selection_list(kind: &str) -> bool {
+    matches!(kind, "ListView" | "GridView" | "StandardListView")
+}
+
+pub fn list_selection_property(kind: &str, name: &str) -> bool {
+    selection_list(kind) && name == "selected-view-index"
+}
+
 pub fn content_viewport(kind: &str) -> bool {
     matches!(kind, "ScrollView" | "Flickable")
 }
@@ -217,16 +225,31 @@ fn box_shadow_type(name: &str) -> Option<Type> {
     })
 }
 
-pub fn control_part_parent(kind: &str) -> Option<&'static str> {
+pub fn control_part_parents(kind: &str) -> &'static [&'static str] {
     match kind {
-        "ButtonContent" => Some("Button"),
-        "SliderHandle" => Some("Slider"),
-        _ => None,
+        "ButtonContent" => &["Button", "TabButton"],
+        "EmptyState" => &[
+            "ListView",
+            "GridView",
+            "StandardListView",
+            "TableView",
+            "StandardTableView",
+            "TreeView",
+        ],
+        "SliderHandle" => &["Slider"],
+        "RangeLowerHandle" | "RangeUpperHandle" => &["RangeSlider"],
+        "ToggleIndicator" => &["CheckBox", "RadioButton", "Switch"],
+        "SwitchThumb" => &["Switch"],
+        "SpinUpIndicator" | "SpinDownIndicator" => &["SpinBox", "DoubleSpinBox"],
+        _ => &[],
     }
 }
 
 pub fn builtin_property(kind: &str, name: &str) -> Option<Type> {
-    if matches!(kind, "ButtonContent" | "SliderHandle") {
+    if name == "layout-direction" && geometry_owner(kind) {
+        return Some(Type::LayoutDirection);
+    }
+    if !control_part_parents(kind).is_empty() {
         return builtin_property("Rectangle", name);
     }
     if matches!(kind, "DayCell" | "SplitHandle") {
@@ -373,6 +396,14 @@ pub fn builtin_property(kind: &str, name: &str) -> Option<Type> {
             _ => None,
         };
     }
+    if kind == "SoundEffect" {
+        return match name {
+            "source" => Some(Type::String),
+            "volume" => Some(Type::Float),
+            "muted" => Some(Type::Bool),
+            _ => media_object_read_type(kind, name),
+        };
+    }
     if kind == "Timer" {
         return match name {
             "interval" => Some(Type::Int),
@@ -474,7 +505,16 @@ pub fn builtin_property(kind: &str, name: &str) -> Option<Type> {
     if kind == "Label" {
         return builtin_property("Text", name);
     }
+    if view_count_property(kind, name) || list_selection_property(kind, name) {
+        return Some(Type::Int);
+    }
     if focus_property(kind, name) {
+        return Some(Type::Bool);
+    }
+    if let Some(ty) = text_selection_property(kind, name) {
+        return Some(ty);
+    }
+    if text_command_property(kind, name) {
         return Some(Type::Bool);
     }
     if let Some(ty) = table_selection_property(kind, name) {
@@ -800,21 +840,25 @@ pub fn builtin_property(kind: &str, name: &str) -> Option<Type> {
             Type::Bool
         }
         "value" | "minimum" | "maximum" | "step-size" if kind == "DoubleSpinBox" => Type::Float,
-        "decimals" if kind == "DoubleSpinBox" => Type::Int,
+        "decimals" if matches!(kind, "DoubleSpinBox" | "TextInput" | "LineEdit") => Type::Int,
+        "minimum-value" | "maximum-value" if matches!(kind, "TextInput" | "LineEdit") => {
+            Type::Float
+        }
         "decimal-separator" if matches!(kind, "DoubleSpinBox" | "TextInput" | "LineEdit") => {
             Type::String
         }
         "wrap" if matches!(kind, "SpinBox" | "DoubleSpinBox" | "Tumbler") => Type::Bool,
         "wrap" if matches!(kind, "Text" | "TextEdit" | "TextArea") => Type::TextWrap,
-        "horizontal-alignment" if kind == "Text" => Type::TextHorizontalAlignment,
+        "horizontal-alignment" if kind == "Text" || text_input(kind) => {
+            Type::TextHorizontalAlignment
+        }
         "vertical-alignment" if kind == "Text" => Type::TextVerticalAlignment,
         "overflow" if kind == "Text" => Type::TextOverflow,
         "max-lines" if kind == "Text" => Type::Int,
         "input-type" if matches!(kind, "TextInput" | "LineEdit") => Type::InputType,
         "password-visible" if matches!(kind, "TextInput" | "LineEdit") => Type::Bool,
-        "maximum-length" if matches!(kind, "TextInput" | "LineEdit" | "TextEdit" | "TextArea") => {
-            Type::Int
-        }
+        "maximum-length" | "minimum-length" if builtins::text_submission_editor(kind) => Type::Int,
+        "submit-when" | "acceptable-input" if builtins::text_submission_editor(kind) => Type::Bool,
         "model" if matches!(kind, "ComboBox" | "Tumbler" | "StandardListView") => Type::StringList,
         "text-role" if matches!(kind, "StandardListView" | "ComboBox") => Type::String,
         "value-role" | "enabled-role" if kind == "ComboBox" => Type::String,
@@ -887,7 +931,9 @@ pub fn builtin_property(kind: &str, name: &str) -> Option<Type> {
         "transition-duration" if kind == "StackView" => Type::Int,
         "dot-size" | "spacing" if kind == "PageIndicator" => Type::Length,
         "current-row" | "frozen-columns" if table_view(kind) => Type::Int,
-        "current-key" | "root-key" if kind == "TreeView" => Type::Int,
+        "current-key" if kind == "TreeView" || selection_list(kind) => Type::Int,
+        "root-key" if kind == "TreeView" => Type::Int,
+        "row-key-field" if selection_list(kind) => Type::String,
         "filter-field" | "filter-text" if matches!(kind, "TreeView" | "StandardTableView") => {
             Type::String
         }
@@ -1147,6 +1193,7 @@ pub fn layout_item_property(name: &str) -> Option<Type> {
         "horizontal-stretch" | "vertical-stretch" | "z" | "opacity" | "transform-rotation"
         | "transform-scale" | "transform-scale-x" | "transform-scale-y" => Type::Float,
         "visible" => Type::Bool,
+        "layout-direction" => Type::LayoutDirection,
         "layout-order" | "row" | "col" | "rowspan" | "colspan" => Type::Int,
         "cross-axis-self-alignment" => Type::CrossAxisAlignment,
         _ => return None,
@@ -1187,6 +1234,14 @@ pub fn delegate_base(kind: &str) -> Option<&'static str> {
 
 pub fn is_builtin(kind: &str) -> bool {
     builtins::builtin_element(delegate_base(kind).unwrap_or(kind)).is_some()
+}
+
+pub fn media_object_read_type(kind: &str, name: &str) -> Option<Type> {
+    match kind {
+        "MediaPlayer" => media_read_type(name),
+        "SoundEffect" if matches!(name, "ready" | "playing" | "error") => media_read_type(name),
+        _ => None,
+    }
 }
 
 pub fn media_read_type(name: &str) -> Option<Type> {
@@ -1297,9 +1352,33 @@ fn table_view(kind: &str) -> bool {
     matches!(kind, "TableView" | "StandardTableView")
 }
 
+pub fn view_count_property(kind: &str, name: &str) -> bool {
+    viewport_kind(kind)
+        && !content_viewport(kind)
+        && builtins::VIEW_COUNT_PROPERTIES.contains(&name)
+}
+
 pub fn focus_property(kind: &str, property: &str) -> bool {
     property == "has-focus" && focus_target_kind(kind)
         || property == "focus-within" && kind == "FocusScope"
+}
+
+pub fn text_selection_property(kind: &str, name: &str) -> Option<Type> {
+    if !text_input(kind) && kind != "ComboBox" {
+        return None;
+    }
+    if !builtins::TEXT_SELECTION_PROPERTIES.contains(&name) {
+        return None;
+    }
+    Some(if name == "selected-text" {
+        Type::String
+    } else {
+        Type::Int
+    })
+}
+
+pub fn text_command_property(kind: &str, name: &str) -> bool {
+    (text_input(kind) || kind == "ComboBox") && builtins::TEXT_COMMAND_PROPERTIES.contains(&name)
 }
 
 fn focus_handler(event: &str) -> bool {
@@ -2342,6 +2421,7 @@ fn validate_table(kind: &str, members: &[Member], span: Span) -> Result<()> {
         _ => None,
     }) {
         match element.ty.as_str() {
+            "EmptyState" => {}
             "TableColumn" if element.repeat.is_none() && element.condition.is_none() => {
                 if element
                     .members
@@ -2440,7 +2520,7 @@ fn swipe_slot(kind: &str) -> bool {
 fn nonvisual_element(kind: &str) -> bool {
     matches!(
         kind,
-        "Action" | "ActionGroup" | "ButtonGroup" | "Timer" | "SecondaryWindow"
+        "Action" | "ActionGroup" | "ButtonGroup" | "Timer" | "SoundEffect" | "SecondaryWindow"
     ) || native_dialog(kind)
 }
 
@@ -2830,7 +2910,11 @@ impl<'a> Scope<'a> {
             }
             if kind == "TreeView" {
                 let mut children = members.iter().filter_map(|member| match member {
-                    Member::Element(element) if !nonvisual_element(&element.ty) => Some(element),
+                    Member::Element(element)
+                        if !nonvisual_element(&element.ty) && element.ty != "EmptyState" =>
+                    {
+                        Some(element)
+                    }
                     _ => None,
                 });
                 if !children.next().is_some_and(|child| {
@@ -2853,7 +2937,11 @@ impl<'a> Scope<'a> {
             }
             if matches!(kind, "ListView" | "GridView") {
                 let mut elements = members.iter().filter_map(|member| match member {
-                    Member::Element(element) if !nonvisual_element(&element.ty) => Some(element),
+                    Member::Element(element)
+                        if !nonvisual_element(&element.ty) && element.ty != "EmptyState" =>
+                    {
+                        Some(element)
+                    }
                     _ => None,
                 });
                 if !elements
@@ -2938,7 +3026,9 @@ impl<'a> Scope<'a> {
                     if e.ty == "TableCell" && (kind != "TableRow" || e.repeat.is_some()) {
                         return fail(e.span, "TableCell must be a direct cell of TableRow");
                     }
-                    if matches!(kind, "TableCell" | "TreeCell" | "StandardListView") {
+                    if matches!(kind, "TableCell" | "TreeCell")
+                        || kind == "StandardListView" && e.ty != "EmptyState"
+                    {
                         return fail(e.span, format!("{kind} cannot contain child elements"));
                     }
                     if kind == "TimePicker" || picker_popup(kind) {
@@ -2966,9 +3056,17 @@ impl<'a> Scope<'a> {
                             | "Spinner"
                             | "BusyIndicator"
                     ) && e.ty != "Tooltip"
+                        && !control_part_parents(&e.ty).contains(&kind)
                         && !(kind == "MonthGrid" && e.ty == "DayCell")
                     {
-                        return fail(e.span, format!("{kind} only accepts Tooltip children"));
+                        return fail(
+                            e.span,
+                            if kind == "RangeSlider" {
+                                "RangeSlider only accepts handle parts and Tooltip children".into()
+                            } else {
+                                format!("{kind} only accepts Tooltip children")
+                            },
+                        );
                     }
                     if e.ty == "DayCell" {
                         if kind != "MonthGrid"
@@ -2985,11 +3083,19 @@ impl<'a> Scope<'a> {
                             return fail(e.span, "MonthGrid accepts only one DayCell");
                         }
                     }
-                    if let Some(expected) = control_part_parent(&e.ty) {
-                        if kind != expected || e.repeat.is_some() || e.condition.is_some() {
+                    let parents = control_part_parents(&e.ty);
+                    if !parents.is_empty() {
+                        if !parents.contains(&delegate_base(kind).unwrap_or(kind))
+                            || e.repeat.is_some()
+                            || e.condition.is_some()
+                        {
                             return fail(
                                 e.span,
-                                format!("{} requires a static child of {expected}", e.ty),
+                                format!(
+                                    "{} requires a static child of {}",
+                                    e.ty,
+                                    parents.join(" or ")
+                                ),
                             );
                         }
                         if !page_slots.insert(&e.ty) {
@@ -3104,7 +3210,10 @@ impl<'a> Scope<'a> {
                             format!("a repeated {} must be the only option", e.ty),
                         );
                     }
-                    if matches!(kind, "RadioButton" | "TabButton") {
+                    if (delegate_base(kind).unwrap_or(kind) == "RadioButton"
+                        && e.ty != "ToggleIndicator")
+                        || (kind == "TabButton" && e.ty != "ButtonContent")
+                    {
                         return fail(e.span, format!("{kind} cannot contain child elements"));
                     }
                     let virtual_radio = e.ty == "RadioDelegate"
@@ -3274,6 +3383,7 @@ impl<'a> Scope<'a> {
                 || self.native_dialog_read(current, reference, span).is_some()
                 || self.image_playback_read(current, reference, span).is_some()
                 || self.media_read(current, reference, span).is_some()
+                || self.text_accepts(current, reference, span)?.is_some()
                 || self.viewport_read(current, reference, span)?.is_some()
                 || self
                     .scroll_control_read(current, reference, span)?
@@ -3403,15 +3513,27 @@ impl<'a> Scope<'a> {
     fn focus_read(&self, current: &str, reference: &str, span: Span) -> Result<Option<ir::Expr>> {
         let Ok((owner, property)) =
             self.member_owner(current, reference, "property", span, |element, name| {
-                element.properties.contains_key(name) || focus_property(&element.kind, name)
+                element.properties.contains_key(name)
+                    || focus_property(&element.kind, name)
+                    || text_selection_property(&element.kind, name).is_some()
+                    || text_command_property(&element.kind, name)
             })
         else {
             return Ok(None);
         };
         let mut element = &self.owners[owner];
-        if element.instance || !focus_property(&element.kind, property) {
+        if element.instance {
             return Ok(None);
         }
+        let (op, ty) = if let Some(ty) = text_selection_property(&element.kind, property) {
+            ("text_selection_read", ty)
+        } else if text_command_property(&element.kind, property) {
+            ("text_command_available", Type::Bool)
+        } else if focus_property(&element.kind, property) {
+            ("focus_read", Type::Bool)
+        } else {
+            return Ok(None);
+        };
         loop {
             if element.repeated {
                 return fail(
@@ -3425,10 +3547,10 @@ impl<'a> Scope<'a> {
             element = &self.owners[parent];
         }
         Ok(Some(ir::Expr {
-            op: "focus_read".into(),
+            op: op.into(),
             owner: Some(owner.into()),
             value: property.into(),
-            ty: Type::Bool,
+            ty,
             args: Vec::new(),
             span,
         }))
@@ -3524,27 +3646,34 @@ impl<'a> Scope<'a> {
             self.member_owner(current, reference, "property", span, |element, name| {
                 element.properties.contains_key(name)
                     || viewport_property(&element.kind, name)
+                    || view_count_property(&element.kind, name)
+                    || list_selection_property(&element.kind, name)
                     || flick_motion_property(&element.kind, name).is_some()
             })
         else {
             return Ok(None);
         };
         let element = &self.owners[owner];
-        let motion = flick_motion_property(&element.kind, property);
-        if element.instance || !(motion.is_some() || viewport_property(&element.kind, property)) {
+        if element.instance {
             return Ok(None);
         }
+        let (op, ty) = if let Some(ty) = flick_motion_property(&element.kind, property) {
+            ("flick_motion_read", ty)
+        } else if list_selection_property(&element.kind, property) {
+            ("list_selection_read", Type::Int)
+        } else if view_count_property(&element.kind, property) {
+            ("view_count", Type::Int)
+        } else if viewport_property(&element.kind, property) {
+            ("viewport_read", Type::Length)
+        } else {
+            return Ok(None);
+        };
         self.require_static_viewport(owner, span)?;
         Ok(Some(ir::Expr {
-            op: if motion.is_some() {
-                "flick_motion_read"
-            } else {
-                "viewport_read"
-            }
-            .into(),
+            op: op.into(),
             owner: Some(owner.into()),
             value: property.into(),
-            ty: motion.unwrap_or(Type::Length),
+            ty,
             args: Vec::new(),
             span,
         }))
@@ -3705,17 +3834,51 @@ impl<'a> Scope<'a> {
         })
     }
 
+    fn text_accepts(&self, current: &str, reference: &str, span: Span) -> Result<Option<ir::Expr>> {
+        let Ok((owner, property)) =
+            self.member_owner(current, reference, "property", span, |element, name| {
+                element.properties.contains_key(name)
+                    || (builtins::text_submission_editor(&element.kind)
+                        && name == "acceptable-input")
+            })
+        else {
+            return Ok(None);
+        };
+        let mut element = &self.owners[owner];
+        if element.instance
+            || !builtins::text_submission_editor(&element.kind)
+            || property != "acceptable-input"
+        {
+            return Ok(None);
+        }
+        loop {
+            if element.repeated {
+                return fail(
+                    span,
+                    "acceptable-input in a repetition requires a component delegate",
+                );
+            }
+            let Some(parent) = &element.parent else {
+                break;
+            };
+            element = &self.owners[parent];
+        }
+        Ok(Some(ir::Expr {
+            owner: Some(owner.into()),
+            value: property.into(),
+            ..ir::Expr::operation("text_accepts", Type::Bool, vec![], span)
+        }))
+    }
+
     fn media_read(&self, current: &str, reference: &str, span: Span) -> Option<ir::Expr> {
         let (receiver, name) = reference.rsplit_once('.')?;
         let owner = self.receiver(current, receiver).unwrap_or(receiver);
-        if self.owners.get(owner)?.kind != "MediaPlayer" {
-            return None;
-        }
+        let kind = &self.owners.get(owner)?.kind;
         Some(ir::Expr {
             op: "media_read".into(),
             owner: Some(owner.into()),
             value: name.into(),
-            ty: media_read_type(name)?,
+            ty: media_object_read_type(kind, name)?,
             args: Vec::new(),
             span,
         })
@@ -4007,13 +4170,21 @@ impl<'a> Scope<'a> {
         }
         if let Some((receiver, method)) = call.callee.rsplit_once('.') {
             let owner = self.receiver(current, receiver).unwrap_or(receiver);
-            if matches!(method, "select-source-index" | "select-source-cell")
-                && let Some(target) = self.owners.get(owner)
+            if matches!(
+                method,
+                "select-source-index" | "select-source-cell" | "select-key"
+            ) && let Some(target) = self.owners.get(owner)
                 && !target.instance
                 && !target.callbacks.contains_key(method)
             {
                 if !viewport_kind(&target.kind) || content_viewport(&target.kind) {
                     return fail(call.span, format!("{method}() requires a virtual view"));
+                }
+                if method == "select-key"
+                    && !(selection_list(&target.kind) && target.members.iter().any(|member|
+                        matches!(member, Member::Binding(binding) if binding.name == "row-key-field")))
+                {
+                    return fail(call.span, "select-key() requires a list or grid with row-key-field");
                 }
                 let cell = method == "select-source-cell";
                 if cell && !table_view(&target.kind) {
@@ -4322,6 +4493,7 @@ impl<'a> Scope<'a> {
                 "scroll-to"
                     | "position-view-at-index"
                     | "position-view-at-source-index"
+                    | "position-view-at-key"
                     | "position-view-at-row"
                     | "position-view-at-column"
                     | "position-view-at-cell"
@@ -4336,6 +4508,12 @@ impl<'a> Scope<'a> {
                         call.span,
                         "scroll commands are not allowed in a pure callback",
                     );
+                }
+                if method == "position-view-at-key"
+                    && !(selection_list(&target.kind) && target.members.iter().any(|member|
+                        matches!(member, Member::Binding(binding) if binding.name == "row-key-field")))
+                {
+                    return fail(call.span, "position-view-at-key() requires a list or grid with row-key-field");
                 }
                 let cell = matches!(
                     method,
@@ -4637,14 +4815,16 @@ impl<'a> Scope<'a> {
                     span: call.span,
                 }));
             }
-            if self
-                .owners
-                .get(owner)
-                .is_some_and(|target| target.kind == "MediaPlayer")
-                && matches!(method, "play" | "pause" | "stop" | "seek" | "go-live")
+            let kind = self.owners.get(owner).map(|target| target.kind.as_str());
+            if (kind == Some("MediaPlayer")
+                && matches!(method, "play" | "pause" | "stop" | "seek" | "go-live"))
+                || (kind == Some("SoundEffect") && method == "play")
             {
                 if !self.effects_allowed {
-                    return fail(call.span, "MediaPlayer commands require an impure callback");
+                    return fail(
+                        call.span,
+                        format!("{} commands require an impure callback", kind.unwrap()),
+                    );
                 }
                 let position = match (method, call.arguments.as_slice()) {
                     ("seek", [position]) => {
@@ -5174,10 +5354,15 @@ fn component<'a>(c: &'a ast::Component, scope: Scope<'a>) -> Result<Vec<LoweredM
     if swipe_slot(&c.base) {
         return fail(c.span, "swipe slots require a direct SwipeDelegate parent");
     }
-    if let Some(parent) = control_part_parent(&c.base) {
+    let parents = control_part_parents(&c.base);
+    if !parents.is_empty() {
         return fail(
             c.span,
-            format!("{} requires a direct {parent} parent", c.base),
+            format!(
+                "{} requires a direct {} parent",
+                c.base,
+                parents.join(" or ")
+            ),
         );
     }
     if c.base == "SplitHandle" {
@@ -5200,7 +5385,7 @@ fn component<'a>(c: &'a ast::Component, scope: Scope<'a>) -> Result<Vec<LoweredM
     }
     if matches!(
         c.base.as_str(),
-        "Timer" | "ActionGroup" | "ButtonGroup" | "SecondaryWindow"
+        "Timer" | "SoundEffect" | "ActionGroup" | "ButtonGroup" | "SecondaryWindow"
     ) || native_dialog(&c.base)
     {
         return fail(
@@ -5359,19 +5544,31 @@ fn element<'a>(
     let scope = if let Some(repeat) = repeat {
         if virtual_delegate {
             if id.is_some()
-                || members.iter().any(|member| {
-                    !matches!(
-                        member,
-                        Member::Binding(_)
-                            | Member::Animation(_)
-                            | Member::States(_)
-                            | Member::Handler(_)
-                    )
+                || members.iter().any(|member| match member {
+                    Member::Binding(_)
+                    | Member::Animation(_)
+                    | Member::States(_)
+                    | Member::Handler(_) => false,
+                    Member::Element(part)
+                        if kind == "Switch"
+                            && matches!(part.ty.as_str(), "ToggleIndicator" | "SwitchThumb") =>
+                    {
+                        part.id.is_some()
+                            || part.repeat.is_some()
+                            || part.condition.is_some()
+                            || part.members.iter().any(|member| {
+                                !matches!(
+                                    member,
+                                    Member::Binding(_) | Member::Animation(_) | Member::States(_)
+                                )
+                            })
+                    }
+                    _ => true,
                 })
             {
                 return fail(
                     span,
-                    "virtual item delegates require an anonymous leaf template",
+                    "virtual item delegates require an anonymous template with only supported visual parts",
                 );
             }
             if matches!(kind, "CheckBox" | "Switch")
@@ -5392,7 +5589,7 @@ fn element<'a>(
                 members,
                 span,
                 kind == "TreeRow",
-                matches!(kind, "TableRow" | "TreeRow"),
+                matches!(kind, "TableRow" | "TreeRow" | "TabButton"),
             )?;
         }
         check_name(&repeat.item, span)?;
@@ -5535,6 +5732,18 @@ fn element<'a>(
     if !instance && row_visibility_view(kind) {
         check_view_record_field(kind, members, scope, owner, "row-visible-field", Type::Bool)?;
     }
+    if !instance && selection_list(kind) {
+        let key = members.iter().find_map(|member| match member {
+            Member::Binding(binding) if binding.name == "current-key" => Some(binding),
+            _ => None,
+        });
+        if let Some(key) = key
+            && !members.iter().any(|member| matches!(member, Member::Binding(binding) if binding.name == "row-key-field"))
+        {
+            return fail(key.span, format!("{kind} current-key requires row-key-field"));
+        }
+        check_view_record_field(kind, members, scope, owner, "row-key-field", Type::Int)?;
+    }
     if !instance && matches!(kind, "TreeView" | "StandardTableView") {
         let has_binding = |name| {
             members
@@ -5616,6 +5825,12 @@ fn element<'a>(
                 "ActionGroup only accepts bindings, Actions and activated(value)",
             );
         }
+        if kind == "SoundEffect" && !matches!(m, Member::Binding(b) if !b.two_way) {
+            return fail(
+                m.span(),
+                "SoundEffect only accepts one-way property bindings",
+            );
+        }
         if kind == "Timer" && !matches!(m, Member::Binding(_) | Member::Handler(_)) {
             return fail(
                 m.span(),
@@ -5689,6 +5904,10 @@ fn element<'a>(
                     || kind == "SplitView" && b.name == "resizing"
                     || flick_motion_property(kind, &b.name).is_some()
                     || focus_property(kind, &b.name)
+                    || text_selection_property(kind, &b.name).is_some()
+                    || text_command_property(kind, &b.name)
+                    || view_count_property(kind, &b.name)
+                    || list_selection_property(kind, &b.name)
                     || is_window(kind) && window_status_property(&b.name)
                     || viewport_property(kind, &b.name) && !viewport_offset
                 {
@@ -5703,11 +5922,10 @@ fn element<'a>(
                         format!("property `AnimatedImage.{}` is read-only", b.name),
                     );
                 }
-                if kind == "MediaPlayer" && media_read_type(&b.name).is_some() {
-                    return fail(
-                        b.span,
-                        format!("property `MediaPlayer.{}` is read-only", b.name),
-                    );
+                if media_object_read_type(kind, &b.name).is_some()
+                    || (builtins::text_submission_editor(kind) && b.name == "acceptable-input")
+                {
+                    return fail(b.span, format!("property `{kind}.{}` is read-only", b.name));
                 }
                 if table_sort_property(kind, &b.name).is_some()
                     || table_selection_property(kind, &b.name).is_some()
@@ -6100,7 +6318,9 @@ fn element<'a>(
                             Type::Bool
                         }
                         ("TableView" | "StandardTableView", "current-row") => Type::Int,
-                        ("TreeView", "current-key") => Type::Int,
+                        (kind, "current-key") if kind == "TreeView" || selection_list(kind) => {
+                            Type::Int
+                        }
                         ("SwipeDelegate", "open-side") => Type::SwipeSide,
                         ("Timer", "running") => Type::Bool,
                         ("SecondaryWindow", "visible") => Type::Bool,
@@ -6870,6 +7090,11 @@ pub fn control_binding_conflict(kind: &str, has: impl Fn(&str) -> bool) -> Optio
         {
             format!("{kind} selection accepts either current-index or current-value")
         }
+        kind if selection_list(kind) && has("row-key-field") && has("current-index") => {
+            format!(
+                "{kind} accepts current-key instead of current-index when row-key-field is present"
+            )
+        }
         "CheckBox" if has("checked") && (has("check-state") || has("tristate")) => {
             "CheckBox accepts checked or check-state/tristate".into()
         }
@@ -6886,11 +7111,20 @@ pub fn animation_target_error(kind: &str, target: &str, root: bool) -> Option<St
         Some("AnimatedImage playback state is read-only".into())
     } else if kind == "MediaPlayer" && media_read_type(target).is_some() {
         Some("MediaPlayer playback state is read-only".into())
-    } else if viewport_property(kind, target) || geometry_property(target).is_some() {
+    } else if builtins::text_submission_editor(kind) && target == "acceptable-input" {
         Some(format!("property `{kind}.{target}` is read-only"))
-    } else if !builtin_property(kind, target)
-        .as_ref()
-        .is_some_and(animatable)
+    } else if viewport_property(kind, target)
+        || geometry_property(target).is_some()
+        || text_selection_property(kind, target).is_some()
+        || text_command_property(kind, target)
+        || view_count_property(kind, target)
+        || list_selection_property(kind, target)
+    {
+        Some(format!("property `{kind}.{target}` is read-only"))
+    } else if builtins::text_submission_rule(kind, target)
+        || !builtin_property(kind, target)
+            .as_ref()
+            .is_some_and(animatable)
     {
         Some(format!("cannot animate `{kind}.{target}`"))
     } else {
@@ -7598,6 +7832,7 @@ fn default(ty: Type, span: Span) -> ir::Expr {
         Type::LayoutAlignment => "stretch",
         Type::CrossAxisAlignment => "auto",
         Type::Orientation => "horizontal",
+        Type::LayoutDirection => "left-to-right",
         Type::FlexboxLayoutDirection => "row",
         Type::FlexboxLayoutWrap => "wrap",
         Type::DialInputMode => "circular",
@@ -8157,6 +8392,7 @@ fn expression(e: &ast::Expr, scope: &Scope<'_>, owner: &str) -> Result<ir::Expr>
                         | "FlickDirection"
                         | "FlickBoundsBehavior"
                         | "FlickBoundsMovement"
+                        | "LayoutDirection"
                         | "FlexboxLayoutDirection"
                         | "FlexboxLayoutWrap"
                         | "DialInputMode"
@@ -8293,6 +8529,7 @@ fn expression(e: &ast::Expr, scope: &Scope<'_>, owner: &str) -> Result<ir::Expr>
                 .or(scope.split_resizing(owner, s, span)?)
                 .or(scope.check_group_read(s, span)?)
                 .or(scope.action_group_read(owner, s, span)?)
+                .or(scope.text_accepts(owner, s, span)?)
             {
                 return Ok(read);
             }
@@ -8972,6 +9209,8 @@ fn collect_bindings(
         if matches!(
             e.op.as_str(),
             "focus_read"
+                | "text_selection_read"
+                | "text_command_available"
                 | "image_playback_read"
                 | "scale_rotate_read"
                 | "swipe_read"
@@ -8984,12 +9223,28 @@ fn collect_bindings(
             return;
         }
         if let Some(owner) = &e.owner {
+            if e.op == "text_accepts" {
+                out.extend(
+                    builtins::TEXT_SUBMISSION_INPUTS
+                        .iter()
+                        .map(|name| path(owner, name)),
+                );
+                return;
+            }
+            if e.op == "list_selection_read" {
+                out.extend(
+                    ["@view-rows", "current-index", "current-key"].map(|name| path(owner, name)),
+                );
+                return;
+            }
             if e.op == "scroll_control_read" && e.value == "position" {
                 out.push(path(owner, "size"));
             }
             let name = if e.op == "tree_query" {
                 "@tree"
-            } else if e.op == "view_index" {
+            } else if e.op == "view_count" && e.value == "source-row-count" {
+                "@view-source"
+            } else if matches!(e.op.as_str(), "view_count" | "view_index") {
                 "@view-rows"
             } else if e.op == "stack_read" {
                 "@stack"
@@ -9057,17 +9312,20 @@ fn collect_bindings(
                     );
                 }
                 if !*instance && viewport_kind(kind) && !content_viewport(kind) {
-                    let inputs = match *kind {
-                        "TreeView" => vec![path(key, "@tree")],
-                        "StandardTableView" => vec![
-                            path(key, "model"),
-                            path(key, "filter-text"),
-                            path(key, "auto-sort"),
-                        ],
-                        "StandardListView" => vec![path(key, "model")],
+                    let source = match *kind {
+                        "StandardListView" | "StandardTableView" => vec![path(key, "model")],
                         _ => Vec::new(),
                     };
-                    edges.insert(path(key, "@view-rows"), (*span, inputs));
+                    edges.insert(path(key, "@view-source"), (*span, source));
+                    let mut rows = vec![path(key, "@view-source")];
+                    match *kind {
+                        "TreeView" => rows.push(path(key, "@tree")),
+                        "StandardTableView" => {
+                            rows.extend([path(key, "filter-text"), path(key, "auto-sort")]);
+                        }
+                        _ => {}
+                    }
+                    edges.insert(path(key, "@view-rows"), (*span, rows));
                 }
                 owners.push(key);
                 let overlay =
@@ -9135,7 +9393,7 @@ fn collect_bindings(
                 edges.insert(key.clone(), (value.span, deps));
                 if matches!(m, LoweredMember::Repeat { .. })
                     && let [.., parent, _] = owners.as_slice()
-                    && let Some((_, inputs)) = edges.get_mut(&path(parent, "@view-rows"))
+                    && let Some((_, inputs)) = edges.get_mut(&path(parent, "@view-source"))
                 {
                     inputs.push(key.clone());
                 }

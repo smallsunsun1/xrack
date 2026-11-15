@@ -27,6 +27,11 @@ pub enum ScrollAction {
         index: i64,
         alignment: ScrollAlignment,
     },
+    /// A business key resolved against the view that handles the request.
+    ToBusinessKey {
+        key: i64,
+        alignment: ScrollAlignment,
+    },
     /// A source record captured before the view is laid out.
     ToRowKey {
         key: crate::RowKey,
@@ -65,6 +70,7 @@ pub enum ScrollCommandMethod {
     Cell,
     SourceIndex,
     SourceCell,
+    BusinessKey,
     CancelFlick,
     ReturnToBounds,
 }
@@ -78,6 +84,7 @@ impl ScrollCommandMethod {
             "position-view-at-cell" => Self::Cell,
             "position-view-at-source-index" => Self::SourceIndex,
             "position-view-at-source-cell" => Self::SourceCell,
+            "position-view-at-key" => Self::BusinessKey,
             "cancel-flick" => Self::CancelFlick,
             "return-to-bounds" => Self::ReturnToBounds,
             _ => return None,
@@ -86,6 +93,10 @@ impl ScrollCommandMethod {
 
     pub fn uses_source_row(self) -> bool {
         matches!(self, Self::SourceIndex | Self::SourceCell)
+    }
+
+    pub fn uses_business_key(self) -> bool {
+        matches!(self, Self::BusinessKey)
     }
 
     pub fn command(self, operands: &[Value]) -> Option<ScrollCommand> {
@@ -114,6 +125,9 @@ impl ScrollCommandMethod {
                 horizontal,
                 vertical,
             },
+            (Self::BusinessKey, &[Int(key), ScrollAlignment(alignment)]) if key >= 0 => {
+                ScrollAction::ToBusinessKey { key, alignment }
+            }
             (Self::SourceIndex, &[Int(row), ScrollAlignment(alignment)]) => {
                 return Some(ScrollCommand::Source(row, SourceScroll::Row(alignment)));
             }

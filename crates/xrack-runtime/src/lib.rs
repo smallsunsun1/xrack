@@ -30,13 +30,17 @@ pub use ui_log::log_ui;
 mod hover;
 mod image_animation;
 mod image_asset;
+mod inspection;
+#[doc(hidden)]
+pub use inspection::WindowInspector;
 mod media;
 pub use media::{
     MediaCommand, MediaFrame, MediaOptions, MediaQueue, MediaRegistration, MediaSession, MediaSlot,
-    MediaState, MediaStatus, open_media_session, register_media_backend,
+    MediaState, MediaStatus, open_media_session, register_media_backend, register_sound_backend,
 };
 mod keyboard;
 mod list;
+mod list_keys;
 mod localization;
 mod localized_number;
 mod model;
@@ -145,7 +149,7 @@ pub use drag::DragArguments;
 pub use drag::{DragAction, DragEvent, is_drag_area};
 pub use focus::{
     FocusAction, FocusContext, FocusEvent, FocusHandle, FocusReason, FocusRequest, FocusRequests,
-    TextCommand,
+    TextCommand, TextCommandAvailability,
 };
 #[doc(hidden)]
 pub use focus::{FocusCommandMethod, FocusHandler, is_focus_handler};
@@ -171,6 +175,8 @@ pub use list::{
     standard_table_rows_with_editors_in_order, standard_table_rows_with_header,
     try_project_standard_table_rows, try_render_rows_from_source, try_render_standard_table_rows,
 };
+#[doc(hidden)]
+pub use list_keys::ListSelectionKeys;
 pub use localization::LocaleContext;
 #[doc(hidden)]
 pub use localization::{LocaleBinding, LocaleId, TranslationCatalog, TranslationValue};
@@ -252,7 +258,8 @@ pub use table_selection::{
 pub use text_input::InputType;
 #[doc(hidden)]
 pub use text_input::{
-    SearchInput, SearchUpdate, text_submission_is_valid, try_text_submission_is_valid,
+    NumericTextLimits, SearchInput, SearchUpdate, text_submission_is_valid, text_submission_with,
+    try_text_submission_is_valid, try_text_submission_with,
 };
 pub use time_picker::Time;
 #[doc(hidden)]
@@ -281,6 +288,11 @@ pub use window_status::{WindowCommandMethod, WindowLifecycle, WindowMetric, Wind
 /// The backend-independent interface implemented by generated UI components.
 pub trait Component {
     fn render(&self) -> Node;
+
+    #[doc(hidden)]
+    fn window_inspector(&self, _scene: &Rc<Node>) -> Option<WindowInspector> {
+        None
+    }
 
     /// Supply the language shared by the desktop hosting this component.
     #[doc(hidden)]
@@ -495,6 +507,9 @@ impl<T: Component + ?Sized> Component for Box<T> {
 
     fn render(&self) -> Node {
         (**self).render()
+    }
+    fn window_inspector(&self, scene: &Rc<Node>) -> Option<WindowInspector> {
+        (**self).window_inspector(scene)
     }
     fn set_locale_context(&self, context: LocaleContext) {
         (**self).set_locale_context(context);
@@ -811,8 +826,19 @@ impl<'a> InputRoute<'a> {
 impl RoutedEvent<'_> {
     #[doc(hidden)]
     pub fn activates_item_delegate(&self, has_action: bool) -> bool {
-        matches!(self, Self::Dispatch("clicked" | "toggled"))
-            || has_action && matches!(self, Self::Control(ControlAction::ActivateAction))
+        matches!(
+            self,
+            Self::Dispatch("clicked" | "toggled") | Self::Control(ControlAction::SetSwitch(_))
+        ) || has_action && matches!(self, Self::Control(ControlAction::ActivateAction))
+    }
+
+    #[doc(hidden)]
+    pub fn checked_after(&self, current: bool) -> Option<bool> {
+        match *self {
+            Self::Dispatch("clicked") => Some(!current),
+            Self::Control(ControlAction::SetSwitch(checked)) if checked != current => Some(checked),
+            _ => None,
+        }
     }
 
     fn is_input_cleanup(&self) -> bool {
@@ -1320,6 +1346,13 @@ impl FlickDirection {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum LayoutDirection {
+    #[default]
+    LeftToRight,
+    RightToLeft,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum FlexboxLayoutDirection {
     #[default]
     Row,
@@ -1478,6 +1511,7 @@ pub enum Value {
     FlickDirection(FlickDirection),
     FlickBoundsBehavior(FlickBoundsBehavior),
     FlickBoundsMovement(FlickBoundsMovement),
+    LayoutDirection(LayoutDirection),
     FlexboxLayoutDirection(FlexboxLayoutDirection),
     FlexboxLayoutWrap(FlexboxLayoutWrap),
     DialInputMode(DialInputMode),
@@ -1572,6 +1606,7 @@ value_from!(Orientation, Orientation);
 value_from!(FlickDirection, FlickDirection);
 value_from!(FlickBoundsBehavior, FlickBoundsBehavior);
 value_from!(FlickBoundsMovement, FlickBoundsMovement);
+value_from!(LayoutDirection, LayoutDirection);
 value_from!(FlexboxLayoutDirection, FlexboxLayoutDirection);
 value_from!(FlexboxLayoutWrap, FlexboxLayoutWrap);
 value_from!(DialInputMode, DialInputMode);
@@ -1646,6 +1681,8 @@ pub struct NodeData {
     pub image_playback: Option<Rc<ImagePlaybackRegistration>>,
     #[doc(hidden)]
     pub media: Option<MediaRegistration>,
+    #[doc(hidden)]
+    pub sound_effects: Vec<MediaRegistration>,
     #[doc(hidden)]
     pub media_frame: Option<MediaFrame>,
     #[doc(hidden)]
@@ -1769,6 +1806,7 @@ impl NodeData {
             timers,
             image_playback,
             media,
+            sound_effects,
             native_dialogs,
             animations,
             state_timings,
@@ -1973,6 +2011,7 @@ impl Node {
             timers: Vec::new(),
             image_playback: None,
             media: None,
+            sound_effects: Vec::new(),
             media_frame: None,
             native_dialogs: Vec::new(),
             animations: BTreeMap::new(),
@@ -2385,6 +2424,13 @@ impl Node {
         self.number("z").filter(|&z| z != 0.0).unwrap_or_default()
     }
 
+    pub fn layout_direction(&self) -> Option<LayoutDirection> {
+        match self.properties.get("layout-direction") {
+            Some(Value::LayoutDirection(direction)) => Some(*direction),
+            _ => None,
+        }
+    }
+
     pub fn orientation(&self) -> Orientation {
         match self.properties.get("orientation") {
             Some(Value::Orientation(value)) => *value,
@@ -2596,7 +2642,17 @@ impl Node {
 
     #[doc(hidden)]
     pub fn is_control_part(&self) -> bool {
-        matches!(self.kind, "ButtonContent" | "SliderHandle")
+        matches!(
+            self.kind,
+            "ButtonContent"
+                | "SliderHandle"
+                | "RangeLowerHandle"
+                | "RangeUpperHandle"
+                | "ToggleIndicator"
+                | "SwitchThumb"
+                | "SpinUpIndicator"
+                | "SpinDownIndicator"
+        )
     }
 
     pub fn at_path(&self, path: &[usize]) -> Option<&Self> {
@@ -2747,7 +2803,9 @@ impl Node {
     #[doc(hidden)]
     pub fn control_target(&self, path: &[usize], action: ControlAction) -> Option<&Self> {
         if action != ControlAction::Drawer(true) {
-            return self.interactive_at_path(path);
+            return self.interactive_at_path(path).filter(|node| {
+                !matches!(action, ControlAction::SetSwitch(_)) || node.kind == "Switch"
+            });
         }
         let node = match path.split_last() {
             Some((&index, parent)) => {

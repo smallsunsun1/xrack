@@ -1,5 +1,9 @@
-use crate::{Rect, ScrollLayout, Size, TextMeasurer, linear::Axis};
-use xrack_runtime::{Node, Orientation, group_index};
+use crate::{
+    ButtonContent, Rect, ScrollLayout, Size, TextMeasurer,
+    linear::{Axis, measure_replacement_content},
+    place_in_direction,
+};
+use xrack_runtime::{LayoutDirection, Node, Orientation, group_index};
 
 pub const TAB_LABEL_SIZE: f32 = 14.0;
 
@@ -7,12 +11,18 @@ pub(crate) fn tab_bar(
     node: &Node,
     bounds: Rect,
     text: &mut impl TextMeasurer,
-    requested: f32,
+    direction: LayoutDirection,
+    requested: Option<f32>,
     reveal: bool,
 ) -> (Vec<Rect>, ScrollLayout) {
     let (axis, size_property) = match node.orientation() {
         Orientation::Horizontal => (Axis::Horizontal, "width"),
         Orientation::Vertical => (Axis::Vertical, "height"),
+    };
+    let direction = if matches!(axis, Axis::Horizontal) {
+        direction
+    } else {
+        LayoutDirection::LeftToRight
     };
     let size = Size::new(bounds.width, bounds.height);
     let extent = axis.extent(size);
@@ -26,16 +36,32 @@ pub(crate) fn tab_bar(
                 return None;
             }
             let explicit = tab.relative_length(size_property, extent);
-            let size = explicit.unwrap_or_else(|| match axis {
-                Axis::Horizontal => {
-                    let label = tab.text("text").unwrap_or("");
-                    let font_size = text
-                        .default_font_size()
-                        .unwrap_or(TAB_LABEL_SIZE)
-                        .clamp(1.0, (cross_extent / 1.4).max(1.0));
-                    (text.measure(label, font_size, f32::INFINITY).width + 24.0).max(48.0)
+            let size = explicit.unwrap_or_else(|| {
+                if let Some(content) = tab.control_part("ButtonContent") {
+                    let padding = 2.0 * ButtonContent::new(tab).padding;
+                    let inner_cross = (cross_extent - padding).max(0.0);
+                    let (available, lower_limit) = match axis {
+                        Axis::Horizontal => (Size::new(f32::INFINITY, inner_cross), 48.0),
+                        Axis::Vertical => (Size::new(inner_cross, f32::INFINITY), 36.0),
+                    };
+                    let content = if content.is_visible() {
+                        measure_replacement_content(content, available, text)
+                    } else {
+                        Size::default()
+                    };
+                    return (axis.extent(content) + padding).max(lower_limit);
                 }
-                Axis::Vertical => 36.0,
+                match axis {
+                    Axis::Horizontal => {
+                        let label = tab.text("text").unwrap_or("");
+                        let font_size = text
+                            .default_font_size()
+                            .unwrap_or(TAB_LABEL_SIZE)
+                            .clamp(1.0, (cross_extent / 1.4).max(1.0));
+                        (text.measure(label, font_size, f32::INFINITY).width + 24.0).max(48.0)
+                    }
+                    Axis::Vertical => 36.0,
+                }
             });
             (size > 0.0).then_some((size, explicit.is_none()))
         })
@@ -49,6 +75,10 @@ pub(crate) fn tab_bar(
         .filter(|(_, flexible)| *flexible)
         .count();
     let extra = (extent - minimum).max(0.0) / flexible.max(1) as f32;
+    let max_offset = (minimum - extent).max(0.0);
+    // Scroll offsets stay in physical coordinates so track, wheel and pan keep
+    // moving the content under the pointer in the same direction.
+    let content = axis.rect(bounds, 0.0, 0.0, extent + max_offset, cross_extent);
     let mut start = 0.0;
     let rects: Vec<_> = sizes
         .into_iter()
@@ -59,10 +89,9 @@ pub(crate) fn tab_bar(
             let size = size + if flexible { extra } else { 0.0 };
             let rect = axis.rect(bounds, start, 0.0, size, cross_extent);
             start += size + spacing;
-            rect
+            place_in_direction(rect, content, direction)
         })
         .collect();
-    let max_offset = (minimum - extent).max(0.0);
     let translate = |mut tab: Rect, offset| {
         match axis {
             Axis::Horizontal => tab.x -= offset,
@@ -70,12 +99,18 @@ pub(crate) fn tab_bar(
         }
         tab
     };
-    let mut scroll = ScrollLayout::new(requested, max_offset);
+    let start_offset = if direction == LayoutDirection::RightToLeft {
+        max_offset
+    } else {
+        0.0
+    };
+    let mut scroll = ScrollLayout::new(requested.unwrap_or(start_offset), max_offset);
     if reveal && let Some(tab) = group_index(node).and_then(|index| rects.get(index)) {
         let offset = tab_reveal_offset(
             bounds,
             translate(*tab, scroll.offset),
             node.orientation(),
+            direction,
             scroll.offset,
         );
         scroll = ScrollLayout::new(offset, max_offset);
@@ -91,13 +126,21 @@ pub(crate) fn tab_reveal_offset(
     viewport: Rect,
     tab: Rect,
     orientation: Orientation,
+    direction: LayoutDirection,
     offset: f32,
 ) -> f32 {
     let (start, extent, available) = match orientation {
         Orientation::Horizontal => (tab.x - viewport.x, tab.width, viewport.width),
         Orientation::Vertical => (tab.y - viewport.y, tab.height, viewport.height),
     };
-    let start = start + offset;
+    // For a tab wider than the viewport, reveal its leading portion.
+    let leading =
+        if orientation == Orientation::Horizontal && direction == LayoutDirection::RightToLeft {
+            (extent - available).max(0.0)
+        } else {
+            0.0
+        };
+    let start = start + offset + leading;
     offset
         .max(start + extent.min(available) - available)
         .min(start)
@@ -115,10 +158,11 @@ pub(crate) struct TabGeometry {
     bar: Rect,
     pub(crate) content: Rect,
     orientation: Orientation,
+    direction: LayoutDirection,
 }
 
 impl TabGeometry {
-    pub(crate) fn new(bounds: Rect, orientation: Orientation) -> Self {
+    pub(crate) fn new(bounds: Rect, orientation: Orientation, direction: LayoutDirection) -> Self {
         let (bar, content) = match orientation {
             Orientation::Horizontal => {
                 let height = bounds.height.min(34.0);
@@ -146,9 +190,10 @@ impl TabGeometry {
             }
         };
         Self {
-            bar,
-            content,
+            bar: place_in_direction(bar, bounds, direction),
+            content: place_in_direction(content, bounds, direction),
             orientation,
+            direction,
         }
     }
 
@@ -157,12 +202,13 @@ impl TabGeometry {
         match self.orientation {
             Orientation::Horizontal => {
                 let width = self.bar.width / count;
-                Rect::new(
+                let rect = Rect::new(
                     self.bar.x + width * index as f32,
                     self.bar.y,
                     width,
                     self.bar.height,
-                )
+                );
+                place_in_direction(rect, self.bar, self.direction)
             }
             Orientation::Vertical => {
                 let height = (self.bar.height / count).min(36.0);

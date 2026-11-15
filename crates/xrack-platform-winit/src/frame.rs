@@ -8,6 +8,7 @@ struct FrameInput {
     offsets: BTreeMap<Vec<usize>, f32>,
     horizontal_offsets: BTreeMap<Vec<usize>, f32>,
     tumbler_preview: Option<(Vec<usize>, f32)>,
+    slider_preview: Option<(Vec<usize>, f64)>,
     swipe_preview: Option<(Vec<usize>, Option<RowKey>, f32)>,
     overscroll: OverscrollFrame,
 }
@@ -24,6 +25,14 @@ pub(crate) struct FrameCache {
 impl FrameCache {
     pub(crate) fn is_dirty(&self) -> bool {
         self.prepared.is_dirty()
+    }
+
+    pub(crate) fn slider_preview_changed(&self, input: &Interaction) -> bool {
+        self.input
+            .as_ref()
+            .and_then(|last| last.slider_preview.as_ref())
+            .map(|(path, fraction)| (path.as_slice(), *fraction))
+            != input.slider_preview_position()
     }
 
     pub(crate) fn prepare(
@@ -43,6 +52,7 @@ impl FrameCache {
                 && &last.offsets == offsets
                 && &last.horizontal_offsets == horizontal_offsets
                 && last.overscroll == overscroll
+                && !self.slider_preview_changed(input)
                 && last
                     .tumbler_preview
                     .as_ref()
@@ -72,6 +82,9 @@ impl FrameCache {
                 horizontal_offsets: horizontal_offsets.clone(),
                 overscroll,
                 tumbler_preview: tumbler_preview.map(|(path, offset)| (path.to_vec(), offset)),
+                slider_preview: input
+                    .slider_preview_position()
+                    .map(|(path, fraction)| (path.to_vec(), fraction)),
                 swipe_preview: swipe_preview
                     .map(|(path, key, offset)| (path.to_vec(), key, offset)),
             });

@@ -91,6 +91,8 @@ impl Drop for RenderedSelection<'_> {
 #[derive(Clone, Copy)]
 struct TargetRoute<'a> {
     follow_row: bool,
+    #[cfg(all(feature = "live-reload", unix))]
+    inspect_instance: bool,
     input: Option<xrack_runtime::InputRoute<'a>>,
 }
 
@@ -250,8 +252,13 @@ impl Program {
                     .focus_targets
                     .iter()
                     .filter(|key| keys.contains(key.as_str()))
-                    .cloned()
-                    .map(|key| (key, Default::default()))
+                    .map(|key| {
+                        let selection = definition.text_selection_targets.contains(key);
+                        let commands = definition.text_command_targets.contains(key);
+                        let handle =
+                            xrack_runtime::FocusHandle::with_text_state(selection, commands);
+                        (key.clone(), handle)
+                    })
                     .collect(),
                 actions: definition
                     .action_keys
@@ -376,6 +383,7 @@ impl Element {
         self.children
             .iter()
             .chain(&self.timers)
+            .chain(&self.sound_effects)
             .chain(&self.commands)
             .chain(&self.native_dialogs)
             .chain(&self.secondary_windows)
@@ -1373,6 +1381,10 @@ impl Instance {
                 Statement::Scroll(target, command, arguments) => {
                     self.scroll_command(target, *command, &self.arguments(arguments, args)?)?;
                 }
+                Statement::SelectKey(target, key) => {
+                    let key = self.int_argument(key, args)?;
+                    self.select_list_key(target, key)?;
+                }
                 Statement::SelectSource(target, index, column) => {
                     let index = self.int_argument(index, args)?;
                     let column = column
@@ -1558,6 +1570,10 @@ impl Instance {
             TreeQuery(target, query, key) => {
                 self.tree_query(target, *query, self.int_argument(key, args)?)
             }
+            ListSelectionRead(owner) => self.selected_list_index(owner).map(Value::Int),
+            ViewCount { owner, source } => self
+                .view_count(owner, *source)
+                .map(|count| Value::Int(count as i64)),
             ViewIndex(target, index, direction) => {
                 let index = self.int_argument(index, args)?;
                 direction
@@ -1578,6 +1594,10 @@ impl Instance {
                     .with_nine_slice(*edges)
                     .map(Value::ImageAsset)
                     .map_err(|error| evaluation(error.to_string()))
+            }
+            TextAccepts(target) => {
+                let (owner, element) = self.element_owner(target)?;
+                owner.text_acceptance(element).map(Value::Bool)
             }
             MediaRead(member) => self
                 .media_slot(&member.owner)
@@ -1840,6 +1860,26 @@ impl Instance {
                     .collect::<Result<xrack_runtime::PointerButtons>>()?;
                 Ok(Value::PointerButtons(buttons))
             }
+            TextSelectionRead(member) => {
+                let handle = self.focus_handle(&member.owner)?;
+                Ok(match member.name.as_str() {
+                    "cursor-offset" => Value::Int(handle.cursor_offset()),
+                    "selection-start-offset" => Value::Int(handle.selection_start_offset()),
+                    "selection-end-offset" => Value::Int(handle.selection_end_offset()),
+                    "selected-text" => Value::String(handle.selected_text()),
+                    _ => return Err(evaluation("invalid text selection property")),
+                })
+            }
+            TextCommandAvailable(member) => {
+                let handle = self.focus_handle(&member.owner)?;
+                Ok(Value::Bool(match member.name.as_str() {
+                    "can-undo" => handle.can_undo(),
+                    "can-redo" => handle.can_redo(),
+                    "can-cut" => handle.can_cut(),
+                    "can-copy" => handle.can_copy(),
+                    _ => return Err(evaluation("invalid text command property")),
+                }))
+            }
             FocusRead(target, within) => {
                 let handle = self.focus_handle(target)?;
                 Ok(Value::Bool(if *within {
@@ -2026,6 +2066,62 @@ impl Instance {
             .timers
             .get(key)
             .ok_or_else(|| evaluation(format!("unknown timer {key}")))
+    }
+
+    pub(crate) fn reloaded_instance(&self, program: &Program) -> Result<Instance> {
+        let next = program.create(&self.0.name)?;
+        let purity = |instance: &Instance| {
+            instance
+                .definition()
+                .callbacks
+                .iter()
+                .filter(|(member, _)| member.owner == "root")
+                .map(|(_, function)| function.pure)
+                .collect::<Vec<_>>()
+        };
+        if self.properties().ne(next.properties())
+            || self.callbacks().ne(next.callbacks())
+            || purity(self) != purity(&next)
+        {
+            return Err(Error::Invalid(format!(
+                "public interface of {} changed; rebuild the application",
+                self.0.name
+            )));
+        }
+        for (member, property) in &self.definition().properties {
+            if property.public
+                && property.writable
+                && let Some(value) = self.0.values.get(member).and_then(Property::explicit_value)
+            {
+                next.set(&member.name, value)?;
+            }
+        }
+        // Remember explicit starts and stops, including completion of a named
+        // one-shot timer. Untouched timers use the new declaration's bindings.
+        for key in self.0.timers.keys() {
+            let Some(timer) = self.definition().root.find_key(key) else {
+                continue;
+            };
+            if timer.id.is_empty() || !next.0.timers.contains_key(key) {
+                continue;
+            }
+            let running = Member::new(key, "running");
+            if let Some(value) = self
+                .0
+                .controls
+                .get(&running)
+                .and_then(Property::explicit_value)
+                && let Some(slot) = next.0.controls.get(&running)
+                && next
+                    .definition()
+                    .root
+                    .find_key(key)
+                    .is_some_and(|timer| !timer.links.contains_key("running"))
+            {
+                slot.set(value);
+            }
+        }
+        Ok(next)
     }
 
     pub(crate) fn split_state(&self, key: &str) -> Rc<xrack_runtime::SplitState> {
@@ -2216,7 +2312,10 @@ impl Instance {
             .transpose()?;
         for binding in &element.bindings {
             let name = binding.name;
-            if element.state_bindings.contains_key(name) || element.control(name).is_some() {
+            if xrack_syntax::builtins::text_submission_rule(node.kind, name)
+                || element.state_bindings.contains_key(name)
+                || element.control(name).is_some()
+            {
                 continue;
             }
             if node.kind == "Tumbler" && name == "model" {
@@ -2345,6 +2444,22 @@ impl Instance {
                 node.set_animation(name, animation);
             }
         }
+        for effect in &element.sound_effects {
+            let source = match self.binding_value(effect, "source")? {
+                Some(Value::String(value)) => value,
+                _ => String::new(),
+            };
+            let volume = match self.binding_value(effect, "volume")? {
+                Some(Value::Float(value)) => value,
+                _ => 1.0,
+            };
+            let muted = self.binding_value(effect, "muted")? == Some(Value::Bool(true));
+            let file = effect.media_source_file.as_deref().unwrap_or_default();
+            node.sound_effects.push(
+                self.media_slot(&effect.key)
+                    .sound_effect(file, &source, volume, muted),
+            );
+        }
         for timer in &element.timers {
             node.timers.extend(self.timer_registration(timer)?);
         }
@@ -2354,6 +2469,12 @@ impl Instance {
         }
         if element.is_list_view() {
             self.render_view(element, &mut node)?;
+            if include_children
+                && node.list.is_some_and(|list| list.row_count == 0)
+                && let Some(slot) = element.empty_state()
+            {
+                node.children.push(self.render_element(slot)?);
+            }
             return Ok(node);
         }
         if picker_value.is_some() {
@@ -2625,7 +2746,17 @@ impl Instance {
             route.input =
                 Some(input.with_root_visibility_override(visible.is_some() && is_instance));
         }
+        let target = |remaining| LocatedTarget {
+            owner: self.clone(),
+            element,
+            remaining,
+            visibility_overridden,
+        };
         if let Visual::Instance { component, .. } = &element.visual {
+            #[cfg(all(feature = "live-reload", unix))]
+            if route.inspect_instance && path.is_empty() {
+                return Ok(Some(target(&[])));
+            }
             let Some(child) = self.children().get(&element.key) else {
                 return Ok(None);
             };
@@ -2637,12 +2768,6 @@ impl Instance {
                 route,
             );
         }
-        let target = |remaining| LocatedTarget {
-            owner: self.clone(),
-            element,
-            remaining,
-            visibility_overridden,
-        };
         let Some((&index, tail)) = path.split_first() else {
             return Ok(Some(target(&[])));
         };
@@ -2653,6 +2778,18 @@ impl Instance {
             || matches!(element.visual, Visual::Builtin("TimePicker"))
         {
             return Ok(Some(target(path)));
+        }
+        if scene.list.is_some_and(|list| list.row_count == 0) && node.kind == "EmptyState" {
+            let Some(slot) = element.empty_state() else {
+                return Ok(None);
+            };
+            if let Some(input) = route.input
+                && !input
+                    .try_available(|| self.view_count(&element.key, false).map(|rows| rows == 0))?
+            {
+                return Ok(None);
+            }
+            return self.locate(program, slot, node, tail, route);
         }
         if scene.list.is_some() {
             let Some((&0, tail)) = tail.split_first() else {
@@ -2726,10 +2863,34 @@ impl Instance {
                 path,
                 TargetRoute {
                     follow_row: false,
+                    #[cfg(all(feature = "live-reload", unix))]
+                    inspect_instance: false,
                     input: None,
                 },
             )?
             .and_then(LocatedTarget::exact))
+    }
+
+    #[cfg(all(feature = "live-reload", unix))]
+    pub(crate) fn inspect_target<'a>(
+        &'a self,
+        scene: &Node,
+        path: &[usize],
+    ) -> Option<(Self, &'a Element)> {
+        self.locate(
+            &self.0.program,
+            &self.definition().root,
+            scene,
+            path,
+            TargetRoute {
+                follow_row: false,
+                inspect_instance: true,
+                input: None,
+            },
+        )
+        .ok()
+        .flatten()
+        .and_then(LocatedTarget::exact)
     }
 
     pub(crate) fn input_route_target<'a, 'i>(
@@ -2758,6 +2919,8 @@ impl Instance {
             path,
             TargetRoute {
                 follow_row: input.event().follows_row(scene, path),
+                #[cfg(all(feature = "live-reload", unix))]
+                inspect_instance: false,
                 input: Some(input),
             },
         )
@@ -2927,19 +3090,7 @@ impl Instance {
                 && event == "accepted"
                 && matches!(kind, "TextInput" | "LineEdit")
                 && element.handlers.contains_key(event)
-                && !input.try_available(|| {
-                    let text = self.control_value(element, "text")?;
-                    let text = match &text {
-                        Some(Value::String(text)) => text.as_str(),
-                        _ => "",
-                    };
-                    xrack_runtime::try_text_submission_is_valid(
-                        text,
-                        self.editor_input_type(element)?,
-                        || self.editor_decimal_separator(element),
-                        || self.editor_maximum_length(element),
-                    )
-                })?
+                && !input.try_available(|| self.text_acceptance(element))?
             {
                 return Ok(false);
             }
@@ -2967,8 +3118,19 @@ impl Instance {
         };
         let row = node.filter(|_| element.row_links.contains_key(name));
         let state = if let Some(node) = row {
-            node.check_state()
-                .next(check_state && node.boolean("tristate", false))
+            if let Some(RoutedEvent::Control(ControlAction::SetSwitch(_))) =
+                input.map(InputRoute::event)
+            {
+                let Some(next) = input
+                    .and_then(|route| route.event().checked_after(node.boolean("checked", false)))
+                else {
+                    return Ok(false);
+                };
+                CheckState::from(next)
+            } else {
+                node.check_state()
+                    .next(check_state && node.boolean("tristate", false))
+            }
         } else {
             let current = || {
                 Ok(match self.control_value(element, name)? {
@@ -3179,6 +3341,22 @@ impl Instance {
         }
     }
 
+    fn select_list_key(&self, target: &str, key: i64) -> Result<()> {
+        if key < 0 {
+            return Ok(());
+        }
+        let (owner, view) = self.element_owner(target)?;
+        let model = owner.view_model(view)?;
+        let index = owner.list_index_for_key(view, &model, key)?;
+        if index >= 0
+            && owner.control_value(view, "current-key")? != Some(Value::Int(key))
+            && owner.set_control_value(view, "current-key", Value::Int(key))?
+        {
+            owner.handler(view, "changed", &[Value::Int(index)])?;
+        }
+        Ok(())
+    }
+
     fn select_source(&self, target: &str, source: i64, column: Option<i64>) -> Result<()> {
         let Ok(source) = usize::try_from(source) else {
             return Ok(());
@@ -3190,16 +3368,18 @@ impl Instance {
         if view.table.is_some() {
             return owner.select_table_source(view, source, column);
         }
+        let model = owner.view_model(view)?;
         let Some(index) = xrack_runtime::try_prepare_source_selection(
-            || Ok(owner.view_model(view)?.visual_index(source)),
-            || owner.current_index(view),
+            || Ok(model.visual_index(source)),
+            || owner.list_selection_index(view, &model),
         )?
         else {
             return Ok(());
         };
-        let value = Value::Int(index);
-        if owner.set_control_value(view, "current-index", value.clone())? {
-            owner.handler(view, "changed", &[value])?;
+        if let Some((property, value)) = owner.list_selection_value(view, &model, index)
+            && owner.set_control_value(view, property, value)?
+        {
+            owner.handler(view, "changed", &[Value::Int(index)])?;
         }
         Ok(())
     }
@@ -3916,36 +4096,48 @@ impl Instance {
                 instance.handler(element, event, &[]).map(|_| true)
             }
             ControlAction::Select(index) if element.is_list_view() => (|| {
+                let model = std::cell::OnceCell::new();
+                let get_model = || -> Result<&crate::repeat::ViewModel> {
+                    if model.get().is_none() {
+                        let _ = model.set(instance.view_model(element)?);
+                    }
+                    Ok(model.get().unwrap())
+                };
                 let selected = xrack_runtime::try_prepare_index_selection(
                     index,
                     || instance.element_allows_routed_input(element, input),
                     |_| {
-                        let model = instance.view_model(element)?;
                         Ok(xrack_runtime::ListMetrics::has_row_in_model(
                             node,
                             index,
-                            model.stamp(),
+                            get_model()?.stamp(),
                         ))
                     },
-                    || instance.current_index(element),
+                    || instance.list_selection_index(element, get_model()?),
                 )?;
                 let Some(index) = selected else {
                     return Ok(false);
                 };
-                if !input.is_current() {
+                let Some((property, value)) =
+                    instance.list_selection_value(element, get_model()?, index)
+                else {
+                    return Ok(false);
+                };
+                if !input.is_current()
+                    || !instance.update_control(element, node, property, value)?
+                {
                     return Ok(false);
                 }
-                let value = Value::Int(index);
-                if !instance.update_control(element, node, "current-index", value.clone())? {
-                    return Ok(false);
-                }
-                instance.handler(element, "changed", &[value])?;
+                instance.handler(element, "changed", &[Value::Int(index)])?;
                 Ok(true)
             })(),
             ControlAction::Select(_) | ControlAction::AcceptComboText
                 if node.kind == "ComboBox" =>
             {
                 instance.combo_action(element, node, action, input)
+            }
+            ControlAction::SetSwitch(_) if node.kind == "Switch" => {
+                instance.dispatch_element(element, "clicked", Some(node), Some(input))
             }
             ControlAction::DelayButton(checked) if node.kind == "DelayButton" => (|| {
                 let applicable = xrack_runtime::try_delay_button_transition_is_current(
@@ -4035,6 +4227,47 @@ impl Instance {
             Some(Value::Int(limit)) => Some(limit),
             _ => None,
         })
+    }
+
+    fn text_acceptance(&self, element: &Element) -> Result<bool> {
+        let value = self.control_value(element, "text")?;
+        let text = match &value {
+            Some(Value::String(text)) => text.as_str(),
+            _ => "",
+        };
+        xrack_runtime::try_text_submission_with(
+            text,
+            self.editor_input_type(element)?,
+            || self.editor_decimal_separator(element),
+            || self.editor_maximum_length(element),
+            || {
+                Ok(match self.binding_value(element, "minimum-length")? {
+                    Some(Value::Int(limit)) => limit,
+                    _ => 0,
+                })
+            },
+            |mode| {
+                let bound = |name| -> Result<Option<f64>> {
+                    Ok(match self.binding_value(element, name)? {
+                        Some(Value::Float(value)) => Some(value),
+                        _ => None,
+                    })
+                };
+                Ok(xrack_runtime::NumericTextLimits {
+                    minimum: bound("minimum-value")?,
+                    maximum: bound("maximum-value")?,
+                    decimals: if mode == xrack_runtime::InputType::Decimal {
+                        match self.binding_value(element, "decimals")? {
+                            Some(Value::Int(limit)) => Some(limit),
+                            _ => None,
+                        }
+                    } else {
+                        None
+                    },
+                })
+            },
+            || self.visual_flag(element, "submit-when", true),
+        )
     }
 
     fn live_editor_allows(
@@ -4168,7 +4401,8 @@ impl Instance {
 }
 
 impl ValueType {
-    pub(super) fn matches(&self, value: &Value) -> bool {
+    /// Test a host value's type. Record fields are validated by the instance.
+    pub fn matches(&self, value: &Value) -> bool {
         match (self, value) {
             (Self::Record(name), Value::Record(record)) => return name.as_ref() == record.name(),
             (Self::RecordList(name), Value::RecordList(list)) => {
@@ -4225,6 +4459,7 @@ impl ValueType {
                 | (Self::FlickBoundsBehavior, Value::FlickBoundsBehavior(_))
                 | (Self::FlickBoundsMovement, Value::FlickBoundsMovement(_))
                 | (Self::PopupPlacement, Value::PopupPlacement(_))
+                | (Self::LayoutDirection, Value::LayoutDirection(_))
                 | (
                     Self::FlexboxLayoutDirection,
                     Value::FlexboxLayoutDirection(_)

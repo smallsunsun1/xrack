@@ -2724,6 +2724,58 @@ fn swipe_preview_invalidates_the_native_frame_cache_until_canceled() {
 }
 
 #[test]
+fn range_preview_updates_cached_thumb_geometry_and_cancellation_restores_it() {
+    use xrack_layout::{SliderGeometry, TextMeasurer, layout_with_input};
+    use xrack_runtime::Length;
+
+    struct Measure;
+    impl TextMeasurer for Measure {
+        fn measure(&mut self, _: &str, _: f32, _: f32) -> Size {
+            Size::default()
+        }
+    }
+
+    let mut node = Node::new("RangeSlider", None);
+    node.properties.insert("live", false.into());
+    node.properties.insert("lower-value", 20.0_f64.into());
+    node.properties.insert("upper-value", 80.0_f64.into());
+    node.add_range_thumbs();
+    let mut art = Node::new("RangeLowerHandle", None);
+    art.properties.insert("width", Length(40.0).into());
+    node.children.push(art);
+    let scene = Rc::new(node);
+    let mut input = Interaction::default();
+    let mut cache = FrameCache::default();
+    let viewport = Size::new(220.0, 40.0);
+    let prepare = |cache: &mut FrameCache, input: &Interaction| {
+        cache
+            .prepare(scene.clone(), viewport, input, |scene| {
+                let layout = layout_with_input(&scene, viewport, &mut Measure, input);
+                (scene, layout)
+            })
+            .1
+    };
+    let before = prepare(&mut cache, &input);
+    let track = SliderGeometry::for_node(before.bounds, &scene);
+    input.pointer_move(&scene, &before, track.position(0.2));
+    input.pointer_press_in_scene(&scene, &before);
+    assert!(input.slider_press(&scene, &before).is_none());
+    input.pointer_move(&scene, &before, track.position(0.5));
+    assert!(input.slider_drag(&scene, &before).is_none());
+    assert!(cache.slider_preview_changed(&input));
+    let preview = prepare(&mut cache, &input);
+    assert!(preview.children[0].bounds.x > before.children[0].bounds.x);
+    assert_eq!(preview.children[2].bounds, preview.children[0].bounds);
+    assert!(!cache.slider_preview_changed(&input));
+
+    assert!(input.cancel_slider_preview());
+    assert!(cache.slider_preview_changed(&input));
+    let restored = prepare(&mut cache, &input);
+    assert_eq!(restored.children[0].bounds, before.children[0].bounds);
+    assert_eq!(restored.children[2].bounds, before.children[2].bounds);
+}
+
+#[test]
 fn horizontal_scroll_invalidates_cached_table_geometry() {
     use xrack_layout::{TextMeasurer, layout_with_input};
     use xrack_runtime::{Length, TableHeader};

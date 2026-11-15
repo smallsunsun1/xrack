@@ -413,6 +413,15 @@ impl Interaction {
                         changed |= self.position_row(&path, node, item, index, alignment);
                     }
                 }
+                ScrollAction::ToBusinessKey { key, alignment } => {
+                    if let Some(index) = node
+                        .row_locator
+                        .as_ref()
+                        .and_then(|locator| locator.business_position(key))
+                    {
+                        changed |= self.position_row(&path, node, item, index, alignment);
+                    }
+                }
                 ScrollAction::ToRowKey {
                     key,
                     source_index,

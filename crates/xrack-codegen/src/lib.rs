@@ -1,7 +1,10 @@
 //! Rust token generation from the typed UI operations exported from MLIR.
 mod image;
+mod live;
 mod scene_plan;
 mod styled_text;
+
+pub use live::generate_live;
 
 use proc_macro2::{Ident, Literal, Span, TokenStream};
 use quote::{format_ident, quote};
@@ -28,7 +31,7 @@ pub use xrack_resources::{EmbeddedImage, EmbeddedPath, EmbeddedTranslations, che
 use xrack_runtime::{is_multiline_text_input, is_toggle};
 use xrack_syntax::{
     ast::{Parameter, Type},
-    builtins::{ColorFunction, MathFunction, StringFunction},
+    builtins::{ColorFunction, MathFunction, StringFunction, text_submission_rule},
 };
 
 fn ident(s: &str) -> Ident {
@@ -84,6 +87,7 @@ fn ty(t: &Type) -> TokenStream {
         Type::FlickDirection => quote!(::xrack_runtime::FlickDirection),
         Type::FlickBoundsBehavior => quote!(::xrack_runtime::FlickBoundsBehavior),
         Type::FlickBoundsMovement => quote!(::xrack_runtime::FlickBoundsMovement),
+        Type::LayoutDirection => quote!(::xrack_runtime::LayoutDirection),
         Type::FlexboxLayoutDirection => quote!(::xrack_runtime::FlexboxLayoutDirection),
         Type::FlexboxLayoutWrap => quote!(::xrack_runtime::FlexboxLayoutWrap),
         Type::DialInputMode => quote!(::xrack_runtime::DialInputMode),
@@ -623,6 +627,34 @@ fn visible_list_model(key: &str) -> Ident {
     format_ident!("__visible_list_model_{}", rust_key(key))
 }
 
+fn list_key_index_method(key: &str) -> Ident {
+    format_ident!("__list_index_for_key_{}", rust_key(key))
+}
+
+fn list_select_key_method(key: &str) -> Ident {
+    format_ident!("__list_select_key_{}", rust_key(key))
+}
+
+fn list_key_locator_method(key: &str) -> Ident {
+    format_ident!("__list_key_locator_{}", rust_key(key))
+}
+
+fn list_selected_index_method(key: &str) -> Ident {
+    format_ident!("__list_selected_index_{}", rust_key(key))
+}
+
+fn list_selection_key_method(key: &str) -> Ident {
+    format_ident!("__list_selection_key_{}", rust_key(key))
+}
+
+fn list_selection_index_method(key: &str) -> Ident {
+    format_ident!("__list_selection_index_{}", rust_key(key))
+}
+
+fn view_count_method(key: &str) -> Ident {
+    format_ident!("__view_count_{}", rust_key(key))
+}
+
 fn view_index_method(key: &str) -> Ident {
     format_ident!("__view_index_{}", rust_key(key))
 }
@@ -659,8 +691,22 @@ fn child_slots(op: OperationRef<'_>) -> impl Iterator<Item = (usize, OperationRe
         .map(move |(index, child)| (first + index, child))
 }
 
+fn empty_state(view: OperationRef<'_>) -> Option<OperationRef<'_>> {
+    element_children(view).find(|child| child.attribute("kind") == Some("EmptyState"))
+}
+
 fn static_children(op: OperationRef<'_>) -> impl Iterator<Item = (usize, OperationRef<'_>)> {
-    child_slots(op).filter(|(_, child)| children(*child, "xr.repeat").next().is_none())
+    let has_empty_state = has_virtual_rows(op) && empty_state(op).is_some();
+    child_slots(op).filter_map(move |(index, child)| {
+        if has_empty_state {
+            (child.attribute("kind") == Some("EmptyState")).then_some((0, child))
+        } else {
+            children(child, "xr.repeat")
+                .next()
+                .is_none()
+                .then_some((index, child))
+        }
+    })
 }
 
 type GroupMembers<'a> = BTreeMap<&'a str, Vec<(Vec<usize>, OperationRef<'a>)>>;
@@ -899,8 +945,15 @@ struct Generator<'a> {
     media_players: Vec<OperationRef<'a>>,
     native_dialogs: Vec<OperationRef<'a>>,
     focus_targets: BTreeSet<&'a str>,
+    text_selection_targets: BTreeSet<&'a str>,
+    text_command_targets: BTreeSet<&'a str>,
+    text_acceptance_targets: BTreeSet<&'a str>,
     pointer_targets: BTreeSet<&'a str>,
     viewport_targets: BTreeSet<&'a str>,
+    view_count_targets: BTreeSet<&'a str>,
+    list_selection_targets: BTreeSet<&'a str>,
+    key_scroll_targets: BTreeSet<&'a str>,
+    view_empty_state_owners: BTreeMap<&'a str, &'a str>,
     source_scroll_targets: BTreeSet<&'a str>,
     geometry_targets: BTreeSet<&'a str>,
     bound_viewports: Vec<OperationRef<'a>>,
@@ -990,6 +1043,10 @@ impl<'a> Generator<'a> {
                 {
                     self.viewport_targets.insert(key);
                 }
+                if let Some(slot) = empty_state(op) {
+                    self.view_empty_state_owners.insert(element_key(slot)?, key);
+                    self.view_count_targets.insert(key);
+                }
                 if row_height_binding(op).is_some() {
                     self.row_height_views.insert(key);
                 }
@@ -1043,7 +1100,7 @@ impl<'a> Generator<'a> {
                 if op.attr("kind") == Ok("AnimatedImage") {
                     self.animated_images.push(op);
                 }
-                if op.attr("kind") == Ok("MediaPlayer") {
+                if matches!(op.attribute("kind"), Some("MediaPlayer" | "SoundEffect")) {
                     self.media_players.push(op);
                 }
                 if op.attr("kind") == Ok("Timer") {
@@ -1080,6 +1137,20 @@ impl<'a> Generator<'a> {
                 "xr.focus_read" => {
                     self.focus_targets.insert(child.attr("owner")?);
                 }
+                "xr.text_selection_read" | "xr.text_command_available" => {
+                    self.index_editor_state(child)?;
+                }
+                "xr.text_accepts" => {
+                    self.text_acceptance_targets.insert(child.attr("owner")?);
+                }
+                "xr.view_count" => {
+                    self.view_count_targets.insert(child.attr("owner")?);
+                }
+                "xr.list_selection_read" => {
+                    let owner = child.attr("owner")?;
+                    self.list_selection_targets.insert(owner);
+                    self.view_count_targets.insert(owner);
+                }
                 "xr.viewport_read" | "xr.flick_motion_read" => {
                     self.viewport_targets.insert(child.attr("owner")?);
                 }
@@ -1098,6 +1169,12 @@ impl<'a> Generator<'a> {
                             "xr.focus_read" | "xr.text_command" => {
                                 self.focus_targets.insert(effect.attr("owner")?);
                             }
+                            "xr.text_selection_read" | "xr.text_command_available" => {
+                                self.index_editor_state(effect)?;
+                            }
+                            "xr.text_accepts" => {
+                                self.text_acceptance_targets.insert(effect.attr("owner")?);
+                            }
                             "xr.viewport_read"
                             | "xr.scroll_command"
                             | "xr.flick_motion_read"
@@ -1106,15 +1183,25 @@ impl<'a> Generator<'a> {
                                 let owner = effect.attr("owner")?;
                                 self.viewport_targets.insert(owner);
                                 if effect.name() == "xr.scroll_command"
-                                    && effect
+                                    && let Some(method) = effect
                                         .attribute("method")
                                         .and_then(xrack_runtime::ScrollCommandMethod::parse)
-                                        .is_some_and(
-                                            xrack_runtime::ScrollCommandMethod::uses_source_row,
-                                        )
                                 {
-                                    self.source_scroll_targets.insert(owner);
+                                    if method.uses_source_row() {
+                                        self.source_scroll_targets.insert(owner);
+                                    }
+                                    if method.uses_business_key() {
+                                        self.key_scroll_targets.insert(owner);
+                                    }
                                 }
+                            }
+                            "xr.view_count" => {
+                                self.view_count_targets.insert(effect.attr("owner")?);
+                            }
+                            "xr.list_selection_read" => {
+                                let owner = effect.attr("owner")?;
+                                self.list_selection_targets.insert(owner);
+                                self.view_count_targets.insert(owner);
                             }
                             "xr.geometry_read" => {
                                 self.geometry_targets.insert(effect.attr("owner")?);
@@ -1139,6 +1226,17 @@ impl<'a> Generator<'a> {
                 }
                 _ => {}
             }
+        }
+        Ok(())
+    }
+
+    fn index_editor_state(&mut self, read: OperationRef<'a>) -> Result<(), String> {
+        let owner = read.attr("owner")?;
+        self.focus_targets.insert(owner);
+        if read.name() == "xr.text_selection_read" {
+            self.text_selection_targets.insert(owner);
+        } else {
+            self.text_command_targets.insert(owner);
         }
         Ok(())
     }
@@ -1577,6 +1675,15 @@ impl<'a> Generator<'a> {
                 };
                 quote!(#receiver.__state.#handle.#getter())
             }
+            "xr.text_selection_read" | "xr.text_command_available" => {
+                let handle = focus_handle(owner(op));
+                let getter = ident(value);
+                quote!(#receiver.__state.#handle.#getter())
+            }
+            "xr.text_accepts" => {
+                let getter = format_ident!("__xr_text_accepts_{}", rust_key(owner(op)));
+                quote!(#receiver.#getter())
+            }
             "xr.media_read" => {
                 let slot = media_slot(owner(op));
                 let getter = ident(value);
@@ -1673,6 +1780,15 @@ impl<'a> Generator<'a> {
                     let __xr_key = #key;
                     #receiver.#snapshot().#method(__xr_key)
                 })
+            }
+            "xr.list_selection_read" => {
+                let method = list_selected_index_method(owner(op));
+                quote!(#receiver.#method())
+            }
+            "xr.view_count" => {
+                let method = view_count_method(owner(op));
+                let source = value == "source-row-count";
+                quote!(#receiver.#method(#source))
             }
             "xr.view_index" => {
                 let method = view_index_method(owner(op));
@@ -2256,7 +2372,8 @@ impl<'a> Generator<'a> {
                     });
                 }
                 "xr.source_selection" => {
-                    let method = source_selection_method(statement.attr("owner")?);
+                    let owner = statement.attr("owner")?;
+                    let method = source_selection_method(owner);
                     let source = self.expr(self.operand(statement, 0)?)?;
                     let column = if statement.attr("method")? == "select-source-cell" {
                         let column = self.expr(self.operand(statement, 1)?)?;
@@ -2264,7 +2381,12 @@ impl<'a> Generator<'a> {
                     } else {
                         quote!(None)
                     };
-                    statements.extend(quote!(self.#method(#source, #column);));
+                    if statement.attr("method")? == "select-key" {
+                        let select = list_select_key_method(owner);
+                        statements.extend(quote!(self.#select(#source);));
+                    } else {
+                        statements.extend(quote!(self.#method(#source, #column);));
+                    }
                 }
                 "xr.move_column" | "xr.move_row" => {
                     let owner = statement.attr("owner")?;
@@ -2445,9 +2567,10 @@ impl<'a> Generator<'a> {
             let row = self.repeat_row(element, repeat, model, next)?;
             let positioned = repeat_is_positioned(element);
             if repeat.uses_row_identity() {
+                let factory = self.repeat_delegate_factory(repeat, model, None)?;
                 out.extend(quote! {
                     let #name = ::xrack_runtime::repeat_scene(
-                        #receiver.#field.render_range(|| #expression, 0..4096, |_| (), #row),
+                        #receiver.#field.render_range(|| #expression, 0..4096, #factory, #row),
                         #positioned,
                     );
                 });
@@ -2465,6 +2588,58 @@ impl<'a> Generator<'a> {
         } else {
             self.render_element(element, scope, out, next, RenderContent::Inline)
         }
+    }
+
+    fn repeat_delegate_factory(
+        &self,
+        repeat: &RepeatScope<'_>,
+        model: OperationRef<'a>,
+        table: Option<OperationRef<'a>>,
+    ) -> Result<TokenStream, String> {
+        if repeat.delegates.is_empty() {
+            return Ok(quote!(|_| ()));
+        }
+        let mut instances = TokenStream::new();
+        let locale = self
+            .with_locale
+            .then(|| quote!(__locale: __locale.clone(),));
+        let globals = (!self.globals.is_empty()).then(|| quote!(__globals: __globals.clone(),));
+        let init_globals = (!self.globals.is_empty())
+            .then(|| quote!(let __globals = self.__state.__globals.clone();));
+        let capture_globals =
+            (!self.globals.is_empty()).then(|| quote!(let __globals = __globals.clone();));
+        let init_locale = self
+            .with_locale
+            .then(|| quote!(let __locale = self.__state.__locale.clone();));
+        let capture_locale = self
+            .with_locale
+            .then(|| quote!(let __locale = __locale.clone();));
+        for (_, delegate) in &repeat.delegates {
+            let component = delegate.attr("component")?;
+            let name = ident(component);
+            let inputs = format_ident!("__Inputs_{}", rust_name(component));
+            let bindings = self.instance_inputs(*delegate, Some(model), table)?;
+            let instance = quote!(#name::__new(#inputs { #bindings #locale #globals ..::core::default::Default::default() }));
+            if repeat.table {
+                instances.extend(quote!({
+                    let __context = __context.clone();
+                    let __parent = __parent.clone();
+                    #capture_locale
+                    #capture_globals
+                    ::std::cell::LazyCell::new(
+                        ::std::boxed::Box::new(move || #instance) as ::std::boxed::Box<dyn FnOnce() -> #name>
+                    )
+                },));
+            } else {
+                instances.extend(quote!(#instance,));
+            }
+        }
+        Ok(quote!(|__context| {
+            #init_locale
+            #init_globals
+            let __parent = ::std::rc::Rc::downgrade(&self.__state);
+            (#instances)
+        }))
     }
 
     fn repeat_row(
@@ -2659,52 +2834,10 @@ impl<'a> Generator<'a> {
             let field = repeat_field(repeat.index());
             let model_expr = self.expr(self.operand(model, 0)?)?;
             let row_expr = self.repeat_row(row, repeat, model, &mut 0)?;
-            let create = if !repeat.delegates.is_empty() {
-                let mut instances = TokenStream::new();
-                let locale = self
-                    .with_locale
-                    .then(|| quote!(__locale: __locale.clone(),));
-                let globals =
-                    (!self.globals.is_empty()).then(|| quote!(__globals: __globals.clone(),));
-                let init_globals = (!self.globals.is_empty())
-                    .then(|| quote!(let __globals = self.__state.__globals.clone();));
-                let capture_globals =
-                    (!self.globals.is_empty()).then(|| quote!(let __globals = __globals.clone();));
-                let init_locale = self
-                    .with_locale
-                    .then(|| quote!(let __locale = self.__state.__locale.clone();));
-                let capture_locale = self
-                    .with_locale
-                    .then(|| quote!(let __locale = __locale.clone();));
-                for (_, delegate) in &repeat.delegates {
-                    let component = delegate.attr("component")?;
-                    let name = ident(component);
-                    let inputs = format_ident!("__Inputs_{}", rust_name(component));
-                    let table = (element.attr("kind") == Ok("TableView")).then_some(element);
-                    let bindings = self.instance_inputs(*delegate, Some(model), table)?;
-                    let instance = quote!(#name::__new(#inputs { #bindings #locale #globals ..::core::default::Default::default() }));
-                    if repeat.table {
-                        instances.extend(quote!({
-                            let __context = __context.clone();
-                            let __parent = __parent.clone();
-                            #capture_locale
-                            #capture_globals
-                            ::std::cell::LazyCell::new(
-                                ::std::boxed::Box::new(move || #instance) as ::std::boxed::Box<dyn FnOnce() -> #name>
-                            )
-                        },));
-                    } else {
-                        instances.extend(quote!(#instance,));
-                    }
-                }
-                quote!(|__context| {
-                    #init_locale
-                    #init_globals
-                    let __parent = ::std::rc::Rc::downgrade(&self.__state);
-                    (#instances)
-                },)
-            } else if repeat.uses_row_identity() {
-                quote!(|_| (),)
+            let create = if repeat.uses_row_identity() {
+                let table = (element.attr("kind") == Ok("TableView")).then_some(element);
+                let factory = self.repeat_delegate_factory(repeat, model, table)?;
+                quote!(#factory,)
             } else {
                 TokenStream::new()
             };
@@ -2793,6 +2926,20 @@ impl<'a> Generator<'a> {
         out: &mut TokenStream,
         delegates: &mut TokenStream,
     ) -> Result<(), String> {
+        if let Some(slot) = empty_state(element) {
+            let mut slot_events = TokenStream::new();
+            let mut slot_delegates = TokenStream::new();
+            path.push(0);
+            self.delegate_event_arms(slot, path, &mut slot_events, &mut slot_delegates)?;
+            path.pop();
+            let active = quote!(scene.at_path(&[#(#path,)* 0]).is_some_and(|node| node.kind == "EmptyState"));
+            out.extend(quote! {
+                [#(#path,)* 0, ..] if #active => match path { #slot_events _ => None },
+            });
+            delegates.extend(quote! {
+                [#(#path,)* 0, ..] if #active => match path { #slot_delegates _ => None },
+            });
+        }
         if element.name() == "xr.instance" {
             let field = instance_field(element_key(element)?);
             let component = ident(element.attr("component")?);
@@ -3021,9 +3168,8 @@ impl<'a> Generator<'a> {
                             let Some(next) = ::xrack_runtime::spin_value_after(cell, *spin) else { return Some(false); };
                         },
                         Type::Bool => quote! {
-                            let ::xrack_runtime::RoutedEvent::Dispatch("clicked") = action else { return Some(false); };
                             let expected = cell.boolean("checked", false);
-                            let next = !expected;
+                            let Some(next) = action.checked_after(expected) else { return Some(false); };
                         },
                         Type::CheckState => quote! {
                             let ::xrack_runtime::RoutedEvent::Dispatch("clicked") = action else { return Some(false); };
@@ -3280,6 +3426,9 @@ impl<'a> Generator<'a> {
                 });
             }
             for (index, child) in child_slots(element) {
+                if child.attribute("kind") == Some("EmptyState") {
+                    continue;
+                }
                 path.push(index);
                 if children(child, "xr.repeat").next().is_some() {
                     let slot = format_ident!("__xr_slot_{}", path.len());
@@ -3477,13 +3626,19 @@ impl<'a> Generator<'a> {
             } else {
                 (
                     quote!(node.boolean("checked", false)),
-                    quote!(!__xr_expected),
+                    quote!({
+                        let Some(next) = action.checked_after(__xr_expected) else {
+                            return Some(false);
+                        };
+                        next
+                    }),
                     quote!(::xrack_runtime::CheckState::from(__xr_next)),
                     TokenStream::new(),
                 )
             };
             field_check = quote! {
-                && (!matches!(action, ::xrack_runtime::RoutedEvent::Dispatch("clicked"))
+                && (!matches!(action, ::xrack_runtime::RoutedEvent::Dispatch("clicked")
+                    | ::xrack_runtime::RoutedEvent::Control(::xrack_runtime::ControlAction::SetSwitch(_)))
                     || (__xr_model.row_matches(__xr_index, __xr_key, |record| record #field == #expected)
                         #tristate_check))
             };
@@ -3493,7 +3648,8 @@ impl<'a> Generator<'a> {
             let changed = self.typed_event(row, "check-state-changed", &quote!(__xr_state))?;
             quote! {
                 let __xr_change = match action {
-                    ::xrack_runtime::RoutedEvent::Dispatch("clicked") => {
+                    ::xrack_runtime::RoutedEvent::Dispatch("clicked")
+                    | ::xrack_runtime::RoutedEvent::Control(::xrack_runtime::ControlAction::SetSwitch(_)) => {
                         let __xr_expected = #expected;
                         let __xr_next = #next;
                         if !__xr_model.update_row_if_key(__xr_index, __xr_key, |record| {
@@ -4292,9 +4448,14 @@ impl<'a> Generator<'a> {
         element: OperationRef<'a>,
         projection: &TableProjection<'_, 'a>,
     ) -> Result<TokenStream, String> {
-        let guards = children(element, "xr.show_if")
+        let mut guards = children(element, "xr.show_if")
             .map(|guard| self.table_projection_value(guard, projection))
             .collect::<Result<Vec<_>, _>>()?;
+        if let Some(&owner) = self.view_empty_state_owners.get(element_key(element)?) {
+            let count = view_count_method(owner);
+            let receiver = projection.expression.receiver;
+            guards.push(quote!(#receiver.#count(false) == 0));
+        }
         Ok(quote!(#((#guards) &&)* true))
     }
 
@@ -4734,6 +4895,35 @@ impl<'a> Generator<'a> {
         Ok(quote!(match #selected { #arms _ => #base }))
     }
 
+    fn render_view_empty_state(
+        &self,
+        view: OperationRef<'a>,
+        scope: &VisualScope<'_>,
+        out: &mut TokenStream,
+        next: &mut usize,
+        name: Ident,
+    ) -> Result<Ident, String> {
+        if xrack_resources::visual::keyed_list(view) {
+            let index = list_selection_index_method(element_key(view)?);
+            out.extend(quote!(#name.properties.insert("current-index", self.#index().into());));
+        }
+        if self.key_scroll_targets.contains(element_key(view)?) {
+            let locator = list_key_locator_method(element_key(view)?);
+            out.extend(quote!(#name.row_locator = Some(self.#locator());));
+        }
+        if let Some(slot) = empty_state(view) {
+            let mut content = TokenStream::new();
+            let child = self.render(slot, scope, &mut content, next)?;
+            out.extend(quote! {
+                if #name.list.is_some_and(|list| list.row_count == 0) {
+                    #content
+                    #name.children.push(#child);
+                }
+            });
+        }
+        Ok(name)
+    }
+
     fn render_table_header(
         &self,
         element: OperationRef<'a>,
@@ -4920,21 +5110,65 @@ impl<'a> Generator<'a> {
                 self.#snapshot().view_index(index, direction)
             });
         }
-        let model = if matches!(element.attr("kind"), Ok("TableView" | "StandardTableView")) {
-            Some(self.table_model(element)?)
-        } else if has_list_visibility(element) {
-            let model = visible_list_model(key);
-            Some(quote!(&self.#model()))
-        } else {
-            None
-        };
-        if let Some(model) = model {
+        if let Some(model) = self.projected_view_model(element)? {
             Ok(quote! {
                 (#model).positions().view_index(index, direction)
             })
         } else {
             let model = self.view_source_model(element)?;
             Ok(quote!((index < ::xrack_runtime::ListModel::row_count(&*#model)).then_some(index)))
+        }
+    }
+
+    fn projected_view_model(
+        &self,
+        element: OperationRef<'a>,
+    ) -> Result<Option<TokenStream>, String> {
+        if matches!(element.attr("kind"), Ok("TableView" | "StandardTableView")) {
+            Ok(Some(self.table_model(element)?))
+        } else if has_list_visibility(element) {
+            let model = visible_list_model(element_key(element)?);
+            Ok(Some(quote!(&self.#model())))
+        } else {
+            Ok(None)
+        }
+    }
+
+    fn view_count_body(&self, view: OperationRef<'a>) -> Result<TokenStream, String> {
+        let model = self.view_source_model(view)?;
+        let source = quote!(::xrack_runtime::ListModel::row_count(&*#model));
+        let rows = if view.attr("kind") == Ok("TreeView") {
+            let snapshot = tree_snapshot_method(element_key(view)?);
+            quote!(self.#snapshot().rows().len())
+        } else if let Some(model) = self.projected_view_model(view)? {
+            quote!((#model).positions().row_count())
+        } else {
+            source.clone()
+        };
+        Ok(quote!((if source { #source } else { #rows }) as ::core::primitive::i64))
+    }
+
+    fn list_selection_index(&self, view: OperationRef<'a>) -> Result<TokenStream, String> {
+        if xrack_resources::visual::keyed_list(view) {
+            let method = list_selection_index_method(element_key(view)?);
+            Ok(quote!(self.#method()))
+        } else {
+            self.control_value(view, "current-index", Type::Int)
+        }
+    }
+
+    fn list_selection_value(
+        &self,
+        view: OperationRef<'a>,
+        index: &TokenStream,
+    ) -> Result<Option<TokenStream>, String> {
+        if xrack_resources::visual::keyed_list(view) {
+            let method = list_selection_key_method(element_key(view)?);
+            Ok(Some(
+                quote!(self.#method(#index as ::core::primitive::usize)),
+            ))
+        } else {
+            Ok(None)
         }
     }
 
@@ -4958,14 +5192,22 @@ impl<'a> Generator<'a> {
             return Ok(quote!(self.#select(source);));
         }
         let lookup = view_index_method(key);
-        let current = self.control_value(element, "current-index", Type::Int)?;
+        let current = self.list_selection_index(element)?;
         let value = quote!(index);
-        let set = self.set_control(element, &value)?;
+        let (prepare, selected) = match self.list_selection_value(element, &value)? {
+            Some(key) => (
+                quote!(let Some(selection) = #key else { return; };),
+                quote!(selection),
+            ),
+            None => (TokenStream::new(), value.clone()),
+        };
+        let set = self.set_control(element, &selected)?;
         let changed = self.typed_event(element, "changed", &value)?;
         Ok(quote! {
             if let Some(index) = ::xrack_runtime::prepare_source_selection(
                 || self.#lookup(source, ::xrack_runtime::ViewIndex::FromSource), || #current,
             ) {
+                #prepare
                 #set
                 #changed
             }
@@ -5466,10 +5708,17 @@ impl<'a> Generator<'a> {
                     "content-x"
                         | "content-y"
                         | "row-height-field"
+                        | "row-key-field"
                         | "row-visible-field"
                         | "row-header-field"
                         | "clipboard-text"
                 )
+            {
+                continue;
+            }
+            if element
+                .attribute("kind")
+                .is_some_and(|kind| text_submission_rule(kind, key))
             {
                 continue;
             }
@@ -5602,6 +5851,20 @@ impl<'a> Generator<'a> {
             let register = timer_member(element_key(timer)?, "register");
             out.extend(quote! { #name.timers.extend(self.#register()); });
         }
+        for effect in
+            element_children(element).filter(|child| child.attr("kind") == Ok("SoundEffect"))
+        {
+            let slot = media_slot(element_key(effect)?);
+            let file = xrack_resources::visual::media_source_file(effect, self.entry_file);
+            let file = file.as_ref();
+            let source =
+                self.binding_value_or(effect, "source", quote!(::std::string::String::new()))?;
+            let volume = self.binding_value_or(effect, "volume", quote!(1.0_f64))?;
+            let muted = self.binding_value_or(effect, "muted", quote!(false))?;
+            out.extend(quote! {
+                #name.sound_effects.push(self.__state.#slot.sound_effect(#file, &#source, #volume, #muted));
+            });
+        }
         for dialog in element_children(element).filter(|child| native_dialog(*child)) {
             let register = native_dialog_member(element_key(dialog)?, "register");
             out.extend(quote!(#name.native_dialogs.extend(self.#register());));
@@ -5650,7 +5913,7 @@ impl<'a> Generator<'a> {
                 }
                 #projected
             });
-            return Ok(name);
+            return self.render_view_empty_state(element, scope, out, next, name);
         }
         if kind == Some("StandardListView") {
             if let Some(binding) = model_binding(element) {
@@ -5672,7 +5935,7 @@ impl<'a> Generator<'a> {
             } else {
                 out.extend(quote! { #name.list = Some(::xrack_runtime::ListMetrics::default()); });
             }
-            return Ok(name);
+            return self.render_view_empty_state(element, scope, out, next, name);
         }
         if kind == Some("StandardTableView") {
             let key = element_key(element)?;
@@ -5700,7 +5963,7 @@ impl<'a> Generator<'a> {
                 &name,
                 &quote!(&*__xr_table_model),
             )?;
-            return Ok(name);
+            return self.render_view_empty_state(element, scope, out, next, name);
         }
         if matches!(
             kind,
@@ -5724,7 +5987,7 @@ impl<'a> Generator<'a> {
                     #projected
                     self.__state.#state.populate_scene(&mut #name, tree);
                 });
-                return Ok(name);
+                return self.render_view_empty_state(element, scope, out, next, name);
             }
             if kind == Some("TableView") {
                 let rows = self.table_rows_model(element)?;
@@ -5749,7 +6012,7 @@ impl<'a> Generator<'a> {
                     &name,
                     &quote!(&*__xr_view_model),
                 )?;
-                return Ok(name);
+                return self.render_view_empty_state(element, scope, out, next, name);
             }
             out.extend(quote! {
                 let __xr_view_model = #receiver.#field.resolve_model(|| #model);
@@ -5766,7 +6029,7 @@ impl<'a> Generator<'a> {
             {
                 out.extend(quote!(#name.row_heights = #projected;));
             }
-            return Ok(name);
+            return self.render_view_empty_state(element, scope, out, next, name);
         }
         let mut content = TokenStream::new();
         if kind == Some("StackView") {
@@ -5808,7 +6071,8 @@ impl<'a> Generator<'a> {
                     .expect("repeated option");
                 let row = self.repeat_row(child, repeat, repeat_op, next)?;
                 let rows = if repeat.uses_row_identity() {
-                    quote!(#receiver.#field.render_resolved_indices(&**__xr_group_model, 0..4096, None, |_| (), #row))
+                    let factory = self.repeat_delegate_factory(repeat, repeat_op, None)?;
+                    quote!(#receiver.#field.render_resolved_indices(&**__xr_group_model, 0..4096, None, #factory, #row))
                 } else {
                     quote!(#receiver.#field.render_resolved_indices(__xr_group_model, 0..4096, #row))
                 };
@@ -6197,12 +6461,9 @@ impl<'a> Generator<'a> {
                 && children(element, "xr.handler")
                     .any(|handler| handler.attr("name") == Ok("accepted"))
             {
-                let text = self.control_value(element, "text", Type::String)?;
-                let (mode, separator, limit) = self.text_input_constraints(element)?;
+                let accepts = self.text_acceptance_expression(element)?;
                 quote! {
-                    if event == "accepted" && !input.available(|| ::xrack_runtime::text_submission_is_valid(
-                        &#text, #mode, || #separator, || #limit,
-                    )) { return false; }
+                    if event == "accepted" && !input.available(|| #accepts) { return false; }
                 }
             } else {
                 TokenStream::new()
@@ -6290,16 +6551,46 @@ impl<'a> Generator<'a> {
             quote!(::std::string::String::new()),
         )?;
         let separator = quote!(if (#separator) == "," { ',' } else { '.' });
-        let limit = match children(element, "xr.bind")
-            .find(|binding| binding.attr("name") == Ok("maximum-length"))
-        {
+        let limit = self.optional_editor_binding(element, "maximum-length")?;
+        Ok((mode, separator, limit))
+    }
+
+    fn optional_editor_binding(
+        &self,
+        element: OperationRef<'a>,
+        name: &str,
+    ) -> Result<TokenStream, String> {
+        let binding = children(element, "xr.bind").find(|binding| binding.attr("name") == Ok(name));
+        match binding {
             Some(binding) => {
                 let value = self.visual_value(binding, &self.visuals)?;
-                quote!(::core::option::Option::Some(#value))
+                Ok(quote!(::core::option::Option::Some(#value)))
             }
-            None => quote!(::core::option::Option::None),
-        };
-        Ok((mode, separator, limit))
+            None => Ok(quote!(::core::option::Option::None)),
+        }
+    }
+
+    fn text_acceptance_expression(&self, element: OperationRef<'a>) -> Result<TokenStream, String> {
+        let text = self.control_value(element, "text", Type::String)?;
+        let (mode, separator, limit) = self.text_input_constraints(element)?;
+        let minimum = self.binding_value_or(element, "minimum-length", quote!(0_i64))?;
+        let condition = self.binding_value_or(element, "submit-when", quote!(true))?;
+        let floor = self.optional_editor_binding(element, "minimum-value")?;
+        let ceiling = self.optional_editor_binding(element, "maximum-value")?;
+        let decimals = self.optional_editor_binding(element, "decimals")?;
+        Ok(quote!(::xrack_runtime::text_submission_with(
+            &#text, #mode, || #separator, || #limit, || #minimum,
+            |mode| ::xrack_runtime::NumericTextLimits {
+                minimum: #floor,
+                maximum: #ceiling,
+                decimals: if mode == ::xrack_runtime::InputType::Decimal {
+                    #decimals
+                } else {
+                    ::core::option::Option::None
+                },
+            },
+            || #condition,
+        )))
     }
 
     fn live_editor_guard(&self, element: OperationRef<'a>) -> Result<TokenStream, String> {
@@ -7102,6 +7393,10 @@ impl<'a> Generator<'a> {
             return Ok(());
         }
         match element.attr("kind")? {
+            "Switch" => out.extend(quote! {
+                [#(#path),*] => matches!(action, ::xrack_runtime::ControlAction::SetSwitch(_))
+                    && self.__dispatch_path(path, "clicked", input),
+            }),
             "StyledText"
                 if children(element, "xr.handler")
                     .any(|handler| handler.attr("name") == Ok("link-activated")) =>
@@ -7390,13 +7685,20 @@ impl<'a> Generator<'a> {
                         ::xrack_runtime::ListModel::structure_stamp,
                     )))
                 };
-                let current = self.control_value(element, "current-index", Type::Int)?;
+                let current = self.list_selection_index(element)?;
                 let receiver = quote!(self);
                 let projection = TableProjection::for_input(&receiver);
                 let available =
                     self.element_allows_routed_input(element, path.is_empty(), &projection)?;
                 let value = quote!(__xr_index);
-                let set = self.set_control(element, &value)?;
+                let (prepare, selected) = match self.list_selection_value(element, &value)? {
+                    Some(key) => (
+                        quote!(let Some(__xr_selection) = input.prepare(|| true, || #key) else { return false; };),
+                        quote!(__xr_selection),
+                    ),
+                    None => (TokenStream::new(), value.clone()),
+                };
+                let set = self.set_control(element, &selected)?;
                 let event = self.typed_event(element, "changed", &value)?;
                 out.extend(quote! {
                     [#(#path),*] => {
@@ -7406,6 +7708,7 @@ impl<'a> Generator<'a> {
                             |_| ::xrack_runtime::ListMetrics::has_row_in_model(node, index, #stamp),
                             || #current,
                         ) else { return false; };
+                        #prepare
                         if !input.is_current() { return false; }
                         #set
                         #event
@@ -8208,7 +8511,16 @@ impl<'a> Generator<'a> {
         for &target in &self.focus_targets {
             let handle = focus_handle(target);
             fields.extend(quote!(#handle: ::xrack_runtime::FocusHandle,));
-            defaults.extend(quote!(#handle: ::core::default::Default::default(),));
+            let selection = self.text_selection_targets.contains(target);
+            let commands = self.text_command_targets.contains(target);
+            let initial = if commands {
+                quote!(::xrack_runtime::FocusHandle::with_text_state(#selection, true))
+            } else if selection {
+                quote!(::xrack_runtime::FocusHandle::with_text_selection())
+            } else {
+                quote!(::core::default::Default::default())
+            };
+            defaults.extend(quote!(#handle: #initial,));
         }
         for (&key, &element) in &self.elements {
             if element.attr("kind") == Ok("SearchField") {
@@ -8762,6 +9074,19 @@ impl<'a> Generator<'a> {
                         NativeDialogEvent::Failed(message) => { #failed }
                         _ => {}
                     })
+                }
+            });
+        }
+        for &target in &self.text_acceptance_targets {
+            let getter = format_ident!("__xr_text_accepts_{}", rust_key(target));
+            let element = self
+                .elements
+                .get(target)
+                .ok_or("unknown text editor owner")?;
+            let accepts = self.text_acceptance_expression(*element)?;
+            methods.extend(quote! {
+                fn #getter(&self) -> bool {
+                    #accepts
                 }
             });
         }
@@ -9646,8 +9971,108 @@ impl<'a> Generator<'a> {
             if !has_virtual_rows(view) {
                 continue;
             }
+            if self.view_count_targets.contains(key) {
+                let count = view_count_method(key);
+                let count_body = self.view_count_body(view)?;
+                methods.extend(quote! {
+                    fn #count(&self, source: ::core::primitive::bool) -> ::core::primitive::i64 {
+                        #count_body
+                    }
+                });
+            }
+            if self.list_selection_targets.contains(key) {
+                let method = list_selected_index_method(key);
+                let index = self.list_selection_index(view)?;
+                let count = view_count_method(key);
+                let resolve = if xrack_resources::visual::keyed_list(view) {
+                    index
+                } else {
+                    quote!({
+                        let index = #index;
+                        if index < 0 { return -1; }
+                        ::xrack_runtime::ListMetrics::effective_index(index, self.#count(false) as ::core::primitive::usize)
+                    })
+                };
+                methods.extend(quote! {
+                    fn #method(&self) -> ::core::primitive::i64 { #resolve }
+                });
+            }
             let lookup = view_index_method(key);
             let index_body = self.view_index_body(view)?;
+            if let Some(field) = self.record_field_binding(view, "row-key-field")? {
+                let field = field_access(field.split('.'));
+                let keys = format_ident!("__list_keys_{}", rust_key(key));
+                let current_key = self.control_value(view, "current-key", Type::Int)?;
+                let (model, source, visible, original) = if has_list_visibility(view) {
+                    let projection = visible_list_model(key);
+                    (
+                        quote!(self.#projection()),
+                        quote!(model.source()),
+                        quote!(model.positions().visual_index(index)),
+                        quote!(model.positions().source_index(index)),
+                    )
+                } else {
+                    (
+                        self.view_source_model(view)?,
+                        quote!(&*model),
+                        quote!(::core::option::Option::Some(index)),
+                        quote!(::core::option::Option::Some(index)),
+                    )
+                };
+                let index = list_selection_index_method(key);
+                let key_at = list_selection_key_method(key);
+                fields.extend(quote!(#keys: ::std::rc::Rc<::xrack_runtime::ListSelectionKeys>,));
+                defaults.extend(quote!(#keys: ::core::default::Default::default(),));
+                let find = list_key_index_method(key);
+                let select = list_select_key_method(key);
+                let set = self.set_control_property(view, "current-key", &quote!(key))?;
+                let changed = self.typed_event(view, "changed", &quote!(index))?;
+                if self.key_scroll_targets.contains(key) {
+                    let locator = list_key_locator_method(key);
+                    let (model, source, order) = if has_list_visibility(view) {
+                        let projection = visible_list_model(key);
+                        (
+                            quote!(::std::rc::Rc::new(self.#projection())),
+                            quote!(model.source_model().clone()),
+                            quote!(Some(model.positions().clone())),
+                        )
+                    } else {
+                        (model.clone(), quote!(model.clone()), quote!(None))
+                    };
+                    methods.extend(quote! {
+                        fn #locator(&self) -> ::xrack_runtime::ListRowLocator {
+                            let model = #model;
+                            ::xrack_runtime::ListRowLocator::new(model.clone()).with_business_keys(
+                                self.__state.#keys.clone(), #source, #order, |row| row #field,
+                            )
+                        }
+                    });
+                }
+                methods.extend(quote! {
+                    fn #find(&self, key: ::core::primitive::i64) -> ::core::primitive::i64 {
+                        if key < 0 { return -1; }
+                        let model = #model;
+                        self.__state.#keys.find(#source, key, |row| row #field)
+                            .and_then(|index| #visible)
+                            .map_or(-1, |index| index as ::core::primitive::i64)
+                    }
+                    fn #select(&self, key: ::core::primitive::i64) {
+                        let index = self.#find(key);
+                        if index >= 0 && key != (#current_key) {
+                            #set
+                            #changed
+                        }
+                    }
+                    fn #index(&self) -> ::core::primitive::i64 {
+                        self.#find(#current_key)
+                    }
+                    fn #key_at(&self, index: ::core::primitive::usize) -> ::core::option::Option<::core::primitive::i64> {
+                        let model = #model;
+                        let index = (#original)?;
+                        self.__state.#keys.key_at(#source, index, |row| row #field)
+                    }
+                });
+            }
             let select = source_selection_method(key);
             let selection_body = self.source_selection_body(view)?;
             methods.extend(quote! {
@@ -9904,6 +10329,10 @@ impl<'a> Generator<'a> {
                             }
                             if let ::core::option::Option::Some(&index) = path.get(depth) {
                                 node = node.child_at(index)?;
+                                if node.kind == "ListRow" {
+                                    // The row route validates its own delegate and model.
+                                    break;
+                                }
                             }
                         }
                     }
@@ -10560,8 +10989,15 @@ fn generate_with_resources(
             media_players: Vec::new(),
             native_dialogs: Vec::new(),
             focus_targets: BTreeSet::new(),
+            text_selection_targets: BTreeSet::new(),
+            text_command_targets: BTreeSet::new(),
+            text_acceptance_targets: BTreeSet::new(),
             pointer_targets: BTreeSet::new(),
             viewport_targets: BTreeSet::new(),
+            view_count_targets: BTreeSet::new(),
+            list_selection_targets: BTreeSet::new(),
+            key_scroll_targets: BTreeSet::new(),
+            view_empty_state_owners: BTreeMap::new(),
             source_scroll_targets: BTreeSet::new(),
             geometry_targets: BTreeSet::new(),
             bound_viewports: Vec::new(),
@@ -10590,6 +11026,13 @@ fn generate_with_resources(
             }
             for &timer in &generator.timers {
                 generator.index_visual_bindings(timer, &mut visuals, &mut 0)?;
+            }
+            for &effect in generator
+                .media_players
+                .iter()
+                .filter(|effect| effect.attr("kind") == Ok("SoundEffect"))
+            {
+                generator.index_visual_bindings(effect, &mut visuals, &mut 0)?;
             }
             for &binding in &generator.repeat_invariants {
                 generator.index_visual_binding(binding, &mut visuals)?;

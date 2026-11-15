@@ -1,6 +1,6 @@
-use crate::{Point, Rect};
+use crate::{Point, Rect, Size};
 use std::f64::consts::{PI, TAU};
-use xrack_runtime::{DialInputMode, Node, Orientation};
+use xrack_runtime::{DialInputMode, LayoutDirection, Node, Orientation};
 
 /// Shared geometry for the saturation and brightness color field.
 pub struct ColorPlaneGeometry {
@@ -38,38 +38,58 @@ pub struct SliderGeometry {
     start: Point,
     end: Point,
     pub radius: f32,
-    horizontal: f32,
-    vertical: f32,
+    thumbs: [Size; Node::RANGE_THUMBS],
 }
 
 impl SliderGeometry {
     pub fn new(bounds: Rect, orientation: Orientation) -> Self {
         let radius = (bounds.width.min(bounds.height) * 0.5).clamp(0.0, 8.0);
-        Self::with_travel(bounds, orientation, radius, radius)
+        Self::with_travel(
+            bounds,
+            orientation,
+            LayoutDirection::LeftToRight,
+            [Size::new(radius * 2.0, radius * 2.0); 2],
+        )
     }
 
     pub fn for_node(bounds: Rect, node: &Node) -> Self {
-        let orientation = node.orientation();
-        let radius = (bounds.width.min(bounds.height) * 0.5).clamp(0.0, 8.0);
-        let extent = |part: &Node, property, available: f32| {
-            part.length(property)
-                .unwrap_or(radius * 2.0)
-                .clamp(0.0, available)
-        };
-        let (horizontal, vertical) =
-            node.control_part("SliderHandle")
-                .map_or((radius, radius), |part| {
-                    (
-                        extent(part, "width", bounds.width) * 0.5,
-                        extent(part, "height", bounds.height) * 0.5,
-                    )
-                });
-        Self::with_travel(bounds, orientation, horizontal, vertical)
+        Self::with_layout_direction(bounds, node, node.layout_direction().unwrap_or_default())
     }
 
-    fn with_travel(bounds: Rect, orientation: Orientation, horizontal: f32, vertical: f32) -> Self {
+    /// Resolve both painting and pointer positions using the effective direction.
+    pub fn with_layout_direction(bounds: Rect, node: &Node, direction: LayoutDirection) -> Self {
         let radius = (bounds.width.min(bounds.height) * 0.5).clamp(0.0, 8.0);
-        let (start, end) = match orientation {
+        let parts = if node.kind == "RangeSlider" {
+            Node::RANGE_HANDLE_PARTS
+        } else {
+            ["SliderHandle"; 2]
+        };
+        let thumbs = parts.map(|kind| {
+            let part = node.control_part(kind);
+            let extent = |property, available: f32| {
+                part.and_then(|part| part.length(property))
+                    .unwrap_or(radius * 2.0)
+                    .clamp(0.0, available)
+            };
+            Size::new(
+                extent("width", bounds.width),
+                extent("height", bounds.height),
+            )
+        });
+        Self::with_travel(bounds, node.orientation(), direction, thumbs)
+    }
+
+    fn with_travel(
+        bounds: Rect,
+        orientation: Orientation,
+        direction: LayoutDirection,
+        thumbs: [Size; 2],
+    ) -> Self {
+        let radius = (bounds.width.min(bounds.height) * 0.5).clamp(0.0, 8.0);
+        // Both endpoints must agree on one position when their values are equal.
+        let horizontal = thumbs[0].width.max(thumbs[1].width) * 0.5;
+        let vertical = thumbs[0].height.max(thumbs[1].height) * 0.5;
+        let (mut start, mut end) = match orientation {
             Orientation::Horizontal => (
                 Point {
                     x: bounds.x + horizontal,
@@ -91,12 +111,14 @@ impl SliderGeometry {
                 },
             ),
         };
+        if orientation == Orientation::Horizontal && direction == LayoutDirection::RightToLeft {
+            std::mem::swap(&mut start, &mut end);
+        }
         Self {
             start,
             end,
             radius,
-            horizontal,
-            vertical,
+            thumbs,
         }
     }
 
@@ -108,9 +130,32 @@ impl SliderGeometry {
         }
     }
 
-    pub(crate) fn contains_thumb(&self, fraction: f64, point: Point) -> bool {
+    pub fn thumb_bounds(&self, index: usize, fraction: f64) -> Rect {
         let center = self.position(fraction);
-        (point.x - center.x).abs() <= self.horizontal && (point.y - center.y).abs() <= self.vertical
+        let Size { width, height } = self.thumbs[index];
+        Rect::new(
+            center.x - width * 0.5,
+            center.y - height * 0.5,
+            width,
+            height,
+        )
+    }
+
+    pub(crate) fn interval_handle_at(
+        &self,
+        point: Point,
+        fraction: f64,
+        interval: xrack_runtime::SliderInterval,
+    ) -> usize {
+        let [lower, upper] = interval.fractions();
+        match [
+            self.thumb_bounds(0, lower).contains(point),
+            self.thumb_bounds(1, upper).contains(point),
+        ] {
+            [true, false] => 0,
+            [false, true] => 1,
+            _ => interval.nearest_handle(fraction),
+        }
     }
 
     pub fn fraction_at(&self, point: Point) -> Option<f64> {

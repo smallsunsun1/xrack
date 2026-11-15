@@ -13,6 +13,7 @@ build --experimental_disk_cache_gc_max_age=30d
 build --java_runtime_version=local_jdk
 build --tool_java_runtime_version=local_jdk
 build --repo_env=BAZEL_DO_NOT_DETECT_CPP_TOOLCHAIN=1
+build --repo_env=ASPECT_TOOLS_TELEMETRY=-all
 # LLVM's overlay enables strict Clang module layering checks, which do not
 # model the current Apple SDK's libc++ headers as Bazel modules.
 build --enable_platform_specific_config

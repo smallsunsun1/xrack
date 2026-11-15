@@ -1,0 +1,42 @@
+export component SoundDemo inherits Window {
+    title: "XRack SoundEffect";
+    width: 400px;
+    height: 220px;
+
+    in property <string> sound-source: "click.wav";
+    in-out property <bool> muted: false;
+    out property <bool> sound-ready: confirmation.ready;
+    out property <bool> sound-playing: confirmation.playing;
+    out property <string> sound-error: confirmation.error;
+
+    confirmation := SoundEffect {
+        source: root.sound-source;
+        volume: 0.35;
+        muted: root.muted;
+    }
+
+    keyboard := Shortcut {
+        sequence: "F2";
+        enabled: root.sound-ready;
+        activated => { confirmation.play(); }
+    }
+
+    VerticalLayout {
+        padding: 24px;
+        spacing: 12px;
+        confirm := Button {
+            text: "播放确认音";
+            enabled: root.sound-ready;
+            clicked => { confirmation.play(); }
+        }
+        silence := CheckBox {
+            text: "静音";
+            checked <=> root.muted;
+        }
+        Label {
+            text: root.sound-error != "" ? root.sound-error
+                : root.sound-playing ? "正在播放音效"
+                : root.sound-ready ? "点击按钮或按 F2" : "正在加载音效";
+        }
+    }
+}

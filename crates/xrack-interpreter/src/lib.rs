@@ -5,11 +5,20 @@ mod evaluate;
 mod gesture;
 mod group;
 mod host;
+#[cfg(feature = "live-reload")]
+pub mod live;
+#[cfg(all(feature = "live-reload", unix))]
+mod live_attach;
+#[cfg(all(feature = "live-reload", unix))]
+mod live_editor;
+#[cfg(all(feature = "live-reload", unix))]
+mod live_inspect;
 mod load;
 mod native_dialog;
 mod picker;
 mod pointer;
 mod range;
+mod reload;
 mod repeat;
 mod secondary_window;
 mod split;
@@ -36,8 +45,11 @@ use xrack_runtime::{
 };
 
 pub use load::load_mlir;
+pub use reload::ReloadableInstance;
 use xrack_mlir::{BinaryOperator, RowSceneCache, UnaryOperator, VisualCacheGroup, VisualCacheKey};
 use xrack_resources::{EmbeddedTranslations, field::BuiltinField};
+#[doc(hidden)]
+pub use xrack_runtime as __live_runtime;
 pub use xrack_runtime::Value as HostValue;
 
 /// Load XR dialect IR and resolve its resources relative to the MLIR file.
@@ -235,6 +247,7 @@ pub enum ValueType {
     FlickBoundsBehavior,
     FlickBoundsMovement,
     PopupPlacement,
+    LayoutDirection,
     FlexboxLayoutDirection,
     FlexboxLayoutWrap,
     CrossAxisAlignment,
@@ -312,8 +325,14 @@ enum Expression {
     ImageDimension(Expr, usize),
     ImagePlaybackRead(Member),
     MediaRead(Member),
+    TextAccepts(String),
     GeometryRead(String, Option<xrack_runtime::GeometryMetric>),
     ViewportRead(String, viewport::Metric),
+    ListSelectionRead(String),
+    ViewCount {
+        owner: String,
+        source: bool,
+    },
     ViewIndex(String, Expr, xrack_runtime::ViewIndex),
     TreeQuery(String, tree::Query, Expr),
     SplitSave(String),
@@ -321,6 +340,8 @@ enum Expression {
     SplitResizing(String),
     TableRead(String, xrack_mlir::TableRead),
     FocusRead(String, bool),
+    TextSelectionRead(Member),
+    TextCommandAvailable(Member),
     HoverRead(String, pointer::HoverRead),
     GestureRead(String, gesture::Metric),
     PointerRead(String, pointer::Read),
@@ -370,6 +391,7 @@ enum Statement {
     },
     Scroll(String, xrack_runtime::ScrollCommandMethod, Vec<Expr>),
     SelectSource(String, Expr, Option<Expr>),
+    SelectKey(String, Expr),
     Table(String, table::Command, Vec<Expr>),
     Focus(String, xrack_runtime::FocusCommandMethod, Option<[Expr; 2]>),
     Tree(String, xrack_runtime::TreeCommandMethod, Expr, Option<Expr>),
@@ -416,6 +438,8 @@ struct RecordField {
 type RecordSchemas = BTreeMap<String, Vec<RecordField>>;
 
 struct Definition {
+    #[cfg(all(feature = "live-reload", unix))]
+    source: Option<live_inspect::Source>,
     properties: BTreeMap<Member, PropertyDef>,
     callbacks: BTreeMap<Member, Function>,
     callback_defaults: BTreeMap<Vec<Member>, Member>,
@@ -424,7 +448,10 @@ struct Definition {
     geometry_targets: BTreeSet<String>,
     viewport_targets: BTreeSet<String>,
     source_scroll_targets: BTreeSet<String>,
+    key_scroll_targets: BTreeSet<String>,
     focus_targets: BTreeSet<String>,
+    text_selection_targets: BTreeSet<String>,
+    text_command_targets: BTreeSet<String>,
     timer_order: Vec<String>,
     action_keys: BTreeSet<String>,
     native_dialog_keys: BTreeSet<String>,
@@ -433,6 +460,8 @@ struct Definition {
 
 struct Element {
     key: String,
+    #[cfg(all(feature = "live-reload", unix))]
+    source: Option<live_inspect::Source>,
     media_source_file: Option<String>,
     id: Arc<str>,
     repeat: Option<Repeat>,
@@ -449,6 +478,7 @@ struct Element {
     contains_delegate: bool,
     visible_field: Option<Rc<[String]>>,
     height_field: Option<Rc<[String]>>,
+    list_key_field: Option<Rc<[String]>>,
     instance_handlers: BTreeMap<Vec<Member>, Function>,
     visual: Visual,
     grid_plan: Option<Arc<[xrack_runtime::GridCellSlot]>>,
@@ -474,6 +504,7 @@ struct Element {
     row_links: BTreeMap<&'static str, RowField>,
     children: Vec<Element>,
     timers: Vec<Element>,
+    sound_effects: Vec<Element>,
     commands: Vec<Element>,
     native_dialogs: Vec<Element>,
     secondary_windows: Vec<Element>,
@@ -679,6 +710,20 @@ impl Instance {
             )));
         };
         Ok(model)
+    }
+
+    /// Check the schema of a row before a host modifies a writable model.
+    pub fn validate_record_row(&self, name: &str, row: &RecordValue) -> Result<()> {
+        let member = Member::root(name);
+        let property = self.require_public(&member, true)?;
+        let ValueType::RecordList(record) = &property.ty else {
+            return Err(Error::Evaluation(format!("property {name} is not a record list")));
+        };
+        self.program().validate_host_value(
+            &ValueType::Record(record.clone()),
+            &Value::Record(row.clone()),
+            format_args!("property {name} row"),
+        )
     }
 
     /// Get the shared read-only touch model without copying its rows.

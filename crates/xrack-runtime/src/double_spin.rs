@@ -11,6 +11,10 @@ impl SpinDecimal {
         value.is_finite().then_some(Self(value))
     }
 
+    pub(crate) fn get(self) -> f64 {
+        self.0
+    }
+
     pub fn parse(text: &str, separator: char) -> Option<Self> {
         if !spin_text_is_valid(text, Some(separator)) {
             return None;

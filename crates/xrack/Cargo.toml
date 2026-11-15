@@ -13,8 +13,9 @@ xrack-platform-winit.workspace = true
 xrack-layout.workspace = true
 xrack-renderer-femtovg.workspace = true
 xrack-assets.workspace = true
-xrack-interpreter = { path = "../xrack-interpreter", version = "=0.5.1", optional = true, features = ["bundled"] }
+xrack-interpreter = { workspace = true, optional = true, features = ["bundled"] }
 
 [features]
 media = ["xrack-platform-winit/media"]
 interpreter = ["dep:xrack-interpreter"]
+live-reload = ["interpreter", "xrack-interpreter/live-reload"]

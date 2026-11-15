@@ -1,7 +1,8 @@
 use crate::{
-    ControlAction, InputRoute, Node, Value, combo_editable, decimal_separator, is_text_input,
-    search_suggestion, spin_text_is_valid, text_input_value,
+    ControlAction, InputRoute, Node, SpinDecimal, Value, combo_editable, decimal_separator,
+    is_text_input, search_suggestion, spin_text_is_valid, text_input_value,
 };
+use std::cmp::Ordering;
 use unicode_segmentation::UnicodeSegmentation;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -305,6 +306,115 @@ pub fn text_submission_is_valid(
         mode,
         || Ok::<_, std::convert::Infallible>(separator()),
         || Ok(maximum_length()),
+    )
+    .unwrap_or_else(|error| match error {})
+}
+
+/// Optional numeric limits for a single-line editor's submitted value.
+#[doc(hidden)]
+#[derive(Default)]
+pub struct NumericTextLimits {
+    pub minimum: Option<f64>,
+    pub maximum: Option<f64>,
+    pub decimals: Option<i64>,
+}
+
+impl NumericTextLimits {
+    fn allows(self, text: &str, mode: InputType, separator: char) -> bool {
+        if let Some(places) = self
+            .decimals
+            .and_then(|places| usize::try_from(places).ok())
+            && text
+                .split_once(separator)
+                .is_some_and(|(_, fraction)| fraction.len() > places)
+        {
+            return false;
+        }
+        if self.minimum.is_none() && self.maximum.is_none() {
+            return true;
+        }
+        if mode == InputType::Number {
+            // Compare the digits to the integral bounds before any float
+            // conversion, so adjacent large integers remain distinct.
+            let digits = text.trim_start_matches('0');
+            let digits = if digits.is_empty() { "0" } else { digits };
+            let compare = |bound: f64| {
+                let bound = format!("{:.0}", bound.abs());
+                digits
+                    .len()
+                    .cmp(&bound.len())
+                    .then_with(|| digits.cmp(&bound))
+            };
+            return self.minimum.is_none_or(|minimum| {
+                minimum.is_finite() && (minimum <= 0.0 || compare(minimum.ceil()) != Ordering::Less)
+            }) && self.maximum.is_none_or(|maximum| {
+                maximum.is_finite()
+                    && maximum >= 0.0
+                    && compare(maximum.floor()) != Ordering::Greater
+            });
+        }
+        let Some(number) = SpinDecimal::parse(text, separator).map(SpinDecimal::get) else {
+            return false;
+        };
+        self.minimum
+            .is_none_or(|minimum| minimum.is_finite() && number >= minimum)
+            && self
+                .maximum
+                .is_none_or(|maximum| maximum.is_finite() && number <= maximum)
+    }
+}
+
+/// Evaluate final submission conditions in order, keeping later bindings lazy.
+#[doc(hidden)]
+pub fn try_text_submission_with<E>(
+    text: &str,
+    mode: InputType,
+    separator: impl FnOnce() -> Result<char, E>,
+    maximum_length: impl FnOnce() -> Result<Option<i64>, E>,
+    minimum_length: impl FnOnce() -> Result<i64, E>,
+    numeric_limits: impl FnOnce(InputType) -> Result<NumericTextLimits, E>,
+    submit_when: impl FnOnce() -> Result<bool, E>,
+) -> Result<bool, E> {
+    let separator = if mode == InputType::Decimal {
+        separator()?
+    } else {
+        '.'
+    };
+    if !try_text_submission_is_valid(text, mode, || Ok(separator), maximum_length)? {
+        return Ok(false);
+    }
+    let Ok(minimum) = usize::try_from(minimum_length()?.max(0)) else {
+        return Ok(false);
+    };
+    if minimum > text.len() || text.graphemes(true).take(minimum).count() != minimum {
+        return Ok(false);
+    }
+    if matches!(mode, InputType::Number | InputType::Decimal)
+        && !numeric_limits(mode)?.allows(text, mode, separator)
+    {
+        return Ok(false);
+    }
+    submit_when()
+}
+
+#[doc(hidden)]
+pub fn text_submission_with(
+    text: &str,
+    mode: InputType,
+    separator: impl FnOnce() -> char,
+    maximum_length: impl FnOnce() -> Option<i64>,
+    minimum_length: impl FnOnce() -> i64,
+    numeric_limits: impl FnOnce(InputType) -> NumericTextLimits,
+    submit_when: impl FnOnce() -> bool,
+) -> bool {
+    try_text_submission_with(
+        text,
+        mode,
+        || Ok::<_, std::convert::Infallible>(separator()),
+        || Ok(maximum_length()),
+        || Ok(minimum_length()),
+        |mode| Ok(numeric_limits(mode)),
+        || Ok(submit_when()),
     )
     .unwrap_or_else(|error| match error {})
 }

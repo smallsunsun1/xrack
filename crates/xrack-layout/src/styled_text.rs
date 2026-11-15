@@ -1,7 +1,7 @@
-use crate::{LabelPlan, Rect, Size};
+use crate::{LabelPlan, Rect, Size, TextAlignment};
 use std::{borrow::Cow, ops::Range};
 use unicode_bidi::{BidiInfo, Direction, get_base_direction};
-use xrack_runtime::{Node, StyledText, TextStyle};
+use xrack_runtime::{LayoutDirection, Node, StyledText, TextHorizontalAlignment, TextStyle};
 
 #[derive(Clone, Debug, PartialEq)]
 struct Piece {
@@ -54,6 +54,27 @@ pub struct StyledTextLayout {
 }
 
 impl StyledTextLayout {
+    pub(crate) fn align_in_direction(
+        &mut self,
+        node: &Node,
+        width: f32,
+        direction: LayoutDirection,
+    ) {
+        let alignment =
+            TextAlignment::from_node(node, Some(direction), TextHorizontalAlignment::Start);
+        for line in self
+            .fragments
+            .chunk_by_mut(|left, right| left.bounds.y == right.bounds.y)
+        {
+            let first = line[0].bounds.x;
+            let last = line.last().unwrap().bounds;
+            let shift = alignment.offset(width - (last.x + last.width - first), false) - first;
+            for fragment in line {
+                fragment.bounds.x += shift;
+            }
+        }
+    }
+
     pub fn new(
         node: &Node,
         document: &StyledText,

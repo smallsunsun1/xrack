@@ -1,6 +1,6 @@
-use crate::{EditAction, Point, Rect, TextEdit, TextPosition, VisualTextLine};
+use crate::{EditAction, Point, Rect, TextAlignment, TextEdit, TextPosition, VisualTextLine};
 use std::{ops::Range, sync::Arc};
-use unicode_bidi::BidiInfo;
+use unicode_bidi::{BidiInfo, Direction, get_base_direction};
 use unicode_segmentation::UnicodeSegmentation;
 use xrack_runtime::TextWrap;
 
@@ -41,6 +41,7 @@ pub struct TextAreaLayout {
     pub lines: Arc<[Range<usize>]>,
     pub max_scroll: Point,
     visual: Option<Arc<[VisualTextLine]>>,
+    offsets: Option<Arc<[f32]>>,
 }
 
 pub(crate) fn grapheme_boundaries(text: &str) -> Vec<usize> {
@@ -194,7 +195,35 @@ impl TextAreaLayout {
             lines: lines.into(),
             max_scroll,
             visual,
+            offsets: None,
         }
+    }
+
+    pub fn aligned(
+        mut self,
+        text: &str,
+        alignment: TextAlignment,
+        advance: impl Fn(&str) -> f32,
+    ) -> Self {
+        self.offsets = alignment.has_offset().then(|| {
+            self.lines
+                .iter()
+                .enumerate()
+                .map(|(index, line)| {
+                    let value = &text[line.clone()];
+                    let (width, rtl) = self.visual_line(index).map_or_else(
+                        || (advance(value), get_base_direction(value) == Direction::Rtl),
+                        |line| (line.width(), line.is_rtl()),
+                    );
+                    alignment.offset((self.area.width - width - 1.0).max(0.0), rtl)
+                })
+                .collect()
+        });
+        self
+    }
+
+    pub fn line_offset(&self, index: usize) -> f32 {
+        self.offsets.as_ref().map_or(0.0, |offsets| offsets[index])
     }
 
     pub fn visual_line(&self, index: usize) -> Option<&VisualTextLine> {
@@ -253,15 +282,16 @@ impl TextAreaLayout {
         let range = &self.lines[line];
         let end = position.offset.clamp(range.start, range.end);
         Point {
-            x: self.visual_line(line).map_or_else(
-                || advance(&text[range.start..end]),
-                |visual| {
-                    visual.caret_x(TextPosition {
-                        offset: end - range.start,
-                        trailing: position.trailing,
-                    })
-                },
-            ),
+            x: self.line_offset(line)
+                + self.visual_line(line).map_or_else(
+                    || advance(&text[range.start..end]),
+                    |visual| {
+                        visual.caret_x(TextPosition {
+                            offset: end - range.start,
+                            trailing: position.trailing,
+                        })
+                    },
+                ),
             y: line as f32 * self.line_height,
         }
     }
@@ -274,6 +304,7 @@ impl TextAreaLayout {
         advance: impl Fn(&str) -> f32,
     ) -> TextPosition {
         let range = &self.lines[line];
+        let x = x - self.line_offset(line);
         if let Some(visual) = self.visual_line(line) {
             return line_offset(visual.hit(x), range.start);
         }

@@ -265,7 +265,7 @@ impl<C: Component, T: TextMeasurer> UiDriver<C, T> {
 
     fn path(&self, id: &str) -> Vec<usize> {
         fn locate(node: &Node, id: &str, path: &mut Vec<usize>, found: &mut Option<Vec<usize>>) {
-            if node.id == Some(id) {
+            if node.element_id() == Some(id) {
                 assert!(
                     found.replace(path.clone()).is_none(),
                     "ambiguous UI target {id:?}"
@@ -286,8 +286,8 @@ impl<C: Component, T: TextMeasurer> UiDriver<C, T> {
         self.scene.at_path(&self.path(id)).unwrap()
     }
 
-    pub fn focused(&self) -> Option<&'static str> {
-        self.input.focused.as_ref().and_then(|target| target.id)
+    pub fn focused(&self) -> Option<&str> {
+        self.input.focused.as_ref()?.element_id()
     }
 
     pub fn can_hit(&mut self, id: &str) -> bool {

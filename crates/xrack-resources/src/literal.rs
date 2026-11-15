@@ -166,6 +166,8 @@ pub fn decode(ty: &Type, spelling: &str) -> Result<Literal, String> {
             "visible" => Visible, "contain" => Contain),
         Type::ScrollSnapMode => enumeration!(ScrollSnapMode,
             "none" => None, "always" => Always, "on-release" => OnRelease),
+        Type::LayoutDirection => enumeration!(LayoutDirection,
+            "left-to-right" => LeftToRight, "right-to-left" => RightToLeft),
         Type::FlexboxLayoutDirection => enumeration!(FlexboxLayoutDirection,
             "row" => Row, "row-reverse" => RowReverse, "column" => Column, "column-reverse" => ColumnReverse),
         Type::FlexboxLayoutWrap => enumeration!(FlexboxLayoutWrap,

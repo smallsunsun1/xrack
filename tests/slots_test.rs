@@ -1,4 +1,4 @@
-use xrack_layout::{ActivationKey, Interaction, Size, SliderKey, TextMeasurer, layout};
+use xrack_layout::{ActivationKey, Interaction, Point, Size, SliderKey, TextMeasurer, layout};
 use xrack_runtime::Component;
 
 const SOURCE: &str = include_str!("../examples/slots/slots.xr");
@@ -94,6 +94,54 @@ fn slot_validation_rejects_ambiguous_or_conditional_placement() {
             "component X inherits Rectangle { Button { ButtonContent {} ButtonContent {} } }",
             "at most one ButtonContent",
         ),
+        (
+            "component X inherits Rectangle { Button { ToggleIndicator {} } }",
+            "static child of CheckBox or RadioButton or Switch",
+        ),
+        (
+            "component X inherits Rectangle { Switch { if true : ToggleIndicator {} } }",
+            "requires a static child",
+        ),
+        (
+            "component X inherits Rectangle { CheckBox { ToggleIndicator {} ToggleIndicator {} } }",
+            "at most one ToggleIndicator",
+        ),
+        (
+            "component X inherits Rectangle { CheckBox { SwitchThumb {} } }",
+            "static child of Switch",
+        ),
+        (
+            "component X inherits Rectangle { Switch { SwitchThumb {} SwitchThumb {} } }",
+            "at most one SwitchThumb",
+        ),
+        (
+            "component X inherits Rectangle { Switch { if true : SwitchThumb {} } }",
+            "requires a static child",
+        ),
+        (
+            "component X inherits Rectangle { Slider { SpinUpIndicator {} } }",
+            "static child of SpinBox or DoubleSpinBox",
+        ),
+        (
+            "component X inherits Rectangle { SpinBox { SpinDownIndicator {} SpinDownIndicator {} } }",
+            "at most one SpinDownIndicator",
+        ),
+        (
+            "component X inherits Rectangle { RangeSlider { RangeUpperHandle {} RangeUpperHandle {} } }",
+            "at most one RangeUpperHandle",
+        ),
+        (
+            "component X inherits Rectangle { TabBar { TabButton { ButtonContent {} ButtonContent {} } } }",
+            "at most one ButtonContent",
+        ),
+        (
+            "component X inherits Rectangle { TabBar { TabButton { if true : ButtonContent {} } } }",
+            "requires a static child",
+        ),
+        (
+            "component X inherits Rectangle { Slider { RangeLowerHandle {} } }",
+            "static child of RangeSlider",
+        ),
     ] {
         let doc = xrack_compiler::parse(source).unwrap();
         let error = xrack_compiler::lower(&doc, "invalid-slots.xr").unwrap_err();
@@ -107,7 +155,17 @@ fn globals_are_reactive_and_shared_per_instance_tree() {
     let doc = xrack_compiler::parse(SOURCE).unwrap();
     let ir = xrack_compiler::lower(&doc, "slots.xr").unwrap();
     let preview = xrack_compiler::prepare_mlir_preview(&ir.to_mlir(), "slots.mlir").unwrap();
-    assert_eq!(preview.components, ["SlotDemo", "GlobalDemo"]);
+    assert_eq!(
+        preview.components,
+        [
+            "SlotDemo",
+            "GlobalDemo",
+            "ToggleIndicatorDemo",
+            "SpinIndicatorDemo",
+            "RangeHandleDemo",
+            "TabContentDemo"
+        ]
+    );
     let program = xrack_interpreter::Program::from_module(&ir).unwrap();
     assert!(
         !program
@@ -391,4 +449,440 @@ fn a_global_upgraded_from_weak_keeps_its_tree_alive() {
     assert!(interpreted_summary.upgrade().is_none());
     assert!(aot_settings.upgrade().is_none());
     assert!(interpreted_settings.upgrade().is_none());
+}
+
+#[test]
+fn replacement_toggle_indicators_keep_pointer_keyboard_and_group_behavior() {
+    use xrack_runtime::{CheckState, Value};
+    let doc = xrack_compiler::parse(SOURCE).unwrap();
+    let ir = xrack_compiler::lower(&doc, "slots.xr").unwrap();
+    let mut interpreted = xrack_interpreter::load_mlir(&ir.to_mlir())
+        .unwrap()
+        .create("ToggleIndicatorDemo")
+        .unwrap();
+    let mut generated = slots_ui::ToggleIndicatorDemo::new();
+    let viewport = Size::new(420.0, 260.0);
+
+    for ui in [&mut generated as &mut dyn Component, &mut interpreted] {
+        let mut input = Interaction::default();
+        let scene = ui.render();
+        let frame = layout(&scene, viewport, &mut Text);
+        let checkbox_mark = frame.at_path(&[0, 0, 0]).unwrap().bounds;
+        assert_eq!((checkbox_mark.width, checkbox_mark.height), (34.0, 26.0));
+        input.pointer_move(
+            &scene,
+            &frame,
+            Point {
+                x: checkbox_mark.x + 8.0,
+                y: checkbox_mark.y + 8.0,
+            },
+        );
+        input.pointer_press_in_scene(&scene, &frame);
+        let target = input.pointer_release_target().unwrap();
+        assert_eq!(target.element_id(), Some("master"));
+        assert!(ui.dispatch_at(&scene, &target.path, "clicked"));
+
+        let scene = ui.render();
+        assert_eq!(
+            scene.find("master").unwrap().check_state(),
+            CheckState::PartiallyChecked
+        );
+        assert_eq!(
+            scene.at_path(&[0, 0, 0, 0, 0]).unwrap().text("text"),
+            Some("–")
+        );
+        let frame = layout(&scene, viewport, &mut Text);
+        let radio_mark = frame.at_path(&[0, 1, 1, 0]).unwrap().bounds;
+        input.pointer_move(
+            &scene,
+            &frame,
+            Point {
+                x: radio_mark.x + 8.0,
+                y: radio_mark.y + 8.0,
+            },
+        );
+        input.pointer_press_in_scene(&scene, &frame);
+        let target = input.pointer_release_target().unwrap();
+        assert_eq!(target.element_id(), Some("shared"));
+        let action = input.select_group_option(&scene, &frame, &target).unwrap();
+        assert!(ui.control_at(&scene, &action.path, action.action));
+
+        let scene = ui.render();
+        assert_eq!(
+            scene.at_path(&[0, 1, 1, 0, 0, 0]).unwrap().text("text"),
+            Some("S")
+        );
+        let frame = layout(&scene, viewport, &mut Text);
+        let target = input.accessibility_target(&scene, &frame, &[0, 2]).unwrap();
+        input.accessibility_focus(target);
+        input.key_press_with_scene(&scene, ActivationKey::Space);
+        let target = input
+            .key_release_with_scene(&scene, ActivationKey::Space)
+            .unwrap();
+        assert_eq!(target.element_id(), Some("online"));
+        assert!(ui.dispatch_at(&scene, &target.path, "clicked"));
+        let scene = ui.render();
+        assert_eq!(
+            scene.at_path(&[0, 2, 0, 0, 0]).unwrap().text("text"),
+            Some("ON")
+        );
+    }
+    assert_eq!(generated.get_tri(), CheckState::PartiallyChecked);
+    assert_eq!(generated.get_profile(), 1);
+    assert!(generated.get_network());
+    assert_eq!(
+        interpreted.get("tri"),
+        Ok(Value::CheckState(CheckState::PartiallyChecked))
+    );
+    assert_eq!(interpreted.get("profile"), Ok(Value::Int(1)));
+    assert_eq!(interpreted.get("network"), Ok(Value::Bool(true)));
+
+    generated.set_option_enabled(false);
+    interpreted
+        .set("option-enabled", Value::Bool(false))
+        .unwrap();
+    for ui in [&mut generated as &mut dyn Component, &mut interpreted] {
+        let scene = ui.render();
+        let frame = layout(&scene, viewport, &mut Text);
+        let mark = frame.at_path(&[0, 2, 0]).unwrap().bounds;
+        let mut input = Interaction::default();
+        input.pointer_move(
+            &scene,
+            &frame,
+            Point {
+                x: mark.x + 8.0,
+                y: mark.y + 8.0,
+            },
+        );
+        input.pointer_press_in_scene(&scene, &frame);
+        assert!(input.pointer_release_target().is_none());
+        assert!(
+            ui.render()
+                .find("online")
+                .unwrap()
+                .boolean("checked", false)
+        );
+    }
+}
+
+#[test]
+fn spin_indicators_share_geometry_with_hits_and_preserve_editing() {
+    use std::time::{Duration, Instant};
+    use xrack_layout::{EditAction, ScrollGestureKind, SpinGeometry};
+    use xrack_runtime::{LayoutDirection, Value};
+
+    let doc = xrack_compiler::parse(SOURCE).unwrap();
+    let ir = xrack_compiler::lower(&doc, "slots.xr").unwrap();
+    let program = xrack_interpreter::load_mlir(&ir.to_mlir()).unwrap();
+    let viewport = Size::new(440.0, 250.0);
+
+    fn step(
+        ui: &mut dyn Component,
+        input: &mut Interaction,
+        viewport: Size,
+        path: &[usize],
+        upward: bool,
+        expected_width: f32,
+    ) -> bool {
+        let scene = ui.render();
+        let frame = layout(&scene, viewport, &mut Text);
+        let spin = frame.at_path(path).unwrap();
+        let geometry = SpinGeometry::for_layout(spin, scene.at_path(path).unwrap());
+        let bounds = if upward { geometry.up } else { geometry.down };
+        // Click in the portion of the replacement outside the stock 28 px hit area.
+        let rtl = spin.layout_direction == LayoutDirection::RightToLeft;
+        let point = Point {
+            x: if rtl {
+                bounds.x + bounds.width - 5.0
+            } else {
+                bounds.x + 5.0
+            },
+            y: bounds.y + bounds.height * 0.5,
+        };
+        assert_eq!(bounds.width, expected_width);
+        if rtl {
+            assert_eq!(geometry.up.x, spin.bounds.x);
+            assert_eq!(geometry.up.x + geometry.up.width, geometry.text.x);
+        } else {
+            assert_eq!(geometry.text.x + geometry.text.width, geometry.up.x);
+        }
+        if let Some(part) = spin.child_at(usize::from(!upward)) {
+            assert_eq!(part.bounds, bounds);
+        }
+        input.pointer_move(&scene, &frame, point);
+        input.pointer_press_in_scene(&scene, &frame);
+        input.spin_press(&scene, &frame);
+        input.spin_release(&scene, &frame).is_some_and(|action| {
+            assert_eq!(action.path, path);
+            ui.control_at(&scene, &action.path, action.action)
+        })
+    }
+
+    for rtl in [false, true] {
+        let mut generated = slots_ui::SpinIndicatorDemo::new();
+        generated.set_rtl(rtl);
+        let mut interpreted = program.create("SpinIndicatorDemo").unwrap();
+        interpreted.set("rtl", rtl.into()).unwrap();
+        let quantity = [0, 1];
+        let price = [0, 2];
+        for ui in [&mut generated as &mut dyn Component, &mut interpreted] {
+            let mut input = Interaction::default();
+            assert!(step(ui, &mut input, viewport, &quantity, true, 52.0));
+            assert!(step(ui, &mut input, viewport, &quantity, false, 52.0));
+            assert!(step(ui, &mut input, viewport, &price, true, 64.0));
+            assert!(step(ui, &mut input, viewport, &price, false, 64.0));
+
+            let scene = ui.render();
+            let frame = layout(&scene, viewport, &mut Text);
+            let spin = scene.find("quantity-field").unwrap();
+            let geom = SpinGeometry::for_layout(frame.at_path(&quantity).unwrap(), spin);
+            let edge = Point {
+                x: geom.up.x + 5.0,
+                y: geom.down.y,
+            };
+            let now = Instant::now();
+            let press = Point {
+                y: edge.y - 1.0,
+                ..edge
+            };
+            let release = Point {
+                y: edge.y + 1.0,
+                ..edge
+            };
+            assert!(input.begin_scroll_gesture(
+                &scene,
+                &frame,
+                press,
+                now,
+                ScrollGestureKind::Touch
+            ));
+            let tap =
+                input.end_scroll_gesture(&scene, &frame, release, now + Duration::from_millis(20));
+            assert!(!tap.tap && tap.control.is_none());
+            let target = input
+                .accessibility_target(&scene, &frame, &quantity)
+                .unwrap();
+            input.accessibility_focus(target);
+            input.edit_spin(spin, EditAction::SelectAll);
+            input.edit_spin(spin, EditAction::Insert("7"));
+            let commit = input.commit_spin_draft().unwrap();
+            assert!(ui.control_at(&scene, &commit.path, commit.action));
+        }
+        assert_eq!(generated.get_quantity(), 7);
+        assert_eq!(generated.get_price(), 1.25);
+        assert_eq!(generated.get_edits(), 5);
+        assert_eq!(interpreted.get("quantity"), Ok(Value::Int(7)));
+        assert_eq!(interpreted.get("price"), Ok(Value::Float(1.25)));
+        assert_eq!(interpreted.get("edits"), Ok(Value::Int(5)));
+
+        generated.set_locked(true);
+        interpreted.set("locked", true.into()).unwrap();
+        for ui in [&mut generated as &mut dyn Component, &mut interpreted] {
+            assert!(!step(
+                ui,
+                &mut Interaction::default(),
+                viewport,
+                &quantity,
+                true,
+                52.0
+            ));
+        }
+    }
+}
+
+#[test]
+fn custom_range_handles_follow_touch_preview_and_keep_two_endpoint_controls() {
+    use xrack_layout::{SliderGeometry, layout_with_input};
+    use xrack_runtime::Value;
+
+    let doc = xrack_compiler::parse(SOURCE).unwrap();
+    let ir = xrack_compiler::lower(&doc, "slots.xr").unwrap();
+    let mut interpreted = xrack_interpreter::load_mlir(&ir.to_mlir())
+        .unwrap()
+        .create("RangeHandleDemo")
+        .unwrap();
+    let mut generated = slots_ui::RangeHandleDemo::new();
+    let viewport = Size::new(440.0, 300.0);
+    let lower = [0, 1, 0];
+
+    for ui in [&mut generated as &mut dyn Component, &mut interpreted] {
+        let mut input = Interaction::default();
+        let scene = ui.render();
+        let frame = layout(&scene, viewport, &mut Text);
+        let band = scene.find("band").unwrap();
+        let track = SliderGeometry::for_node(frame.at_path(&[0, 1]).unwrap().bounds, band);
+        let center = track.position(0.2);
+        let start = Point {
+            x: center.x + 15.0,
+            y: center.y,
+        };
+        let before = frame.at_path(&lower).unwrap().bounds;
+        assert!(before.contains(start), "the artwork extends the hit region");
+        assert_eq!(before.width, 42.0);
+        assert_eq!(frame.at_path(&[0, 1, 2]).unwrap().bounds, before);
+        assert!(input.touch_range_press(&scene, &frame, start));
+        assert!(input.slider_press(&scene, &frame).is_none());
+        assert!(input.is_focused(&lower));
+        let next = track.position(0.47);
+        input.pointer_move(
+            &scene,
+            &frame,
+            Point {
+                x: next.x + 15.0,
+                y: next.y,
+            },
+        );
+        assert!(input.slider_drag(&scene, &frame).is_none());
+        assert_eq!(
+            ui.render().find("band").unwrap().number("lower-value"),
+            Some(20.0)
+        );
+
+        let preview = layout_with_input(&scene, viewport, &mut Text, &input);
+        let draft = preview.at_path(&lower).unwrap().bounds;
+        assert_eq!(preview.at_path(&[0, 1, 2]).unwrap().bounds, draft);
+        assert!((draft.x + draft.width * 0.5 - next.x).abs() < 0.01);
+        assert_eq!(
+            preview.at_path(&[0, 1, 1]).unwrap().bounds,
+            frame.at_path(&[0, 1, 1]).unwrap().bounds,
+        );
+
+        let release = input.slider_release(&scene, &preview).unwrap();
+        assert_eq!(release.path, lower);
+        assert!(ui.adjust_range_at(&scene, &release.path, release.action));
+        input.finish_touch_range();
+
+        let scene = ui.render();
+        let frame = layout(&scene, viewport, &mut Text);
+        let upper = [0, 2, 1];
+        let bounds = frame.at_path(&upper).unwrap().bounds;
+        assert_eq!(bounds.height, 38.0);
+        assert_eq!(frame.at_path(&[0, 2, 2]).unwrap().bounds, bounds);
+        let target = input.accessibility_target(&scene, &frame, &upper).unwrap();
+        input.accessibility_focus(target);
+        let adjust = input
+            .slider_key(&scene, &frame, SliderKey::Up, true)
+            .unwrap();
+        assert_eq!(adjust.path, upper);
+        assert!(ui.adjust_range_at(&scene, &adjust.path, adjust.action));
+        let scene = ui.render();
+        let next = layout(&scene, viewport, &mut Text)
+            .at_path(&upper)
+            .unwrap()
+            .bounds;
+        assert!(next.y < bounds.y);
+    }
+    assert_eq!(generated.get_low(), 50.0);
+    assert_eq!(generated.get_high(), 80.0);
+    assert_eq!(generated.get_changes(), 1);
+    assert_eq!(generated.get_releases(), 1);
+    assert_eq!(interpreted.get("low"), Ok(Value::Float(50.0)));
+    assert_eq!(interpreted.get("high"), Ok(Value::Float(80.0)));
+    assert_eq!(interpreted.get("changes"), Ok(Value::Int(1)));
+    assert_eq!(interpreted.get("releases"), Ok(Value::Int(1)));
+}
+
+#[test]
+fn tab_content_uses_repeated_row_context_and_keeps_navigation_in_the_tab_bar() {
+    use xrack_layout::NavigationKey;
+    use xrack_runtime::{Color, Orientation, Value};
+
+    let doc = xrack_compiler::parse(SOURCE).unwrap();
+    let ir = xrack_compiler::lower(&doc, "slots.xr").unwrap();
+    let mut interpreted = xrack_interpreter::load_mlir(&ir.to_mlir())
+        .unwrap()
+        .create("TabContentDemo")
+        .unwrap();
+    let mut generated = slots_ui::TabContentDemo::new();
+    let viewport = Size::new(432.0, 246.0);
+
+    for ui in [&mut generated as &mut dyn Component, &mut interpreted] {
+        let mut input = Interaction::default();
+        let scene = ui.render();
+        let bar = scene.find("tabs").unwrap();
+        for (index, label) in ["Overview", "Reports", "Settings"].into_iter().enumerate() {
+            let content = bar.children[index].control_part("ButtonContent").unwrap();
+            assert_eq!(content.children[0].children[0].text("text"), Some(label));
+        }
+        let frame = layout(&scene, viewport, &mut Text);
+        let first = frame.at_path(&[0, 0]).unwrap().bounds;
+        let adornment = frame.at_path(&[0, 0, 0, 0]).unwrap().bounds;
+        assert_eq!(first.width, 120.0);
+        assert_eq!(adornment.width, 100.0);
+        assert_eq!(frame.at_path(&[3, 0]).unwrap().bounds.height, 44.0);
+        input.pointer_move(
+            &scene,
+            &frame,
+            Point {
+                x: adornment.x + 10.0,
+                y: adornment.y + 9.0,
+            },
+        );
+        input.pointer_press_in_scene(&scene, &frame);
+        let pressed = input.pointer_release_target().unwrap();
+        assert_eq!(pressed.path, [0, 0]);
+        input.accessibility_focus(pressed);
+        let action = input
+            .group_key(&scene, &frame, NavigationKey::Right)
+            .unwrap();
+        assert_eq!(action.path, [0]);
+        assert!(ui.control_at(&scene, &action.path, action.action));
+        assert!(input.is_focused(&[0, 2]));
+
+        let scene = ui.render();
+        let frame = layout(&scene, viewport, &mut Text);
+        let tab_bar = frame.at_path(&[0]).unwrap();
+        assert!(tab_bar.scroll_on(Orientation::Horizontal).unwrap().offset > 0.0);
+        let selected = frame.at_path(&[0, 2]).unwrap().bounds;
+        assert_eq!(selected.intersect(tab_bar.bounds), selected);
+        assert_eq!(
+            scene.at_path(&[0, 2, 0, 0]).unwrap().color("background"),
+            Some(Color(0x208c78ff)),
+        );
+        assert!(
+            frame
+                .at_path(&[3])
+                .unwrap()
+                .scroll_on(Orientation::Vertical)
+                .unwrap()
+                .offset
+                > 0.0,
+        );
+    }
+    assert_eq!(generated.get_selected(), 2);
+    assert_eq!(interpreted.get("selected"), Ok(Value::Int(2)));
+
+    let names = vec!["Overview".into(), "Reports".into(), "Build queue".into()];
+    generated.set_sections(names.clone());
+    interpreted
+        .set("sections", Value::StringList(names))
+        .unwrap();
+    for ui in [&generated as &dyn Component, &interpreted] {
+        let scene = ui.render();
+        let badge = scene.at_path(&[0, 2, 0, 0]).unwrap();
+        assert_eq!(badge.children[0].text("text"), Some("Build queue"));
+        assert_eq!(badge.color("background"), Some(Color(0x208c78ff)));
+    }
+}
+
+#[test]
+fn mlir_requires_a_switch_parent_for_the_thumb_slot() {
+    let doc = xrack_compiler::parse(
+        "export component X inherits Window { Switch { SwitchThumb {} ToggleIndicator {} } }",
+    )
+    .unwrap();
+    let ir = xrack_compiler::lower(&doc, "switch-slot.xr")
+        .unwrap()
+        .to_mlir();
+    let valid = xrack_compiler::prepare_mlir_preview(&ir, "switch-slot.mlir").unwrap();
+    assert_eq!(valid.components, ["X"]);
+    let wrong_owner = ir.replace("kind = \"Switch\"", "kind = \"CheckBox\"");
+    assert_ne!(wrong_owner, ir);
+    let error = xrack_compiler::prepare_mlir_preview(&wrong_owner, "switch-slot.mlir")
+        .err()
+        .unwrap();
+    assert!(
+        error.to_string().contains("static child of Switch"),
+        "{error}"
+    );
 }

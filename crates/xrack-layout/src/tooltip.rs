@@ -242,6 +242,9 @@ impl TooltipState {
             node,
             anchor,
             owner: bounds,
+            layout_direction: node
+                .layout_direction()
+                .or(owner.layout_direction_override()),
         })
     }
 }
@@ -250,6 +253,7 @@ pub struct TooltipPopup<'a> {
     pub node: &'a Node,
     anchor: Anchor,
     owner: Rect,
+    layout_direction: Option<xrack_runtime::LayoutDirection>,
 }
 
 /// Place a tooltip surface in window coordinates, using the normal text and layout engine.
@@ -262,6 +266,7 @@ pub fn layout_tooltip(
         node,
         anchor,
         owner,
+        layout_direction,
     } = popup;
     let area = viewport.inset(6.0);
     let mut surface = Node::new("VerticalLayout", None);
@@ -358,6 +363,7 @@ pub fn layout_tooltip(
     );
     let mut context = LayoutContext {
         row_key: None,
+        layout_direction,
         anchor: None,
         resolved_list_scroll: None,
         row_layouts: None,

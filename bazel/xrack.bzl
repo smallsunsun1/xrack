@@ -15,7 +15,7 @@ rust_generated_source = rule(
     attrs = {"src": attr.label(allow_single_file = [".rs"], mandatory = True)},
 )
 
-def xr_ui_library(name, src, visibility = None, assets = [], sources = []):
+def xr_ui_library(name, src, visibility = None, assets = [], sources = [], live_reload = False):
     generated = name + ".rs"
     asset_args = "".join([" --asset \"$(location %s)\"" % asset for asset in assets])
     source_args = "".join([" --source \"$(location %s)\"" % file for file in sources])
@@ -24,7 +24,7 @@ def xr_ui_library(name, src, visibility = None, assets = [], sources = []):
         srcs = [src] + assets + sources,
         outs = [generated],
         tools = ["//crates/xrack-compiler:xrackc"],
-        cmd = '"$(location //crates/xrack-compiler:xrackc)" --emit rust --restrict-assets --restrict-sources%s%s -o "$@" "$(location %s)"' % (asset_args, source_args, src),
+        cmd = '"$(location //crates/xrack-compiler:xrackc)" --emit %s --restrict-assets --restrict-sources%s%s -o "$@" "$(location %s)"' % ("rust-live" if live_reload else "rust", asset_args, source_args, src),
     )
     rust_library(
         name = name,
@@ -34,6 +34,6 @@ def xr_ui_library(name, src, visibility = None, assets = [], sources = []):
         edition = "2024",
         # The compiler tests verify the generated source. Lint the generator itself.
         tags = ["no-clippy"],
-        deps = ["//crates/xrack-runtime:xrack_runtime"],
+        deps = ["//crates/xrack-runtime:xrack_runtime"] + (["//crates/xrack-preview:xrack_preview_live"] if live_reload else []),
         visibility = visibility,
     )

@@ -901,7 +901,12 @@ impl Builder<'_> {
                 item.bounds,
                 path,
                 self.input,
-                (self.scale, item.world_transform()),
+                (
+                    self.scale,
+                    item.world_transform(),
+                    item.layout_direction_override(),
+                    item.clip,
+                ),
                 self.text_system,
                 |start, value| {
                     let mut key = Key::element(node, path, row);
@@ -1293,7 +1298,7 @@ impl Builder<'_> {
         path: &[usize],
         row: Option<(RowKey, usize)>,
     ) -> Vec<NodeId> {
-        let geometry = CalendarGeometry::new(node, item.bounds);
+        let geometry = CalendarGeometry::for_layout(node, item);
         let target = (!self.input.menu_open())
             .then(|| {
                 self.input
@@ -1382,7 +1387,7 @@ impl Builder<'_> {
         path: &[usize],
         row: Option<(RowKey, usize)>,
     ) -> Vec<NodeId> {
-        let geometry = CalendarGeometry::new(node, item.bounds);
+        let geometry = CalendarGeometry::for_layout(node, item);
         let days = geometry
             .weekdays(node)
             .map(|(rect, name)| (rect, name.to_owned()));
@@ -1458,7 +1463,7 @@ impl Builder<'_> {
         target: &Target,
         row: Option<(RowKey, usize)>,
     ) -> Vec<NodeId> {
-        SearchGeometry::new(item.bounds)
+        SearchGeometry::for_layout(item)
             .actions(node)
             .filter_map(|(rect, action)| {
                 let rect = rect.intersect(item.clip);
@@ -1916,6 +1921,51 @@ mod tests {
     }
 
     #[test]
+    fn empty_view_content_exposes_its_button_without_creating_an_accessible_row() {
+        let mut window = Node::new("Window", None);
+        let mut view = Node::new("StandardListView", Some("results"));
+        view.properties
+            .insert("accessible-name", "Results".to_owned().into());
+        length(&mut view, "width", 180.0);
+        length(&mut view, "height", 100.0);
+        view.list = Some(ListMetrics::default());
+        let mut empty = Node::new("EmptyState", None);
+        empty.children.push(button("retry", "Retry", 10.0));
+        view.children.push(empty);
+        window.children.push(view);
+
+        let scene = Rc::new(window);
+        let frame = Rc::new(layout(&scene, Size::new(200.0, 120.0), &mut Text));
+        let mut projection = Projection::default();
+        let update = projection
+            .update(&scene, &frame, &Interaction::default(), 1.0, None)
+            .unwrap();
+        let (id, retry) = named(&update, "Retry");
+        assert_eq!(retry.role(), Role::Button);
+        assert!(retry.supports_action(Action::Click));
+        assert!(
+            matches!(projection.route(id), Some(Route::Element { target, .. })
+            if target.path == [0, 0, 0])
+        );
+        assert!(
+            !update
+                .nodes
+                .iter()
+                .any(|(_, node)| node.role() == Role::ListBoxOption)
+        );
+
+        let mut restored = (*scene).clone();
+        restored.children[0].list.as_mut().unwrap().row_count = 1;
+        restored.children[0].children.clear();
+        let restored = Rc::new(restored);
+        let frame = Rc::new(layout(&restored, Size::new(200.0, 120.0), &mut Text));
+        projection
+            .update(&restored, &frame, &Interaction::default(), 1.0, None)
+            .unwrap();
+        assert!(projection.route(id).is_none());
+    }
+
+    #[test]
     fn sparse_table_cells_keep_accessible_routes_when_dense_positions_change() {
         use xrack_runtime::{TableColumnWindow, TableHeader};
 
@@ -2163,7 +2213,36 @@ mod tests {
         slider.properties.insert("value", 40.0.into());
         slider.properties.insert("maximum", 100.0.into());
         slider.children.push(Node::new("SliderHandle", None));
-        window.children.extend([apply, slider]);
+        let mut checkbox = Node::new("CheckBox", Some("master"));
+        length(&mut checkbox, "y", 42.0);
+        length(&mut checkbox, "width", 100.0);
+        length(&mut checkbox, "height", 34.0);
+        checkbox
+            .properties
+            .insert("text", "Include settings".to_owned().into());
+        checkbox
+            .properties
+            .insert("check-state", CheckState::PartiallyChecked.into());
+        let mut indicator = Node::new("ToggleIndicator", None);
+        indicator
+            .children
+            .push(button("mark", "Decorative checkbox mark", 0.0));
+        checkbox.children.push(indicator);
+        let mut switch = Node::new("Switch", Some("network"));
+        length(&mut switch, "x", 110.0);
+        length(&mut switch, "y", 42.0);
+        length(&mut switch, "width", 100.0);
+        length(&mut switch, "height", 34.0);
+        switch
+            .properties
+            .insert("text", "Network".to_owned().into());
+        switch.properties.insert("checked", true.into());
+        let mut thumb = Node::new("SwitchThumb", None);
+        thumb
+            .children
+            .push(button("ornament", "Thumb decoration", 0.0));
+        switch.children.push(thumb);
+        window.children.extend([apply, slider, checkbox, switch]);
 
         let scene = Rc::new(window);
         let frame = Rc::new(layout(&scene, Size::new(220.0, 100.0), &mut Text));
@@ -2188,6 +2267,151 @@ mod tests {
             .update(&scene, &frame, &input, 1.0, None)
             .unwrap();
         assert_eq!(update.focus, slider_id);
+        let (check_id, checkbox) = named(&update, "Include settings");
+        assert_eq!(checkbox.role(), Role::CheckBox);
+        assert!(checkbox.supports_action(Action::Click));
+        assert_eq!(checkbox.toggled(), Some(Toggled::Mixed));
+        assert!(checkbox.children().is_empty());
+        input.focus_next(&scene, &frame, false);
+        let update = projection
+            .update(&scene, &frame, &input, 1.0, None)
+            .unwrap();
+        assert_eq!(update.focus, check_id);
+        let (switch_id, switch) = named(&update, "Network");
+        assert_eq!(switch.role(), Role::Switch);
+        assert!(switch.supports_action(Action::Click));
+        assert_eq!(switch.toggled(), Some(Toggled::True));
+        assert!(switch.children().is_empty());
+        input.focus_next(&scene, &frame, false);
+        let update = projection
+            .update(&scene, &frame, &input, 1.0, None)
+            .unwrap();
+        assert_eq!(update.focus, switch_id);
+    }
+
+    #[test]
+    fn search_buttons_and_editor_text_follow_the_rtl_layout() {
+        let mut search = Node::new("SearchField", Some("query"));
+        length(&mut search, "width", 220.0);
+        length(&mut search, "height", 36.0);
+        search
+            .properties
+            .insert("accessible-name", "Query".to_owned().into());
+        search.properties.insert(
+            "layout-direction",
+            xrack_runtime::LayoutDirection::RightToLeft.into(),
+        );
+        search.properties.insert("text", "report".to_owned().into());
+        let scene = Rc::new(search);
+        let frame = Rc::new(layout(&scene, Size::new(220.0, 36.0), &mut Text));
+        let geometry = SearchGeometry::for_layout(&frame);
+        let input = Interaction::default();
+        let text = TextSystem::system().unwrap();
+        let update = Projection::default()
+            .update(&scene, &frame, &input, 1.0, Some(&text))
+            .unwrap();
+        let (_, submit) = named(&update, "Search");
+        let (_, clear) = named(&update, "Clear search");
+        assert_eq!(clear.bounds().unwrap().x0, f64::from(geometry.clear.x));
+        assert_eq!(submit.bounds().unwrap().x0, f64::from(geometry.submit.x));
+        assert!(clear.supports_action(Action::Click));
+        assert!(submit.supports_action(Action::Click));
+        let run = update
+            .nodes
+            .iter()
+            .find_map(|(_, node)| {
+                (node.role() == Role::TextRun && node.value() == Some("report")).then_some(node)
+            })
+            .unwrap()
+            .bounds()
+            .unwrap();
+        assert!(run.x0 > f64::from(geometry.entry.x + geometry.entry.width * 0.5));
+        assert!(run.x1 < f64::from(geometry.submit.x));
+    }
+
+    #[test]
+    fn spin_indicator_art_keeps_numeric_accessibility_on_the_parent() {
+        let mut window = Node::new("Window", None);
+        window.properties.insert(
+            "layout-direction",
+            xrack_runtime::LayoutDirection::RightToLeft.into(),
+        );
+        let mut spin = Node::new("DoubleSpinBox", Some("price"));
+        length(&mut spin, "width", 180.0);
+        length(&mut spin, "height", 48.0);
+        spin.properties
+            .insert("accessible-name", "Price".to_owned().into());
+        spin.properties.insert("value", 1.25_f64.into());
+        spin.properties.insert("step-size", 0.25_f64.into());
+        let mut up = Node::new("SpinUpIndicator", None);
+        length(&mut up, "width", 64.0);
+        up.children
+            .push(button("decoration", "Decorative up arrow", 0.0));
+        spin.children.push(up);
+        window.children.push(spin);
+
+        let scene = Rc::new(window);
+        let frame = Rc::new(layout(&scene, Size::new(220.0, 100.0), &mut Text));
+        let item = frame.child_at(0).unwrap();
+        let parts = xrack_layout::SpinGeometry::for_layout(item, scene.child_at(0).unwrap());
+        assert_eq!(parts.up.x, item.bounds.x);
+        assert_eq!(item.child_at(0).unwrap().bounds, parts.up);
+        let mut input = Interaction::default();
+        input.focus_next(&scene, &frame, false);
+        let update = Projection::default()
+            .update(&scene, &frame, &input, 1.0, None)
+            .unwrap();
+        let (parent, spin) = named(&update, "Price");
+        assert_eq!(update.focus, parent);
+        assert_eq!(spin.role(), Role::SpinButton);
+        assert_eq!(spin.numeric_value(), Some(1.25));
+        assert_eq!(spin.numeric_value_step(), Some(0.25));
+        assert!(spin.supports_action(Action::Increment));
+        assert!(spin.supports_action(Action::Decrement));
+        assert!(spin.children().is_empty());
+    }
+
+    #[test]
+    fn range_handle_art_preserves_two_independent_accessible_sliders() {
+        let mut window = Node::new("Window", None);
+        let mut range = Node::new("RangeSlider", Some("budget"));
+        length(&mut range, "width", 200.0);
+        length(&mut range, "height", 40.0);
+        range.properties.insert("lower-value", 20.0_f64.into());
+        range.properties.insert("upper-value", 80.0_f64.into());
+        range.add_range_thumbs();
+        let mut part = Node::new("RangeLowerHandle", None);
+        length(&mut part, "width", 40.0);
+        part.children
+            .push(button("decoration", "Decorative grip", 0.0));
+        range.children.push(part);
+        window.children.push(range);
+        let scene = Rc::new(window);
+        let frame = Rc::new(layout(&scene, Size::new(220.0, 90.0), &mut Text));
+        let mut input = Interaction::default();
+        input.focus_next(&scene, &frame, false);
+        let mut projection = Projection::default();
+        let update = projection
+            .update(&scene, &frame, &input, 1.0, None)
+            .unwrap();
+        let (lower_id, lower) = named(&update, "Lower value");
+        let (upper_id, upper) = named(&update, "Upper value");
+        assert_eq!(update.focus, lower_id);
+        for (node, value) in [(lower, 20.0), (upper, 80.0)] {
+            assert_eq!(node.role(), Role::Slider);
+            assert_eq!(node.numeric_value(), Some(value));
+            assert!(node.supports_action(Action::SetValue));
+            assert!(node.children().is_empty());
+        }
+        assert_eq!(frame.at_path(&[0, 0]).unwrap().bounds.width, 40.0);
+        input.focus_next(&scene, &frame, false);
+        assert_eq!(
+            projection
+                .update(&scene, &frame, &input, 1.0, None)
+                .unwrap()
+                .focus,
+            upper_id,
+        );
     }
 
     #[test]
@@ -3430,6 +3654,11 @@ mod tests {
             length(&mut tab, "width", 80.0);
             tab.properties.insert("text", name.to_owned().into());
             tab.properties.insert("enabled", enabled.into());
+            let mut content = Node::new("ButtonContent", None);
+            content
+                .children
+                .push(button("decoration", "Decorative badge", 0.0));
+            tab.children.push(content);
             bar.children.push(tab);
         }
         let scene = Rc::new(bar);
@@ -3447,9 +3676,28 @@ mod tests {
         assert_eq!(overview.role(), Role::Tab);
         assert_eq!(overview.is_selected(), Some(true));
         assert!(overview.supports_action(Action::Click));
+        assert!(overview.children().is_empty());
         let (_, disabled) = named(&update, "Disabled");
         assert_eq!(disabled.is_selected(), Some(false));
         assert!(!disabled.supports_action(Action::Click));
+
+        let mut mirrored = scene.as_ref().clone();
+        mirrored.properties.insert(
+            "layout-direction",
+            xrack_runtime::LayoutDirection::RightToLeft.into(),
+        );
+        let mirrored = Rc::new(mirrored);
+        let frame = Rc::new(layout(&mirrored, Size::new(160.0, 40.0), &mut Text));
+        let update = Projection::default()
+            .update(&mirrored, &frame, &input, 1.0, None)
+            .unwrap();
+        let (_, tabs) = named(&update, "Pages");
+        assert_eq!(tabs.scroll_x(), Some(80.0));
+        assert!(tabs.supports_action(Action::ScrollLeft));
+        let (_, overview) = named(&update, "Overview");
+        assert_eq!(overview.is_selected(), Some(true));
+        assert_eq!(overview.bounds().unwrap().x0, 80.0);
+        assert_eq!(overview.bounds().unwrap().x1, 160.0);
     }
 
     #[test]
@@ -3880,7 +4128,12 @@ mod tests {
     #[test]
     fn menu_popup_exposes_nested_items_and_rejects_replaced_rows() {
         let mut root = Node::new("Window", None);
+        root.properties.insert(
+            "layout-direction",
+            xrack_runtime::LayoutDirection::RightToLeft.into(),
+        );
         let mut bar = Node::new("MenuBar", None);
+        length(&mut bar, "width", 420.0);
         let mut file = Node::new("Menu", Some("file"));
         file.properties
             .insert("title", Value::String("File".into()));
@@ -3928,6 +4181,7 @@ mod tests {
         assert!(item.supports_action(Action::Click));
         let (_, export_item) = update.nodes.iter().find(|(id, _)| *id == export).unwrap();
         assert_eq!(export_item.label(), Some("Export"));
+        assert!(item.bounds().unwrap().x1 <= export_item.bounds().unwrap().x0);
         assert_eq!(export_item.children().len(), 1);
 
         let Some(Route::MenuEntry { entry, .. }) = tree.route(png) else {

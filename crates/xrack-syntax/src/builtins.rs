@@ -39,6 +39,7 @@ pub fn builtin_element(name: &str) -> Option<&'static str> {
         "DropArea",
         "FileDialog",
         "FlexboxLayout",
+        "EmptyState",
         "Flickable",
         "FlowLayout",
         "FocusScope",
@@ -54,6 +55,7 @@ pub fn builtin_element(name: &str) -> Option<&'static str> {
         "LineEdit",
         "ListView",
         "MediaPlayer",
+        "SoundEffect",
         "Menu",
         "MenuBar",
         "MenuItem",
@@ -70,7 +72,9 @@ pub fn builtin_element(name: &str) -> Option<&'static str> {
         "ProgressIndicator",
         "RadioButton",
         "RadioGroup",
+        "RangeLowerHandle",
         "RangeSlider",
+        "RangeUpperHandle",
         "Rectangle",
         "RoundButton",
         "Row",
@@ -84,6 +88,8 @@ pub fn builtin_element(name: &str) -> Option<&'static str> {
         "Slider",
         "SliderHandle",
         "SpinBox",
+        "SpinDownIndicator",
+        "SpinUpIndicator",
         "Spinner",
         "SplitHandle",
         "SplitView",
@@ -101,6 +107,7 @@ pub fn builtin_element(name: &str) -> Option<&'static str> {
         "SwipeRight",
         "SwipeView",
         "Switch",
+        "SwitchThumb",
         "SystemTrayIcon",
         "Tab",
         "TabBar",
@@ -117,6 +124,7 @@ pub fn builtin_element(name: &str) -> Option<&'static str> {
         "TimePicker",
         "TimePickerPopup",
         "Timer",
+        "ToggleIndicator",
         "ToolBar",
         "ToolButton",
         "ToolSeparator",
@@ -133,6 +141,41 @@ pub fn builtin_element(name: &str) -> Option<&'static str> {
         "Window",
         "WindowMoveArea",
     )
+}
+
+pub const TEXT_SELECTION_PROPERTIES: &[&str] = &[
+    "cursor-offset",
+    "selection-start-offset",
+    "selection-end-offset",
+    "selected-text",
+];
+
+pub const VIEW_COUNT_PROPERTIES: &[&str] = &["row-count", "source-row-count"];
+
+pub const TEXT_COMMAND_PROPERTIES: &[&str] = &["can-undo", "can-redo", "can-cut", "can-copy"];
+
+/// Bindings used by a text editor's final submission status.
+pub const TEXT_SUBMISSION_INPUTS: &[&str] = &[
+    "text",
+    "input-type",
+    "decimal-separator",
+    "maximum-length",
+    "minimum-length",
+    "minimum-value",
+    "maximum-value",
+    "decimals",
+    "submit-when",
+];
+
+pub fn text_submission_editor(kind: &str) -> bool {
+    matches!(kind, "TextInput" | "LineEdit" | "TextEdit" | "TextArea")
+}
+
+/// Rules that are evaluated when checking the final value rather than rendering an editor.
+pub fn text_submission_rule(kind: &str, name: &str) -> bool {
+    text_submission_editor(kind) && matches!(name, "minimum-length" | "submit-when")
+        || matches!(kind, "TextInput" | "LineEdit")
+            && matches!(name, "minimum-value" | "maximum-value" | "decimals")
 }
 
 pub const NAMESPACES: &[&str] = &["Math", "Strings", "Model", "Colors", "Dates", "I18n", "Log"];

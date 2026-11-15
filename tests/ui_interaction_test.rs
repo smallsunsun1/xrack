@@ -3143,6 +3143,25 @@ fn editor_commands_select_utf8_ranges_and_share_edit_history() {
     let handle = node.focus_handle.clone().unwrap();
     assert_eq!(input.editor.as_ref().unwrap().selection(&original), 0..9);
 
+    let mut observations = xrack_layout::FocusObservers::default();
+    observations.sync(&input, &scene, &layout, true);
+    let (scene, layout) = prepare(&ui, &mut input);
+    assert!(input.open_context_menu(&scene, &layout, true));
+    for (command, tool) in [
+        ("Undo", "undo-tool"),
+        ("Redo", "redo-tool"),
+        ("Cut", "cut-selection"),
+        ("Copy", "copy-selection"),
+    ] {
+        let menu = &input.menu_panels(&scene, &layout)[0];
+        let row = menu.rows.iter().find(|row| row.label == command).unwrap();
+        assert_eq!(
+            row.enabled,
+            scene.find(tool).unwrap().boolean("enabled", true)
+        );
+    }
+    input.close_menu(&scene, &layout);
+
     let copy_path = [0, 0, 4];
     let button = layout.at_path(&copy_path).unwrap().bounds;
     input.pointer_move(

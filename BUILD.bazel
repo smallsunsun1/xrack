@@ -1,6 +1,8 @@
 exports_files([
     "Cargo.toml",
     "Cargo.lock",
+    "LICENSE-APACHE",
+    "LICENSE-MIT",
 ])
 
 alias(

@@ -5,7 +5,7 @@ use xrack_runtime::{
     is_text_input, is_toggle,
 };
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Axis {
     Horizontal,
     Vertical,
@@ -148,6 +148,26 @@ impl AxisInfo {
     pub(crate) fn clamp(self, size: f32) -> f32 {
         size.clamp(self.min, self.max)
     }
+}
+
+pub(crate) fn measure_replacement_content(
+    content: &Node,
+    available: Size,
+    text: &mut impl TextMeasurer,
+) -> Size {
+    let mut size = Size::default();
+    for child in &content.children {
+        if participates_in_flow(child) {
+            let child_metrics = measure(child, available, text);
+            size.width = size
+                .width
+                .max(child_metrics.x.preferred + child.length("x").unwrap_or(0.0));
+            size.height = size
+                .height
+                .max(child_metrics.y.preferred + child.length("y").unwrap_or(0.0));
+        }
+    }
+    size
 }
 
 pub(crate) fn intrinsic_item(kind: &str) -> bool {
@@ -470,14 +490,17 @@ pub(crate) fn measure_with_width(
             }
             "ScrollBar" | "ScrollIndicator" => Size::new(160.0, 12.0),
             "Dial" => Size::new(96.0, 96.0),
-            "SpinBox" | "DoubleSpinBox" | "ComboBox" => {
-                let width = match node.kind {
-                    "SpinBox" => 116.0,
-                    "DoubleSpinBox" => 148.0,
-                    _ => 156.0,
-                };
-                Size::new(width, (text.font_size(node) * 1.4 + 10.0).max(34.0))
+            "SpinBox" | "DoubleSpinBox" => {
+                let editor_width = if node.kind == "SpinBox" { 88.0 } else { 120.0 };
+                let stepper = crate::SpinGeometry::preferred_stepper_size(node);
+                Size::new(
+                    editor_width + stepper.width,
+                    (text.font_size(node) * 1.4 + 10.0)
+                        .max(34.0)
+                        .max(stepper.height),
+                )
             }
+            "ComboBox" => Size::new(156.0, (text.font_size(node) * 1.4 + 10.0).max(34.0)),
             "Calendar" => Size::new(294.0, 300.0),
             "MonthGrid" => Size::new(294.0, 216.0),
             "DayOfWeekRow" => Size::new(294.0, 32.0),
@@ -501,13 +524,22 @@ pub(crate) fn measure_with_width(
             "ProgressIndicator" => Size::new(160.0, 10.0),
             "BusyIndicator" | "Spinner" => Size::new(36.0, 36.0),
             "CheckBox" | "Switch" | "RadioButton" => {
-                let decoration = if node.kind == "Switch" { 50.0 } else { 30.0 };
+                let indicator = crate::toggle_indicator_size(node);
+                let decoration = indicator.map_or_else(
+                    || if node.kind == "Switch" { 50.0 } else { 30.0 },
+                    |size| size.width + if node.is_item_delegate() { 34.0 } else { 13.0 },
+                );
                 let label = text.measure_node(
                     node,
                     node.text("text").unwrap_or(""),
                     (available.width - decoration).max(0.0),
                 );
-                Size::new(label.width + decoration, label.height.max(26.0))
+                Size::new(
+                    label.width + decoration,
+                    label
+                        .height
+                        .max(indicator.map_or(26.0, |size| size.height.max(26.0))),
+                )
             }
             "Button" | "ToolButton" | "RoundButton" | "DialogButton" | "DelayButton" => {
                 let button = ButtonContent::new(node);
@@ -517,19 +549,7 @@ pub(crate) fn measure_with_width(
                         (available.width - chrome).max(0.0),
                         (available.height - chrome).max(0.0),
                     );
-                    let mut size = Size::default();
-                    for child in &content.children {
-                        if participates_in_flow(child) {
-                            let child_metrics = measure(child, available, text);
-                            size.width = size
-                                .width
-                                .max(child_metrics.x.preferred + child.length("x").unwrap_or(0.0));
-                            size.height = size
-                                .height
-                                .max(child_metrics.y.preferred + child.length("y").unwrap_or(0.0));
-                        }
-                    }
-                    size
+                    measure_replacement_content(content, available, text)
                 } else {
                     let icon = button.icon.as_ref().map_or(0.0, |(_, size)| *size);
                     let decoration = icon + button.gap();
@@ -767,6 +787,7 @@ pub(crate) fn children(
     node: &Node,
     axis: Axis,
     bounds: Rect,
+    direction: xrack_runtime::LayoutDirection,
     text: &mut impl TextMeasurer,
 ) -> Vec<Rect> {
     let inner = Padding::read(node).inner_rect(bounds);
@@ -838,7 +859,11 @@ pub(crate) fn children(
             item.cross
         };
         let (offset, extent) = cross_geometry(cross, item.cross_alignment, cross_available);
-        let mut rect = axis.rect(inner, cursor, offset, size, extent);
+        let mut rect = crate::place_in_direction(
+            axis.rect(inner, cursor, offset, size, extent),
+            inner,
+            direction,
+        );
         if legacy {
             rect.x += child.length("x").unwrap_or(0.0);
             rect.y += child.length("y").unwrap_or(0.0);

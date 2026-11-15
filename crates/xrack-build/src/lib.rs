@@ -20,12 +20,23 @@ pub fn compile(input: impl AsRef<Path>) -> io::Result<()> {
     } else {
         bundled_compiler(&out)?
     };
-    let status = Command::new(compiler)
-        .args(["--cargo", "--cargo-facade"])
-        .arg(input.as_ref())
-        .arg("-o")
-        .arg(out.join("xrack_ui.rs"))
-        .status()?;
+    let mut command = Command::new(&compiler);
+    command.args(["--cargo", "--cargo-facade"]);
+    if cfg!(feature = "live-reload") {
+        let path = compiler
+            .to_str()
+            .ok_or_else(|| io::Error::other("xrackc path must be UTF-8"))?;
+        if path.contains(['\r', '\n']) {
+            return Err(io::Error::other("invalid xrackc path for live reload"));
+        }
+        println!("cargo::rustc-env=XRACK_LIVE_COMPILER={path}");
+        command
+            .arg("--live-reload")
+            .arg(input.as_ref().canonicalize()?);
+    } else {
+        command.arg(input.as_ref());
+    }
+    let status = command.arg("-o").arg(out.join("xrack_ui.rs")).status()?;
     if status.success() {
         Ok(())
     } else {

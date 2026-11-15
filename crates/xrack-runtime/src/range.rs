@@ -179,6 +179,9 @@ pub fn prepare_range_view<T>(
 impl Node {
     #[doc(hidden)]
     pub const RANGE_THUMBS: usize = 2;
+    #[doc(hidden)]
+    pub const RANGE_HANDLE_PARTS: [&'static str; Self::RANGE_THUMBS] =
+        ["RangeLowerHandle", "RangeUpperHandle"];
 
     #[doc(hidden)]
     pub fn range_target(&self, path: &[usize]) -> Option<&Self> {

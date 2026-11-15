@@ -7,9 +7,18 @@ use controls_ui::{
 fn main() -> std::process::ExitCode {
     let result = match std::env::args().nth(1).as_deref() {
         Some("--slider-snap") => xrack_platform_winit::run(SnapSlidersDemo::new()),
+        Some("--rtl-feedback") => {
+            xrack_platform_winit::run(controls_ui::DirectionalFeedbackDemo::new())
+        }
+        Some("--rtl-sliders") => {
+            xrack_platform_winit::run(controls_ui::DirectionalSlidersDemo::new())
+        }
         Some("--wheel") => xrack_platform_winit::run(WheelControlsDemo::new()),
         Some("--panes") => xrack_platform_winit::run(PaneFrameDemo::new()),
         Some("--calendar") => xrack_platform_winit::run(CalendarDemo::new()),
+        Some("--rtl-calendar") => {
+            xrack_platform_winit::run(controls_ui::DirectionalCalendarDemo::new())
+        }
         Some("--calendar-agenda") => {
             let mut ui = CalendarAgendaDemo::new();
             let weak = ui.as_weak();

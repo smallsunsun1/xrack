@@ -6,6 +6,8 @@ mod native;
 #[cfg(feature = "ffmpeg")]
 mod player;
 #[cfg(feature = "ffmpeg")]
+mod sound;
+#[cfg(feature = "ffmpeg")]
 mod subtitles;
 
 #[cfg(feature = "ffmpeg")]

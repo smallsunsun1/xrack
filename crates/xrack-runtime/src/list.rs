@@ -1,5 +1,7 @@
 use crate::property::{ReadWatch, with_read_watch};
-use crate::{Date, Node, Orientation, Property, TableRows, Time, Value, VecModel};
+use crate::{
+    Date, ListSelectionKeys, Node, Orientation, Property, TableRows, Time, Value, VecModel,
+};
 use std::{
     cell::Cell,
     cmp::Ordering as Comparison,
@@ -406,6 +408,14 @@ impl ListMetrics {
         })
     }
 
+    #[doc(hidden)]
+    pub fn effective_index(index: i64, count: usize) -> i64 {
+        match usize::try_from(index) {
+            Ok(position) if position < count => index,
+            _ => -1,
+        }
+    }
+
     /// Check that a selection position still belongs to the rendered model order.
     #[doc(hidden)]
     pub fn has_row_in_model(node: &Node, index: usize, live_stamp: Option<(u64, u64)>) -> bool {
@@ -420,6 +430,10 @@ impl ListMetrics {
 pub struct ListRowLocator(Rc<dyn RowPositions>);
 
 trait RowPositions {
+    fn business_position(&self, _key: i64) -> Option<usize> {
+        None
+    }
+
     fn first_position(&self, candidates: &[(RowKey, usize)]) -> Option<(usize, usize)>;
     fn key_at(&self, index: usize) -> Option<RowKey>;
     fn position_of_source_key(&self, key: RowKey, source_index: usize) -> Option<usize>;
@@ -472,9 +486,62 @@ impl<M: ListModel> RowPositions for M {
     }
 }
 
+struct KeyedPositions {
+    positions: Rc<dyn RowPositions>,
+    locate: Box<dyn Fn(i64) -> Option<usize>>,
+}
+
+impl RowPositions for KeyedPositions {
+    fn business_position(&self, key: i64) -> Option<usize> {
+        (self.locate)(key)
+    }
+
+    fn first_position(&self, candidates: &[(RowKey, usize)]) -> Option<(usize, usize)> {
+        self.positions.first_position(candidates)
+    }
+
+    fn key_at(&self, index: usize) -> Option<RowKey> {
+        self.positions.key_at(index)
+    }
+
+    fn position_of_source_key(&self, key: RowKey, source_index: usize) -> Option<usize> {
+        self.positions.position_of_source_key(key, source_index)
+    }
+}
+
 impl ListRowLocator {
     pub fn new(model: Rc<impl ListModel + 'static>) -> Self {
         Self(model)
+    }
+
+    /// Resolve keys against this frame's model and displayed order.
+    pub fn with_business_keys<T: Clone + PartialEq + 'static>(
+        self,
+        keys: Rc<ListSelectionKeys>,
+        model: Rc<VecModel<T>>,
+        order: Option<crate::TableRowPositions>,
+        key_of: impl Fn(&T) -> i64 + 'static,
+    ) -> Self {
+        let stamp = model.contents_stamp();
+        let key_of = Rc::new(key_of);
+        Self(Rc::new(KeyedPositions {
+            positions: self.0,
+            locate: Box::new(move |key| {
+                if model.contents_stamp() != stamp {
+                    return None;
+                }
+                let key_of = key_of.clone();
+                let source = keys.find(&model, key, move |row| key_of(row))?;
+                match &order {
+                    Some(order) => order.visual_index(source),
+                    None => Some(source),
+                }
+            }),
+        }))
+    }
+
+    pub fn business_position(&self, key: i64) -> Option<usize> {
+        self.0.business_position(key)
     }
 
     pub fn first_position(&self, candidates: &[(RowKey, usize)]) -> Option<(usize, usize)> {

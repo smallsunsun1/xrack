@@ -311,7 +311,18 @@ pub(crate) fn measure(node: &Node, available: Size, text: &mut impl TextMeasurer
     }
 }
 
-pub(crate) fn children(node: &Node, bounds: Rect, text: &mut impl TextMeasurer) -> Vec<Rect> {
+pub(crate) fn children(
+    node: &Node,
+    bounds: Rect,
+    direction: xrack_runtime::LayoutDirection,
+    text: &mut impl TextMeasurer,
+) -> Vec<Rect> {
     let inner = Padding::read(node).inner_rect(bounds);
-    Flow::plan(node, inner, text).children
+    let mut children = Flow::plan(node, inner, text).children;
+    if direction == xrack_runtime::LayoutDirection::RightToLeft {
+        for child in &mut children {
+            *child = crate::place_in_direction(*child, inner, direction);
+        }
+    }
+    children
 }

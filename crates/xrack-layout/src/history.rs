@@ -190,13 +190,13 @@ impl TextHistory {
         Some(record.apply(&self.expected, redo))
     }
 
-    pub(crate) fn can_replay(&self, current: &str, redo: bool) -> bool {
-        self.expected == current
-            && if redo {
-                !self.redo.is_empty()
-            } else {
-                !self.undo.is_empty()
-            }
+    pub(crate) fn availability(&self, current: &str) -> (bool, bool) {
+        let (undo, redo) = (!self.undo.is_empty(), !self.redo.is_empty());
+        if (undo || redo) && self.expected == current {
+            (undo, redo)
+        } else {
+            (false, false)
+        }
     }
 
     pub(crate) fn commit_replay(&mut self, text: String, redo: bool) {

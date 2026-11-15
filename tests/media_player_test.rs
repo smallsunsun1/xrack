@@ -624,3 +624,135 @@ fn generated_and_interpreted_live_example_rewind_real_hls() {
         std::panic::resume_unwind(error);
     }
 }
+
+#[cfg(feature = "media_backend")]
+#[test]
+fn sound_effect_preloads_and_plays_from_button_and_shortcut_in_both_backends() {
+    use std::{thread, time::Duration};
+    use xrack_layout::{ShortcutOutcome, WindowEffects};
+
+    fn exercise<C: Component>(
+        ui: &mut C,
+        state: impl Fn(&C) -> (bool, bool, String),
+        set_source: impl Fn(&mut C, &str),
+    ) {
+        let mut queue = MediaQueue::default();
+        let mut input = Interaction::default();
+        let size = Size::new(400.0, 220.0);
+        let wait = |queue: &mut MediaQueue, ui: &C, expected_playing, expected_error| {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            loop {
+                let scene = ui.render_shared();
+                let laid_out = layout(&scene, size, &mut Text);
+                assert!(
+                    scene.find("confirmation").is_none(),
+                    "sound occupies a scene slot"
+                );
+                let effects = WindowEffects::collect(&scene, &laid_out);
+                assert_eq!(effects.media.len(), 1);
+                queue.sync(effects.media);
+                let now = Instant::now();
+                queue.advance(now);
+                let (ready, playing, error) = state(ui);
+                if expected_error {
+                    if !error.is_empty() {
+                        assert!(error.contains("requires a local WAV file"), "{error}");
+                        assert!(!ready && !playing);
+                        return;
+                    }
+                } else if ready && playing == expected_playing {
+                    return;
+                } else {
+                    assert!(error.is_empty(), "{error}");
+                }
+                assert!(now < deadline, "timed out waiting for SoundEffect");
+                thread::sleep(Duration::from_millis(5));
+            }
+        };
+
+        // The default relative path works for both generated code and MLIR.
+        wait(&mut queue, ui, false, false);
+
+        let scene = ui.render_shared();
+        let laid_out = layout(&scene, size, &mut Text);
+        let layout_index = scene
+            .children
+            .iter()
+            .position(|node| node.kind == "VerticalLayout")
+            .unwrap();
+        let bounds = laid_out.at_path(&[layout_index, 0]).unwrap().bounds;
+        input.pointer_move(
+            &scene,
+            &laid_out,
+            Point {
+                x: bounds.x + bounds.width / 2.0,
+                y: bounds.y + bounds.height / 2.0,
+            },
+        );
+        input.pointer_press_in_scene(&scene, &laid_out);
+        let click = input.pointer_release_target().unwrap();
+        assert_eq!(
+            scene.at_path(&click.path).unwrap().element_id(),
+            Some("confirm")
+        );
+        assert!(ui.dispatch_at(&scene, &click.path, "clicked"));
+        wait(&mut queue, ui, true, false);
+        wait(&mut queue, ui, false, false);
+
+        let scene = ui.render_shared();
+        let laid_out = layout(&scene, size, &mut Text);
+        let ShortcutOutcome::Activate(event) = input.shortcut_press(
+            &scene,
+            &laid_out,
+            "F2".parse().unwrap(),
+            false,
+            Instant::now(),
+        ) else {
+            panic!("F2 shortcut was not routed");
+        };
+        assert!(ui.control_at(&scene, &event.path, event.action));
+        wait(&mut queue, ui, true, false);
+
+        set_source(ui, "sound_effect.xr");
+        wait(&mut queue, ui, false, true);
+        set_source(ui, "click.wav");
+        wait(&mut queue, ui, false, false);
+
+        queue.sync([]);
+        assert_eq!(state(ui), (false, false, String::new()));
+    }
+
+    xrack_media::install();
+    let mut compiled = sound_ui::SoundDemo::new();
+    exercise(
+        &mut compiled,
+        |ui| {
+            (
+                ui.get_sound_ready(),
+                ui.get_sound_playing(),
+                ui.get_sound_error(),
+            )
+        },
+        |ui, path| ui.set_sound_source(path.into()),
+    );
+
+    let source = include_str!("../examples/sound_effect/sound_effect.xr");
+    let document = xrack_compiler::parse(source).unwrap();
+    let module = xrack_compiler::lower(&document, "examples/sound_effect/sound_effect.xr").unwrap();
+    let program = xrack_interpreter::load_mlir(&module.to_mlir()).unwrap();
+    let mut interpreted = program.create("SoundDemo").unwrap();
+    exercise(
+        &mut interpreted,
+        |ui| {
+            let Value::String(error) = ui.get("sound-error").unwrap() else {
+                panic!("sound-error was not a string");
+            };
+            (
+                ui.get("sound-ready") == Ok(Value::Bool(true)),
+                ui.get("sound-playing") == Ok(Value::Bool(true)),
+                error,
+            )
+        },
+        |ui, path| ui.set("sound-source", Value::String(path.into())).unwrap(),
+    );
+}
