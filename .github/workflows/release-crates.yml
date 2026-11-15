@@ -13,6 +13,10 @@ on:
         description: Publish an existing release tag from main
         type: boolean
         default: false
+      publish-vscode-only:
+        description: Publish the verified VSIX packages for an existing stable Cargo release
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -43,7 +47,8 @@ jobs:
         id: source
         env:
           GH_TOKEN: ${{ github.token }}
-          PUBLISH: ${{ github.event_name == 'push' || inputs.publish }}
+          PUBLISH: ${{ github.event_name == 'push' || inputs.publish || inputs.publish-vscode-only }}
+          VSCODE_ONLY: ${{ inputs.publish-vscode-only == true }}
         run: |
           commit=$(git rev-parse HEAD)
           tag="v${XRACK_RELEASE_VERSION#v}"
@@ -66,9 +71,14 @@ jobs:
               exit 1
             fi
           fi
+          git switch --detach "$commit"
+          if [[ "$VSCODE_ONLY" == true && ! "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Marketplace publishing requires a stable release tag."
+            exit 1
+          fi
           marketplace=false
           ci_run=
-          if [[ "$GITHUB_EVENT_NAME" == push && "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+          if [[ ( "$GITHUB_EVENT_NAME" == push || "$VSCODE_ONLY" == true ) && "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
             python3 tools/package_vscode.py check-tag "$tag"
             ci_run=$(gh api --method GET "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs" \
               -f branch=main -f event=push -f status=success -f head_sha="$commit" \
@@ -79,18 +89,26 @@ jobs:
             fi
             marketplace=true
           fi
+          if [[ "$VSCODE_ONLY" == true ]]; then
+            release_run=$(gh api --method GET "repos/$GITHUB_REPOSITORY/actions/workflows/release-crates.yml/runs" \
+              -f branch="$tag" -f event=push -f status=success -f head_sha="$commit" \
+              --jq '.workflow_runs[0].id // empty')
+            if [[ -z "$release_run" ]] || ! gh api "repos/$GITHUB_REPOSITORY/actions/runs/$release_run/jobs" \
+              --jq '.jobs[] | select(.name == "publish" and .conclusion == "success") | .name' | grep -qx publish; then
+              echo "::error::The tag must already have a successful Cargo publication."
+              exit 1
+            fi
+          fi
           printf 'commit=%s\ntag=%s\nmarketplace=%s\nci-run=%s\n' "$commit" "$tag" "$marketplace" "$ci_run" >> "$GITHUB_OUTPUT"
       - name: Install Linux desktop build dependencies
+        if: '!inputs.publish-vscode-only'
         run: bash tools/install_ci_linux_deps.sh
       - name: Verify crate release
-        env:
-          SOURCE_SHA: ${{ steps.source.outputs.commit }}
-        run: |
-          git switch --detach "$SOURCE_SHA"
-          python3 tools/publish_crates.py -- "${XRACK_RELEASE_VERSION#v}"
+        if: '!inputs.publish-vscode-only'
+        run: python3 tools/publish_crates.py -- "${XRACK_RELEASE_VERSION#v}"
 
   build:
-    if: (github.event_name == 'push' || inputs.publish) && needs.verify.outputs.ci-run == ''
+    if: (github.event_name == 'push' || inputs.publish) && !inputs.publish-vscode-only && needs.verify.outputs.ci-run == ''
     needs: verify
     uses: ./.github/workflows/ci.yml
     with:
@@ -100,7 +118,7 @@ jobs:
     if: >-
       !cancelled() && needs.verify.result == 'success' &&
       (needs.verify.outputs.ci-run != '' || needs.build.result == 'success') &&
-      (github.event_name == 'push' || inputs.publish)
+      (github.event_name == 'push' || inputs.publish) && !inputs.publish-vscode-only
     needs: [verify, build]
     runs-on: ubuntu-24.04
     timeout-minutes: 20
@@ -142,7 +160,9 @@ jobs:
         run: python3 tools/publish_crates.py --publish --archives .tools/release -- "${XRACK_RELEASE_VERSION#v}"
 
   publish-vscode:
-    if: needs.verify.outputs.marketplace == 'true'
+    if: >-
+      !cancelled() && needs.verify.result == 'success' && needs.verify.outputs.marketplace == 'true' &&
+      (inputs.publish-vscode-only || needs.publish.result == 'success')
     needs: [verify, publish]
     runs-on: ubuntu-24.04
     timeout-minutes: 20
@@ -169,10 +189,12 @@ jobs:
           path: .tools/vsix-release
       - name: Verify all five VSIX files and publish with OIDC
         shell: bash
+        env:
+          RELEASE_TAG: ${{ needs.verify.outputs.tag }}
         run: |
           retry=()
-          if (( GITHUB_RUN_ATTEMPT > 1 )); then
+          if [[ "$GITHUB_EVENT_NAME" == workflow_dispatch ]] || (( GITHUB_RUN_ATTEMPT > 1 )); then
             retry=(--skip-duplicate)
           fi
-          python3 tools/package_vscode.py publish "$GITHUB_REF_NAME" \
+          python3 tools/package_vscode.py publish "$RELEASE_TAG" \
             --packages .tools/vsix-release "${retry[@]}"

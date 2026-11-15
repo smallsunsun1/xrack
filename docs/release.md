@@ -23,6 +23,8 @@ Cargo 会验证打包后的源码，并在发布时按依赖顺序上传这些 c
 
 稳定版本和 Cargo 使用同一个 `vX.Y.Z` tag。先同步 Cargo workspace 与 `crates/xrack-lsp/vscode/package.json` 的版本，并确保该提交的 main CI 通过。发布工作流复用 CI 的五个平台 VSIX，通过 `vscode-marketplace` 环境和 Marketplace 的 GitHub OIDC 信任策略发布。 [Release XRack](../.github/workflows/release-crates.yml) · [Marketplace](https://marketplace.visualstudio.com/items?itemName=SunJiahe.xrack)
 
+如果 Cargo 已发布而 Marketplace 需要补发，可以从 `main` 手动运行 **Release XRack**，输入同一个稳定版本并勾选 **Publish the verified VSIX packages for an existing stable Cargo release**。补发使用原 tag 对应的 CI 产物，并检查该 tag 已成功发布 Cargo。手动运行期间，`vscode-marketplace` 环境需要允许 `main` 部署。
+
 ## GitHub Actions
 
 [CI](../.github/workflows/ci.yml) 在 macOS arm64、Linux x64 与 arm64、Windows x64 与 arm64 上测试 Cargo 桌面依赖栈与 Bazel 编译器。每个平台用暂存的发布产物运行仓库外的 AOT 和 MLIR 解释器示例，再上传归档与校验文件。Linux x64 任务额外上传通过 Cargo 验证的运行时包。真实 GPU 测试使用本地显式目标 `//tests:gpu_test`。
