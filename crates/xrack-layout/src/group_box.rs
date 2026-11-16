@@ -2,8 +2,9 @@ use crate::{Rect, font_size, linear::Padding};
 use xrack_runtime::Node;
 
 pub(crate) fn title_height(node: &Node, size: f32) -> f32 {
-    if node.kind == "GroupBox"
-        && (node.group_checkable() || node.text("title").is_some_and(|title| !title.is_empty()))
+    if node.kind == "Expander"
+        || node.kind == "GroupBox"
+            && (node.group_checkable() || node.text("title").is_some_and(|title| !title.is_empty()))
     {
         (size * 1.4 + 4.0).max(24.0)
     } else {

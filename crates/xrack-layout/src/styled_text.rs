@@ -1,4 +1,7 @@
-use crate::{LabelPlan, Rect, Size, TextAlignment};
+use crate::{
+    LabelPlan, Point, Rect, Size, TextAlignment, TextAreaMotion, TextEdit, TextPosition,
+    VisualTextLine,
+};
 use std::{borrow::Cow, ops::Range};
 use unicode_bidi::{BidiInfo, Direction, get_base_direction};
 use xrack_runtime::{LayoutDirection, Node, StyledText, TextHorizontalAlignment, TextStyle};
@@ -30,6 +33,7 @@ impl Piece {
 pub struct StyledFragment {
     piece: Piece,
     pub bounds: Rect,
+    visual: Option<VisualTextLine>,
 }
 
 impl StyledFragment {
@@ -44,6 +48,25 @@ impl StyledFragment {
     pub fn link(&self) -> Option<usize> {
         self.piece.link
     }
+
+    #[doc(hidden)]
+    pub fn selection_geometry(&self) -> Option<(&VisualTextLine, Range<usize>, usize)> {
+        Some((
+            self.visual.as_ref()?,
+            self.piece.range.clone()?,
+            if self.piece.rtl_mark {
+                '\u{200f}'.len_utf8()
+            } else {
+                0
+            },
+        ))
+    }
+
+    fn position(&self, mut local: TextPosition) -> Option<TextPosition> {
+        let (_, range, prefix) = self.selection_geometry()?;
+        local.offset = range.start + local.offset.saturating_sub(prefix).min(range.len());
+        Some(local)
+    }
 }
 
 /// Final text geometry consumed by painting, hit testing and accessibility.
@@ -54,6 +77,148 @@ pub struct StyledTextLayout {
 }
 
 impl StyledTextLayout {
+    #[doc(hidden)]
+    pub fn shape_selection(
+        &mut self,
+        document: &StyledText,
+        mut shape: impl FnMut(&str, TextStyle) -> VisualTextLine,
+    ) {
+        for fragment in &mut self.fragments {
+            if fragment.piece.range.is_some() {
+                fragment.visual = Some(shape(&fragment.text(document), fragment.style()));
+            }
+        }
+    }
+
+    #[doc(hidden)]
+    pub fn selection_hit(&self, point: Point) -> Option<TextPosition> {
+        let distance = |point: f32, start: f32, size: f32| {
+            (start - point).max(point - (start + size)).max(0.0)
+        };
+        let fragment = self
+            .fragments
+            .iter()
+            .filter(|fragment| fragment.visual.is_some())
+            .min_by(|a, b| {
+                let y = |f: &StyledFragment| distance(point.y, f.bounds.y, f.bounds.height);
+                let x = |f: &StyledFragment| distance(point.x, f.bounds.x, f.bounds.width);
+                y(a).total_cmp(&y(b)).then_with(|| x(a).total_cmp(&x(b)))
+            })?;
+        fragment.position(fragment.visual.as_ref()?.hit(point.x - fragment.bounds.x))
+    }
+
+    #[doc(hidden)]
+    pub fn move_selection(
+        &self,
+        text: &str,
+        editor: &mut TextEdit,
+        motion: TextAreaMotion,
+        selecting: bool,
+    ) -> bool {
+        let caret = editor.position(text);
+        let items = self
+            .fragments
+            .iter()
+            .enumerate()
+            .filter_map(|(index, fragment)| {
+                let (visual, range, prefix) = fragment.selection_geometry()?;
+                Some((index, fragment, visual, range, prefix))
+            });
+        let Some((index, fragment, visual, range, prefix)) =
+            items.min_by_key(|(_, _, _, range, _)| {
+                let distance = range.start.saturating_sub(caret.offset)
+                    + caret.offset.saturating_sub(range.end);
+                let wrong_edge = if caret.trailing {
+                    caret.offset == range.start
+                } else {
+                    caret.offset == range.end
+                };
+                (distance, wrong_edge)
+            })
+        else {
+            return false;
+        };
+        let local = TextPosition {
+            offset: caret.offset.clamp(range.start, range.end) - range.start + prefix,
+            trailing: caret.trailing,
+        };
+        let mut preferred = None;
+        let next = match motion {
+            TextAreaMotion::Left | TextAreaMotion::Right => {
+                let right = matches!(motion, TextAreaMotion::Right);
+                visual
+                    .step(local, right)
+                    .and_then(|position| fragment.position(position))
+                    .or_else(|| {
+                        let adjacent = if right {
+                            self.fragments[index + 1..]
+                                .iter()
+                                .find(|fragment| fragment.visual.is_some())
+                        } else {
+                            self.fragments[..index]
+                                .iter()
+                                .rev()
+                                .find(|fragment| fragment.visual.is_some())
+                        }?;
+                        let visual = adjacent.visual.as_ref()?;
+                        let edge = visual.edge(!right);
+                        let position = adjacent.position(edge)?;
+                        if adjacent.bounds.y == fragment.bounds.y && position.offset == caret.offset
+                        {
+                            visual
+                                .step(edge, right)
+                                .and_then(|next| adjacent.position(next))
+                                .or(Some(position))
+                        } else {
+                            Some(position)
+                        }
+                    })
+            }
+            TextAreaMotion::Up
+            | TextAreaMotion::Down
+            | TextAreaMotion::PageUp
+            | TextAreaMotion::PageDown => {
+                let x = editor
+                    .preferred_x()
+                    .unwrap_or(fragment.bounds.x + visual.caret_x(local));
+                preferred = Some(x);
+                let delta = match motion {
+                    TextAreaMotion::Up => -fragment.bounds.height,
+                    TextAreaMotion::Down => fragment.bounds.height,
+                    TextAreaMotion::PageUp => -self.size.height,
+                    _ => self.size.height,
+                };
+                self.selection_hit(Point {
+                    x,
+                    y: fragment.bounds.y + fragment.bounds.height * 0.5 + delta,
+                })
+            }
+            _ => return false,
+        };
+        if !selecting
+            && matches!(motion, TextAreaMotion::Left | TextAreaMotion::Right)
+            && !editor.selection(text).is_empty()
+        {
+            // Collapse an existing range in the same direction as the text line.
+            let range = editor.selection(text);
+            let end = matches!(motion, TextAreaMotion::Right) != visual.is_rtl();
+            editor.place_caret(
+                text,
+                TextPosition {
+                    offset: if end { range.end } else { range.start },
+                    trailing: end,
+                },
+                false,
+            );
+        } else if let Some(next) = next {
+            editor.place_caret(text, next, selecting);
+            if let Some(x) = preferred {
+                editor.set_preferred_x(x);
+            }
+        }
+        true
+    }
+
     pub(crate) fn align_in_direction(
         &mut self,
         node: &Node,
@@ -97,7 +262,11 @@ impl StyledTextLayout {
             for piece in pieces(document, bidi, line.range, line.ellipsis) {
                 let advance = width(&piece);
                 let bounds = Rect::new(x, line.origin.y, advance, font_size * 1.4);
-                fragments.push(StyledFragment { piece, bounds });
+                fragments.push(StyledFragment {
+                    piece,
+                    bounds,
+                    visual: None,
+                });
                 x += advance;
             }
         }

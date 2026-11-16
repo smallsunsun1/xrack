@@ -65,6 +65,8 @@ use clip::ClipChain;
 pub use clip::{RoundedClip, corner_radii, normalize_radii};
 pub use delay_button::ButtonHoldEvent;
 pub use drag::{DragDispatch, DragUpdate};
+#[doc(hidden)]
+pub use edit::selection_drag_axis;
 pub use edit::{EditAction, TextEdit, TextEditContext, TextPosition};
 pub use file_drop::{FileDragInput, FileDropScope};
 pub use focus_observers::{FocusDelivery, FocusObservers};
@@ -105,7 +107,9 @@ pub use styled_text::{StyledFragment, StyledTextLayout};
 pub use swipe_delegate::SwipeDelegateGeometry;
 pub use swipe_gesture::SwipeDelivery;
 pub use table::TableGeometry;
-pub use text_area::{TextAreaLayout, TextAreaMotion};
+pub use text_area::{
+    TextAreaLayout, TextAreaMotion, text_editor_line_bounds, text_editor_viewport,
+};
 pub use tooltip::{TooltipPopup, layout_tooltip};
 pub use transform::Affine;
 use transform::TransformSpace;
@@ -279,6 +283,9 @@ impl<'a> WindowEffects<'a> {
     }
 
     fn extend(&mut self, node: &'a Node, layout: &LayoutNode) {
+        if node.expander_collapsed() {
+            return;
+        }
         if let Some(handle) = node
             .button_press_handle
             .as_ref()
@@ -2101,6 +2108,7 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
         let child_clip = scroll_area.map_or(child_clip, |area| child_clip.intersect(area));
         let children: Vec<_> = node
             .materialized_children()
+            .filter(|_| !node.expander_collapsed())
             .zip(placements)
             .map(|((index, child), placement)| {
                 self.path.push(index);

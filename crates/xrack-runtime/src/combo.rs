@@ -472,6 +472,29 @@ pub enum ComboStateModel {
 }
 
 impl ComboStateModel {
+    fn exact_enabled_selection(&self, text: &str) -> Option<ComboSelection> {
+        let (index, value) = match self {
+            Self::Strings(model) => {
+                model.contents_stamp();
+                let index = model.position_untracked(0..model.len(), |label| label == text)?;
+                (index, Value::String(text.to_owned()))
+            }
+            Self::Records(items) => {
+                items.stamp();
+                let index = items
+                    .rows
+                    .find_label(0..items.rows.len(), true, &mut |label| label == text)?;
+                (index, items.rows.value(index)?)
+            }
+            Self::Tumbler(_) => return None,
+        };
+        Some(ComboSelection {
+            index,
+            value,
+            label: text.to_owned(),
+        })
+    }
+
     pub fn count(&self) -> usize {
         match self {
             Self::Strings(model) => model.len(),
@@ -647,12 +670,23 @@ pub enum ComboUpdate<'a> {
     SetFreeText(&'a str),
     SetEditText(&'a str),
     ResetEditText,
+    FinishEdit { text: &'a str, accepted: bool },
     Selected(&'a str),
     ValueSelected(&'a Value),
     Accepted(&'a str),
 }
 
 impl ComboInput {
+    pub fn accepts_unmatched_text(&self) -> bool {
+        matches!(
+            self,
+            Self::Accept {
+                selection: None,
+                ..
+            }
+        )
+    }
+
     /// Commit selection and edit text before publishing callbacks.
     pub fn try_apply<E>(
         self,
@@ -681,6 +715,10 @@ impl ComboInput {
                             update(SetEditText(&selection.label))?;
                         }
                     }
+                    update(FinishEdit {
+                        text: &selection.label,
+                        accepted: false,
+                    })?;
                 }
                 update(Selected(&selection.label))?;
                 if records {
@@ -698,6 +736,10 @@ impl ComboInput {
                     if matches!(editor, ComboEditor::Default) {
                         update(ResetEditText)?;
                     }
+                    update(FinishEdit {
+                        text: &text,
+                        accepted: true,
+                    })?;
                     if records {
                         update(ValueSelected(&selection.value))?;
                     }
@@ -710,6 +752,10 @@ impl ComboInput {
                     if matches!(editor, ComboEditor::Default) {
                         update(SetEditText(&text))?;
                     }
+                    update(FinishEdit {
+                        text: &text,
+                        accepted: true,
+                    })?;
                 }
                 update(Accepted(&text))?;
             }
@@ -729,6 +775,56 @@ impl ComboInput {
         })
         .unwrap_or_else(|error| match error {})
     }
+}
+
+fn same_combo_value(left: &Value, right: &Value) -> bool {
+    left == right
+        || matches!((left, right), (Value::Float(a), Value::Float(b)) if a.is_nan() && b.is_nan())
+}
+
+/// Run the accepted handler before checking a fresh model for newly inserted text.
+/// The editor can keep its existing free-text state or let the handler supply a selection.
+#[doc(hidden)]
+pub fn try_resolve_combo_after_accept<E>(
+    text: &str,
+    mut state: impl FnMut() -> Result<Option<Value>, E>,
+    accepted: impl FnOnce() -> Result<(), E>,
+    available: impl FnOnce() -> Result<bool, E>,
+    model: impl FnOnce() -> Result<ComboStateModel, E>,
+) -> Result<Option<ComboSelection>, E> {
+    let before = state()?;
+    accepted()?;
+    let Some(before) = before else {
+        return Ok(None);
+    };
+    crate::property::watch_reads(|reads| {
+        if !available()?
+            || !state()?.is_some_and(|after| same_combo_value(&before, &after))
+            || reads.changed()
+        {
+            return Ok(None);
+        }
+        let selection = model()?.exact_enabled_selection(text);
+        Ok(selection.filter(|_| !reads.changed()))
+    })
+}
+
+#[doc(hidden)]
+pub fn resolve_combo_after_accept(
+    text: &str,
+    mut state: impl FnMut() -> Option<Value>,
+    accepted: impl FnOnce(),
+    available: impl FnOnce() -> bool,
+    model: impl FnOnce() -> ComboStateModel,
+) -> Option<ComboSelection> {
+    try_resolve_combo_after_accept(
+        text,
+        || Ok::<_, std::convert::Infallible>(state()),
+        || Ok(accepted()),
+        || Ok(available()),
+        || Ok(model()),
+    )
+    .unwrap_or_else(|error| match error {})
 }
 
 fn combo_selection(node: &Node, index: usize) -> Option<ComboSelection> {
@@ -935,10 +1031,9 @@ impl Node {
 
     #[doc(hidden)]
     pub fn combo_selection_is_current(&self, property: &str, value: &Value) -> bool {
-        match (self.properties.get(property), value) {
-            (Some(Value::Float(shown)), Value::Float(live)) if shown.is_nan() => live.is_nan(),
-            (shown, live) => shown == Some(live),
-        }
+        self.properties
+            .get(property)
+            .is_some_and(|shown| same_combo_value(shown, value))
     }
 
     #[doc(hidden)]

@@ -338,6 +338,20 @@ pub(crate) fn model_page(
             });
             ("IntList", count, items, Some(model.edit_stamp()))
         }
+        Value::DateList(rows) => {
+            let items = rows
+                .iter()
+                .skip(query.offset)
+                .take(query.limit)
+                .map(|date| json!(date.to_string()))
+                .collect();
+            ("DateList", rows.len(), items, None)
+        }
+        Value::DateModel(model) => {
+            let (count, items) =
+                model.inspect_rows(query.offset, query.limit, |date| json!(date.to_string()));
+            ("DateList", count, items, Some(model.edit_stamp()))
+        }
         Value::StringList(rows) => {
             let items = rows
                 .iter()
@@ -475,6 +489,20 @@ fn describe(value: &Value, property: &mut Json, depth: usize, remaining: &mut us
             set_items(property, "IntList", count, sample);
             return;
         }
+        Value::DateList(items) if depth > 0 => {
+            let sample: Vec<_> = items
+                .iter()
+                .take(MAX_ROWS)
+                .map(ToString::to_string)
+                .collect();
+            set_items(property, "DateList", items.len(), sample);
+            return;
+        }
+        Value::DateModel(model) if depth > 0 => {
+            let (count, sample) = model.inspect_rows(0, MAX_ROWS, ToString::to_string);
+            set_items(property, "DateList", count, sample);
+            return;
+        }
         Value::StringList(items) if depth > 0 => {
             let sample: Vec<_> = items
                 .iter()
@@ -509,6 +537,11 @@ fn describe(value: &Value, property: &mut Json, depth: usize, remaining: &mut us
         }
         Value::StringList(items) => ("StringList", json!(format!("{} rows", items.len()))),
         Value::IntList(items) => ("IntList", json!(format!("{} rows", items.len()))),
+        Value::DateList(items) => ("DateList", json!(format!("{} rows", items.len()))),
+        Value::DateModel(model) => (
+            "DateList",
+            json!(format!("{} rows", model.inspect_rows(0, 0, |_| ()).0)),
+        ),
         Value::IntModel(model) => (
             "IntList",
             json!(format!("{} rows", model.inspect_rows(0, 0, |_| ()).0)),

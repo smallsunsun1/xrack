@@ -75,6 +75,25 @@ impl TextAlignment {
             self.offset(free, rtl)
         }
     }
+
+    #[doc(hidden)]
+    pub fn single_line_view_offset(
+        self,
+        width: f32,
+        advance: f32,
+        rtl: bool,
+        caret: Option<f32>,
+        drag_scroll: Option<f32>,
+    ) -> f32 {
+        let overflow = advance + 1.0 - width;
+        if let Some(scroll) = drag_scroll
+            && overflow > 0.0
+        {
+            -scroll.clamp(0.0, overflow)
+        } else {
+            self.single_line_offset(width, advance, rtl, caret)
+        }
+    }
 }
 
 pub fn uses_label_layout(node: &Node) -> bool {

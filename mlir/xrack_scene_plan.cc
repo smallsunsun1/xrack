@@ -155,6 +155,8 @@ private:
 bool emptyModel(Value model) {
   if (auto array = model.getDefiningOp<ArrayOp>())
     return array.getItems().empty();
+  if (auto array = model.getDefiningOp<DateArrayOp>())
+    return array.getItems().empty();
   if (auto array = model.getDefiningOp<RecordArrayOp>())
     return array.getItems().empty();
   auto literal = model.getDefiningOp<LiteralOp>();

@@ -83,14 +83,14 @@ export component App inherits Window {
 
 ## 内建函数与值
 
-普通内建函数通过 `Math`、`Strings`、`Model`、`Colors`、`Dates`、`I18n` 和 `Log` 命名空间调用。`@` 用于 `@tr`、`@image-url` 等专用语法。作用域中若已有同名控件 ID，限定调用会解析为该控件的成员。
+普通内建函数通过 `Math`、`Strings`、`Model`、`Colors`、`Dates`、`Times`、`I18n` 和 `Log` 命名空间调用。`@` 用于 `@tr`、`@image-url` 等专用语法。作用域中若已有同名控件 ID，限定调用会解析为该控件的成员。
 
 - **Math** 的 `min`、`max`、`clamp`、`abs` 和 `mod` 保留数值单位，整数和浮点数可以混用。`clamp` 会交换颠倒的边界。`mod` 计算欧几里得余数，除数为零时整数结果为 0，其他数值结果为 NaN。`round`、`floor` 和 `ceil` 返回整数，超出整数范围时饱和。`round` 在中点向远离零的方向舍入。
 - **Math** 还提供 `sign`、`sqrt`、`pow`、`exp`、`ln`、`log`、`hypot`、`is-finite`，以及 `pi`、`tau`、`e`。三角函数 `sin`、`cos`、`tan` 和反三角函数 `asin`、`acos`、`atan`、`atan2` 用弧度表示角度。用 `Math.to-radians(90)` 和 `Math.to-degrees(angle)` 换算。`Math.atan2(y, x)` 按坐标返回方向角。
 - **Strings** 提供 `trim`、`is-empty`、`contains`、`starts-with`、`ends-with`、`replace-all`、`lowercase`、`uppercase` 和 `character-count`。字符计数按 Unicode 字素簇计算，例如 `"👩‍💻"` 算一个字符。`is-int`、`is-float` 检查修剪过的数字字符串。`Strings.to-float(input, 0.0)` 和 `Strings.to-int(input, 0)` 在解析失败时返回默认值。小数分隔符使用 `.`。
 - **Strings.format** 的模板是字符串字面量。`{}` 按顺序消费字符串、整数、浮点数、布尔值、日期或时间参数。`{{` 和 `}}` 表示字面量大括号。`Strings.format("{:.2}", value)` 输出两位小数，精度可设为 0 到 20。
-- **Model** 的 `count` 和 `is-empty` 跟踪字符串或记录模型的行数。修改已有行的内容会保留行数绑定的缓存。`Model.at(root.rows, index, fallback)` 按从零开始的索引取行，只有索引越界时才求值默认表达式。默认值类型必须和模型行一致。
-- **Model** 的 `append(model, value)`、`insert(model, index, value)`、`set(model, index, value)`、`remove(model, index)`、`move(model, from, to)` 和 `clear(model)` 可在有副作用的回调中编辑模型。第一个参数必须是可写的列表属性，行值必须匹配该属性的整数、字符串或记录类型。索引从零开始，`insert` 接受当前行数作为追加位置，`move` 的目标是行移动后的索引。无效索引会忽略。
+- **Model** 的 `count` 和 `is-empty` 跟踪模型的行数。修改已有行的内容会保留行数绑定的缓存。`Model.at(root.rows, index, fallback)` 按从零开始的索引取行，只有索引越界时才求值默认表达式。默认值类型必须和模型行一致。
+- **Model** 的 `append(model, value)`、`insert(model, index, value)`、`set(model, index, value)`、`remove(model, index)`、`move(model, from, to)` 和 `clear(model)` 可在有副作用的回调中编辑模型。第一个参数必须是可写的列表属性，行值必须匹配列表的元素类型。索引从零开始，`insert` 接受当前行数作为追加位置，`move` 的目标是行移动后的索引。无效索引会忽略。
 - **Colors** 提供 `rgb`、`rgba`、`with-alpha` 和 `mix`，例如 `Colors.rgba(30, 120, 200, 75%)`。RGB 通道限制在 0 到 255，透明度与混合系数限制在 0 到 1。`mix` 对 RGBA 四个通道做线性插值。
 - **I18n.locale()** 返回协商后的语言标识，例如 `"fr"`。调用会跟踪 UI 语言变化。有 Fluent 语言包时使用匹配语言或语言包的默认语言。没有语言包时返回应用设置的语言，尚未设置时返回 `"und"`。词条翻译使用 `@tr`。
 
@@ -101,7 +101,14 @@ export component App inherits Window {
 - `Dates.add-months(date, months, fallback)` 加减整月并尽量保留原来的日。目标月没有对应的日时取目标月的最后一天，例如 2024 年 1 月 31 日加一个月得到 2 月 29 日。
 - `Dates.weekday(date)` 返回周一为 1 到周日为 7 的编号。无效日期返回 0。
 
+- `Dates.parse-iso(text, fallback)` 解析 ASCII `YYYY-MM-DD` 日期。只有输入不完整、格式错误或日期不存在时才求值 `fallback`。
+- `Dates.is-selectable(date, minimum, maximum, disabled-weekdays, disabled-dates)` 检查与日历控件相同的日期上下限、禁用星期和停约日期。
+- `Dates.months(from, to)` 返回覆盖给定闭区间的 `[Date]`，每一项为月份的第一天。无效日期或起点晚于终点时返回空模型。
+- `Dates.month-index(from, to, date)` 查找该日期所属月份在上述模型中的零基索引，日期无效或月份不在范围内时返回 `-1`。
+
 加减遇到无效输入或结果超出年份范围时才会求值并返回 `fallback`。
+
+`Times.parse-iso(text, fallback)` 和 `Times.is-valid-iso(text)` 接受 ASCII `HH:mm` 或 `HH:mm:ss`，省略秒时解析为零。解析失败时才求值 `fallback`。`Times.format-iso(time, show-seconds)` 返回补零后的 24 小时制文本。`Times.in-range(time, minimum, maximum)` 检查闭区间，起点晚于终点时没有可选时间。
 
 ```xr
 in property <Date> selected: Date { year: 2024, month: 1, day: 31 };

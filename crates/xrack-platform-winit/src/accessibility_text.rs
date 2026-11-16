@@ -5,7 +5,8 @@ use unicode_segmentation::UnicodeSegmentation;
 use xrack_layout::Affine;
 use xrack_layout::{
     ComboGeometry, Interaction, PasswordMask, Point, Rect, TextAlignment, TextAreaLayout, TextEdit,
-    TextMeasurer, TextPosition, VisualTextLine, font_size,
+    TextMeasurer, TextPosition, VisualTextLine, font_size, text_editor_line_bounds,
+    text_editor_viewport,
 };
 use xrack_renderer_femtovg::TextSystem;
 use xrack_runtime::{
@@ -18,11 +19,7 @@ use xrack_runtime::{
 const RUN_CHARACTERS: usize = 256;
 
 pub(crate) fn supports_ranges(node: &Node) -> bool {
-    is_text_input(node.kind) || combo_editable(node)
-}
-
-pub(crate) fn focused_editor<'a>(input: &'a Interaction, path: &[usize]) -> Option<&'a TextEdit> {
-    input.editor.as_ref().filter(|_| input.is_focused(path))
+    is_text_input(node.kind) || combo_editable(node) || node.selectable_styled_text()
 }
 
 #[derive(PartialEq)]
@@ -30,6 +27,7 @@ pub(crate) struct EditorState {
     anchor: usize,
     focus: TextPosition,
     composing: bool,
+    horizontal_drag_scroll: Option<f32>,
 }
 
 impl EditorState {
@@ -44,6 +42,7 @@ impl EditorState {
             anchor: editor.anchor(text),
             focus: editor.position(text),
             composing: !editor.preedit.is_empty(),
+            horizontal_drag_scroll: editor.horizontal_drag_scroll(),
         })
     }
 }
@@ -137,17 +136,18 @@ pub(crate) fn project_text(
     mut allocate_id: impl FnMut(usize, &str) -> NodeId,
 ) -> (TextDocument, Vec<(NodeId, AccessibleNode)>) {
     let source = text_input_value(node);
-    let mask = node.is_password().then(|| PasswordMask::new(source));
+    let mask = node
+        .is_password()
+        .then(|| PasswordMask::for_node(node, source));
     let value = mask.as_ref().map_or(source, PasswordMask::display);
-    let revealed = mask.as_ref().filter(|_| !node.password_masked());
-    let measured = |range: Range<usize>| {
-        if let Some(mask) = revealed {
-            &source[mask.source_offset(range.start)..mask.source_offset(range.end)]
-        } else {
-            &value[range]
-        }
-    };
-    let editor = focused_editor(input, path);
+    let editor = input.displayed_editor(node, path);
+    let displayed_mask = node
+        .password_masked()
+        .then(|| PasswordMask::for_editor(node, source, editor));
+    // Shape the same glyphs the user sees, while publishing only the redacted value.
+    let measured = displayed_mask
+        .as_ref()
+        .map_or(source, PasswordMask::display);
     let scroll = input.text_scroll(path);
     let size = text_system.map_or_else(|| font_size(node), |system| system.font_size(node));
     let rect = if combo_editable(node) {
@@ -158,7 +158,7 @@ pub(crate) fn project_text(
     } else {
         rect
     };
-    let viewport = rect.inset(node.length("padding").unwrap_or(6.0).max(0.0));
+    let viewport = text_editor_viewport(node, rect);
     let multiline = is_multiline_text_input(node.kind);
     let layout = multiline.then(|| {
         text_system.map_or_else(
@@ -182,7 +182,7 @@ pub(crate) fn project_text(
     let single_geometry = if multiline {
         None
     } else {
-        text_system.map(|system| system.single_line_layout(node, measured(single.clone())))
+        text_system.map(|system| system.single_line_layout(node, measured))
     };
     let (origin, height) = if let Some(layout) = &layout {
         let scroll = layout.clamp_scroll(scroll);
@@ -199,17 +199,18 @@ pub(crate) fn project_text(
         let offset = single_geometry.as_ref().map_or(0.0, |visual| {
             let caret = editor.map(|editor| {
                 let mut caret = editor.position(source);
-                if let Some(mask) = mask.as_ref().filter(|_| node.password_masked()) {
+                if let Some(mask) = &displayed_mask {
                     caret.offset = mask.display_offset(caret.offset);
                 }
                 visual.caret_x(caret)
             });
             let aligned_x = viewport.x
-                + alignment.single_line_offset(
+                + alignment.single_line_view_offset(
                     viewport.width,
                     visual.width(),
                     visual.is_rtl(),
                     caret,
+                    editor.and_then(TextEdit::horizontal_drag_scroll),
                 );
             let draft_x = (|| {
                 let completion = input.combo_completion(node, path)?;
@@ -228,15 +229,19 @@ pub(crate) fn project_text(
         (
             Point {
                 x: viewport.x + offset,
-                y: rect.y + ((rect.height - height) * 0.5).max(0.0),
+                y: text_editor_line_bounds(viewport, height).y,
             },
             height,
         )
     };
-    let word_starts: Vec<_> = value
-        .unicode_word_indices()
-        .map(|(offset, _)| offset)
-        .collect();
+    let word_starts: Vec<_> = if mask.is_some() {
+        Vec::new()
+    } else {
+        value
+            .unicode_word_indices()
+            .map(|(offset, _)| offset)
+            .collect()
+    };
     let mut document = TextDocument {
         runs: Vec::new(),
         path: path.to_vec(),
@@ -275,24 +280,7 @@ pub(crate) fn project_text(
             let end_byte = offsets[end - first];
             let text = &value[start_byte..end_byte];
             let id = allocate_id(start_byte, text);
-            let mut run = AccessibleNode::new(Role::TextRun);
-            run.set_value(text);
-            run.set_character_lengths(
-                offsets
-                    .windows(2)
-                    .map(|pair| (pair[1] - pair[0]) as u8)
-                    .collect::<Vec<_>>(),
-            );
-            let words = word_starts.partition_point(|&offset| offset < start_byte)
-                ..word_starts.partition_point(|&offset| offset < end_byte);
-            run.set_word_starts(
-                word_starts[words]
-                    .iter()
-                    .filter_map(|offset| {
-                        offsets.binary_search(offset).ok().map(|index| index as u8)
-                    })
-                    .collect::<Vec<_>>(),
-            );
+            let mut run = text_run(text, offsets, &word_starts);
             if first != 0
                 && let Some((previous_id, previous)) = nodes.last_mut()
             {
@@ -336,6 +324,122 @@ pub(crate) fn project_text(
     (document, nodes)
 }
 
+pub(crate) fn project_styled_text(
+    node: &Node,
+    layout: &xrack_layout::LayoutNode,
+    path: &[usize],
+    scale: f64,
+    mut allocate_id: impl FnMut(usize, &str) -> NodeId,
+) -> (TextDocument, Vec<(NodeId, AccessibleNode)>) {
+    let value = text_input_value(node);
+    let mut fragments = layout
+        .styled_text
+        .iter()
+        .flat_map(|plan| &plan.fragments)
+        .filter_map(|fragment| {
+            let (visual, range, prefix) = fragment.selection_geometry()?;
+            Some((range, fragment.bounds, visual, prefix))
+        })
+        .collect::<Vec<_>>();
+    fragments.sort_by_key(|(range, ..)| range.start);
+    let mut segments = Vec::new();
+    let mut end = 0;
+    for (range, bounds, visual, prefix) in fragments {
+        if end < range.start {
+            segments.push((end..range.start, None));
+        }
+        end = range.end;
+        segments.push((range, Some((bounds, visual, prefix))));
+    }
+    if end < value.len() || segments.is_empty() {
+        segments.push((end..value.len(), None));
+    }
+
+    let starts: Vec<_> = value.unicode_word_indices().map(|(byte, _)| byte).collect();
+    let mut document = TextDocument {
+        runs: Vec::new(),
+        path: path.to_vec(),
+        scroll: Point::default(),
+    };
+    let mut nodes: Vec<(NodeId, AccessibleNode)> = Vec::new();
+    let mut previous_line = None;
+    for (index, (range, geometry)) in segments.iter().enumerate() {
+        let offsets = character_offsets(value, range.clone());
+        let count = offsets.len() - 1;
+        let positions = geometry
+            .and_then(|(_, visual, prefix)| character_geometry_from(visual, count, None, prefix));
+        let line = geometry.map(|(bounds, _, _)| bounds.y);
+        let mut first = 0;
+        loop {
+            let limit = (first + RUN_CHARACTERS).min(count);
+            let last = positions
+                .as_ref()
+                .map_or(limit, |positions| contiguous_end(positions, first, limit));
+            let offsets = &offsets[first..=last];
+            let start = offsets[0];
+            let end = offsets[last - first];
+            let text = &value[start..end];
+            let id = allocate_id(start, text);
+            let mut run = text_run(text, offsets, &starts);
+            if let Some(((bounds, _, _), positions)) = geometry.as_ref().zip(positions.as_ref()) {
+                publish_geometry(
+                    &mut run,
+                    &positions[first..last],
+                    Point {
+                        x: layout.bounds.x + bounds.x,
+                        y: layout.bounds.y + bounds.y,
+                    },
+                    bounds.height,
+                    scale,
+                    layout.world_transform(),
+                );
+            }
+            if (first != 0 || line.is_some() && line == previous_line)
+                && let Some((previous_id, previous)) = nodes.last_mut()
+            {
+                previous.set_next_on_line(id);
+                run.set_previous_on_line(*previous_id);
+            }
+            previous_line = line;
+            let trailing_boundary = last < count
+                || segments.get(index + 1).is_some_and(|(_, next)| {
+                    line.is_some() && next.is_some_and(|(bounds, _, _)| line == Some(bounds.y))
+                });
+            document.runs.push(Run {
+                id,
+                offsets: offsets.to_vec(),
+                trailing_boundary,
+            });
+            nodes.push((id, run));
+            if last == count {
+                break;
+            }
+            first = last;
+        }
+    }
+    (document, nodes)
+}
+
+fn text_run(text: &str, offsets: &[usize], word_starts: &[usize]) -> AccessibleNode {
+    let mut run = AccessibleNode::new(Role::TextRun);
+    run.set_value(text);
+    run.set_character_lengths(
+        offsets
+            .windows(2)
+            .map(|pair| (pair[1] - pair[0]) as u8)
+            .collect::<Vec<_>>(),
+    );
+    let words = word_starts.partition_point(|&offset| offset < offsets[0])
+        ..word_starts.partition_point(|&offset| offset < offsets[offsets.len() - 1]);
+    run.set_word_starts(
+        word_starts[words]
+            .iter()
+            .filter_map(|offset| offsets.binary_search(offset).ok().map(|index| index as u8))
+            .collect::<Vec<_>>(),
+    );
+    run
+}
+
 #[derive(Clone, Copy)]
 struct CharacterGeometry {
     leading: f32,
@@ -348,11 +452,21 @@ fn character_geometry(
     count: usize,
     newline_width: Option<f32>,
 ) -> Option<Vec<CharacterGeometry>> {
-    if visual.graphemes().len() + usize::from(newline_width.is_some()) != count {
+    character_geometry_from(visual, count, newline_width, 0)
+}
+
+fn character_geometry_from(
+    visual: &VisualTextLine,
+    count: usize,
+    newline_width: Option<f32>,
+    prefix: usize,
+) -> Option<Vec<CharacterGeometry>> {
+    let cells = visual.graphemes();
+    let cells = &cells[cells.partition_point(|cell| cell.bytes.end <= prefix)..];
+    if cells.len() + usize::from(newline_width.is_some()) != count {
         return None;
     }
-    let mut cells: Vec<_> = visual
-        .graphemes()
+    let mut cells: Vec<_> = cells
         .iter()
         .map(|cell| CharacterGeometry {
             leading: cell.leading,

@@ -1,7 +1,7 @@
 use crate::{Interaction, Target};
-use std::ops::Range;
+use std::{ops::Range, time::Duration};
 use unicode_segmentation::UnicodeSegmentation;
-use xrack_runtime::{Node, TextCommand, spin_editable};
+use xrack_runtime::{KeyModifiers, Node, TextCommand, spin_editable};
 
 #[derive(Clone, Debug, Default)]
 pub struct TextEdit {
@@ -10,8 +10,46 @@ pub struct TextEdit {
     trailing: bool,
     preferred_x: Option<f32>,
     composition: Option<(u64, TextEditContext)>,
+    word_drag: Option<WordDrag>,
+    horizontal_drag_scroll: Option<f32>,
+    pub(crate) password_echo: Option<crate::password::PasswordEcho>,
     pub preedit: String,
     pub preedit_cursor: Option<usize>,
+}
+
+/// Clamp a drag hit to the visible edge and advance the viewport toward it.
+#[doc(hidden)]
+pub fn selection_drag_axis(
+    pointer: f32,
+    start: f32,
+    size: f32,
+    offset: f32,
+    limit: f32,
+    elapsed: Duration,
+) -> (f32, f32, bool) {
+    if size <= 0.0 {
+        return (start, offset, false);
+    }
+    let end = start + size;
+    let outside = pointer - pointer.clamp(start, end);
+    let speed = (70.0 + outside.abs() * 9.0).min(1600.0) * outside.signum();
+    let offset = if outside == 0.0 {
+        offset
+    } else {
+        (offset + speed * elapsed.as_secs_f32()).clamp(0.0, limit)
+    };
+    let pending = (outside < 0.0 && offset > 0.0) || (outside > 0.0 && offset < limit);
+    (
+        pointer.clamp(start, end.next_down().max(start)),
+        offset,
+        pending,
+    )
+}
+
+#[derive(Clone, Debug)]
+struct WordDrag {
+    value: String,
+    anchor: Range<usize>,
 }
 
 /// A logical offset with affinity to the preceding grapheme at a bidi or wrap boundary.
@@ -25,13 +63,61 @@ pub struct TextPosition {
 pub enum EditAction<'a> {
     Insert(&'a str),
     ReplaceAll(&'a str),
+    ReplaceRange { start: i64, end: i64, text: &'a str },
     Backspace,
     Delete,
+    BackspaceWord,
+    DeleteWord,
     Left(bool),
     Right(bool),
+    WordLeft(bool),
+    WordRight(bool),
     Home(bool),
     End(bool),
     SelectAll,
+}
+
+impl EditAction<'_> {
+    #[doc(hidden)]
+    pub fn word_shortcut(key: &str, modifiers: KeyModifiers, macos: bool) -> Option<Self> {
+        let word = if macos {
+            modifiers.alt && !modifiers.control
+        } else {
+            modifiers.control && !modifiers.alt
+        };
+        if !word || modifiers.meta {
+            return None;
+        }
+        Some(match key {
+            "ArrowLeft" => Self::WordLeft(modifiers.shift),
+            "ArrowRight" => Self::WordRight(modifiers.shift),
+            "Backspace" => Self::BackspaceWord,
+            "Delete" => Self::DeleteWord,
+            _ => return None,
+        })
+    }
+
+    pub(crate) fn changes_text(self) -> bool {
+        matches!(
+            self,
+            Self::Insert(_)
+                | Self::ReplaceAll(_)
+                | Self::ReplaceRange { .. }
+                | Self::Backspace
+                | Self::Delete
+                | Self::BackspaceWord
+                | Self::DeleteWord
+        )
+    }
+}
+
+pub(crate) fn word_ranges(text: &str) -> impl DoubleEndedIterator<Item = Range<usize>> + '_ {
+    text.split_word_bound_indices()
+        .filter(|(_, word)| {
+            word.chars()
+                .any(|ch| !ch.is_whitespace() && !ch.is_control())
+        })
+        .map(|(index, word)| index..index + word.len())
 }
 
 pub(crate) struct AppliedEdit {
@@ -39,6 +125,33 @@ pub(crate) struct AppliedEdit {
     pub start: usize,
     pub removed: String,
     pub inserted: String,
+}
+
+impl AppliedEdit {
+    pub(crate) fn replace_text(self, original: &str, text: String) -> Self {
+        if self.text == text {
+            return self;
+        }
+        let start = original
+            .graphemes(true)
+            .zip(text.graphemes(true))
+            .take_while(|(old, new)| old == new)
+            .map(|(grapheme, _)| grapheme.len())
+            .sum::<usize>();
+        let end = original[start..]
+            .graphemes(true)
+            .rev()
+            .zip(text[start..].graphemes(true).rev())
+            .take_while(|(old, new)| old == new)
+            .map(|(grapheme, _)| grapheme.len())
+            .sum::<usize>();
+        Self {
+            removed: original[start..original.len() - end].to_owned(),
+            inserted: text[start..text.len() - end].to_owned(),
+            text,
+            start,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -93,6 +206,7 @@ impl TextEdit {
 
     pub fn place_caret(&mut self, text: &str, position: TextPosition, selecting: bool) {
         self.set_preedit(String::new(), None);
+        self.word_drag = None;
         self.caret = boundary(text, position.offset);
         self.trailing = position.trailing;
         self.preferred_x = None;
@@ -104,6 +218,80 @@ impl TextEdit {
     pub fn set_selection(&mut self, text: &str, anchor: usize, focus: TextPosition) {
         self.place_caret(text, focus, false);
         self.anchor = boundary(text, anchor);
+    }
+
+    pub(crate) fn word_at(text: &str, position: TextPosition, password: bool) -> Range<usize> {
+        if password {
+            return 0..text.len();
+        }
+        let offset = boundary(text, position.offset);
+        let index = if position.trailing || offset == text.len() {
+            text[..offset]
+                .grapheme_indices(true)
+                .next_back()
+                .map_or(0, |(index, _)| index)
+        } else {
+            offset
+        };
+        text.split_word_bound_indices()
+            .find(|(offset, word)| *offset <= index && index < *offset + word.len())
+            .map_or(index..index, |(offset, word)| {
+                let end = text
+                    .grapheme_indices(true)
+                    .find(|(index, _)| *index >= offset + word.len())
+                    .map_or(text.len(), |(index, _)| index);
+                boundary(text, offset)..end
+            })
+    }
+
+    #[doc(hidden)]
+    pub fn start_word_drag(
+        &mut self,
+        text: &str,
+        position: TextPosition,
+        password: bool,
+        select_word: bool,
+    ) {
+        let anchor = Self::word_at(text, position, password);
+        if select_word {
+            self.set_selection(
+                text,
+                anchor.start,
+                TextPosition {
+                    offset: anchor.end,
+                    trailing: true,
+                },
+            );
+        } else {
+            self.place_caret(text, position, false);
+        }
+        self.word_drag = Some(WordDrag {
+            value: text.to_owned(),
+            anchor,
+        });
+    }
+
+    #[doc(hidden)]
+    pub fn extend_word_drag(&mut self, text: &str, position: TextPosition) -> bool {
+        let Some(drag) = self.word_drag.take().filter(|drag| drag.value == text) else {
+            return false;
+        };
+        let word = Self::word_at(text, position, false);
+        let (anchor, caret, trailing) = if word.start < drag.anchor.start {
+            (drag.anchor.end, word.start, false)
+        } else {
+            (drag.anchor.start, drag.anchor.end.max(word.end), true)
+        };
+        self.set_selection(
+            text,
+            anchor,
+            TextPosition {
+                offset: caret,
+                trailing,
+            },
+        );
+        self.word_drag = Some(drag);
+        true
     }
 
     pub(crate) fn preferred_x(&self) -> Option<f32> {
@@ -137,17 +325,31 @@ impl TextEdit {
     }
 
     fn update_preedit(&mut self, value: String, cursor: Option<(usize, usize)>) {
+        self.password_echo = None;
+        self.horizontal_drag_scroll = None;
         self.preedit_cursor = cursor.map(|(start, _)| boundary(&value, start));
         self.preedit = value;
     }
 
+    #[doc(hidden)]
+    pub fn horizontal_drag_scroll(&self) -> Option<f32> {
+        self.horizontal_drag_scroll
+    }
+
+    #[doc(hidden)]
+    pub fn set_horizontal_drag_scroll(&mut self, offset: Option<f32>) {
+        self.horizontal_drag_scroll = offset;
+    }
+
     /// Return a replacement value for actions that change the committed text.
     pub fn apply(&mut self, text: &str, action: EditAction<'_>) -> Option<String> {
-        self.apply_mode(text, action, false).map(|edit| edit.text)
+        self.apply_mode(text, action, false, false)
+            .map(|edit| edit.text)
     }
 
     pub fn apply_multiline(&mut self, text: &str, action: EditAction<'_>) -> Option<String> {
-        self.apply_mode(text, action, true).map(|edit| edit.text)
+        self.apply_mode(text, action, true, false)
+            .map(|edit| edit.text)
     }
 
     pub(crate) fn apply_mode(
@@ -155,10 +357,15 @@ impl TextEdit {
         text: &str,
         action: EditAction<'_>,
         multiline: bool,
+        overwrite: bool,
     ) -> Option<AppliedEdit> {
         self.set_preedit(String::new(), None);
+        self.word_drag = None;
         self.preferred_x = None;
-        self.trailing = matches!(action, EditAction::Right(_) | EditAction::End(_));
+        self.trailing = matches!(
+            action,
+            EditAction::Right(_) | EditAction::WordRight(_) | EditAction::End(_)
+        );
         let caret = self.caret(text);
         let selection = self.selection(text);
         let left = || {
@@ -173,6 +380,21 @@ impl TextEdit {
                 .next()
                 .map_or(caret, |g| caret + g.len())
         };
+        let previous_word = || {
+            word_ranges(text)
+                .rev()
+                .find(|word| word.start < caret)
+                .map_or(0, |word| boundary(text, word.start))
+        };
+        let next_word = || {
+            word_ranges(text)
+                .find(|word| word.end > caret)
+                .map_or(text.len(), |word| {
+                    text.grapheme_indices(true)
+                        .find(|(index, _)| *index >= word.end)
+                        .map_or(text.len(), |(index, _)| index)
+                })
+        };
         let mut move_caret = |next: usize, selecting: bool| {
             self.caret = next;
             if !selecting {
@@ -180,10 +402,12 @@ impl TextEdit {
             }
         };
         let (range, replacement) = match action {
-            EditAction::Left(selecting) => {
+            EditAction::Left(selecting) | EditAction::WordLeft(selecting) => {
                 move_caret(
                     if !selecting && !selection.is_empty() {
                         selection.start
+                    } else if matches!(action, EditAction::WordLeft(_)) {
+                        previous_word()
                     } else {
                         left()
                     },
@@ -191,10 +415,12 @@ impl TextEdit {
                 );
                 return None;
             }
-            EditAction::Right(selecting) => {
+            EditAction::Right(selecting) | EditAction::WordRight(selecting) => {
                 move_caret(
                     if !selecting && !selection.is_empty() {
                         selection.end
+                    } else if matches!(action, EditAction::WordRight(_)) {
+                        next_word()
                     } else {
                         right()
                     },
@@ -217,8 +443,17 @@ impl TextEdit {
             }
             EditAction::Backspace if selection.is_empty() => (left()..caret, String::new()),
             EditAction::Delete if selection.is_empty() => (caret..right(), String::new()),
-            EditAction::Backspace | EditAction::Delete => (selection, String::new()),
-            EditAction::Insert(value) | EditAction::ReplaceAll(value) => {
+            EditAction::BackspaceWord if selection.is_empty() => {
+                (previous_word()..caret, String::new())
+            }
+            EditAction::DeleteWord if selection.is_empty() => (caret..next_word(), String::new()),
+            EditAction::Backspace
+            | EditAction::Delete
+            | EditAction::BackspaceWord
+            | EditAction::DeleteWord => (selection, String::new()),
+            EditAction::Insert(value)
+            | EditAction::ReplaceAll(value)
+            | EditAction::ReplaceRange { text: value, .. } => {
                 let normalized;
                 let value = if multiline {
                     normalized = value.replace("\r\n", "\n").replace('\r', "\n");
@@ -230,12 +465,25 @@ impl TextEdit {
                     .chars()
                     .filter(|ch| !ch.is_control() || (multiline && *ch == '\n'))
                     .collect::<String>();
-                let replace_all = matches!(action, EditAction::ReplaceAll(_));
-                if filtered.is_empty() && !(replace_all && value.is_empty()) {
+                let explicit = match action {
+                    EditAction::ReplaceAll(_) => Some(0..text.len()),
+                    EditAction::ReplaceRange { start, end, .. } => {
+                        let offset = |byte: i64| {
+                            boundary(text, usize::try_from(byte.max(0)).unwrap_or(text.len()))
+                        };
+                        let (start, end) = (offset(start), offset(end));
+                        Some(start.min(end)..start.max(end))
+                    }
+                    _ => None,
+                };
+                if filtered.is_empty() && !(explicit.is_some() && value.is_empty()) {
                     return None;
                 }
-                if replace_all {
-                    (0..text.len(), filtered)
+                if let Some(range) = explicit {
+                    (range, filtered)
+                } else if overwrite && selection.is_empty() {
+                    let end = overwrite_end(text, caret, &filtered);
+                    (caret..end, filtered)
                 } else {
                     (selection, filtered)
                 }
@@ -267,6 +515,28 @@ impl TextEdit {
     }
 }
 
+fn overwrite_end(text: &str, caret: usize, inserted: &str) -> usize {
+    // Segment with the preceding grapheme so a combining mark does not consume the next one.
+    let previous = text[..caret]
+        .graphemes(true)
+        .next_back()
+        .unwrap_or_default();
+    let combined = [previous, inserted].concat();
+    let line_break = |cluster: &str| cluster.contains(['\r', '\n']);
+    let count = combined
+        .grapheme_indices(true)
+        .filter(|(offset, _)| *offset >= previous.len())
+        .take_while(|(_, cluster)| !line_break(cluster))
+        .count();
+    caret
+        + text[caret..]
+            .graphemes(true)
+            .take(count)
+            .take_while(|cluster| !line_break(cluster))
+            .map(str::len)
+            .sum::<usize>()
+}
+
 /// The focused editor and selection at the start of an asynchronous edit.
 #[derive(Clone, Debug)]
 pub struct TextEditContext {
@@ -281,7 +551,7 @@ impl TextEditContext {
     pub fn for_clipboard(input: &Interaction, scene: &Node, command: TextCommand) -> Option<Self> {
         let node = scene.interactive_at_path(&input.focused.as_ref()?.path)?;
         if node.is_password() && command != TextCommand::Paste
-            || node.boolean("read-only", false) && command != TextCommand::Copy
+            || node.text_read_only() && command != TextCommand::Copy
         {
             return None;
         }
@@ -352,6 +622,7 @@ impl Interaction {
         self.dismiss_choice();
         self.break_text_edit_group();
         if let Some(editor) = &mut self.editor {
+            editor.password_echo = None;
             editor.composition = Some((id, context));
         }
         true
@@ -420,7 +691,7 @@ impl TextEditContext {
         self.matches(input, scene)
             && scene
                 .interactive_at_path(&self.target.path)
-                .is_some_and(|node| !node.boolean("read-only", false))
+                .is_some_and(|node| !node.text_read_only())
     }
 }
 
@@ -445,4 +716,167 @@ fn current<'a>(
     let selection = editor.selection(&text);
     let caret = editor.position(&text);
     Some((target, text, selection, caret))
+}
+
+#[cfg(test)]
+mod word_tests {
+    use super::*;
+
+    #[test]
+    fn word_boundaries_keep_combining_sequences_and_joined_emoji_intact() {
+        let text = "e\u{301}clair  👩‍💻 猫";
+        let emoji = text.find('👩').unwrap();
+        let mut editor = TextEdit::at_end(text);
+        editor.apply(text, EditAction::WordLeft(false));
+        assert_eq!(&text[editor.caret(text)..], "猫");
+        editor.apply(text, EditAction::WordLeft(false));
+        assert_eq!(editor.caret(text), emoji);
+        editor.apply(text, EditAction::WordRight(true));
+        assert_eq!(&text[editor.selection(text)], "👩‍💻");
+        assert_eq!(
+            editor.apply(text, EditAction::DeleteWord).as_deref(),
+            Some("e\u{301}clair   猫")
+        );
+
+        let word = "first, second";
+        let mut editor = TextEdit::at_end(word);
+        assert_eq!(
+            editor.apply(word, EditAction::BackspaceWord).as_deref(),
+            Some("first, ")
+        );
+        assert_eq!(
+            editor
+                .apply("first, ", EditAction::BackspaceWord)
+                .as_deref(),
+            Some("first")
+        );
+    }
+
+    #[test]
+    fn overwrite_counts_new_graphemes_and_respects_line_boundaries() {
+        let mut editor = TextEdit::default();
+        let text = "e\u{301}👩‍💻\r\n猫";
+        let result = editor
+            .apply_mode(text, EditAction::Insert("ABC"), true, true)
+            .unwrap();
+        assert_eq!(result.text, "ABC\r\n猫");
+        assert_eq!(result.removed, "e\u{301}👩‍💻");
+
+        editor.place_caret(
+            "e猫",
+            TextPosition {
+                offset: 1,
+                trailing: true,
+            },
+            false,
+        );
+        let edit = editor
+            .apply_mode("e猫", EditAction::Insert("\u{301}"), false, true)
+            .unwrap();
+        assert_eq!(edit.text, "e\u{301}猫");
+        assert!(edit.removed.is_empty());
+
+        editor.place_caret(text, TextPosition::default(), false);
+        let edit = editor
+            .apply_mode(text, EditAction::Insert("\n"), true, true)
+            .unwrap();
+        assert_eq!(edit.text, format!("\n{text}"));
+
+        editor.set_selection(
+            text,
+            0,
+            TextPosition {
+                offset: "e\u{301}".len(),
+                trailing: true,
+            },
+        );
+        let edit = editor
+            .apply_mode(text, EditAction::Insert("AB"), true, true)
+            .unwrap();
+        assert_eq!(edit.text, "AB👩‍💻\r\n猫");
+    }
+
+    #[test]
+    fn pointer_word_drag_keeps_its_anchor_when_extending_and_reversing() {
+        let text = "alpha e\u{301}clair 👩‍💻 猫";
+        let selected = text.find('e').unwrap();
+        let after_word = text.find('👩').unwrap() - 1;
+        let mut editor = TextEdit::at_end(text);
+        editor.start_word_drag(
+            text,
+            TextPosition {
+                offset: after_word,
+                trailing: true,
+            },
+            false,
+            true,
+        );
+        assert_eq!(&text[editor.selection(text)], "e\u{301}clair");
+        assert!(editor.extend_word_drag(
+            text,
+            TextPosition {
+                offset: text.len(),
+                trailing: true
+            }
+        ));
+        assert_eq!(&text[editor.selection(text)], "e\u{301}clair 👩‍💻 猫");
+        assert!(editor.extend_word_drag(text, TextPosition::default()));
+        assert_eq!(&text[editor.selection(text)], "alpha e\u{301}clair");
+        assert!(editor.extend_word_drag(
+            text,
+            TextPosition {
+                offset: selected,
+                trailing: false
+            }
+        ));
+        assert_eq!(&text[editor.selection(text)], "e\u{301}clair");
+        assert!(!editor.extend_word_drag("replacement", TextPosition::default()));
+
+        editor.start_word_drag(text, TextPosition::default(), true, true);
+        assert_eq!(editor.selection(text), 0..text.len());
+
+        let position = TextPosition {
+            offset: 2,
+            trailing: true,
+        };
+        editor.start_word_drag(text, position, false, false);
+        assert_eq!(editor.selection(text), 2..2);
+        assert!(editor.extend_word_drag(
+            text,
+            TextPosition {
+                offset: 3,
+                trailing: true
+            }
+        ));
+        assert_eq!(&text[editor.selection(text)], "alpha");
+    }
+
+    #[test]
+    fn word_shortcuts_respect_the_keyboard_platform_and_alt_graph() {
+        let option = KeyModifiers {
+            alt: true,
+            shift: true,
+            ..Default::default()
+        };
+        let control = KeyModifiers {
+            control: true,
+            ..Default::default()
+        };
+        assert!(matches!(
+            EditAction::word_shortcut("ArrowLeft", option, true),
+            Some(EditAction::WordLeft(true))
+        ));
+        assert!(EditAction::word_shortcut("ArrowLeft", option, false).is_none());
+        assert!(matches!(
+            EditAction::word_shortcut("Backspace", control, false),
+            Some(EditAction::BackspaceWord)
+        ));
+        assert!(EditAction::word_shortcut("Backspace", control, true).is_none());
+        let both = KeyModifiers {
+            alt: true,
+            ..control
+        };
+        assert!(EditAction::word_shortcut("Delete", both, true).is_none());
+        assert!(EditAction::word_shortcut("Delete", both, false).is_none());
+    }
 }

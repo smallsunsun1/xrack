@@ -1,4 +1,4 @@
-import { LabelCard as BaseLabel } from "widgets.xr";
+import { DateField, LabelCard as BaseLabel, TimeField } from "widgets.xr";
 
 component SearchLabel inherits BaseLabel {
     caption: "搜索关键词";
@@ -162,7 +162,7 @@ export component BidiEditorDemo inherits Window {
 
     VerticalLayout {
         padding: 16px; spacing: 10px;
-        Text { text: "单行 · 用方向键移动，用 Shift 扩展选区"; }
+        Text { text: "单行 · Option / Ctrl + 方向键按词移动"; }
         entry := LineEdit {
             accessible-name: "混排单行";
             text <=> root.line;
@@ -333,14 +333,137 @@ export component FormDemo inherits Window {
     }
 }
 
+export component DateFieldDemo inherits Window {
+    title: "XRack · 日期字段";
+    width: 452px;
+    height: 464px;
+    background: #162034;
+
+    in-out property <[Date]> closed-dates: [Date { year: 2024, month: 2, day: 29 }];
+    out property <Date> committed-date: booking.date;
+    out property <string> draft: booking.draft-text;
+    out property <bool> acceptable: booking.acceptable-input;
+    out property <int> commits: 0;
+
+    Label { x: 24px; y: 18px; text: "预约日期"; font-size: 20px; }
+    booking := DateField {
+        x: 24px; y: 56px; width: 404px;
+        caption: "预约日期";
+        initial-date: Date { year: 2024, month: 2, day: 28 };
+        minimum-date: Date { year: 2024, month: 2, day: 5 };
+        maximum-date: Date { year: 2024, month: 4, day: 15 };
+        disabled-weekdays: [6, 7];
+        disabled-dates: root.closed-dates;
+        committed(day) => { root.commits += 1; }
+    }
+    Label {
+        x: 24px; y: 113px;
+        text: root.acceptable ? "可提交" : "请检查日期或停约规则";
+    }
+    Label {
+        x: 24px; y: 145px;
+        text: "已提交 · " + root.committed-date;
+    }
+    next-appointment := Button {
+        x: 24px; y: 184px; width: 200px; height: 36px;
+        text: "载入 3 月 4 日预约";
+        clicked => { booking.set-date(Date { year: 2024, month: 3, day: 4 }); }
+    }
+}
+
+export component TimeFieldDemo inherits Window {
+    title: "XRack · 时间字段";
+    width: 452px;
+    height: 440px;
+    background: #162034;
+
+    in-out property <bool> show-seconds: false;
+    in-out property <Time> latest: Time { hour: 17, minute: 0, second: 0 };
+    out property <Time> committed-time: appointment.time;
+    out property <string> draft: appointment.draft-text;
+    out property <bool> acceptable: appointment.acceptable-input;
+    out property <int> commits: 0;
+
+    Label { x: 24px; y: 18px; text: "预约时间"; font-size: 20px; }
+    appointment := TimeField {
+        x: 24px; y: 56px; width: 404px;
+        caption: "预约时间";
+        initial-time: Time { hour: 13, minute: 30, second: 42 };
+        minimum-time: Time { hour: 9, minute: 0, second: 0 };
+        maximum-time: root.latest;
+        show-seconds: root.show-seconds;
+        use-24-hour-format: false;
+        committed(value) => { root.commits += 1; }
+    }
+    Label { x: 24px; y: 113px; text: root.acceptable ? "可提交" : "请检查时间或营业时段"; }
+    Label { x: 24px; y: 145px; text: "已提交 · " + root.committed-time; }
+    seconds-toggle := Button {
+        x: 24px; y: 184px; width: 150px; height: 36px;
+        text: root.show-seconds ? "隐藏秒数" : "显示秒数";
+        clicked => { root.show-seconds = !root.show-seconds; }
+    }
+    preset-time := Button {
+        x: 184px; y: 184px; width: 218px; height: 36px;
+        text: "载入 16:05:45 预约";
+        clicked => { appointment.set-time(Time { hour: 16, minute: 5, second: 45 }); }
+    }
+}
+
+export component EditorInsetsDemo inherits Window {
+    title: "XRack · 输入框内边距";
+    width: 432px;
+    height: 350px;
+
+    in-out property <bool> spacious: true;
+    in-out property <color> hint: #ffb554;
+    in-out property <string> account: "";
+
+    account-field := LineEdit {
+        x: 24px; y: 42px; width: 384px; height: 64px;
+        accessible-name: "账户";
+        text <=> root.account;
+        placeholder-text: "请输入账户名称";
+        placeholder-text-color: root.hint;
+        padding: 6px;
+        padding-left: root.spacious ? 48px : 6px;
+        padding-top: root.spacious ? 24px : 6px;
+    }
+    Label { x: 24px; y: 16px; text: "账户"; }
+    note-field := TextArea {
+        x: 24px; y: 124px; width: 384px; height: 114px;
+        accessible-name: "备注";
+        placeholder-text: "填写备注，可输入多行";
+        placeholder-text-color: root.hint;
+        padding-top: root.spacious ? 22px : 6px;
+        padding-left: root.spacious ? 24px : 6px;
+        padding-right: root.spacious ? 78px : 6px;
+        padding-bottom: root.spacious ? 16px : 6px;
+    }
+    choice := ComboBox {
+        x: 24px; y: 254px; width: 384px; height: 44px;
+        editable: true;
+        model: ["本地账户", "团队账户"];
+        placeholder-text: "选择或输入团队";
+        placeholder-text-color: root.hint;
+        padding-left: root.spacious ? 24px : 6px;
+    }
+    padding-toggle := CheckBox {
+        x: 24px; y: 310px; width: 214px; height: 28px;
+        text: "使用自定义内边距";
+        checked <=> root.spacious;
+    }
+}
+
 export component PasswordDemo inherits Window {
     title: "XRack · 密码输入";
     width: 392px;
-    height: 214px;
+    height: 254px;
     background: #162034;
 
     in-out property <string> secret: "";
     in-out property <bool> reveal: false;
+    in-out property <string> mask-character: "•";
+    in-out property <bool> briefly-reveal: false;
     out property <int> submissions: 0;
 
     Text { x: 24px; y: 18px; text: "密码输入"; font-size: 22px; }
@@ -350,6 +473,8 @@ export component PasswordDemo inherits Window {
         placeholder-text: "输入测试口令";
         input-type: password;
         password-visible: root.reveal;
+        password-character: root.mask-character;
+        password-mask-delay: root.briefly-reveal ? 750 : 0;
         text <=> root.secret;
         accepted => { root.submissions += 1; }
     }
@@ -358,7 +483,17 @@ export component PasswordDemo inherits Window {
         text: "显示口令";
         checked <=> root.reveal;
     }
-    Text { x: 24px; y: 166px; text: "提交 " + root.submissions + " 次"; color: #acc0db; }
+    mask-toggle := Button {
+        x: 184px; y: 117px; width: 184px; height: 34px;
+        text: "切换遮罩 " + root.mask-character;
+        clicked => { root.mask-character = root.mask-character == "•" ? "*" : "•"; }
+    }
+    timed-reveal-toggle := CheckBox {
+        x: 24px; y: 154px; width: 256px; height: 34px;
+        text: "短暂显示刚键入的字符";
+        checked <=> root.briefly-reveal;
+    }
+    Text { x: 24px; y: 206px; text: "提交 " + root.submissions + " 次"; color: #acc0db; }
 }
 
 export component ValidationDemo inherits Window {
@@ -488,13 +623,110 @@ export component NumericValidationDemo inherits Window {
     }
 }
 
+export component InputMaskDemo inherits Window {
+    title: "XRack · 输入掩码";
+    width: 440px; height: 320px;
+    background: #162034;
+
+    in-out property <string> date: "";
+    in-out property <string> device: "";
+    in-out property <string> date-mask: "9999-99-99";
+    out property <bool> date-ready: date-field.acceptable-input;
+    out property <bool> device-ready: device-field.acceptable-input;
+    out property <string> submitted: "";
+
+    VerticalLayout {
+        padding: 24px;
+        spacing: 10px;
+        Label { text: "日期 · YYYY-MM-DD"; }
+        date-field := LineEdit {
+            accessible-name: "日期";
+            input-mask: root.date-mask;
+            placeholder-text: "输入或粘贴 20261117";
+            text <=> root.date;
+            accepted => { root.submitted = root.date; }
+        }
+        Label { text: "设备编号 · 两个字母与三位数字"; }
+        device-field := TextInput {
+            accessible-name: "设备编号";
+            input-mask: "AA-999";
+            placeholder-text: "例如 AB123";
+            text <=> root.device;
+        }
+        send := Button {
+            text: "提交记录";
+            enabled: root.date-ready && root.device-ready;
+            clicked => { root.submitted = root.date + " / " + root.device; }
+        }
+        result := Label { text: root.submitted; }
+    }
+}
+
+export component EditingLifecycleDemo inherits Window {
+    title: "XRack · 结束编辑";
+    width: 488px; height: 386px;
+    background: #162034;
+
+    in-out property <string> code: "";
+    in-out property <string> note: "";
+    out property <int> finishes: 0;
+    out property <int> accepts: 0;
+    out property <string> trace: "";
+    out property <string> last-result: "";
+    callback finish(string, bool);
+
+    finish(text, acceptable) => {
+        root.finishes += 1;
+        root.last-result = (acceptable ? "已保存 " : "待补全 ") + text;
+    }
+
+    VerticalLayout {
+        padding: 24px;
+        spacing: 12px;
+        label := Label { text: "输入编号后按 Enter 或 Tab"; }
+        code-field := LineEdit {
+            accessible-name: "编号";
+            input-mask: "999-999";
+            placeholder-text: "六位数字";
+            text <=> root.code;
+            accepted => {
+                root.accepts += 1;
+                root.trace += "accept;";
+            }
+            editing-finished(text, acceptable) => {
+                root.trace += (acceptable ? "code:valid;" : "code:draft;");
+                root.finish(text, acceptable);
+            }
+        }
+        note-field := TextArea {
+            height: 100px;
+            accessible-name: "备注";
+            placeholder-text: "备注（至少 4 个字素簇）";
+            minimum-length: 4;
+            text <=> root.note;
+            editing-finished(text, acceptable) => {
+                root.trace += (acceptable ? "note:valid;" : "note:draft;");
+                root.finish(text, acceptable);
+            }
+        }
+        reset := Button {
+            text: "载入示例编号";
+            clicked => { root.code = "987-654"; }
+        }
+        result := Label { text: root.last-result; }
+        totals := Label { text: "结束编辑 " + root.finishes + " 次 · Enter 确认 " + root.accepts + " 次"; }
+    }
+}
+
 export component EditorSelectionDemo inherits Window {
     title: "XRack · 文本选区";
-    width: 456px; height: 220px;
+    width: 456px; height: 330px;
     background: #162034;
 
     in-out property <string> document: "任务：é👩‍💻";
     in-out property <bool> concealed: false;
+    in-out property <bool> overwrite: false;
+    in-out property <MouseSelectionMode> mouse-mode: MouseSelectionMode.characters;
     out property <int> caret: entry.cursor-offset;
     out property <int> selection-start: entry.selection-start-offset;
     out property <int> selection-end: entry.selection-end-offset;
@@ -509,6 +741,8 @@ export component EditorSelectionDemo inherits Window {
         entry := LineEdit {
             accessible-name: "正文";
             input-type: root.concealed ? password : text;
+            mouse-selection-mode: root.mouse-mode;
+            overwrite-mode: root.overwrite;
             text <=> root.document;
         }
         select-prefix-tool := Button {
@@ -520,6 +754,266 @@ export component EditorSelectionDemo inherits Window {
             text: "光标 " + root.caret + " · 选区 [" + root.selection-start + ", " + root.selection-end + ")";
         }
         selection-text := Label { text: "选中文字：" + root.selected; }
+        mode-button := Button {
+            text: root.mouse-mode == MouseSelectionMode.characters ? "鼠标选区：按字"
+                : root.mouse-mode == MouseSelectionMode.words ? "鼠标选区：按词" : "鼠标选区：只放置光标";
+            focus-on-click: false;
+            clicked => {
+                root.mouse-mode = root.mouse-mode == MouseSelectionMode.characters ? MouseSelectionMode.words
+                    : root.mouse-mode == MouseSelectionMode.words ? MouseSelectionMode.caret : MouseSelectionMode.characters;
+            }
+        }
+        HorizontalLayout {
+            spacing: 12px;
+            CheckBox { text: "覆盖输入"; checked <=> root.overwrite; }
+            select-word-tool := Button {
+                text: "选择光标处的词";
+                focus-on-click: false;
+                clicked => { entry.focus(); entry.select-word(); }
+            }
+        }
+    }
+}
+
+export component PersistentSelectionDemo inherits Window {
+    title: "XRack · 保留文本选区";
+    width: 480px; height: 264px;
+    background: #162034;
+    in-out property <string> document: "éclair 和猫";
+    in-out property <bool> retain: true;
+    out property <string> selected: entry.selected-text;
+    out property <int> selection-start: entry.selection-start-offset;
+    out property <int> selection-end: entry.selection-end-offset;
+    out property <string> recorded: "";
+    entry := TextArea {
+        x: 20px; y: 16px; width: 440px; height: 104px;
+        accessible-name: "正文";
+        text <=> root.document;
+        persistent-selection: root.retain;
+    }
+    select-tool := Button {
+        x: 20px; y: 136px; width: 126px; height: 34px;
+        text: "选择开头";
+        clicked => { entry.focus(); entry.set-selection-offsets(0, 3); }
+    }
+    toolbar := Button {
+        x: 156px; y: 136px; width: 146px; height: 34px;
+        text: "记录选区";
+        clicked => { root.recorded = entry.selected-text; }
+    }
+    return-tool := Button {
+        x: 312px; y: 136px; width: 148px; height: 34px;
+        text: "回到编辑器";
+        clicked => { entry.focus(); }
+    }
+    CheckBox {
+        x: 20px; y: 182px; width: 154px; height: 28px;
+        text: "失焦保留选区";
+        checked <=> root.retain;
+    }
+    selection-text := Label {
+        x: 20px; y: 222px; width: 440px;
+        text: "选中：" + root.selected + " · 已记录：" + root.recorded;
+    }
+}
+
+export component LongTextSelectionDemo inherits Window {
+    title: "XRack · 滚动选取长文本";
+    width: 496px; height: 342px;
+    background: #162034;
+    in-out property <MouseSelectionMode> mouse-mode: MouseSelectionMode.characters;
+    out property <string> selected: entry.selected-text;
+    out property <string> line-selected: single-line.selected-text;
+    in-out property <string> line:
+        "Project Atlas • éclair 👩‍💻 • Select across a long line and keep the pointer held past the edge • Displayed scroll follows the selection";
+    in-out property <string> document:
+        "01  Project Atlas    Review: éclair emoji 👩‍💻 and Unicode in a long source line\n"
+        + "02  Project Atlas    Design review and integration tests across the desktop backend\n"
+        + "03  Project Atlas    Release artifacts and the nightly preview are ready for check\n"
+        + "04  Project Atlas    Commit updated translations and the keyboard navigation guide\n"
+        + "05  Project Atlas    Confirm the differences across the renderer and interpreter\n"
+        + "06  Project Atlas    Audit text ranges in documents with mixed Unicode scripts\n"
+        + "07  Project Atlas    Read-only views support selection, copy and accessible ranges\n"
+        + "08  Project Atlas    Set up the example workspace and open the form component\n"
+        + "09  Project Atlas    Review source location and binding diagnostics for editors\n"
+        + "10  Project Atlas    Confirm branch and version before preparing distribution\n"
+        + "11  Project Atlas    Export documentation and check the reference page locally\n"
+        + "12  Project Atlas    Gather final notes on initial load and startup timing\n"
+        + "13  Project Atlas    Check stable model keys for mapped and filtered delegates\n"
+        + "14  Project Atlas    Verify the popups restore focus to the previous editor\n"
+        + "15  Project Atlas    Record the observed keyboard behavior for each platform\n"
+        + "16  Project Atlas    Check final line and confirm the selected range is correct";
+
+    entry := TextArea {
+        x: 20px; y: 18px; width: 456px; height: 164px;
+        accessible-name: "长文档";
+        font-family: "monospace";
+        wrap: no-wrap;
+        read-only: true;
+        text: root.document;
+        mouse-selection-mode: root.mouse-mode;
+    }
+    single-line := LineEdit {
+        x: 20px; y: 195px; width: 456px; height: 34px;
+        accessible-name: "单行长文本";
+        font-family: "monospace";
+        read-only: true;
+        text: root.line;
+        mouse-selection-mode: root.mouse-mode;
+    }
+    mode-button := Button {
+        x: 20px; y: 244px; width: 180px; height: 34px;
+        text: root.mouse-mode == MouseSelectionMode.words ? "拖选单位：词段" : "拖选单位：字素";
+        clicked => {
+            root.mouse-mode = root.mouse-mode == MouseSelectionMode.words
+                ? MouseSelectionMode.characters : MouseSelectionMode.words;
+        }
+    }
+    Label {
+        x: 20px; y: 294px; width: 456px;
+        text: "多行选区 [" + entry.selection-start-offset + ", " + entry.selection-end-offset
+            + ") · 单行选区 [" + single-line.selection-start-offset + ", " + single-line.selection-end-offset + ")";
+    }
+}
+
+export component SelectionColorsDemo inherits Window {
+    title: "XRack · 文字选区配色";
+    width: 496px; height: 316px;
+    background: #142035;
+    in-out property <color> highlight: #7046bf;
+    in-out property <color> selected-ink: #ffeb9a;
+
+    LineEdit {
+        x: 20px; y: 20px; width: 456px; height: 38px;
+        font-size: 22px;
+        accessible-name: "单行选区";
+        text: "Paper office éclair مرحبا Done";
+        color: #83c7ff;
+        selection-color: root.highlight;
+        selected-text-color: root.selected-ink;
+    }
+    TextArea {
+        x: 20px; y: 74px; width: 456px; height: 84px;
+        font-size: 22px;
+        accessible-name: "多行选区";
+        text: "Paper office éclair\nمرحبا Arabic Done";
+        color: #83c7ff;
+        selection-color: root.highlight;
+        selected-text-color: root.selected-ink;
+    }
+    StyledText {
+        x: 20px; y: 176px; width: 456px; height: 68px;
+        font-size: 22px;
+        text: @markdown("Paper **office** *éclair* [مرحبا](#sample) Done");
+        selectable: true;
+        color: #83c7ff;
+        link-color: #edb085;
+        selection-color: root.highlight;
+        selected-text-color: root.selected-ink;
+    }
+    change-colors := Button {
+        x: 20px; y: 260px; width: 180px; height: 36px;
+        text: "切换选区配色";
+        focus-on-click: false;
+        clicked => {
+            root.highlight = root.highlight == #7046bf ? #166055 : #7046bf;
+            root.selected-ink = root.selected-ink == #ffeb9a ? #e2fff0 : #ffeb9a;
+        }
+    }
+}
+
+export component TextOperationsDemo inherits Window {
+    title: "XRack · 程序化文本编辑";
+    width: 520px; height: 238px;
+    background: #142035;
+    in-out property <string> document: "éclair 👩‍💻";
+    in-out property <string> date: "2026-11-17";
+    out property <string> edits: "";
+
+    body := LineEdit {
+        x: 20px; y: 18px; width: 480px; height: 36px;
+        accessible-name: "正文";
+        text <=> root.document;
+        edited => { root.edits = root.edits + "[" + root.document + "]"; }
+    }
+    masked := LineEdit {
+        x: 20px; y: 68px; width: 480px; height: 36px;
+        accessible-name: "日期";
+        input-mask: "9999-99-99";
+        text <=> root.date;
+    }
+    format-tool := Button {
+        x: 20px; y: 125px; width: 146px; height: 34px;
+        text: "编辑正文";
+        clicked => {
+            body.replace-text(2, 3, "É");
+            body.insert-text(0, "#");
+            body.remove-text(0, 1);
+            body.append-text("!");
+        }
+    }
+    date-tool := Button {
+        x: 178px; y: 125px; width: 151px; height: 34px;
+        text: "更新月份";
+        clicked => { masked.replace-text(5, 7, "12"); masked.insert-text(0, "!"); }
+    }
+    undo-tool := Button {
+        x: 341px; y: 125px; width: 159px; height: 34px;
+        text: "撤销正文编辑";
+        clicked => { body.focus(); body.undo(); }
+    }
+    clear-tool := Button {
+        x: 20px; y: 174px; width: 146px; height: 34px;
+        text: "清空正文";
+        clicked => { body.clear-text(); }
+    }
+    Label {
+        x: 178px; y: 179px; width: 322px;
+        text: "工具栏操作逐笔进入撤销历史";
+    }
+}
+
+export component PatternValidationDemo inherits Window {
+    title: "XRack · 正则输入校验";
+    width: 488px; height: 224px;
+    background: #142035;
+    in-out property <string> code: "";
+    in-out property <string> pattern: "[A-Z]{2}-[0-9]{3}";
+    out property <bool> ready: field.acceptable-input;
+    out property <InputValidity> validation: field.input-validity;
+    out property <int> submissions: 0;
+
+    Label {
+        x: 20px; y: 18px; width: 448px;
+        text: root.pattern == "[A-Z]{2}-[0-9]{3}" ? "格式 AB-123" : "格式 甲乙-123";
+    }
+    field := LineEdit {
+        x: 20px; y: 56px; width: 448px; height: 38px;
+        accessible-name: "设备编号";
+        placeholder-text: root.pattern == "[A-Z]{2}-[0-9]{3}" ? "AB-123" : "甲乙-123";
+        input-pattern: root.pattern;
+        text <=> root.code;
+        accepted => { root.submissions += 1; }
+    }
+    status := Label {
+        x: 20px; y: 117px; width: 448px;
+        text: root.validation == InputValidity.acceptable ? "可提交"
+            : root.validation == InputValidity.intermediate ? "请补全编号" : "编号格式错误";
+    }
+    pattern-tool := Button {
+        x: 20px; y: 163px; width: 186px; height: 34px;
+        text: "切换编号格式";
+        focus-on-click: false;
+        clicked => {
+            root.pattern = root.pattern == "[A-Z]{2}-[0-9]{3}"
+                ? "[甲乙]{2}-[0-9]{3}" : "[A-Z]{2}-[0-9]{3}";
+        }
+    }
+    submit := Button {
+        x: 220px; y: 163px; width: 120px; height: 34px;
+        text: "提交";
+        enabled: root.ready;
+        clicked => { root.submissions += 1; }
     }
 }
 

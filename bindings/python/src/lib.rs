@@ -330,6 +330,7 @@ fn type_name(ty: ValueType) -> String {
         ValueType::String => "str".into(),
         ValueType::StringList => "list[str]".into(),
         ValueType::IntList => "list[int]".into(),
+        ValueType::DateList => "list[xrack.Date]".into(),
         ValueType::Record(_) => "xrack.Record".into(),
         ValueType::RecordList(_) => "xrack.RecordList".into(),
         _ => format!("xrack.{ty:?}"),

@@ -8,6 +8,7 @@ repository.workspace = true
 description = "XRack ir support"
 
 [dependencies]
+regex-automata.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 xrack-syntax.workspace = true

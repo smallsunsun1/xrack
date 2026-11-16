@@ -1,9 +1,9 @@
-use crate::{TextPosition, text_area::grapheme_boundaries};
+use crate::{TextPosition, edit::word_ranges, text_area::grapheme_boundaries};
 use std::{collections::BTreeMap, ops::Range};
 use unicode_bidi::BidiInfo;
 
 /// One grapheme's logical byte range and its two visual edges.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct VisualGrapheme {
     pub bytes: Range<usize>,
     pub leading: f32,
@@ -30,7 +30,7 @@ impl VisualGrapheme {
 }
 
 /// Maps logical grapheme boundaries to the advances of a shaped visual line.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct VisualTextLine {
     cells: Vec<VisualGrapheme>,
     visual: Vec<usize>,
@@ -175,7 +175,7 @@ impl VisualTextLine {
         })
     }
 
-    pub fn step(&self, position: TextPosition, right: bool) -> Option<TextPosition> {
+    fn step_index(&self, position: TextPosition, right: bool) -> Option<usize> {
         let x = self.caret_x(position);
         let index = if right {
             self.visual
@@ -185,9 +185,43 @@ impl VisualTextLine {
                 .partition_point(|&index| self.cells[index].span().start < x - 0.001)
                 .checked_sub(1)?
         };
-        self.visual
-            .get(index)
-            .map(|&index| self.cells[index].edge(right))
+        (index < self.visual.len()).then_some(index)
+    }
+
+    pub fn step(&self, position: TextPosition, right: bool) -> Option<TextPosition> {
+        self.step_index(position, right)
+            .map(|index| self.cells[self.visual[index]].edge(right))
+    }
+
+    /// Seek the edge of the next Unicode word in visual order.
+    pub fn word_step(
+        &self,
+        text: &str,
+        position: TextPosition,
+        right: bool,
+    ) -> Option<TextPosition> {
+        let start = self.step_index(position, right)?;
+        let words: Vec<_> = word_ranges(text).collect();
+        let mut chosen = None;
+        let mut end = None;
+        let indices = std::iter::successors(Some(start), |&index| {
+            if right {
+                (index + 1 < self.visual.len()).then_some(index + 1)
+            } else {
+                index.checked_sub(1)
+            }
+        });
+        for index in indices {
+            let cell = &self.cells[self.visual[index]];
+            let slot = words.partition_point(|word| word.end <= cell.bytes.start);
+            let word = words.get(slot).filter(|word| word.start < cell.bytes.end);
+            if chosen.is_some() && word.map(|_| slot) != chosen {
+                break;
+            }
+            chosen = word.map(|_| slot);
+            end = Some(cell.edge(right));
+        }
+        end
     }
 
     fn selected(&self, bytes: Range<usize>) -> impl DoubleEndedIterator<Item = &VisualGrapheme> {
@@ -234,6 +268,41 @@ impl VisualTextLine {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn words_follow_shaped_order_across_a_bidirectional_run() {
+        let text = "foo אבג baz";
+        let line = VisualTextLine::new(
+            text,
+            [0, 1, 2, 3, 8, 6, 4, 10, 11, 12, 13].map(|index| (index, 10.0)),
+        );
+        let start = TextPosition {
+            offset: 3,
+            trailing: true,
+        };
+        let position = line.word_step(text, start, true).unwrap();
+        assert_eq!(
+            position,
+            TextPosition {
+                offset: 4,
+                trailing: false
+            }
+        );
+        assert_eq!(line.caret_x(position), 70.0);
+        let position = line.word_step(text, position, true).unwrap();
+        assert_eq!(position.offset, text.len());
+        let position = line.word_step(text, position, false).unwrap();
+        assert_eq!(position.offset, 11);
+        let position = line.word_step(text, position, false).unwrap();
+        assert_eq!(
+            position,
+            TextPosition {
+                offset: 10,
+                trailing: true
+            }
+        );
+        assert_eq!(line.caret_x(position), 40.0);
+    }
 
     #[test]
     fn mixed_runs_keep_distinct_caret_edges_and_split_logical_selections() {

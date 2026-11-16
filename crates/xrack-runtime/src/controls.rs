@@ -122,6 +122,38 @@ pub fn prepare_group_box_toggle(
     .unwrap_or_else(|error| match error {})
 }
 
+/// Resolve a toggle or explicit expansion without acting on an old input route.
+#[doc(hidden)]
+pub fn try_prepare_expander_change<E>(
+    input: Option<InputRoute<'_>>,
+    requested: Option<bool>,
+    expanded: impl FnOnce() -> Result<bool, E>,
+) -> Result<Option<bool>, E> {
+    if input.is_some_and(|input| !input.is_current()) {
+        return Ok(None);
+    }
+    crate::property::watch_reads(|reads| {
+        let current = expanded()?;
+        let next = requested.unwrap_or(!current);
+        Ok(
+            (next != current && !reads.changed() && input.is_none_or(InputRoute::is_current))
+                .then_some(next),
+        )
+    })
+}
+
+#[doc(hidden)]
+pub fn prepare_expander_change(
+    input: Option<InputRoute<'_>>,
+    requested: Option<bool>,
+    expanded: impl FnOnce() -> bool,
+) -> Option<bool> {
+    try_prepare_expander_change(input, requested, || {
+        Ok::<_, std::convert::Infallible>(expanded())
+    })
+    .unwrap_or_else(|error| match error {})
+}
+
 /// Resolve an activation target without allowing bindings to invalidate it mid-read.
 #[doc(hidden)]
 pub fn try_prepare_action_view<T, E>(
@@ -376,6 +408,7 @@ impl SpinAction {
 pub enum ControlAction {
     Spin(SpinAction),
     SetSwitch(bool),
+    Expander(bool),
     Calendar(crate::CalendarAction),
     Select(usize),
     ActivateRadioOption,
@@ -1899,9 +1932,36 @@ impl Node {
         .unwrap_or_else(|error| match error {});
     }
 
-    /// Project navigation metadata for every page and mount the selected row and any paint-only swipe preview.
     #[doc(hidden)]
     pub fn try_append_navigation_pages<M: ListModel, E>(
+        &mut self,
+        source: impl FnOnce() -> Result<Rc<M>, E>,
+        describe: impl FnMut(&Rc<M>, usize) -> Result<Node, E>,
+        mount: impl FnOnce(&Rc<M>, Option<usize>) -> Result<Vec<Node>, E>,
+    ) -> Result<(), E> {
+        self.try_append_navigation_pages_with_preview(source, describe, |model, [active, _]| {
+            mount(model, active)
+        })
+    }
+
+    #[doc(hidden)]
+    pub fn append_navigation_pages<M: ListModel>(
+        &mut self,
+        source: impl FnOnce() -> Rc<M>,
+        mut describe: impl FnMut(&Rc<M>, usize) -> Node,
+        mount: impl FnOnce(&Rc<M>, Option<usize>) -> Vec<Node>,
+    ) {
+        self.try_append_navigation_pages(
+            || Ok::<_, std::convert::Infallible>(source()),
+            |model, slot| Ok(describe(model, slot)),
+            |model, slot| Ok(mount(model, slot)),
+        )
+        .unwrap_or_else(|error| match error {});
+    }
+
+    /// Project navigation metadata for every page and mount the selected row and any paint-only swipe preview.
+    #[doc(hidden)]
+    pub fn try_append_navigation_pages_with_preview<M: ListModel, E>(
         &mut self,
         source: impl FnOnce() -> Result<Rc<M>, E>,
         mut describe: impl FnMut(&Rc<M>, usize) -> Result<Node, E>,
@@ -1972,13 +2032,13 @@ impl Node {
     }
 
     #[doc(hidden)]
-    pub fn append_navigation_pages<M: ListModel>(
+    pub fn append_navigation_pages_with_preview<M: ListModel>(
         &mut self,
         source: impl FnOnce() -> Rc<M>,
         mut describe: impl FnMut(&Rc<M>, usize) -> Node,
         mount: impl FnOnce(&Rc<M>, [Option<usize>; 2]) -> Vec<Node>,
     ) {
-        self.try_append_navigation_pages(
+        self.try_append_navigation_pages_with_preview(
             || Ok::<_, std::convert::Infallible>(source()),
             |model, slot| Ok(describe(model, slot)),
             |model, slot| Ok(mount(model, slot)),

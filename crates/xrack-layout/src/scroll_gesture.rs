@@ -34,6 +34,7 @@ pub(crate) struct DragMotion {
     point: Point,
     updated: Instant,
     velocity: Point,
+    latest_velocity: Point,
     samples: u8,
     pub(crate) dragging: bool,
 }
@@ -44,6 +45,7 @@ impl DragMotion {
             point,
             updated: now,
             velocity: Point::default(),
+            latest_velocity: Point::default(),
             samples: 0,
             dragging: false,
         }
@@ -70,12 +72,12 @@ impl DragMotion {
             } else {
                 elapsed / (elapsed + 0.025)
             };
-            let smooth = |old: f32, movement: f32| {
-                let speed = (movement / elapsed).clamp(-MAX_SPEED, MAX_SPEED);
-                old + (speed - old) * blend
+            self.latest_velocity = Point {
+                x: (delta.x / elapsed).clamp(-MAX_SPEED, MAX_SPEED),
+                y: (delta.y / elapsed).clamp(-MAX_SPEED, MAX_SPEED),
             };
-            self.velocity.x = smooth(self.velocity.x, delta.x);
-            self.velocity.y = smooth(self.velocity.y, delta.y);
+            self.velocity.x += (self.latest_velocity.x - self.velocity.x) * blend;
+            self.velocity.y += (self.latest_velocity.y - self.velocity.y) * blend;
             self.samples = self.samples.saturating_add(1);
         }
         self.point = point;
@@ -100,6 +102,10 @@ impl DragMotion {
         // Use at least two motion samples to distinguish a flick from one coalesced move.
         (self.samples >= 2).then_some(())?;
         self.recent_velocity(now)
+    }
+
+    pub(crate) fn measured_release_velocities(&self, now: Instant) -> Option<(Point, Point)> {
+        Some((self.measured_release_velocity(now)?, self.latest_velocity))
     }
 
     pub(crate) fn finish(self, now: Instant, axes: [bool; 2]) -> Option<FlingMotion> {

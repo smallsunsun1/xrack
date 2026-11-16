@@ -629,12 +629,20 @@ pub fn builtin_property(kind: &str, name: &str) -> Option<Type> {
             _ => None,
         };
     }
+    if builtins::text_selection_kind(kind)
+        && matches!(name, "selection-color" | "selected-text-color")
+    {
+        return Some(Type::Color);
+    }
     if kind == "StyledText" {
         return match name {
             "text" => Some(Type::StyledText),
             "link-color" => Some(Type::Color),
-            "enabled" => Some(Type::Bool),
-            _ => builtin_property("Text", name),
+            "enabled" | "selectable" | "persistent-selection" | "has-focus" | "can-copy" => {
+                Some(Type::Bool)
+            }
+            "mouse-selection-mode" => Some(Type::MouseSelectionMode),
+            _ => text_selection_property(kind, name).or_else(|| builtin_property("Text", name)),
         };
     }
     if kind == "Label" {
@@ -748,6 +756,7 @@ pub fn builtin_property(kind: &str, name: &str) -> Option<Type> {
                     | "DelayButton"
                     | "DialogButton"
                     | "GroupBox"
+                    | "Expander"
                     | "ToolBar"
                     | "MenuBar"
                     | "TabBar"
@@ -788,6 +797,7 @@ pub fn builtin_property(kind: &str, name: &str) -> Option<Type> {
                     | "Menu"
                     | "TableColumn"
                     | "GroupBox"
+                    | "Expander"
                     | "TimePickerPopup"
                     | "DatePickerPopup"
                     | "ColorPickerPopup"
@@ -827,6 +837,7 @@ pub fn builtin_property(kind: &str, name: &str) -> Option<Type> {
                     | "DelayButton"
                     | "DialogButton"
                     | "GroupBox"
+                    | "Expander"
                     | "Dialog"
                     | "Drawer"
                     | "TableCell"
@@ -863,6 +874,7 @@ pub fn builtin_property(kind: &str, name: &str) -> Option<Type> {
                     | "DelayButton"
                     | "DialogButton"
                     | "GroupBox"
+                    | "Expander"
                     | "Dialog"
                     | "Drawer"
                     | "DialogButtonBox"
@@ -931,7 +943,8 @@ pub fn builtin_property(kind: &str, name: &str) -> Option<Type> {
         {
             Type::Bool
         }
-        "content-padding" if kind == "GroupBox" => Type::Length,
+        "content-padding" if matches!(kind, "GroupBox" | "Expander") => Type::Length,
+        "expanded" if kind == "Expander" => Type::Bool,
         "shortcut" if kind == "MenuItem" => Type::String,
         "open" | "close-on-escape" | "close-on-outside"
             if matches!(kind, "Dialog" | "Drawer" | "PopupWindow") || picker_popup(kind) =>
@@ -1021,8 +1034,15 @@ pub fn builtin_property(kind: &str, name: &str) -> Option<Type> {
         "max-lines" if kind == "Text" => Type::Int,
         "input-type" if builtins::text_submission_single_line(kind) => Type::InputType,
         "password-visible" if matches!(kind, "TextInput" | "LineEdit") => Type::Bool,
+        "password-character" if builtins::text_submission_single_line(kind) => Type::String,
+        "password-mask-delay" if builtins::text_submission_single_line(kind) => Type::Int,
+        "input-mask" if builtins::text_mask_editor(kind) => Type::String,
+        "input-pattern" if builtins::text_submission_editor(kind) => Type::String,
+        "overwrite-mode" | "persistent-selection" if builtins::text_editor(kind) => Type::Bool,
+        "mouse-selection-mode" if builtins::text_editor(kind) => Type::MouseSelectionMode,
         "maximum-length" | "minimum-length" if builtins::text_submission_editor(kind) => Type::Int,
         "submit-when" | "acceptable-input" if builtins::text_submission_editor(kind) => Type::Bool,
+        "input-validity" if builtins::text_submission_editor(kind) => Type::InputValidity,
         "model"
             if matches!(
                 kind,
@@ -1096,6 +1116,16 @@ pub fn builtin_property(kind: &str, name: &str) -> Option<Type> {
             Type::Date
         }
         "today" if kind == "MonthGrid" => Type::Date,
+        "highlight-start" | "highlight-end" if matches!(kind, "Calendar" | "MonthGrid") => {
+            Type::Date
+        }
+        "fixed-month" if kind == "MonthGrid" => Type::Bool,
+        "disabled-weekdays" if matches!(kind, "Calendar" | "MonthGrid" | "DatePickerPopup") => {
+            Type::IntList
+        }
+        "disabled-dates" if matches!(kind, "Calendar" | "MonthGrid" | "DatePickerPopup") => {
+            Type::DateList
+        }
         "week-start"
             if matches!(
                 kind,
@@ -1108,6 +1138,7 @@ pub fn builtin_property(kind: &str, name: &str) -> Option<Type> {
             Type::StringList
         }
         "time" if time_picker(kind) => Type::Time,
+        "minimum-time" | "maximum-time" if kind == "TimePickerPopup" => Type::Time,
         "use-24-hour-format" | "show-seconds" if time_picker(kind) => Type::Bool,
         "accept-text" | "cancel-text" if picker_popup(kind) => Type::String,
         "show-alpha" | "show-color-plane" if kind == "ColorPickerPopup" => Type::Bool,
@@ -1210,7 +1241,8 @@ pub fn builtin_property(kind: &str, name: &str) -> Option<Type> {
         }
         "wrap" if matches!(kind, "ToolBar" | "DialogButtonBox") => Type::Bool,
         "auto-complete" if kind == "ComboBox" => Type::Bool,
-        "placeholder-text" if text_input(kind) || kind == "ComboBox" => Type::String,
+        "placeholder-text" if builtins::text_editor(kind) => Type::String,
+        "placeholder-text-color" if builtins::text_editor(kind) => Type::Color,
         "context-menu-enabled"
             if text_input(kind)
                 || matches!(
@@ -1284,11 +1316,16 @@ pub fn builtin_property(kind: &str, name: &str) -> Option<Type> {
         {
             Type::Length
         }
+        "padding" | "padding-left" | "padding-right" | "padding-top" | "padding-bottom"
+            if builtins::text_editor(kind) =>
+        {
+            Type::Length
+        }
         "padding"
             if matches!(
                 kind,
                 "Button" | "ToolButton" | "RoundButton" | "DialogButton" | "DelayButton"
-            ) || text_input(kind) =>
+            ) =>
         {
             Type::Length
         }
@@ -1429,6 +1466,7 @@ fn linear_layout(kind: &str) -> bool {
             | "SwipeLeft"
             | "SwipeRight"
             | "GroupBox"
+            | "Expander"
             | "TimePicker"
             | "PageHeader"
             | "PageFooter"
@@ -1483,6 +1521,7 @@ fn text_input(kind: &str) -> bool {
 fn focus_target_kind(kind: &str) -> bool {
     let kind = delegate_base(kind).unwrap_or(kind);
     text_input(kind)
+        || kind == "StyledText"
         || toggle(kind)
         || matches!(
             kind,
@@ -1516,6 +1555,7 @@ fn focus_target_kind(kind: &str) -> bool {
                 | "TableView"
                 | "StandardTableView"
                 | "GroupBox"
+                | "Expander"
                 | "PageIndicator"
                 | "Tumbler"
                 | "PathView"
@@ -1538,6 +1578,7 @@ fn has_font(kind: &str) -> bool {
                 | "DelayButton"
                 | "DialogButton"
                 | "GroupBox"
+                | "Expander"
                 | "Dialog"
                 | "Drawer"
                 | "TableCell"
@@ -1658,7 +1699,7 @@ pub fn focus_property(kind: &str, property: &str) -> bool {
 }
 
 pub fn text_selection_property(kind: &str, name: &str) -> Option<Type> {
-    if !text_input(kind) && kind != "ComboBox" {
+    if !builtins::text_selection_kind(kind) {
         return None;
     }
     if !builtins::TEXT_SELECTION_PROPERTIES.contains(&name) {
@@ -1672,7 +1713,8 @@ pub fn text_selection_property(kind: &str, name: &str) -> Option<Type> {
 }
 
 pub fn text_command_property(kind: &str, name: &str) -> bool {
-    (text_input(kind) || kind == "ComboBox") && builtins::TEXT_COMMAND_PROPERTIES.contains(&name)
+    builtins::text_editor(kind) && builtins::TEXT_COMMAND_PROPERTIES.contains(&name)
+        || kind == "StyledText" && name == "can-copy"
 }
 
 fn focus_handler(event: &str) -> bool {
@@ -1734,6 +1776,7 @@ fn control_event(kind: &str, event: &str) -> bool {
         return event == "resized";
     }
     matches!(kind, "TextInput" | "LineEdit") && matches!(event, "edited" | "accepted")
+        || builtins::editing_finished_editor(kind) && event == "editing-finished"
         || kind == "SearchField"
             && matches!(
                 event,
@@ -1741,6 +1784,7 @@ fn control_event(kind: &str, event: &str) -> bool {
             )
         || matches!(kind, "TextEdit" | "TextArea") && event == "edited"
         || (toggle(kind) || kind == "GroupBox") && event == "toggled"
+        || kind == "Expander" && event == "expanded-changed"
         || kind == "CheckBox" && event == "check-state-changed"
         || matches!(kind, "Slider" | "RangeSlider" | "Dial")
             && matches!(event, "changed" | "released")
@@ -1841,6 +1885,7 @@ pub fn event_parameters<'a>(
     let key_handler = kind == "FocusScope" && key_handler(event);
     Ok(match kind {
         _ if scrolled => &[],
+        _ if event == "editing-finished" => &[Type::String, Type::Bool],
         _ if event == "current-cell-changed" => &[Type::Int, Type::Int],
         _ if event == "tab-close-requested" => &[Type::Int, Type::String],
         _ if matches!(event, "column-moved" | "tab-moved" | "page-moved") => {
@@ -1864,7 +1909,7 @@ pub fn event_parameters<'a>(
         "FileDialog" if event == "accepted" => &[Type::StringList],
         "MessageDialog" if event == "finished" => &[Type::StandardButtonKind],
         kind if native_dialog(kind) && event == "failed" => &[Type::String],
-        "GroupBox" => &[Type::Bool],
+        "GroupBox" | "Expander" => &[Type::Bool],
         "CheckBox" if event == "check-state-changed" => &[Type::CheckState],
         "StackView" => &[Type::String, Type::Int],
         "StackPage" if event == "leave-requested" => &[Type::String, Type::Bool],
@@ -2201,6 +2246,7 @@ fn validate_records(doc: &ast::Document) -> Result<BTreeMap<&str, &ast::RecordDe
                 Type::RecordList(_)
                     | Type::StringList
                     | Type::IntList
+                    | Type::DateList
                     | Type::TouchPoints
                     | Type::GradientStop
                     | Type::Percent
@@ -3778,7 +3824,7 @@ impl<'a> Scope<'a> {
                 || self.native_dialog_read(current, reference, span).is_some()
                 || self.image_playback_read(current, reference, span).is_some()
                 || self.media_read(current, reference, span).is_some()
-                || self.text_accepts(current, reference, span)?.is_some()
+                || self.text_validation(current, reference, span)?.is_some()
                 || self.viewport_read(current, reference, span)?.is_some()
                 || self
                     .scroll_control_read(current, reference, span)?
@@ -4149,7 +4195,10 @@ impl<'a> Scope<'a> {
             );
         };
         let (_, ty) = self.property(owner, model, true, *model_span)?;
-        if !matches!(ty, Type::IntList | Type::StringList | Type::RecordList(_)) {
+        if !matches!(
+            ty,
+            Type::IntList | Type::DateList | Type::StringList | Type::RecordList(_)
+        ) {
             return fail(
                 *model_span,
                 format!("{use_site} requires a writable list property"),
@@ -4438,12 +4487,17 @@ impl<'a> Scope<'a> {
         })
     }
 
-    fn text_accepts(&self, current: &str, reference: &str, span: Span) -> Result<Option<ir::Expr>> {
+    fn text_validation(
+        &self,
+        current: &str,
+        reference: &str,
+        span: Span,
+    ) -> Result<Option<ir::Expr>> {
         let Ok((owner, property)) =
             self.member_owner(current, reference, "property", span, |element, name| {
                 element.properties.contains_key(name)
                     || (builtins::text_submission_editor(&element.kind)
-                        && name == "acceptable-input")
+                        && matches!(name, "acceptable-input" | "input-validity"))
             })
         else {
             return Ok(None);
@@ -4451,7 +4505,7 @@ impl<'a> Scope<'a> {
         let mut element = &self.owners[owner];
         if element.instance
             || !builtins::text_submission_editor(&element.kind)
-            || property != "acceptable-input"
+            || !matches!(property, "acceptable-input" | "input-validity")
         {
             return Ok(None);
         }
@@ -4459,7 +4513,7 @@ impl<'a> Scope<'a> {
             if element.repeated {
                 return fail(
                     span,
-                    "acceptable-input in a repetition requires a component delegate",
+                    format!("{property} in a repetition requires a component delegate"),
                 );
             }
             let Some(parent) = &element.parent else {
@@ -4467,10 +4521,15 @@ impl<'a> Scope<'a> {
             };
             element = &self.owners[parent];
         }
+        let (op, ty) = if property == "input-validity" {
+            ("text_validity", Type::InputValidity)
+        } else {
+            ("text_accepts", Type::Bool)
+        };
         Ok(Some(ir::Expr {
             owner: Some(owner.into()),
             value: property.into(),
-            ..ir::Expr::operation("text_accepts", Type::Bool, vec![], span)
+            ..ir::Expr::operation(op, ty, vec![], span)
         }))
     }
 
@@ -5609,18 +5668,9 @@ impl<'a> Scope<'a> {
             if let Some(target) = self.owners.get(owner)
                 && !target.instance
                 && !target.callbacks.contains_key(method)
-                && ((text_input(&target.kind) || target.kind == "ComboBox")
-                    && matches!(
-                        method,
-                        "select-all"
-                            | "clear-selection"
-                            | "set-selection-offsets"
-                            | "undo"
-                            | "redo"
-                            | "cut"
-                            | "copy"
-                            | "paste"
-                    )
+                && (builtins::text_editor_methods(&target.kind)
+                    .iter()
+                    .any(|editor_method| editor_method.name == method)
                     || table_view(&target.kind) && matches!(method, "edit-cell" | "cancel-edit"))
             {
                 if !self.effects_allowed {
@@ -5629,11 +5679,16 @@ impl<'a> Scope<'a> {
                         "text commands are not allowed in a pure callback",
                     );
                 }
-                let arity = if matches!(method, "set-selection-offsets" | "edit-cell") {
-                    2
-                } else {
-                    0
+                let types: &[Type] = match method {
+                    "set-selection-offsets" | "edit-cell" | "remove-text" => {
+                        &[Type::Int, Type::Int]
+                    }
+                    "replace-text" => &[Type::Int, Type::Int, Type::String],
+                    "insert-text" => &[Type::Int, Type::String],
+                    "append-text" => &[Type::String],
+                    _ => &[],
                 };
+                let arity = types.len();
                 if call.arguments.len() != arity {
                     return fail(call.span, format!("{method}() expects {arity} arguments"));
                 }
@@ -5651,7 +5706,8 @@ impl<'a> Scope<'a> {
                 let args = call
                     .arguments
                     .iter()
-                    .map(|arg| expression_as(arg, self, current, Type::Int))
+                    .zip(types)
+                    .map(|(arg, ty)| expression_as(arg, self, current, ty.clone()))
                     .collect::<Result<Vec<_>>>()?;
                 return Ok(ir::Statement::TextCommand(ir::TextCommand {
                     owner: owner.into(),
@@ -6536,8 +6592,10 @@ fn element<'a>(
     let source_kind = kind;
     let delegate = delegate_base(kind).map(|_| kind);
     let kind = delegate_base(kind).unwrap_or(kind);
-    if matches!(kind, "ComboOption" | "TumblerOption" | "PathViewOption")
-        && scope.containing_repeat(owner).is_some()
+    if matches!(
+        kind,
+        "ComboOption" | "TumblerOption" | "PathViewOption" | "Expander"
+    ) && scope.containing_repeat(owner).is_some()
     {
         return fail(
             span,
@@ -7074,7 +7132,8 @@ fn element<'a>(
                     );
                 }
                 if media_object_read_type(kind, &b.name).is_some()
-                    || (builtins::text_submission_editor(kind) && b.name == "acceptable-input")
+                    || (builtins::text_submission_editor(kind)
+                        && matches!(b.name.as_str(), "acceptable-input" | "input-validity"))
                     || combo_popup_property(kind, &b.name).is_some()
                 {
                     return fail(b.span, format!("property `{kind}.{}` is read-only", b.name));
@@ -7089,6 +7148,60 @@ fn element<'a>(
                     || kind == "StackPage" && stack_page_read_type(&b.name).is_some()
                 {
                     return fail(b.span, format!("property `{kind}.{}` is read-only", b.name));
+                }
+                if b.name == "input-mask"
+                    && builtins::text_mask_editor(kind)
+                    && let ExprKind::Literal {
+                        value,
+                        ty: Type::String,
+                    } = &b.value.kind
+                    && let Ok(mask) = serde_json::from_str::<String>(value)
+                    && !mask.is_empty()
+                {
+                    let mut escaped = false;
+                    let mut slot = false;
+                    for character in mask.chars() {
+                        if !escaped {
+                            slot |= matches!(character, '9' | 'A' | 'N' | 'H' | 'X');
+                        }
+                        escaped = !escaped && character == '\\';
+                    }
+                    if !slot || escaped || mask.chars().any(char::is_control) {
+                        return fail(
+                            b.value.span,
+                            "input-mask requires at least one slot (9, A, N, H or X) and complete escapes",
+                        );
+                    }
+                }
+                if b.name == "input-pattern"
+                    && builtins::text_submission_editor(kind)
+                    && let ExprKind::Literal {
+                        value,
+                        ty: Type::String,
+                    } = &b.value.kind
+                    && let Ok(pattern) = serde_json::from_str::<String>(value)
+                    && !pattern.is_empty()
+                {
+                    use regex_automata::{
+                        MatchKind,
+                        dfa::{StartKind, dense},
+                        nfa::thompson,
+                    };
+                    let result = dense::Builder::new()
+                        .thompson(thompson::Config::new().nfa_size_limit(Some(1024 * 1024)))
+                        .configure(
+                            dense::Config::new()
+                                .start_kind(StartKind::Anchored)
+                                .match_kind(MatchKind::All)
+                                .dfa_size_limit(Some(1024 * 1024))
+                                .determinize_size_limit(Some(4 * 1024 * 1024)),
+                        )
+                        .build(&pattern);
+                    if let Err(error) = result {
+                        let detail = std::error::Error::source(&error)
+                            .map_or_else(|| error.to_string(), ToString::to_string);
+                        return fail(b.value.span, format!("invalid input-pattern: {detail}"));
+                    }
                 }
                 if !bindings.insert(b.name.as_str()) {
                     return fail(b.span, format!("duplicate binding `{}`", b.name));
@@ -7493,7 +7606,7 @@ fn element<'a>(
                     let expected = match (kind, b.name.as_str()) {
                         _ if viewport_offset => Type::Length,
                         (kind, "text") if text_input(kind) => Type::String,
-                        ("CheckBox" | "Switch", "checked") => Type::Bool,
+                        ("CheckBox" | "Switch", "checked") | ("Expander", "expanded") => Type::Bool,
                         ("CheckBox", "check-state") => Type::CheckState,
                         (kind, "checked")
                             if matches!(
@@ -7858,6 +7971,7 @@ fn element<'a>(
                                 | "DelayButton"
                                 | "CheckBox"
                                 | "GroupBox"
+                                | "Expander"
                                 | "FocusScope"
                                 | "WheelHandler"
                                 | "HoverHandler"
@@ -8077,7 +8191,7 @@ pub fn state_property(kind: &str, property: &str) -> Option<Type> {
         || kind == "RoundButton" && property == "radius"
         || kind == "ToolSeparator"
             && matches!(property, "orientation" | "stroke-width" | "padding")
-        || pane(kind)
+        || (pane(kind) || builtins::text_editor(kind))
             && matches!(
                 property,
                 "padding" | "padding-left" | "padding-right" | "padding-top" | "padding-bottom"
@@ -8099,6 +8213,9 @@ pub fn state_property(kind: &str, property: &str) -> Option<Type> {
                 | "visible"
                 | "enabled"
                 | "link-color"
+                | "selection-color"
+                | "selected-text-color"
+                | "placeholder-text-color"
                 | "font-family"
                 | "font-weight"
                 | "font-italic"
@@ -8341,7 +8458,9 @@ pub fn animation_target_error(kind: &str, target: &str, root: bool) -> Option<St
         Some("AnimatedImage playback state is read-only".into())
     } else if kind == "MediaPlayer" && media_read_type(target).is_some() {
         Some("MediaPlayer playback state is read-only".into())
-    } else if builtins::text_submission_editor(kind) && target == "acceptable-input" {
+    } else if builtins::text_submission_editor(kind)
+        && matches!(target, "acceptable-input" | "input-validity")
+    {
         Some(format!("property `{kind}.{target}` is read-only"))
     } else if viewport_property(kind, target)
         || geometry_property(target).is_some()
@@ -8757,7 +8876,7 @@ fn row_editor_binding(kind: &str) -> Option<(&'static str, Type)> {
     }
 }
 
-pub fn day_cell_inputs() -> [(&'static str, Type); 9] {
+pub fn day_cell_inputs() -> [(&'static str, Type); 12] {
     [
         ("cell-date", Type::Date),
         ("cell-index", Type::Int),
@@ -8768,6 +8887,9 @@ pub fn day_cell_inputs() -> [(&'static str, Type); 9] {
         ("cell-today", Type::Bool),
         ("cell-in-month", Type::Bool),
         ("cell-enabled", Type::Bool),
+        ("cell-in-range", Type::Bool),
+        ("cell-range-start", Type::Bool),
+        ("cell-range-end", Type::Bool),
     ]
 }
 
@@ -9078,8 +9200,12 @@ fn default(ty: Type, span: Span) -> ir::Expr {
     if ty == Type::StringList {
         return ir::Expr::operation("array", ty, vec![], span);
     }
-    if ty == Type::IntList {
-        return ir::Expr::operation("int_array", ty, vec![], span);
+    if let Some(op) = match ty {
+        Type::IntList => Some("int_array"),
+        Type::DateList => Some("date_array"),
+        _ => None,
+    } {
+        return ir::Expr::operation(op, ty, vec![], span);
     }
     if ty == Type::PointerButtons {
         return ir::Expr::operation("pointer_buttons", ty, vec![], span);
@@ -9128,6 +9254,8 @@ fn default(ty: Type, span: Span) -> ir::Expr {
         Type::ScrollSnapMode => "none",
         Type::ScrollAlignment => "contain",
         Type::TextWrap => "word-wrap",
+        Type::MouseSelectionMode => "characters",
+        Type::InputValidity => "invalid",
         Type::TextHorizontalAlignment => "start",
         Type::TextVerticalAlignment => "top",
         Type::TextOverflow => "clip",
@@ -9170,7 +9298,7 @@ fn expression_as(
     if let ExprKind::Conditional { condition, yes, no } = &e.kind
         && (matches!(
             expected,
-            Type::Brush | Type::PointerButtons | Type::TouchPoints | Type::IntList
+            Type::Brush | Type::PointerButtons | Type::TouchPoints | Type::IntList | Type::DateList
         ) || !expected.enum_variants().is_empty())
     {
         let condition = expression_as(condition, scope, owner, Type::Bool)?;
@@ -9193,13 +9321,17 @@ fn expression_as(
         return Ok(ir::Expr::operation("record_array", expected, items, e.span));
     }
     if let ExprKind::Array(items) = &e.kind
-        && expected == Type::IntList
+        && let Some((op, item_type)) = match expected {
+            Type::IntList => Some(("int_array", Type::Int)),
+            Type::DateList => Some(("date_array", Type::Date)),
+            _ => None,
+        }
     {
         let items = items
             .iter()
-            .map(|item| expression_as(item, scope, owner, Type::Int))
+            .map(|item| expression_as(item, scope, owner, item_type.clone()))
             .collect::<Result<Vec<_>>>()?;
-        return Ok(ir::Expr::operation("int_array", expected, items, e.span));
+        return Ok(ir::Expr::operation(op, expected, items, e.span));
     }
     if let ExprKind::Array(items) = &e.kind
         && expected == Type::PointerButtons
@@ -9475,6 +9607,7 @@ fn expression(e: &ast::Expr, scope: &Scope<'_>, owner: &str) -> Result<ir::Expr>
                     Type::Record(name.clone()),
                 ),
                 Some(Type::Int) => ("int_array", Type::IntList, Type::Int),
+                Some(Type::Date) => ("date_array", Type::DateList, Type::Date),
                 _ => ("array", Type::StringList, Type::String),
             };
             let items = items
@@ -9633,12 +9766,34 @@ fn expression(e: &ast::Expr, scope: &Scope<'_>, owner: &str) -> Result<ir::Expr>
                     FunctionKind::DateIsValid
                     | FunctionKind::DateAddDays
                     | FunctionKind::DateAddMonths
-                    | FunctionKind::DateWeekday => {
+                    | FunctionKind::DateWeekday
+                    | FunctionKind::DateMonths
+                    | FunctionKind::DateMonthIndex
+                    | FunctionKind::DateParseIso
+                    | FunctionKind::DateIsSelectable => {
                         let (op, result) = match function.kind {
                             FunctionKind::DateIsValid => ("date_is_valid", Type::Bool),
                             FunctionKind::DateAddDays => ("date_add_days", Type::Date),
                             FunctionKind::DateAddMonths => ("date_add_months", Type::Date),
                             FunctionKind::DateWeekday => ("date_weekday", Type::Int),
+                            FunctionKind::DateMonths => ("date_months", Type::DateList),
+                            FunctionKind::DateMonthIndex => ("date_month_index", Type::Int),
+                            FunctionKind::DateParseIso => ("date_parse_iso", Type::Date),
+                            FunctionKind::DateIsSelectable => ("date_is_selectable", Type::Bool),
+                            _ => unreachable!(),
+                        };
+                        let args = builtin_arguments(call, scope, owner, function)?;
+                        Ok(ir::Expr::operation(op, result, args, span))
+                    }
+                    FunctionKind::TimeParseIso
+                    | FunctionKind::TimeIsValidIso
+                    | FunctionKind::TimeFormatIso
+                    | FunctionKind::TimeInRange => {
+                        let (op, result) = match function.kind {
+                            FunctionKind::TimeParseIso => ("time_parse_iso", Type::Time),
+                            FunctionKind::TimeIsValidIso => ("time_is_valid_iso", Type::Bool),
+                            FunctionKind::TimeFormatIso => ("time_format_iso", Type::String),
+                            FunctionKind::TimeInRange => ("time_in_range", Type::Bool),
                             _ => unreachable!(),
                         };
                         let args = builtin_arguments(call, scope, owner, function)?;
@@ -9772,6 +9927,8 @@ fn expression(e: &ast::Expr, scope: &Scope<'_>, owner: &str) -> Result<ir::Expr>
                         | "ScrollSnapMode"
                         | "ScrollAlignment"
                         | "TextWrap"
+                        | "MouseSelectionMode"
+                        | "InputValidity"
                         | "TextHorizontalAlignment"
                         | "TextVerticalAlignment"
                         | "TextOverflow"
@@ -9905,7 +10062,7 @@ fn expression(e: &ast::Expr, scope: &Scope<'_>, owner: &str) -> Result<ir::Expr>
                 .or(scope.split_resizing(owner, s, span)?)
                 .or(scope.check_group_read(s, span)?)
                 .or(scope.action_group_read(owner, s, span)?)
-                .or(scope.text_accepts(owner, s, span)?)
+                .or(scope.text_validation(owner, s, span)?)
             {
                 return Ok(read);
             }
@@ -10552,6 +10709,8 @@ fn geometry_safe_binding(kind: &str, property: &str, fixed_label: bool) -> bool 
             | "color"
             | "border-color"
             | "link-color"
+            | "selection-color"
+            | "selected-text-color"
             | "accessible-name"
             | "accessible-description"
             | "opacity"
@@ -10655,7 +10814,7 @@ fn collect_bindings(
                 out.extend(["checked", "check-state"].map(|name| path(owner, name)));
                 return;
             }
-            if e.op == "text_accepts" {
+            if matches!(e.op.as_str(), "text_accepts" | "text_validity") {
                 out.extend(
                     builtins::TEXT_SUBMISSION_INPUTS
                         .iter()

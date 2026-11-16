@@ -94,13 +94,23 @@ impl Instance {
         Ok(DateBounds::new(
             date("minimum-date", Date::MIN)?,
             date("maximum-date", Date::MAX)?,
-        ))
+        )
+        .with_disabled_weekdays(self.disabled_calendar_weekdays(element)?)
+        .with_disabled_dates(self.disabled_calendar_dates(element)?))
     }
 
     fn time_options(&self, element: &Element) -> Result<TimePickerOptions> {
         let use_24 = self.binding_value(element, "use-24-hour-format")? != Some(Value::Bool(false));
         let seconds = self.binding_value(element, "show-seconds")? == Some(Value::Bool(true));
-        Ok(TimePickerOptions::new(use_24, seconds))
+        let time = |name, fallback| match self.binding_value(element, name)? {
+            Some(Value::Time(value)) => Ok(value),
+            None => Ok(fallback),
+            _ => Err(Error::Evaluation(format!("expected a time for {name}"))),
+        };
+        Ok(TimePickerOptions::new(use_24, seconds).with_bounds(
+            time("minimum-time", Time::MIN)?,
+            time("maximum-time", Time::MAX)?,
+        ))
     }
 
     fn show_alpha(&self, element: &Element) -> Result<bool> {

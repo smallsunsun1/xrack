@@ -55,6 +55,8 @@ mod property;
 mod range;
 mod record;
 pub use record::{RecordList, RecordRowValidator, RecordValue};
+mod input_mask;
+mod input_pattern;
 mod list_sections;
 mod loader;
 mod repeat;
@@ -69,6 +71,10 @@ mod table_clipboard;
 mod table_history;
 mod table_rows;
 mod table_selection;
+pub use input_mask::{InputMask, MaskDelete, MaskEdit};
+pub use input_pattern::InputValidity;
+#[doc(hidden)]
+pub use input_pattern::input_pattern_accepts;
 mod text_input;
 mod time_picker;
 mod timer;
@@ -96,8 +102,9 @@ pub use button_group::{
 pub use calendar::{CalendarAction, CalendarState, Date, is_calendar_control};
 #[doc(hidden)]
 pub use calendar::{
-    CalendarCell, CalendarCells, CalendarUpdate, DateBounds, DatePopupState, apply_calendar_action,
-    calendar_input_is_current, try_apply_calendar_action, try_calendar_input_is_current,
+    CalendarCell, CalendarCells, CalendarHighlight, CalendarHighlightDay, CalendarUpdate,
+    DateBounds, DatePopupState, apply_calendar_action, calendar_input_is_current,
+    calendar_weekday_mask, try_apply_calendar_action, try_calendar_input_is_current,
 };
 #[doc(hidden)]
 pub use callback::{CallbackAlreadyRunning, CallbackSlot, EffectfulCallback};
@@ -115,8 +122,9 @@ pub use combo::{
     ComboEditor, ComboInput, ComboItems, ComboModel, ComboOptionInput, ComboOptionParameter,
     ComboOptionRenderer, ComboPopupHandle, ComboSelection, ComboStateModel, ComboSubmission,
     ComboUpdate, combo_model_is_current, combo_submission, combo_value, prepare_combo_input,
-    prepare_combo_input_with_draft, prepare_combo_input_with_live_draft, try_prepare_combo_input,
-    try_prepare_combo_input_with_draft, try_prepare_combo_input_with_live_draft,
+    prepare_combo_input_with_draft, prepare_combo_input_with_live_draft,
+    resolve_combo_after_accept, try_prepare_combo_input, try_prepare_combo_input_with_draft,
+    try_prepare_combo_input_with_live_draft, try_resolve_combo_after_accept,
 };
 pub use controls::{
     ActionKey, ControlAction, DialogCommand, DialogRole, PopupPlacement, SpinAction, SpinRange,
@@ -142,11 +150,12 @@ pub use controls::{
 #[doc(hidden)]
 pub use controls::{
     delay_button_transition_is_current, group_selection_item, moved_navigation_index,
-    prepare_action_activation, prepare_action_view, prepare_group_box_toggle,
-    prepare_group_selection, prepare_group_selection_with_model, prepare_index_selection,
-    prepare_row_toggle, prepare_row_toggle_matching, prepare_source_selection, prepare_tab_close,
-    prepare_tab_move, resize_table_column, tab_is_closable, table_drag_available,
-    try_delay_button_transition_is_current, try_prepare_action_activation, try_prepare_action_view,
+    prepare_action_activation, prepare_action_view, prepare_expander_change,
+    prepare_group_box_toggle, prepare_group_selection, prepare_group_selection_with_model,
+    prepare_index_selection, prepare_row_toggle, prepare_row_toggle_matching,
+    prepare_source_selection, prepare_tab_close, prepare_tab_move, resize_table_column,
+    tab_is_closable, table_drag_available, try_delay_button_transition_is_current,
+    try_prepare_action_activation, try_prepare_action_view, try_prepare_expander_change,
     try_prepare_group_box_toggle, try_prepare_group_selection,
     try_prepare_group_selection_with_model, try_prepare_index_selection, try_prepare_row_toggle,
     try_prepare_row_toggle_matching, try_prepare_source_selection, try_prepare_tab_close,
@@ -169,7 +178,10 @@ pub use external_loader::{
 #[doc(hidden)]
 pub use focus::{ButtonAnimationDelivery, ButtonAnimations};
 #[doc(hidden)]
-pub use focus::{ButtonPressHandle, FocusCommandMethod, FocusHandler, is_focus_handler};
+pub use focus::{
+    ButtonPressHandle, FocusCommandMethod, FocusHandler, QueuedFocusRequest, TextReplacement,
+    is_focus_handler,
+};
 pub use focus::{
     FocusAction, FocusContext, FocusEvent, FocusHandle, FocusReason, FocusRequest, FocusRequests,
     TextCommand, TextCommandAvailability,
@@ -292,8 +304,9 @@ pub use table_selection::{
 pub use text_input::InputType;
 #[doc(hidden)]
 pub use text_input::{
-    NumericTextLimits, SearchInput, SearchUpdate, text_submission_is_valid, text_submission_with,
-    try_text_submission_is_valid, try_text_submission_with,
+    NumericTextLimits, SearchInput, SearchUpdate, text_input_validity, text_submission_is_valid,
+    text_submission_with, text_submission_with_mask, try_text_input_validity,
+    try_text_submission_is_valid, try_text_submission_with, try_text_submission_with_mask,
 };
 pub use time_picker::Time;
 #[doc(hidden)]
@@ -1455,6 +1468,14 @@ pub enum TextWrap {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum MouseSelectionMode {
+    #[default]
+    Characters,
+    Words,
+    Caret,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum TextHorizontalAlignment {
     #[default]
     Start,
@@ -1550,6 +1571,8 @@ pub enum Value {
     IntList(Vec<i64>),
     /// A live integer list whose bindings share the same row identities.
     IntModel(VecModel<i64>),
+    DateList(Vec<Date>),
+    DateModel(VecModel<Date>),
     StringList(Vec<String>),
     /// A live string list whose row identities are shared by its bindings.
     StringModel(VecModel<String>),
@@ -1583,6 +1606,8 @@ pub enum Value {
     ScrollSnapMode(ScrollSnapMode),
     ScrollAlignment(ScrollAlignment),
     TextWrap(TextWrap),
+    MouseSelectionMode(MouseSelectionMode),
+    InputValidity(InputValidity),
     TextHorizontalAlignment(TextHorizontalAlignment),
     TextVerticalAlignment(TextVerticalAlignment),
     TextOverflow(TextOverflow),
@@ -1655,6 +1680,18 @@ impl From<VecModel<String>> for Value {
         Self::StringList(model.into_snapshot())
     }
 }
+impl From<VecModel<i64>> for Value {
+    fn from(model: VecModel<i64>) -> Self {
+        Self::IntList(model.into_snapshot())
+    }
+}
+
+impl From<VecModel<Date>> for Value {
+    fn from(model: VecModel<Date>) -> Self {
+        Self::DateList(model.into_snapshot())
+    }
+}
+
 value_from!(Length, Length);
 value_from!(Percent, Percent);
 value_from!(Color, Color);
@@ -1680,6 +1717,8 @@ value_from!(ScrollBarPolicy, ScrollBarPolicy);
 value_from!(ScrollSnapMode, ScrollSnapMode);
 value_from!(ScrollAlignment, ScrollAlignment);
 value_from!(TextWrap, TextWrap);
+value_from!(MouseSelectionMode, MouseSelectionMode);
+value_from!(InputValidity, InputValidity);
 value_from!(TextHorizontalAlignment, TextHorizontalAlignment);
 value_from!(TextVerticalAlignment, TextVerticalAlignment);
 value_from!(TextOverflow, TextOverflow);
@@ -1985,7 +2024,11 @@ pub fn supports_untyped_dispatch(kind: &str, event: &str) -> bool {
     }
     !matches!(
         event,
-        "check-state-changed" | "close-requested" | "pointer-event" | "scroll-event"
+        "check-state-changed"
+            | "close-requested"
+            | "editing-finished"
+            | "pointer-event"
+            | "scroll-event"
     ) && !is_multiline_text_input(kind)
         && !matches!(
             kind,
@@ -2336,6 +2379,7 @@ impl Node {
             }
             name if paint_only & self.paint_only_bit(name) != 0 => false,
             "opacity" => false,
+            "selection-color" | "selected-text-color" => false,
             "drop-shadow-blur"
             | "drop-shadow-color"
             | "drop-shadow-offset-x"
@@ -2496,6 +2540,16 @@ impl Node {
             .or_else(|| self.font("font").and_then(Font::finite_size))
     }
 
+    #[doc(hidden)]
+    pub fn selectable_styled_text(&self) -> bool {
+        self.kind == "StyledText" && self.boolean("selectable", false)
+    }
+
+    #[doc(hidden)]
+    pub fn text_read_only(&self) -> bool {
+        self.kind == "StyledText" || self.boolean("read-only", false)
+    }
+
     pub fn styled_text(&self, name: &str) -> Option<&StyledText> {
         match self.properties.get(name) {
             Some(Value::StyledText(value)) => Some(value),
@@ -2595,6 +2649,14 @@ impl Node {
         match self.properties.get(property) {
             Some(Value::ScrollBarPolicy(policy)) => *policy,
             _ => ScrollBarPolicy::AsNeeded,
+        }
+    }
+
+    #[doc(hidden)]
+    pub fn mouse_selection_mode(&self) -> MouseSelectionMode {
+        match self.properties.get("mouse-selection-mode") {
+            Some(Value::MouseSelectionMode(mode)) => *mode,
+            _ => MouseSelectionMode::default(),
         }
     }
 
@@ -2919,6 +2981,9 @@ impl Node {
     }
 
     fn scene_input_scope_available(&self, child: Option<&Self>) -> bool {
+        if child.is_some() && self.expander_collapsed() {
+            return false;
+        }
         self.input_scope_available(
             child,
             || self.boolean("open", false),
@@ -2996,7 +3061,15 @@ impl Node {
         } else {
             self.interactive_at_path(path)
         };
-        node.filter(|node| node.kind == "FocusScope")
+        node.filter(|node| {
+            node.kind == "FocusScope"
+                || matches!(event, FocusEvent::Lost(_))
+                    && (is_text_input(node.kind) || node.kind == "ComboBox")
+                    && node
+                        .focus_handle
+                        .as_ref()
+                        .is_some_and(FocusHandle::has_editor_changes)
+        })
     }
 
     #[doc(hidden)]
@@ -3009,8 +3082,12 @@ impl Node {
         self.kind == "GroupBox" && self.boolean("checkable", false)
     }
 
+    pub fn expander_collapsed(&self) -> bool {
+        self.kind == "Expander" && !self.boolean("expanded", false)
+    }
+
     pub fn group_content_enabled(&self) -> bool {
-        !self.group_checkable() || self.boolean("checked", true)
+        !self.expander_collapsed() && (!self.group_checkable() || self.boolean("checked", true))
     }
 
     #[doc(hidden)]

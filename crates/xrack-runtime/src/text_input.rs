@@ -1,6 +1,6 @@
 use crate::{
-    ControlAction, InputRoute, Node, SpinDecimal, Value, combo_editable, decimal_separator,
-    is_text_input, search_suggestion, spin_text_is_valid, text_input_value,
+    ControlAction, InputMask, InputRoute, InputValidity, Node, SpinDecimal, Value, combo_editable,
+    decimal_separator, is_text_input, search_suggestion, spin_text_is_valid, text_input_value,
 };
 use std::cmp::Ordering;
 use unicode_segmentation::UnicodeSegmentation;
@@ -192,15 +192,24 @@ impl Node {
         separator: impl FnOnce() -> Result<char, E>,
         maximum_length: impl FnOnce() -> Result<Option<i64>, E>,
     ) -> Result<bool, E> {
-        if !text_syntax_allows(text, mode, separator)? {
+        if !self
+            .text("input-mask")
+            .filter(|mask| !mask.is_empty())
+            .is_none_or(|mask| InputMask::parse(mask).is_some_and(|mask| mask.allows(text)))
+            || !text_syntax_allows(text, mode, separator)?
+        {
             return Ok(false);
         }
         let limit = maximum_length()?.and_then(|limit| usize::try_from(limit).ok());
-        Ok(limit.is_none_or(|limit| {
+        let length_allowed = limit.is_none_or(|limit| {
             let length = text.graphemes(true).count();
             // An external update can leave the value over its limit. Let edits repair it.
             length <= limit || length < text_input_value(self).graphemes(true).count()
-        }))
+        });
+        Ok(length_allowed
+            && self
+                .text("input-pattern")
+                .is_none_or(|pattern| crate::input_pattern::input_pattern_allows(pattern, text)))
     }
 
     #[doc(hidden)]
@@ -267,12 +276,19 @@ impl Node {
 
     /// Check whether the current value can be submitted by an editor.
     pub fn accepts_text_submission(&self) -> bool {
-        text_submission_is_valid(
-            text_input_value(self),
-            self.input_type(),
-            || decimal_separator(self),
-            || self.int("maximum-length"),
-        )
+        let text = text_input_value(self);
+        self.text("input-mask")
+            .filter(|mask| !mask.is_empty())
+            .is_none_or(|mask| InputMask::parse(mask).is_some_and(|mask| mask.accepts(text)))
+            && text_submission_is_valid(
+                text,
+                self.input_type(),
+                || decimal_separator(self),
+                || self.int("maximum-length"),
+            )
+            && self
+                .text("input-pattern")
+                .is_none_or(|pattern| crate::input_pattern_accepts(pattern, text))
     }
 }
 
@@ -290,8 +306,7 @@ pub fn try_text_submission_is_valid<E>(
     let limit = maximum_length()?.and_then(|limit| usize::try_from(limit).ok());
     Ok(
         limit.is_none_or(|limit| text.graphemes(true).nth(limit).is_none())
-            && (!matches!(mode, InputType::Number | InputType::Decimal)
-                || text.bytes().any(|byte| byte.is_ascii_digit())),
+            && submission_has_value(text, mode),
     )
 }
 
@@ -376,26 +391,16 @@ pub fn try_text_submission_with<E>(
     numeric_limits: impl FnOnce(InputType) -> Result<NumericTextLimits, E>,
     submit_when: impl FnOnce() -> Result<bool, E>,
 ) -> Result<bool, E> {
-    let separator = if mode == InputType::Decimal {
-        separator()?
-    } else {
-        '.'
-    };
-    if !try_text_submission_is_valid(text, mode, || Ok(separator), maximum_length)? {
-        return Ok(false);
-    }
-    let Ok(minimum) = usize::try_from(minimum_length()?.max(0)) else {
-        return Ok(false);
-    };
-    if minimum > text.len() || text.graphemes(true).take(minimum).count() != minimum {
-        return Ok(false);
-    }
-    if matches!(mode, InputType::Number | InputType::Decimal)
-        && !numeric_limits(mode)?.allows(text, mode, separator)
-    {
-        return Ok(false);
-    }
-    submit_when()
+    try_text_submission_with_mask(
+        text,
+        mode,
+        separator,
+        maximum_length,
+        minimum_length,
+        numeric_limits,
+        || Ok(String::new()),
+        submit_when,
+    )
 }
 
 #[doc(hidden)]
@@ -415,6 +420,159 @@ pub fn text_submission_with(
         || Ok(maximum_length()),
         || Ok(minimum_length()),
         |mode| Ok(numeric_limits(mode)),
+        || Ok(submit_when()),
+    )
+    .unwrap_or_else(|error| match error {})
+}
+
+pub fn try_text_submission_with_mask<E>(
+    text: &str,
+    mode: InputType,
+    separator: impl FnOnce() -> Result<char, E>,
+    maximum_length: impl FnOnce() -> Result<Option<i64>, E>,
+    minimum_length: impl FnOnce() -> Result<i64, E>,
+    numeric_limits: impl FnOnce(InputType) -> Result<NumericTextLimits, E>,
+    mask: impl FnOnce() -> Result<String, E>,
+    submit_when: impl FnOnce() -> Result<bool, E>,
+) -> Result<bool, E> {
+    let separator = if mode == InputType::Decimal {
+        separator()?
+    } else {
+        '.'
+    };
+    if !try_text_submission_is_valid(text, mode, || Ok(separator), maximum_length)? {
+        return Ok(false);
+    }
+    if !try_text_submission_limits(text, mode, separator, minimum_length, numeric_limits)? {
+        return Ok(false);
+    }
+    let mask = mask()?;
+    if !mask.is_empty() && !InputMask::parse(&mask).is_some_and(|pattern| pattern.accepts(text)) {
+        return Ok(false);
+    }
+    submit_when()
+}
+
+fn submission_has_value(text: &str, mode: InputType) -> bool {
+    !matches!(mode, InputType::Number | InputType::Decimal)
+        || text.bytes().any(|byte| byte.is_ascii_digit())
+}
+
+fn try_text_submission_limits<E>(
+    text: &str,
+    mode: InputType,
+    separator: char,
+    minimum_length: impl FnOnce() -> Result<i64, E>,
+    numeric_limits: impl FnOnce(InputType) -> Result<NumericTextLimits, E>,
+) -> Result<bool, E> {
+    let Ok(minimum) = usize::try_from(minimum_length()?.max(0)) else {
+        return Ok(false);
+    };
+    if minimum > text.len() || text.graphemes(true).take(minimum).count() != minimum {
+        return Ok(false);
+    }
+    if matches!(mode, InputType::Number | InputType::Decimal)
+        && !numeric_limits(mode)?.allows(text, mode, separator)
+    {
+        return Ok(false);
+    }
+    Ok(true)
+}
+
+#[doc(hidden)]
+pub fn text_submission_with_mask(
+    text: &str,
+    mode: InputType,
+    separator: impl FnOnce() -> char,
+    maximum_length: impl FnOnce() -> Option<i64>,
+    minimum_length: impl FnOnce() -> i64,
+    numeric_limits: impl FnOnce(InputType) -> NumericTextLimits,
+    mask: impl FnOnce() -> String,
+    submit_when: impl FnOnce() -> bool,
+) -> bool {
+    try_text_submission_with_mask(
+        text,
+        mode,
+        || Ok::<_, std::convert::Infallible>(separator()),
+        || Ok(maximum_length()),
+        || Ok(minimum_length()),
+        |mode| Ok(numeric_limits(mode)),
+        || Ok(mask()),
+        || Ok(submit_when()),
+    )
+    .unwrap_or_else(|error| match error {})
+}
+
+#[doc(hidden)]
+pub fn try_text_input_validity<E>(
+    text: &str,
+    mode: InputType,
+    separator: impl FnOnce() -> Result<char, E>,
+    maximum_length: impl FnOnce() -> Result<Option<i64>, E>,
+    minimum_length: impl FnOnce() -> Result<i64, E>,
+    numeric_limits: impl FnOnce(InputType) -> Result<NumericTextLimits, E>,
+    mask: impl FnOnce() -> Result<String, E>,
+    pattern: impl FnOnce() -> Result<String, E>,
+    submit_when: impl FnOnce() -> Result<bool, E>,
+) -> Result<InputValidity, E> {
+    let separator = if mode == InputType::Decimal {
+        separator()?
+    } else {
+        '.'
+    };
+    if !text_syntax_allows(text, mode, || Ok(separator))?
+        || maximum_length()?
+            .and_then(|limit| usize::try_from(limit).ok())
+            .is_some_and(|limit| text.graphemes(true).nth(limit).is_some())
+    {
+        return Ok(InputValidity::Invalid);
+    }
+    let mask = mask()?;
+    let masked = if mask.is_empty() {
+        InputValidity::Acceptable
+    } else {
+        InputMask::parse(&mask).map_or(InputValidity::Invalid, |mask| mask.validity(text))
+    };
+    if masked == InputValidity::Invalid {
+        return Ok(InputValidity::Invalid);
+    }
+    let matched = crate::input_pattern::pattern_validity(&pattern()?, text);
+    if matched == InputValidity::Invalid {
+        return Ok(InputValidity::Invalid);
+    }
+    if masked == InputValidity::Acceptable
+        && matched == InputValidity::Acceptable
+        && submission_has_value(text, mode)
+        && try_text_submission_limits(text, mode, separator, minimum_length, numeric_limits)?
+        && submit_when()?
+    {
+        Ok(InputValidity::Acceptable)
+    } else {
+        Ok(InputValidity::Intermediate)
+    }
+}
+
+#[doc(hidden)]
+pub fn text_input_validity(
+    text: &str,
+    mode: InputType,
+    separator: impl FnOnce() -> char,
+    maximum_length: impl FnOnce() -> Option<i64>,
+    minimum_length: impl FnOnce() -> i64,
+    numeric_limits: impl FnOnce(InputType) -> NumericTextLimits,
+    mask: impl FnOnce() -> String,
+    pattern: impl FnOnce() -> String,
+    submit_when: impl FnOnce() -> bool,
+) -> InputValidity {
+    try_text_input_validity(
+        text,
+        mode,
+        || Ok::<_, std::convert::Infallible>(separator()),
+        || Ok(maximum_length()),
+        || Ok(minimum_length()),
+        |mode| Ok(numeric_limits(mode)),
+        || Ok(mask()),
+        || Ok(pattern()),
         || Ok(submit_when()),
     )
     .unwrap_or_else(|error| match error {})

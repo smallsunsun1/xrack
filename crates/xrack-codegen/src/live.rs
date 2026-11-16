@@ -118,6 +118,8 @@ fn value_variant(ty: &Type) -> Result<Ident, String> {
         Type::String => "String",
         Type::StringList => "StringList",
         Type::IntList => "IntList",
+        Type::DateList => "DateList",
+        Type::Date => "Date",
         Type::Length => "Length",
         Type::Color => "Color",
         _ => {
@@ -158,13 +160,19 @@ fn property_methods(property: OperationRef<'_>, writable: bool) -> Result<TokenS
             }
         });
     }
-    if matches!(ty, Type::StringList | Type::IntList) {
+    if matches!(ty, Type::StringList | Type::IntList | Type::DateList) {
         let model = format_ident!("model_{name_rust}");
         let (item, access, value) = if ty == Type::IntList {
             (
                 quote!(::core::primitive::i64),
                 quote!(int_model),
                 quote!(::xrack_runtime::Value::IntModel(model)),
+            )
+        } else if ty == Type::DateList {
+            (
+                quote!(::xrack_runtime::Date),
+                quote!(date_model),
+                quote!(::xrack_runtime::Value::DateModel(model)),
             )
         } else {
             (

@@ -213,6 +213,8 @@ pub fn controlled_property(element: OperationRef<'_>) -> Option<(&'static str, T
     ) || element.attribute("kind").and_then(picker_value).is_some()
     {
         Some(("open", Type::Bool))
+    } else if element.attr("kind") == Ok("Expander") {
+        Some(("expanded", Type::Bool))
     } else if element.attr("kind") == Ok("TimePicker") {
         Some(("time", Type::Time))
     } else if element.attr("kind") == Ok("Timer") {

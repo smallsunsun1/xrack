@@ -14,3 +14,166 @@ export component LabelCard inherits Rectangle {
         color: #e4edff;
     }
 }
+
+export component DateField inherits Rectangle {
+    height: 40px;
+    in property <string> caption: "日期";
+    in property <Date> initial-date: Date { year: 1970, month: 1, day: 1 };
+    in property <Date> minimum-date: Date { year: 1, month: 1, day: 1 };
+    in property <Date> maximum-date: Date { year: 9999, month: 12, day: 31 };
+    in property <[int]> disabled-weekdays: [];
+    in property <[Date]> disabled-dates: [];
+    out property <Date> date: root.initial-date;
+    out property <string> draft-text: Dates.is-valid(root.initial-date) ? "" + root.initial-date : "";
+    private property <bool> picker-open: false;
+    private property <Date> invalid-date: Date { year: 0, month: 1, day: 1 };
+    private property <Date> draft-date: Dates.parse-iso(root.draft-text, root.invalid-date);
+    out property <bool> acceptable-input: root.available(root.draft-date);
+
+    callback committed(Date);
+    pure callback available(Date) -> bool;
+    available(day) => {
+        Dates.is-selectable(day, root.minimum-date, root.maximum-date, root.disabled-weekdays, root.disabled-dates)
+    }
+    callback set-date(Date);
+    set-date(day) => {
+        root.date = root.available(day) ? day : root.date;
+        root.draft-text = root.available(day) ? "" + day : root.draft-text;
+    }
+    callback revert();
+    revert => { root.draft-text = Dates.is-valid(root.date) ? "" + root.date : ""; }
+
+    HorizontalLayout {
+        width: 100%; height: 100%; spacing: 8px;
+        date-entry := LineEdit {
+            horizontal-stretch: 1;
+            text <=> root.draft-text;
+            accessible-name: root.caption;
+            placeholder-text: "YYYY-MM-DD";
+            input-mask: "9999-99-99";
+            submit-when: root.acceptable-input;
+            accepted => {
+                root.date = root.draft-date;
+                root.committed(root.date);
+            }
+        }
+        date-picker-button := Button {
+            width: 100px;
+            text: "日历";
+            accessible-name: "选择" + root.caption;
+            clicked => { root.picker-open = true; }
+        }
+    }
+    revert-date-draft := Shortcut {
+        sequence: "Escape";
+        focus-within: true;
+        activated => { root.revert(); }
+    }
+    date-picker := DatePickerPopup {
+        open <=> root.picker-open;
+        title: "选择" + root.caption;
+        accept-text: "应用";
+        cancel-text: "取消";
+        date <=> root.date;
+        minimum-date: root.minimum-date;
+        maximum-date: root.maximum-date;
+        disabled-weekdays: root.disabled-weekdays;
+        disabled-dates: root.disabled-dates;
+        accepted(day) => {
+            root.draft-text = "" + day;
+            root.committed(day);
+        }
+    }
+}
+
+export component TimeField inherits Rectangle {
+    height: 40px;
+    in property <string> caption: "时间";
+    in property <Time> initial-time: Time { hour: 0, minute: 0, second: 0 };
+    in property <Time> minimum-time: Time { hour: 0, minute: 0, second: 0 };
+    in property <Time> maximum-time: Time { hour: 23, minute: 59, second: 59 };
+    in property <bool> show-seconds: false;
+    in property <bool> use-24-hour-format: true;
+    out property <Time> time: root.initial-time;
+    private property <string> minute-text: Times.format-iso(root.initial-time, false);
+    private property <string> second-text: Times.format-iso(root.initial-time, true);
+    private property <bool> picker-open: false;
+    out property <string> draft-text: root.show-seconds ? root.second-text : root.minute-text;
+    private property <Time> parsed-time: Times.parse-iso(root.draft-text, root.time);
+    private property <Time> draft-time: Time {
+        hour: root.parsed-time.hour, minute: root.parsed-time.minute,
+        second: root.show-seconds ? root.parsed-time.second : root.time.second
+    };
+    private property <bool> valid-draft: Times.is-valid-iso(root.draft-text)
+        && Times.in-range(root.draft-time, root.minimum-time, root.maximum-time);
+    out property <bool> acceptable-input: root.show-seconds ? second-entry.acceptable-input : minute-entry.acceptable-input;
+
+    callback committed(Time);
+    callback set-time(Time);
+    set-time(value) => {
+        root.time = Times.in-range(value, root.minimum-time, root.maximum-time) ? value : root.time;
+        root.minute-text = Times.in-range(value, root.minimum-time, root.maximum-time)
+            ? Times.format-iso(value, false) : root.minute-text;
+        root.second-text = Times.in-range(value, root.minimum-time, root.maximum-time)
+            ? Times.format-iso(value, true) : root.second-text;
+    }
+    callback revert();
+    revert => {
+        root.minute-text = Times.format-iso(root.time, false);
+        root.second-text = Times.format-iso(root.time, true);
+    }
+
+    HorizontalLayout {
+        width: 100%; height: 100%; spacing: 8px;
+        if !root.show-seconds : minute-entry := LineEdit {
+            horizontal-stretch: 1;
+            text <=> root.minute-text;
+            accessible-name: root.caption;
+            placeholder-text: "HH:mm";
+            input-mask: "99:99";
+            submit-when: root.valid-draft;
+            accepted => {
+                root.set-time(root.draft-time);
+                root.committed(root.time);
+            }
+        }
+        if root.show-seconds : second-entry := LineEdit {
+            horizontal-stretch: 1;
+            text <=> root.second-text;
+            accessible-name: root.caption;
+            placeholder-text: "HH:mm:ss";
+            input-mask: "99:99:99";
+            submit-when: root.valid-draft;
+            accepted => {
+                root.set-time(root.draft-time);
+                root.committed(root.time);
+            }
+        }
+        time-picker-button := Button {
+            width: 100px;
+            text: "时钟";
+            accessible-name: "选择" + root.caption;
+            clicked => { root.picker-open = true; }
+        }
+    }
+    revert-time-draft := Shortcut {
+        sequence: "Escape";
+        focus-within: true;
+        activated => { root.revert(); }
+    }
+    time-picker := TimePickerPopup {
+        open <=> root.picker-open;
+        title: "选择" + root.caption;
+        accept-text: "应用时间";
+        cancel-text: "取消";
+        time <=> root.time;
+        minimum-time: root.minimum-time;
+        maximum-time: root.maximum-time;
+        show-seconds: root.show-seconds;
+        use-24-hour-format: root.use-24-hour-format;
+        accepted(value) => {
+            root.set-time(value);
+            root.committed(value);
+        }
+    }
+}

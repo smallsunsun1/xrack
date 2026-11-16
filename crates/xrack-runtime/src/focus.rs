@@ -319,6 +319,12 @@ struct FocusSignals {
     within: Property<bool>,
     text: Option<Box<TextSelectionSignals>>,
     commands: Option<Box<TextCommandSignals>>,
+    editing: RefCell<Option<EditorChange>>,
+}
+
+struct EditorChange {
+    initial: String,
+    draft: String,
 }
 
 #[derive(Default)]
@@ -368,10 +374,20 @@ pub enum FocusAction {
     CancelTableEdit,
 }
 
+/// Replace the given byte range in a live editor. Positions are clamped by its text layout.
+#[doc(hidden)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TextReplacement {
+    pub start: i64,
+    pub end: i64,
+    pub text: String,
+}
+
 /// A programmatic edit using the same selection, validation and history as keyboard input.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TextCommand {
     SelectAll,
+    SelectWord,
     ClearSelection,
     SetSelection { anchor: i64, focus: i64 },
     Undo,
@@ -390,6 +406,7 @@ pub enum FocusCommandMethod {
     OpenChoice,
     CloseChoice,
     SelectAll,
+    SelectWord,
     ClearSelection,
     SetSelection,
     Undo,
@@ -399,6 +416,11 @@ pub enum FocusCommandMethod {
     Paste,
     EditTableCell,
     CancelTableEdit,
+    InsertText,
+    ReplaceText,
+    RemoveText,
+    AppendText,
+    ClearText,
 }
 
 impl FocusCommandMethod {
@@ -409,6 +431,7 @@ impl FocusCommandMethod {
             "open-popup" => Self::OpenChoice,
             "close-popup" => Self::CloseChoice,
             "select-all" => Self::SelectAll,
+            "select-word" => Self::SelectWord,
             "clear-selection" => Self::ClearSelection,
             "set-selection-offsets" => Self::SetSelection,
             "undo" => Self::Undo,
@@ -418,6 +441,11 @@ impl FocusCommandMethod {
             "paste" => Self::Paste,
             "edit-cell" => Self::EditTableCell,
             "cancel-edit" => Self::CancelTableEdit,
+            "insert-text" => Self::InsertText,
+            "replace-text" => Self::ReplaceText,
+            "remove-text" => Self::RemoveText,
+            "append-text" => Self::AppendText,
+            "clear-text" => Self::ClearText,
             _ => return None,
         })
     }
@@ -429,6 +457,7 @@ impl FocusCommandMethod {
             (Self::OpenChoice, []) => return Some(FocusAction::OpenChoice),
             (Self::CloseChoice, []) => return Some(FocusAction::CloseChoice),
             (Self::SelectAll, []) => TextCommand::SelectAll,
+            (Self::SelectWord, []) => TextCommand::SelectWord,
             (Self::ClearSelection, []) => TextCommand::ClearSelection,
             (Self::SetSelection, &[anchor, focus]) => TextCommand::SetSelection { anchor, focus },
             (Self::Undo, []) => TextCommand::Undo,
@@ -443,6 +472,28 @@ impl FocusCommandMethod {
             _ => return None,
         };
         Some(FocusAction::Text(text))
+    }
+
+    pub fn uses_text_operand(self) -> bool {
+        matches!(
+            self,
+            Self::InsertText | Self::ReplaceText | Self::AppendText
+        )
+    }
+
+    pub fn edits_text(self) -> bool {
+        self.uses_text_operand() || matches!(self, Self::RemoveText | Self::ClearText)
+    }
+
+    pub fn replacement(self, offsets: &[i64], text: String) -> Option<TextReplacement> {
+        let (start, end) = match (self, offsets) {
+            (Self::InsertText, &[offset]) => (offset, offset),
+            (Self::ReplaceText | Self::RemoveText, &[start, end]) => (start, end),
+            (Self::AppendText, []) => (i64::MAX, i64::MAX),
+            (Self::ClearText, []) => (0, i64::MAX),
+            _ => return None,
+        };
+        Some(TextReplacement { start, end, text })
     }
 }
 
@@ -531,9 +582,18 @@ pub struct FocusRequest {
     pub action: FocusAction,
 }
 
+#[doc(hidden)]
+pub enum QueuedFocusRequest {
+    Focus(FocusRequest),
+    ReplaceText {
+        target: FocusHandle,
+        replacement: TextReplacement,
+    },
+}
+
 /// A window's commands, drained against the scene prepared after the callback.
 #[derive(Clone, Default)]
-pub struct FocusRequests(Rc<RefCell<Vec<FocusRequest>>>);
+pub struct FocusRequests(Rc<RefCell<Vec<QueuedFocusRequest>>>);
 
 thread_local! {
     static ACTIVE: RefCell<Option<FocusRequests>> = const { RefCell::new(None) };
@@ -547,6 +607,17 @@ impl FocusRequests {
     }
 
     pub fn drain(&self) -> Vec<FocusRequest> {
+        self.drain_commands()
+            .into_iter()
+            .filter_map(|command| match command {
+                QueuedFocusRequest::Focus(request) => Some(request),
+                QueuedFocusRequest::ReplaceText { .. } => None,
+            })
+            .collect()
+    }
+
+    #[doc(hidden)]
+    pub fn drain_commands(&self) -> Vec<QueuedFocusRequest> {
         std::mem::take(&mut *self.0.borrow_mut())
     }
 
@@ -574,6 +645,43 @@ impl FocusHandle {
             commands: commands.then(Box::default),
             ..FocusSignals::default()
         }))
+    }
+
+    #[doc(hidden)]
+    pub fn record_editor_edit(&self, before: &str, after: &str) {
+        if before == after {
+            return;
+        }
+        let mut editing = self.0.editing.borrow_mut();
+        let initial = editing
+            .take()
+            .filter(|editing| editing.draft == before)
+            .map_or_else(|| before.to_owned(), |editing| editing.initial);
+        if initial != after {
+            *editing = Some(EditorChange {
+                initial,
+                draft: after.to_owned(),
+            });
+        }
+    }
+
+    #[doc(hidden)]
+    pub fn has_editor_changes(&self) -> bool {
+        self.0.editing.borrow().is_some()
+    }
+
+    #[doc(hidden)]
+    pub fn take_editor_changes(&self, current: &str) -> bool {
+        self.0
+            .editing
+            .borrow_mut()
+            .take()
+            .is_some_and(|editing| editing.draft == current)
+    }
+
+    #[doc(hidden)]
+    pub fn discard_editor_changes(&self) {
+        self.0.editing.borrow_mut().take();
     }
 
     #[doc(hidden)]
@@ -687,12 +795,24 @@ impl FocusHandle {
     }
 
     pub fn request(&self, action: FocusAction) {
+        Self::enqueue(QueuedFocusRequest::Focus(FocusRequest {
+            target: self.clone(),
+            action,
+        }));
+    }
+
+    #[doc(hidden)]
+    pub fn request_text_edit(&self, replacement: TextReplacement) {
+        Self::enqueue(QueuedFocusRequest::ReplaceText {
+            target: self.clone(),
+            replacement,
+        });
+    }
+
+    fn enqueue(request: QueuedFocusRequest) {
         ACTIVE.with(|active| {
             if let Some(requests) = &*active.borrow() {
-                requests.0.borrow_mut().push(FocusRequest {
-                    target: self.clone(),
-                    action,
-                });
+                requests.0.borrow_mut().push(request);
             }
         });
     }

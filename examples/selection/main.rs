@@ -13,6 +13,10 @@ fn main() -> std::process::ExitCode {
             xrack_platform_winit::run(selection_ui::MixedRadioOptionsDemo::new())
         }
         Some("--editable-combo") => xrack_platform_winit::run(EditableChoiceDemo::new()),
+        Some("--combo-append") => xrack_platform_winit::run(selection_ui::ComboAppendDemo::new()),
+        Some("--combo-lifecycle") => {
+            xrack_platform_winit::run(selection_ui::ComboLifecycleDemo::new())
+        }
         Some("--validated-combo") => {
             xrack_platform_winit::run(selection_ui::ComboValidationDemo::new())
         }

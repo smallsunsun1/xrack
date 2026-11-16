@@ -31,8 +31,8 @@ use std::rc::Rc;
 use std::time::{Duration, Instant};
 use xrack_runtime::{
     ButtonGroupMembership, CalendarAction, Component, ControlAction, Date, DialInputMode,
-    DialogRole, DrawerEdge, LayoutDirection, Length, ListMetrics, Node, Orientation, PageIdentity,
-    RangeAction, RowKey, RowSelection, ScrollAction, ScrollAlignment, ScrollBarRange,
+    DialogRole, DrawerEdge, FocusHandle, LayoutDirection, Length, ListMetrics, Node, Orientation,
+    PageIdentity, RangeAction, RowKey, RowSelection, ScrollAction, ScrollAlignment, ScrollBarRange,
     ScrollRequest, ScrollSnapMode, SelectionTarget, SliderInterval, SliderRange, SpinAction,
     SpinDecimal, StandardButtonKind, SwipePreviewHandle, SwipeSide, TableEditPosition,
     TableSelectionAction, TextCommand, TextCommandAvailability, TreeAction, TreeSelectionAction,
@@ -754,17 +754,62 @@ struct PageSwipe {
     next: Option<SwipePagePosition>,
     mirrored: bool,
     start: Point,
+    bounds: Rect,
     threshold: f32,
 }
 
 impl PageSwipe {
-    fn movement(&self, point: Point) -> (f32, f32) {
-        let x = self.start.x - point.x;
-        let y = self.start.y - point.y;
+    fn along_and_across(&self, vector: Point) -> (f32, f32) {
         match self.target.orientation {
-            Orientation::Horizontal => (x, y.abs()),
-            Orientation::Vertical => (y, x.abs()),
+            Orientation::Horizontal => (vector.x, vector.y.abs()),
+            Orientation::Vertical => (vector.y, vector.x.abs()),
         }
+    }
+
+    fn movement(&self, point: Point) -> (f32, f32) {
+        self.along_and_across(Point {
+            x: self.start.x - point.x,
+            y: self.start.y - point.y,
+        })
+    }
+
+    fn release_distance(
+        &self,
+        distance: f32,
+        item: &LayoutNode,
+        velocity: Option<(Point, Point)>,
+    ) -> f32 {
+        const MIN_FLICK_SPEED: f32 = 480.0;
+        const PROJECTION_SECONDS: f32 = 0.10;
+
+        let magnitude = distance.abs();
+        let Some((smoothed, latest)) = velocity else {
+            return magnitude;
+        };
+        let Some(latest) = item.map_delta_from_window(latest) else {
+            return magnitude;
+        };
+        let (along, across) = self.along_and_across(latest);
+        if along.abs() < MIN_FLICK_SPEED || along.abs() <= across {
+            return magnitude;
+        }
+
+        let signed = along * distance.signum();
+        let velocity = if signed < 0.0 {
+            // A clear reversal takes effect before the smoothed velocity catches up.
+            signed
+        } else {
+            let Some(smoothed) = item.map_delta_from_window(smoothed) else {
+                return magnitude;
+            };
+            let (along, across) = self.along_and_across(smoothed);
+            let forward = along * distance.signum();
+            if forward < MIN_FLICK_SPEED || forward <= across {
+                return magnitude;
+            }
+            signed.min(forward)
+        };
+        magnitude + (velocity * PROJECTION_SECONDS).clamp(-self.threshold, self.threshold)
     }
 
     fn destination(&self, physical_forward: bool) -> Option<&SwipePagePosition> {
@@ -788,6 +833,7 @@ impl PageSwipe {
             && view.boolean("interactive", true)
             && view.orientation() == self.target.orientation
             && self.mirrored == swipe_view_mirrored(view, item)
+            && item.bounds == self.bounds
             && item.visible
             && item.enabled
             && scene.row_key_at(path) == self.target.row_key
@@ -804,14 +850,23 @@ impl PageSwipe {
         .then_some(destination)
     }
 
-    fn action(self, scene: &Node, layout: &LayoutNode, point: Point) -> Option<ControlInput> {
+    fn action(
+        self,
+        scene: &Node,
+        layout: &LayoutNode,
+        point: Point,
+        velocity: Option<(Point, Point)>,
+    ) -> Option<ControlInput> {
         let (view, item) = self.view(scene, layout)?;
         let (distance, across) = self.movement(item.map_from_window(point)?);
         let index = self.live_destination(view, distance > 0.0)?.index;
-        (distance.abs() >= self.threshold && distance.abs() > across).then_some(ControlInput {
-            path: self.target.path,
-            action: ControlAction::Select(index),
-        })
+        (distance.abs() >= self.threshold * 0.25
+            && distance.abs() > across
+            && self.release_distance(distance, item, velocity) >= self.threshold)
+            .then_some(ControlInput {
+                path: self.target.path,
+                action: ControlAction::Select(index),
+            })
     }
 }
 
@@ -961,6 +1016,19 @@ impl AxisMotion {
     }
 }
 
+#[derive(Clone, Debug)]
+struct EditorClick {
+    target: Target,
+    sample: (Point, Instant),
+}
+
+#[derive(Clone, Debug)]
+struct TextSelectionScroll {
+    target: Target,
+    point: Point,
+    due: Instant,
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct Interaction {
     pub hovered: Option<Target>,
@@ -1034,7 +1102,13 @@ pub struct Interaction {
     split_hover: Option<(xrack_runtime::SplitResizeHandle, usize)>,
     table_edit: Option<TableEdit>,
     last_table_click: Option<(Target, Instant)>,
+    editor_press: Option<EditorClick>,
+    last_editor_click: Option<EditorClick>,
+    text_selection_scroll: Option<TextSelectionScroll>,
     pub editor: Option<TextEdit>,
+    persistent_editor: Option<PersistentEditor>,
+    retained_selections: Vec<RetainedSelection>,
+    editor_window_inactive: bool,
     history: EditHistories,
     scroll_offsets: BTreeMap<Vec<usize>, f32>,
     horizontal_scroll_offsets: BTreeMap<Vec<usize>, f32>,
@@ -1048,11 +1122,62 @@ pub struct Interaction {
     swipe_page_motion: Option<SwipePageMotion>,
     swipe_commit: Option<(PageSwipe, f32)>,
     page_focus: crate::focus_scope::PageFocusHistory,
+    calendar_page_focus: Option<CalendarPageFocus>,
     scope_focus: crate::focus_scope::FocusHistory,
     transitioning_stacks: BTreeSet<Vec<usize>>,
     pointer_on_stack_slide: bool,
     window_move_press: Option<WindowMovePress>,
     dialog_backdrop: Option<Vec<usize>>,
+}
+
+#[derive(Clone, Debug)]
+struct CalendarPageFocus {
+    from: Target,
+    view: Target,
+    viewport: Option<ViewportHandle>,
+    order: (u64, u64),
+    index: usize,
+}
+
+#[derive(Clone, Debug)]
+struct PersistentEditor {
+    target: Target,
+    handle: Option<FocusHandle>,
+    text: String,
+    password: bool,
+}
+
+impl PersistentEditor {
+    fn new(target: &Target, node: &Node) -> Self {
+        let mut target = target.clone();
+        target.text_link = None;
+        Self {
+            target,
+            handle: node.focus_handle.clone(),
+            text: text_input_value(node).to_owned(),
+            password: node.is_password(),
+        }
+    }
+
+    fn same_target(&self, target: &Target) -> bool {
+        self.target.path == target.path
+            && self.target.row_key == target.row_key
+            && self.target.element_id() == target.element_id()
+    }
+
+    fn matches(&self, node: &Node) -> bool {
+        node.boolean("persistent-selection", false)
+            && (is_text_input(node.kind) || combo_editable(node) || node.selectable_styled_text())
+            && node.focus_handle == self.handle
+            && node.is_password() == self.password
+            && text_input_value(node) == self.text
+    }
+}
+
+#[derive(Clone, Debug)]
+struct RetainedSelection {
+    source: PersistentEditor,
+    editor: TextEdit,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1076,8 +1201,8 @@ enum HitPurpose<'a> {
 
 pub(crate) fn focusable(node: &Node) -> bool {
     let kind = node.kind;
-    if kind == "GroupBox" {
-        return node.group_checkable();
+    if matches!(kind, "GroupBox" | "Expander") {
+        return kind == "Expander" || node.group_checkable();
     }
     if kind == "PageIndicator" {
         return node.boolean("interactive", false) && page_indicator_count(node) != 0;
@@ -1125,6 +1250,7 @@ pub(crate) fn focusable(node: &Node) -> bool {
             | "ContextMenuArea"
     ) || is_toggle(kind)
         || is_text_input(kind)
+        || node.selectable_styled_text()
 }
 
 fn interactive(node: &Node) -> bool {
@@ -1307,7 +1433,9 @@ fn hit(
         target.push(slot);
         return Hit::Target(Target::from_node(target, handle, true, None));
     }
-    if node.group_checkable() && layout.group_header(node).contains(point) {
+    if (node.kind == "Expander" || node.group_checkable())
+        && layout.group_header(node).contains(point)
+    {
         return if layout.enabled {
             Hit::Target(Target::from_node(path.clone(), node, true, None))
         } else {
@@ -1441,7 +1569,7 @@ fn hit(
     if xrack_runtime::is_pane(node.kind) {
         return Hit::Blocked(path.clone());
     }
-    if matches!(node.kind, "Tab" | "GroupBox")
+    if matches!(node.kind, "Tab" | "GroupBox" | "Expander")
         || is_window_overlay(node.kind)
         || !interactive(node)
         || node.kind == "TouchArea"
@@ -1676,7 +1804,7 @@ fn focus_hitbox(node: &Node, layout: &LayoutNode) -> Option<Rect> {
     }
     let hitbox = if node.kind == "Tab" {
         layout.tab_header
-    } else if layout.visible && node.kind == "GroupBox" {
+    } else if layout.visible && matches!(node.kind, "GroupBox" | "Expander") {
         Some(layout.group_header(node))
     } else if layout.visible {
         Some(layout.bounds)
@@ -1881,7 +2009,9 @@ pub(crate) fn focus_targets_with_reveal(
         } else if !matches!(node.kind, "Tab" | "TreeCell" | "FocusScope" | "Loader")
             && !is_window_overlay(node.kind)
             && focusable(node)
-            && (node.kind != "GroupBox" || clipped_candidates || eligible(node, layout))
+            && (!matches!(node.kind, "GroupBox" | "Expander")
+                || clipped_candidates
+                || eligible(node, layout))
         {
             out.extend(candidate(path, node, layout));
         }
@@ -2593,12 +2723,16 @@ impl Interaction {
 
     fn set_focus_with_reason(&mut self, focus: Option<Target>, reason: xrack_runtime::FocusReason) {
         if self.focused != focus {
+            self.calendar_page_focus = None;
+            self.text_selection_scroll = None;
+            self.retain_editor_selection();
+            self.editor_press = None;
+            self.last_editor_click = None;
             self.focus_reason = reason;
             self.cancel_shortcut_sequence();
             self.cancel_delay();
             self.button_hold = None;
             self.history.break_group();
-            self.editor = None;
             self.spin_draft = None;
             self.table_edit = None;
             self.last_table_click = None;
@@ -3210,7 +3344,7 @@ impl Interaction {
         if self.editor.as_ref().is_some_and(TextEdit::is_composing) {
             return TextCommandAvailability::default();
         }
-        let writable = !node.boolean("read-only", false);
+        let writable = !node.text_read_only();
         let copy = selected && !node.is_password();
         let (undo, redo) = self
             .editor_history(scene, target, node)
@@ -3239,7 +3373,7 @@ impl Interaction {
                     let value = self.editor_value(node);
                     text.kind == node.kind
                         && text.password == node.is_password()
-                        && text.writable == !node.boolean("read-only", false)
+                        && text.writable == !node.text_read_only()
                         && text.value == value
                         && self.editor.as_ref().is_some_and(|editor| {
                             !editor.is_composing()
@@ -3419,8 +3553,82 @@ impl Interaction {
         self.pointer
     }
 
+    /// Start a click sequence only for a live editor that owned the primary press.
+    #[doc(hidden)]
+    pub fn editor_mouse_press(
+        &mut self,
+        target: &Target,
+        point: Point,
+        now: Instant,
+        selecting: bool,
+    ) -> bool {
+        let previous = self.last_editor_click.take();
+        self.editor_press = None;
+        if selecting
+            || self.pressed.as_ref() != Some(target)
+            || self.focused.as_ref() != Some(target)
+        {
+            return false;
+        }
+        let sample = (point, now);
+        let repeated = previous.is_some_and(|click| {
+            click.target == *target && crate::pointer_click_follows(click.sample, sample)
+        });
+        if !repeated {
+            self.editor_press = Some(EditorClick {
+                target: target.clone(),
+                sample,
+            });
+        }
+        repeated
+    }
+
+    #[doc(hidden)]
+    pub fn clear_editor_click(&mut self) {
+        self.editor_press = None;
+        self.last_editor_click = None;
+    }
+
     pub fn pointer_press_origin(&self) -> Option<Point> {
         self.press_origin
+    }
+
+    #[doc(hidden)]
+    pub fn schedule_text_selection_scroll(
+        &mut self,
+        target: &Target,
+        point: Option<Point>,
+        now: Instant,
+    ) {
+        self.text_selection_scroll = point
+            .filter(|_| self.pressed.as_ref() == Some(target) && self.editor_active(&target.path))
+            .map(|point| TextSelectionScroll {
+                target: target.clone(),
+                point,
+                due: self
+                    .text_selection_scroll
+                    .as_ref()
+                    .filter(|scroll| &scroll.target == target)
+                    .map_or(now + SCROLL_FRAME_INTERVAL, |scroll| scroll.due),
+            });
+    }
+
+    #[doc(hidden)]
+    pub fn text_selection_scroll_deadline(&self) -> Option<Instant> {
+        let scroll = self.text_selection_scroll.as_ref()?;
+        (self.pressed.as_ref() == Some(&scroll.target) && self.editor_active(&scroll.target.path))
+            .then_some(scroll.due)
+    }
+
+    #[doc(hidden)]
+    pub fn take_text_selection_scroll(&mut self, now: Instant) -> Option<(Point, Duration)> {
+        let Some(due) = self.text_selection_scroll_deadline() else {
+            self.text_selection_scroll = None;
+            return None;
+        };
+        let elapsed = now.checked_duration_since(due)? + SCROLL_FRAME_INTERVAL;
+        let scroll = self.text_selection_scroll.take()?;
+        Some((scroll.point, elapsed.min(3 * SCROLL_FRAME_INTERVAL)))
     }
 
     pub fn text_scroll(&self, path: &[usize]) -> Point {
@@ -4583,6 +4791,7 @@ impl Interaction {
                     next,
                     mirrored: swipe_view_mirrored(view, item),
                     start: item.map_from_window(point).unwrap_or(point),
+                    bounds: item.bounds,
                     threshold: (extent * 0.15).clamp(24.0, 96.0),
                 })
             })
@@ -5253,7 +5462,12 @@ impl Interaction {
         if gesture.motion.dragging
             && let Some(page) = gesture.pages.into_iter().next()
         {
-            let control = page.action(scene, layout, point);
+            let control = page.action(
+                scene,
+                layout,
+                point,
+                gesture.motion.measured_release_velocities(now),
+            );
             if let Some(motion) = &mut self.swipe_page_motion {
                 if control.is_some() {
                     self.swipe_commit = Some((motion.page.clone(), motion.fraction));
@@ -5469,6 +5683,10 @@ impl Interaction {
     pub fn scroll_motion_active(&self) -> bool {
         self.scroll_fling.is_some()
             || self.overscroll.deadline().is_some()
+            || self
+                .swipe_page_motion
+                .as_ref()
+                .is_some_and(|motion| motion.wake.is_some())
             || self
                 .tumbler_flick
                 .as_ref()
@@ -6206,6 +6424,7 @@ impl Interaction {
     pub fn is_text_editor(&self, node: &Node, target: &Target) -> bool {
         is_text_input(node.kind)
             || combo_editable(node)
+            || node.selectable_styled_text()
             || editable_table_cell(node)
                 && self
                     .table_edit
@@ -6508,12 +6727,48 @@ impl Interaction {
         let target_node = self
             .focused
             .as_ref()
-            .and_then(|target| Some((target, scene.at_path(&target.path)?)));
-        if let Some((_, node)) = target_node
+            .and_then(|target| Some((target, target.node_in(scene)?)));
+        if let Some((target, node)) = target_node
             .filter(|(target, node)| self.is_text_editor(node, target) || spin_editable(node))
         {
+            let persistent = node.boolean("persistent-selection", false)
+                && (is_text_input(node.kind)
+                    || combo_editable(node)
+                    || node.selectable_styled_text());
+            if persistent {
+                if let Some(source) = &mut self.persistent_editor {
+                    if !source.matches(node) {
+                        self.editor = None;
+                        if let Some(handle) = &source.handle {
+                            handle.clear_text_state();
+                        }
+                        *source = PersistentEditor::new(target, node);
+                    } else {
+                        source.target.path.clone_from(&target.path);
+                    }
+                } else {
+                    if self.editor.is_none()
+                        && let Some(index) = self.retained_selections.iter().position(|selection| {
+                            selection.source.same_target(target) && selection.source.matches(node)
+                        })
+                    {
+                        self.editor = Some(self.retained_selections.remove(index).editor);
+                    }
+                    self.persistent_editor = Some(PersistentEditor::new(target, node));
+                }
+            } else {
+                self.persistent_editor = None;
+            }
             if self.editor.is_none() {
                 self.editor = Some(TextEdit::at_end(&self.editor_value(node)));
+            }
+            if let Some(editor) = &mut self.editor
+                && editor
+                    .password_echo
+                    .as_ref()
+                    .is_some_and(|echo| !echo.matches(node, text_input_value(node)))
+            {
+                editor.password_echo = None;
             }
             if (is_text_input(node.kind) || combo_editable(node))
                 && let Some(target) = &self.focused
@@ -6522,10 +6777,121 @@ impl Interaction {
                 history.observe(text_input_value(node));
             }
         } else {
+            self.persistent_editor = None;
             self.editor = None;
             self.spin_draft = None;
         }
         self.reconcile_text_composition(scene);
+    }
+
+    fn retain_editor_selection(&mut self) {
+        let old = self.editor.take();
+        let Some(source) = self.persistent_editor.take() else {
+            return;
+        };
+        let Some(editor) = old else { return };
+        let state = editor.selection_state(&source.text);
+        if state.collapsed() {
+            return;
+        }
+        let mut saved = TextEdit::default();
+        saved.restore_selection(&source.text, state);
+        saved.set_horizontal_drag_scroll(editor.horizontal_drag_scroll());
+        if let Some(handle) = &source.handle {
+            let range = saved.selection(&source.text);
+            let text = if source.password {
+                ""
+            } else {
+                &source.text[range.clone()]
+            };
+            handle.publish_text_selection(saved.caret(&source.text), range, text);
+            handle.publish_text_commands(Default::default());
+        }
+        self.retained_selections.push(RetainedSelection {
+            source,
+            editor: saved,
+        });
+    }
+
+    #[doc(hidden)]
+    pub fn set_editor_window_active(&mut self, active: bool) {
+        self.editor_window_inactive = !active;
+        if !active && let Some(editor) = &mut self.editor {
+            editor.password_echo = None;
+        }
+    }
+
+    #[doc(hidden)]
+    pub fn password_echo_deadline(&self) -> Option<Instant> {
+        Some(self.editor.as_ref()?.password_echo.as_ref()?.deadline)
+    }
+
+    #[doc(hidden)]
+    pub fn expire_password_echo(&mut self, now: Instant) -> bool {
+        if let Some(editor) = &mut self.editor
+            && editor
+                .password_echo
+                .as_ref()
+                .is_some_and(|echo| now >= echo.deadline)
+        {
+            editor.password_echo = None;
+            return true;
+        }
+        false
+    }
+
+    #[doc(hidden)]
+    pub fn editor_active(&self, path: &[usize]) -> bool {
+        !self.editor_window_inactive && self.is_focused(path)
+    }
+
+    #[doc(hidden)]
+    pub fn displayed_editor(&self, node: &Node, path: &[usize]) -> Option<&TextEdit> {
+        if self.is_focused(path) {
+            return self.editor.as_ref().filter(|_| {
+                !self.editor_window_inactive
+                    || self
+                        .persistent_editor
+                        .as_ref()
+                        .is_some_and(|source| source.matches(node))
+            });
+        }
+        self.retained_selections.iter().find_map(|selection| {
+            (selection.source.target.path == path && selection.source.matches(node))
+                .then_some(&selection.editor)
+        })
+    }
+
+    pub(crate) fn retained_editor_for<'a>(
+        &'a self,
+        scene: &'a Node,
+        target: &Target,
+        handle: &FocusHandle,
+    ) -> Option<(&'a TextEdit, &'a Node)> {
+        for selection in &self.retained_selections {
+            let source = &selection.source;
+            if source.handle.as_ref() == Some(handle)
+                && source.target.row_key == target.row_key
+                && let Some(node) = source
+                    .target
+                    .node_in(scene)
+                    .filter(|node| source.matches(node))
+            {
+                return Some((&selection.editor, node));
+            }
+        }
+        let source = self.persistent_editor.as_ref()?;
+        if !self.editor_window_inactive
+            || !source.same_target(target)
+            || source.handle.as_ref() != Some(handle)
+        {
+            return None;
+        }
+        let node = source
+            .target
+            .node_in(scene)
+            .filter(|node| source.matches(node))?;
+        Some((self.editor.as_ref()?, node))
     }
 
     pub fn break_text_edit_group(&mut self) {
@@ -6559,26 +6925,75 @@ impl Interaction {
         now: Instant,
         commit: impl FnOnce(&Target, String) -> bool,
     ) -> bool {
-        let Some(target) = &self.focused else {
+        let Some(target) = self.focused.clone() else {
             return false;
         };
+        self.apply_text_edit_at(scene, &target, action, source, now, commit)
+    }
+
+    #[doc(hidden)]
+    pub fn apply_text_replacement(
+        &mut self,
+        component: &mut impl Component,
+        scene: &Node,
+        layout: &LayoutNode,
+        handle: &FocusHandle,
+        replacement: &xrack_runtime::TextReplacement,
+        now: Instant,
+    ) -> Option<Target> {
+        let modal = self.active_dialog(layout).unwrap_or_default();
+        let target = crate::focus_scope::handle_target(scene, layout, modal, handle, true)?;
+        let focused = self.focused.as_ref() == Some(&target);
+        if focused {
+            if self.editor.as_ref().is_some_and(TextEdit::is_composing) {
+                return None;
+            }
+            self.sync_editor(scene);
+        }
+        let action = EditAction::ReplaceRange {
+            start: replacement.start,
+            end: replacement.end,
+            text: &replacement.text,
+        };
+        let changed = self.apply_text_edit_at(
+            scene,
+            &target,
+            action,
+            EditSource::Atomic,
+            now,
+            |target, text| component.edit_at(scene, &target.path, text),
+        );
+        if changed && !focused {
+            handle.discard_editor_changes();
+        }
+        changed.then_some(target)
+    }
+
+    fn apply_text_edit_at(
+        &mut self,
+        scene: &Node,
+        target: &Target,
+        action: EditAction<'_>,
+        source: EditSource,
+        now: Instant,
+        commit: impl FnOnce(&Target, String) -> bool,
+    ) -> bool {
         let Some(node) = scene.interactive_at_path(&target.path).filter(|node| {
             self.is_text_editor(node, target) && scene.row_key_at(&target.path) == target.row_key
         }) else {
             return false;
         };
-        if node.boolean("read-only", false)
-            && matches!(
-                action,
-                EditAction::Insert(_)
-                    | EditAction::ReplaceAll(_)
-                    | EditAction::Backspace
-                    | EditAction::Delete
-            )
-        {
+        if node.text_read_only() && action.changes_text() {
             return false;
         }
 
+        let active = self.focused.as_ref() == Some(target);
+        let explicit = matches!(action, EditAction::ReplaceRange { .. });
+        let mut inactive = (!active).then(|| {
+            self.displayed_editor(node, &target.path)
+                .cloned()
+                .unwrap_or_else(|| TextEdit::at_end(text_input_value(node)))
+        });
         let draft = self
             .table_edit
             .as_mut()
@@ -6586,32 +7001,107 @@ impl Interaction {
         let text = draft
             .as_ref()
             .map_or_else(|| text_input_value(node), |edit| &edit.draft);
-        let editor = self.editor.get_or_insert_with(|| TextEdit::at_end(text));
+        let editor = inactive
+            .as_mut()
+            .unwrap_or_else(|| self.editor.get_or_insert_with(|| TextEdit::at_end(text)));
+        editor.password_echo = None;
         let previous = editor.clone();
         let before = editor.selection_state(text);
-        let Some(edit) = editor.apply_mode(text, action, is_multiline_text_input(node.kind)) else {
-            self.break_text_edit_group();
+        let mask = node.text("input-mask").filter(|mask| !mask.is_empty());
+        let overwrite = node.boolean("overwrite-mode", false)
+            && matches!(source, EditSource::Keyboard | EditSource::Ime)
+            && matches!(action, EditAction::Insert(_))
+            && before.collapsed();
+        let Some(mut edit) = editor.apply_mode(
+            text,
+            action,
+            is_multiline_text_input(node.kind),
+            overwrite && mask.is_none(),
+        ) else {
+            if explicit {
+                *editor = previous;
+            } else if active {
+                self.break_text_edit_group();
+            }
             return false;
         };
+        if let Some(mask) = mask {
+            let delete = match action {
+                EditAction::Backspace | EditAction::BackspaceWord if before.collapsed() => {
+                    Some(xrack_runtime::MaskDelete::Backward)
+                }
+                EditAction::Delete | EditAction::DeleteWord if before.collapsed() => {
+                    Some(xrack_runtime::MaskDelete::Forward)
+                }
+                _ => None,
+            };
+            let range = edit.start..edit.start + edit.removed.len();
+            let Some(formatted) = xrack_runtime::InputMask::parse(mask).and_then(|mask| {
+                if overwrite {
+                    mask.overwrite(text, range.start, &edit.inserted)
+                } else {
+                    mask.edit(text, range, &edit.inserted, delete)
+                }
+            }) else {
+                *editor = previous;
+                if !explicit {
+                    editor.set_preedit(String::new(), None);
+                }
+                return false;
+            };
+            editor.place_caret(
+                &formatted.text,
+                TextPosition {
+                    offset: formatted.caret,
+                    trailing: !edit.inserted.is_empty(),
+                },
+                false,
+            );
+            edit = edit.replace_text(text, formatted.text);
+        }
         if edit.text == text {
-            self.break_text_edit_group();
+            if explicit {
+                *editor = previous;
+            } else if active {
+                self.break_text_edit_group();
+            }
             return false;
         }
         if draft.is_none()
             && (!node.allows_text_edit(&edit.text) || !commit(target, edit.text.clone()))
         {
             *editor = previous;
-            editor.set_preedit(String::new(), None);
+            if !explicit {
+                editor.set_preedit(String::new(), None);
+            }
             return false;
         }
-        self.painted_combo_completion = None;
-        self.dismissed_combo_draft = None;
         let group = Group::for_edit(source, action, before, &edit);
         let after = editor.selection_state(&edit.text);
+        if active
+            && !self.editor_window_inactive
+            && source == EditSource::Keyboard
+            && let EditAction::Insert(typed) = action
+        {
+            editor.password_echo = crate::password::PasswordEcho::new(
+                node,
+                &edit.text,
+                typed,
+                editor.caret(&edit.text),
+                now,
+            );
+        }
         let (next, record) = Record::new(edit, before, after);
-        if node.kind == "SearchField" {
-            self.search_query = (!next.is_empty()).then(|| next.clone());
-            Self::clear_choice(&mut self.choice);
+        if active {
+            self.painted_combo_completion = None;
+            self.dismissed_combo_draft = None;
+            if let Some(source) = &mut self.persistent_editor {
+                source.text.clone_from(&next);
+            }
+            if node.kind == "SearchField" {
+                self.search_query = (!next.is_empty()).then(|| next.clone());
+                Self::clear_choice(&mut self.choice);
+            }
         }
         if let Some(draft) = draft {
             draft.history.observe(&draft.draft);
@@ -6701,7 +7191,7 @@ impl Interaction {
         };
         let Some(node) = scene.interactive_at_path(&target.path).filter(|node| {
             (self.is_text_editor(node, target) || spin_editable(node))
-                && !node.boolean("read-only", false)
+                && !node.text_read_only()
                 && scene.row_key_at(&target.path) == target.row_key
         }) else {
             return false;
@@ -6753,6 +7243,9 @@ impl Interaction {
         self.editor
             .get_or_insert_with(|| TextEdit::at_end(text))
             .restore_selection(&next, selection);
+        if let Some(source) = &mut self.persistent_editor {
+            source.text.clone_from(&next);
+        }
         if node.kind == "SearchField" {
             self.search_query = (!next.is_empty()).then(|| next.clone());
             Self::clear_choice(&mut self.choice);
@@ -6781,7 +7274,7 @@ impl Interaction {
         let edit = self.editor.get_or_insert_with(|| TextEdit::at_end(&text));
         let previous = edit.clone();
         let Some(change) = edit
-            .apply_mode(&text, action, false)
+            .apply_mode(&text, action, false, false)
             .filter(|change| change.text != text)
         else {
             self.break_text_edit_group();
@@ -7316,6 +7809,23 @@ impl Interaction {
         if self.pointer != Some(point) {
             self.tooltip.source = TooltipSource::Pointer;
         }
+        if self.editor_press.as_ref().is_some_and(|press| {
+            let start = press.sample.0;
+            (point.x - start.x).hypot(point.y - start.y)
+                > crate::pointer_events::PRESS_AND_HOLD_SLOP
+        }) {
+            self.editor_press = None;
+        }
+        if let Some((start, target)) = self.press_origin.zip(self.pressed.as_ref())
+            && target.text_link_index().is_some()
+            && target
+                .node_in(scene)
+                .is_some_and(Node::selectable_styled_text)
+            && (point.x - start.x).hypot(point.y - start.y)
+                > crate::pointer_events::PRESS_AND_HOLD_SLOP
+        {
+            self.pointer_activation_claimed = true;
+        }
         self.pointer = Some(point);
         if self.wheel_steps.as_ref().is_some_and(|steps| {
             self.pointer_hover_target(scene, layout)
@@ -7555,6 +8065,8 @@ impl Interaction {
     }
 
     fn press(&mut self, proxy: Option<Target>, layout: Option<&LayoutNode>, preserve_focus: bool) {
+        self.text_selection_scroll = None;
+        self.editor_press = None;
         self.cancel_shortcut_sequence();
         self.reset_list_typeahead();
         self.reset_wheel_adjustment();
@@ -9512,6 +10024,123 @@ impl Interaction {
         })
     }
 
+    /// Page between the fixed month grids in a virtual list, leaving its date and row selection alone.
+    #[doc(hidden)]
+    pub fn calendar_page_key(
+        &mut self,
+        scene: &Node,
+        layout: &LayoutNode,
+        key: NavigationKey,
+    ) -> bool {
+        let step = match key {
+            NavigationKey::PageUp => -1,
+            NavigationKey::PageDown => 1,
+            _ => return false,
+        };
+        let Some(from) = self
+            .focused
+            .as_ref()
+            .filter(|target| valid(target, scene, layout))
+        else {
+            return false;
+        };
+        if !from
+            .node_in(scene)
+            .is_some_and(|node| node.kind == "MonthGrid" && node.boolean("fixed-month", false))
+        {
+            return false;
+        }
+        let Some((view, node, item, index, order)) = (0..from.path.len()).rev().find_map(|depth| {
+            let view = &from.path[..depth];
+            let node = scene
+                .interactive_at_path(view)
+                .filter(|node| node.kind == "ListView")?;
+            let item = layout
+                .at_path(view)
+                .filter(|item| item.enabled && item.scroll.is_some())?;
+            let list = node.list?;
+            let slot = from.path[depth];
+            let row = node
+                .child_at(slot)
+                .filter(|child| child.kind == "ListRow")?
+                .routing_row_key()?;
+            let index = list
+                .first_row
+                .checked_add(slot)
+                .filter(|&index| index < list.row_count)?;
+            let order = node.standard_list_stamp?;
+            (from.row_key == Some(row)).then_some((view, node, item, index, order))
+        }) else {
+            return false;
+        };
+        if let Some(index) = index
+            .checked_add_signed(step)
+            .filter(|&index| node.list.is_some_and(|list| index < list.row_count))
+        {
+            let page = CalendarPageFocus {
+                from: from.clone(),
+                view: Target::from_node(view.to_vec(), node, true, scene.row_key_at(view)),
+                viewport: node.viewport_handle.clone(),
+                order,
+                index,
+            };
+            self.reveal_row(&page.view.path, node, item, index);
+            self.calendar_page_focus = Some(page);
+        }
+        true
+    }
+
+    fn finish_calendar_page_focus(&mut self, scene: &Node, layout: &LayoutNode) {
+        let Some(page) = self
+            .calendar_page_focus
+            .take()
+            .filter(|page| self.focused.as_ref() == Some(&page.from))
+        else {
+            return;
+        };
+        // The view can recycle slots after scrolling. Resolve the destination only
+        // against the same model order that supplied the previous focused row.
+        let Some(view) = page.view.node_in(scene).filter(|view| {
+            view.kind == "ListView"
+                && view.viewport_handle == page.viewport
+                && view.standard_list_stamp == Some(page.order)
+        }) else {
+            return;
+        };
+        let Some(slot) = view
+            .list
+            .and_then(|list| page.index.checked_sub(list.first_row))
+        else {
+            return;
+        };
+        let Some(row) = view
+            .child_at(slot)
+            .filter(|row| row.kind == "ListRow")
+            .and_then(Node::routing_row_key)
+        else {
+            return;
+        };
+        let mut path = page.view.path;
+        let tail = &page.from.path[path.len() + 1..];
+        path.push(slot);
+        path.extend_from_slice(tail);
+        let Some(target) = self
+            .accessibility_target(scene, layout, &path)
+            .filter(|target| {
+                target.focusable
+                    && target.row_key == Some(row)
+                    && target.element_id() == page.from.element_id()
+                    && target.node_in(scene).is_some_and(|node| {
+                        node.kind == "MonthGrid" && node.boolean("fixed-month", false)
+                    })
+            })
+        else {
+            return;
+        };
+        self.set_focus(Some(target));
+        self.remember_focus_scope(scene, layout);
+    }
+
     pub fn calendar_key(
         &self,
         scene: &Node,
@@ -9525,15 +10154,14 @@ impl Interaction {
         }
         let item = layout.at_path(&target.path)?;
         let geometry = CalendarGeometry::for_layout(node, item);
-        let calendar = geometry.state;
+        let calendar = &geometry.state;
         let day = |delta| {
-            Some(
-                geometry
-                    .cursor()?
-                    .add_days(delta)
-                    .unwrap_or(if delta < 0 { Date::MIN } else { Date::MAX })
-                    .clamp(calendar.minimum, calendar.maximum),
-            )
+            let date = geometry
+                .cursor()?
+                .add_days(delta)
+                .unwrap_or(if delta < 0 { Date::MIN } else { Date::MAX })
+                .clamp(calendar.minimum, calendar.maximum);
+            calendar.selectable_from(date, delta > 0)
         };
         let month = |offset| {
             if geometry.has_header() {
@@ -9559,11 +10187,13 @@ impl Interaction {
                 } else {
                     calendar.month.last_of_month().min(calendar.maximum)
                 };
+                let date = calendar.selectable_from(date, key == NavigationKey::Home)?;
                 if date.first_of_month() != calendar.month {
                     return None;
                 }
                 CalendarAction::Select(date)
             }
+            NavigationKey::PageUp | NavigationKey::PageDown if calendar.fixed_month => return None,
             NavigationKey::PageUp => CalendarAction::Browse(month(-1)),
             NavigationKey::PageDown => CalendarAction::Browse(month(1)),
         };
@@ -9618,13 +10248,22 @@ impl Interaction {
             return None;
         }
         let geometry = CalendarGeometry::for_layout(node, layout.at_path(&target.path)?);
-        Some(ControlInput {
+        let date = geometry.cursor()?;
+        geometry.state.allows(date).then(|| ControlInput {
             path: target.path.clone(),
-            action: ControlAction::Calendar(geometry.day_action(geometry.cursor()?)),
+            action: ControlAction::Calendar(geometry.day_action(date)),
         })
     }
 
     pub fn pointer_release_target(&mut self) -> Option<Target> {
+        self.text_selection_scroll = None;
+        if self.pressed.is_some() {
+            self.last_editor_click = self.editor_press.take().filter(|press| {
+                self.pressed.as_ref() == Some(&press.target)
+                    && self.hovered.as_ref() == Some(&press.target)
+                    && !self.pointer_activation_claimed
+            });
+        }
         self.finish_button_contact(
             ButtonContactSource::Pointer,
             self.pressed.is_some() && self.pressed == self.hovered,
@@ -10717,6 +11356,7 @@ impl Interaction {
         self.page_focus.reconcile(scene);
         self.remember_focus_scope(scene, layout);
         self.reconcile_dialogs(scene, layout);
+        self.finish_calendar_page_focus(scene, layout);
         if self.overscroll.has_offset() {
             let scope = self.active_dialog(layout).unwrap_or_default();
             self.overscroll.reconcile(layout.at_path(scope));
@@ -10892,7 +11532,7 @@ impl Interaction {
                         let mut target = match node.kind {
                             "ListView" | "GridView" | "StandardListView" | "TableView"
                             | "TreeView" | "SwipeView" | "SwipeDelegate" | "StackView"
-                            | "GroupBox"
+                            | "GroupBox" | "Expander"
                                 if eligible(node, item) =>
                             {
                                 Target::from_node(path.to_vec(), node, true, None)
@@ -10938,6 +11578,23 @@ impl Interaction {
                 .at_path(path)
                 .is_some_and(|node| is_multiline_text_input(node.kind))
                 && scene.row_key_at(path) == *key
+        });
+        self.retained_selections.retain_mut(|selection| {
+            let source = &mut selection.source;
+            if !valid(&source.target, scene, layout)
+                && let Some(target) = moved_row_target(&source.target, scene, layout)
+            {
+                source.target = target;
+            }
+            let keep = valid(&source.target, scene, layout)
+                && source
+                    .target
+                    .node_in(scene)
+                    .is_some_and(|node| source.matches(node));
+            if !keep && let Some(handle) = &source.handle {
+                handle.clear_text_state();
+            }
+            keep
         });
         if self
             .choice
@@ -11434,8 +12091,14 @@ impl Interaction {
                 }
                 xrack_runtime::FocusAction::Text(command) => {
                     let node = scene.interactive_at_path(&target.path)?;
-                    if self.focused.as_ref() != Some(&target)
-                        || !(is_text_input(node.kind) || combo_editable(node))
+                    let focused = self.focused.as_ref().is_some_and(|current| {
+                        current == &target
+                            || node.selectable_styled_text()
+                                && current.path == target.path
+                                && current.row_key == target.row_key
+                    });
+                    if !focused
+                        || !self.is_text_editor(node, &target)
                         || self.editor.as_ref().is_some_and(TextEdit::is_composing)
                     {
                         return None;
@@ -11487,6 +12150,16 @@ impl Interaction {
                     trailing: false,
                 },
             ),
+            TextCommand::SelectWord => {
+                let word = TextEdit::word_at(&value, editor.position(&value), node.is_password());
+                (
+                    word.start,
+                    TextPosition {
+                        offset: word.end,
+                        trailing: true,
+                    },
+                )
+            }
             TextCommand::ClearSelection => {
                 let caret = editor.position(&value);
                 (caret.offset, caret)
@@ -11574,6 +12247,9 @@ impl Interaction {
         (node.standard_button_kind() == kind).then_some(target)
     }
     pub fn cancel_press(&mut self) {
+        self.text_selection_scroll = None;
+        self.editor_press = None;
+        self.last_editor_click = None;
         self.button_press_events.extend(
             self.button_contacts
                 .drain(..)

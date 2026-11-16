@@ -1,11 +1,71 @@
-use femtovg::{Align, Baseline, Color, FontId, Paint, TextContext, TextDecoration, TextMetrics};
+use femtovg::{
+    Align, Baseline, Canvas, Color, ErrorKind, FillRule, FontId, Paint, Path, TextContext,
+    TextDecoration, TextMetrics, renderer::WGPURenderer,
+};
 use fontdb::{Database, Family, Query, Style, Weight};
 use std::{cell::RefCell, collections::HashMap, ops::Range, rc::Rc, sync::Arc};
 use xrack_layout::{
-    LabelLayout, Rect, Size, StyledTextLayout, TextAlignment, TextAreaLayout, TextMeasurer,
-    VisualTextLine,
+    LabelLayout, Point, Rect, Size, StyledTextLayout, TextAlignment, TextAreaLayout, TextMeasurer,
+    VisualTextLine, text_editor_viewport,
 };
 use xrack_runtime::{EmbeddedFonts, LayoutDirection, Node, TextStyle, TextWrap};
+
+pub(crate) fn fill_selected_text(
+    canvas: &mut Canvas<WGPURenderer>,
+    clip: Rect,
+    origin: Point,
+    text: &str,
+    paint: &Paint,
+    spans: &[Range<f32>],
+    selected_color: Option<Color>,
+) -> Result<(), ErrorKind> {
+    let Some(selected_color) = selected_color.filter(|_| !spans.is_empty()) else {
+        return canvas
+            .fill_text(origin.x, origin.y, text, paint)
+            .map(|_| ());
+    };
+
+    // Draw the complete shaped line through disjoint clips. Splitting the
+    // string here would reshape ligatures and could reorder bidi fragments.
+    let mut normal = Path::new();
+    let mut selected = Path::new();
+    let right = clip.x + clip.width;
+    let mut left = clip.x;
+    for span in spans {
+        let start = (origin.x + span.start).max(left);
+        let end = (origin.x + span.end).min(right);
+        if end <= start {
+            continue;
+        }
+        if start > left {
+            normal.rect(left, clip.y, start - left, clip.height);
+        }
+        selected.rect(start, clip.y, end - start, clip.height);
+        left = end;
+    }
+    if selected.is_empty() {
+        return canvas
+            .fill_text(origin.x, origin.y, text, paint)
+            .map(|_| ());
+    }
+    if left < right {
+        normal.rect(left, clip.y, right - left, clip.height);
+    }
+    let mut fill = |path: &Path, paint: &Paint| {
+        canvas.save();
+        canvas.clip_path(path, FillRule::NonZero);
+        let result = canvas.fill_text(origin.x, origin.y, text, paint);
+        canvas.restore();
+        result.map(|_| ())
+    };
+    if !normal.is_empty() {
+        fill(&normal, paint)?;
+    }
+    if selected_color.a > 0.0 {
+        fill(&selected, &paint.clone().with_color(selected_color))?;
+    }
+    Ok(())
+}
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 struct FontRequest {
@@ -594,7 +654,7 @@ impl TextSystem {
         }
     }
 
-    fn shape_visual_line(&self, text: &str, paint: &Paint) -> VisualTextLine {
+    pub(crate) fn shape_visual_line(&self, text: &str, paint: &Paint) -> VisualTextLine {
         let metrics = self
             .context()
             .measure_text(0.0, 0.0, text, paint)
@@ -642,7 +702,7 @@ impl TextSystem {
         direction: Option<LayoutDirection>,
     ) -> TextAreaLayout {
         let alignment = TextAlignment::editor(node, direction);
-        let area = bounds.inset(node.length("padding").unwrap_or(6.0).max(0.0));
+        let area = text_editor_viewport(node, bounds);
         let size = self.font_size(node);
         let face = self.face(Some(node), TextStyle::default());
         let wrap = node.text_wrap();
@@ -739,12 +799,12 @@ impl TextMeasurer for TextSystem {
     }
 
     fn layout_styled_text(&mut self, node: &Node, available: Size) -> Option<StyledTextLayout> {
-        crate::styled_text::layout(self, node, available)
+        crate::styled_text::layout(self, node, available, true)
     }
 
     fn measure_label(&mut self, node: &Node, max_width: f32) -> Size {
         let available = Size::new(max_width, f32::INFINITY);
-        self.layout_styled_text(node, available).map_or_else(
+        crate::styled_text::layout(self, node, available, false).map_or_else(
             || {
                 self.label_layout(node, available, node.layout_direction())
                     .size

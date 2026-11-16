@@ -13,6 +13,17 @@ pub struct Time {
 }
 
 impl Time {
+    pub const MIN: Self = Self {
+        hour: 0,
+        minute: 0,
+        second: 0,
+    };
+    pub const MAX: Self = Self {
+        hour: 23,
+        minute: 59,
+        second: 59,
+    };
+
     pub fn new(hour: i64, minute: i64, second: i64) -> Option<Self> {
         let value = Self {
             hour,
@@ -20,6 +31,33 @@ impl Time {
             second,
         };
         (value == value.normalized()).then_some(value)
+    }
+
+    /// Parse an ASCII time of day, with optional seconds.
+    pub fn parse_iso(text: &str) -> Option<Self> {
+        let (hour, minute, second) = match text.as_bytes() {
+            [h1, h2, b':', m1, m2] => ((*h1, *h2), (*m1, *m2), (b'0', b'0')),
+            [h1, h2, b':', m1, m2, b':', s1, s2] => ((*h1, *h2), (*m1, *m2), (*s1, *s2)),
+            _ => return None,
+        };
+        let pair = |(left, right): (u8, u8)| {
+            (left.is_ascii_digit() && right.is_ascii_digit())
+                .then(|| i64::from(left - b'0') * 10 + i64::from(right - b'0'))
+        };
+        Self::new(pair(hour)?, pair(minute)?, pair(second)?)
+    }
+
+    pub fn format_iso(self, show_seconds: bool) -> String {
+        let time = self.normalized();
+        if show_seconds {
+            time.to_string()
+        } else {
+            format!("{:02}:{:02}", time.hour, time.minute)
+        }
+    }
+
+    pub fn in_range(self, minimum: Self, maximum: Self) -> bool {
+        self == self.normalized() && (minimum.normalized()..=maximum.normalized()).contains(&self)
     }
 
     pub fn normalized(self) -> Self {
@@ -57,6 +95,8 @@ fn numbers(values: impl Iterator<Item = i64>) -> TumblerItems {
 pub struct TimePickerOptions {
     use_24_hours: bool,
     show_seconds: bool,
+    minimum: Time,
+    maximum: Time,
 }
 
 impl TimePickerOptions {
@@ -64,13 +104,29 @@ impl TimePickerOptions {
         Self {
             use_24_hours,
             show_seconds,
+            minimum: Time::MIN,
+            maximum: Time::MAX,
         }
+    }
+
+    pub fn with_bounds(mut self, minimum: Time, maximum: Time) -> Self {
+        self.minimum = minimum.normalized();
+        self.maximum = maximum.normalized();
+        self
+    }
+
+    fn allows(self, time: Time) -> bool {
+        time.in_range(self.minimum, self.maximum)
     }
 
     pub fn from_node(node: &Node) -> Self {
         Self::new(
             node.boolean("use-24-hour-format", true),
             node.boolean("show-seconds", false),
+        )
+        .with_bounds(
+            node.time("minimum-time").unwrap_or(Time::MIN),
+            node.time("maximum-time").unwrap_or(Time::MAX),
         )
     }
 
@@ -230,11 +286,12 @@ impl TimePopupState {
             return Ok(());
         };
         let mut picker = Node::new("TimePicker", None);
-        TimePickerOptions::from_node(dialog).populate(&mut picker, draft);
+        let options = TimePickerOptions::from_node(dialog);
+        options.populate(&mut picker, draft);
         for wheel in &mut picker.children {
             self.0.stamp(wheel);
         }
-        append_picker_dialog(dialog, picker);
+        append_picker_dialog(dialog, picker, options.allows(draft));
         Ok(())
     }
 
@@ -301,7 +358,11 @@ impl TimePopupState {
         options: impl FnOnce() -> Result<TimePickerOptions, E>,
     ) -> Result<Option<Time>, E> {
         self.0.try_finish_input(dialog, role, input, |draft| {
-            Ok((options()? == TimePickerOptions::from_node(dialog)).then_some(draft))
+            let options = options()?;
+            Ok(
+                (options == TimePickerOptions::from_node(dialog) && options.allows(draft))
+                    .then_some(draft),
+            )
         })
     }
 
@@ -323,6 +384,63 @@ impl TimePopupState {
     }
 
     pub fn finish_with_role(&self, dialog: &Node, role: DialogRole) -> Option<Time> {
+        if role == DialogRole::Accept
+            && !TimePickerOptions::from_node(dialog).allows(self.0.current(dialog)?)
+        {
+            return None;
+        }
         self.0.finish(dialog, role)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_and_formats_strict_iso_times() {
+        assert_eq!(Time::parse_iso("00:00"), Some(Time::MIN));
+        assert_eq!(Time::parse_iso("23:59:59"), Some(Time::MAX));
+        assert_eq!(Time::parse_iso("13:07"), Time::new(13, 7, 0));
+        let time = Time::new(1, 2, 3).unwrap();
+        assert_eq!(time.format_iso(false), "01:02");
+        assert_eq!(time.format_iso(true), "01:02:03");
+        for invalid in [
+            "24:00",
+            "12:60",
+            "23:59:60",
+            "1:23",
+            "01:2",
+            "01:23:",
+            "01:23Z",
+            " 01:23",
+            "１２:３４",
+            "01:2é",
+        ] {
+            assert!(Time::parse_iso(invalid).is_none(), "{invalid}");
+        }
+        assert!(time.in_range(Time::MIN, time));
+        assert!(!time.in_range(Time::MAX, Time::MIN));
+    }
+
+    #[test]
+    fn time_popup_keeps_an_out_of_range_draft_and_disables_confirmation() {
+        let draft = Time::new(15, 30, 12).unwrap();
+        let earlier = Time::new(15, 0, 0).unwrap();
+        let state = TimePopupState::default();
+        let dialog = |maximum: Time| {
+            let mut node = Node::new("TimePickerPopup", None);
+            node.properties.insert("open", true.into());
+            node.properties.insert("maximum-time", maximum.into());
+            node
+        };
+        let mut disabled = dialog(earlier);
+        state.populate(&mut disabled, || draft);
+        assert!(!disabled.children[1].children[1].boolean("enabled", true));
+        assert_eq!(state.finish(&disabled), None);
+        let mut enabled = dialog(draft);
+        state.populate(&mut enabled, || Time::MIN);
+        assert!(enabled.children[1].children[1].boolean("enabled", true));
+        assert_eq!(state.finish(&enabled), Some(draft));
     }
 }

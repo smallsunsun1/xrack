@@ -3922,6 +3922,202 @@ fn combo_text_accepts_the_first_match_and_preserves_a_newer_draft() {
 }
 
 #[test]
+fn combo_acceptance_resolves_inserted_rows_after_the_callback_in_both_backends() {
+    use selection_ui::ComboAppendDemo;
+    use xrack_runtime::{ControlAction, combo_index, combo_text, text_input_value};
+
+    let preview = xrack_compiler::prepare_preview(
+        include_str!("../examples/selection/selection.xr"),
+        "examples/selection/selection.xr",
+        Default::default(),
+    )
+    .unwrap();
+    let program = Program::from_module(&preview.module).unwrap();
+
+    for (text, pin, rewrite, replace, before, after, expected_draft) in [
+        ("新标签", false, false, false, -1, 2, "新标签"),
+        ("新标签", false, false, true, -1, 1, "新标签"),
+        ("新标签", true, false, false, -1, 0, "新标签"),
+        ("新标签", false, true, false, -1, -1, "待确认"),
+        ("优先", false, false, false, 1, 1, "优先"),
+    ] {
+        let mut actual = program.create("ComboAppendDemo").unwrap();
+        let mut aot = ComboAppendDemo::new();
+        actual.set("pin-choice", pin.into()).unwrap();
+        actual.set("rewrite-draft", rewrite.into()).unwrap();
+        actual.set("replace-model", replace.into()).unwrap();
+        aot.set_pin_choice(pin);
+        aot.set_rewrite_draft(rewrite);
+        aot.set_replace_model(replace);
+        for ui in [&mut actual as &mut dyn Component, &mut aot] {
+            assert!(ui.edit_at(&ui.render_shared(), &[1], text.into()));
+            assert!(ui.control_at(&ui.render_shared(), &[1], ControlAction::AcceptComboText));
+            let scene = ui.render_shared();
+            let node = scene.find("labels-box").unwrap();
+            assert_eq!(combo_index(node), usize::try_from(after).ok());
+            assert_eq!(text_input_value(node), expected_draft);
+            if !pin && !rewrite {
+                assert_eq!(combo_text(node), text);
+            }
+        }
+        assert_eq!(aot.get_label_before(), before);
+        assert_eq!(actual.get("label-before"), Ok(before.into()));
+        assert_eq!(aot.get_label_after(), after);
+        assert_eq!(actual.get("label-after"), Ok(after.into()));
+        assert_eq!(actual.take_error(), None);
+    }
+
+    for (enabled, expected_key, expected_index, label) in
+        [(true, 91_i64, 3, "新设备"), (false, 1_i64, 0, "设备 A")]
+    {
+        let mut actual = program.create("ComboAppendDemo").unwrap();
+        let mut aot = ComboAppendDemo::new();
+        actual.set("enable-new-record", enabled.into()).unwrap();
+        aot.set_enable_new_record(enabled);
+        for ui in [&mut actual as &mut dyn Component, &mut aot] {
+            assert!(ui.edit_at(&ui.render_shared(), &[4], "新设备".into()));
+            assert!(ui.control_at(&ui.render_shared(), &[4], ControlAction::AcceptComboText));
+            let scene = ui.render_shared();
+            let node = scene.find("entries-box").unwrap();
+            assert_eq!(combo_index(node), Some(expected_index));
+            assert_eq!(combo_text(node), label);
+            assert_eq!(text_input_value(node), "新设备");
+        }
+        assert_eq!(aot.get_entry_before(), 1);
+        assert_eq!(actual.get("entry-before"), Ok(1_i64.into()));
+        assert_eq!(aot.get_entry_after(), expected_key);
+        assert_eq!(actual.get("entry-after"), Ok(expected_key.into()));
+        assert_eq!(aot.get_typed_selections(), 0);
+        assert_eq!(actual.get("typed-selections"), Ok(0_i64.into()));
+        assert_eq!(actual.take_error(), None);
+    }
+}
+
+#[test]
+fn editable_record_combo_finishes_after_its_commit_callbacks_in_both_backends() {
+    use selection_ui::ComboLifecycleDemo;
+    use std::time::Instant;
+    use xrack_layout::{EditAction, EditSource, FocusObservers, Interaction, Size};
+    use xrack_runtime::ControlAction::{AcceptComboText, Select};
+
+    fn focus(
+        ui: &mut impl Component,
+        input: &mut Interaction,
+        observers: &mut FocusObservers,
+        path: &[usize],
+    ) {
+        let (scene, layout) = prepare_list(ui, input, Size::new(470.0, 288.0));
+        let target = input.accessibility_target(&scene, &layout, path).unwrap();
+        input.focus_target(&scene, &layout, target);
+        for event in observers.sync(input, &scene, &layout, true) {
+            event.apply(ui, &scene);
+        }
+    }
+
+    fn edit(ui: &mut impl Component, input: &mut Interaction, text: &str) {
+        let scene = ui.render_shared();
+        assert!(input.edit_text(
+            ui,
+            &scene,
+            EditAction::ReplaceAll(text),
+            EditSource::Atomic,
+            Instant::now(),
+        ));
+    }
+
+    fn drive(ui: &mut impl Component) {
+        let device = [1];
+        let other = [2];
+        let mode = [3];
+        let mut input = Interaction::default();
+        let mut observers = FocusObservers::default();
+
+        focus(ui, &mut input, &mut observers, &device);
+        edit(ui, &mut input, "CD456");
+        assert_eq!(
+            ui.render_shared().find("device").unwrap().text("edit-text"),
+            Some("CD-456")
+        );
+        assert!(ui.control_at(&ui.render_shared(), &device, AcceptComboText));
+        focus(ui, &mut input, &mut observers, &other);
+        assert_eq!(
+            ui.render_shared().find("totals").unwrap().text("text"),
+            Some("结束编辑 1 次")
+        );
+
+        focus(ui, &mut input, &mut observers, &device);
+        edit(ui, &mut input, "E");
+        assert!(!ui.control_at(&ui.render_shared(), &device, AcceptComboText));
+        focus(ui, &mut input, &mut observers, &other);
+        assert_eq!(
+            ui.render_shared().find("result").unwrap().text("text"),
+            Some("待补全 E")
+        );
+
+        focus(ui, &mut input, &mut observers, &device);
+        edit(ui, &mut input, "AB123");
+        assert!(ui.control_at(&ui.render_shared(), &device, Select(2)));
+        focus(ui, &mut input, &mut observers, &other);
+        assert_eq!(
+            ui.render_shared().find("result").unwrap().text("text"),
+            Some("待补全 库存归档")
+        );
+
+        focus(ui, &mut input, &mut observers, &device);
+        edit(ui, &mut input, "XY987");
+        assert!(ui.dispatch_at(&ui.render_shared(), &mode, "clicked"));
+        focus(ui, &mut input, &mut observers, &device);
+        assert!(ui.dispatch_at(&ui.render_shared(), &mode, "clicked"));
+        focus(ui, &mut input, &mut observers, &other);
+        assert_eq!(
+            ui.render_shared().find("totals").unwrap().text("text"),
+            Some("结束编辑 3 次")
+        );
+    }
+
+    let preview = xrack_compiler::prepare_preview(
+        include_str!("../examples/selection/selection.xr"),
+        "examples/selection/selection.xr",
+        Default::default(),
+    )
+    .unwrap();
+    let mut actual = Program::from_module(&preview.module)
+        .unwrap()
+        .create("ComboLifecycleDemo")
+        .unwrap();
+    let mut aot = ComboLifecycleDemo::new();
+    drive(&mut actual);
+    drive(&mut aot);
+    let trace = "value 22;accept CD-456;finish CD-456 valid;finish E draft;selected 库存归档;value 33;finish 库存归档 draft;";
+    assert_eq!(aot.get_trace(), trace);
+    assert_eq!(actual.get("trace"), Ok(trace.to_owned().into()));
+    assert_eq!(aot.get_selection(), 33);
+    assert_eq!(actual.get("selection"), Ok(33_i64.into()));
+    // A selection may still use the model snapshot after an app replaces the draft.
+    // The earlier user edit must not finish using that programmatic replacement.
+    assert!(actual.edit_at(&actual.render_shared(), &[1], "CD-456".into()));
+    assert!(aot.edit_at(&aot.render_shared(), &[1], "CD-456".into()));
+    let before_actual = actual.render_shared();
+    let before_aot = aot.render_shared();
+    actual.set("draft", "ZZ-123".to_owned().into()).unwrap();
+    aot.set_draft("ZZ-123".into());
+    assert!(actual.control_at(&before_actual, &[1], Select(0)));
+    assert!(aot.control_at(&before_aot, &[1], Select(0)));
+    assert_eq!(aot.get_finishes(), 3);
+    assert_eq!(actual.get("finishes"), Ok(3_i64.into()));
+
+    let actual_scene = actual.render_shared();
+    let aot_scene = aot.render_shared();
+    actual.set("pattern", "9999".to_owned().into()).unwrap();
+    aot.set_pattern("9999".into());
+    assert!(!actual.edit_at(&actual_scene, &[1], "CD-456".into()));
+    assert!(!aot.edit_at(&aot_scene, &[1], "CD-456".into()));
+    assert!(!aot.get_valid());
+    assert_eq!(actual.get("valid"), Ok(false.into()));
+    assert_eq!(actual.take_error(), None);
+}
+
+#[test]
 fn combo_callbacks_observe_selection_and_explicit_edit_text_in_order() {
     use xrack_runtime::ControlAction::{AcceptComboText, Select};
 
@@ -22811,21 +23007,32 @@ fn swipe_drag_prepares_only_the_requested_neighbor_and_commits_from_the_drag_pos
         assert!(input.is_focused(&[1, 1, 0, 2]));
 
         let now = released + Duration::from_millis(240);
-        let halfway = Point {
-            x: start.x - 244.0,
+        // Release after a quick movement well below the normal distance threshold.
+        let first_sample = Point {
+            x: start.x - 22.0,
+            y: start.y,
+        };
+        let short_flick = Point {
+            x: start.x - 49.0,
             y: start.y,
         };
         assert!(input.begin_scroll_gesture(&scene, &frame, start, now, ScrollGestureKind::Touch));
         assert!(input.move_scroll_gesture(
             &scene,
             &frame,
-            halfway,
-            now + Duration::from_millis(18)
+            first_sample,
+            now + Duration::from_millis(10)
+        ));
+        assert!(input.move_scroll_gesture(
+            &scene,
+            &frame,
+            short_flick,
+            now + Duration::from_millis(24)
         ));
         let (dragged, drag_frame) = prepare_list(ui, &input, size);
-        let committed = now + Duration::from_millis(54);
+        let committed = now + Duration::from_millis(30);
         let action = input
-            .end_scroll_gesture(&dragged, &drag_frame, halfway, committed)
+            .end_scroll_gesture(&dragged, &drag_frame, short_flick, committed)
             .control
             .unwrap();
         assert_eq!(action.action, ControlAction::Select(2));
@@ -22839,7 +23046,8 @@ fn swipe_drag_prepares_only_the_requested_neighbor_and_commits_from_the_drag_pos
             committed,
             Some(&input),
         );
-        assert_eq!(transitions.at(&[1]).unwrap().incoming_offset(), 0.5);
+        let incoming = transitions.at(&[1]).unwrap().incoming_offset();
+        assert!((incoming - (1.0 - 49.0 / 488.0)).abs() < 1e-6);
         assert!(input.is_focused(&[1, 2, 0, 1]));
         assert!(
             after
@@ -31463,6 +31671,277 @@ fn numeric_submission_applies_live_range_and_precision_in_both_backends() {
 }
 
 #[test]
+fn masked_edit_normalizes_paste_and_ime_and_keeps_validation_live_in_both_backends() {
+    use form_ui::InputMaskDemo;
+    use std::time::Instant;
+    use xrack_layout::{EditAction, EditSource, Interaction, Size, TextPosition};
+
+    fn drive(ui: &mut impl Component) {
+        let size = Size::new(440.0, 320.0);
+        let date = [0, 1];
+        let device = [0, 3];
+        let mut input = Interaction::default();
+        let (scene, frame) = prepare_list(ui, &input, size);
+        let target = input.accessibility_target(&scene, &frame, &date).unwrap();
+        input.focus_target(&scene, &frame, target);
+        let now = Instant::now();
+        assert!(input.edit_text(
+            ui,
+            &scene,
+            EditAction::Insert("2026"),
+            EditSource::Keyboard,
+            now
+        ));
+        let scene = ui.render_shared();
+        assert_eq!(scene.at_path(&date).unwrap().text("text"), Some("2026"));
+        assert!(!ui.dispatch_at(&scene, &date, "accepted"));
+        assert!(input.edit_text(
+            ui,
+            &scene,
+            EditAction::Insert("1117"),
+            EditSource::Atomic,
+            now
+        ));
+        let scene = ui.render_shared();
+        assert_eq!(
+            scene.at_path(&date).unwrap().text("text"),
+            Some("2026-11-17")
+        );
+
+        let editor = input.editor.as_mut().unwrap();
+        editor.place_caret(
+            "2026-11-17",
+            TextPosition {
+                offset: 5,
+                trailing: false,
+            },
+            false,
+        );
+        assert!(input.edit_text(ui, &scene, EditAction::Backspace, EditSource::Keyboard, now));
+        let scene = ui.render_shared();
+        assert_eq!(
+            scene.at_path(&date).unwrap().text("text"),
+            Some("2021-11-7")
+        );
+        assert!(!ui.dispatch_at(&scene, &date, "accepted"));
+        assert!(input.replay_text_edit(ui, &scene, false));
+        let (scene, frame) = prepare_list(ui, &input, size);
+        assert_eq!(
+            scene.at_path(&date).unwrap().text("text"),
+            Some("2026-11-17")
+        );
+        assert_eq!(input.editor.as_ref().unwrap().caret("2026-11-17"), 5);
+        assert!(!input.edit_text(ui, &scene, EditAction::Insert("!"), EditSource::Atomic, now));
+        assert_eq!(input.editor.as_ref().unwrap().caret("2026-11-17"), 5);
+        assert!(ui.dispatch_at(&scene, &date, "accepted"));
+        assert!(!scene.find("send").unwrap().boolean("enabled", true));
+
+        let target = input.accessibility_target(&scene, &frame, &device).unwrap();
+        input.focus_target(&scene, &frame, target);
+        input.sync_editor(&scene);
+        assert!(input.begin_text_composition(&scene, 42));
+        assert!(input.update_text_composition(&scene, 42, "e\u{301}中".into()));
+        assert_eq!(
+            ui.render_shared().at_path(&device).unwrap().text("text"),
+            Some("")
+        );
+        assert_eq!(input.finish_text_composition(&scene, 42), (true, true));
+        assert!(input.edit_text(
+            ui,
+            &scene,
+            EditAction::Insert("e\u{301}中017"),
+            EditSource::Atomic,
+            now
+        ));
+        let scene = ui.render_shared();
+        assert_eq!(
+            scene.at_path(&device).unwrap().text("text"),
+            Some("e\u{301}中-017")
+        );
+        assert!(scene.find("send").unwrap().boolean("enabled", false));
+    }
+
+    let mut interpreted = interpret_form_fixture("InputMaskDemo");
+    let mut compiled = InputMaskDemo::new();
+    drive(&mut interpreted);
+    drive(&mut compiled);
+    assert_eq!(compiled.get_submitted(), "2026-11-17");
+    assert_eq!(
+        interpreted.get("submitted"),
+        Ok("2026-11-17".to_owned().into())
+    );
+    let stale = interpreted.render_shared();
+    let previous = compiled.render_shared();
+    interpreted
+        .set("date-mask", "99/99/9999".to_owned().into())
+        .unwrap();
+    compiled.set_date_mask("99/99/9999".into());
+    assert!(!interpreted.edit_at(&stale, &[0, 1], "2027-01-01".into()));
+    assert!(!compiled.edit_at(&previous, &[0, 1], "2027-01-01".into()));
+    assert!(!interpreted.dispatch_at(&stale, &[0, 1], "accepted"));
+    assert!(!compiled.dispatch_at(&previous, &[0, 1], "accepted"));
+    assert_eq!(interpreted.get("date-ready"), Ok(false.into()));
+    assert!(!compiled.get_date_ready());
+    assert_eq!(interpreted.take_error(), None);
+}
+
+#[test]
+fn editing_finished_reports_a_live_draft_once_per_effective_edit_in_both_backends() {
+    use form_ui::EditingLifecycleDemo;
+    use std::time::Instant;
+    use xrack_layout::{EditAction, EditSource, FocusObservers, Interaction, Size};
+
+    fn drive(ui: &mut impl Component) {
+        let mut input = Interaction::default();
+        let mut observers = FocusObservers::default();
+        let now = Instant::now();
+        let code = [0, 1];
+        let note = [0, 2];
+        let button = [0, 3];
+        fn focus(
+            ui: &mut impl Component,
+            input: &mut Interaction,
+            observers: &mut FocusObservers,
+            path: &[usize],
+        ) {
+            let (scene, frame) = prepare_list(ui, input, Size::new(488.0, 386.0));
+            let target = input.accessibility_target(&scene, &frame, path).unwrap();
+            input.focus_target(&scene, &frame, target);
+            for event in observers.sync(input, &scene, &frame, true) {
+                event.apply(ui, &scene);
+            }
+        }
+
+        let change = |ui: &mut _, input: &mut Interaction, text: &str| {
+            let scene = Component::render_shared(ui);
+            input.edit_text(
+                ui,
+                &scene,
+                EditAction::ReplaceAll(text),
+                EditSource::Atomic,
+                now,
+            )
+        };
+
+        focus(ui, &mut input, &mut observers, &code);
+        assert!(change(ui, &mut input, "123456"));
+        assert!(ui.dispatch_at(&ui.render_shared(), &code, "accepted"));
+        assert_eq!(
+            ui.render_shared().find("result").unwrap().text("text"),
+            Some("已保存 123-456")
+        );
+        focus(ui, &mut input, &mut observers, &button);
+        assert!(
+            ui.render_shared()
+                .find("totals")
+                .unwrap()
+                .text("text")
+                .unwrap()
+                .contains("结束编辑 1 次")
+        );
+
+        focus(ui, &mut input, &mut observers, &code);
+        assert!(change(ui, &mut input, "12"));
+        assert!(!ui.dispatch_at(&ui.render_shared(), &code, "accepted"));
+        focus(ui, &mut input, &mut observers, &note);
+        assert_eq!(
+            ui.render_shared().find("result").unwrap().text("text"),
+            Some("待补全 12")
+        );
+        assert!(change(ui, &mut input, "a\nbc"));
+        focus(ui, &mut input, &mut observers, &code);
+        assert_eq!(
+            ui.render_shared().find("result").unwrap().text("text"),
+            Some("已保存 a\nbc")
+        );
+
+        assert!(change(ui, &mut input, "321"));
+        let scene = ui.render_shared();
+        assert!(input.replay_text_edit(ui, &scene, false));
+        focus(ui, &mut input, &mut observers, &button);
+        assert!(
+            ui.render_shared()
+                .find("totals")
+                .unwrap()
+                .text("text")
+                .unwrap()
+                .contains("结束编辑 3 次")
+        );
+
+        focus(ui, &mut input, &mut observers, &code);
+        assert!(change(ui, &mut input, "456789"));
+        assert!(ui.dispatch_at(&ui.render_shared(), &button, "clicked"));
+        focus(ui, &mut input, &mut observers, &button);
+        assert_eq!(
+            ui.render_shared().find("code-field").unwrap().text("text"),
+            Some("987-654")
+        );
+    }
+
+    let mut actual = interpret_form_fixture("EditingLifecycleDemo");
+    let mut aot = EditingLifecycleDemo::new();
+    drive(&mut actual);
+    drive(&mut aot);
+    let trace = "accept;code:valid;code:draft;note:valid;";
+    assert_eq!(aot.get_trace(), trace);
+    assert_eq!(actual.get("trace"), Ok(trace.to_owned().into()));
+    assert_eq!(aot.get_finishes(), 3);
+    assert_eq!(actual.get("finishes"), Ok(3_i64.into()));
+    assert_eq!(actual.take_error(), None);
+}
+
+#[test]
+fn editor_commands_preserve_word_edits_and_history_in_both_backends() {
+    use form_ui::EditorSelectionDemo;
+    use std::time::Instant;
+    use xrack_layout::{EditAction, EditSource, Interaction, Size};
+
+    fn drive(ui: &mut impl Component, text: &str) {
+        let mut input = Interaction::default();
+        let path = [0, 0];
+        let (scene, frame) = prepare_list(ui, &input, Size::new(456.0, 330.0));
+        let target = input.accessibility_target(&scene, &frame, &path).unwrap();
+        input.focus_target(&scene, &frame, target);
+        input.sync_editor(&scene);
+        let now = Instant::now();
+        for action in [
+            EditAction::WordLeft(false),
+            EditAction::WordLeft(false),
+            EditAction::WordRight(true),
+        ] {
+            assert!(!input.edit_text(ui, &scene, action, EditSource::Keyboard, now));
+        }
+        assert_eq!(&text[input.editor.as_ref().unwrap().selection(text)], "👩‍💻");
+        assert!(input.edit_text(
+            ui,
+            &scene,
+            EditAction::DeleteWord,
+            EditSource::Keyboard,
+            now
+        ));
+        let updated = ui.render_shared();
+        assert_eq!(
+            updated.at_path(&path).unwrap().text("text"),
+            Some("e\u{301}clair   猫")
+        );
+        assert!(input.replay_text_edit(ui, &updated, false));
+        assert_eq!(
+            ui.render_shared().at_path(&path).unwrap().text("text"),
+            Some(text)
+        );
+        assert_eq!(&text[input.editor.as_ref().unwrap().selection(text)], "👩‍💻");
+    }
+    let text = "e\u{301}clair  👩‍💻 猫";
+    let mut actual = interpret_form_fixture("EditorSelectionDemo");
+    let mut aot = EditorSelectionDemo::new();
+    actual.set("document", text.to_owned().into()).unwrap();
+    aot.set_document(text.into());
+    drive(&mut actual, text);
+    drive(&mut aot, text);
+    assert_eq!(actual.take_error(), None);
+}
+
+#[test]
 fn text_selection_bindings_follow_the_active_editor_in_both_backends() {
     use form_ui::EditorSelectionDemo;
     use std::time::Instant;
@@ -31479,7 +31958,7 @@ fn text_selection_bindings_follow_the_active_editor_in_both_backends() {
         let _context = queue.enter();
         let mut input = Interaction::default();
         let mut observations = FocusObservers::default();
-        let size = Size::new(456.0, 220.0);
+        let size = Size::new(456.0, 330.0);
 
         assert_eq!(read(ui), (0, 0, 0, String::new()));
         let (scene, layout) = prepare_list(ui, &input, size);

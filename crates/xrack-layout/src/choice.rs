@@ -269,9 +269,15 @@ impl ComboGeometry {
             );
             crate::linear::measure_replacement_content(content, available, text)
         });
+        let (entry_width, vertical_padding) = if xrack_runtime::combo_editable(node) {
+            let padding = crate::linear::Padding::for_editor(node).size();
+            (116.0 + padding.width, padding.height)
+        } else {
+            (128.0, 10.0)
+        };
         Size::new(
-            trigger + 128.0_f32.max(content.width + Self::LABEL_INSET),
-            (text.font_size(node) * 1.4 + 10.0)
+            trigger + entry_width.max(content.width + Self::LABEL_INSET),
+            (text.font_size(node) * 1.4 + vertical_padding)
                 .max(34.0)
                 .max(indicator.map_or(0.0, |size| size.height + 8.0))
                 .max(content.height),

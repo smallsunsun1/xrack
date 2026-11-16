@@ -232,6 +232,89 @@ fn a_deferred_focus_command_is_consumed_with_an_unchanged_scene() {
 }
 
 #[test]
+fn native_text_replacements_keep_focus_and_leave_ime_preedit_intact() {
+    use xrack_layout::{TextMeasurer, layout};
+    use xrack_runtime::{FocusCommandMethod, FocusHandle, Length};
+
+    struct View {
+        handle: FocusHandle,
+        text: String,
+    }
+    impl Component for View {
+        fn render(&self) -> Node {
+            let mut input = Node::new("LineEdit", Some("editor"));
+            input.focus_handle = Some(self.handle.clone());
+            input.properties.insert("width", Length(180.0).into());
+            input.properties.insert("height", Length(34.0).into());
+            input.properties.insert("text", self.text.clone().into());
+            input
+        }
+        fn dispatch(&mut self, _: &str, _: &str) -> bool {
+            false
+        }
+        fn edit_at(&mut self, _: &Node, path: &[usize], text: String) -> bool {
+            assert!(path.is_empty());
+            self.text = text;
+            true
+        }
+    }
+    struct Measure;
+    impl TextMeasurer for Measure {
+        fn measure(&mut self, _: &str, _: f32, _: f32) -> Size {
+            Size::default()
+        }
+    }
+    let handle = FocusHandle::default();
+    let mut app = Application::new(
+        View {
+            handle: handle.clone(),
+            text: "ab".into(),
+        },
+        LocalExecutor::new(|| {}),
+    );
+    let frame = Rc::new(layout(&app.scene, Size::new(200.0, 90.0), &mut Measure));
+    app.layout = Some(frame.clone());
+    {
+        let _focus = app.focus_requests.enter();
+        handle.request_text_edit(
+            FocusCommandMethod::AppendText
+                .replacement(&[], "c".into())
+                .unwrap(),
+        );
+        handle.request_text_edit(
+            FocusCommandMethod::ReplaceText
+                .replacement(&[1, 3], "界".into())
+                .unwrap(),
+        );
+    }
+    app.refresh_after_update(false);
+    assert_eq!(app.component.text, "a界");
+    assert!(app.input.focused.is_none());
+    app.input.accessibility_focus(
+        app.input
+            .accessibility_target(&app.scene, &frame, &[])
+            .unwrap(),
+    );
+    app.input.sync_editor(&app.scene);
+    app.input
+        .editor
+        .as_mut()
+        .unwrap()
+        .set_preedit("输入中".into(), None);
+    {
+        let _focus = app.focus_requests.enter();
+        handle.request_text_edit(
+            FocusCommandMethod::ClearText
+                .replacement(&[], String::new())
+                .unwrap(),
+        );
+    }
+    app.apply_focus_and_text_requests();
+    assert_eq!(app.component.text, "a界");
+    assert_eq!(app.input.editor.as_ref().unwrap().preedit, "输入中");
+}
+
+#[test]
 fn a_deferred_scroll_command_is_consumed_with_an_unchanged_scene() {
     use xrack_layout::{TextMeasurer, layout};
     use xrack_runtime::{Length, ScrollAction, ViewportHandle};

@@ -353,7 +353,7 @@ fn collect_dependencies<'m>(
                 dependencies.push(qualify(owner, "@control:layout-direction"));
             }
         }
-        "xr.text_accepts" => {
+        "xr.text_accepts" | "xr.text_validity" => {
             dependencies.extend(
                 xrack_syntax::builtins::TEXT_SUBMISSION_INPUTS
                     .iter()

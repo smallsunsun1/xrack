@@ -1,13 +1,49 @@
-use crate::{EditAction, Point, Rect, TextAlignment, TextEdit, TextPosition, VisualTextLine};
-use std::{ops::Range, sync::Arc};
+use crate::{
+    EditAction, Point, Rect, TextAlignment, TextEdit, TextPosition, VisualTextLine,
+    selection_drag_axis,
+};
+use std::{ops::Range, sync::Arc, time::Duration};
 use unicode_bidi::{BidiInfo, Direction, get_base_direction};
 use unicode_segmentation::UnicodeSegmentation;
-use xrack_runtime::TextWrap;
+use xrack_runtime::{Node, TextWrap, combo_editable, is_text_input};
+
+/// Bounds available for text, within the entry part of a compound control.
+#[doc(hidden)]
+pub fn text_editor_viewport(node: &Node, bounds: Rect) -> Rect {
+    use crate::linear::Padding;
+    if is_text_input(node.kind) || combo_editable(node) {
+        return Padding::for_editor(node).inner_rect(bounds);
+    }
+    // Numeric steppers and inline table cells use the padding of their host.
+    let inset = node
+        .length("padding")
+        .unwrap_or(Padding::EDITOR_DEFAULT)
+        .max(0.0);
+    let x = inset.min(bounds.width * 0.5);
+    Rect::new(
+        bounds.x + x,
+        bounds.y,
+        bounds.width - 2.0 * x,
+        bounds.height,
+    )
+}
+
+#[doc(hidden)]
+pub fn text_editor_line_bounds(viewport: Rect, line_height: f32) -> Rect {
+    Rect::new(
+        viewport.x,
+        viewport.y + ((viewport.height - line_height) * 0.5).max(0.0),
+        viewport.width,
+        line_height.min(viewport.height),
+    )
+}
 
 #[derive(Clone, Copy, Debug)]
 pub enum TextAreaMotion {
     Left,
     Right,
+    WordLeft,
+    WordRight,
     Up,
     Down,
     Home,
@@ -17,6 +53,15 @@ pub enum TextAreaMotion {
 }
 
 impl TextAreaMotion {
+    #[doc(hidden)]
+    pub fn from_word_action(action: EditAction<'_>) -> Option<(Self, bool)> {
+        match action {
+            EditAction::WordLeft(selecting) => Some((Self::WordLeft, selecting)),
+            EditAction::WordRight(selecting) => Some((Self::WordRight, selecting)),
+            _ => None,
+        }
+    }
+
     pub fn from_navigation(key: crate::NavigationKey, shortcut: bool) -> Option<Self> {
         use crate::NavigationKey;
         Some(match key {
@@ -244,6 +289,40 @@ impl TextAreaLayout {
         }
     }
 
+    /// Scroll toward a captured selection drag and hit-test at the visible edge.
+    #[doc(hidden)]
+    pub fn selection_drag(
+        &self,
+        point: Point,
+        scroll: Point,
+        elapsed: Duration,
+    ) -> (Point, Point, bool) {
+        let (x, scroll_x, horizontal) = selection_drag_axis(
+            point.x,
+            self.area.x,
+            self.area.width,
+            scroll.x,
+            self.max_scroll.x,
+            elapsed,
+        );
+        let (y, scroll_y, vertical) = selection_drag_axis(
+            point.y,
+            self.area.y,
+            self.area.height,
+            scroll.y,
+            self.max_scroll.y,
+            elapsed,
+        );
+        (
+            Point { x, y },
+            Point {
+                x: scroll_x,
+                y: scroll_y,
+            },
+            horizontal || vertical,
+        )
+    }
+
     pub fn keep_visible(&self, scroll: Point, caret: Point) -> Point {
         self.clamp_scroll(Point {
             x: scroll.x.max(caret.x + 1.0 - self.area.width).min(caret.x),
@@ -352,17 +431,23 @@ impl TextAreaLayout {
         let line = self.line_index(caret);
         let range = &self.lines[line];
         match motion {
-            TextAreaMotion::Left | TextAreaMotion::Right => {
-                let right = matches!(motion, TextAreaMotion::Right);
-                let Some(visual) = self.visual_line(line) else {
-                    editor.apply_multiline(
-                        text,
-                        if right {
-                            EditAction::Right(selecting)
-                        } else {
-                            EditAction::Left(selecting)
-                        },
-                    );
+            TextAreaMotion::Left
+            | TextAreaMotion::Right
+            | TextAreaMotion::WordLeft
+            | TextAreaMotion::WordRight => {
+                let right = matches!(motion, TextAreaMotion::Right | TextAreaMotion::WordRight);
+                let word = matches!(motion, TextAreaMotion::WordLeft | TextAreaMotion::WordRight);
+                let fallback = match (word, right) {
+                    (true, true) => EditAction::WordRight(selecting),
+                    (true, false) => EditAction::WordLeft(selecting),
+                    (false, true) => EditAction::Right(selecting),
+                    (false, false) => EditAction::Left(selecting),
+                };
+                let Some(visual) = self
+                    .visual_line(line)
+                    .filter(|visual| !word || visual.graphemes().iter().any(|cell| cell.rtl))
+                else {
+                    editor.apply_multiline(text, fallback);
                     return;
                 };
                 let selection = editor.selection(text);
@@ -391,8 +476,14 @@ impl TextAreaLayout {
                     offset: caret.offset - range.start,
                     trailing: caret.trailing,
                 };
-                let position = visual
-                    .step(local, right)
+                let step = |visual: &VisualTextLine, position, range: &Range<usize>| {
+                    if word {
+                        visual.word_step(&text[range.clone()], position, right)
+                    } else {
+                        visual.step(position, right)
+                    }
+                };
+                let position = step(visual, local, range)
                     .map(|position| line_offset(position, range.start))
                     .or_else(|| {
                         let next = if right != visual.is_rtl() {
@@ -401,10 +492,13 @@ impl TextAreaLayout {
                             line.checked_sub(1)
                         }?;
                         let next_visual = self.visual_line(next)?;
-                        Some(line_offset(
-                            next_visual.edge(!right),
-                            self.lines[next].start,
-                        ))
+                        let edge = next_visual.edge(!right);
+                        let position = if word {
+                            step(next_visual, edge, &self.lines[next]).unwrap_or(edge)
+                        } else {
+                            edge
+                        };
+                        Some(line_offset(position, self.lines[next].start))
                     });
                 if let Some(position) = position {
                     editor.place_caret(text, position, selecting);
@@ -431,7 +525,9 @@ impl TextAreaLayout {
                     TextAreaMotion::Home
                     | TextAreaMotion::End
                     | TextAreaMotion::Left
-                    | TextAreaMotion::Right => unreachable!(),
+                    | TextAreaMotion::Right
+                    | TextAreaMotion::WordLeft
+                    | TextAreaMotion::WordRight => unreachable!(),
                 };
                 let x = editor
                     .preferred_x()
@@ -463,6 +559,37 @@ mod tests {
 
     fn advance(text: &str) -> f32 {
         text.graphemes(true).count() as f32
+    }
+
+    #[test]
+    fn edge_drag_clamps_the_hit_and_scrolls_only_while_there_is_overflow() {
+        let geometry = TextAreaLayout::new(
+            "abcdefghijklmnopqrst\nsecond line\nthird line",
+            Rect::new(10.0, 20.0, 8.0, 12.0),
+            10.0,
+            TextWrap::NoWrap,
+            advance,
+            str::len,
+        );
+        let outside = Point { x: 30.0, y: 70.0 };
+        let (edge, offset, pending) =
+            geometry.selection_drag(outside, Point::default(), Duration::ZERO);
+        assert!(geometry.area.contains(edge));
+        assert_eq!(offset, Point::default());
+        assert!(pending);
+        let (_, offset, _) = geometry.selection_drag(outside, offset, Duration::from_millis(16));
+        assert!(offset.x > 0.0 && offset.y > offset.x);
+        let (_, end, pending) = geometry.selection_drag(outside, offset, Duration::from_secs(1));
+        assert_eq!(end, geometry.max_scroll);
+        assert!(!pending);
+        let (_, unchanged, pending) =
+            geometry.selection_drag(Point { x: 12.0, y: 24.0 }, end, Duration::from_millis(16));
+        assert_eq!(unchanged, end);
+        assert!(!pending);
+        let (_, start, pending) =
+            geometry.selection_drag(Point::default(), end, Duration::from_secs(1));
+        assert_eq!(start, Point::default());
+        assert!(!pending);
     }
 
     #[test]

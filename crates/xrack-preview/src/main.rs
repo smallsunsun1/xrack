@@ -131,6 +131,8 @@ enum Request {
         alt: bool,
         meta: bool,
         primary: bool,
+        #[serde(default)]
+        macos: Option<bool>,
     },
     Click {
         x: f32,
@@ -678,6 +680,7 @@ impl Host {
                 alt,
                 meta,
                 primary,
+                macos,
             } => {
                 let event = KeyEvent {
                     key,
@@ -691,7 +694,14 @@ impl Host {
                         primary,
                     },
                 };
-                self.interact_with(|scene, renderer| scene.keyboard(renderer, &event, pressed))
+                self.interact_with(|scene, renderer| {
+                    scene.keyboard_for_platform(
+                        renderer,
+                        &event,
+                        pressed,
+                        macos.unwrap_or(cfg!(target_os = "macos")),
+                    )
+                })
             }
             Request::Click { x, y } if x.is_finite() && y.is_finite() => {
                 self.interact(|scene| scene.click(Point { x, y }))

@@ -169,6 +169,10 @@ export component CalendarAgendaDemo inherits Window {
     in-out property <Date> selected: Date { year: 2026, month: 11, day: 11 };
     in-out property <Date> review-date: Date { year: 2026, month: 11, day: 12 };
     in-out property <string> review-label: "评审";
+    in-out property <[int]> blocked-weekdays: [];
+    in-out property <[Date]> closed-dates: [];
+    in-out property <Date> highlight-start: Date { year: 0, month: 1, day: 1 };
+    in-out property <Date> highlight-end: Date { year: 0, month: 1, day: 1 };
     private property <Date> release-date: Date { year: 2026, month: 11, day: 19 };
     out property <int> activations: 0;
     callback browse(int);
@@ -202,12 +206,17 @@ export component CalendarAgendaDemo inherits Window {
     }
     agenda := MonthGrid {
         x: 66px; y: 104px; width: 490px; height: 312px;
+        disabled-weekdays: root.blocked-weekdays;
+        disabled-dates: root.closed-dates;
+        highlight-start: root.highlight-start;
+        highlight-end: root.highlight-end;
         date <=> root.selected;
         display-month <=> root.month;
         today: Date { year: 2026, month: 11, day: 11 };
         activated(day) => { root.activations += 1; }
         DayCell {
-            background: cell-selected ? #3b56ad : #25334b;
+            background: cell-selected || cell-range-start || cell-range-end ? #3b56ad
+                : cell-in-range ? #344875 : #25334b;
             border-color: cell-today ? #a8bbff : #1b293d;
             border-width: 1px;
             border-radius: 6px;
@@ -314,6 +323,8 @@ export component CalendarDemo inherits Window {
     in-out property <Date> selected: Date { year: 2024, month: 2, day: 28 };
     in-out property <Date> month: Date { year: 2024, month: 2, day: 1 };
     in-out property <bool> picker-open: false;
+    in-out property <[int]> blocked-weekdays: [];
+    in-out property <[Date]> closed-dates: [];
     private property <Date> earliest: Date { year: 2024, month: 2, day: 5 };
     in-out property <Date> latest: Date { year: 2024, month: 4, day: 15 };
     private property <[string]> weekdays: ["一", "二", "三", "四", "五", "六", "日"];
@@ -334,6 +345,8 @@ export component CalendarDemo inherits Window {
         date <=> root.selected;
         display-month <=> root.month;
         minimum-date: root.earliest;
+        disabled-weekdays: root.blocked-weekdays;
+        disabled-dates: root.closed-dates;
         maximum-date: root.latest;
         weekday-labels: root.weekdays;
         changed(day) => { root.date-changes += 1; root.picked-day = day.day; }
@@ -350,12 +363,136 @@ export component CalendarDemo inherits Window {
         open <=> root.picker-open;
         date <=> root.selected;
         minimum-date: root.earliest;
+        disabled-weekdays: root.blocked-weekdays;
+        disabled-dates: root.closed-dates;
         maximum-date: root.latest;
         weekday-labels: root.weekdays;
         cancel-text: "取消";
         accept-text: "应用日期";
         accepted(date) => { root.month = date; root.accepts += 1; }
         canceled => { root.cancels += 1; }
+    }
+    workdays-toggle := Button {
+        x: 207px; y: 390px; width: 112px; height: 44px;
+        text: Model.is-empty(root.blocked-weekdays) ? "只选择工作日" : "允许周末";
+        clicked => {
+            root.blocked-weekdays = Model.is-empty(root.blocked-weekdays) ? [6, 7] : [];
+        }
+    }
+    leap-day-toggle := Button {
+        x: 325px; y: 390px; width: 93px; height: 44px;
+        text: Model.is-empty(root.closed-dates) ? "闰日停约" : "开放闰日";
+        clicked => {
+            root.closed-dates = Model.is-empty(root.closed-dates)
+                ? [Date { year: 2024, month: 2, day: 29 }] : [];
+        }
+    }
+}
+
+export struct DateIntervalSelection {
+    start: Date,
+    end: Date,
+    choosing-end: bool,
+}
+
+component CalendarMonthRow inherits Rectangle {
+    in property <Date> month;
+    in property <Date> earliest;
+    in property <Date> latest;
+    in-out property <Date> selected;
+    in property <[Date]> closures;
+    in property <Date> highlight-start;
+    in property <Date> highlight-end;
+    callback date-activated(Date);
+
+    Label {
+        x: 10px; y: 4px; height: 24px;
+        text: root.month.year + " 年 " + root.month.month + " 月";
+        font-size: 18px;
+    }
+    DayOfWeekRow {
+        x: 10px; y: 29px; width: 94%; height: 24px;
+        weekday-labels: ["一", "二", "三", "四", "五", "六", "日"];
+    }
+    calendar-month := MonthGrid {
+        x: 10px; y: 53px; width: 94%; height: 178px;
+        accessible-name: root.month.year + " 年 " + root.month.month + " 月";
+        fixed-month: true;
+        display-month: root.month;
+        date <=> root.selected;
+        minimum-date: root.earliest;
+        maximum-date: root.latest;
+        disabled-weekdays: [6, 7];
+        disabled-dates: root.closures;
+        highlight-start: root.highlight-start;
+        highlight-end: root.highlight-end;
+        activated(day) => { root.date-activated(day); }
+    }
+}
+
+export component CalendarBrowserDemo inherits Window {
+    title: "XRack · 多月日历";
+    width: 452px;
+    height: 575px;
+    background: #162034;
+
+    in-out property <Date> range-start: Date { year: 2024, month: 2, day: 5 };
+    in-out property <Date> range-end: Date { year: 2124, month: 1, day: 31 };
+    in-out property <Date> selected: Date { year: 2024, month: 2, day: 28 };
+    in-out property <Date> jump-target: Date { year: 2080, month: 2, day: 29 };
+    in-out property <[Date]> closures: [Date { year: 2024, month: 2, day: 29 }];
+    in-out property <bool> select-range: false;
+    private property <Date> empty-date: Date { year: 0, month: 1, day: 1 };
+    out property <DateIntervalSelection> interval: DateIntervalSelection {
+        start: root.empty-date, end: root.empty-date, choosing-end: false
+    };
+    callback pick-date(Date);
+    pick-date(day) => {
+        root.interval = !root.select-range ? root.interval : root.interval.choosing-end
+            ? DateIntervalSelection {
+                start: root.interval.start <= day ? root.interval.start : day,
+                end: root.interval.start <= day ? day : root.interval.start,
+                choosing-end: false
+            }
+            : DateIntervalSelection { start: day, end: day, choosing-end: true };
+    }
+    private property <[Date]> month-model: Dates.months(root.range-start, root.range-end);
+    out property <int> month-count: Model.count(root.month-model);
+    out property <int> jump-index: Dates.month-index(root.range-start, root.range-end, root.jump-target);
+
+    Label {
+        x: 16px; y: 12px; font-size: 20px;
+        text: !root.select-range ? "选中日期 · " + root.selected
+            : !Dates.is-valid(root.interval.start) ? "请选择区间起点"
+            : root.interval.choosing-end ? "请选择终点 · " + root.interval.start
+            : "区间 · " + root.interval.start + " → " + root.interval.end;
+    }
+    jump-month := Button {
+        x: 232px; y: 45px; width: 200px; height: 34px;
+        text: "跳到 " + root.jump-target.year + " 年 " + root.jump-target.month + " 月";
+        enabled: root.jump-index >= 0;
+        clicked => { months-view.position-view-at-index(root.jump-index, ScrollAlignment.beginning); }
+    }
+    Label { x: 16px; y: 52px; text: root.month-count + " 个月"; }
+    months-view := ListView {
+        x: 16px; y: 90px; width: 420px; height: 468px;
+        row-height: 237px;
+        accessible-name: "月份浏览";
+        for month in root.month-model : CalendarMonthRow {
+            month: month;
+            earliest: root.range-start;
+            latest: root.range-end;
+            closures: root.closures;
+            selected <=> root.selected;
+            highlight-start: root.select-range ? root.interval.start : root.empty-date;
+            highlight-end: !root.select-range ? root.empty-date : root.interval.choosing-end ? root.selected : root.interval.end;
+            date-activated(day) => { root.pick-date(day); }
+        }
+    }
+    interval-toggle := Button {
+        x: 113px; y: 45px; width: 108px; height: 34px;
+        text: root.select-range ? "单日选择" : "区间选择";
+        clicked => { root.select-range = !root.select-range; }
     }
 }
 
@@ -1099,6 +1236,47 @@ export component CheckGroupDemo inherits Window {
         show-validation-toggle := CheckBox { text: "显示校验选项"; checked <=> root.show-validation; }
         allow-metadata-toggle := CheckBox { text: "允许单独操作元数据"; checked <=> root.allow-metadata; }
         Label { text: "全选会更新全部导出选项，包括当前隐藏的项。"; }
+    }
+}
+
+component ExpanderSettings inherits VerticalLayout {
+    spacing: 8px;
+    out property <string> draft: "localhost";
+    callback saved();
+    endpoint := LineEdit {
+        accessible-name: "服务地址";
+        text <=> root.draft;
+    }
+    save := Button { text: "保存地址"; clicked => { root.saved(); } }
+}
+
+export component ExpanderDemo inherits Window {
+    title: "XRack · 折叠设置";
+    width: 480px;
+    height: 350px;
+    background: #162034;
+
+    in-out property <bool> details-open: false;
+    out property <string> draft: settings.draft;
+    out property <int> expansion-changes: 0;
+    out property <int> saves: 0;
+
+    close-details := Shortcut {
+        sequence: "F8";
+        activated => { root.details-open = false; }
+    }
+    VerticalLayout {
+        x: 18px; y: 14px; width: 444px; height: 320px;
+        spacing: 10px;
+        Label { text: "连接设置"; font-size: 22px; }
+        details := Expander {
+            title: "高级连接选项";
+            expanded <=> root.details-open;
+            expanded-changed(value) => { root.expansion-changes += 1; }
+            settings := ExpanderSettings { saved => { root.saves += 1; } }
+        }
+        after-details := Label { text: "草稿 · " + root.draft; }
+        Label { text: "在输入框按 F8 折叠"; color: #a9b6ca; }
     }
 }
 

@@ -1,17 +1,23 @@
 use crate::{
     TextSystem, color,
+    text::fill_selected_text,
     theme::{Palette, PaletteRole as Role},
 };
 use femtovg::{Canvas, Color, Paint, Path, renderer::WGPURenderer};
-use std::{borrow::Cow, ops::Range};
+use std::{
+    borrow::Cow,
+    ops::Range,
+    time::{Duration, Instant},
+};
 use xrack_layout::{
     ComboGeometry, Interaction, LayoutNode, PasswordMask, Point, Rect, SearchGeometry,
     SpinGeometry, Target, TextAlignment, TextAreaLayout, TextAreaMotion, TextEdit, TextMeasurer,
-    TextPosition, ToggleGeometry, VisualTextLine,
+    TextPosition, ToggleGeometry, VisualTextLine, selection_drag_axis, text_editor_line_bounds,
+    text_editor_viewport,
 };
 use xrack_runtime::{
-    CheckState, Color as UiColor, LayoutDirection, Node, combo_editable, is_multiline_text_input,
-    is_spin_box, spin_editable, text_input_value,
+    CheckState, Color as UiColor, LayoutDirection, MouseSelectionMode, Node, combo_editable,
+    is_multiline_text_input, is_spin_box, spin_editable, text_input_value,
 };
 
 fn editor_text<'a>(input: &Interaction, node: &'a Node) -> Cow<'a, str> {
@@ -34,6 +40,13 @@ fn editor_part(node: &Node, layout: &LayoutNode) -> Option<Rect> {
     }
 }
 
+enum EditorPointerMode {
+    Caret,
+    Press,
+    StartWord,
+    Drag,
+}
+
 /// A pointer hit bound to the editor that owned the press.
 #[doc(hidden)]
 pub struct PointerCaret {
@@ -41,6 +54,8 @@ pub struct PointerCaret {
     origin: Point,
     point: Point,
     selecting: bool,
+    initial_view: bool,
+    mode: EditorPointerMode,
 }
 
 impl PointerCaret {
@@ -53,13 +68,16 @@ impl PointerCaret {
         point: Point,
         selecting: bool,
     ) -> Option<Self> {
-        let pointer = Self {
+        let mut pointer = Self {
             target: target.clone(),
             origin,
             point,
             selecting,
+            initial_view: false,
+            mode: EditorPointerMode::Caret,
         };
-        pointer.hit(input, scene, layout)?;
+        let (node, _, _, _) = pointer.hit(input, scene, layout)?;
+        pointer.initial_view = input.displayed_editor(node, &target.path).is_none();
         Some(pointer)
     }
 
@@ -76,6 +94,22 @@ impl PointerCaret {
             .filter(|target| input.pressed.as_ref() == Some(target))?;
         let origin = input.pointer_press_origin().unwrap_or(point);
         Self::new(input, scene, layout, target, origin, point, selecting)
+    }
+
+    #[doc(hidden)]
+    pub fn mouse_press(mut self, input: &mut Interaction, now: Instant) -> Self {
+        self.mode = if input.editor_mouse_press(&self.target, self.point, now, self.selecting) {
+            EditorPointerMode::StartWord
+        } else {
+            EditorPointerMode::Press
+        };
+        self
+    }
+
+    #[doc(hidden)]
+    pub fn during_drag(mut self) -> Self {
+        self.mode = EditorPointerMode::Drag;
+        self
     }
 
     fn hit<'a>(
@@ -118,47 +152,189 @@ impl PointerCaret {
         scene: &Node,
         layout: &LayoutNode,
     ) -> bool {
+        self.place_at(text_system, input, scene, layout, Instant::now())
+    }
+
+    pub(crate) fn place_at(
+        self,
+        text_system: &TextSystem,
+        input: &mut Interaction,
+        scene: &Node,
+        layout: &LayoutNode,
+        now: Instant,
+    ) -> bool {
+        self.place_with_scroll(text_system, input, scene, layout, now, Duration::ZERO)
+    }
+
+    #[doc(hidden)]
+    pub fn advance_drag_scroll(
+        text_system: &TextSystem,
+        input: &mut Interaction,
+        scene: &Node,
+        layout: &LayoutNode,
+        now: Instant,
+    ) -> bool {
+        let Some((point, elapsed)) = input.take_text_selection_scroll(now) else {
+            return false;
+        };
+        Self::from_pressed(input, scene, layout, point, true).is_some_and(|pointer| {
+            pointer
+                .during_drag()
+                .place_with_scroll(text_system, input, scene, layout, now, elapsed)
+        })
+    }
+
+    fn place_with_scroll(
+        self,
+        text_system: &TextSystem,
+        input: &mut Interaction,
+        scene: &Node,
+        layout: &LayoutNode,
+        now: Instant,
+        scroll_elapsed: Duration,
+    ) -> bool {
         if input.focused.as_ref() != Some(&self.target) {
             return false;
         }
         let Some((node, bounds, point, direction)) = self.hit(input, scene, layout) else {
             return false;
         };
+        let mode = node.mouse_selection_mode();
+        if mode == MouseSelectionMode::Caret {
+            match self.mode {
+                EditorPointerMode::Drag => {
+                    input.schedule_text_selection_scroll(&self.target, None, now);
+                    return false;
+                }
+                EditorPointerMode::Press | EditorPointerMode::StartWord => {
+                    input.clear_editor_click()
+                }
+                EditorPointerMode::Caret => {}
+            }
+        }
         input.sync_editor(scene);
         let value = editor_text(input, node);
-        let (position, reveal) = if is_multiline_text_input(node.kind) {
+        let dragging = matches!(self.mode, EditorPointerMode::Drag);
+        let mut drag_scroll = None;
+        let (position, reveal) = if node.selectable_styled_text() {
+            let local = Point {
+                x: point.x - bounds.x,
+                y: point.y - bounds.y,
+            };
+            let position = layout
+                .at_path(&self.target.path)
+                .and_then(|item| item.styled_text.as_ref())
+                .and_then(|plan| plan.selection_hit(local))
+                .unwrap_or_default();
+            (position, None)
+        } else if is_multiline_text_input(node.kind) {
             let geometry =
                 text_system.text_area_layout_in_direction(node, bounds, &value, direction);
             let scroll = geometry.clamp_scroll(input.text_scroll(&self.target.path));
+            let outside = dragging && !geometry.area.contains(point);
+            let (point, scroll, pending) = if outside {
+                geometry.selection_drag(point, scroll, scroll_elapsed)
+            } else {
+                (point, scroll, false)
+            };
+            if dragging {
+                input.schedule_text_selection_scroll(
+                    &self.target,
+                    pending.then_some(self.point),
+                    now,
+                );
+            }
             let advance = |text: &str| text_system.advance_node(node, text);
             let position = geometry.hit(&value, point, scroll, advance);
-            let caret = geometry.caret_point(&value, position, advance);
-            (position, Some(geometry.keep_visible(scroll, caret)))
+            (position, Some((geometry, scroll, outside)))
         } else {
+            // A newly focused editor defaults to a caret at the end. Resolve the
+            // first press against the previous view unless a selection was restored.
+            let hit_editor = input.editor.as_ref().filter(|editor| {
+                dragging || !self.initial_view || !editor.selection(&value).is_empty()
+            });
             let hint = input
                 .painted_combo_completion_for(node, &self.target.path)
                 .and_then(|completion| {
                     let item = layout.at_path(&self.target.path)?;
                     Some((completion.suffix(), item.clip))
                 });
-            (
-                text_system.single_line_hit_in_direction(
-                    node,
-                    bounds,
-                    point,
-                    input.editor.as_ref(),
-                    &value,
-                    (direction, hint),
-                ),
-                None,
-            )
+            let hit = text_system.single_line_hit_in_direction(
+                node,
+                bounds,
+                point,
+                hit_editor,
+                &value,
+                LineHitOptions {
+                    direction,
+                    completion: hint,
+                    drag_elapsed: dragging.then_some(scroll_elapsed),
+                },
+            );
+            if dragging {
+                input.schedule_text_selection_scroll(
+                    &self.target,
+                    hit.pending.then_some(self.point),
+                    now,
+                );
+                drag_scroll = hit.drag_scroll;
+            }
+            (hit.position, None)
         };
         input.break_text_edit_group();
         let Some(editor) = &mut input.editor else {
             return false;
         };
-        editor.place_caret(&value, position, self.selecting);
-        if let Some(scroll) = reveal {
+        match (self.mode, mode) {
+            (
+                EditorPointerMode::StartWord,
+                MouseSelectionMode::Characters | MouseSelectionMode::Words,
+            ) => {
+                editor.start_word_drag(&value, position, node.is_password(), true);
+            }
+            (EditorPointerMode::Press, MouseSelectionMode::Words) => {
+                let anchor = if self.selecting {
+                    let offset = editor.anchor(&value);
+                    let caret = editor.position(&value);
+                    TextPosition {
+                        offset,
+                        trailing: offset > caret.offset || offset == caret.offset && caret.trailing,
+                    }
+                } else {
+                    position
+                };
+                editor.start_word_drag(&value, anchor, node.is_password(), false);
+                if self.selecting {
+                    editor.extend_word_drag(&value, position);
+                }
+            }
+            (EditorPointerMode::Drag, mode) => {
+                if !editor.extend_word_drag(&value, position)
+                    && mode == MouseSelectionMode::Characters
+                {
+                    editor.place_caret(&value, position, true);
+                }
+            }
+            (pointer, mode) => editor.place_caret(
+                &value,
+                position,
+                self.selecting
+                    && (matches!(pointer, EditorPointerMode::Caret)
+                        || mode != MouseSelectionMode::Caret),
+            ),
+        }
+        if dragging {
+            editor.set_horizontal_drag_scroll(drag_scroll);
+        }
+        if let Some((geometry, scroll, outside)) = reveal {
+            let scroll = if outside {
+                scroll
+            } else {
+                let caret = geometry.caret_point(&value, editor.position(&value), |text| {
+                    text_system.advance_node(node, text)
+                });
+                geometry.keep_visible(scroll, caret)
+            };
             input.set_text_scroll(&self.target, scroll);
         }
         true
@@ -168,6 +344,7 @@ impl PointerCaret {
 pub(crate) struct EntryText<'a> {
     pub value: &'a str,
     pub editor: Option<&'a TextEdit>,
+    pub active: bool,
     pub scroll: Point,
     pub direction: Option<LayoutDirection>,
     pub completion: Option<(&'a str, Rect)>,
@@ -181,14 +358,31 @@ struct DisplayText<'a> {
     placeholder: bool,
 }
 
-fn display_text<'a>(node: &'a Node, value: &'a str, editor: Option<&TextEdit>) -> DisplayText<'a> {
+struct LineHitOptions<'a> {
+    direction: Option<LayoutDirection>,
+    completion: Option<(&'a str, Rect)>,
+    drag_elapsed: Option<Duration>,
+}
+
+struct LineHit {
+    position: TextPosition,
+    drag_scroll: Option<f32>,
+    pending: bool,
+}
+
+fn display_text<'a>(
+    node: &'a Node,
+    value: &'a str,
+    editor: Option<&TextEdit>,
+    active: bool,
+) -> DisplayText<'a> {
     let mut content = Cow::Borrowed(value);
     let mut selection = 0..0;
     let mut composition = 0..0;
     let mut caret = None;
     if let Some(edit) = editor {
         selection = edit.selection(value);
-        if edit.preedit.is_empty() {
+        if !active || edit.preedit.is_empty() {
             caret = Some(edit.position(value));
         } else {
             content
@@ -206,7 +400,11 @@ fn display_text<'a>(node: &'a Node, value: &'a str, editor: Option<&TextEdit>) -
     if placeholder {
         content = node.text("placeholder-text").unwrap_or("").into();
     } else if node.password_masked() {
-        let mask = PasswordMask::new(&content);
+        let mask = PasswordMask::for_editor(
+            node,
+            &content,
+            editor.filter(|_| active && composition.is_empty()),
+        );
         selection = mask.display_offset(selection.start)..mask.display_offset(selection.end);
         composition = mask.display_offset(composition.start)..mask.display_offset(composition.end);
         if let Some(caret) = &mut caret {
@@ -240,8 +438,7 @@ impl TextSystem {
         let Some(node) = scene.interactive_at_path(&target.path) else {
             return false;
         };
-        if node.password_masked()
-            || !input.is_text_editor(node, &target)
+        if !input.is_text_editor(node, &target)
             || node.element_id() != target.element_id()
             || scene.row_key_at(&target.path) != target.row_key
         {
@@ -258,6 +455,12 @@ impl TextSystem {
         let Some(editor) = &mut input.editor else {
             return false;
         };
+        if node.selectable_styled_text() {
+            let Some(plan) = &item.styled_text else {
+                return false;
+            };
+            return plan.move_selection(&value, editor, motion, selecting);
+        }
         if is_multiline_text_input(node.kind) {
             let geometry = self.text_area_layout_in_direction(
                 node,
@@ -270,21 +473,53 @@ impl TextSystem {
             let caret = geometry.caret_point(&value, editor.position(&value), advance);
             input.set_text_scroll(&target, geometry.keep_visible(scroll, caret));
         } else {
-            let visual = self.single_line_layout(node, &value);
+            let mask = node
+                .password_masked()
+                .then(|| PasswordMask::for_editor(node, &value, Some(editor)));
+            let visual =
+                self.single_line_layout(node, mask.as_ref().map_or(&value, PasswordMask::display));
+            let display_offset = |offset| {
+                mask.as_ref()
+                    .map_or(offset, |mask| mask.display_offset(offset))
+            };
             let position = match motion {
-                TextAreaMotion::Left | TextAreaMotion::Right => {
-                    let right = matches!(motion, TextAreaMotion::Right);
+                TextAreaMotion::Left
+                | TextAreaMotion::Right
+                | TextAreaMotion::WordLeft
+                | TextAreaMotion::WordRight => {
+                    let right = matches!(motion, TextAreaMotion::Right | TextAreaMotion::WordRight);
                     let edge = (!selecting)
-                        .then(|| visual.selection_edge(editor.selection(&value), right))
+                        .then(|| {
+                            let selection = editor.selection(&value);
+                            visual.selection_edge(
+                                display_offset(selection.start)..display_offset(selection.end),
+                                right,
+                            )
+                        })
                         .flatten();
-                    edge.or_else(|| visual.step(editor.position(&value), right))
+                    edge.or_else(|| {
+                        let mut position = editor.position(&value);
+                        position.offset = display_offset(position.offset);
+                        if matches!(motion, TextAreaMotion::WordLeft | TextAreaMotion::WordRight) {
+                            if mask.is_some() {
+                                Some(visual.edge(right))
+                            } else {
+                                visual.word_step(&value, position, right)
+                            }
+                        } else {
+                            visual.step(position, right)
+                        }
+                    })
                 }
                 TextAreaMotion::Home | TextAreaMotion::End => {
                     Some(visual.edge(matches!(motion, TextAreaMotion::End) != visual.is_rtl()))
                 }
                 _ => return false,
             };
-            if let Some(position) = position {
+            if let Some(mut position) = position {
+                if let Some(mask) = &mask {
+                    position.offset = mask.source_offset(position.offset);
+                }
                 editor.place_caret(&value, position, selecting);
             }
         }
@@ -370,8 +605,13 @@ impl TextSystem {
             point,
             editor,
             value,
-            (node.layout_direction(), None),
+            LineHitOptions {
+                direction: node.layout_direction(),
+                completion: None,
+                drag_elapsed: None,
+            },
         )
+        .position
     }
 
     fn single_line_hit_in_direction(
@@ -381,10 +621,12 @@ impl TextSystem {
         point: Point,
         editor: Option<&TextEdit>,
         value: &str,
-        (direction, completion): (Option<LayoutDirection>, Option<(&str, Rect)>),
-    ) -> TextPosition {
-        let area = bounds.inset(node.length("padding").unwrap_or(6.0).max(0.0));
-        let mask = node.password_masked().then(|| PasswordMask::new(value));
+        options: LineHitOptions<'_>,
+    ) -> LineHit {
+        let area = text_editor_viewport(node, bounds);
+        let mask = node
+            .password_masked()
+            .then(|| PasswordMask::for_editor(node, value, editor));
         let display = mask.as_ref().map_or(value, PasswordMask::display);
         let layout = self.single_line_layout(node, display);
         let caret = editor.map(|edit| {
@@ -394,17 +636,51 @@ impl TextSystem {
             }
             caret
         });
-        let (mut x, _) = entry_origin(node, area, &layout, caret, false, direction);
-        if let Some((draft, _)) = completion
+        let mut drag_scroll = editor.and_then(TextEdit::horizontal_drag_scroll);
+        let (mut x, _) = entry_origin(
+            node,
+            area,
+            &layout,
+            caret,
+            false,
+            options.direction,
+            drag_scroll,
+        );
+        let mut hit_x = point.x;
+        let mut pending = false;
+        let overflow = layout.width() + 1.0 - area.width;
+        if let Some(elapsed) = options.drag_elapsed
+            && area.width > 0.0
+            && overflow > 0.0
+            && (hit_x < area.x || hit_x > area.x + area.width)
+        {
+            let (edge, offset, more) = selection_drag_axis(
+                hit_x,
+                area.x,
+                area.width,
+                (area.x - x).clamp(0.0, overflow),
+                overflow,
+                elapsed,
+            );
+            x = area.x - offset;
+            hit_x = edge;
+            drag_scroll = Some(offset);
+            pending = more;
+        } else if let Some((draft, _)) = options
+            .completion
             .and_then(|hint| self.inline_completion_positions(node, area, &layout, x, hint))
         {
             x = draft;
         }
-        let mut position = layout.hit(point.x - x);
+        let mut position = layout.hit(hit_x - x);
         if let Some(mask) = &mask {
             position.offset = mask.source_offset(position.offset);
         }
-        position
+        LineHit {
+            position,
+            drag_scroll,
+            pending,
+        }
     }
 
     pub fn single_line_caret_x(
@@ -431,8 +707,8 @@ impl TextSystem {
         editor: Option<&TextEdit>,
         (direction, completion): (Option<LayoutDirection>, Option<(&str, Rect)>),
     ) -> f32 {
-        let display = display_text(node, value, editor);
-        let area = bounds.inset(node.length("padding").unwrap_or(6.0).max(0.0));
+        let display = display_text(node, value, editor, true);
+        let area = text_editor_viewport(node, bounds);
         let layout = self.single_line_layout(node, &display.content);
         let (x, caret) = entry_origin(
             node,
@@ -441,6 +717,7 @@ impl TextSystem {
             display.caret,
             display.placeholder,
             direction,
+            editor.and_then(TextEdit::horizontal_drag_scroll),
         );
         let shift = completion
             .and_then(|hint| self.inline_completion_positions(node, area, &layout, x, hint))
@@ -492,7 +769,7 @@ impl TextSystem {
         editor: Option<&TextEdit>,
         direction: Option<LayoutDirection>,
     ) -> (TextAreaLayout, Option<Point>) {
-        let display = display_text(node, node.text("text").unwrap_or(""), editor);
+        let display = display_text(node, node.text("text").unwrap_or(""), editor, true);
         let layout = self.text_area_layout_in_direction(node, bounds, &display.content, direction);
         let caret = display.caret.map(|position| {
             layout.caret_point(&display.content, position, |text| {
@@ -512,6 +789,9 @@ impl TextSystem {
     ) -> Option<Rect> {
         let target = input.focused.as_ref()?;
         let node = scene.interactive_at_path(&target.path)?;
+        if node.selectable_styled_text() {
+            return None;
+        }
         if !input.is_text_editor(node, target) && !spin_editable(node) {
             return None;
         }
@@ -554,7 +834,11 @@ impl TextSystem {
                 input.editor.as_ref(),
                 (layout.layout_direction_override(), hint),
             );
-            Some(layout.window_bounds(Rect::new(x, bounds.y, 1.0, bounds.height.max(1.0))))
+            let line = text_editor_line_bounds(
+                text_editor_viewport(node, bounds),
+                self.font_size(node) * 1.4,
+            );
+            Some(layout.window_bounds(Rect::new(x, line.y, 1.0, line.height.max(1.0))))
         }
     }
 }
@@ -566,6 +850,7 @@ fn entry_origin(
     caret: Option<TextPosition>,
     placeholder: bool,
     direction: Option<LayoutDirection>,
+    drag_scroll: Option<f32>,
 ) -> (f32, Option<f32>) {
     let alignment = TextAlignment::editor(node, direction);
     let advance = if placeholder {
@@ -573,7 +858,14 @@ fn entry_origin(
     } else {
         caret.map(|position| line.caret_x(position))
     };
-    let x = area.x + alignment.single_line_offset(area.width, line.width(), line.is_rtl(), advance);
+    let x = area.x
+        + alignment.single_line_view_offset(
+            area.width,
+            line.width(),
+            line.is_rtl(),
+            advance,
+            if placeholder { None } else { drag_scroll },
+        );
     let caret_x = if placeholder {
         caret.map(|_| {
             area.x + alignment.single_line_offset(area.width, 0.0, line.is_rtl(), Some(0.0))
@@ -599,17 +891,24 @@ pub(crate) fn draw(
         composition,
         caret,
         placeholder,
-    } = display_text(node, text.value, text.editor);
-    let area = bounds.inset(node.length("padding").unwrap_or(6.0).max(0.0));
+    } = display_text(node, text.value, text.editor, text.active);
+    let area = text_editor_viewport(node, bounds);
     if area.width <= 0.0 || area.height <= 0.0 {
         return Ok(false);
     }
     let size = text_system.font_size(node);
     let height = size * 1.4;
-    let y = bounds.y + ((bounds.height - height) * 0.5).max(0.0);
+    let y = text_editor_line_bounds(area, height).y;
     let layout = text_system.single_line_layout(node, &content);
-    let (aligned_x, caret_x) =
-        entry_origin(node, area, &layout, caret, placeholder, text.direction);
+    let (aligned_x, caret_x) = entry_origin(
+        node,
+        area,
+        &layout,
+        caret,
+        placeholder,
+        text.direction,
+        text.editor.and_then(TextEdit::horizontal_drag_scroll),
+    );
     let hint = text.completion.and_then(|(suffix, clip)| {
         text_system
             .inline_completion_positions(node, area, &layout, aligned_x, (suffix, clip))
@@ -617,20 +916,16 @@ pub(crate) fn draw(
     });
     let x = hint.map_or(aligned_x, |(draft, _, _)| draft);
     let caret_x = caret_x.map(|caret| caret + x - aligned_x);
-    canvas.intersect_scissor(area.x, bounds.y, area.width, bounds.height);
+    canvas.intersect_scissor(area.x, area.y, area.width, area.height);
     let mut rect = |x: f32, y: f32, width: f32, height: f32, tint: Color| {
         let mut path = Path::new();
         path.rect(x, y, width, height);
         canvas.fill_path(&path, &Paint::color(tint));
     };
-    for span in layout.selection_spans(selection) {
-        rect(
-            x + span.start,
-            y,
-            span.end - span.start,
-            height,
-            color(theme.role(Role::TextSelection)),
-        );
+    let selected = layout.selection_spans(selection);
+    let highlight = color(theme.text_selection(node));
+    for span in &selected {
+        rect(x + span.start, y, span.end - span.start, height, highlight);
     }
     for span in layout.selection_spans(composition) {
         rect(
@@ -641,7 +936,9 @@ pub(crate) fn draw(
             color(theme.focus),
         );
     }
-    if let Some(caret_x) = caret_x {
+    if text.active
+        && let Some(caret_x) = caret_x
+    {
         rect(
             caret_x,
             y + 1.0,
@@ -650,15 +947,18 @@ pub(crate) fn draw(
             color(theme.focus),
         );
     }
-    let foreground = if placeholder || !enabled {
-        theme.disabled_text
-    } else {
-        node.color("color").unwrap_or(theme.text)
-    };
+    let foreground = theme.editor_foreground(node, placeholder, enabled);
     let paint = text_system.paint_node(node, color(foreground), false);
-    canvas
-        .fill_text(x, y, &content, &paint)
-        .map_err(|error| format!("text input drawing failed: {error}"))?;
+    fill_selected_text(
+        canvas,
+        area,
+        Point { x, y },
+        &content,
+        &paint,
+        &selected,
+        node.color("selected-text-color").map(color),
+    )
+    .map_err(|error| format!("text input drawing failed: {error}"))?;
     if let Some((_, ghost, suffix)) = hint {
         canvas
             .fill_text(
@@ -688,7 +988,7 @@ pub(crate) fn draw_area(
     text: EntryText<'_>,
     enabled: bool,
 ) -> Result<(), String> {
-    let display = display_text(node, text.value, text.editor);
+    let display = display_text(node, text.value, text.editor, text.active);
     let layout =
         text_system.text_area_layout_in_direction(node, bounds, &display.content, text.direction);
     let area = layout.area;
@@ -700,12 +1000,10 @@ pub(crate) fn draw_area(
     let height = layout.line_height;
     let origin = area.x - scroll.x;
     let advance = |text: &str| text_system.advance_node(node, text);
-    let foreground = if display.placeholder || !enabled {
-        theme.disabled_text
-    } else {
-        node.color("color").unwrap_or(theme.text)
-    };
+    let foreground = theme.editor_foreground(node, display.placeholder, enabled);
     let paint = text_system.paint_node(node, color(foreground), false);
+    let selected_color = node.color("selected-text-color").map(color);
+    let highlight = color(theme.text_selection(node));
     canvas.intersect_scissor(area.x, area.y, area.width, area.height);
     for index in layout.visible_lines(scroll) {
         let x = origin + layout.line_offset(index);
@@ -717,12 +1015,13 @@ pub(crate) fn draw_area(
         let local = |span: &Range<usize>| {
             span.start.saturating_sub(line.start)..span.end.saturating_sub(line.start)
         };
+        let selected = visual.selection_spans(local(&display.selection));
         if !display.selection.is_empty() {
-            for span in visual.selection_spans(local(&display.selection)) {
+            for span in &selected {
                 fill_rect(
                     canvas,
                     Rect::new(x + span.start, y, span.end - span.start, height),
-                    color(theme.role(Role::TextSelection)),
+                    highlight,
                 );
             }
             let newline = display.selection.start <= line.end
@@ -738,17 +1037,20 @@ pub(crate) fn draw_area(
                 });
                 let width = size * 0.45;
                 let left = if visual.is_rtl() { edge - width } else { edge };
-                fill_rect(
-                    canvas,
-                    Rect::new(x + left, y, width, height),
-                    color(theme.role(Role::TextSelection)),
-                );
+                fill_rect(canvas, Rect::new(x + left, y, width, height), highlight);
             }
         }
         if !line.is_empty() {
-            canvas
-                .fill_text(x, y, &display.content[line.clone()], &paint)
-                .map_err(|error| format!("multiline text drawing failed: {error}"))?;
+            fill_selected_text(
+                canvas,
+                area,
+                Point { x, y },
+                &display.content[line.clone()],
+                &paint,
+                &selected,
+                selected_color,
+            )
+            .map_err(|error| format!("multiline text drawing failed: {error}"))?;
         }
         for span in visual.selection_spans(local(&display.composition)) {
             fill_rect(
@@ -758,7 +1060,9 @@ pub(crate) fn draw_area(
             );
         }
     }
-    if let Some(position) = display.caret {
+    if text.active
+        && let Some(position) = display.caret
+    {
         let caret = layout.caret_point(&display.content, position, advance);
         fill_rect(
             canvas,

@@ -5651,6 +5651,40 @@ fn spinner_and_busy_indicator_verify_progress_and_motion_types() {
 }
 
 #[test]
+fn expander_uses_a_boolean_link_and_expansion_event() {
+    let source = r#"
+        export component App inherits Window {
+            in-out property <bool> active: false;
+            details := Expander {
+                title: "Details";
+                expanded <=> root.active;
+                expanded-changed(value) => { root.active = value; }
+                Button { text: "Nested action"; }
+            }
+        }
+    "#;
+    let output = compile(source, "expander.xr").unwrap();
+    assert!(output.mlir.contains("xr.control_link"));
+    assert!(output.mlir.contains(r#"name = "expanded-changed""#));
+    assert!(
+        compile(
+            &source.replace(
+                "in-out property <bool> active: false",
+                "in-out property <int> active: 1"
+            ),
+            "expander.xr"
+        )
+        .is_err()
+    );
+    let raw = lower(source, "expander.xr").replace(r#"name = "title""#, r#"name = "expanded""#);
+    assert!(
+        mlir::process(&raw)
+            .unwrap_err()
+            .contains("incorrect Expander property type")
+    );
+}
+
+#[test]
 fn group_box_checks_its_header_and_checked_binding_in_mlir() {
     let source = r#"
         export component App inherits Window {
@@ -9993,6 +10027,699 @@ fn combo_submission_rules_are_typed_and_follow_the_draft() {
     );
     let error = compile(&text_cycle, "combo_submission.xr").err().unwrap();
     assert!(error.contains("cyclic"), "{error}");
+}
+
+#[test]
+fn editing_finished_handler_is_typed_and_scoped_to_text_editors() {
+    let source = r#"
+        export component App inherits Window {
+            out property <string> saved: "";
+            notes := TextArea {
+                editing-finished(text, acceptable) => {
+                    root.saved = acceptable ? text : "";
+                }
+            }
+        }
+    "#;
+    assert!(compile(source, "editor-events.xr").is_ok());
+    assert!(compile(&source.replace("TextArea", "Button"), "editor-events.xr").is_err());
+    assert!(
+        compile(
+            &source.replace("(text, acceptable)", "()"),
+            "editor-events.xr"
+        )
+        .is_err()
+    );
+    let ir = lower(source, "editor-events.xr");
+    assert!(mlir::process(&ir).is_ok());
+    let invalid = ir.replace(r#"\22ty\22:\22bool\22"#, r#"\22ty\22:\22int\22"#);
+    assert_ne!(ir, invalid);
+    assert!(
+        mlir::process(&invalid)
+            .unwrap_err()
+            .contains("editing-finished requires")
+    );
+}
+
+#[test]
+fn input_mask_type_and_pattern_are_checked() {
+    let source = r#"
+        export component App inherits Window {
+            code := LineEdit { input-mask: "AA-999"; maximum-length: 6; }
+            out property <bool> ready: code.acceptable-input;
+        }
+    "#;
+    assert!(compile(source, "masked.xr").is_ok());
+    let cycle = source.replace(r#""AA-999""#, r#"self.acceptable-input ? "A" : "9""#);
+    assert!(compile(&cycle, "masked.xr").is_err());
+    let invalid = source.replace(r#""AA-999""#, r#""---""#);
+    assert!(
+        compile(&invalid, "masked.xr")
+            .err()
+            .unwrap()
+            .contains("requires at least one slot")
+    );
+    let invalid = source.replace("LineEdit", "TextArea");
+    assert!(
+        compile(&invalid, "masked.xr")
+            .err()
+            .unwrap()
+            .contains("input-mask")
+    );
+    let raw = lower(&source.replace(r#"input-mask: "AA-999";"#, ""), "masked.xr");
+    let invalid = raw.replace(r#"name = "maximum-length""#, r#"name = "input-mask""#);
+    assert!(
+        mlir::process(&invalid)
+            .unwrap_err()
+            .contains("input-mask requires a string")
+    );
+}
+
+#[test]
+fn input_validity_is_a_typed_read_only_editor_property() {
+    let source = r#"
+        export component App inherits Window {
+            editor := LineEdit { text: "AB"; }
+            out property <InputValidity> state: editor.input-validity;
+            out property <bool> may-submit: root.state == InputValidity.acceptable;
+        }
+    "#;
+    let output = compile(source, "input-validity.xr").unwrap();
+    assert!(output.mlir.contains("xr.text_validity"));
+    assert!(output.mlir.contains("!xr.inputvalidity"));
+    let invalid = source.replace(
+        r#"text: "AB";"#,
+        "input-validity: InputValidity.acceptable;",
+    );
+    assert!(
+        compile(&invalid, "input-validity.xr")
+            .err()
+            .unwrap()
+            .contains("read-only")
+    );
+    let raw = lower(source, "input-validity.xr");
+    let wrong_owner = raw.replace(r#"kind = "LineEdit""#, r#"kind = "Button""#);
+    assert_ne!(raw, wrong_owner);
+    assert!(
+        mlir::process(&wrong_owner)
+            .unwrap_err()
+            .contains("input-validity requires a statically addressed text editor")
+    );
+    let invalid_case = raw.replace(r#"value = "acceptable""#, r#"value = "pending""#);
+    assert_ne!(raw, invalid_case);
+    assert!(mlir::process(&invalid_case).is_err());
+}
+
+#[test]
+fn iso_time_helpers_and_popup_bounds_use_typed_ir() {
+    let source = r#"
+        export component App inherits Window {
+            in-out property <string> text: "13:30:42";
+            in property <Time> latest: Time { hour: 17 };
+            out property <Time> typed: Times.parse-iso(root.text, root.latest);
+            out property <bool> valid: Times.is-valid-iso(root.text) && Times.in-range(root.typed, Time { hour: 9 }, root.latest);
+            out property <string> display: Times.format-iso(root.typed, false);
+            TimePickerPopup { minimum-time: Time { hour: 9 }; maximum-time: root.latest; }
+        }
+    "#;
+    let output = compile(source, "time-field.xr").unwrap();
+    for op in [
+        "xr.time_parse_iso",
+        "xr.time_is_valid_iso",
+        "xr.time_in_range",
+        "xr.time_format_iso",
+        r#"name = "maximum-time""#,
+    ] {
+        assert!(output.mlir.contains(op), "{op}");
+    }
+    assert!(
+        compile(
+            &source.replace("maximum-time: root.latest", "maximum-time: 17"),
+            "time-field.xr"
+        )
+        .is_err()
+    );
+    assert!(
+        compile(
+            &source.replace("TimePickerPopup", "TimePicker"),
+            "time-field.xr"
+        )
+        .is_err()
+    );
+    let raw = lower(
+        r#"export component App inherits Window { TimePickerPopup { show-seconds: true; } }"#,
+        "time-field.xr",
+    );
+    let raw = raw.replace(r#"name = "show-seconds""#, r#"name = "minimum-time""#);
+    assert!(
+        mlir::process(&raw)
+            .unwrap_err()
+            .contains("time bounds require a Time on TimePickerPopup")
+    );
+}
+
+#[test]
+fn date_parsing_and_availability_lower_with_typed_fallback_and_models() {
+    let source = r#"
+        export component App inherits Window {
+            in-out property <string> text: "2024-02-29";
+            in property <Date> minimum: Date { year: 2024, month: 2, day: 5 };
+            in property <Date> maximum: Date { year: 2024, month: 4, day: 15 };
+            in-out property <[Date]> unavailable: [Date { year: 2024, month: 2, day: 29 }];
+            out property <Date> parsed: Dates.parse-iso(root.text, root.minimum);
+            out property <bool> allowed: Dates.is-selectable(root.parsed, root.minimum, root.maximum, [6, 7], root.unavailable);
+        }
+    "#;
+    let output = compile(source, "date-text.xr").unwrap();
+    for op in [
+        "xr.date_parse_iso",
+        "xr.date_is_selectable",
+        "!xr.intlist",
+        "!xr.datelist",
+    ] {
+        assert!(output.mlir.contains(op), "{op}");
+    }
+    assert!(
+        compile(
+            &source.replace("root.text, root.minimum", "false, root.minimum"),
+            "date-text.xr"
+        )
+        .is_err()
+    );
+    assert!(
+        compile(
+            &source.replace("[6, 7], root.unavailable", "[6, 7], [6]"),
+            "date-text.xr"
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn calendar_ranges_expose_typed_highlight_bindings_and_day_cell_inputs() {
+    let source = r#"
+        export component App inherits Window {
+            MonthGrid {
+                highlight-start: Date { year: 2024, month: 2, day: 27 };
+                highlight-end: Date { year: 2024, month: 3, day: 1 };
+                DayCell { visible: cell-in-range || cell-range-start || cell-range-end; }
+            }
+        }
+    "#;
+    let compiled = compile(source, "highlights.xr").unwrap();
+    for name in [
+        "highlight-start",
+        "highlight-end",
+        "cell-in-range",
+        "cell-range-start",
+        "cell-range-end",
+    ] {
+        assert!(compiled.mlir.contains(name), "{name}");
+    }
+    assert!(
+        compile(
+            &source.replace(
+                "year: 2024, month: 2, day: 27",
+                "year: true, month: 2, day: 27"
+            ),
+            "highlights.xr"
+        )
+        .is_err()
+    );
+    let raw = lower(
+        r#"export component App inherits Window { MonthGrid { week-start: 5; } }"#,
+        "highlights.xr",
+    );
+    let raw = raw.replace(r#"name = "week-start""#, r#"name = "highlight-end""#);
+    assert!(
+        mlir::process(&raw)
+            .unwrap_err()
+            .contains("calendar highlight endpoints require a Date")
+    );
+}
+
+#[test]
+fn date_month_models_and_fixed_month_grids_have_typed_ir() {
+    let source = r#"
+        export component App inherits Window {
+            in-out property <Date> start: Date { year: 2024, month: 2, day: 29 };
+            in-out property <Date> end: Date { year: 2025, month: 3, day: 2 };
+            out property <[Date]> months: Dates.months(root.start, root.end);
+            out property <int> last-index: Dates.month-index(root.start, root.end, root.end);
+            MonthGrid { fixed-month: true; display-month: root.start; }
+        }
+    "#;
+    let output = compile(source, "date-months.xr").unwrap();
+    for op in [
+        "xr.date_months",
+        "xr.date_month_index",
+        "!xr.datelist",
+        r#"name = "fixed-month""#,
+    ] {
+        assert!(output.mlir.contains(op), "{op}");
+    }
+    assert!(
+        compile(
+            &source.replace("root.start, root.end", "9, root.end"),
+            "date-months.xr"
+        )
+        .is_err()
+    );
+    assert!(compile(&source.replace("MonthGrid", "Calendar"), "date-months.xr").is_err());
+    let raw = lower(
+        r#"export component App inherits Window { MonthGrid { week-start: 1; } }"#,
+        "date-months.xr",
+    );
+    let raw = raw.replace(r#"name = "week-start""#, r#"name = "fixed-month""#);
+    assert!(
+        mlir::process(&raw)
+            .unwrap_err()
+            .contains("fixed-month requires a boolean on MonthGrid")
+    );
+}
+
+#[test]
+fn date_lists_support_models_repeats_and_typed_calendar_bindings() {
+    let source = r#"
+        export component App inherits Window {
+            in-out property <[Date]> holidays: [Date { year: 2024, month: 2, day: 29 }];
+            out property <Date> first-holiday: Model.at(root.holidays, 0, Date { year: 2024, month: 1, day: 1 });
+            pure callback echo([Date]) -> [Date];
+            echo(dates) => { dates }
+            Calendar { disabled-dates: root.holidays; }
+            for holiday in root.holidays : Text { text: "" + holiday; }
+            add := Button { clicked => { Model.append(root.holidays, Date { year: 2024, month: 3, day: 1 }); } }
+        }
+    "#;
+    let compiled = compile(source, "holidays.xr").unwrap();
+    for op in [
+        "!xr.datelist",
+        "xr.date_array",
+        "xr.model_at",
+        "xr.model_edit",
+        "xr.repeat",
+    ] {
+        assert!(compiled.mlir.contains(op), "{op}");
+    }
+    assert!(
+        compile(
+            &source.replace("disabled-dates: root.holidays", "disabled-dates: [1]"),
+            "holidays.xr"
+        )
+        .is_err()
+    );
+    let raw = lower(
+        r#"export component App inherits Window { Calendar { disabled-weekdays: [6]; } }"#,
+        "holidays.xr",
+    );
+    let raw = raw.replace(
+        r#"name = "disabled-weekdays""#,
+        r#"name = "disabled-dates""#,
+    );
+    assert!(
+        mlir::process(&raw)
+            .unwrap_err()
+            .contains("disabled-dates requires [Date]")
+    );
+}
+
+#[test]
+fn disabled_weekdays_are_typed_in_source_and_raw_mlir() {
+    let source =
+        r#"export component App inherits Window { Calendar { disabled-weekdays: [6, 7]; } }"#;
+    assert!(
+        compile(source, "weekdays.xr")
+            .unwrap()
+            .mlir
+            .contains(r#"name = "disabled-weekdays""#)
+    );
+    assert!(
+        compile(
+            &source.replace("Calendar", "WeekNumberColumn"),
+            "weekdays.xr"
+        )
+        .is_err()
+    );
+    let wrong_type = r#"export component App inherits Window { Calendar { week-start: 6; } }"#;
+    let raw = lower(wrong_type, "weekdays.xr")
+        .replace(r#"name = "week-start""#, r#"name = "disabled-weekdays""#);
+    assert!(
+        mlir::process(&raw)
+            .unwrap_err()
+            .contains("disabled-weekdays requires [int]")
+    );
+}
+
+#[test]
+fn editor_appearance_checks_types_and_owners() {
+    let source = r#"
+        export component App inherits Window {
+            editor := LineEdit { padding-left: 16px; placeholder-text-color: #ffb554; }
+        }
+    "#;
+    let output = compile(source, "appearance.xr").unwrap();
+    assert!(output.mlir.contains(r#"name = "padding-left""#));
+    assert!(output.mlir.contains(r#"name = "placeholder-text-color""#));
+    assert!(compile(&source.replace("LineEdit", "Rectangle"), "appearance.xr").is_err());
+    assert!(compile(&source.replace("16px", "false"), "appearance.xr").is_err());
+    let invalid = lower(
+        &source.replace(
+            "placeholder-text-color: #ffb554;",
+            "placeholder-text: \"hint\";",
+        ),
+        "appearance.xr",
+    )
+    .replace(
+        r#"name = "placeholder-text""#,
+        r#"name = "placeholder-text-color""#,
+    );
+    assert!(
+        mlir::process(&invalid)
+            .unwrap_err()
+            .contains("incorrect text editor appearance property or type")
+    );
+}
+
+#[test]
+fn password_character_checks_element_and_type_in_source_and_mlir() {
+    let source = r#"
+        export component App inherits Window {
+            editor := LineEdit { input-type: password; password-character: "🔒"; }
+        }
+    "#;
+    let output = compile(source, "password-character.xr").unwrap();
+    assert!(output.mlir.contains(r#"name = "password-character""#));
+    assert!(compile(&source.replace(r#""🔒""#, "true"), "password-character.xr").is_err());
+    let wrong_element = source
+        .replace("LineEdit", "TextArea")
+        .replace("input-type: password;", "");
+    assert!(compile(&wrong_element, "password-character.xr").is_err());
+    let wrong_type = lower(
+        &source.replace(r#"password-character: "🔒";"#, "password-visible: true;"),
+        "password-character.xr",
+    );
+    let invalid = wrong_type.replace(
+        r#"name = "password-visible""#,
+        r#"name = "password-character""#,
+    );
+    assert!(
+        mlir::process(&invalid)
+            .unwrap_err()
+            .contains("incorrect password input property or type")
+    );
+}
+
+#[test]
+fn password_mask_delay_checks_raw_mlir_and_source_types() {
+    let source = r#"
+        export component App inherits Window {
+            editor := LineEdit { input-type: password; password-mask-delay: 750; }
+        }
+    "#;
+    let output = compile(source, "password-mask-delay.xr").unwrap();
+    assert!(output.mlir.contains(r#"name = "password-mask-delay""#));
+    assert!(compile(&source.replace("750", "true"), "password-mask-delay.xr").is_err());
+    let invalid = lower(
+        &source.replace("password-mask-delay: 750;", "password-visible: true;"),
+        "password-mask-delay.xr",
+    )
+    .replace(
+        r#"name = "password-visible""#,
+        r#"name = "password-mask-delay""#,
+    );
+    assert!(
+        mlir::process(&invalid)
+            .unwrap_err()
+            .contains("incorrect password input property or type")
+    );
+}
+
+#[test]
+fn input_pattern_checks_binding_types_and_reports_invalid_literals() {
+    let source = r#"
+        export component App inherits Window {
+            editor := LineEdit { input-pattern: "[A-Z]{2}-[0-9]{3}"; maximum-length: 6; }
+            out property <bool> valid: editor.acceptable-input;
+        }
+    "#;
+    let output = compile(source, "input-pattern.xr").unwrap();
+    assert!(output.mlir.contains(r#"name = "input-pattern""#));
+    assert!(output.mlir.contains("xr.text_accepts"));
+    let invalid = source.replace("[A-Z]{2}-[0-9]{3}", "[");
+    let error = compile(&invalid, "input-pattern.xr").err().unwrap();
+    assert!(error.contains("invalid input-pattern"), "{error}");
+    let oversized = source.replace("[A-Z]{2}-[0-9]{3}", "a{1000000000}");
+    assert!(
+        compile(&oversized, "input-pattern.xr")
+            .err()
+            .unwrap()
+            .contains("invalid input-pattern")
+    );
+    let wrong_type = source.replace(r#""[A-Z]{2}-[0-9]{3}""#, "true");
+    assert!(compile(&wrong_type, "input-pattern.xr").is_err());
+    let cycle = source.replace(
+        r#""[A-Z]{2}-[0-9]{3}""#,
+        r#"self.acceptable-input ? "A" : "B""#,
+    );
+    assert!(
+        compile(&cycle, "input-pattern.xr")
+            .err()
+            .unwrap()
+            .contains("cycl")
+    );
+
+    let raw = lower(
+        &source.replace(r#"input-pattern: "[A-Z]{2}-[0-9]{3}"; "#, ""),
+        "input-pattern.xr",
+    );
+    let invalid = raw.replace(r#"name = "maximum-length""#, r#"name = "input-pattern""#);
+    assert_ne!(raw, invalid);
+    assert!(
+        mlir::process(&invalid)
+            .unwrap_err()
+            .contains("input-pattern requires a string")
+    );
+}
+
+#[test]
+fn text_editing_commands_check_operand_types_and_read_only_targets() {
+    let source = r#"
+        export component App inherits Window {
+            field := LineEdit {}
+            button := Button {
+                clicked => {
+                    field.insert-text(3, "note");
+                    field.replace-text(1, 2, "é");
+                    field.remove-text(0, 1);
+                    field.append-text("!");
+                    field.clear-text();
+                }
+            }
+        }
+    "#;
+    let output = compile(source, "text-commands.xr").unwrap();
+    assert!(output.mlir.contains(r#"method = "replace-text""#));
+    assert!(output.mlir.contains("!xr.string"));
+    assert!(
+        compile(&source.replace(r#"3, "note""#, "3, 4"), "text-commands.xr")
+            .err()
+            .unwrap()
+            .contains("type mismatch")
+    );
+    assert!(
+        compile(
+            &source.replace("LineEdit", "StyledText"),
+            "text-commands.xr"
+        )
+        .is_err()
+    );
+    let raw = lower(source, "text-commands.xr");
+    let bad = raw.replace(r#"method = "replace-text""#, r#"method = "remove-text""#);
+    assert_ne!(raw, bad);
+    assert!(
+        mlir::process(&bad)
+            .unwrap_err()
+            .contains("valid text edit signature")
+    );
+}
+
+#[test]
+fn text_selection_colors_are_bound_and_type_checked() {
+    let source = r#"
+        export component App inherits Window {
+            in-out property <color> ink: #ffe600;
+            LineEdit { selection-color: #603fa2; selected-text-color: root.ink; }
+            TextArea { selection-color: #603fa2; selected-text-color: root.ink; }
+            StyledText { selectable: true; selected-text-color: root.ink; }
+        }
+    "#;
+    let output = compile(source, "selection-colors.xr").unwrap();
+    assert!(output.mlir.contains(r#"name = "selected-text-color""#));
+    assert!(
+        compile(&source.replace("root.ink", "true"), "selection-colors.xr")
+            .err()
+            .unwrap()
+            .contains("type mismatch")
+    );
+    assert!(compile(&source.replace("TextArea", "Label"), "selection-colors.xr").is_err());
+    let raw = lower(source, "selection-colors.xr");
+    let invalid = raw.replace(r#"kind = "LineEdit""#, r#"kind = "Label""#);
+    assert_ne!(raw, invalid);
+    assert!(
+        mlir::process(&invalid)
+            .unwrap_err()
+            .contains("requires a color on a text editor or StyledText")
+    );
+}
+
+#[test]
+fn styled_text_selectable_enables_read_only_text_commands() {
+    let source = r#"
+        export component App inherits Window {
+            out property <string> selected: doc.selected-text;
+            doc := StyledText { selectable: true; text: @markdown("**Bold** [link](#a)"); }
+            trigger := Button { clicked => { doc.focus(); doc.select-all(); doc.copy(); } }
+        }
+    "#;
+    let output = compile(source, "selectable.xr").unwrap();
+    assert!(output.mlir.contains(r#"name = "selectable""#));
+    assert!(output.mlir.contains(r#"method = "copy""#));
+    assert!(
+        compile(
+            &source.replace("doc.copy()", "doc.paste()"),
+            "selectable.xr"
+        )
+        .is_err()
+    );
+    let raw = lower(source, "selectable.xr");
+    let invalid = raw.replace(r#"method = "copy""#, r#"method = "paste""#);
+    assert_ne!(invalid, raw);
+    assert!(mlir::process(&invalid).is_err());
+}
+
+#[test]
+fn persistent_selection_is_a_boolean_editor_binding() {
+    let source = r#"
+        export component App inherits Window {
+            TextArea { persistent-selection: true; }
+            LineEdit { persistent-selection: false; }
+            ComboBox { editable: true; persistent-selection: true; }
+        }
+    "#;
+    assert!(compile(source, "persistent.xr").is_ok());
+    assert!(
+        compile(&source.replace("TextArea", "Label"), "persistent.xr")
+            .err()
+            .unwrap()
+            .contains("persistent-selection")
+    );
+    assert!(
+        compile(
+            &source.replace("persistent-selection: true", "persistent-selection: 2"),
+            "persistent.xr"
+        )
+        .err()
+        .unwrap()
+        .contains("type mismatch")
+    );
+    let raw = lower(source, "persistent.xr");
+    let bad = raw.replacen(r#"kind = "TextArea""#, r#"kind = "Label""#, 1);
+    assert_ne!(raw, bad);
+    assert!(
+        mlir::process(&bad)
+            .unwrap_err()
+            .contains("persistent-selection requires a boolean on a text editor")
+    );
+}
+
+#[test]
+fn editor_overwrite_and_select_word_are_checked() {
+    let source = r#"
+        export component Editor inherits Window {
+            in-out property <bool> overwrite: true;
+            line := LineEdit { overwrite-mode: root.overwrite; }
+            TextArea { overwrite-mode: true; }
+            ComboBox { editable: true; overwrite-mode: root.overwrite; }
+            select-tool := Button { clicked => { line.select-word(); } }
+        }
+    "#;
+    let compiled = compile(source, "overwrite.xr").unwrap();
+    assert!(compiled.mlir.contains(r#"name = "overwrite-mode""#));
+    assert!(compiled.mlir.contains(r#"method = "select-word""#));
+    for (from, to, expected) in [
+        ("TextArea {", "Label {", "overwrite-mode"),
+        (
+            "overwrite-mode: true",
+            "overwrite-mode: 10",
+            "type mismatch",
+        ),
+        (
+            "line.select-word()",
+            "line.select-word(1)",
+            "expects 0 arguments",
+        ),
+    ] {
+        let error = compile(&source.replace(from, to), "overwrite.xr")
+            .err()
+            .unwrap();
+        assert!(error.contains(expected), "{error}");
+    }
+    let raw = lower(source, "overwrite.xr");
+    let invalid = raw.replacen(r#"kind = "TextArea""#, r#"kind = "Label""#, 1);
+    assert_ne!(raw, invalid);
+    assert!(
+        mlir::process(&invalid)
+            .unwrap_err()
+            .contains("overwrite-mode requires")
+    );
+}
+
+#[test]
+fn mouse_selection_mode_is_checked_in_source_and_mlir() {
+    let source = r#"
+        export component App inherits Window {
+            in-out property <MouseSelectionMode> mode: MouseSelectionMode.words;
+            TextInput { mouse-selection-mode: root.mode; }
+            LineEdit { mouse-selection-mode: characters; }
+            TextEdit { mouse-selection-mode: caret; }
+            TextArea { mouse-selection-mode: root.mode; }
+            SearchField { mouse-selection-mode: root.mode; }
+            ComboBox { editable: true; mouse-selection-mode: root.mode; }
+        }
+    "#;
+    let output = compile(source, "mouse-selection.xr").unwrap();
+    assert!(output.mlir.contains("!xr.mouseselectionmode"));
+    assert!(
+        output
+            .rust
+            .to_string()
+            .contains("MouseSelectionMode :: Words")
+    );
+    for (from, to, expected) in [
+        (
+            "mouse-selection-mode: caret",
+            "mouse-selection-mode: true",
+            "type mismatch",
+        ),
+        ("LineEdit {", "Button {", "mouse-selection-mode"),
+    ] {
+        let error = compile(&source.replace(from, to), "mouse-selection.xr")
+            .err()
+            .unwrap();
+        assert!(error.contains(expected), "{error}");
+    }
+
+    let raw = lower(source, "mouse-selection.xr");
+    let bad_literal = raw.replace(r#"value = "words""#, r#"value = "unknown""#);
+    assert_ne!(raw, bad_literal);
+    assert!(mlir::process(&bad_literal).is_err());
+    let bad_control = raw.replace(r#"kind = "LineEdit""#, r#"kind = "Button""#);
+    assert_ne!(raw, bad_control);
+    assert!(
+        mlir::process(&bad_control)
+            .unwrap_err()
+            .contains("mouse-selection-mode requires")
+    );
 }
 
 #[test]

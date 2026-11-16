@@ -17,6 +17,9 @@ fn main() -> std::process::ExitCode {
         Some("--wheel") => xrack_platform_winit::run(WheelControlsDemo::new()),
         Some("--panes") => xrack_platform_winit::run(PaneFrameDemo::new()),
         Some("--calendar") => xrack_platform_winit::run(CalendarDemo::new()),
+        Some("--calendar-browser") => {
+            xrack_platform_winit::run(controls_ui::CalendarBrowserDemo::new())
+        }
         Some("--rtl-calendar") => {
             xrack_platform_winit::run(controls_ui::DirectionalCalendarDemo::new())
         }
@@ -87,6 +90,7 @@ fn main() -> std::process::ExitCode {
             xrack_platform_winit::run(controls_ui::ProgrammaticToggleDemo::new())
         }
         Some("--groups") => xrack_platform_winit::run(GroupBoxDemo::new()),
+        Some("--expander") => xrack_platform_winit::run(controls_ui::ExpanderDemo::new()),
         Some("--indicators") => xrack_platform_winit::run(IndicatorsDemo::new()),
         Some("--custom-progress") => {
             xrack_platform_winit::run(controls_ui::CustomProgressDemo::new())

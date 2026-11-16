@@ -18,6 +18,7 @@ rust_test(
         "//examples/form:form.xr",
         "//examples/form:widgets.xr",
         "//examples/layout:bundled_sources",
+        "//examples/layout:layout.xr",
         "//examples/list:list.xr",
         "//examples/media:media_sources",
         "//examples/menu:menu.xr",

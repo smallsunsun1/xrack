@@ -21,6 +21,9 @@ impl PythonValue {
             (ValueType::IntList, HostValue::StringList(value)) if value.is_empty() => {
                 HostValue::IntList(Vec::new())
             }
+            (ValueType::DateList, HostValue::StringList(value)) if value.is_empty() => {
+                HostValue::DateList(Vec::new())
+            }
             (_, value) => value,
         };
         if ty.matches(&value) {
@@ -664,6 +667,7 @@ macro_rules! bridge_values {
             PyString::TYPE_HINT,
             type_hint_subscript!(PyList::TYPE_HINT, PyString::TYPE_HINT),
             type_hint_subscript!(PyList::TYPE_HINT, PyInt::TYPE_HINT),
+            type_hint_subscript!(PyList::TYPE_HINT, Date::TYPE_HINT),
             $($wrapper::TYPE_HINT,)+
             $($name::TYPE_HINT),+
         );
@@ -687,6 +691,11 @@ macro_rules! bridge_values {
                     item.is_instance_of::<PyInt>() && !item.is_instance_of::<PyBool>()
                 }) {
                     return Ok(HostValue::IntList(value.extract()?));
+                }
+                if !list.is_empty() && list.iter().all(|item| item.is_instance_of::<Date>()) {
+                    let dates = list.iter().map(|item| Ok(item.extract::<PyRef<'_, Date>>()?.0))
+                        .collect::<PyResult<Vec<_>>>()?;
+                    return Ok(HostValue::DateList(dates));
                 }
                 return Ok(HostValue::StringList(value.extract()?));
             }
@@ -717,6 +726,8 @@ macro_rules! bridge_values {
                 HostValue::StringList(value) => convert!(value),
                 HostValue::IntList(value) => convert!(value),
                 HostValue::IntModel(model) => convert!(model.into_snapshot()),
+                HostValue::DateList(dates) => convert!(dates.into_iter().map(Date).collect::<Vec<_>>()),
+                HostValue::DateModel(model) => convert!(model.into_snapshot().into_iter().map(Date).collect::<Vec<_>>()),
                 HostValue::Image(value) => convert!(Image(value.into())),
                 // The combo projection is renderer data and has no public ValueType.
                 HostValue::ComboModel(_) => Err(PyTypeError::new_err("invalid public XRack combo projection")),
@@ -786,6 +797,8 @@ bridge_values! {
         LogLevel { Trace, Debug, Info, Warn, Error },
         MessageButtons { Ok, OkCancel, YesNo, YesNoCancel },
         MessageLevel { Info, Warning, Error },
+        MouseSelectionMode { Characters, Words, Caret },
+        InputValidity { Invalid, Intermediate, Acceptable },
         Orientation { Horizontal, Vertical },
         PointerButton { Primary, Secondary, Middle },
         PointerEventKind { Down, Move, Up, Cancel },

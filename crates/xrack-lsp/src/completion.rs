@@ -1463,7 +1463,8 @@ fn suggest<'a>(index: &Index<'a>, scope: usize, head: &[&Token<'a>], items: &mut
         let animation = first == "animate";
         for property in catalog::PROPERTIES.split_ascii_whitespace() {
             if xrack_ir::semantic::media_object_read_type(kind, property).is_some()
-                || (builtins::text_submission_editor(kind) && property == "acceptable-input")
+                || (builtins::text_submission_editor(kind)
+                    && matches!(property, "acceptable-input" | "input-validity"))
                 || (animation && builtins::text_submission_rule(kind, property))
                 || matches!(property, "content-x" | "content-y")
                     && (animation || !viewport_offset_property(kind, property))
@@ -1653,6 +1654,8 @@ fn suggest<'a>(index: &Index<'a>, scope: usize, head: &[&Token<'a>], items: &mut
                         |ty| format!("event handler ({})", ty.name()),
                     );
                     items.add(event, FUNCTION, &detail);
+                } else if event == "editing-finished" {
+                    items.add(event, FUNCTION, "event handler (string, bool)");
                 } else {
                     items.add(event, FUNCTION, "event handler");
                 }
@@ -2004,6 +2007,7 @@ fn qualified<'a>(index: &Index<'a>, scope: usize, head: &[&Token<'a>], items: &m
         if matches!(index.scopes[scope].role, Role::Handler) {
             for method in catalog::focus_methods(kind)
                 .iter()
+                .chain(catalog::text_editor_methods(kind))
                 .chain(index.button_methods(owner, kind))
                 .chain(catalog::scroll_bar_methods(kind))
             {
@@ -2097,6 +2101,7 @@ fn qualified<'a>(index: &Index<'a>, scope: usize, head: &[&Token<'a>], items: &m
                 PROPERTY,
                 "read-only bool · valid for submission",
             );
+            items.add("input-validity", PROPERTY, "read-only InputValidity");
         }
         let media_methods = catalog::media_methods(kind);
         if !media_methods.is_empty() {
@@ -2314,19 +2319,6 @@ fn qualified<'a>(index: &Index<'a>, scope: usize, head: &[&Token<'a>], items: &m
                     items.add("set-row-height", FUNCTION, "(int, length)");
                 }
             }
-        }
-        if matches!(role, Role::Handler)
-            && matches!(
-                kind,
-                "TextInput" | "LineEdit" | "TextEdit" | "TextArea" | "SearchField" | "ComboBox"
-            )
-        {
-            items.words(
-                "select-all clear-selection undo redo cut copy paste",
-                FUNCTION,
-                "()",
-            );
-            items.add("set-selection-offsets", FUNCTION, "(int, int)");
         }
     }
     if receiver.is_empty()

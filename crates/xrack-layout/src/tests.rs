@@ -1,6 +1,29 @@
 use super::*;
 use xrack_runtime::{CrossAxisAlignment, LayoutAlignment, Length, Node, Value};
 
+#[test]
+fn editor_padding_reserves_space_and_clamps_exhausted_axes() {
+    let mut editor = Node::new("LineEdit", None);
+    for (property, value) in [
+        ("padding", 8.0),
+        ("padding-left", 28.0),
+        ("padding-bottom", 20.0),
+    ] {
+        editor.properties.insert(property, Length(value).into());
+    }
+    assert_eq!(
+        text_editor_viewport(&editor, Rect::new(10.0, 20.0, 100.0, 50.0)),
+        Rect::new(38.0, 28.0, 64.0, 22.0)
+    );
+    assert_eq!(
+        text_editor_viewport(&editor, Rect::new(10.0, 20.0, 12.0, 4.0)),
+        Rect::new(22.0, 24.0, 0.0, 0.0)
+    );
+    let preferred = crate::linear::measure(&editor, Size::new(320.0, 120.0), &mut Text);
+    assert_eq!(preferred.x.preferred, 204.0);
+    assert_eq!(preferred.y.preferred, font_size(&editor) * 1.4 + 28.0);
+}
+
 struct Text;
 impl TextMeasurer for Text {
     fn measure(&mut self, text: &str, _: f32, max_width: f32) -> Size {
@@ -1243,6 +1266,77 @@ fn a_tab_close_press_cannot_activate_the_body_or_a_changed_value() {
 }
 
 #[test]
+fn editor_double_click_requires_a_completed_click_on_the_same_model_row() {
+    use std::time::{Duration, Instant};
+    use xrack_runtime::VecModel;
+
+    let mut scene = node("Window", "window");
+    let rows = VecModel::from(vec![0_i64, 1]);
+    let mut row = node("ListRow", "row");
+    row.set_row_key(rows.row_key(0));
+    length(&mut row, "height", 60.0);
+    let mut editor = node("LineEdit", "editor");
+    length(&mut editor, "width", 160.0);
+    length(&mut editor, "height", 36.0);
+    row.children.push(editor);
+    scene.children.push(row);
+    let size = Size::new(240.0, 100.0);
+    let point = Point { x: 20.0, y: 18.0 };
+    let now = Instant::now();
+    let mut input = Interaction::default();
+    let press = |input: &mut Interaction, scene: &Node, at, selecting| {
+        let frame = layout(scene, size, &mut Text);
+        input.pointer_move(scene, &frame, point);
+        input.pointer_press_in_scene(scene, &frame);
+        let target = input.pressed.clone().unwrap();
+        assert_eq!(target.path, [0, 0]);
+        input.editor_mouse_press(&target, point, at, selecting)
+    };
+    assert!(!press(&mut input, &scene, now, false));
+    assert!(input.pointer_release_target().is_some());
+    assert!(press(
+        &mut input,
+        &scene,
+        now + Duration::from_millis(85),
+        false
+    ));
+    assert!(input.pointer_release_target().is_some());
+
+    assert!(!press(
+        &mut input,
+        &scene,
+        now + Duration::from_millis(100),
+        false
+    ));
+    let frame = layout(&scene, size, &mut Text);
+    input.pointer_move(&scene, &frame, Point { x: 80.0, y: 18.0 });
+    input.pointer_move(&scene, &frame, point);
+    assert!(input.pointer_release_target().is_some());
+    assert!(!press(
+        &mut input,
+        &scene,
+        now + Duration::from_millis(150),
+        false
+    ));
+    assert!(input.pointer_release_target().is_some());
+
+    scene.children[0].set_row_key(rows.row_key(1));
+    assert!(!press(
+        &mut input,
+        &scene,
+        now + Duration::from_millis(200),
+        false
+    ));
+    assert!(input.pointer_release_target().is_some());
+    assert!(!press(
+        &mut input,
+        &scene,
+        now + Duration::from_millis(300),
+        true
+    ));
+}
+
+#[test]
 fn stack_layout_measures_the_stack_and_places_only_the_current_child() {
     let mut stack = node("StackLayout", "layers");
     length(&mut stack, "padding", 5.0);
@@ -2309,6 +2403,110 @@ fn swipe_view_yields_to_a_scrollable_page_until_the_next_gesture_at_its_edge() {
 }
 
 #[test]
+fn swipe_release_distinguishes_flicks_pauses_and_reversals_in_the_local_axis() {
+    use std::time::{Duration, Instant};
+    use xrack_runtime::ControlAction;
+
+    for (axis, direction, rotation) in [
+        (Orientation::Horizontal, LayoutDirection::LeftToRight, 0.0),
+        (Orientation::Horizontal, LayoutDirection::RightToLeft, 0.0),
+        (Orientation::Vertical, LayoutDirection::RightToLeft, 0.0),
+        (Orientation::Horizontal, LayoutDirection::LeftToRight, 90.0),
+    ] {
+        let mut scene = node("Window", "window");
+        let mut view = node("SwipeView", "pages");
+        for (property, value) in [
+            ("x", 120.0),
+            ("y", 120.0),
+            ("width", 400.0),
+            ("height", 400.0),
+        ] {
+            length(&mut view, property, value);
+        }
+        view.properties.extend([
+            ("orientation", axis.into()),
+            ("layout-direction", direction.into()),
+            ("transform-rotation", rotation.into()),
+        ]);
+        let mut hidden = node("SwipePage", "hidden");
+        boolean(&mut hidden, "visible", false);
+        view.children.extend([
+            node("SwipePage", "one"),
+            hidden,
+            node("SwipePage", "three"),
+            node("SwipePage", "four"),
+        ]);
+        scene.children.push(view);
+        let frame = layout(&scene, Size::new(640.0, 640.0), &mut Text);
+        let view = frame.at_path(&[0]).unwrap();
+        let start = Point { x: 320.0, y: 320.0 };
+        let mirrored = axis == Orientation::Horizontal && direction == LayoutDirection::RightToLeft;
+        let point = |along: f32, across: f32| {
+            let movement = if mirrored { -along } else { along };
+            let local = match axis {
+                Orientation::Horizontal => Point {
+                    x: start.x - movement,
+                    y: start.y - across,
+                },
+                Orientation::Vertical => Point {
+                    x: start.x - across,
+                    y: start.y - movement,
+                },
+            };
+            view.map_to_window(local)
+        };
+        // Points are (along, across, elapsed milliseconds) in the view's local coordinates.
+        let gesture = |moves: &[(f32, f32, u64)], release_ms| {
+            let mut input = Interaction::default();
+            let now = Instant::now();
+            assert!(input.begin_scroll_gesture(
+                &scene,
+                &frame,
+                point(0.0, 0.0),
+                now,
+                ScrollGestureKind::Touch
+            ));
+            for &(along, across, at) in moves {
+                input.move_scroll_gesture(
+                    &scene,
+                    &frame,
+                    point(along, across),
+                    now + Duration::from_millis(at),
+                );
+            }
+            let &(along, across, _) = moves.last().unwrap();
+            let released = input.end_scroll_gesture(
+                &scene,
+                &frame,
+                point(along, across),
+                now + Duration::from_millis(release_ms),
+            );
+            assert!(!released.tap);
+            released.control.map(|control| {
+                assert_eq!(control.path, [0]);
+                control.action
+            })
+        };
+
+        let next = Some(ControlAction::Select(2));
+        let fast = [(18.0, 0.0, 12), (35.0, 0.0, 24)];
+        assert_eq!(
+            gesture(&fast, 30),
+            next,
+            "{axis:?} {direction:?} {rotation}"
+        );
+        assert_eq!(gesture(&fast, 120), None);
+        assert_eq!(gesture(&[(18.0, 0.0, 100), (35.0, 0.0, 200)], 205), None);
+        assert_eq!(gesture(&[(35.0, 0.0, 12)], 30), None);
+        assert_eq!(gesture(&[(9.0, 0.0, 1), (14.0, 0.0, 2)], 3), None);
+        assert_eq!(gesture(&[(18.0, 0.0, 12), (35.0, 19.0, 24)], 30), None);
+        assert_eq!(gesture(&[(100.0, 0.0, 18), (66.0, 0.0, 32)], 37), None);
+        assert_eq!(gesture(&[(100.0, 0.0, 18), (66.0, 0.0, 32)], 130), next);
+        assert_eq!(gesture(&[(180.0, 0.0, 20)], 40), next);
+    }
+}
+
+#[test]
 fn swipe_gesture_cancels_when_a_model_change_replaces_its_destination() {
     use std::time::{Duration, Instant};
     use xrack_runtime::{ControlAction, VecModel};
@@ -2739,6 +2937,125 @@ fn vertical_scrolling_from_the_side_of_a_window_does_not_open_a_drawer() {
             .get(&[][..])
             .is_some_and(|offset| *offset > 70.0)
     );
+}
+
+#[test]
+fn calendar_paging_matches_recycled_rows_without_a_viewport_handle() {
+    use std::rc::Rc;
+    use xrack_runtime::{ListMetrics, ListModel, VecModel};
+
+    fn page(model: &Rc<VecModel<i64>>, index: usize) -> Node {
+        let mut list = node("ListView", "months");
+        list.standard_list_stamp = Some(ListModel::structure_stamp(&**model));
+        list.list = Some(ListMetrics {
+            row_count: model.len(),
+            first_row: index,
+        });
+        length(&mut list, "row-height", 180.0);
+        let mut row = Node::new("ListRow", None);
+        row.set_row_key(model.row_key(index));
+        let mut grid = node("MonthGrid", "month");
+        boolean(&mut grid, "fixed-month", true);
+        length(&mut grid, "width", 200.0);
+        length(&mut grid, "height", 160.0);
+        row.children.push(grid);
+        list.children.push(row);
+        list
+    }
+
+    let model = Rc::new(VecModel::from(vec![1, 2, 3]));
+    let size = Size::new(230.0, 180.0);
+    let mut input = Interaction::default();
+    let january = page(&model, 0);
+    let frame = layout_with_input(&january, size, &mut Text, &input);
+    let focused = input
+        .accessibility_target(&january, &frame, &[0, 0])
+        .unwrap();
+    input.focus_target(&january, &frame, focused);
+    assert!(input.calendar_page_key(&january, &frame, NavigationKey::PageDown));
+    assert_eq!(input.scroll_offsets().get(&[][..]), Some(&180.0));
+    let february = page(&model, 1);
+    let frame = layout_with_input(&february, size, &mut Text, &input);
+    input.reconcile(&february, &frame);
+    assert_eq!(input.focused.as_ref().unwrap().row_key, model.row_key(1));
+    assert!(input.calendar_page_key(&february, &frame, NavigationKey::PageUp));
+
+    let replacement = page(&Rc::new(VecModel::from(vec![1, 2, 3])), 0);
+    let frame = layout_with_input(&replacement, size, &mut Text, &input);
+    input.reconcile(&replacement, &frame);
+    assert!(
+        input
+            .focused
+            .as_ref()
+            .is_none_or(|target| target.element_id() != Some("month"))
+    );
+}
+
+#[test]
+fn retained_selection_follows_its_row_and_clears_when_removed() {
+    use xrack_runtime::{FocusHandle, ListMetrics, TextCommand, VecModel};
+
+    let model = VecModel::from(vec![0, 1]);
+    let mut list = node("ListView", "list");
+    list.list = Some(ListMetrics {
+        row_count: 2,
+        first_row: 0,
+    });
+    length(&mut list, "height", 70.0);
+    length(&mut list, "row-height", 30.0);
+    let selected = FocusHandle::with_text_selection();
+    for index in 0..2 {
+        let mut row = Node::new("ListRow", None);
+        row.set_row_key(model.row_key(index));
+        let mut editor = node("LineEdit", "editor");
+        editor.focus_handle = Some(if index == 0 {
+            selected.clone()
+        } else {
+            FocusHandle::default()
+        });
+        editor.properties.insert("text", "same".to_owned().into());
+        boolean(&mut editor, "persistent-selection", true);
+        length(&mut editor, "width", 120.0);
+        length(&mut editor, "height", 28.0);
+        row.children.push(editor);
+        list.children.push(row);
+    }
+    let mut toolbar = button("toolbar");
+    length(&mut toolbar, "y", 80.0);
+    let mut scene = Node::new("Window", None);
+    scene.children = vec![list, toolbar];
+    let size = Size::new(200.0, 110.0);
+    let frame = layout(&scene, size, &mut Text);
+    let mut input = Interaction::default();
+    for path in [&[0, 0, 0][..], &[1][..]] {
+        let target = input.accessibility_target(&scene, &frame, path).unwrap();
+        input.focus_target(&scene, &frame, target);
+        input.sync_editor(&scene);
+        if path.len() == 3 {
+            input.apply_text_selection(&scene, TextCommand::SelectAll);
+        }
+    }
+    assert_eq!(selected.selected_text(), "same");
+    scene.children[0].children.swap(0, 1);
+    let frame = layout(&scene, size, &mut Text);
+    input.reconcile(&scene, &frame);
+    for (row, expected) in [(0, None), (1, Some(0..4))] {
+        let path = [0, row, 0];
+        let editor = scene.at_path(&path).unwrap();
+        assert_eq!(
+            input
+                .displayed_editor(editor, &path)
+                .map(|edit| edit.selection("same")),
+            expected,
+        );
+    }
+    scene.children[0].children.pop();
+    if let Some(list) = &mut scene.children[0].list {
+        list.row_count = 1;
+    }
+    let frame = layout(&scene, size, &mut Text);
+    input.reconcile(&scene, &frame);
+    assert_eq!(selected.selected_text(), "");
 }
 
 #[test]

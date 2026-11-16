@@ -10,6 +10,7 @@ use xrack_runtime::{
 pub(crate) enum Model {
     Count(i64),
     Integers(VecModel<i64>),
+    Dates(VecModel<xrack_runtime::Date>),
     Strings(VecModel<String>),
     Records(xrack_runtime::RecordList),
     Touches(xrack_runtime::TouchPoints),
@@ -19,6 +20,7 @@ impl Model {
     pub(crate) fn move_row(&self, from: usize, to: usize) -> bool {
         match self {
             Self::Integers(rows) => rows.move_row(from, to),
+            Self::Dates(rows) => rows.move_row(from, to),
             Self::Strings(rows) => rows.move_row(from, to),
             Self::Records(rows) => rows.model().move_row(from, to),
             Self::Count(_) | Self::Touches(_) => false,
@@ -50,6 +52,12 @@ pub(crate) fn edit_model(
                 _ => Err(invalid()),
             })?
             .apply(&rows),
+        Value::DateModel(rows) => edit
+            .try_map(|value| match value {
+                Value::Date(value) => Ok(value),
+                _ => Err(invalid()),
+            })?
+            .apply(&rows),
         Value::StringModel(rows) => edit
             .try_map(|value| match value {
                 Value::String(value) => Ok(value),
@@ -74,6 +82,7 @@ impl ListModel for Model {
         match self {
             Self::Count(count) => count.row_count(),
             Self::Integers(rows) => rows.row_count(),
+            Self::Dates(rows) => rows.row_count(),
             Self::Strings(rows) => rows.row_count(),
             Self::Records(records) => records.model().row_count(),
             Self::Touches(points) => points.row_count(),
@@ -84,6 +93,7 @@ impl ListModel for Model {
         match self {
             Self::Count(count) => Value::Int(count.item(row)),
             Self::Integers(rows) => rows.item(row).into(),
+            Self::Dates(rows) => rows.item(row).into(),
             Self::Strings(rows) => rows.item(row).into(),
             Self::Records(records) => Value::Record(records.model().item(row)),
             Self::Touches(points) => Value::TouchPoint(points.item(row)),
@@ -94,6 +104,7 @@ impl ListModel for Model {
         match self {
             Self::Count(count) => count.track_item(row),
             Self::Integers(rows) => rows.track_item(row),
+            Self::Dates(rows) => rows.track_item(row),
             Self::Strings(rows) => rows.track_item(row),
             Self::Records(records) => records.model().track_item(row),
             Self::Touches(points) => points.track_item(row),
@@ -104,6 +115,7 @@ impl ListModel for Model {
         match self {
             Self::Count(count) => count.row_key(row),
             Self::Integers(rows) => ListModel::row_key(rows, row),
+            Self::Dates(rows) => ListModel::row_key(rows, row),
             Self::Strings(rows) => ListModel::row_key(rows, row),
             Self::Records(records) => ListModel::row_key(records.model(), row),
             Self::Touches(points) => points.row_key(row),
@@ -114,6 +126,7 @@ impl ListModel for Model {
         match self {
             Self::Count(count) => count.visit_row_keys(range, visit),
             Self::Integers(rows) => ListModel::visit_row_keys(rows, range, visit),
+            Self::Dates(rows) => ListModel::visit_row_keys(rows, range, visit),
             Self::Strings(rows) => ListModel::visit_row_keys(rows, range, visit),
             Self::Records(records) => ListModel::visit_row_keys(records.model(), range, visit),
             Self::Touches(points) => points.visit_row_keys(range, visit),
@@ -124,6 +137,7 @@ impl ListModel for Model {
         match self {
             Self::Count(count) => count.index_of_key(key),
             Self::Integers(rows) => ListModel::index_of_key(rows, key),
+            Self::Dates(rows) => ListModel::index_of_key(rows, key),
             Self::Strings(rows) => ListModel::index_of_key(rows, key),
             Self::Records(records) => ListModel::index_of_key(records.model(), key),
             Self::Touches(points) => points.index_of_key(key),
@@ -134,6 +148,7 @@ impl ListModel for Model {
         match self {
             Self::Count(count) => count.row_lifetime(key),
             Self::Integers(rows) => ListModel::row_lifetime(rows, key),
+            Self::Dates(rows) => ListModel::row_lifetime(rows, key),
             Self::Strings(rows) => ListModel::row_lifetime(rows, key),
             Self::Records(records) => ListModel::row_lifetime(records.model(), key),
             Self::Touches(points) => points.row_lifetime(key),
@@ -144,6 +159,7 @@ impl ListModel for Model {
         match self {
             Self::Count(count) => count.structure_stamp(),
             Self::Integers(rows) => ListModel::structure_stamp(rows),
+            Self::Dates(rows) => ListModel::structure_stamp(rows),
             Self::Strings(rows) => ListModel::structure_stamp(rows),
             Self::Records(records) => ListModel::structure_stamp(records.model()),
             Self::Touches(points) => points.structure_stamp(),
@@ -154,6 +170,7 @@ impl ListModel for Model {
         match self {
             Self::Count(count) => count.contents_stamp(),
             Self::Integers(rows) => rows.contents_stamp(),
+            Self::Dates(rows) => rows.contents_stamp(),
             Self::Strings(rows) => rows.contents_stamp(),
             Self::Records(records) => records.model().contents_stamp(),
             Self::Touches(points) => points.contents_stamp(),
@@ -206,6 +223,8 @@ impl RepeatState {
                 Value::Int(count) => Ok(Model::Count(count)),
                 Value::IntModel(model) => Ok(Model::Integers(model)),
                 Value::IntList(items) => Ok(Model::Integers(items.into())),
+                Value::DateModel(model) => Ok(Model::Dates(model)),
+                Value::DateList(items) => Ok(Model::Dates(items.into())),
                 Value::StringModel(model) => Ok(Model::Strings(model)),
                 Value::StringList(items) => Ok(Model::Strings(VecModel::from(items))),
                 Value::RecordList(records) => Ok(Model::Records(records)),

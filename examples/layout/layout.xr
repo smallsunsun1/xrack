@@ -669,6 +669,8 @@ export component StyledTextDemo inherits Window {
     in-out property <styled-text> body: @markdown("# 发布说明\n\n**粗体**、*斜体*、[`xrackc`](#compiler) 和 ~~已弃用~~。\n\n**مرحبا** بكم في XRack · [阅读手册](#manual)");
     in-out property <bool> compact: false;
     in-out property <bool> links-enabled: true;
+    in-out property <bool> selectable: false;
+    out property <string> selected: body-label.selected-text;
     out property <string> last-link: "";
 
     Label {
@@ -681,6 +683,7 @@ export component StyledTextDemo inherits Window {
         color: #e8f2ff;
         link-color: #84d8ff;
         enabled: root.links-enabled;
+        selectable: root.selectable;
         max-lines: root.compact ? 2 : 5;
         overflow: elide;
         text: root.body;
@@ -688,7 +691,9 @@ export component StyledTextDemo inherits Window {
     }
     Label {
         x: 24px; y: 212px; width: 412px; overflow: elide;
-        text: root.last-link == "" ? "用 Tab 和 Enter 打开链接" : "已激活 " + root.last-link;
+        text: root.last-link == ""
+            ? (root.selectable ? "拖选文字，用系统复制快捷键复制，点按链接打开" : "用 Tab 和 Enter 打开链接")
+            : "已激活 " + root.last-link;
     }
     CheckBox {
         x: 24px; y: 236px; width: 412px; height: 30px;

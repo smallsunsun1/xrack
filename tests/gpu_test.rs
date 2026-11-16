@@ -1397,6 +1397,476 @@ fn preview_calendar_keyboard_commits_only_the_accepted_popup_draft() {
 }
 
 #[test]
+fn expander_reflows_the_group_preserves_drafts_and_rejects_stale_child_input() {
+    use controls_ui::ExpanderDemo;
+    use xrack_renderer_femtovg::preview::PreviewScene;
+    use xrack_runtime::KeyEvent;
+
+    fn exercise(
+        renderer: &mut Renderer,
+        mut ui: Box<dyn Component>,
+        mut programmatic: impl FnMut(bool),
+    ) {
+        let group = [1, 1];
+        let collapsed = ui.render_shared();
+        assert!(ui.control_at(&collapsed, &group, ControlAction::Expander(true)));
+        let stale = ui.render_shared();
+        assert!(!ui.control_at(&stale, &group, ControlAction::Expander(true)));
+        assert!(stale.at_path(&[1, 1, 0, 1]).is_some());
+        programmatic(false);
+        assert!(!ui.dispatch_at(&stale, &[1, 1, 0, 1], "clicked"));
+
+        let mut preview = PreviewScene::new(ui);
+        preview.render_animated(renderer).unwrap();
+        let after_y = |preview: &PreviewScene| {
+            preview
+                .inspect_frame()
+                .unwrap()
+                .1
+                .at_path(&[1, 2])
+                .unwrap()
+                .bounds
+                .y
+        };
+        let draft = |preview: &PreviewScene| {
+            preview
+                .inspect_frame()
+                .unwrap()
+                .0
+                .find("after-details")
+                .unwrap()
+                .text("text")
+                .unwrap()
+                .to_owned()
+        };
+        let collapsed_y = after_y(&preview);
+        let (scene, layout, _) = preview.inspect_frame().unwrap();
+        assert!(scene.find("endpoint").is_none());
+        let header = layout
+            .at_path(&group)
+            .unwrap()
+            .group_header(scene.at_path(&group).unwrap());
+        preview.click(Point {
+            x: header.x + 10.0,
+            y: header.y + 10.0,
+        });
+        preview.render_animated(renderer).unwrap();
+        assert!(after_y(&preview) > collapsed_y);
+        let area = preview
+            .inspect_frame()
+            .unwrap()
+            .1
+            .at_path(&[1, 1, 0, 0])
+            .unwrap()
+            .bounds;
+        preview.click(Point {
+            x: area.x + 20.0,
+            y: area.y + 10.0,
+        });
+        preview.render_animated(renderer).unwrap();
+        preview.edit(EditAction::SelectAll);
+        preview.paste("draft.example");
+        preview.render_animated(renderer).unwrap();
+        let key = |preview: &mut PreviewScene, renderer: &mut Renderer, name: &str| {
+            let event = KeyEvent {
+                key: name.into(),
+                ..Default::default()
+            };
+            preview.keyboard(renderer, &event, true);
+            preview.keyboard(renderer, &event, false);
+            preview.render_animated(renderer).unwrap();
+        };
+        key(&mut preview, renderer, "F8");
+        let (scene, _, focus) = preview.inspect_frame().unwrap();
+        assert_eq!(focus, Some(group.as_slice()));
+        assert!(scene.find("endpoint").is_none());
+        assert_eq!(after_y(&preview), collapsed_y);
+        assert_eq!(draft(&preview), "草稿 · draft.example");
+        key(&mut preview, renderer, "Enter");
+        assert_eq!(
+            preview
+                .inspect_frame()
+                .unwrap()
+                .0
+                .find("endpoint")
+                .unwrap()
+                .text("text"),
+            Some("draft.example")
+        );
+        key(&mut preview, renderer, " ");
+        assert!(
+            preview
+                .inspect_frame()
+                .unwrap()
+                .0
+                .find("endpoint")
+                .is_none()
+        );
+    }
+
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))
+    .unwrap();
+    let aot = ExpanderDemo::new();
+    let mut handle = aot.as_weak().upgrade().unwrap();
+    exercise(&mut renderer, Box::new(aot), |value| {
+        handle.set_details_open(value)
+    });
+    assert_eq!(handle.get_expansion_changes(), 4);
+    assert_eq!(handle.get_saves(), 0);
+    let interpreter = interpret_example("examples/controls/controls.xr")
+        .create("ExpanderDemo")
+        .unwrap();
+    let handle = interpreter.clone();
+    exercise(&mut renderer, Box::new(interpreter), |value| {
+        handle.set("details-open", value.into()).unwrap()
+    });
+    assert_eq!(
+        handle.get("expansion-changes").unwrap(),
+        xrack_runtime::Value::Int(4)
+    );
+    assert_eq!(handle.get("saves").unwrap(), xrack_runtime::Value::Int(0));
+}
+
+#[test]
+fn calendar_browser_virtualizes_months_and_keeps_each_grid_fixed() {
+    use controls_ui::CalendarBrowserDemo;
+    use xrack_layout::{CalendarGeometry, LayoutNode};
+    use xrack_renderer_femtovg::preview::PreviewScene;
+    use xrack_runtime::{Date, Node};
+
+    fn visible_months(node: &Node, layout: &LayoutNode) -> Vec<Date> {
+        if !layout.visible {
+            return Vec::new();
+        }
+        node.date("display-month")
+            .filter(|_| node.kind == "MonthGrid")
+            .into_iter()
+            .chain(node.materialized_children().flat_map(|(index, child)| {
+                layout
+                    .child_at(index)
+                    .map_or_else(Vec::new, |item| visible_months(child, item))
+            }))
+            .collect()
+    }
+
+    fn grid_at<'a>(
+        node: &'a Node,
+        layout: &'a LayoutNode,
+        month: Date,
+    ) -> Option<(&'a Node, &'a LayoutNode)> {
+        if node.kind == "MonthGrid" && node.date("display-month") == Some(month) {
+            return Some((node, layout));
+        }
+        node.materialized_children()
+            .find_map(|(index, child)| grid_at(child, layout.child_at(index)?, month))
+    }
+
+    fn exercise(renderer: &mut Renderer, component: Box<dyn Component>, reverse: impl FnOnce()) {
+        let date = |year, month, day| Date::new(year, month, day).unwrap();
+        let february = date(2024, 2, 1);
+        let march = date(2024, 3, 1);
+        let mut preview = PreviewScene::new(component);
+        preview.render_animated(renderer).unwrap();
+        let (scene, layout, _) = preview.inspect_frame().unwrap();
+        assert_eq!(
+            scene.find("months-view").unwrap().list.unwrap().row_count,
+            1200
+        );
+        let before = visible_months(scene, layout);
+        assert!(before.contains(&february) && before.contains(&march));
+        assert!(before.len() <= 3, "{before:?}");
+        let (grid, layout) = grid_at(scene, layout, february).unwrap();
+        let geometry = CalendarGeometry::for_layout(grid, layout);
+        assert!(
+            !geometry
+                .days()
+                .find(|day| day.date == march)
+                .unwrap()
+                .enabled
+        );
+        assert!(
+            !geometry
+                .days()
+                .find(|day| day.date == date(2024, 2, 29))
+                .unwrap()
+                .enabled
+        );
+        let (scene, layout, _) = preview.inspect_frame().unwrap();
+        let (grid, layout) = grid_at(scene, layout, march).unwrap();
+        let geometry = CalendarGeometry::for_layout(grid, layout);
+        let friday = geometry.days().find(|day| day.date == march).unwrap();
+        assert!(friday.enabled);
+        preview.click(Point {
+            x: friday.bounds.x + 4.0,
+            y: friday.bounds.y + 4.0,
+        });
+        preview.render_animated(renderer).unwrap();
+        let (scene, layout, _) = preview.inspect_frame().unwrap();
+        assert_eq!(
+            grid_at(scene, layout, february).unwrap().0.date("date"),
+            Some(march)
+        );
+        assert_eq!(
+            grid_at(scene, layout, march).unwrap().0.date("date"),
+            Some(march)
+        );
+        let initial_row = scene.find("months-view").unwrap().int("current-index");
+        let april = date(2024, 4, 1);
+        let key = |preview: &mut PreviewScene, renderer: &mut Renderer, name: &str| {
+            let event = xrack_runtime::KeyEvent {
+                key: name.into(),
+                ..Default::default()
+            };
+            assert!(preview.keyboard(renderer, &event, true));
+            preview.keyboard(renderer, &event, false);
+            preview.render_animated(renderer).unwrap();
+        };
+        let focused_month = |preview: &PreviewScene| {
+            let (scene, _, focus) = preview.inspect_frame().unwrap();
+            focus
+                .and_then(|path| scene.at_path(path))
+                .and_then(|node| node.date("display-month"))
+        };
+        key(&mut preview, renderer, "PageDown");
+        assert_eq!(focused_month(&preview), Some(april));
+        let (scene, layout, _) = preview.inspect_frame().unwrap();
+        assert_eq!(
+            grid_at(scene, layout, april).unwrap().0.date("date"),
+            Some(march)
+        );
+        assert_eq!(
+            scene.find("months-view").unwrap().int("current-index"),
+            initial_row
+        );
+        key(&mut preview, renderer, "Enter");
+        let (scene, layout, _) = preview.inspect_frame().unwrap();
+        assert_eq!(
+            grid_at(scene, layout, april).unwrap().0.date("date"),
+            Some(april)
+        );
+        key(&mut preview, renderer, "PageUp");
+        assert_eq!(focused_month(&preview), Some(march));
+        key(&mut preview, renderer, "PageUp");
+        assert_eq!(focused_month(&preview), Some(february));
+        key(&mut preview, renderer, "PageUp");
+        assert_eq!(focused_month(&preview), Some(february));
+        preview.click(Point { x: 155.0, y: 62.0 });
+        preview.render_animated(renderer).unwrap();
+        let (scene, layout, _) = preview.inspect_frame().unwrap();
+        let (grid, item) = grid_at(scene, layout, march).unwrap();
+        let geometry = CalendarGeometry::for_layout(grid, item);
+        let monday = geometry
+            .days()
+            .find(|day| day.date == date(2024, 3, 4))
+            .unwrap();
+        preview.click(Point {
+            x: monday.bounds.x + 4.0,
+            y: monday.bounds.y + 4.0,
+        });
+        preview.render_animated(renderer).unwrap();
+        let label = |preview: &PreviewScene| {
+            preview
+                .inspect_frame()
+                .unwrap()
+                .0
+                .child_at(0)
+                .unwrap()
+                .text("text")
+                .unwrap()
+                .to_owned()
+        };
+        assert_eq!(label(&preview), "请选择终点 · 2024-03-04");
+        key(&mut preview, renderer, "PageUp");
+        key(&mut preview, renderer, "End");
+        assert_eq!(label(&preview), "请选择终点 · 2024-03-04");
+        let (scene, layout, _) = preview.inspect_frame().unwrap();
+        let (grid, item) = grid_at(scene, layout, february).unwrap();
+        let geometry = CalendarGeometry::for_layout(grid, item);
+        let leap_day = geometry
+            .days()
+            .find(|day| day.date == date(2024, 2, 29))
+            .unwrap();
+        assert!(leap_day.highlight.in_range);
+        assert!(!leap_day.enabled);
+        key(&mut preview, renderer, "Enter");
+        assert_eq!(label(&preview), "区间 · 2024-02-28 → 2024-03-04");
+        preview.click(Point { x: 280.0, y: 62.0 });
+        preview.render_animated(renderer).unwrap();
+        let (scene, layout, _) = preview.inspect_frame().unwrap();
+        let after = visible_months(scene, layout);
+        assert_eq!(after.first(), Some(&date(2080, 2, 1)), "{after:?}");
+        assert!(after.len() <= 3);
+        reverse();
+        preview.render_animated(renderer).unwrap();
+        let (scene, layout, _) = preview.inspect_frame().unwrap();
+        assert!(visible_months(scene, layout).is_empty());
+        assert!(!scene.find("jump-month").unwrap().boolean("enabled", true));
+    }
+
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))
+    .unwrap();
+    let reversed = Date::new(2020, 1, 1).unwrap();
+    let aot = CalendarBrowserDemo::new();
+    assert_eq!(aot.get_jump_index(), 672);
+    let weak = aot.as_weak();
+    exercise(&mut renderer, Box::new(aot), || {
+        weak.upgrade().unwrap().set_range_end(reversed)
+    });
+    let interpreter = interpret_example("examples/controls/controls.xr")
+        .create("CalendarBrowserDemo")
+        .unwrap();
+    let host = interpreter.clone();
+    exercise(&mut renderer, Box::new(interpreter), || {
+        host.set("range-end", reversed.into()).unwrap()
+    });
+}
+
+#[test]
+fn date_exclusions_guard_live_calendar_and_picker_routes_in_both_backends() {
+    use xrack_layout::CalendarGeometry;
+    use xrack_renderer_femtovg::preview::PreviewScene;
+    use xrack_runtime::{CalendarAction, Date, KeyEvent, VecModel};
+
+    fn exercise(
+        renderer: &mut Renderer,
+        mut component: Box<dyn Component>,
+        weekdays: VecModel<i64>,
+        closed_dates: VecModel<Date>,
+    ) {
+        let date = |day| Date::new(2024, 3, day).unwrap();
+        let before = component.render_shared();
+        assert!(
+            xrack_runtime::CalendarState::from_node(before.find("calendar").unwrap())
+                .allows(date(2))
+        );
+        weekdays.push(6);
+        weekdays.push(7);
+        let saturday = ControlAction::Calendar(CalendarAction::Select(date(2)));
+        assert!(!component.control_at(&before, &[1], saturday));
+        let sunday = component.render_shared();
+        closed_dates.push(date(4));
+        let monday = ControlAction::Calendar(CalendarAction::Select(date(4)));
+        assert!(!component.control_at(&sunday, &[1], monday));
+        let mut preview = PreviewScene::new(component);
+        preview.render_animated(renderer).unwrap();
+        let (scene, layout, _) = preview.inspect_frame().unwrap();
+        let grid = CalendarGeometry::for_layout(
+            scene.find("calendar").unwrap(),
+            layout.at_path(&[1]).unwrap(),
+        );
+        let weekend = grid.days().find(|day| day.date == date(2)).unwrap();
+        assert!(!weekend.enabled);
+        preview.click(Point {
+            x: weekend.bounds.x + 4.0,
+            y: weekend.bounds.y + 4.0,
+        });
+        preview.render_animated(renderer).unwrap();
+        assert_eq!(
+            preview
+                .inspect_frame()
+                .unwrap()
+                .0
+                .find("calendar")
+                .unwrap()
+                .date("date"),
+            Some(date(1))
+        );
+        let press = |preview: &mut PreviewScene, renderer: &mut Renderer, key: &str, pressed| {
+            assert!(preview.keyboard(
+                renderer,
+                &KeyEvent {
+                    key: key.into(),
+                    ..Default::default()
+                },
+                pressed
+            ));
+            preview.render_animated(renderer).unwrap();
+        };
+        // Ensure focus is on a selectable day before moving across the weekend.
+        let (scene, layout, _) = preview.inspect_frame().unwrap();
+        let grid = CalendarGeometry::for_layout(
+            scene.find("calendar").unwrap(),
+            layout.at_path(&[1]).unwrap(),
+        );
+        let friday = grid.action_bounds(CalendarAction::Select(date(1))).unwrap();
+        preview.click(Point {
+            x: friday.x + 4.0,
+            y: friday.y + 4.0,
+        });
+        preview.render_animated(renderer).unwrap();
+        press(&mut preview, renderer, "ArrowRight", true);
+        assert_eq!(
+            preview
+                .inspect_frame()
+                .unwrap()
+                .0
+                .find("calendar")
+                .unwrap()
+                .date("date"),
+            Some(date(5))
+        );
+        preview.click(Point { x: 40.0, y: 410.0 });
+        preview.render_animated(renderer).unwrap();
+        closed_dates.push(date(5));
+        preview.render_animated(renderer).unwrap();
+        let (scene, layout, _) = preview.inspect_frame().unwrap();
+        let picker = scene.find("picker").unwrap();
+        assert!(picker.is_visible());
+        assert!(!layout.at_path(&[3, 1, 1]).unwrap().enabled);
+        assert_eq!(picker.children[0].date("date"), Some(date(5)));
+        press(&mut preview, renderer, "ArrowRight", true);
+        assert!(
+            preview
+                .inspect_frame()
+                .unwrap()
+                .1
+                .at_path(&[3, 1, 1])
+                .unwrap()
+                .enabled
+        );
+        press(&mut preview, renderer, "Tab", true);
+        press(&mut preview, renderer, "Tab", true);
+        press(&mut preview, renderer, "Enter", true);
+        press(&mut preview, renderer, "Enter", false);
+        let scene = preview.inspect_frame().unwrap().0;
+        assert!(!scene.find("picker").unwrap().is_visible());
+        assert_eq!(scene.find("calendar").unwrap().date("date"), Some(date(6)));
+    }
+
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))
+    .unwrap();
+    let friday = Date::new(2024, 3, 1).unwrap();
+    let mut aot = CalendarDemo::new();
+    aot.set_selected(friday);
+    aot.set_month(friday);
+    let weekdays = aot.model_blocked_weekdays();
+    let closed_dates = aot.model_closed_dates();
+    exercise(&mut renderer, Box::new(aot), weekdays, closed_dates);
+    let program = interpret_example("examples/controls/controls.xr");
+    let interpreter = program.create("CalendarDemo").unwrap();
+    interpreter.set("selected", friday.into()).unwrap();
+    interpreter.set("month", friday.into()).unwrap();
+    let weekdays = VecModel::default();
+    interpreter
+        .set(
+            "blocked-weekdays",
+            xrack_runtime::Value::IntModel(weekdays.clone()),
+        )
+        .unwrap();
+    let closed_dates = interpreter.date_model("closed-dates").unwrap();
+    exercise(&mut renderer, Box::new(interpreter), weekdays, closed_dates);
+}
+
+#[test]
 fn preview_color_hex_blocks_confirmation_until_the_draft_is_valid() {
     use xrack_layout::EditAction;
     use xrack_renderer_femtovg::preview::PreviewScene;
@@ -1432,6 +1902,965 @@ fn preview_color_hex_blocks_confirmation_until_the_draft_is_valid() {
     assert!(!ui.get_picker_open());
     assert_eq!(ui.get_accepts(), 1);
     assert_eq!(ui.get_selected(), Color(0x12ab349a));
+}
+
+#[test]
+fn preview_double_press_selects_a_word_and_drag_extends_to_whole_words() {
+    use form_ui::EditorSelectionDemo;
+    use xrack_renderer_femtovg::preview::{PointerContact, PreviewScene};
+    use xrack_runtime::{KeyEvent, KeyModifiers, PointerButton, PointerEvent};
+
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))
+    .unwrap();
+    let mut ui = EditorSelectionDemo::new();
+    ui.set_document("alpha beta gamma".into());
+    let mut preview = PreviewScene::new(Box::new(ui.as_weak().upgrade().unwrap()));
+    preview.render_animated(&mut renderer).unwrap();
+    let bounds = preview
+        .inspect_frame()
+        .unwrap()
+        .1
+        .at_path(&[0, 0])
+        .unwrap()
+        .bounds;
+    preview.click(Point {
+        x: bounds.x + 10.0,
+        y: bounds.y + 10.0,
+    });
+    preview.render_animated(&mut renderer).unwrap();
+
+    // Measure the hits using the same shaped caret coordinates as the preview.
+    let mut caret_x = |key: &str, word| {
+        let event = KeyEvent {
+            key: key.into(),
+            modifiers: KeyModifiers {
+                control: word,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        assert!(preview.keyboard_for_platform(&mut renderer, &event, true, false));
+        preview.render_animated(&mut renderer).unwrap();
+        preview.ime_area().unwrap().x
+    };
+    let start = caret_x("Home", false);
+    let first_end = caret_x("ArrowRight", true);
+    let second_end = caret_x("ArrowRight", true);
+    let first = Point {
+        x: start.midpoint(first_end),
+        y: bounds.y + 10.0,
+    };
+    let second = Point {
+        x: first_end.midpoint(second_end),
+        y: bounds.y + 10.0,
+    };
+    preview.click(first);
+    preview.render_animated(&mut renderer).unwrap();
+    assert_eq!(ui.get_selected(), "");
+
+    let contact = PointerContact {
+        id: 19,
+        primary: true,
+        event: PointerEvent {
+            button: PointerButton::Primary,
+            ..Default::default()
+        },
+    };
+    assert!(preview.press_contact(contact, first, false));
+    preview.render_animated(&mut renderer).unwrap();
+    assert_eq!(ui.get_selected(), "alpha");
+    assert!(preview.move_contact(contact, second));
+    preview.render_animated(&mut renderer).unwrap();
+    assert_eq!(ui.get_selected(), "alpha beta");
+    assert!(preview.move_contact(contact, first));
+    preview.render_animated(&mut renderer).unwrap();
+    assert_eq!(ui.get_selected(), "alpha");
+    preview.finish_contact(contact, first, false, false);
+    preview.render_animated(&mut renderer).unwrap();
+    assert_eq!(ui.get_selected(), "alpha");
+}
+
+#[test]
+fn preview_mouse_selection_modes_match_between_interpreter_and_aot() {
+    use form_ui::EditorSelectionDemo;
+    use xrack_renderer_femtovg::preview::{PointerContact, PreviewScene};
+    use xrack_runtime::{KeyEvent, KeyModifiers, MouseSelectionMode, PointerButton, PointerEvent};
+
+    fn selected(preview: &PreviewScene) -> &str {
+        preview
+            .inspect_frame()
+            .unwrap()
+            .0
+            .find("selection-text")
+            .unwrap()
+            .text("text")
+            .unwrap()
+            .strip_prefix("选中文字：")
+            .unwrap()
+    }
+
+    fn exercise(renderer: &mut Renderer, component: Box<dyn Component>, mode: MouseSelectionMode) {
+        let mut preview = PreviewScene::new(component);
+        preview.render_animated(renderer).unwrap();
+        let bounds = preview
+            .inspect_frame()
+            .unwrap()
+            .1
+            .at_path(&[0, 0])
+            .unwrap()
+            .bounds;
+        let y = bounds.y + 10.0;
+        preview.click(Point {
+            x: bounds.x + bounds.width - 15.0,
+            y,
+        });
+        preview.render_animated(renderer).unwrap();
+
+        let mut caret_x = |key: &str, word: bool, shift: bool| {
+            let event = KeyEvent {
+                key: key.into(),
+                modifiers: KeyModifiers {
+                    control: word,
+                    shift,
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            assert!(preview.keyboard_for_platform(renderer, &event, true, false));
+            preview.render_animated(renderer).unwrap();
+            preview.ime_area().unwrap().x
+        };
+        let start = caret_x("Home", false, false);
+        let first_end = caret_x("ArrowRight", true, false);
+        let second_end = caret_x("ArrowRight", true, false);
+        let first = Point {
+            x: start.midpoint(first_end),
+            y,
+        };
+        let second = Point {
+            x: first_end.midpoint(second_end),
+            y,
+        };
+
+        let contact = PointerContact {
+            id: 20,
+            primary: true,
+            event: PointerEvent {
+                button: PointerButton::Primary,
+                ..Default::default()
+            },
+        };
+        assert!(preview.press_contact(contact, first, false));
+        preview.render_animated(renderer).unwrap();
+        assert_eq!(selected(&preview), "");
+        let press_caret = preview.ime_area().unwrap().x;
+        assert!(preview.move_contact(contact, second));
+        preview.render_animated(renderer).unwrap();
+        match mode {
+            MouseSelectionMode::Characters => {
+                let selection = selected(&preview);
+                assert!(!selection.is_empty() && "alpha beta".contains(selection));
+                assert_ne!(selection, "alpha beta");
+            }
+            MouseSelectionMode::Words => assert_eq!(selected(&preview), "alpha beta"),
+            MouseSelectionMode::Caret => {
+                assert_eq!(selected(&preview), "");
+                assert_eq!(preview.ime_area().unwrap().x, press_caret);
+            }
+        }
+        preview.finish_contact(contact, second, false, false);
+        preview.render_animated(renderer).unwrap();
+
+        preview.click(first);
+        preview.render_animated(renderer).unwrap();
+        let shifted = PointerContact {
+            id: 21,
+            event: PointerEvent {
+                modifiers: KeyModifiers {
+                    shift: true,
+                    ..Default::default()
+                },
+                ..contact.event
+            },
+            ..contact
+        };
+        assert!(preview.press_contact(shifted, second, false));
+        preview.render_animated(renderer).unwrap();
+        if mode == MouseSelectionMode::Words {
+            assert_eq!(selected(&preview), "alpha beta");
+        }
+        if mode == MouseSelectionMode::Caret {
+            assert_eq!(selected(&preview), "");
+        }
+        preview.finish_contact(shifted, second, false, false);
+
+        if mode == MouseSelectionMode::Caret {
+            for _ in 0..2 {
+                preview.click(first);
+                preview.render_animated(renderer).unwrap();
+                assert_eq!(selected(&preview), "");
+            }
+            let extend = KeyEvent {
+                key: "Home".into(),
+                modifiers: KeyModifiers {
+                    shift: true,
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            assert!(preview.keyboard_for_platform(renderer, &extend, true, false));
+            preview.render_animated(renderer).unwrap();
+            assert!(!selected(&preview).is_empty());
+        }
+    }
+
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))
+    .unwrap();
+    let program = interpret_example("examples/form/form.xr");
+    for mode in [
+        MouseSelectionMode::Characters,
+        MouseSelectionMode::Words,
+        MouseSelectionMode::Caret,
+    ] {
+        let mut aot = EditorSelectionDemo::new();
+        aot.set_document("alpha beta gamma".into());
+        aot.set_mouse_mode(mode);
+        exercise(&mut renderer, Box::new(aot), mode);
+        let interpreted = program.create("EditorSelectionDemo").unwrap();
+        interpreted
+            .set("document", "alpha beta gamma".to_owned().into())
+            .unwrap();
+        interpreted.set("mouse-mode", mode.into()).unwrap();
+        exercise(&mut renderer, Box::new(interpreted), mode);
+    }
+}
+
+#[test]
+fn persistent_text_selection_survives_toolbar_focus_in_both_backends() {
+    use form_ui::PersistentSelectionDemo;
+    use xrack_renderer_femtovg::preview::PreviewScene;
+
+    fn description(preview: &PreviewScene) -> &str {
+        preview
+            .inspect_frame()
+            .unwrap()
+            .0
+            .find("selection-text")
+            .unwrap()
+            .text("text")
+            .unwrap()
+    }
+
+    fn press(preview: &mut PreviewScene, renderer: &mut Renderer, x: f32, y: f32) {
+        preview.click(Point { x, y });
+        preview.render_animated(renderer).unwrap();
+    }
+
+    fn exercise(renderer: &mut Renderer, ui: Box<dyn Component>, change: impl FnOnce()) {
+        let mut preview = PreviewScene::new(ui);
+        preview.render_animated(renderer).unwrap();
+        press(&mut preview, renderer, 80.0, 153.0);
+        assert_eq!(description(&preview), "选中：e\u{301} · 已记录：");
+        preview.set_window_active(false);
+        preview.render_animated(renderer).unwrap();
+        assert_eq!(description(&preview), "选中：e\u{301} · 已记录：");
+        preview.set_window_active(true);
+        preview.render_animated(renderer).unwrap();
+        press(&mut preview, renderer, 228.0, 153.0);
+        assert_eq!(description(&preview), "选中：e\u{301} · 已记录：e\u{301}");
+        assert_eq!(preview.inspect_frame().unwrap().2, Some(&[2][..]));
+        press(&mut preview, renderer, 390.0, 153.0);
+        assert_eq!(description(&preview), "选中：e\u{301} · 已记录：e\u{301}");
+        assert_eq!(preview.inspect_frame().unwrap().2, Some(&[0][..]));
+
+        press(&mut preview, renderer, 228.0, 153.0);
+        change();
+        preview.render_animated(renderer).unwrap();
+        assert_eq!(description(&preview), "选中： · 已记录：e\u{301}");
+        press(&mut preview, renderer, 390.0, 153.0);
+        assert_eq!(description(&preview), "选中： · 已记录：e\u{301}");
+        preview.edit(EditAction::Insert("!"));
+        preview.render_animated(renderer).unwrap();
+        let scene = preview.inspect_frame().unwrap().0;
+        assert_eq!(
+            scene.find("entry").unwrap().text("text"),
+            Some("e\u{301}lan!")
+        );
+        press(&mut preview, renderer, 80.0, 153.0);
+        assert_eq!(description(&preview), "选中：e\u{301} · 已记录：e\u{301}");
+        press(&mut preview, renderer, 100.0, 196.0);
+        assert_eq!(description(&preview), "选中： · 已记录：e\u{301}");
+    }
+
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))
+    .unwrap();
+    let aot = PersistentSelectionDemo::new();
+    let mut control = aot.as_weak().upgrade().unwrap();
+    exercise(&mut renderer, Box::new(aot), move || {
+        control.set_document("e\u{301}lan".into())
+    });
+    let interpreted = interpret_example("examples/form/form.xr")
+        .create("PersistentSelectionDemo")
+        .unwrap();
+    let control = interpreted.clone();
+    exercise(&mut renderer, Box::new(interpreted), move || {
+        control
+            .set("document", "e\u{301}lan".to_owned().into())
+            .unwrap()
+    });
+}
+
+#[test]
+fn retained_selection_is_painted_after_editor_focus_moves() {
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))
+    .unwrap();
+    let ui = form_ui::PersistentSelectionDemo::new();
+    let scene = ui.render_shared();
+    let mut input = Interaction::default();
+    let initial = renderer.snapshot(&scene, 480, 264, 1.0, &input).unwrap();
+    let toolbar = input
+        .accessibility_target(&scene, &initial.layout, &[2])
+        .unwrap();
+    input.focus_target(&scene, &initial.layout, toolbar.clone());
+    let without = renderer.snapshot(&scene, 480, 264, 1.0, &input).unwrap();
+    let editor = input
+        .accessibility_target(&scene, &initial.layout, &[0])
+        .unwrap();
+    input.focus_target(&scene, &initial.layout, editor);
+    input.sync_editor(&scene);
+    input.apply_text_selection(&scene, xrack_runtime::TextCommand::SelectAll);
+    input.focus_target(&scene, &initial.layout, toolbar);
+    let retained = renderer.snapshot(&scene, 480, 264, 1.0, &input).unwrap();
+    let changed = retained
+        .rgba
+        .chunks_exact(4)
+        .zip(without.rgba.chunks_exact(4))
+        .filter(|(a, b)| a != b)
+        .count();
+    assert!(
+        changed > 100,
+        "retained selection changed only {changed} pixels"
+    );
+}
+
+#[test]
+fn long_text_drag_autoscrolls_without_more_pointer_events_in_both_backends() {
+    use form_ui::LongTextSelectionDemo;
+    use std::time::{Duration, Instant};
+    use xrack_renderer_femtovg::preview::{PointerContact, PreviewScene};
+    use xrack_runtime::{MouseSelectionMode, PointerButton, PointerEvent};
+
+    fn exercise(
+        renderer: &mut Renderer,
+        component: Box<dyn Component>,
+        selected: impl Fn() -> String,
+        horizontal: bool,
+        mode: MouseSelectionMode,
+    ) {
+        let mut preview = PreviewScene::new(component);
+        preview.advance(renderer);
+        let rect = preview
+            .inspect_frame()
+            .unwrap()
+            .1
+            .at_path(&[0])
+            .unwrap()
+            .bounds;
+        let start = Point {
+            x: rect.x + 7.0,
+            y: rect.y + 10.0,
+        };
+        let outside = if horizontal {
+            Point {
+                x: rect.x + rect.width + 110.0,
+                y: start.y,
+            }
+        } else {
+            Point {
+                x: start.x + 9.0,
+                y: rect.y + rect.height + 70.0,
+            }
+        };
+        let contact = PointerContact {
+            id: 31,
+            primary: true,
+            event: PointerEvent {
+                button: PointerButton::Primary,
+                ..Default::default()
+            },
+        };
+        assert!(preview.press_contact(contact, start, false));
+        let now = Instant::now();
+        preview.advance_at(renderer, now);
+        assert!(preview.move_contact(contact, outside));
+        preview.advance_at(renderer, now);
+        let before = selected();
+        if mode != MouseSelectionMode::Caret {
+            assert!(
+                preview.next_frame_delay().is_some(),
+                "edge drag needs another frame"
+            );
+        }
+
+        for frame in 1..=6 {
+            preview.advance_at(renderer, now + Duration::from_millis(32 * frame));
+        }
+        let during = selected();
+        if mode == MouseSelectionMode::Caret {
+            assert!(during.is_empty());
+        } else {
+            assert!(!before.is_empty());
+            assert!(
+                during.len() > before.len(),
+                "selection stayed at {during:?}"
+            );
+            assert!(
+                during.starts_with(&before),
+                "edge motion lost the selection anchor"
+            );
+            assert_eq!(during.contains('\n'), !horizontal);
+        }
+
+        let stop = now + Duration::from_millis(224);
+        if horizontal {
+            assert!(preview.move_contact(contact, start));
+            preview.advance_at(renderer, stop);
+            let inside = selected();
+            preview.advance_at(renderer, stop + Duration::from_millis(64));
+            assert_eq!(selected(), inside);
+        }
+        preview.finish_contact(
+            contact,
+            if horizontal { start } else { outside },
+            false,
+            false,
+        );
+        preview.advance_at(renderer, stop + Duration::from_millis(96));
+        let released = selected();
+        preview.advance_at(renderer, stop + Duration::from_millis(160));
+        assert_eq!(selected(), released);
+    }
+
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))
+    .unwrap();
+    let program = interpret_example("examples/form/form.xr");
+    for (horizontal, mode) in [
+        (false, MouseSelectionMode::Characters),
+        (true, MouseSelectionMode::Words),
+        (false, MouseSelectionMode::Caret),
+    ] {
+        let mut aot = LongTextSelectionDemo::new();
+        aot.set_mouse_mode(mode);
+        let control = aot.as_weak().upgrade().unwrap();
+        exercise(
+            &mut renderer,
+            Box::new(aot),
+            || control.get_selected(),
+            horizontal,
+            mode,
+        );
+        let interpreted = program.create("LongTextSelectionDemo").unwrap();
+        interpreted.set("mouse-mode", mode.into()).unwrap();
+        let control = interpreted.clone();
+        exercise(
+            &mut renderer,
+            Box::new(interpreted),
+            || match control.get("selected").unwrap() {
+                Value::String(value) => value,
+                value => panic!("expected selected string, got {value:?}"),
+            },
+            horizontal,
+            mode,
+        );
+    }
+}
+
+#[test]
+fn single_line_drag_scrolls_ltr_and_rtl_in_both_backends() {
+    use form_ui::LongTextSelectionDemo;
+    use std::time::{Duration, Instant};
+    use xrack_renderer_femtovg::preview::{PointerContact, PreviewScene};
+    use xrack_runtime::{KeyEvent, MouseSelectionMode, PointerButton, PointerEvent};
+
+    fn exercise(
+        renderer: &mut Renderer,
+        ui: Box<dyn Component>,
+        selected: impl Fn() -> String,
+        rtl: bool,
+    ) {
+        let mut preview = PreviewScene::new(ui);
+        preview.advance(renderer);
+        let bounds = preview
+            .inspect_frame()
+            .unwrap()
+            .1
+            .at_path(&[1])
+            .unwrap()
+            .bounds;
+        let y = bounds.y + bounds.height * 0.5;
+        let right = bounds.x + bounds.width;
+        if rtl {
+            preview.click(Point {
+                x: (bounds.x + right) * 0.5,
+                y,
+            });
+            preview.advance(renderer);
+            let home = KeyEvent {
+                key: "Home".into(),
+                ..Default::default()
+            };
+            assert!(preview.keyboard_for_platform(renderer, &home, true, false));
+            preview.advance(renderer);
+        }
+
+        let start = Point {
+            x: if rtl { right - 7.0 } else { bounds.x + 7.0 },
+            y,
+        };
+        let outside = Point {
+            x: if rtl { bounds.x - 104.0 } else { right + 104.0 },
+            y,
+        };
+        let contact = PointerContact {
+            id: 39,
+            primary: true,
+            event: PointerEvent {
+                button: PointerButton::Primary,
+                ..Default::default()
+            },
+        };
+        let clock = Instant::now();
+        assert!(preview.press_contact(contact, start, false));
+        preview.advance_at(renderer, clock);
+        assert!(preview.move_contact(contact, outside));
+        preview.advance_at(renderer, clock);
+        let first = selected();
+        assert!(!first.is_empty());
+        if !rtl {
+            assert!(first.starts_with("Project Atlas"), "{first:?}");
+        }
+        assert!(preview.next_frame_delay().is_some());
+        for i in 1..=6 {
+            preview.advance_at(renderer, clock + Duration::from_millis(i * 28));
+        }
+        let expanded = selected();
+        assert!(
+            expanded.len() > first.len(),
+            "rtl={rtl}: {first:?} -> {expanded:?}"
+        );
+        assert!(expanded.starts_with(&first));
+        let caret = preview.ime_area().unwrap();
+        preview.finish_contact(contact, outside, false, false);
+        preview.advance_at(renderer, clock + Duration::from_millis(220));
+        assert_eq!(preview.ime_area(), Some(caret));
+        assert_eq!(selected(), expanded);
+        preview.advance_at(renderer, clock + Duration::from_millis(280));
+        assert_eq!(selected(), expanded);
+    }
+
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))
+    .unwrap();
+    let program = interpret_example("examples/form/form.xr");
+    let arabic = "نص عربي طويل لاختبار التحديد عند حافة حقل النص ".repeat(12);
+    for rtl in [false, true] {
+        let mut aot = LongTextSelectionDemo::new();
+        let interpreted = program.create("LongTextSelectionDemo").unwrap();
+        if rtl {
+            aot.set_mouse_mode(MouseSelectionMode::Words);
+            aot.set_line(arabic.clone());
+            interpreted
+                .set("mouse-mode", MouseSelectionMode::Words.into())
+                .unwrap();
+            interpreted.set("line", arabic.clone().into()).unwrap();
+        }
+        let control = aot.as_weak().upgrade().unwrap();
+        exercise(
+            &mut renderer,
+            Box::new(aot),
+            || control.get_line_selected(),
+            rtl,
+        );
+        let control = interpreted.clone();
+        exercise(
+            &mut renderer,
+            Box::new(interpreted),
+            || match control.get("line-selected").unwrap() {
+                Value::String(value) => value,
+                value => panic!("expected the selected string, got {value:?}"),
+            },
+            rtl,
+        );
+    }
+}
+
+#[test]
+fn pattern_validation_preserves_prefixes_and_rechecks_dynamic_rules_in_both_backends() {
+    use form_ui::PatternValidationDemo;
+    use xrack_renderer_femtovg::preview::PreviewScene;
+    use xrack_runtime::{InputValidity, InputValidity::*, KeyEvent};
+
+    fn exercise(
+        renderer: &mut Renderer,
+        ui: Box<dyn Component>,
+        read: impl Fn() -> (String, bool, i64, InputValidity),
+        mut set_pattern: impl FnMut(&str),
+    ) {
+        let mut preview = PreviewScene::new(ui);
+        preview.advance(renderer);
+        preview.click(Point { x: 35.0, y: 72.0 });
+        preview.advance(renderer);
+        let enter = KeyEvent {
+            key: "Enter".into(),
+            ..Default::default()
+        };
+        preview.edit(EditAction::Insert("AB-12"));
+        preview.advance(renderer);
+        assert_eq!(read(), ("AB-12".into(), false, 0, Intermediate));
+        preview.keyboard_for_platform(renderer, &enter, true, false);
+        preview.advance(renderer);
+        assert_eq!(read(), ("AB-12".into(), false, 0, Intermediate));
+        preview.edit(EditAction::Insert("x"));
+        preview.advance(renderer);
+        assert_eq!(read().0, "AB-12");
+
+        assert!(preview.begin_text_composition(renderer, 91));
+        assert!(preview.update_text_composition(91, "3".into()));
+        preview.advance(renderer);
+        assert!(!read().1);
+        assert!(preview.finish_text_composition(91, "3"));
+        preview.advance(renderer);
+        assert_eq!(read(), ("AB-123".into(), true, 0, Acceptable));
+        assert!(preview.keyboard_for_platform(renderer, &enter, true, false));
+        preview.advance(renderer);
+        assert_eq!(read(), ("AB-123".into(), true, 1, Acceptable));
+
+        set_pattern("[甲乙]{2}-[0-9]{3}");
+        preview.advance(renderer);
+        assert_eq!(read(), ("AB-123".into(), false, 1, Invalid));
+        preview.edit(EditAction::SelectAll);
+        preview.paste("甲乙-304");
+        preview.advance(renderer);
+        assert_eq!(read(), ("甲乙-304".into(), true, 1, Acceptable));
+        set_pattern("[");
+        preview.advance(renderer);
+        assert_eq!(read(), ("甲乙-304".into(), false, 1, Invalid));
+        set_pattern("");
+        preview.advance(renderer);
+        assert_eq!(read(), ("甲乙-304".into(), true, 1, Acceptable));
+    }
+
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))
+    .unwrap();
+    let aot = PatternValidationDemo::new();
+    let control = aot.as_weak().upgrade().unwrap();
+    let mut setter = aot.as_weak().upgrade().unwrap();
+    exercise(
+        &mut renderer,
+        Box::new(aot),
+        || {
+            (
+                control.get_code(),
+                control.get_ready(),
+                control.get_submissions(),
+                control.get_validation(),
+            )
+        },
+        |pattern| setter.set_pattern(pattern.into()),
+    );
+    let interpreted = interpret_example("examples/form/form.xr")
+        .create("PatternValidationDemo")
+        .unwrap();
+    let control = interpreted.clone();
+    exercise(
+        &mut renderer,
+        Box::new(interpreted),
+        || {
+            let Value::String(code) = control.get("code").unwrap() else {
+                panic!("expected code")
+            };
+            let Value::Bool(ready) = control.get("ready").unwrap() else {
+                panic!("expected readiness")
+            };
+            let Value::Int(submissions) = control.get("submissions").unwrap() else {
+                panic!("expected count")
+            };
+            let Value::InputValidity(validity) = control.get("validation").unwrap() else {
+                panic!("expected validity")
+            };
+            (code, ready, submissions, validity)
+        },
+        |pattern| control.set("pattern", pattern.to_owned().into()).unwrap(),
+    );
+}
+
+#[test]
+fn text_commands_edit_unfocused_fields_in_order_and_undo_in_both_backends() {
+    use form_ui::TextOperationsDemo;
+    use xrack_renderer_femtovg::preview::PreviewScene;
+
+    fn exercise(
+        renderer: &mut Renderer,
+        ui: Box<dyn Component>,
+        values: impl Fn() -> (String, String, String),
+    ) {
+        let mut preview = PreviewScene::new(ui);
+        preview.advance(renderer);
+        let click = |preview: &mut PreviewScene, renderer: &mut Renderer, x: f32, y: f32| {
+            preview.click(Point { x, y });
+            preview.advance(renderer);
+        };
+        click(&mut preview, renderer, 90.0, 141.0);
+        assert_eq!(preview.inspect_frame().unwrap().2, Some(&[2][..]));
+        assert_eq!(values().0, "Éclair 👩‍💻!");
+        assert_eq!(values().2, "[Éclair 👩‍💻][#Éclair 👩‍💻][Éclair 👩‍💻][Éclair 👩‍💻!]");
+        click(&mut preview, renderer, 240.0, 141.0);
+        assert_eq!(values().1, "2026-12-17");
+        assert_eq!(preview.inspect_frame().unwrap().2, Some(&[3][..]));
+        for expected in ["Éclair 👩‍💻", "#Éclair 👩‍💻", "Éclair 👩‍💻", "éclair 👩‍💻"]
+        {
+            click(&mut preview, renderer, 408.0, 141.0);
+            assert_eq!(values().0, expected);
+        }
+        preview.replay_edit(true);
+        preview.advance(renderer);
+        assert_eq!(values().0, "Éclair 👩‍💻");
+        click(&mut preview, renderer, 81.0, 192.0);
+        assert_eq!(values().0, "");
+        assert_eq!(preview.inspect_frame().unwrap().2, Some(&[5][..]));
+        click(&mut preview, renderer, 408.0, 141.0);
+        assert_eq!(values().0, "Éclair 👩‍💻");
+    }
+
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))
+    .unwrap();
+    let aot = TextOperationsDemo::new();
+    let control = aot.as_weak().upgrade().unwrap();
+    exercise(&mut renderer, Box::new(aot), || {
+        (
+            control.get_document(),
+            control.get_date(),
+            control.get_edits(),
+        )
+    });
+    let interpreted = interpret_example("examples/form/form.xr")
+        .create("TextOperationsDemo")
+        .unwrap();
+    let control = interpreted.clone();
+    let get = |name| match control.get(name).unwrap() {
+        Value::String(value) => value,
+        value => panic!("expected string, got {value:?}"),
+    };
+    exercise(&mut renderer, Box::new(interpreted), || {
+        (get("document"), get("date"), get("edits"))
+    });
+}
+
+#[test]
+fn preview_overwrite_and_select_word_match_between_interpreter_and_aot() {
+    use form_ui::EditorSelectionDemo;
+    use xrack_renderer_femtovg::preview::PreviewScene;
+
+    const ORIGINAL: &str = "e\u{301}👩‍💻 cat";
+    fn value(preview: &PreviewScene) -> &str {
+        preview
+            .inspect_frame()
+            .unwrap()
+            .0
+            .find("entry")
+            .unwrap()
+            .text("text")
+            .unwrap()
+    }
+    fn exercise(renderer: &mut Renderer, ui: Box<dyn Component>) {
+        let mut preview = PreviewScene::new(ui);
+        preview.render_animated(renderer).unwrap();
+        let bounds = preview
+            .inspect_frame()
+            .unwrap()
+            .1
+            .at_path(&[0, 0])
+            .unwrap()
+            .bounds;
+        preview.click(Point {
+            x: bounds.x + 10.0,
+            y: bounds.y + 10.0,
+        });
+        preview.render_animated(renderer).unwrap();
+        preview.edit(EditAction::Home(false));
+        preview.edit(EditAction::Insert("A"));
+        preview.render_animated(renderer).unwrap();
+        assert_eq!(value(&preview), "A👩‍💻 cat");
+        preview.edit(EditAction::Insert("B"));
+        preview.render_animated(renderer).unwrap();
+        assert_eq!(value(&preview), "AB cat");
+        preview.replay_edit(false);
+        preview.render_animated(renderer).unwrap();
+        assert_eq!(value(&preview), ORIGINAL);
+        preview.replay_edit(true);
+        preview.render_animated(renderer).unwrap();
+        assert_eq!(value(&preview), "AB cat");
+
+        preview.edit(EditAction::Home(false));
+        assert!(preview.begin_text_composition(renderer, 81));
+        assert!(preview.update_text_composition(81, "猫".into()));
+        preview.render_animated(renderer).unwrap();
+        assert_eq!(value(&preview), "AB cat");
+        assert!(preview.finish_text_composition(81, "猫"));
+        preview.render_animated(renderer).unwrap();
+        assert_eq!(value(&preview), "猫B cat");
+        preview.edit(EditAction::Home(false));
+        preview.paste("!");
+        preview.render_animated(renderer).unwrap();
+        assert_eq!(value(&preview), "!猫B cat");
+
+        preview.edit(EditAction::End(false));
+        preview.render_animated(renderer).unwrap();
+        let bounds = preview
+            .inspect_frame()
+            .unwrap()
+            .1
+            .at_path(&[0, 5, 1])
+            .unwrap()
+            .bounds;
+        preview.click(Point {
+            x: bounds.x + 10.0,
+            y: bounds.y + 10.0,
+        });
+        preview.render_animated(renderer).unwrap();
+        let scene = preview.inspect_frame().unwrap().0;
+        assert_eq!(
+            scene.find("selection-text").unwrap().text("text"),
+            Some("选中文字：cat")
+        );
+    }
+
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))
+    .unwrap();
+    let mut aot = EditorSelectionDemo::new();
+    aot.set_document(ORIGINAL.into());
+    aot.set_overwrite(true);
+    exercise(&mut renderer, Box::new(aot));
+
+    let interpreted = interpret_example("examples/form/form.xr")
+        .create("EditorSelectionDemo")
+        .unwrap();
+    interpreted
+        .set("document", ORIGINAL.to_owned().into())
+        .unwrap();
+    interpreted.set("overwrite", true.into()).unwrap();
+    exercise(&mut renderer, Box::new(interpreted));
+}
+
+#[test]
+fn preview_word_shortcuts_preserve_unicode_and_use_the_clients_platform() {
+    use form_ui::EditorSelectionDemo;
+    use xrack_renderer_femtovg::preview::PreviewScene;
+    use xrack_runtime::{KeyEvent, KeyModifiers};
+
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))
+    .unwrap();
+    let mut ui = EditorSelectionDemo::new();
+    let mut preview = PreviewScene::new(Box::new(ui.as_weak().upgrade().unwrap()));
+    let original = "alpha e\u{301}clair 👩‍💻";
+    ui.set_document(original.into());
+
+    preview.render_animated(&mut renderer).unwrap();
+    let bounds = preview
+        .inspect_frame()
+        .unwrap()
+        .1
+        .at_path(&[0, 0])
+        .unwrap()
+        .bounds;
+    preview.click(Point {
+        x: bounds.x + 5.0,
+        y: bounds.y + 5.0,
+    });
+    preview.render_animated(&mut renderer).unwrap();
+    let event = |key: &str, modifiers| KeyEvent {
+        key: key.into(),
+        modifiers,
+        ..Default::default()
+    };
+    let end = event("End", KeyModifiers::default());
+    assert!(preview.keyboard_for_platform(&mut renderer, &end, true, true));
+    assert!(preview.keyboard_for_platform(
+        &mut renderer,
+        &event(
+            "ArrowLeft",
+            KeyModifiers {
+                alt: true,
+                shift: true,
+                ..Default::default()
+            }
+        ),
+        true,
+        true,
+    ));
+    preview.render_animated(&mut renderer).unwrap();
+    assert_eq!(ui.get_selected(), "👩‍💻");
+    assert!(preview.keyboard_for_platform(
+        &mut renderer,
+        &event(
+            "Backspace",
+            KeyModifiers {
+                alt: true,
+                ..Default::default()
+            }
+        ),
+        true,
+        true,
+    ));
+    assert_eq!(ui.get_document(), "alpha e\u{301}clair ");
+    preview.render_animated(&mut renderer).unwrap();
+    preview.replay_edit(false);
+    assert_eq!(ui.get_document(), original);
+    preview.render_animated(&mut renderer).unwrap();
+
+    assert!(preview.keyboard_for_platform(&mut renderer, &end, true, false));
+    assert!(preview.keyboard_for_platform(
+        &mut renderer,
+        &event(
+            "Backspace",
+            KeyModifiers {
+                control: true,
+                ..Default::default()
+            }
+        ),
+        true,
+        false,
+    ));
+    assert_eq!(ui.get_document(), "alpha e\u{301}clair ");
 }
 
 #[test]
@@ -2898,6 +4327,84 @@ fn custom_tumbler_artwork_paints_visible_rows_and_follows_drag_displacement() {
 }
 
 #[test]
+fn editor_insets_share_geometry_and_keep_placeholder_ink_separate() {
+    use form_ui::EditorInsetsDemo;
+    use xrack_renderer_femtovg::preview::PreviewScene;
+    use xrack_runtime::Color;
+
+    fn crop_diff(
+        a: &xrack_renderer_femtovg::Snapshot,
+        b: &xrack_renderer_femtovg::Snapshot,
+        mut y: std::ops::Range<u32>,
+    ) -> bool {
+        y.any(|y| (24..408).any(|x| a.pixel(x, y) != b.pixel(x, y)))
+    }
+
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))
+    .unwrap();
+    let mut aot = EditorInsetsDemo::new();
+    let parsed = interpret_example("examples/form/form.xr");
+    let interpreter = parsed.create("EditorInsetsDemo").unwrap();
+    let input = Interaction::default();
+    let mut draw = |component: &dyn Component| {
+        renderer
+            .snapshot(&component.render_shared(), 432, 350, 1.0, &input)
+            .unwrap()
+    };
+    let empty = draw(&aot);
+    assert_same_pixels(&empty, &draw(&interpreter));
+    let ink = Color(0x09e6e2ff);
+    aot.set_hint(ink);
+    interpreter.set("hint", ink.into()).unwrap();
+    let painted = draw(&aot);
+    assert_same_pixels(&painted, &draw(&interpreter));
+    assert!(crop_diff(&empty, &painted, 42..106));
+    assert!(crop_diff(&empty, &painted, 124..238));
+
+    aot.set_account("WW".into());
+    interpreter.set("account", "WW".to_owned().into()).unwrap();
+    let typed = draw(&aot);
+    assert_same_pixels(&typed, &draw(&interpreter));
+    aot.set_hint(Color(0xffb554ff));
+    assert!(!crop_diff(&typed, &draw(&aot), 42..106));
+
+    for ui in [Box::new(aot) as Box<dyn Component>, Box::new(interpreter)] {
+        let mut preview = PreviewScene::new(ui);
+        preview.render_animated(&mut renderer).unwrap();
+        let (scene, layout, _) = preview.inspect_frame().unwrap();
+        let note = scene.find("note-field").unwrap();
+        let sized =
+            renderer
+                .text
+                .text_area_layout(note, layout.at_path(&[2]).unwrap().bounds, "WW");
+        assert_eq!(
+            sized.area,
+            xrack_layout::Rect::new(48.0, 146.0, 282.0, 76.0)
+        );
+        preview.click(Point { x: 60.0, y: 80.0 });
+        preview.render_animated(&mut renderer).unwrap();
+        let ime = preview.ime_area().unwrap();
+        assert_eq!(ime.x, 72.0);
+        assert!(ime.y >= 66.0 && ime.y + ime.height <= 100.0, "{ime:?}");
+        preview.edit(EditAction::Insert("!"));
+        preview.render_animated(&mut renderer).unwrap();
+        assert_eq!(
+            preview
+                .inspect_frame()
+                .unwrap()
+                .0
+                .find("account-field")
+                .unwrap()
+                .text("text"),
+            Some("!WW")
+        );
+    }
+}
+
+#[test]
 fn password_rendering_and_hit_testing_use_the_same_grapheme_mask() {
     let mut renderer = pollster::block_on(Renderer::new(
         wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
@@ -2909,7 +4416,7 @@ fn password_rendering_and_hit_testing_use_the_same_grapheme_mask() {
     ui.set_secret(secret.into());
     let scene = ui.render_shared();
     let input = Interaction::default();
-    let hidden = renderer.snapshot(&scene, 392, 214, 1.0, &input).unwrap();
+    let hidden = renderer.snapshot(&scene, 392, 254, 1.0, &input).unwrap();
     let path = [1];
     let node = scene.at_path(&path).unwrap();
     let area = hidden.layout.at_path(&path).unwrap().bounds;
@@ -2931,7 +4438,7 @@ fn password_rendering_and_hit_testing_use_the_same_grapheme_mask() {
     );
     ui.set_secret("abc".into());
     let same_mask = renderer
-        .snapshot(&ui.render(), 392, 214, 1.0, &input)
+        .snapshot(&ui.render(), 392, 254, 1.0, &input)
         .unwrap();
     assert_eq!(hidden.rgba, same_mask.rgba);
 
@@ -2941,7 +4448,7 @@ fn password_rendering_and_hit_testing_use_the_same_grapheme_mask() {
         let mut edit = TextEdit::at_end(value);
         edit.set_preedit(preedit.into(), Some((preedit.len(), preedit.len())));
         input.editor = Some(edit);
-        renderer.snapshot(&scene, 392, 214, 1.0, &input).unwrap()
+        renderer.snapshot(&scene, 392, 254, 1.0, &input).unwrap()
     };
     assert_eq!(
         composing(&mut renderer, secret, "か").rgba,
@@ -2949,14 +4456,372 @@ fn password_rendering_and_hit_testing_use_the_same_grapheme_mask() {
     );
 
     ui.set_secret(secret.into());
+    ui.set_mask_character("🔒".into());
+    let custom = ui.render_shared();
+    let custom_frame = renderer.snapshot(&custom, 392, 254, 1.0, &input).unwrap();
+    let node = custom.at_path(&path).unwrap();
+    assert_eq!(node.text("password-character"), Some("🔒"));
+    let x = area.x + 6.0 + renderer.text.advance_node(node, "🔒");
+    assert_eq!(
+        renderer
+            .text
+            .single_line_hit(
+                node,
+                area,
+                Point {
+                    x,
+                    y: area.y + 12.0
+                },
+                None
+            )
+            .offset,
+        "e\u{301}".len()
+    );
+    let program = interpret_example("examples/form/form.xr");
+    let interpreted = program.create("PasswordDemo").unwrap();
+    interpreted.set("secret", secret.to_owned().into()).unwrap();
+    interpreted
+        .set("mask-character", "🔒".to_owned().into())
+        .unwrap();
+    let interpreted_frame = renderer
+        .snapshot(&interpreted.render_shared(), 392, 254, 1.0, &input)
+        .unwrap();
+    assert_same_pixels(&custom_frame, &interpreted_frame);
+    assert!((area.y as u32..(area.y + area.height) as u32).any(|y| {
+        (area.x as u32..(area.x + area.width) as u32)
+            .any(|x| custom_frame.pixel(x, y) != hidden.pixel(x, y))
+    }));
+
+    let mut keyboard = Interaction::default();
+    keyboard.focus_next(&custom, &custom_frame.layout, false);
+    keyboard.editor = Some(TextEdit::at_end(secret));
+    assert!(renderer.text.move_editor_caret(
+        &mut keyboard,
+        &custom,
+        &custom_frame.layout,
+        TextAreaMotion::Left,
+        true
+    ));
+    assert_eq!(
+        keyboard.editor.as_ref().unwrap().selection(secret),
+        secret.len() - "界".len()..secret.len()
+    );
+    assert!(renderer.text.move_editor_caret(
+        &mut keyboard,
+        &custom,
+        &custom_frame.layout,
+        TextAreaMotion::WordLeft,
+        true
+    ));
+    assert_eq!(
+        keyboard.editor.as_ref().unwrap().selection(secret),
+        0..secret.len()
+    );
+
     ui.set_reveal(true);
     let shown = renderer
-        .snapshot(&ui.render(), 392, 214, 1.0, &input)
+        .snapshot(&ui.render(), 392, 254, 1.0, &input)
         .unwrap();
     assert!((area.y as u32..(area.y + area.height) as u32).any(|y| {
         (area.x as u32..(area.x + area.width) as u32)
             .any(|x| shown.pixel(x, y) != hidden.pixel(x, y))
     }));
+}
+
+#[test]
+fn time_field_preserves_hidden_seconds_and_rechecks_the_open_popup_range() {
+    use form_ui::TimeFieldDemo;
+    use xrack_renderer_femtovg::preview::PreviewScene;
+    use xrack_runtime::{KeyEvent, Time};
+
+    fn exercise(
+        renderer: &mut Renderer,
+        component: Box<dyn Component>,
+        mut maximum: impl FnMut(Time),
+    ) {
+        let mut preview = PreviewScene::new(component);
+        preview.render_animated(renderer).unwrap();
+        let label = |preview: &PreviewScene, index| {
+            preview
+                .inspect_frame()
+                .unwrap()
+                .0
+                .child_at(index)
+                .unwrap()
+                .text("text")
+                .unwrap()
+                .to_owned()
+        };
+        let key = |preview: &mut PreviewScene, renderer: &mut Renderer, name: &str| {
+            let event = KeyEvent {
+                key: name.into(),
+                ..Default::default()
+            };
+            preview.keyboard(renderer, &event, true);
+            preview.keyboard(renderer, &event, false);
+            preview.render_animated(renderer).unwrap();
+        };
+        let paste = |preview: &mut PreviewScene, renderer: &mut Renderer, value: &str| {
+            preview.click(Point { x: 85.0, y: 78.0 });
+            preview.render_animated(renderer).unwrap();
+            preview.edit(EditAction::SelectAll);
+            preview.paste(value);
+            preview.render_animated(renderer).unwrap();
+        };
+        let accept_enabled = |preview: &PreviewScene| {
+            let popup = preview
+                .inspect_frame()
+                .unwrap()
+                .0
+                .find("time-picker")
+                .unwrap();
+            assert!(popup.is_visible());
+            popup
+                .child_at(1)
+                .unwrap()
+                .child_at(1)
+                .unwrap()
+                .boolean("enabled", true)
+        };
+        assert_eq!(label(&preview, 3), "已提交 · 13:30:42");
+        paste(&mut preview, renderer, "2400");
+        assert_eq!(label(&preview, 2), "请检查时间或营业时段");
+        key(&mut preview, renderer, "Enter");
+        assert_eq!(label(&preview, 3), "已提交 · 13:30:42");
+        key(&mut preview, renderer, "Escape");
+        assert_eq!(label(&preview, 2), "可提交");
+        paste(&mut preview, renderer, "1459");
+        key(&mut preview, renderer, "Enter");
+        assert_eq!(label(&preview, 3), "已提交 · 14:59:42");
+        preview.click(Point { x: 75.0, y: 198.0 });
+        preview.render_animated(renderer).unwrap();
+        assert_eq!(
+            preview
+                .inspect_frame()
+                .unwrap()
+                .0
+                .find("second-entry")
+                .unwrap()
+                .text("text"),
+            Some("14:59:42")
+        );
+        for incomplete_or_late in ["1459", "173001"] {
+            paste(&mut preview, renderer, incomplete_or_late);
+            assert_eq!(label(&preview, 2), "请检查时间或营业时段");
+        }
+        paste(&mut preview, renderer, "153005");
+        key(&mut preview, renderer, "Enter");
+        assert_eq!(label(&preview, 3), "已提交 · 15:30:05");
+        paste(&mut preview, renderer, "240000");
+        let clock = Point { x: 380.0, y: 76.0 };
+        preview.click(clock);
+        preview.render_animated(renderer).unwrap();
+        assert!(accept_enabled(&preview));
+        key(&mut preview, renderer, "Escape");
+        assert_eq!(label(&preview, 2), "请检查时间或营业时段");
+        assert_eq!(label(&preview, 3), "已提交 · 15:30:05");
+        preview.click(clock);
+        preview.render_animated(renderer).unwrap();
+        maximum(Time::new(15, 0, 0).unwrap());
+        preview.render_animated(renderer).unwrap();
+        assert!(!accept_enabled(&preview));
+        key(&mut preview, renderer, "ArrowUp");
+        assert!(accept_enabled(&preview));
+        for _ in 0..5 {
+            key(&mut preview, renderer, "Tab");
+        }
+        key(&mut preview, renderer, "Enter");
+        assert_eq!(label(&preview, 3), "已提交 · 14:30:05");
+        assert_eq!(label(&preview, 2), "可提交");
+    }
+
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))
+    .unwrap();
+    let aot = TimeFieldDemo::new();
+    let mut handle = aot.as_weak().upgrade().unwrap();
+    exercise(&mut renderer, Box::new(aot), |value| {
+        handle.set_latest(value)
+    });
+    assert_eq!(handle.get_commits(), 3);
+    let interpreter = interpret_example("examples/form/form.xr")
+        .create("TimeFieldDemo")
+        .unwrap();
+    let handle = interpreter.clone();
+    exercise(&mut renderer, Box::new(interpreter), |value| {
+        handle.set("latest", value.into()).unwrap()
+    });
+    assert_eq!(handle.get("commits").unwrap(), xrack_runtime::Value::Int(3));
+}
+
+#[test]
+fn date_field_keeps_drafts_separate_and_shares_keyboard_and_picker_rules() {
+    use form_ui::DateFieldDemo;
+    use xrack_renderer_femtovg::preview::PreviewScene;
+    use xrack_runtime::{Date, KeyEvent, VecModel};
+
+    fn exercise(renderer: &mut Renderer, component: Box<dyn Component>, closed: VecModel<Date>) {
+        let mut preview = PreviewScene::new(component);
+        preview.render_animated(renderer).unwrap();
+        let visible = |preview: &PreviewScene, id: &str| {
+            preview
+                .inspect_frame()
+                .unwrap()
+                .0
+                .find(id)
+                .is_some_and(|node| node.is_visible())
+        };
+        let display = |preview: &PreviewScene| {
+            preview
+                .inspect_frame()
+                .unwrap()
+                .0
+                .child_at(3)
+                .unwrap()
+                .text("text")
+                .unwrap()
+                .to_owned()
+        };
+        let validation = |preview: &PreviewScene| {
+            preview
+                .inspect_frame()
+                .unwrap()
+                .0
+                .child_at(2)
+                .unwrap()
+                .text("text")
+                .unwrap()
+                .to_owned()
+        };
+        let key = |preview: &mut PreviewScene, renderer: &mut Renderer, name: &str| {
+            let event = KeyEvent {
+                key: name.into(),
+                ..Default::default()
+            };
+            preview.keyboard(renderer, &event, true);
+            preview.keyboard(renderer, &event, false);
+            preview.render_animated(renderer).unwrap();
+        };
+        let paste = |preview: &mut PreviewScene, renderer: &mut Renderer, value: &str| {
+            preview.click(Point { x: 85.0, y: 78.0 });
+            preview.render_animated(renderer).unwrap();
+            preview.edit(EditAction::SelectAll);
+            preview.paste(value);
+            preview.render_animated(renderer).unwrap();
+        };
+        assert_eq!(display(&preview), "已提交 · 2024-02-28");
+        for invalid in ["20240230", "20240229"] {
+            paste(&mut preview, renderer, invalid);
+            assert_eq!(validation(&preview), "请检查日期或停约规则");
+            key(&mut preview, renderer, "Enter");
+            assert_eq!(display(&preview), "已提交 · 2024-02-28");
+        }
+        closed.clear();
+        preview.render_animated(renderer).unwrap();
+        assert_eq!(validation(&preview), "可提交");
+        closed.push(Date::new(2024, 2, 29).unwrap());
+        preview.render_animated(renderer).unwrap();
+        assert_eq!(validation(&preview), "请检查日期或停约规则");
+        key(&mut preview, renderer, "Escape");
+        assert_eq!(validation(&preview), "可提交");
+        paste(&mut preview, renderer, "20240301");
+        assert_eq!(display(&preview), "已提交 · 2024-02-28");
+        key(&mut preview, renderer, "Enter");
+        assert_eq!(display(&preview), "已提交 · 2024-03-01");
+        paste(&mut preview, renderer, "20240229");
+        let calendar = Point { x: 380.0, y: 76.0 };
+        preview.click(calendar);
+        preview.render_animated(renderer).unwrap();
+        assert!(visible(&preview, "date-picker"));
+        key(&mut preview, renderer, "Escape");
+        assert!(!visible(&preview, "date-picker"));
+        assert_eq!(display(&preview), "已提交 · 2024-03-01");
+        assert_eq!(validation(&preview), "请检查日期或停约规则");
+        preview.click(calendar);
+        preview.render_animated(renderer).unwrap();
+        key(&mut preview, renderer, "ArrowRight");
+        key(&mut preview, renderer, "Tab");
+        key(&mut preview, renderer, "Tab");
+        key(&mut preview, renderer, "Enter");
+        assert_eq!(display(&preview), "已提交 · 2024-03-04");
+        assert_eq!(validation(&preview), "可提交");
+        paste(&mut preview, renderer, "20240230");
+        preview.click(Point { x: 80.0, y: 198.0 });
+        preview.render_animated(renderer).unwrap();
+        assert_eq!(display(&preview), "已提交 · 2024-03-04");
+        assert_eq!(validation(&preview), "可提交");
+    }
+
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))
+    .unwrap();
+    let aot = DateFieldDemo::new();
+    let closed = aot.model_closed_dates();
+    let weak = aot.as_weak();
+    let owner = weak.upgrade().unwrap();
+    exercise(&mut renderer, Box::new(aot), closed);
+    assert_eq!(owner.get_commits(), 2);
+    let interpreter = interpret_example("examples/form/form.xr")
+        .create("DateFieldDemo")
+        .unwrap();
+    let closed = interpreter.date_model("closed-dates").unwrap();
+    let owner = interpreter.clone();
+    exercise(&mut renderer, Box::new(interpreter), closed);
+    assert_eq!(owner.get("commits").unwrap(), xrack_runtime::Value::Int(2));
+}
+
+#[test]
+fn password_echo_uses_the_preview_deadline_in_both_backends() {
+    use std::time::{Duration, Instant};
+    use xrack_renderer_femtovg::preview::PreviewScene;
+
+    fn exercise(renderer: &mut Renderer, component: Box<dyn Component>) {
+        let mut preview = PreviewScene::new(component);
+        preview.render_animated(renderer).unwrap();
+        preview.click(Point { x: 40.0, y: 80.0 });
+        preview.render_animated(renderer).unwrap();
+        preview.edit(EditAction::Insert("👩‍💻"));
+        let visible = preview.render_animated(renderer).unwrap().to_vec();
+        let delay = preview
+            .next_frame_delay()
+            .expect("password echo schedules a repaint");
+        assert!(delay <= Duration::from_millis(750));
+        preview.advance_at(renderer, Instant::now() + Duration::from_secs(1));
+        let hidden = preview.draw_prepared(renderer).unwrap().to_vec();
+        assert_ne!(visible, hidden);
+        assert!(preview.next_frame_delay().is_none());
+
+        // A paste of the same glyph stays masked even for a one-grapheme paste.
+        preview.edit(EditAction::SelectAll);
+        preview.paste("👨‍💻");
+        assert_eq!(preview.render_animated(renderer).unwrap(), &hidden);
+        assert!(preview.next_frame_delay().is_none());
+        preview.edit(EditAction::SelectAll);
+        preview.edit(EditAction::Insert("W"));
+        assert!(preview.render_animated(renderer).unwrap() != hidden);
+        preview.set_window_active(false);
+        preview.render_animated(renderer).unwrap();
+        preview.set_window_active(true);
+        assert_eq!(preview.render_animated(renderer).unwrap(), &hidden);
+    }
+
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))
+    .unwrap();
+    let mut aot = PasswordDemo::new();
+    aot.set_briefly_reveal(true);
+    exercise(&mut renderer, Box::new(aot));
+    let interpreted = interpret_example("examples/form/form.xr")
+        .create("PasswordDemo")
+        .unwrap();
+    interpreted.set("briefly-reveal", true.into()).unwrap();
+    exercise(&mut renderer, Box::new(interpreted));
 }
 
 #[test]
@@ -3156,6 +5021,16 @@ fn calendar_draws_the_selected_leap_day_using_its_hit_geometry() {
         .unwrap();
     assert_eq!(after.pixel(x, y), Some(selected));
     assert_ne!(after.pixel(previous_x, previous_y), Some(selected));
+    let mut highlighted = ui.render();
+    let calendar = &mut highlighted.children[1];
+    let start = Date::new(2024, 2, 26).unwrap();
+    calendar.properties.insert("highlight-start", start.into());
+    calendar.properties.insert("highlight-end", leap_day.into());
+    let highlighted = renderer
+        .snapshot(&highlighted, 440, 460, 1.0, &input)
+        .unwrap();
+    let (x, y) = pixel(Date::new(2024, 2, 27).unwrap());
+    assert_ne!(highlighted.pixel(x, y), after.pixel(x, y));
 }
 
 #[test]
@@ -7412,8 +9287,8 @@ fn swipe_page_slides_follow_the_axis_and_right_to_left_direction() {
         after.children[0]
             .properties
             .insert("current-index", 1_i64.into());
-        let after_layout = renderer.layout_with_input(&after, viewport, &input);
         after.children[0].mount_swipe_pages(|_, _| {});
+        let after_layout = renderer.layout_with_input(&after, viewport, &input);
         let mut transitions = StackTransitions::default();
         let now = Instant::now();
         transitions.update_with_input(
@@ -9331,6 +11206,235 @@ fn styled_text_shapes_bidi_spans_and_elides_without_losing_the_source_text() {
     assert!(visible.height < bounds.height);
     assert_eq!(colored_x(&clipped, visible, 2), None);
     assert_eq!(scene.at_path(&[1]).unwrap().text("text"), Some(body));
+}
+
+#[test]
+fn text_selection_colors_keep_shaping_and_match_between_backends() {
+    use form_ui::SelectionColorsDemo;
+    use xrack_layout::Rect;
+    use xrack_renderer_femtovg::Snapshot;
+    use xrack_runtime::{Color, Node, TextCommand};
+
+    const HIGHLIGHT: [u8; 4] = [0x70, 0x46, 0xbf, 0xff];
+    const SELECTED: [u8; 4] = [0xff, 0xeb, 0x9a, 0xff];
+    const NORMAL: [u8; 4] = [0x83, 0xc7, 0xff, 0xff];
+    const LINK: [u8; 4] = [0xed, 0xb0, 0x85, 0xff];
+
+    fn selected_frame(renderer: &mut Renderer, scene: &Node, field: usize) -> Snapshot {
+        let mut input = Interaction::default();
+        let initial = renderer.snapshot(scene, 496, 316, 1.0, &input).unwrap();
+        let path = [field];
+        let target = input
+            .accessibility_target(scene, &initial.layout, &path)
+            .unwrap();
+        input.focus_target(scene, &initial.layout, target);
+        input.sync_editor(scene);
+        let text = scene.at_path(&path).unwrap().text("text").unwrap();
+        let anchor = text.find("office").unwrap() + 2;
+        let focus = text.find("Done").unwrap();
+        input.apply_text_selection(
+            scene,
+            TextCommand::SetSelection {
+                anchor: anchor as i64,
+                focus: focus as i64,
+            },
+        );
+        renderer.snapshot(scene, 496, 316, 1.0, &input).unwrap()
+    }
+
+    fn count(frame: &Snapshot, bounds: Rect, rgba: [u8; 4]) -> usize {
+        (bounds.y as u32..(bounds.y + bounds.height) as u32)
+            .flat_map(|y| (bounds.x as u32..(bounds.x + bounds.width) as u32).map(move |x| (x, y)))
+            .filter(|(x, y)| frame.pixel(*x, *y) == Some(rgba))
+            .count()
+    }
+
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))
+    .unwrap();
+    let mut aot = SelectionColorsDemo::new();
+    let interpreted = interpret_example("examples/form/form.xr")
+        .create("SelectionColorsDemo")
+        .unwrap();
+    let opaque_aot = aot.render_shared();
+    let opaque_interp = interpreted.render_shared();
+    aot.set_selected_ink(Color(0x12ab3400));
+    interpreted
+        .set("selected-ink", Color(0x12ab3400).into())
+        .unwrap();
+    let transparent_aot = aot.render_shared();
+    let transparent_interp = interpreted.render_shared();
+    assert!(opaque_aot.same_frame_inputs(&transparent_aot));
+    assert!(opaque_interp.same_frame_inputs(&transparent_interp));
+
+    for field in 0..3 {
+        let opaque = selected_frame(&mut renderer, &opaque_aot, field);
+        assert_same_pixels(
+            &opaque,
+            &selected_frame(&mut renderer, &opaque_interp, field),
+        );
+        let transparent = selected_frame(&mut renderer, &transparent_aot, field);
+        assert_same_pixels(
+            &transparent,
+            &selected_frame(&mut renderer, &transparent_interp, field),
+        );
+        let bounds = opaque.layout.at_path(&[field]).unwrap().bounds;
+        let glyph_pixels = count(&opaque, bounds, SELECTED);
+        assert!(
+            glyph_pixels > 12,
+            "field {field} is missing the selected glyph color"
+        );
+        assert!(count(&opaque, bounds, HIGHLIGHT) > glyph_pixels);
+        assert_eq!(count(&transparent, bounds, SELECTED), 0);
+        assert!(count(&transparent, bounds, HIGHLIGHT) > count(&opaque, bounds, HIGHLIGHT));
+        assert!(count(&opaque, bounds, NORMAL) > 12);
+        for original in [NORMAL, LINK] {
+            assert_eq!(
+                count(&opaque, bounds, original),
+                count(&transparent, bounds, original),
+                "normal ink leaked behind transparent selection in field {field}",
+            );
+        }
+    }
+}
+
+#[test]
+fn selectable_styled_text_keeps_link_activation_and_copies_plain_text_in_both_backends() {
+    use layout_ui::StyledTextDemo;
+    use xrack_renderer_femtovg::preview::{PointerContact, PreviewScene};
+    use xrack_runtime::{KeyEvent, KeyModifiers, PointerButton, PointerEvent, StyledText};
+
+    fn exercise(
+        renderer: &mut Renderer,
+        ui: Box<dyn Component>,
+        document: &str,
+        read: impl Fn() -> (String, String),
+    ) {
+        let mut preview = PreviewScene::new(ui);
+        preview.advance(renderer);
+        let (scene, layout, _) = preview.inspect_frame().unwrap();
+        let body = layout.at_path(&[1]).unwrap();
+        let link = body.text_link_regions().next().unwrap().1;
+        let start = Point {
+            x: link.x + 2.0,
+            y: link.y + link.height / 2.0,
+        };
+        let end = Point {
+            x: body.bounds.x + body.bounds.width - 2.0,
+            y: body.bounds.y + body.bounds.height - 2.0,
+        };
+        let mut native = Interaction::default();
+        native.pointer_move(scene, layout, start);
+        native.pointer_press_in_scene(scene, layout);
+        native.pointer_move(
+            scene,
+            layout,
+            Point {
+                x: link.x + link.width - 2.0,
+                y: start.y,
+            },
+        );
+        assert!(
+            native
+                .hovered
+                .as_ref()
+                .is_some_and(|target| target.text_link_index() == Some(0))
+        );
+        assert!(native.pointer_release_target().is_none());
+        let contact = PointerContact {
+            id: 41,
+            primary: true,
+            event: PointerEvent {
+                button: PointerButton::Primary,
+                ..Default::default()
+            },
+        };
+        assert!(preview.press_contact(contact, start, false));
+        preview.advance(renderer);
+        assert!(preview.move_contact(contact, end));
+        preview.advance(renderer);
+        preview.finish_contact(contact, end, false, false);
+        preview.advance(renderer);
+        let (selected, link) = read();
+        assert!(selected.contains("code"), "{selected:?}");
+        assert!(document.contains(&selected));
+        assert!(link.is_empty());
+
+        let key = |key: &str| KeyEvent {
+            key: key.into(),
+            modifiers: KeyModifiers {
+                control: true,
+                primary: true,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        assert!(preview.keyboard_for_platform(renderer, &key("c"), true, false));
+        assert_eq!(
+            preview.take_clipboard_request().unwrap().text.as_deref(),
+            Some(selected.as_str())
+        );
+        assert!(preview.keyboard_for_platform(renderer, &key("a"), true, false));
+        preview.advance(renderer);
+        assert_eq!(read().0, document);
+        let home = KeyEvent {
+            key: "Home".into(),
+            ..Default::default()
+        };
+        assert!(preview.keyboard_for_platform(renderer, &home, true, false));
+        preview.advance(renderer);
+        let extend = KeyEvent {
+            key: "ArrowRight".into(),
+            modifiers: KeyModifiers {
+                shift: true,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        for _ in 0..5 {
+            assert!(preview.keyboard_for_platform(renderer, &extend, true, false));
+            preview.advance(renderer);
+        }
+        assert_eq!(read().0, "Bold ");
+        preview.click(start);
+        preview.advance(renderer);
+        assert_eq!(read().1, "#target");
+    }
+
+    let mut renderer = pollster::block_on(Renderer::new(
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        None,
+    ))
+    .unwrap();
+    let document = StyledText::from_markdown(
+        "**Bold** [long link](#target), éclair and `code`.\n\nمرحبا XRack",
+    )
+    .unwrap();
+    let mut aot = StyledTextDemo::new();
+    aot.set_selectable(true);
+    aot.set_body(document.clone());
+    let control = aot.as_weak().upgrade().unwrap();
+    exercise(&mut renderer, Box::new(aot), document.text(), || {
+        (control.get_selected(), control.get_last_link())
+    });
+    let interpreted = interpret_example("examples/layout/layout.xr")
+        .create("StyledTextDemo")
+        .unwrap();
+    interpreted.set("selectable", true.into()).unwrap();
+    interpreted.set("body", document.clone().into()).unwrap();
+    let control = interpreted.clone();
+    let get = |name| match control.get(name).unwrap() {
+        Value::String(value) => value,
+        value => panic!("expected string, got {value:?}"),
+    };
+    exercise(
+        &mut renderer,
+        Box::new(interpreted),
+        document.text(),
+        || (get("selected"), get("last-link")),
+    );
 }
 
 #[test]

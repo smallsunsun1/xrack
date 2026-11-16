@@ -139,7 +139,23 @@ pub(crate) fn calendar(
         return Ok(());
     }
     for day in geometry.days() {
-        if day.selected {
+        let endpoint = day.highlight.start || day.highlight.end;
+        if day.highlight.in_range && enabled {
+            let bounds = day.bounds;
+            let inset = 3.0_f32.min(bounds.height * 0.25);
+            fill(
+                canvas,
+                Rect::new(
+                    bounds.x,
+                    bounds.y + inset,
+                    bounds.width,
+                    bounds.height - 2.0 * inset,
+                ),
+                0.0,
+                theme.text_selection(node),
+            );
+        }
+        if day.selected || endpoint {
             let inset = 2.0_f32
                 .min(day.bounds.width * 0.2)
                 .min(day.bounds.height * 0.2);
@@ -147,7 +163,7 @@ pub(crate) fn calendar(
                 canvas,
                 day.bounds.inset(inset),
                 6.0,
-                if enabled {
+                if enabled && (day.enabled || day.selected) {
                     theme.button
                 } else {
                     theme.disabled
@@ -165,8 +181,8 @@ pub(crate) fn calendar(
             paint.set_line_width(1.5);
             canvas.stroke_path(&outline, &paint);
         }
-        let tint = if enabled && day.enabled && (day.in_month || day.selected) {
-            if day.selected {
+        let tint = if enabled && day.enabled && (day.in_month || day.selected || endpoint) {
+            if day.selected || endpoint {
                 theme.on_accent(theme.text)
             } else {
                 theme.text
@@ -1105,6 +1121,56 @@ pub(crate) fn radio_indicator(
             })),
         );
     }
+}
+
+pub(crate) fn expander_header(
+    canvas: &mut Canvas<WGPURenderer>,
+    text: &TextSystem,
+    theme: Palette,
+    node: &Node,
+    header: Rect,
+    layout: &LayoutNode,
+) -> Result<(), String> {
+    let rtl = layout.layout_direction == LayoutDirection::RightToLeft;
+    let direction = if rtl { -1.0 } else { 1.0 };
+    let x = if rtl {
+        header.x + header.width - 10.0
+    } else {
+        header.x + 10.0
+    };
+    let y = header.y + header.height * 0.5;
+    let foreground = if layout.enabled {
+        node.color("color").unwrap_or(theme.text)
+    } else {
+        theme.disabled_text
+    };
+    let mut chevron = Path::new();
+    if node.expander_collapsed() {
+        chevron.move_to(x - 2.0 * direction, y - 4.0);
+        chevron.line_to(x + 2.0 * direction, y);
+        chevron.line_to(x - 2.0 * direction, y + 4.0);
+    } else {
+        chevron.move_to(x - 4.0, y - 2.0);
+        chevron.line_to(x, y + 2.0);
+        chevron.line_to(x + 4.0, y - 2.0);
+    }
+    let mut paint = Paint::color(color(foreground));
+    paint.set_line_width(1.5);
+    canvas.stroke_path(&chevron, &paint);
+    let mut paint = text.paint_node(node, color(foreground), false);
+    let size = text.font_size(node);
+    if rtl {
+        paint.set_text_align(Align::Right);
+    }
+    canvas
+        .fill_text(
+            x + direction * 13.0,
+            header.y + ((header.height - size * 1.4) * 0.5).max(0.0),
+            node.text("title").unwrap_or(""),
+            &paint,
+        )
+        .map(|_| ())
+        .map_err(|error| format!("expander header drawing failed: {error}"))
 }
 
 pub(crate) fn group_title(

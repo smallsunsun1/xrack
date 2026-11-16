@@ -325,6 +325,7 @@ pub(crate) fn query(
                 Type::RecordList(name) => format!("[{name}]"),
                 Type::StringList => "[string]".into(),
                 Type::IntList => "[int]".into(),
+                Type::DateList => "[Date]".into(),
                 _ => ty.name().into_owned(),
             });
             let description = ty.map_or_else(
@@ -906,6 +907,7 @@ impl<'a, 'w> Symbols<'a, 'w> {
                 .chain(catalog::tree_selection_methods(kind))
                 .chain(catalog::dynamic_methods(kind))
                 .chain(catalog::focus_methods(kind))
+                .chain(catalog::text_editor_methods(kind))
                 .chain(self.index.button_methods(owner, kind))
                 .any(|method| method.name == name)
         {
@@ -963,8 +965,12 @@ impl<'a, 'w> Symbols<'a, 'w> {
         .or_else(|| xrack_ir::semantic::media_object_read_type(kind, name))
         .or_else(|| (kind == "Loader" && name == "status").then_some(Type::String))
         .or_else(|| {
-            (builtins::text_submission_editor(kind) && name == "acceptable-input")
-                .then_some(Type::Bool)
+            builtins::text_submission_editor(kind).then_some(())?;
+            match name {
+                "acceptable-input" => Some(Type::Bool),
+                "input-validity" => Some(Type::InputValidity),
+                _ => None,
+            }
         }) {
             let mut symbol = Symbol::builtin(Kind::Property, Some(ty));
             symbol.modifiers |= READONLY;
@@ -1053,6 +1059,7 @@ impl<'a, 'w> Symbols<'a, 'w> {
                     .chain(catalog::tree_selection_methods(kind))
                     .chain(catalog::dynamic_methods(kind))
                     .chain(catalog::focus_methods(kind))
+                    .chain(catalog::text_editor_methods(kind))
                     .chain(self.index.button_methods(owner, kind))
                     .find(|method| method.name == self.text(i))
                 {

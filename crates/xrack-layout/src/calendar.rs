@@ -1,5 +1,8 @@
 use crate::{LayoutNode, Point, Rect, place_in_direction};
-use xrack_runtime::{CalendarAction, CalendarState, Date, LayoutDirection, Node};
+use xrack_runtime::{
+    CalendarAction, CalendarHighlight, CalendarHighlightDay, CalendarState, Date, LayoutDirection,
+    Node,
+};
 
 const WEEKDAYS: [&str; 7] = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 
@@ -50,6 +53,7 @@ pub struct CalendarGeometry {
     cells: [Option<Date>; 42],
     week_start: usize,
     today: Option<Date>,
+    highlight: CalendarHighlight,
 }
 
 #[derive(Clone, Copy)]
@@ -61,6 +65,7 @@ pub struct CalendarDay {
     pub selected: bool,
     pub in_month: bool,
     pub today: bool,
+    pub highlight: CalendarHighlightDay,
 }
 
 #[derive(Clone, Copy)]
@@ -88,18 +93,21 @@ impl CalendarGeometry {
             "WeekNumberColumn" => CalendarPart::WeekNumberColumn,
             _ => CalendarPart::Calendar,
         };
+        let cells = if part == CalendarPart::DayOfWeekRow {
+            [None; 42]
+        } else {
+            state.cells(week_start)
+        };
+        let highlight = CalendarHighlight::from_node(node, state.fixed_month);
         Self {
             bounds,
             part,
             state,
             layout_direction: direction,
-            cells: if part == CalendarPart::DayOfWeekRow {
-                [None; 42]
-            } else {
-                state.cells(week_start)
-            },
+            cells,
             week_start: week_start as usize - 1,
             today: node.date("today"),
+            highlight,
         }
     }
 
@@ -160,6 +168,7 @@ impl CalendarGeometry {
             .enumerate()
             .filter_map(|(index, &date)| {
                 let date = date?;
+                let in_month = self.state.month == date.first_of_month();
                 Some(CalendarDay {
                     date,
                     slot: index,
@@ -169,8 +178,9 @@ impl CalendarGeometry {
                         self.cell(index % 7, 2 + index / 7, 1)
                     },
                     enabled: self.state.allows(date),
-                    selected: self.state.selected == date,
-                    in_month: self.state.month == date.first_of_month(),
+                    selected: self.state.selected == date && self.state.allows(date),
+                    in_month,
+                    highlight: self.highlight.day(date, in_month),
                     today: self.today == Some(date),
                 })
             })
@@ -200,7 +210,11 @@ impl CalendarGeometry {
     }
 
     pub fn cursor(&self) -> Option<Date> {
-        if self.has_header() || self.cells.contains(&Some(self.state.selected)) {
+        if self.has_header()
+            || (self.cells.contains(&Some(self.state.selected))
+                && (!self.state.fixed_month
+                    || self.state.selected.first_of_month() == self.state.month))
+        {
             return Some(if self.has_header() {
                 self.state.cursor()
             } else {

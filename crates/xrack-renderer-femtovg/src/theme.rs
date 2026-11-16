@@ -123,6 +123,22 @@ impl Palette {
         self.light
     }
 
+    pub(crate) fn editor_foreground(self, node: &Node, placeholder: bool, enabled: bool) -> Color {
+        if !enabled {
+            self.disabled_text
+        } else if placeholder {
+            node.color("placeholder-text-color")
+                .unwrap_or(self.disabled_text)
+        } else {
+            node.color("color").unwrap_or(self.text)
+        }
+    }
+
+    pub(crate) fn text_selection(self, node: &Node) -> Color {
+        node.color("selection-color")
+            .unwrap_or_else(|| self.role(PaletteRole::TextSelection))
+    }
+
     pub(crate) fn role(self, role: PaletteRole) -> Color {
         use PaletteRole::*;
         let (dark, light) = match role {

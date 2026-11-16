@@ -1,6 +1,6 @@
 //! Project the prepared XRack scene into the native accessibility tree.
 use crate::accessibility_text::{
-    EditorState, TextDocument, focused_editor, project_text, supports_ranges,
+    EditorState, TextDocument, project_styled_text, project_text, supports_ranges,
 };
 use accesskit::{
     Action, ActionData, CustomAction, HasPopup, Invalid, Live, Node as AccessibleNode, NodeId,
@@ -589,7 +589,9 @@ impl Builder<'_> {
                 Role::Group if node.kind == "DayOfWeekRow" => Some("Days of week"),
                 Role::Group if node.kind == "WeekNumberColumn" => Some("Week numbers"),
                 Role::Group if node.kind == "StyledText" => node.text("text"),
-                Role::Group if matches!(node.kind, "GroupBox" | "Page") => node.text("title"),
+                Role::Group if matches!(node.kind, "GroupBox" | "Expander" | "Page") => {
+                    node.text("title")
+                }
                 Role::ProgressIndicator if node.kind == "BusyIndicator" => Some("Loading"),
                 Role::ProgressIndicator => Some("Progress"),
                 Role::ScrollBar => Some("Scroll bar"),
@@ -611,6 +613,7 @@ impl Builder<'_> {
             && label.is_none()
             && description.is_none()
             && !node.group_checkable()
+            && node.kind != "Expander"
         {
             return None;
         }
@@ -648,7 +651,10 @@ impl Builder<'_> {
             accessible.set_disabled();
         }
         if is_calendar_control(node.kind) {
-            accessible.set_value(CalendarState::from_node(node).selected.to_string());
+            let calendar = CalendarState::from_node(node);
+            if !calendar.fixed_month || calendar.allows(calendar.selected) {
+                accessible.set_value(calendar.selected.to_string());
+            }
             children.extend(self.calendar_parts(node, item, path, row));
         } else if matches!(node.kind, "DayOfWeekRow" | "WeekNumberColumn") {
             children.extend(self.calendar_labels(node, item, path, row));
@@ -798,7 +804,7 @@ impl Builder<'_> {
                 if let Some(placeholder) = node.text("placeholder-text") {
                     accessible.set_placeholder(placeholder);
                 }
-                if node.boolean("read-only", false) {
+                if node.text_read_only() {
                     accessible.set_read_only();
                 }
                 if node.kind == "SearchField" {
@@ -951,25 +957,33 @@ impl Builder<'_> {
         }
 
         let text_editor = if supports_ranges(node) {
-            let editor = focused_editor(self.input, path);
-            let (document, runs) = project_text(
-                node,
-                item.bounds,
-                path,
-                self.input,
-                (
-                    self.scale,
-                    item.world_transform(),
-                    item.layout_direction_override(),
-                    item.clip,
-                ),
-                self.text_system,
-                |start, value| {
-                    let mut key = Key::element(node, path, row);
-                    key.text_run = Some((start, value.into()));
-                    self.id(key)
-                },
-            );
+            let editor = self.input.displayed_editor(node, path);
+            let scale = self.scale;
+            let text_system = self.text_system;
+            let input = self.input;
+            let allocate = |start, value: &str| {
+                let mut key = Key::element(node, path, row);
+                key.text_run = Some((start, value.into()));
+                self.id(key)
+            };
+            let (document, runs) = if node.selectable_styled_text() {
+                project_styled_text(node, item, path, scale, allocate)
+            } else {
+                project_text(
+                    node,
+                    item.bounds,
+                    path,
+                    input,
+                    (
+                        scale,
+                        item.world_transform(),
+                        item.layout_direction_override(),
+                        item.clip,
+                    ),
+                    text_system,
+                    allocate,
+                )
+            };
             children.extend(runs.iter().map(|(id, _)| *id));
             self.nodes.extend(runs);
             if let Some(editor) = editor {
@@ -980,12 +994,12 @@ impl Builder<'_> {
         } else {
             false
         };
-        if node.group_checkable()
+        if (node.group_checkable() || node.kind == "Expander")
             && let Some(toggle) = self.group_toggle(node, item, path, row)
         {
             children.insert(0, toggle);
         }
-        if node.kind != "GroupBox"
+        if !matches!(node.kind, "GroupBox" | "Expander")
             && (!self.input.menu_open() || node.kind == "Menu")
             && let Some(target) = self
                 .input
@@ -1364,21 +1378,34 @@ impl Builder<'_> {
             return None;
         }
         let mut key = Key::element(node, path, row);
-        key.kind = "GroupBoxToggle";
+        let expander = node.kind == "Expander";
+        key.kind = if expander {
+            "ExpanderHeader"
+        } else {
+            "GroupBoxToggle"
+        };
         let id = self.id(key);
-        let mut toggle = AccessibleNode::new(Role::CheckBox);
+        let mut toggle = AccessibleNode::new(if expander {
+            Role::Button
+        } else {
+            Role::CheckBox
+        });
         toggle.set_bounds(bounds(item.visible_window_bounds(rect), self.scale));
         toggle.set_label(
             node.text("accessible-name")
                 .or_else(|| node.text("title"))
                 .filter(|label| !label.is_empty())
-                .unwrap_or("Enable group"),
+                .unwrap_or(if expander { "Details" } else { "Enable group" }),
         );
-        toggle.set_toggled(if node.boolean("checked", true) {
-            Toggled::True
+        if expander {
+            toggle.set_expanded(!node.expander_collapsed());
         } else {
-            Toggled::False
-        });
+            toggle.set_toggled(if node.boolean("checked", true) {
+                Toggled::True
+            } else {
+                Toggled::False
+            });
+        }
         if !item.enabled {
             toggle.set_disabled();
         } else if !self.input.menu_open()
@@ -1387,6 +1414,13 @@ impl Builder<'_> {
                 .accessibility_target(self.scene, self.layout, path)
         {
             toggle.add_action(Action::Click);
+            if expander {
+                toggle.add_action(if node.expander_collapsed() {
+                    Action::Expand
+                } else {
+                    Action::Collapse
+                });
+            }
             toggle.add_action(Action::Focus);
             if self.input.focused.as_ref() == Some(&target) {
                 self.focus = id;
@@ -1422,14 +1456,28 @@ impl Builder<'_> {
             .navigation()
             .into_iter()
             .zip(["Previous month", "Next month"])
-            .map(|((rect, action), label)| (rect, action, label.to_owned(), None, false, None));
+            .map(|((rect, action), label)| {
+                (rect, action, label.to_owned(), None, false, None, None)
+            });
         let days = geometry.days().map(|day| {
+            let range = match (
+                day.highlight.start,
+                day.highlight.end,
+                day.highlight.in_range,
+            ) {
+                (true, true, _) => Some("Range start and end"),
+                (true, false, _) => Some("Range start"),
+                (false, true, _) => Some("Range end"),
+                (false, false, true) => Some("In range"),
+                _ => None,
+            };
             (
                 day.bounds,
                 day.enabled.then_some(geometry.day_action(day.date)),
                 day.date.to_string(),
                 Some(day.selected),
                 day.today,
+                range,
                 node.calendar_cells()
                     .and_then(|cells| cells.get(day.slot))
                     .and_then(|cell| cell.text("accessible-description"))
@@ -1440,7 +1488,7 @@ impl Builder<'_> {
             .chain(days)
             .enumerate()
             .filter_map(
-                |(index, (rect, action, label, selected, today, description))| {
+                |(index, (rect, action, label, selected, today, range, description))| {
                     let rect = rect.intersect(item.clip);
                     if rect.width <= 0.0 || rect.height <= 0.0 {
                         return None;
@@ -1458,13 +1506,15 @@ impl Builder<'_> {
                         Role::Button
                     });
                     part.set_label(label);
-                    match (today, description) {
-                        (true, Some(description)) => {
-                            part.set_description(format!("Today. {description}"))
-                        }
-                        (true, None) => part.set_description("Today"),
-                        (false, Some(description)) => part.set_description(description),
-                        (false, None) => {}
+                    let descriptions = [today.then_some("Today"), range, description];
+                    if descriptions.iter().any(Option::is_some) {
+                        part.set_description(
+                            descriptions
+                                .into_iter()
+                                .flatten()
+                                .collect::<Vec<_>>()
+                                .join(". "),
+                        );
                     }
                     part.set_bounds(bounds(item.visible_window_bounds(rect), self.scale));
                     if let Some(selected) = selected {
@@ -1794,6 +1844,7 @@ fn role(node: &Node, view: Option<&str>) -> Role {
         "Switch" => Role::Switch,
         "RadioButton" => Role::RadioButton,
         "RadioGroup" => Role::RadioGroup,
+        "StyledText" if node.selectable_styled_text() => Role::MultilineTextInput,
         "StyledText"
             if node
                 .styled_text("text")
@@ -2022,6 +2073,7 @@ pub(crate) fn supports_click(kind: &str) -> bool {
             | "RoundButton"
             | "DelayButton"
             | "GroupBox"
+            | "Expander"
             | "DialogButton"
             | "TouchArea"
             | "SwipeDelegate"
@@ -2356,6 +2408,51 @@ mod tests {
     }
 
     #[test]
+    fn expander_header_exposes_expansion_and_hides_collapsed_content() {
+        let mut panel = Node::new("Expander", Some("panel"));
+        panel
+            .properties
+            .insert("title", "More options".to_owned().into());
+        panel.children.push(button("save", "Save preferences", 0.0));
+        let mut projection = Projection::default();
+        let size = Size::new(220.0, 140.0);
+        let check = |panel: Node, expanded: bool, projection: &mut Projection| {
+            let scene = Rc::new(panel);
+            let frame = Rc::new(layout(&scene, size, &mut Text));
+            let update = projection
+                .update(&scene, &frame, &Interaction::default(), 1.0, None)
+                .unwrap();
+            let (id, header) = update
+                .nodes
+                .iter()
+                .find(|(_, node)| {
+                    node.role() == Role::Button && node.label() == Some("More options")
+                })
+                .unwrap();
+            assert_eq!(header.is_expanded(), Some(expanded));
+            assert_eq!(header.supports_action(Action::Expand), !expanded);
+            assert_eq!(header.supports_action(Action::Collapse), expanded);
+            assert!(matches!(
+                projection.route(*id),
+                Some(Route::Element {
+                    kind: "Expander",
+                    ..
+                })
+            ));
+            assert_eq!(
+                update
+                    .nodes
+                    .iter()
+                    .any(|(_, node)| node.label() == Some("Save preferences")),
+                expanded
+            );
+        };
+        check(panel.clone(), false, &mut projection);
+        panel.properties.insert("expanded", true.into());
+        check(panel, true, &mut projection);
+    }
+
+    #[test]
     fn frame_groups_accessible_children_and_inherits_disabled_state() {
         let mut window = Node::new("Window", None);
         let mut frame = Node::new("ControlFrame", Some("group"));
@@ -2478,6 +2575,52 @@ mod tests {
             .update(&scene, &frame, &input, 1.0, None)
             .unwrap();
         assert_eq!(update.focus, switch_id);
+    }
+
+    #[test]
+    fn single_line_drag_scroll_moves_accessible_text_without_a_caret_change() {
+        let mut node = Node::new("LineEdit", Some("input"));
+        length(&mut node, "width", 140.0);
+        length(&mut node, "height", 32.0);
+        node.properties
+            .insert("text", "long text ".repeat(16).into());
+        let scene = Rc::new(node);
+        let frame = Rc::new(layout(&scene, Size::new(140.0, 32.0), &mut Text));
+        let text = TextSystem::system().unwrap();
+        let mut input = Interaction::default();
+        input.accessibility_focus(input.accessibility_target(&scene, &frame, &[]).unwrap());
+        input.editor = Some(Default::default());
+        let mut projection = Projection::default();
+        let first_run_x = |update: TreeUpdate| {
+            update
+                .nodes
+                .into_iter()
+                .find(|(_, node)| node.role() == Role::TextRun)
+                .unwrap()
+                .1
+                .bounds()
+                .unwrap()
+                .x0
+        };
+        let initial = first_run_x(
+            projection
+                .update(&scene, &frame, &input, 1.0, Some(&text))
+                .unwrap(),
+        );
+        input
+            .editor
+            .as_mut()
+            .unwrap()
+            .set_horizontal_drag_scroll(Some(24.0));
+        let scrolled = first_run_x(
+            projection
+                .update(&scene, &frame, &input, 1.0, Some(&text))
+                .unwrap(),
+        );
+        assert!(
+            (initial - scrolled - 24.0).abs() < 0.01,
+            "{initial} -> {scrolled}"
+        );
     }
 
     #[test]
@@ -3049,6 +3192,50 @@ mod tests {
     }
 
     #[test]
+    fn selectable_styled_text_exposes_read_only_ranges_and_link_actions() {
+        let mut label = Node::new("StyledText", Some("document"));
+        let styled =
+            xrack_runtime::StyledText::from_markdown("**Alpha** [link](#a) é.\n\nمرحبا").unwrap();
+        let plain = styled.text().to_owned();
+        label.properties.insert("text", styled.into());
+        label.properties.insert("selectable", true.into());
+        label
+            .properties
+            .insert("accessible-name", "Document".to_owned().into());
+        let scene = Rc::new(label);
+        let mut text = TextSystem::system().unwrap();
+        let frame = Rc::new(layout(&scene, Size::new(280.0, 120.0), &mut text));
+        let mut input = Interaction::default();
+        input.accessibility_focus(input.accessibility_target(&scene, &frame, &[]).unwrap());
+        input.sync_editor(&scene);
+        input.apply_text_selection(&scene, xrack_runtime::TextCommand::SelectAll);
+        let mut tree = Projection::default();
+        let update = tree
+            .update(&scene, &frame, &input, 1.0, Some(&text))
+            .unwrap();
+        let (id, node) = named(&update, "Document");
+        assert!(node.is_read_only());
+        assert!(node.supports_action(Action::SetTextSelection));
+        assert!(!node.supports_action(Action::SetValue));
+        let (anchor, focus) = tree
+            .text_selection(id, *node.text_selection().unwrap(), &plain)
+            .unwrap();
+        assert_eq!((anchor, focus.offset), (0, plain.len()));
+        assert!(
+            update
+                .nodes
+                .iter()
+                .any(|(_, node)| node.role() == Role::Link && node.supports_action(Action::Click))
+        );
+        assert!(
+            update
+                .nodes
+                .iter()
+                .any(|(_, node)| node.role() == Role::TextRun && node.bounds().is_some())
+        );
+    }
+
+    #[test]
     fn styled_text_exposes_full_plain_text_through_the_label_role() {
         let mut label = Node::new("StyledText", Some("rich"));
         length(&mut label, "width", 30.0);
@@ -3209,8 +3396,23 @@ mod tests {
         grid.properties.insert("date", date(2021, 1, 8).into());
         grid.properties.insert("today", date(2021, 1, 8).into());
         grid.properties
+            .insert("highlight-start", date(2021, 1, 7).into());
+        grid.properties
+            .insert("highlight-end", date(2021, 1, 11).into());
+        grid.properties
             .insert("minimum-date", date(2020, 12, 28).into());
+        grid.properties.insert(
+            "disabled-weekdays",
+            xrack_runtime::Value::IntList(vec![6, 7]),
+        );
+        grid.properties.insert(
+            "disabled-dates",
+            xrack_runtime::Value::DateList(vec![date(2021, 1, 11)]),
+        );
         let cells = xrack_runtime::CalendarCells::default().render(&grid, |day| {
+            if [date(2021, 1, 9), date(2021, 1, 11)].contains(&day.date) {
+                assert!(!day.enabled);
+            }
             let mut cell = Node::new("Rectangle", None);
             if day.today {
                 cell.properties
@@ -3238,7 +3440,10 @@ mod tests {
         let (id, selected) = named(&update, "2021-01-08");
         let selected_id = id;
         assert_eq!(selected.toggled(), Some(Toggled::True));
-        assert_eq!(selected.description(), Some("Today. Release review"));
+        assert_eq!(
+            selected.description(),
+            Some("Today. In range. Release review")
+        );
         assert!(
             !update
                 .nodes
@@ -3255,6 +3460,17 @@ mod tests {
         let (id, disabled) = named(&update, "2020-12-27");
         assert!(disabled.is_disabled());
         assert!(projection.route(id).is_none());
+        assert_eq!(
+            named(&update, "2021-01-07").1.description(),
+            Some("Range start")
+        );
+        for (label, description) in [("2021-01-09", "In range"), ("2021-01-11", "Range end")] {
+            let (id, closed) = named(&update, label);
+            assert!(closed.is_disabled());
+            assert_eq!(closed.description(), Some(description));
+            assert!(!closed.supports_action(Action::Click));
+            assert!(projection.route(id).is_none());
+        }
         for value in ["Sun", "Week 53 of 2020", "Week 1 of 2021"] {
             assert!(
                 update
@@ -3265,6 +3481,9 @@ mod tests {
         }
 
         let mut rtl = scene.as_ref().clone();
+        rtl.children[0]
+            .properties
+            .insert("fixed-month", true.into());
         rtl.properties.insert(
             "layout-direction",
             xrack_runtime::LayoutDirection::RightToLeft.into(),
@@ -3276,6 +3495,9 @@ mod tests {
             .unwrap();
         let (id, selected) = named(&update, "2021-01-08");
         assert_eq!(id, selected_id);
+        let (adjacent, day) = named(&update, "2020-12-28");
+        assert!(day.is_disabled());
+        assert!(projection.route(adjacent).is_none());
         let geometry =
             CalendarGeometry::for_layout(scene.child_at(0).unwrap(), frame.child_at(0).unwrap());
         let day = geometry.days().find(|day| day.selected).unwrap();
@@ -3291,7 +3513,10 @@ mod tests {
                 .unwrap()
         };
         assert!(x("Sun") > x("Mon"));
-        assert_eq!(selected.description(), Some("Today. Release review"));
+        assert_eq!(
+            selected.description(),
+            Some("Today. In range. Release review")
+        );
     }
 
     #[test]
@@ -4192,14 +4417,14 @@ mod tests {
     }
 
     #[test]
-    fn password_projection_publishes_only_bullets_and_maps_utf8_selection() {
+    fn password_projection_publishes_only_masked_text_and_maps_utf8_selection() {
         use xrack_runtime::InputType;
 
         let secret = "e\u{301}👩‍💻";
-        for (kind, text, role, revealed) in [
-            ("LineEdit", "text", Role::PasswordInput, false),
-            ("LineEdit", "text", Role::PasswordInput, true),
-            ("ComboBox", "edit-text", Role::EditableComboBox, false),
+        for (kind, text, role, revealed, marker) in [
+            ("LineEdit", "text", Role::PasswordInput, false, "•"),
+            ("LineEdit", "text", Role::PasswordInput, true, "x"),
+            ("ComboBox", "edit-text", Role::EditableComboBox, false, "🇨🇳"),
         ] {
             let mut field = Node::new(kind, Some("passphrase"));
             field
@@ -4210,6 +4435,9 @@ mod tests {
                 field.properties.insert("editable", true.into());
             }
             field.properties.insert("password-visible", revealed.into());
+            field
+                .properties
+                .insert("password-character", marker.to_owned().into());
             let scene = Rc::new(field);
             let frame = Rc::new(layout(&scene, Size::new(240.0, 40.0), &mut Text));
             let mut input = Interaction::default();
@@ -4230,8 +4458,8 @@ mod tests {
                 .find(|(id, _)| field.children().contains(id))
                 .unwrap()
                 .1;
-            assert_eq!(run.value(), Some("••"));
-            assert_eq!(run.character_lengths(), &[3, 3]);
+            assert_eq!(run.value(), Some(marker.repeat(2).as_str()));
+            assert_eq!(run.character_lengths(), &[marker.len() as u8; 2]);
             assert!(run.word_starts().is_empty());
             assert!(!format!("{update:?}").contains(secret));
 
@@ -4242,6 +4470,103 @@ mod tests {
             assert_eq!(focus.offset, secret.len());
             assert!(tree.text_selection(*id, selection, "changed").is_none());
         }
+    }
+
+    #[test]
+    fn text_run_bounds_follow_the_editors_asymmetric_insets() {
+        use xrack_runtime::Length;
+        let text_system = xrack_renderer_femtovg::TextSystem::bundled_only();
+        let mut editor = Node::new("LineEdit", Some("entry"));
+        editor.properties.insert("text", "WW".to_owned().into());
+        let text_bounds = |node: Node| {
+            let scene = Rc::new(node);
+            let frame = Rc::new(layout(&scene, Size::new(240.0, 80.0), &mut Text));
+            let update = Projection::default()
+                .update(
+                    &scene,
+                    &frame,
+                    &Interaction::default(),
+                    1.0,
+                    Some(&text_system),
+                )
+                .unwrap();
+            update
+                .nodes
+                .iter()
+                .find(|(_, node)| node.role() == Role::TextRun)
+                .and_then(|(_, node)| node.bounds())
+                .unwrap()
+        };
+        let uniform = text_bounds(editor.clone());
+        editor.properties.insert("padding-top", Length(26.0).into());
+        editor
+            .properties
+            .insert("padding-left", Length(28.0).into());
+        let asymmetric = text_bounds(editor);
+        assert_eq!(asymmetric.x0 - uniform.x0, 22.0);
+        assert_eq!(asymmetric.y0 - uniform.y0, 10.0);
+    }
+
+    #[test]
+    fn password_projection_stays_masked_during_timed_echo() {
+        use xrack_layout::{EditAction, EditSource, PasswordMask};
+        use xrack_runtime::{Component, InputType};
+
+        struct Editor(Node);
+        impl Component for Editor {
+            fn render(&self) -> Node {
+                self.0.clone()
+            }
+
+            fn dispatch(&mut self, _: &str, _: &str) -> bool {
+                false
+            }
+
+            fn edit_at(&mut self, _: &Node, _: &[usize], value: String) -> bool {
+                self.0.properties.insert("text", value.into());
+                true
+            }
+        }
+
+        let mut field = Node::new("LineEdit", Some("passphrase"));
+        field
+            .properties
+            .insert("input-type", InputType::Password.into());
+        field
+            .properties
+            .insert("password-mask-delay", 1000_i64.into());
+        let mut editor = Editor(field);
+        let old_scene = editor.render();
+        let size = Size::new(240.0, 40.0);
+        let old_frame = layout(&old_scene, size, &mut Text);
+        let mut input = Interaction::default();
+        input.accessibility_focus(
+            input
+                .accessibility_target(&old_scene, &old_frame, &[])
+                .unwrap(),
+        );
+        input.sync_editor(&old_scene);
+        assert!(input.edit_text(
+            &mut editor,
+            &old_scene,
+            EditAction::Insert("🔒"),
+            EditSource::Keyboard,
+            std::time::Instant::now()
+        ));
+        let scene = Rc::new(editor.render());
+        let frame = Rc::new(layout(&scene, size, &mut Text));
+        let visual = PasswordMask::for_editor(&scene, "🔒", input.displayed_editor(&scene, &[]));
+        assert_eq!(visual.display(), "🔒");
+        let update = Projection::default()
+            .update(&scene, &frame, &input, 1.0, None)
+            .unwrap();
+        assert!(!format!("{update:?}").contains("🔒"));
+        assert!(
+            update
+                .nodes
+                .iter()
+                .any(|(_, node)| node.role() == Role::TextRun && node.value() == Some("•"))
+        );
     }
 
     #[test]
@@ -4388,6 +4713,52 @@ mod tests {
         assert_eq!(overview.is_selected(), Some(true));
         assert_eq!(overview.bounds().unwrap().x0, 80.0);
         assert_eq!(overview.bounds().unwrap().x1, 160.0);
+    }
+
+    #[test]
+    fn accessibility_keeps_the_opted_in_selection_on_an_unfocused_editor() {
+        let text = "e\u{301}clair";
+        let mut editor = Node::new("TextArea", Some("editor"));
+        length(&mut editor, "width", 170.0);
+        length(&mut editor, "height", 60.0);
+        editor
+            .properties
+            .insert("accessible-name", "Editor".to_owned().into());
+        editor.properties.insert("text", text.to_owned().into());
+        editor
+            .properties
+            .insert("persistent-selection", true.into());
+        let mut button = Node::new("Button", Some("toolbar"));
+        length(&mut button, "y", 72.0);
+        button
+            .properties
+            .insert("text", "Toolbar".to_owned().into());
+        let mut root = Node::new("Window", None);
+        root.children = vec![editor, button];
+        let scene = Rc::new(root);
+        let frame = Rc::new(layout(&scene, Size::new(200.0, 150.0), &mut Text));
+        let mut input = Interaction::default();
+        for path in [[0], [1]] {
+            input.accessibility_focus(input.accessibility_target(&scene, &frame, &path).unwrap());
+            input.sync_editor(&scene);
+            if path == [0] {
+                input
+                    .editor
+                    .as_mut()
+                    .unwrap()
+                    .set_selection(text, 3, TextPosition::default());
+            }
+        }
+        let mut tree = Projection::default();
+        let update = tree.update(&scene, &frame, &input, 1.0, None).unwrap();
+        let (editor_id, editor) = named(&update, "Editor");
+        let (button_id, _) = named(&update, "Toolbar");
+        assert_eq!(update.focus, button_id);
+        let selection = editor.text_selection().unwrap();
+        assert_eq!(
+            tree.text_selection(editor_id, *selection, text),
+            Some((3, TextPosition::default()))
+        );
     }
 
     #[test]

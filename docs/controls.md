@@ -26,6 +26,8 @@
 
 取消勾选会保留内容和布局，禁用组内输入、快捷键和弹层。普通输入焦点会回到仍可用的分组标题。运行 `bazel run //examples/controls:controls -- --groups` 体验。
 
+`Expander` 默认折叠。设定 `title` 和可双向绑定的 `expanded`，就可以通过点击标题、Enter、Space 或无障碍展开和折叠。用户切换会触发 `expanded-changed(bool)`。折叠释放内容占用的布局空间，保留控件状态，并把内容里的焦点移回标题。展开后的子项沿用垂直布局的内边距、间距与尺寸约束。运行 `bazel run //examples/controls:controls -- --expander`，输入草稿后按 F8 折叠，再展开可继续编辑。
+
 `FlowLayout` 按子项的首选尺寸自动换行，设置 `orientation: vertical;` 可改为纵向排列并换列。每一行或列独立应用 `alignment` 和 `cross-axis-alignment`，子项仍可使用尺寸约束、`layout-order` 和 `cross-axis-self-alignment`。用 `horizontal-spacing` 和 `vertical-spacing` 分别控制两个方向的间距，默认沿用 `spacing`。隐藏和零尺寸子项不参与排布。运行 `bazel run //examples/layout:layout -- --flow` 后调整窗口宽度，可观察按钮换行和下方状态文本的位置变化。
 
 `FlexboxLayout` 支持 `flex-direction` 的 `row`、`row-reverse`、`column` 和 `column-reverse`，以及 `flex-wrap` 的 `wrap`、`no-wrap` 和 `wrap-reverse`。`alignment: stretch;` 按主轴伸缩权重分配每行的剩余空间，并遵守最大尺寸。空间不足时按首选尺寸比例收缩，受最小尺寸限制。`cross-axis-line-alignment` 分配行与行之间的空间，`cross-axis-alignment` 和子项的 `cross-axis-self-alignment` 对齐行内元素。`spacing-horizontal` 和 `spacing-vertical` 可分别设定两个方向的间距。Tab 和无障碍按布局方向及 `layout-order` 遍历。运行 `bazel run //examples/layout:layout -- --flex` 体验。
@@ -57,6 +59,8 @@
 `StyledText` 接收 `styled-text` 值并复用标签的布局属性。``@markdown("**粗体**、*斜体*和 `xrackc`")`` 在编译时生成文字和字素对齐的样式区间。支持段落、标题、粗体、斜体、删除线、代码和链接。图片和 HTML 会产生诊断。Rust 可用 `StyledText::from_markdown` 解析动态内容，也可用 `StyledText::from_parts` 提供有样式区间和链接的文本。
 Markdown 链接用 `[文案](目标)` 声明，默认显示下划线并可配置 `link-color`。鼠标和 Tab / Enter 均可触发 `link-activated(target)`，应用收到字符串后决定如何处理。布局截断和祖先裁剪会同步限制链接的命中范围和焦点。运行 `bazel run //examples/layout:layout -- --styled-text` 体验换行和截断。
 
+设置 `selectable: true;` 后，`StyledText` 可以拖选、双击选词、全选和复制纯文本。选区按已排版的字形定位，样式和链接保持有效。短按链接触发 `link-activated`，从链接上开始拖动则选择文字。可通过 `selected-text` 读取选中内容，通过 `select-all()`、`select-word()`、`set-selection-offsets(anchor, focus)`、`clear-selection()` 和 `copy()` 操作已聚焦的选区。全选包含原文中被截断的部分。运行 `bazel run //examples/layout:layout -- --selectable-styled-text` 体验。
+
 窗口可绑定 `default-font-family`、`default-font-size`、`default-font-weight` 和 `default-font-italic`。文字、按钮和输入控件可分别用 `font-family`、`font-size`、`font-weight` 和 `font-italic` 覆盖窗口设置。字体可用系统字体族名或 `monospace`。缺少所选字形时继续用系统回退字体。字重使用 100 到 900，400 为常规字重，0 沿用默认值。可变字体使用支持的字重和斜体轴。布局、GPU 绘制、编辑器光标和无障碍文字范围共用字体选择。运行 `bazel run //examples/layout:layout -- --fonts`，切换等宽字体和字号，观察单行输入和多行换行。
 
 在 `.xr` 文件顶部写 `import "fonts/example.ttf";` 可内嵌本地 TTF、OTF 或 TTC 字体。路径相对于声明所在的 `.xr` 文件，Bazel 目标通过 `xr_ui_library` 的 `assets` 列出字体文件。通过字体内部的字体族名设置 `font-family` 或 `default-font-family`。内嵌字体优先于系统同名字体，TTC 可按字重和斜体选择文件中的字体变体。
@@ -65,15 +69,56 @@ Markdown 链接用 `[文案](目标)` 声明，默认显示下划线并可配置
 
 `TextInput` 和 `LineEdit` 提供单行键盘编辑、选区、IME 预编辑和提交。`text <=> root.query;` 与 `checked <=> root.flag;` 分别把文本输入和复选框与可写属性相连。条件子元素用 `if condition : Element { ... }` 表达，隐藏时保留组件的内部状态。重复元素用 `for item[index] in root.items : Text { ... }` 表达，接受整数计数、`[string]` 和命名记录列表，以匿名、无状态的显示模板生成纵向列表。
 
-在单行输入中设置 `input-type: password;` 后，绘制和光标按字素簇使用圆点，IME 预编辑也会遮罩。应用通过 `text` 绑定读写真值。设置 `password-visible: true;` 可显式显示原文，剪贴板复制、剪切仍被禁用，无障碍树仍只发布遮罩后的值和选区。可粘贴到可编辑的密码字段。运行 `bazel run //examples/form:form -- --password` 体验。
+`TextInput`、`LineEdit`、`TextEdit`、`TextArea`、`SearchField` 和可编辑的 `ComboBox` 默认使用 6 个逻辑像素的内边距。`padding` 设置四边的统一值，`padding-left`、`padding-right`、`padding-top`、`padding-bottom` 可以分别覆盖，方向以屏幕物理边为准。布局会给内边距预留空间。多行换行、选区、光标与输入法定位都在内缩后的区域计算。下拉箭头和搜索按钮保留各自的点击区域。
+
+`placeholder-text-color` 是可绑定的 `color`，用于编辑区为空时的占位文字。正常输入使用 `color`，禁用时使用主题颜色。运行 `bazel run //examples/form:form -- --editor-insets`，可以切换四边内边距，在单行和多行中试用鼠标与键盘输入。
+
+在单行输入中设置 `input-type: password;` 后，每个字素簇默认显示为圆点 `•`，IME 预编辑也会遮罩。`TextInput`、`LineEdit` 和可编辑的 `ComboBox` 可用 `password-character: "*";` 换成其他标记。使用字符串的第一个字素簇。空值、空白、控制字符、超过 64 字节或连续显示时会合并的标记使用默认圆点。应用通过 `text` 绑定读写真值。`TextInput` 和 `LineEdit` 可用 `password-visible: true;` 显式显示原文。剪贴板复制和剪切仍被禁用，无障碍树仍只发布遮罩后的值和选区。运行 `bazel run //examples/form:form -- --password` 体验显示和切换遮罩。
+
+`password-mask-delay` 以毫秒为单位。设为 `750` 可短暂显示刚键入的单个字素。默认 `0`，所有字符立即遮罩。计时从这次键入开始。粘贴、程序写入、IME 预编辑或提交都保持遮罩。移动光标、失焦、窗口失活或关闭延迟后会恢复完整遮罩。剪贴板和无障碍沿用密码字段的规则，无障碍仍只收到遮罩字符。
 
 `TextInput` 和 `LineEdit` 的 `input-type: number;` 接受 ASCII 数字，`decimal` 允许前置正负号和一个小数分隔符。`decimal-separator` 默认为 `"."`，也可设为 `","`。空文本、单独的符号或分隔符可作为编辑中间态，按 Enter 提交需至少有一位数字。`input-type: search;` 将单行输入向辅助技术标记为搜索框。
+
+单行和多行编辑器都支持按词操作。macOS 使用 Option，Windows 和 Linux 使用 Ctrl。配合左右方向键可移动一个 Unicode 词段，再按住 Shift 可扩展选区。配合 Backspace 或 Delete 可删除光标前方或后方的词段，也可删除已有选区。方向键遵循双向文字的视觉顺序，删除使用文本中的逻辑前后顺序。每次删除可以撤销。运行 `bazel run //examples/form:form -- --bidi` 试用混合方向文字。
+
+`TextInput`、`LineEdit`、`TextEdit`、`TextArea`、`SearchField` 和可编辑的 `ComboBox` 支持 `mouse-selection-mode`。默认 `MouseSelectionMode.characters` 按 Unicode 字素拖选，`MouseSelectionMode.words` 让拖动和 Shift+点击按完整 Unicode 词段扩选。两种模式下双击都会选中词段，双击后不松开鼠标可继续逐词扩选。密码字段按词选择时以整段文字为单位。
+
+`MouseSelectionMode.caret` 让鼠标只负责聚焦和放置光标。键盘、无障碍和程序仍可设置选区。运行 `bazel run //examples/form:form -- --editor-selection`，点击模式按钮切换三种行为。
+
+在 `TextArea` 或 `TextEdit` 中按住鼠标拖出编辑区域时，内容会沿该方向自动滚动并继续扩展选区。离边缘越远，滚动越快。不换行的长行也可向左右拖选。松开鼠标、移回编辑区域或失去焦点时停止滚动。运行 `bazel run //examples/form:form -- --long-text-selection` 可体验字素和词段两种拖选方式。
+
+`TextInput`、`LineEdit`、`SearchField` 和可编辑的 `ComboBox` 也支持横向拖选。单行控件在按住期间逐步移动可见范围。松开后保留显示位置，下次按键编辑或移动光标时恢复光标跟随。在同一个示例中，可以用下方的单行控件试用。
+
+这些编辑器也支持 `overwrite-mode: true;`。选区为空时，键盘输入和 IME 提交按 Unicode 字素覆盖光标后的内容，最多到当前行尾。已经选中的文字仍按正常规则替换。掩码字段按槽位覆盖，固定分隔符保留。剪贴板粘贴沿用插入行为。已提交的覆盖支持撤销和重做。
+
+回调可用 `editor.select-word();` 在已聚焦的编辑器里选择光标处的词段，密码字段选择整段并继续隐藏 `selected-text`。在同一个示例里勾选「覆盖输入」，或按「选择光标处的词」体验。
+
+设置 `persistent-selection: true;` 后，工具栏或另一个输入框取得焦点时，原编辑器仍显示选区并提供 `selected-text` 和选区偏移。用键盘或 `focus()` 返回时可继续编辑该选区。编辑器失去焦点时隐藏光标，保存已提交文本的选区。外部修改文本、关闭属性或移除编辑器会清除保存的选区。默认值是 `false`。运行 `bazel run //examples/form:form -- --persistent-selection`，依次点「选择开头」「记录选区」「回到编辑器」。
+
+编辑器和可选取的 `StyledText` 可分别绑定 `selection-color` 和 `selected-text-color`，类型都是 `color`。前者设置选区背景，后者覆盖选中字形的前景色。可使用带透明度的颜色。省略属性时仍使用主题背景和原有文字前景色。运行 `bazel run //examples/form:form -- --selection-colors`，选中文字后点「切换选区配色」对照单行、多行和富文本效果。
+
+可编辑的文本控件可在回调中调用 `insert-text(offset, text)`、`replace-text(start, end, text)`、`remove-text(start, end)`、`append-text(text)` 和 `clear-text()`。偏移是从 0 开始的 UTF-8 字节数，越界值会收拢到文本范围内，字素内部的偏移会落到该字素开头。替换和删除接受两个方向的边界，包含起点并排除终点。
+
+命令参数在回调运行时求值，随后按调用顺序应用到挂载的编辑器。每条命令都使用执行时的文本，复用当前字段的输入校验和 `edited` 回调。校验通过的改动各记为一笔撤销，并保留当前焦点。运行 `bazel run //examples/form:form -- --text-operations`，可以用工具栏修改正文和日期，再尝试撤销。
 
 单行和多行编辑器可用 `maximum-length` 限制 Unicode 字素簇数，负值表示不限。键盘、粘贴、IME 提交和无障碍替换都校验整次编辑。无效输入会保留原值、选区和撤销记录。应用写入的值保持原样，超长文本可逐步删到限制以内。运行 `bazel run //examples/form:form -- --validation` 体验。
 
 `TextInput`、`LineEdit`、`TextEdit` 和 `TextArea` 可用 `minimum-length` 设置提交时所需的最少字素簇数，默认 0。`submit-when` 可绑定到文本及表单状态，默认 true。只读的 `acceptable-input` 把文本格式、长度和提交条件合成一个布尔值，可直接绑定到提交按钮的 `enabled`。单行编辑器的 Enter 提交使用同一规则，仍可输入未完成的草稿。多行编辑器的 Enter 继续插入换行。运行 `bazel run //examples/form:form -- --submission` 体验。
 
 单行数字输入还可用 `float` 绑定 `minimum-value` 和 `maximum-value`，提交范围包含上下限，省略任一端表示该方向不限。`input-type: decimal;` 下可设 `decimals` 限制小数位数，负值表示不限。越界值和小数位数超限的草稿仍可继续编辑，`acceptable-input` 为 false。运行 `bazel run //examples/form:form -- --numeric-validation`，可以试试输入使用逗号小数点的金额。
+
+`TextInput` 和 `LineEdit` 支持 `input-mask`。例如 `"9999-99-99"` 会把输入或粘贴的 `20261117` 格式化为 `2026-11-17`，分隔符也会写入绑定的 `text`。模式里的 `9` 表示 ASCII 数字，`A` 表示字母字素，`N` 表示字母或数字字素，`H` 表示 ASCII 十六进制字符，`X` 表示任意非控制字素。其他字符是固定文本。在 `.xr` 字符串中用 `\\` 转义掩码字符。
+
+草稿可以只填前几个槽位。全部填完后，`acceptable-input` 还会检查输入类型、长度和 `submit-when`，后者适合表达业务规则。粘贴和 IME 提交会整次校验。程序可以继续直接写入绑定值，只有符合掩码的格式才可提交。空掩码恢复普通编辑。运行 `bazel run //examples/form:form -- --input-mask` 体验日期和设备编号。
+
+需要校验可变格式时，可为 `TextInput`、`LineEdit`、`TextEdit`、`TextArea` 或可编辑的 `ComboBox` 绑定 `input-pattern`。它使用 Rust 正则语法进行全串匹配。以 `"[A-Z]{2}-[0-9]{3}"` 为例，`AB-12` 可以继续输入，`AB-123` 满足正则提交条件。在编辑区输入、粘贴或提交 IME 后，无法补全成匹配值的草稿会保留原值。此规则与长度、掩码和 `submit-when` 一起生效。
+
+空模式关闭正则校验。字面量模式的语法或构建错误会定位到源代码，动态模式更新后立即重新检查 `acceptable-input`。运行 `bazel run //examples/form:form -- --input-pattern`，可切换英文或中文的设备编号格式。
+
+只读的 `input-validity` 将编辑草稿和提交规则合成三个 `InputValidity` 枚举值。 `acceptable` 表示可以提交，`intermediate` 表示可保留的草稿仍有条件待满足，`invalid` 表示当前值违反编辑规则。过短、数字超出提交范围或 `submit-when` 尚未满足属于 `intermediate`。输入类型、最大长度、掩码或正则拒绝当前值时得到 `invalid`。可编辑下拉框切换成不可编辑模式时也会返回 `invalid`。同一示例会用这三个状态显示不同提示。
+
+`TextInput`、`LineEdit`、`TextEdit` 和 `TextArea` 提供 `editing-finished(text, acceptable)`。用户改动文字后，按 Tab 或点击离开仍挂载的输入框会结束编辑。回调收到当前文本和 `acceptable-input` 的判定，可按结果保存或提示补全。单行输入通过 Enter 校验时先触发 `accepted`，再触发本次编辑的 `editing-finished`。之后离开同一个输入框时，只有新改动才会再次触发。撤销到编辑前的值会清除待结束状态，直接改写绑定值也由应用自行处理。多行输入的 Enter 继续插入换行。运行 `bazel run //examples/form:form -- --editing-finish` 对照确认、失焦和载入示例编号。
+
 
 ## 导航
 
@@ -307,7 +352,11 @@ PathView {
 
 `choice.edit-text` 读取编辑草稿，显式清空后返回空字符串。自动编辑框尚未改动时，草稿跟随当前选中的标签。
 
+如果提交时模型中没有匹配项，可在 `accepted(text)` 中把名称加入模型。回调结束后，控件会从最新模型中查找第一个启用的精确匹配项，并写回索引或业务值。回调主动改写草稿或选择时，控件保留回调的决定。`editing-finished` 可以读取更新后的选择。运行 `bazel run //examples/selection:selection -- --combo-append` 体验新增标签和带业务键的记录。
+
 可编辑下拉框支持与单行文本编辑器相同的提交校验。可用 `minimum-length`、`maximum-length` 和 `submit-when` 设置规则，使用数字输入时还可绑定范围和小数位数。只读的 `acceptable-input` 随草稿和规则变化，进入不可编辑模式时为 false。Enter 提交前会重新校验，未完成或越界的草稿可以继续修改。显式选中模型中启用的选项会更新选择和草稿。运行 `bazel run //examples/selection -- --validated-combo` 体验。
+
+可编辑 `ComboBox` 也可用 `input-mask` 格式化键盘输入、粘贴和 IME 提交的草稿。草稿有改动时，有效的 Enter 确认会先发出 `accepted(text)`，再发出 `editing-finished(text, acceptable)`。从列表选中已有项会先交付选择回调，再以该选项的文字和校验结果结束编辑。按 Tab 或点击离开时会交付当前草稿及其校验结果。切换成不可编辑模式会清除待结束状态。运行 `bazel run //examples/selection:selection -- --combo-lifecycle` 试用设备编号掩码和记录选项。
 
 `auto-complete: true;` 可在编辑区显示模型中首个前缀匹配项的后缀。光标位于草稿末尾、没有选区且 IME 未预编辑时才显示。已有精确匹配时保留当前文字。按可见后缀所在方向的箭头键插入补全并形成一笔可撤销的编辑。按 Escape 收起提示。模型变化会使过期候选失效。按 Enter 仍提交草稿，Tab 仍切换焦点。
 
@@ -353,7 +402,7 @@ PathView {
 
 当焦点在 `TabWidget` 或 `SwipeView` 的页面内时，切页会恢复新页面上次聚焦的控件。没有记录时，焦点移到页内第一个可聚焦控件。模型页面按行身份记忆焦点，重排后仍能返回同一行的控件。点击 `TabWidget` 的标题后，方向键继续在标题间导航。按 Tab 进入内容区时，会优先回到该页上次聚焦的 Tab 停靠点。可在 `--model-tabs` 示例里聚焦页内的「详情」后按 F6 切页，或在 `--model-swipe` 中滑动、按方向键切页并用 F7 重排前两项。
 
-`SwipeView.transition-duration` 以毫秒指定选中页改变后的滑动时长，默认为 `0`。启用后，拖动时当前页和相邻页跟随指针移动。拖动距离达到阈值后松手会切页并从当前位置继续滑动，距离较短或取消时滑回当前页。拖动时只准备当前方向的一张相邻页，选择、焦点和事件仍由当前页处理。过渡沿 `orientation` 运动，横排遵循 RTL。过渡期间旧页仅用作绘制快照，焦点和无障碍立即切到新页。按方向键再次切页时，会从已显示的动画帧接续。手势开始后若当前页或目标页被模型替换，或目标页因重排改变位置，本次手势取消。运行 `bazel run //examples/navigation:navigation -- --model-swipe` 可查看 180 毫秒的过渡。
+`SwipeView.transition-duration` 以毫秒指定选中页改变后的滑动时长，默认为 `0`。启用后，拖动时当前页和相邻页跟随指针移动。达到切页距离后松手会从当前位置继续滑动。短距离快速甩动也可切到同方向的相邻页，停顿后以拖动距离判定，收手时急反向可以滑回当前页。取消手势也会滑回当前页。拖动时只准备当前方向的一张相邻页，选择、焦点和事件仍由当前页处理。过渡沿 `orientation` 运动，横排遵循 RTL。过渡期间旧页仅用作绘制快照，焦点和无障碍立即切到新页。按方向键再次切页时，会从已显示的动画帧接续。手势开始后若当前页或目标页被模型替换，或目标页因重排改变位置，本次手势取消。运行 `bazel run //examples/navigation:navigation -- --model-swipe` 可查看 180 毫秒的过渡。
 
 `SwipeView` 可以用一个 `for … : SwipePage` 从模型生成全部页面。和 `TabBar` 使用同一个模型、绑定同一个 `current-value` 后，两处的顺序和选择都随模型同步。建议把编辑器、表单等交互和局部状态封装在页内的组件中。
 
@@ -381,6 +430,12 @@ SwipeView {
 
 日历使用公历，年份范围为 1–9999，`minimum-date` 和 `maximum-date` 可进一步限制选择。默认日期是 `1970-01-01`，应用可传入当天或业务日期。`week-start` 按周一为 1 到周日为 7 编号，`weekday-labels` 接收从周一起排列的自定义星期名。
 
+`Calendar`、`MonthGrid` 和 `DatePickerPopup` 可绑定 `disabled-weekdays: [6, 7];`，例如预约表单要排除周末。编号从周一 1 到周日 7，与 `week-start` 的显示顺序无关。重复或越界的编号会忽略，空数组允许所有星期。鼠标、键盘和无障碍都遵守同一规则。方向键跳过禁用日期，Home 和 End 只在当前月内寻找可选日期。规则变化会保留应用已经设置的 `date`，日期弹层会等到草稿可以选择时才允许确认。
+
+三个日期控件也接受 `disabled-dates`，类型为 `[Date]`。它与 `disabled-weekdays`、`minimum-date`、`maximum-date` 同时生效。重复或无效的日期忽略，选择规则随共享模型的修改更新。运行 `bazel run //examples/controls:controls -- --calendar`，点击「闰日停约」，再从 2 月 28 日向右移动，可直接跳到 3 月 1 日。
+
+`DateField` 是可导入的 `.xr` 组件，定义在 `examples/form/widgets.xr`。它使用 `initial-date` 初始化，分别提供只读的 `date`、`draft-text` 和 `acceptable-input`。输入支持 `YYYY-MM-DD` 与数字粘贴。Enter 提交合法日期，Escape 恢复到已提交日期。日历按钮打开 `DatePickerPopup`，确认和键盘提交共用 `committed(date)`。应用可调用 `set-date(date)` 同步已提交日期和草稿。两种输入路径共享上下限、禁用星期和停约日期。运行 `bazel run //examples/form:form -- --date-field` 体验。
+
 `DatePickerPopup` 通过 `open` 打开，复用 `Calendar` 的日期范围、星期设置和键盘导航。打开时从 `date` 读取独立草稿，翻月只改变视图。确认时按当前范围调整草稿，写回双向绑定并触发 `accepted(date)`，取消或按 Escape 触发 `canceled()`。`title`、`accept-text` 和 `cancel-text` 可自定义。运行 `bazel run //examples/controls:controls -- --calendar` 体验内联日历和日期弹层。
 
 `MonthGrid` 提供六行日期网格，可与 `DayOfWeekRow` 和 `WeekNumberColumn` 组合。让星期行和月份网格同宽、周数列和月份网格同高，并为三个控件绑定同一 `week-start`。周数列和月份网格共享 `display-month`。周数采用 ISO 8601，每行按该行的星期四归属，跨年时可显示上一年最后一周或下一年第一周。
@@ -389,11 +444,19 @@ SwipeView {
 
 月份网格中的 `date` 和 `display-month` 可分别双向绑定。点击可用的相邻月份日期只更新选择，Page Up / Page Down 翻月。方向键改变日期，超出可见网格时随日期翻月。点击、Enter 或空格触发 `activated(date)`，包括再次触发同一日期。应用可传入 `today` 标记当天。运行 `bazel run //examples/controls:controls -- --month-grid` 体验自定义标题和周数列。
 
-在 `MonthGrid` 内声明一个匿名 `DayCell`，即可自定义每个日期的视觉内容。模板可读取 `cell-date`、零基 `cell-index`、`cell-weekday`、`cell-week`、`cell-week-year`、`cell-selected`、`cell-today`、`cell-in-month` 和 `cell-enabled`。`cell-week` 和 `cell-week-year` 表示该日期的 ISO 周数和周所属年份。网格为每个单元分配并裁剪内容区域，同时处理选择、键盘导航和无障碍日期动作。模板的 `accessible-description` 可补充日程信息。每个日期独立缓存模板绑定。运行 `bazel run //examples/controls:controls -- --calendar-agenda` 查看带日程标签的月份网格。
+`MonthGrid { fixed-month: true; }` 只允许选择显示月份中的日期，输入操作保持 `display-month` 的绑定，位于虚拟 `ListView` 中时，Page Up 和 Page Down 将焦点移到上一行或下一行的月份格，保留当前选中日期。将 `Dates.months(from, to)` 绑定给虚拟 `ListView`，每一行用月份格显示一个月，即可共享日期选择、禁用日和停约列表。用 `Dates.month-index` 配合 `position-view-at-index` 跳到指定月。运行 `bazel run //examples/controls:controls -- --calendar-browser` 可以滚动 1,200 个月，或直接跳到 2080 年 2 月。
+
+`Calendar` 和 `MonthGrid` 可绑定 `highlight-start` 和 `highlight-end`，以闭区间显示日期。两个端点都是 `Date`，可以从后往前指定。只有端点都有效才显示区间。区间覆盖的停约日仍保留禁用状态，固定月份格只标出本月日期。辅助技术可以读取区间起点、终点或内部日期。
+
+在多月日历示例中点击「区间选择」，点击或按 Enter 选中起点，再激活另一个日期确认终点。选择终点期间，方向键移动会更新预览。示例把两个端点和选择阶段保存在同一条记录中。
+
+在 `MonthGrid` 内声明一个匿名 `DayCell`，即可自定义每个日期的视觉内容。模板可读取 `cell-date`、零基 `cell-index`、`cell-weekday`、`cell-week`、`cell-week-year`、`cell-selected`、`cell-today`、`cell-in-month` 、`cell-enabled`、`cell-in-range`、`cell-range-start` 和 `cell-range-end`。`cell-week` 和 `cell-week-year` 表示该日期的 ISO 周数和周所属年份。网格为每个单元分配并裁剪内容区域，同时处理选择、键盘导航和无障碍日期动作。模板的 `accessible-description` 可补充日程信息。每个日期独立缓存模板绑定。运行 `bazel run //examples/controls:controls -- --calendar-agenda` 查看带日程标签的月份网格。
 
 `TimePicker` 和 `TimePickerPopup` 使用 `Time { hour: 23, minute: 58, second: 41 }`。字段省略时默认为零。构造时小时限制到 0–23，分秒限制到 0–59。`time` 可双向绑定，内联滚轮改值后触发 `changed(time)`。默认显示 24 小时制，设置 `use-24-hour-format: false;` 可显示 12 小时制和 AM/PM。`show-seconds: true;` 显示秒，隐藏时保留原值。滚轮支持鼠标、键盘和辅助技术操作。
 
-`TimePickerPopup` 通过 `open` 打开，打开时读取一次 `time` 作为草稿。确认后写回并触发 `accepted(time)`，取消或按 Escape 触发 `canceled()`。可用 `title`、`accept-text` 和 `cancel-text` 自定义文字。运行 `bazel run //examples/controls:controls -- --time` 体验。
+`TimePickerPopup` 通过 `open` 打开，打开时读取一次 `time` 作为草稿。确认后写回并触发 `accepted(time)`，取消或按 Escape 触发 `canceled()`。可用 `title`、`accept-text` 和 `cancel-text` 自定义文字。`minimum-time` 和 `maximum-time` 可限制弹层的确认范围。滚轮可以经过超出范围的中间值，小于下限或大于上限时禁止确认。运行 `bazel run //examples/controls:controls -- --time` 体验。
+
+`TimeField` 定义在 `examples/form/widgets.xr`，可直接导入。它组合文本编辑器和时间弹层，支持输入或粘贴纯数字并用 Enter 提交，Escape 恢复已提交时间。`show-seconds` 同时控制文本和滚轮是否显示秒，隐藏时提交分钟会保留原秒数。文本使用 24 小时制，`use-24-hour-format` 可单独调整弹层。可用 `set-time(time)` 同步程序写入，两种输入路径共用 `minimum-time`、`maximum-time` 和 `committed(time)` 回调。运行 `bazel run //examples/form:form -- --time-field` 体验。
 
 `ColorPickerPopup` 支持 RGBA 滑条、0–255 数值输入和十六进制编辑。`show-color-plane: true;` 打开 HSV 色板和色相滑条，鼠标或触摸可拖动色板，方向键分别调整饱和度和明度。所有输入共享草稿并实时更新棋盘格上的预览。十六进制输入接受六位 RGB，也可以在 `show-alpha: true;` 时输入八位 RGBA。六位输入和隐藏透明度控件都会保留原有 alpha。格式无效时保留上一次有效预览，修正后可确认。
 

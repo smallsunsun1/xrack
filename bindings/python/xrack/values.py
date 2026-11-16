@@ -32,6 +32,7 @@ from ._native import (
     ImageTileMode,
     ImageVerticalAlignment,
     InputType,
+    InputValidity,
     KeyEvent,
     KeyModifiers,
     LayoutAlignment,
@@ -40,6 +41,7 @@ from ._native import (
     LogLevel,
     MessageButtons,
     MessageLevel,
+    MouseSelectionMode,
     Orientation,
     Percent,
     PointerButton,
@@ -99,6 +101,7 @@ __all__ = [
     "ImageTileMode",
     "ImageVerticalAlignment",
     "InputType",
+    "InputValidity",
     "KeyEvent",
     "KeyModifiers",
     "LayoutAlignment",
@@ -107,6 +110,7 @@ __all__ = [
     "LogLevel",
     "MessageButtons",
     "MessageLevel",
+    "MouseSelectionMode",
     "Orientation",
     "Percent",
     "PointerButton",
@@ -172,6 +176,7 @@ Value: TypeAlias = (
     | ImageTileMode
     | ImageVerticalAlignment
     | InputType
+    | InputValidity
     | KeyEvent
     | KeyModifiers
     | LayoutAlignment
@@ -180,6 +185,7 @@ Value: TypeAlias = (
     | LogLevel
     | MessageButtons
     | MessageLevel
+    | MouseSelectionMode
     | Orientation
     | Percent
     | PointerButton

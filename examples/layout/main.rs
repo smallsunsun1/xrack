@@ -25,6 +25,11 @@ fn main() -> std::process::ExitCode {
         Some("--rtl") => xrack_platform_winit::run(LayoutDirectionDemo::new()),
         Some("--flex") => xrack_platform_winit::run(FlexDemo::new()),
         Some("--styled-text") => xrack_platform_winit::run(StyledTextDemo::new()),
+        Some("--selectable-styled-text") => {
+            let mut ui = StyledTextDemo::new();
+            ui.set_selectable(true);
+            xrack_platform_winit::run(ui)
+        }
         Some("--labels") => xrack_platform_winit::run(LabelsDemo::new()),
         Some("--fonts") => xrack_platform_winit::run(FontsDemo::new()),
         Some("--states") => xrack_platform_winit::run(StatesDemo::new()),

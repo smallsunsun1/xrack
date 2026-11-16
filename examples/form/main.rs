@@ -1,8 +1,10 @@
 use form_ui::{
-    BidiEditorDemo, CloseGuardDemo, DragDropDemo, EditorCommandsDemo, EditorMenuDemo,
-    EditorSelectionDemo, FileDialogDemo, FileDropDemo, FormDemo, MessageDialogDemo,
-    NumericValidationDemo, PasswordDemo, SubmissionValidationDemo, TextAlignmentDemo,
-    ValidationDemo,
+    BidiEditorDemo, CloseGuardDemo, DateFieldDemo, DragDropDemo, EditingLifecycleDemo,
+    EditorCommandsDemo, EditorInsetsDemo, EditorMenuDemo, EditorSelectionDemo, FileDialogDemo,
+    FileDropDemo, FormDemo, InputMaskDemo, LongTextSelectionDemo, MessageDialogDemo,
+    NumericValidationDemo, PasswordDemo, PatternValidationDemo, PersistentSelectionDemo,
+    SelectionColorsDemo, SubmissionValidationDemo, TextAlignmentDemo, TextOperationsDemo,
+    TimeFieldDemo, ValidationDemo,
 };
 use std::{cell::OnceCell, rc::Rc};
 use xrack_platform_winit::{DesktopWindow, run_desktop};
@@ -25,11 +27,21 @@ fn run_close_guard() -> Result<(), String> {
 fn main() -> std::process::ExitCode {
     let result = match std::env::args().nth(1).as_deref() {
         Some("--password") => xrack_platform_winit::run(PasswordDemo::new()),
+        Some("--date-field") => xrack_platform_winit::run(DateFieldDemo::new()),
+        Some("--time-field") => xrack_platform_winit::run(TimeFieldDemo::new()),
+        Some("--editor-insets") => xrack_platform_winit::run(EditorInsetsDemo::new()),
         Some("--drag") => xrack_platform_winit::run(DragDropDemo::new()),
         Some("--drop-files") => xrack_platform_winit::run(FileDropDemo::new()),
         Some("--validation") => xrack_platform_winit::run(ValidationDemo::new()),
         Some("--rtl-text") => xrack_platform_winit::run(TextAlignmentDemo::new()),
         Some("--editor-selection") => xrack_platform_winit::run(EditorSelectionDemo::new()),
+        Some("--persistent-selection") => xrack_platform_winit::run(PersistentSelectionDemo::new()),
+        Some("--long-text-selection") => xrack_platform_winit::run(LongTextSelectionDemo::new()),
+        Some("--selection-colors") => xrack_platform_winit::run(SelectionColorsDemo::new()),
+        Some("--text-operations") => xrack_platform_winit::run(TextOperationsDemo::new()),
+        Some("--input-pattern") => xrack_platform_winit::run(PatternValidationDemo::new()),
+        Some("--editing-finish") => xrack_platform_winit::run(EditingLifecycleDemo::new()),
+        Some("--input-mask") => xrack_platform_winit::run(InputMaskDemo::new()),
         Some("--numeric-validation") => xrack_platform_winit::run(NumericValidationDemo::new()),
         Some("--submission") => xrack_platform_winit::run(SubmissionValidationDemo::new()),
         Some("--editor-commands") => xrack_platform_winit::run(EditorCommandsDemo::new()),

@@ -174,6 +174,7 @@ fn kind(op: Op<'_>, ty: &Type) -> Result<ValueType> {
         Type::String => ValueType::String,
         Type::StringList => ValueType::StringList,
         Type::IntList => ValueType::IntList,
+        Type::DateList => ValueType::DateList,
         Type::Record(name) => ValueType::Record(Rc::from(name.as_ref())),
         Type::RecordList(name) => ValueType::RecordList(Rc::from(name.as_ref())),
         Type::Date => ValueType::Date,
@@ -197,6 +198,8 @@ fn kind(op: Op<'_>, ty: &Type) -> Result<ValueType> {
         Type::FlexboxLayoutWrap => ValueType::FlexboxLayoutWrap,
         Type::CrossAxisAlignment => ValueType::CrossAxisAlignment,
         Type::TextWrap => ValueType::TextWrap,
+        Type::MouseSelectionMode => ValueType::MouseSelectionMode,
+        Type::InputValidity => ValueType::InputValidity,
         Type::TextHorizontalAlignment => ValueType::TextHorizontalAlignment,
         Type::TextVerticalAlignment => ValueType::TextVerticalAlignment,
         Type::TextOverflow => ValueType::TextOverflow,
@@ -555,11 +558,9 @@ impl<'m> Loader<'m> {
                     let command = runtime::FocusCommandMethod::parse(method).ok_or_else(|| {
                         invalid(statement, format_args!("unknown focus command {method}"))
                     })?;
-                    let arguments = if statement.operand_count() == 0 {
-                        None
-                    } else {
-                        Some([expression(self, 0)?, expression(self, 1)?])
-                    };
+                    let arguments = (0..statement.operand_count())
+                        .map(|index| expression(self, index))
+                        .collect::<Result<Vec<_>>>()?;
                     self.focus_targets.insert(owner.into());
                     body.push(Statement::Focus(owner.into(), command, arguments));
                 }
@@ -716,6 +717,7 @@ impl<'m> Loader<'m> {
                     ValueType::Int
                         | ValueType::StringList
                         | ValueType::IntList
+                        | ValueType::DateList
                         | ValueType::RecordList(_)
                         | ValueType::TouchPoints
                 ) {
@@ -996,6 +998,11 @@ impl<'m> Loader<'m> {
         let mut section_header = None;
         let mut combo_option = None;
         let mut day_cell = None;
+        if op.children().any(|child| {
+            child.name() == "xr.bind" && child.attribute("name") == Some("persistent-selection")
+        }) {
+            self.focus_targets.insert(key.into());
+        }
         for child in op.children() {
             match child.name() {
                 "xr.property" => self.property(key, child)?,
@@ -1004,7 +1011,7 @@ impl<'m> Loader<'m> {
                 "xr.clipboard_paste" => {}
                 "xr.handler" => {
                     let name = attribute(child, "name")?;
-                    if runtime::is_focus_handler(name) {
+                    if runtime::is_focus_handler(name) || name == "editing-finished" {
                         self.focus_targets.insert(key.into());
                     }
                     if matches!(
@@ -1733,6 +1740,7 @@ impl<'m> Loader<'m> {
             }
             "xr.media_read" => Expression::MediaRead(member(op, "value")?),
             "xr.text_accepts" => Expression::TextAccepts(attribute(op, "owner")?.into()),
+            "xr.text_validity" => Expression::TextValidity(attribute(op, "owner")?.into()),
             "xr.image_playback_read" => Expression::ImagePlaybackRead(member(op, "value")?),
             "xr.nine_slice" => {
                 let edges =
@@ -1927,6 +1935,14 @@ impl<'m> Loader<'m> {
             }
             "xr.date_is_valid" => Expression::DateIsValid(argument(self, 0)?),
             "xr.date_weekday" => Expression::DateWeekday(argument(self, 0)?),
+            "xr.date_months" => Expression::DateMonths(argument(self, 0)?, argument(self, 1)?),
+            "xr.date_month_index" => Expression::DateMonthIndex(
+                argument(self, 0)?,
+                argument(self, 1)?,
+                argument(self, 2)?,
+            ),
+            "xr.date_parse_iso" => Expression::DateParseIso(argument(self, 0)?, argument(self, 1)?),
+            "xr.date_is_selectable" => Expression::DateIsSelectable(arguments(self)?),
             "xr.date_add_days" => {
                 Expression::DateAddDays(argument(self, 0)?, argument(self, 1)?, argument(self, 2)?)
             }
@@ -1935,6 +1951,14 @@ impl<'m> Loader<'m> {
                 argument(self, 1)?,
                 argument(self, 2)?,
             ),
+            "xr.time_parse_iso" => Expression::TimeParseIso(argument(self, 0)?, argument(self, 1)?),
+            "xr.time_is_valid_iso" => Expression::TimeIsValidIso(argument(self, 0)?),
+            "xr.time_format_iso" => {
+                Expression::TimeFormatIso(argument(self, 0)?, argument(self, 1)?)
+            }
+            "xr.time_in_range" => {
+                Expression::TimeInRange(argument(self, 0)?, argument(self, 1)?, argument(self, 2)?)
+            }
             "xr.make_time" => {
                 Expression::MakeTime([argument(self, 0)?, argument(self, 1)?, argument(self, 2)?])
             }
@@ -1947,6 +1971,7 @@ impl<'m> Loader<'m> {
             "xr.pointer_buttons" => Expression::PointerButtons(arguments(self)?),
             "xr.array" => Expression::Array(arguments(self)?),
             "xr.int_array" => Expression::IntArray(arguments(self)?),
+            "xr.date_array" => Expression::DateArray(arguments(self)?),
             "xr.call" => Expression::Call(
                 member(op, "value")?,
                 arguments(self)?,
@@ -2005,6 +2030,7 @@ pub(super) fn default_value(
         }
         ValueType::StringList => Ok(Value::StringList(Vec::new())),
         ValueType::IntList => Ok(Value::IntList(Vec::new())),
+        ValueType::DateList => Ok(Value::DateList(Vec::new())),
         _ => runtime_default(ty).ok_or_else(|| format!("no runtime default for {ty:?}")),
     }
 }
@@ -2017,7 +2043,7 @@ fn runtime_default(kind: &ValueType) -> Option<Value> {
                 $(ValueType::$variant => Value::$variant(Default::default()),)*
                 ValueType::Image => Value::ImageAsset(ImageAsset::default()),
                 ValueType::Percent => Value::Percent(Percent(0.0)),
-                ValueType::Record(_) | ValueType::RecordList(_) | ValueType::StringList | ValueType::IntList => return None,
+                ValueType::Record(_) | ValueType::RecordList(_) | ValueType::StringList | ValueType::IntList | ValueType::DateList => return None,
             }
         };
     }
@@ -2070,6 +2096,8 @@ fn runtime_default(kind: &ValueType) -> Option<Value> {
         FlexboxLayoutWrap,
         CrossAxisAlignment,
         TextWrap,
+        MouseSelectionMode,
+        InputValidity,
         TextHorizontalAlignment,
         TextVerticalAlignment,
         TextOverflow,
@@ -2192,6 +2220,7 @@ const PROPERTIES: &[&str] = &[
     "tristate",
     "read-only",
     "placeholder-text",
+    "placeholder-text-color",
     "max-length",
     "font-size",
     "font-family",
@@ -2272,6 +2301,9 @@ const PROPERTIES: &[&str] = &[
     "column-width",
     "preserve-scroll-anchor",
     "link-color",
+    "selection-color",
+    "selected-text-color",
+    "selectable",
     "model",
     "text-role",
     "value-role",
@@ -2288,6 +2320,11 @@ const PROPERTIES: &[&str] = &[
     "date",
     "display-month",
     "minimum-date",
+    "disabled-weekdays",
+    "disabled-dates",
+    "fixed-month",
+    "highlight-start",
+    "highlight-end",
     "maximum-date",
     "today",
     "week-start",
@@ -2295,6 +2332,8 @@ const PROPERTIES: &[&str] = &[
     "time",
     "use-24-hour-format",
     "show-seconds",
+    "minimum-time",
+    "maximum-time",
     "show-alpha",
     "show-color-plane",
     "preview-text",
@@ -2318,7 +2357,14 @@ const PROPERTIES: &[&str] = &[
     "accepted-buttons",
     "multi-touch",
     "press-and-hold-interval",
+    "password-character",
+    "password-mask-delay",
     "password-visible",
+    "input-mask",
+    "input-pattern",
+    "mouse-selection-mode",
+    "overwrite-mode",
+    "persistent-selection",
     "maximum-length",
     "minimum-length",
     "minimum-value",
@@ -2392,6 +2438,7 @@ const PROPERTIES: &[&str] = &[
     "shortcut",
     "exclusive",
     "checkable",
+    "expanded",
     "icon-only",
     "display",
     "colorize-icon",

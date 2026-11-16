@@ -170,6 +170,8 @@ RTL 下，内建纵向滚动条放在左侧，`ScrollView` 和 `Flickable` 的�
 
 `TreeView.selected-keys` 是按业务键升序排列的只读 `[int]` 快照，包含折叠、筛选和切换分支时保留的选中项。应用可把快照存进自己的属性，再用 `tree.select-keys(saved)` 一次替换多选。恢复在整个树模型中解析业务键，光标、展开状态和滚动位置保持原样。输入中的重复键会合并。只要有一个键在模型中缺失或不唯一，整个操作就不提交。传入 `[]` 可清空选区。
 
+`[Date]` 是日期模型，可用于属性、回调、`for`、`Model.count`、`Model.at` 和写操作。Rust 可用 `model_属性名()` 取得共享的 `VecModel<Date>`。日期控件通过 `disabled-dates` 消费模型。Python 暴露 `list[xrack.Date]`。
+
 `[int]` 可用于属性、回调参数和返回值，也可以通过 `for` 生成元素。用 `Model.count`、`Model.is-empty` 或 `Model.at` 读取，Rust 可以用属性的 `model_*` 访问器取得共享的 `VecModel<i64>`。运行 `bazel run //examples/tree:tree -- --batch-selection`，选择含折叠节点的一批记录，保存、清空后再恢复。
 
 `TreeRow` 可在布局中组合类型化编辑器。`TreeCell { text <=> record.label; }` 编辑字符串，`SpinBox { value <=> record.quota; }` 编辑整数，`Slider { value <=> record.load; }` 编辑浮点数，`CheckBox { checked <=> record.active; }` 或 `Switch` 编辑布尔值。绑定目标是可写列表中当前记录的字段。布局可用 `if` 条件显示，编辑器的路径需保持稳定。

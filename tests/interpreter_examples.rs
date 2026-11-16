@@ -289,6 +289,7 @@ fn all_example_exports_match_generated_scenes_layout_and_input_routes() {
         [
             ControlsDemo,
             CalendarAgendaDemo,
+            CalendarBrowserDemo,
             MonthGridDemo,
             CalendarDemo,
             DecimalSpinDemo,
@@ -304,6 +305,7 @@ fn all_example_exports_match_generated_scenes_layout_and_input_routes() {
             CheckStateDemo,
             CheckGroupDemo,
             GroupBoxDemo,
+            ExpanderDemo,
             IndicatorsDemo,
             CustomProgressDemo,
             TimeDemo,
@@ -342,21 +344,35 @@ fn all_example_exports_match_generated_scenes_layout_and_input_routes() {
             MessageDialogDemo,
             CloseGuardDemo,
             BidiEditorDemo,
+            DateFieldDemo,
+            TimeFieldDemo,
             EditorCommandsDemo,
+            EditorInsetsDemo,
             EditorMenuDemo,
             FormDemo,
             PasswordDemo,
             ValidationDemo,
             SubmissionValidationDemo,
             NumericValidationDemo,
+            InputMaskDemo,
+            EditingLifecycleDemo,
             EditorSelectionDemo,
+            PersistentSelectionDemo,
+            LongTextSelectionDemo,
+            SelectionColorsDemo,
+            TextOperationsDemo,
+            PatternValidationDemo,
             TextAlignmentDemo,
             DragDropDemo,
             VirtualDragDemo,
             FileDropDemo
         ]
     );
-    check!("form/widgets.xr", widgets_ui, [LabelCard]);
+    check!(
+        "form/widgets.xr",
+        widgets_ui,
+        [DateField, LabelCard, TimeField]
+    );
     check!("layout/bundled.xr", bundled_ui, [BundledFontsDemo]);
     check!("layout/fonts/sample.xr", font_sample_ui, [FontSample]);
     check!(
@@ -477,6 +493,8 @@ fn all_example_exports_match_generated_scenes_layout_and_input_routes() {
             MixedRadioOptionsDemo,
             EditableChoiceDemo,
             ComboValidationDemo,
+            ComboLifecycleDemo,
+            ComboAppendDemo,
             DirectionalChoiceDemo
         ]
     );

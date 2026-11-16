@@ -191,7 +191,9 @@ impl StackTransitions {
                 && old_layout.clip == new_layout.clip
                 && (new.kind != "SwipeView"
                     || (old.orientation(), old_layout.layout_direction)
-                        == (new.orientation(), new_layout.layout_direction))
+                        == (new.orientation(), new_layout.layout_direction)
+                        && old.swipe_preview.as_ref().map(|preview| &preview.handle)
+                            == new.swipe_preview.as_ref().map(|preview| &preview.handle))
                 && viewport.width > 0.0
                 && viewport.height > 0.0;
             if change.changed {

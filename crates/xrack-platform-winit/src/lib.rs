@@ -792,6 +792,15 @@ impl<C: Component> Application<C> {
                     self.input.focus_target(&self.scene, layout, target);
                     self.update_editor();
                 }
+                AccessibleAction::Expand | AccessibleAction::Collapse if kind == "Expander" => {
+                    let expanded = request.action == AccessibleAction::Expand;
+                    let path = target.path.clone();
+                    self.input.accessibility_focus(target);
+                    self.apply_control(ControlInput {
+                        path,
+                        action: ControlAction::Expander(expanded),
+                    });
+                }
                 AccessibleAction::Expand | AccessibleAction::Collapse if kind == "ListRow" => {
                     if let Some(action) = self.input.tree_row_expansion(
                         &self.scene,
@@ -971,7 +980,7 @@ impl<C: Component> Application<C> {
                     }
                 }
                 AccessibleAction::Increment | AccessibleAction::Decrement
-                    if is_spin_box(kind) && !node.boolean("read-only", false) =>
+                    if is_spin_box(kind) && !node.text_read_only() =>
                 {
                     self.apply_control(ControlInput {
                         path: target.path,
@@ -1597,6 +1606,7 @@ impl<C: Component> Application<C> {
 
     fn publish_focus(&mut self) {
         self.flush_button_press_events();
+        self.input.sync_editor(&self.scene);
         let Some(layout) = &self.layout else {
             return;
         };
@@ -1677,7 +1687,7 @@ impl<C: Component> Application<C> {
                 self.viewport_observers.sync(&self.scene, layout);
             }
         }
-        self.apply_focus_and_text_requests();
+        let edited_focused = self.apply_focus_and_text_requests();
         if let Some(layout) = &self.layout {
             self.input.remember_focus_scope(&self.scene, layout);
         }
@@ -1716,7 +1726,7 @@ impl<C: Component> Application<C> {
             .as_ref()
             .and_then(|layout| self.input.list_typeahead_ime_area(&self.scene, layout));
         state.window.set_ime_allowed(
-            (field.is_some_and(|node| !node.boolean("read-only", false)) || list_caret.is_some())
+            (field.is_some_and(|node| !node.text_read_only()) || list_caret.is_some())
                 && state.window.has_focus()
                 && !self.input.menu_open(),
         );
@@ -1724,7 +1734,12 @@ impl<C: Component> Application<C> {
             && let Some(caret) = state
                 .renderer
                 .text
-                .editor_ime_area(&mut self.input, &self.scene, layout, follow_caret)
+                .editor_ime_area(
+                    &mut self.input,
+                    &self.scene,
+                    layout,
+                    follow_caret || edited_focused,
+                )
                 .or(list_caret)
         {
             state.window.set_ime_cursor_area(
@@ -1735,10 +1750,33 @@ impl<C: Component> Application<C> {
         state.window.request_redraw();
     }
 
-    fn apply_focus_and_text_requests(&mut self) {
-        for request in self.focus_requests.drain() {
+    fn apply_focus_and_text_requests(&mut self) -> bool {
+        let mut edited_focused = false;
+        for request in self.focus_requests.drain_commands() {
             let Some(layout) = &self.layout else {
                 break;
+            };
+            let request = match request {
+                xrack_runtime::QueuedFocusRequest::Focus(request) => request,
+                xrack_runtime::QueuedFocusRequest::ReplaceText {
+                    target,
+                    replacement,
+                } => {
+                    if let Some(target) = self.input.apply_text_replacement(
+                        &mut self.component,
+                        &self.scene,
+                        layout,
+                        &target,
+                        &replacement,
+                        Instant::now(),
+                    ) {
+                        edited_focused |= self.input.focused.as_ref() == Some(&target);
+                        if self.sync_base_scene() {
+                            self.prepare_frame(self.transition_epoch.elapsed());
+                        }
+                    }
+                    continue;
+                }
             };
             let focused = self.input.focused.clone();
             let was_editing = focused
@@ -1766,12 +1804,14 @@ impl<C: Component> Application<C> {
                 self.prepare_frame(self.transition_epoch.elapsed());
             }
         }
+        edited_focused
     }
 
     fn run_text_command(&mut self, command: TextCommand) -> bool {
         self.pending_clipboard = None;
         match command {
             TextCommand::SelectAll
+            | TextCommand::SelectWord
             | TextCommand::ClearSelection
             | TextCommand::SetSelection { .. } => {
                 self.input.apply_text_selection(&self.scene, command);
@@ -1826,14 +1866,29 @@ impl<C: Component> Application<C> {
         }
     }
 
-    fn place_text_caret(&mut self, point: Point, selecting: bool) {
+    fn place_text_caret(
+        &mut self,
+        point: Point,
+        selecting: bool,
+        mouse_press: Option<Instant>,
+        dragging: bool,
+    ) {
         let (Some(state), Some(layout)) = (&self.state, &self.layout) else {
             return;
         };
-        if let Some(pointer) =
+        let Some(pointer) =
             PointerCaret::from_pressed(&self.input, &self.scene, layout, point, selecting)
-            && pointer.place(&state.renderer.text, &mut self.input, &self.scene, layout)
-        {
+        else {
+            return;
+        };
+        let pointer = if dragging {
+            pointer.during_drag()
+        } else if let Some(now) = mouse_press {
+            pointer.mouse_press(&mut self.input, now)
+        } else {
+            pointer
+        };
+        if pointer.place(&state.renderer.text, &mut self.input, &self.scene, layout) {
             self.pending_clipboard = None;
         }
     }
@@ -2119,6 +2174,14 @@ impl<C: Component> Application<C> {
         else {
             return false;
         };
+        if target.text_link_index().is_some()
+            && matches!(
+                event.logical_key,
+                Key::Named(NamedKey::Enter | NamedKey::Space)
+            )
+        {
+            return false;
+        }
         let spin = is_spin_box(node.kind);
         if self
             .input
@@ -2156,6 +2219,24 @@ impl<C: Component> Application<C> {
             && let Key::Character(key) = &event.logical_key
             && self.text_shortcut(key, shift, event.repeat)
         {
+            return true;
+        }
+        let word_key = match event.logical_key {
+            Key::Named(NamedKey::ArrowLeft) => Some("ArrowLeft"),
+            Key::Named(NamedKey::ArrowRight) => Some("ArrowRight"),
+            Key::Named(NamedKey::Backspace) => Some("Backspace"),
+            Key::Named(NamedKey::Delete) => Some("Delete"),
+            _ => None,
+        };
+        if let Some(action) = word_key.and_then(|key| {
+            EditAction::word_shortcut(key, self.input_modifiers(), cfg!(target_os = "macos"))
+        }) {
+            if let Some((motion, selecting)) = TextAreaMotion::from_word_action(action)
+                && self.move_text_caret(motion, selecting)
+            {
+                return true;
+            }
+            self.edit_text(action);
             return true;
         }
         if let Some(motion) = navigation_key_value(&event.logical_key)
@@ -2797,7 +2878,7 @@ impl<C: Component> Application<C> {
             _ => return false,
         };
         if event.state == ElementState::Pressed
-            && !node.boolean("read-only", false)
+            && !node.text_read_only()
             && !self
                 .input
                 .editor
@@ -3141,6 +3222,9 @@ impl<C: Component> Application<C> {
     }
 
     fn keyboard_input(&mut self, event: &KeyEvent, is_synthetic: bool) {
+        if event.state == ElementState::Pressed {
+            self.input.clear_editor_click();
+        }
         let route = (!is_synthetic)
             .then(|| self.input.key_route(&self.scene, self.layout.as_deref()?))
             .flatten();
@@ -3436,6 +3520,15 @@ impl<C: Component> Application<C> {
             self.adjust_range(input);
             return true;
         }
+        if event.state == ElementState::Pressed
+            && self
+                .layout
+                .as_ref()
+                .is_some_and(|layout| self.input.calendar_page_key(&self.scene, layout, key))
+        {
+            self.relayout();
+            return true;
+        }
         let operation = self.row_selection(true);
         if event.state == ElementState::Pressed
             && let Some(input) = self.layout.as_ref().and_then(|layout| {
@@ -3655,7 +3748,11 @@ impl<C: Component> Application<C> {
                     );
                 }
                 if !self.input.table_row_resize_cursor() {
-                    self.place_text_caret(point, self.modifiers.shift_key());
+                    let mouse_press = click
+                        .as_ref()
+                        .filter(|sample| !replay && sample.touch_device.is_none())
+                        .map(|sample| sample.time);
+                    self.place_text_caret(point, self.modifiers.shift_key(), mouse_press, false);
                 }
             }
             if let Some(layout) = &self.layout {
@@ -4498,7 +4595,7 @@ impl<C: Component> Application<C> {
         let node = self.scene.at_path(&path).ok_or("Target disappeared")?;
         if !allowed.contains(&node.kind)
             || node.is_password()
-            || matches!(action, RecordedAction::Fill { .. }) && node.boolean("read-only", false)
+            || matches!(action, RecordedAction::Fill { .. }) && node.text_read_only()
         {
             return Err(format!(
                 "Target {id} does not support that inspection action"
@@ -4813,6 +4910,7 @@ impl<C: Component> HostedWindow for Application<C> {
         let id = state.window.id();
         state.set_visible(self.base_scene.boolean("visible", true));
         self.focus_active = state.window.has_focus();
+        self.input.set_editor_window_active(self.focus_active);
         self.component
             .publish_window_status(state.sample_window_status());
         self.state = Some(state);
@@ -4896,6 +4994,21 @@ impl<C: Component> HostedWindow for Application<C> {
         let _scroll = self.scroll_requests.enter();
         let window_deadline = self.apply_window_presentation(now);
         self.refresh_dependencies();
+        if self.input.expire_password_echo(now) {
+            self.refresh_editor(true);
+        }
+        if let (Some(state), Some(layout)) = (&self.state, &self.layout)
+            && PointerCaret::advance_drag_scroll(
+                &state.renderer.text,
+                &mut self.input,
+                &self.scene,
+                layout,
+                now,
+            )
+        {
+            self.pending_clipboard = None;
+            self.refresh_editor(false);
+        }
         self.present_native_dialog();
         self.publish_focus();
         self.update_accessibility();
@@ -4950,6 +5063,8 @@ impl<C: Component> HostedWindow for Application<C> {
             (self.state.is_some() && self.component.has_window_commands()).then_some(now),
             self.animation_wake,
             scroll_wake,
+            self.input.text_selection_scroll_deadline(),
+            self.input.password_echo_deadline(),
             self.viewport_observers.scroll_activity_deadline(),
             self.input.table_touch_hold_deadline(),
             self.input.delay_deadline(),
@@ -5229,8 +5344,8 @@ impl<C: Component> Application<C> {
                             .is_some_and(|node| self.input.is_text_editor(node, target))
                     })
                 {
-                    self.place_text_caret(point, true);
-                    self.update_editor();
+                    self.place_text_caret(point, true, None, true);
+                    self.refresh_editor(false);
                 }
                 if let Some(input) = self
                     .layout
@@ -5473,7 +5588,7 @@ impl<C: Component> Application<C> {
                         self.list_typeahead_text(&value);
                     }
                 } else if !self.list_typeahead_text(&value) {
-                    self.edit_text_from(EditAction::Insert(&value), EditSource::Atomic);
+                    self.edit_text_from(EditAction::Insert(&value), EditSource::Ime);
                 }
             }
             WindowEvent::Ime(Ime::Preedit(value, cursor)) if !self.input.menu_open() => {
@@ -5501,6 +5616,7 @@ impl<C: Component> Application<C> {
             }
             WindowEvent::Focused(focused) => {
                 self.focus_active = focused;
+                self.input.set_editor_window_active(focused);
                 if !focused {
                     self.cancel_scale_rotate();
                     if let Some(state) = &mut self.state {

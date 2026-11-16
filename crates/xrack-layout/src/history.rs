@@ -44,12 +44,14 @@ impl EditorKey {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EditSource {
     Keyboard,
+    Ime,
     Atomic,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Group {
     Insert,
+    Overwrite,
     Backspace,
     Delete,
     Atomic,
@@ -62,11 +64,17 @@ impl Group {
         before: SelectionState,
         edit: &AppliedEdit,
     ) -> Self {
-        if source == EditSource::Atomic || !before.collapsed() {
+        if source != EditSource::Keyboard || !before.collapsed() {
             return Self::Atomic;
         }
         match action {
-            EditAction::Insert(_) if !edit.inserted.contains('\n') => Self::Insert,
+            EditAction::Insert(_) if !edit.inserted.contains('\n') => {
+                if edit.removed.is_empty() {
+                    Self::Insert
+                } else {
+                    Self::Overwrite
+                }
+            }
             EditAction::Backspace => Self::Backspace,
             EditAction::Delete => Self::Delete,
             _ => Self::Atomic,
@@ -112,6 +120,10 @@ impl Record {
         match group {
             Group::Insert if self.start + self.inserted.len() == next.start => {
                 self.inserted.push_str(&next.inserted)
+            }
+            Group::Overwrite if self.start + self.inserted.len() == next.start => {
+                self.removed.push_str(&next.removed);
+                self.inserted.push_str(&next.inserted);
             }
             Group::Delete if self.start == next.start => self.removed.push_str(&next.removed),
             Group::Backspace if next.start + next.removed.len() == self.start => {

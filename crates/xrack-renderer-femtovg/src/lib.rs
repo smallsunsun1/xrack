@@ -864,7 +864,8 @@ impl Renderer {
             }
             return Ok(());
         }
-        let group_header = (node.kind == "GroupBox").then(|| layout.group_header(node));
+        let group_header =
+            matches!(node.kind, "GroupBox" | "Expander").then(|| layout.group_header(node));
         if node.kind == "SplitHandle" {
             if node.children.is_empty() {
                 controls::split_handle(
@@ -908,6 +909,7 @@ impl Renderer {
                     | "Dialog"
                     | "PopupWindow"
                     | "GroupBox"
+                    | "Expander"
                     | "Pane"
                     | "ControlFrame"
                     | "Drawer"
@@ -1041,7 +1043,9 @@ impl Renderer {
             self.canvas.save();
             self.canvas
                 .intersect_scissor(header.x, header.y, header.width, header.height);
-            let result = if node.group_checkable() {
+            let result = if node.kind == "Expander" {
+                controls::expander_header(&mut self.canvas, &self.text, theme, node, header, layout)
+            } else if node.group_checkable() {
                 entry::toggle(&mut self.canvas, &self.text, theme, node, header, layout)
             } else {
                 let size = self.text.font_size(node);
@@ -1368,10 +1372,11 @@ impl Renderer {
                     std::borrow::Cow::Borrowed(node.text("text").unwrap_or("")),
                 )
             };
-            let editor = input
-                .editor
-                .as_ref()
-                .filter(|_| input.is_focused(path) && (is_input || spin_editable(node)));
+            let editor = if is_input || spin_editable(node) {
+                input.displayed_editor(node, path)
+            } else {
+                None
+            };
             let completion = if editable_combo && layout.enabled {
                 input.combo_completion(node, path)
             } else {
@@ -1380,6 +1385,7 @@ impl Renderer {
             let entry = entry::EntryText {
                 value: &value,
                 editor,
+                active: input.editor_active(path),
                 scroll: input.text_scroll(path),
                 direction: layout.layout_direction_override(),
                 completion: completion
@@ -1420,7 +1426,18 @@ impl Renderer {
                 .as_ref()
                 .filter(|target| target.path == *path)
                 .and_then(xrack_layout::Target::text_link_index);
-            styled_text::draw(&mut self.canvas, &self.text, node, layout, theme, focused)?;
+            let selection = input.displayed_editor(node, path).map_or(0..0, |editor| {
+                editor.selection(node.text("text").unwrap_or_default())
+            });
+            styled_text::draw(
+                &mut self.canvas,
+                &self.text,
+                node,
+                layout,
+                theme,
+                focused,
+                selection,
+            )?;
         } else if xrack_layout::uses_label_layout(node) {
             let tint = if layout.enabled {
                 node.color("color").unwrap_or(theme.text)

@@ -152,7 +152,7 @@ impl FontPopupState {
             .properties
             .insert("vertical-alignment", TextVerticalAlignment::Center.into());
         body.children.push(preview);
-        append_picker_dialog(dialog, body);
+        append_picker_dialog(dialog, body, true);
         Ok(())
     }
 

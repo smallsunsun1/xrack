@@ -41,13 +41,13 @@ void XrackDialect::initialize() {
 }
 
 bool isExpression(Operation &op) {
-  return isa<LiteralOp, ReadOp, DynamicActionOp, DynamicReadOp, LoaderMountedOp, LoaderExternalStatusOp, ControlReadOp, GeometryReadOp, StackReadOp, TreeQueryOp, TreeSelectionKeysOp, ListSelectionKeysOp, ViewIndexOp, ViewCountOp, ListSelectionReadOp, TableSortReadOp, TableSelectionReadOp, TableHistoryReadOp, SplitStateReadOp, SplitResizingOp, ImagePlaybackReadOp, MediaReadOp, TextAcceptsOp, WindowReadOp, CheckGroupReadOp, ActionGroupReadOp, NativeDialogReadOp, FocusReadOp, TextSelectionReadOp, TextCommandAvailableOp, ViewportReadOp, FlickMotionReadOp, ScrollControlReadOp, ScaleRotateReadOp, SwipeReadOp, HoverReadOp, TouchAreaReadOp, ButtonPressedOp, ButtonCheckedOp, RadioCheckedOp, NavigationActiveOp, NavigationIndexOp, NavigationCountOp, ToggleStateReadOp, NumericValueReadOp, ComboStateReadOp, ComboPopupReadOp, RangePositionReadOp, ParamOp, UnaryOp, CastOp,
+  return isa<LiteralOp, ReadOp, DynamicActionOp, DynamicReadOp, LoaderMountedOp, LoaderExternalStatusOp, ControlReadOp, GeometryReadOp, StackReadOp, TreeQueryOp, TreeSelectionKeysOp, ListSelectionKeysOp, ViewIndexOp, ViewCountOp, ListSelectionReadOp, TableSortReadOp, TableSelectionReadOp, TableHistoryReadOp, SplitStateReadOp, SplitResizingOp, ImagePlaybackReadOp, MediaReadOp, TextAcceptsOp, TextValidityOp, WindowReadOp, CheckGroupReadOp, ActionGroupReadOp, NativeDialogReadOp, FocusReadOp, TextSelectionReadOp, TextCommandAvailableOp, ViewportReadOp, FlickMotionReadOp, ScrollControlReadOp, ScaleRotateReadOp, SwipeReadOp, HoverReadOp, TouchAreaReadOp, ButtonPressedOp, ButtonCheckedOp, RadioCheckedOp, NavigationActiveOp, NavigationIndexOp, NavigationCountOp, ToggleStateReadOp, NumericValueReadOp, ComboStateReadOp, ComboPopupReadOp, RangePositionReadOp, ParamOp, UnaryOp, CastOp,
              ListRowSelectedOp, StringifyOp, BinaryOp, SelectOp, SolidBrushOp, GradientStopOp,
-             LinearGradientOp, RadialGradientOp, ImageUrlOp, ImageDimensionOp, NineSliceOp, MarkdownOp, TranslateOp, LocaleOp, FormatNumberOp, ParseNumberOp, ArrayOp, IntArrayOp, PointerButtonsOp, CallOp,
+             LinearGradientOp, RadialGradientOp, ImageUrlOp, ImageDimensionOp, NineSliceOp, MarkdownOp, TranslateOp, LocaleOp, FormatNumberOp, ParseNumberOp, ArrayOp, IntArrayOp, DateArrayOp, PointerButtonsOp, CallOp,
              RoundOp, MathFunctionOp, StringFunctionOp, ColorFunctionOp, ModelCountOp, ModelIsEmptyOp, ModelAtOp, FormatFixedOp, ToRatioOp, MakeRecordOp, DefaultRecordOp, RecordArrayOp,
              GetFieldOp, KeyFieldOp, WheelFieldOp, PointerFieldOp, TouchPointFieldOp, MakeDateOp, DateFieldOp,
-             DateIsValidOp, DateAddDaysOp, DateAddMonthsOp, DateWeekdayOp,
-             MakeTimeOp, TimeFieldOp, MakeFontOp, FontFieldOp>(op);
+             DateIsValidOp, DateAddDaysOp, DateAddMonthsOp, DateWeekdayOp, DateMonthsOp, DateMonthIndexOp, DateParseIsoOp, DateIsSelectableOp,
+             MakeTimeOp, TimeFieldOp, TimeParseIsoOp, TimeIsValidIsoOp, TimeFormatIsoOp, TimeInRangeOp, MakeFontOp, FontFieldOp>(op);
 }
 
 LogicalResult TranslateOp::verify() {
@@ -88,7 +88,22 @@ static bool isTextEditor(llvm::StringRef kind) {
       .Default(false);
 }
 
+static bool validTextEditorAppearance(llvm::StringRef kind,
+                                      llvm::StringRef name, Type type) {
+  if (name == "placeholder-text-color")
+    return isTextEditor(kind) && isa<ColorType>(type);
+  if (isTextEditor(kind) &&
+      llvm::StringSwitch<bool>(name)
+          .Cases({"padding", "padding-left", "padding-right", "padding-top",
+                  "padding-bottom"}, true)
+          .Default(false))
+    return isa<LengthType>(type);
+  return true;
+}
+
 static bool isTextCommandProperty(llvm::StringRef kind, llvm::StringRef name) {
+  if (kind == "StyledText")
+    return name == "can-copy";
   return isTextEditor(kind) &&
          llvm::StringSwitch<bool>(name)
              .Cases({"can-undo", "can-redo", "can-copy", "can-cut"}, true)
@@ -96,7 +111,7 @@ static bool isTextCommandProperty(llvm::StringRef kind, llvm::StringRef name) {
 }
 
 static bool isTextSelectionProperty(llvm::StringRef kind, llvm::StringRef name) {
-  return isTextEditor(kind) &&
+  return (isTextEditor(kind) || kind == "StyledText") &&
          llvm::StringSwitch<bool>(name)
              .Cases({"cursor-offset", "selection-start-offset", "selection-end-offset", "selected-text"}, true)
              .Default(false);
@@ -413,7 +428,7 @@ static ReadOp writableNavigationModelRead(ElementOp target) {
     if (!llvm::hasSingleElement(repeats))
       continue;
     auto source = (*repeats.begin()).getInput();
-    if (isa<IntListType, StringListType, RecordListType>(source.getType()))
+    if (isa<IntListType, DateListType, StringListType, RecordListType>(source.getType()))
       return source.getDefiningOp<ReadOp>();
   }
   return {};
@@ -1500,7 +1515,7 @@ LogicalResult ElementOp::verify() {
                 .Cases({"Text", "Label", "StyledText", "TextArea", "TextEdit", "SearchField",
                         "Button", "StandardButton", "ToolButton", "RoundButton", "DelayButton",
                         "DialogButton", "CheckBox", "Switch", "RadioButton",
-                        "RadioGroup", "GroupBox", "Dialog", "Drawer", "TableCell",
+                        "RadioGroup", "GroupBox", "Expander", "Dialog", "Drawer", "TableCell",
                         "TreeCell", "Tooltip", "SpinBox", "DoubleSpinBox",
                         "ComboBox", "Menu", "MenuItem", "Calendar",
                         "DatePickerPopup", "Tumbler", "PathView"},
@@ -1515,9 +1530,24 @@ LogicalResult ElementOp::verify() {
       }
       const bool textEntry = singleLine || kind == "ComboBox";
       if ((name == "input-type" && (!textEntry || !isa<InputModeType>(type))) ||
-          (name == "password-visible" && (!singleLine || !isa<BoolType>(type))))
+          (name == "password-visible" && (!singleLine || !isa<BoolType>(type))) ||
+          (name == "password-character" && (!textEntry || !isa<StringType>(type))) ||
+          (name == "password-mask-delay" && (!textEntry || !isa<IntType>(type))))
         return child.emitOpError("incorrect password input property or type");
+      if (name == "input-mask" && (!textEntry || !isa<StringType>(type)))
+        return child.emitOpError("input-mask requires a string on a single-line text editor");
+      if (name == "overwrite-mode" && (!isTextEditor(kind) || !isa<BoolType>(type)))
+        return child.emitOpError("overwrite-mode requires a boolean on a text editor");
+      if (name == "selectable" && (kind != "StyledText" || !isa<BoolType>(type)))
+        return child.emitOpError("selectable requires a boolean on StyledText");
+      if (name == "persistent-selection" && (!(isTextEditor(kind) || kind == "StyledText") || !isa<BoolType>(type)))
+        return child.emitOpError("persistent-selection requires a boolean on a text editor");
+      if (name == "mouse-selection-mode" &&
+          (!(isTextEditor(kind) || kind == "StyledText") || !isa<MouseSelectionModeType>(type)))
+        return child.emitOpError("mouse-selection-mode requires a MouseSelectionMode value on a text editor");
       const bool textSubmission = textEntry || kind == "TextEdit" || kind == "TextArea";
+      if (name == "input-pattern" && (!textSubmission || !isa<StringType>(type)))
+        return child.emitOpError("input-pattern requires a string on a text editor");
       if ((name == "minimum-length" || name == "maximum-length") &&
           (!textSubmission || !isa<IntType>(type)))
         return child.emitOpError() << name << " requires an integer on a text editor";
@@ -1528,8 +1558,8 @@ LogicalResult ElementOp::verify() {
         return child.emitOpError() << name << " requires a float on a single-line text editor";
       if (textEntry && name == "decimals" && !isa<IntType>(type))
         return child.emitOpError("decimals requires an integer");
-      if (textSubmission && name == "acceptable-input")
-        return child.emitOpError("acceptable-input is read-only");
+      if (textSubmission && (name == "acceptable-input" || name == "input-validity"))
+        return child.emitOpError() << name << " is read-only";
       if (kind == "ComboBox" && (name == "popup-open" || name == "highlighted-index"))
         return child.emitOpError("ComboBox popup state is read-only");
       if (isTextSelectionProperty(kind, name) || isTextCommandProperty(kind, name))
@@ -1621,8 +1651,13 @@ LogicalResult ElementOp::verify() {
            (name == "speed" && !isa<FloatType>(bind.getInput().getType())) ||
            (name == "loops" && !isa<IntType>(bind.getInput().getType()))))
         return child.emitOpError("incorrect AnimatedImage playback property or type");
+      if (!validTextEditorAppearance(kind, name, bind.getInput().getType()))
+        return child.emitOpError("incorrect text editor appearance property or type");
       if (name == "link-color" && (kind != "StyledText" || !isa<ColorType>(bind.getInput().getType())))
         return child.emitOpError("link-color requires StyledText and a color");
+      if ((name == "selection-color" || name == "selected-text-color") &&
+          (!(isTextEditor(kind) || kind == "StyledText") || !isa<ColorType>(bind.getInput().getType())))
+        return child.emitOpError() << name << " requires a color on a text editor or StyledText";
       if (kind == "Text" || kind == "Label" || kind == "StyledText") {
         auto type = bind.getInput().getType();
         if ((name == "text" &&
@@ -1669,6 +1704,13 @@ LogicalResult ElementOp::verify() {
         if (isPushButton(kind) && (name == "checked" || name == "checkable") &&
             !isa<BoolType>(type))
           return child.emitOpError("button check properties require bool");
+      }
+      if (kind == "Expander") {
+        auto type = bind.getInput().getType();
+        if ((name == "title" && !isa<StringType>(type)) ||
+            (name == "content-padding" && !isa<LengthType>(type)) ||
+            ((name == "enabled" || name == "expanded") && !isa<BoolType>(type)))
+          return child.emitOpError("incorrect Expander property type");
       }
       if (kind == "GroupBox") {
         auto type = bind.getInput().getType();
@@ -1912,6 +1954,21 @@ LogicalResult ElementOp::verify() {
               name == "enabled") && !isa<BoolType>(type)))
           return child.emitOpError("incorrect DoubleSpinBox property type");
       }
+      if (name == "disabled-weekdays" &&
+          (!(kind == "Calendar" || kind == "MonthGrid" || kind == "DatePickerPopup") ||
+           !isa<IntListType>(bind.getInput().getType())))
+        return child.emitOpError("disabled-weekdays requires [int] on a date selection control");
+      if ((name == "highlight-start" || name == "highlight-end") &&
+          (!(kind == "Calendar" || kind == "MonthGrid") ||
+           !isa<DateType>(bind.getInput().getType())))
+        return child.emitOpError("calendar highlight endpoints require a Date on Calendar or MonthGrid");
+      if (name == "fixed-month" &&
+          (kind != "MonthGrid" || !isa<BoolType>(bind.getInput().getType())))
+        return child.emitOpError("fixed-month requires a boolean on MonthGrid");
+      if (name == "disabled-dates" &&
+          (!(kind == "Calendar" || kind == "MonthGrid" || kind == "DatePickerPopup") ||
+           !isa<DateListType>(bind.getInput().getType())))
+        return child.emitOpError("disabled-dates requires [Date] on a date selection control");
       if (kind == "Calendar" || kind == "MonthGrid" || kind == "DayOfWeekRow" ||
           kind == "WeekNumberColumn" || kind == "DatePickerPopup") {
         auto type = bind.getInput().getType();
@@ -1931,6 +1988,9 @@ LogicalResult ElementOp::verify() {
              (kind == "DayOfWeekRow" || kind == "WeekNumberColumn")))
           return child.emitOpError("property is unavailable on this calendar control");
       }
+      if ((name == "minimum-time" || name == "maximum-time") &&
+          (kind != "TimePickerPopup" || !isa<TimeType>(bind.getInput().getType())))
+        return child.emitOpError("time bounds require a Time on TimePickerPopup");
       if (isTimePicker(kind)) {
         auto type = bind.getInput().getType();
         if ((name == "time" && !isa<TimeType>(type)) ||
@@ -2462,6 +2522,7 @@ LogicalResult ClipboardPasteOp::verify() {
       auto list = dyn_cast<RecordListType>(model);
       const bool itemType = (isa<StringListType>(model) && isa<StringType>(type)) ||
                             (isa<IntListType>(model) && isa<IntType>(type)) ||
+                            (isa<DateListType>(model) && isa<DateType>(type)) ||
           (list && record && list.getName() == record.getName());
       if (name.empty() || (name == text && !isa<StringType>(type)) ||
           (name != text && name != repeat.getItem() && name != repeat.getIndex()) ||
@@ -2574,6 +2635,8 @@ LogicalResult StateSetOp::verify() {
   if (isa<InstanceOp>((*this)->getParentOp()))
     return verifyInstanceLayout(*this, getName(), getInput().getType());
   auto element = cast<ElementOp>((*this)->getParentOp());
+  if (!validTextEditorAppearance(element.getKind(), getName(), getInput().getType()))
+    return emitOpError("incorrect text editor appearance property or type");
   if (getName() == "pressed" && isPushButton(element.getKind()))
     return emitOpError("button pressed state is read-only");
   if (isTextSubmissionRule(element.getKind(), getName()) ||
@@ -2667,6 +2730,7 @@ LogicalResult ControlLinkOp::verify() {
   const bool text = (kind == "TextInput" || kind == "LineEdit" ||
                      kind == "SearchField" || kind == "TextEdit" || kind == "TextArea") &&
                     getName() == "text" && isa<StringType>(type);
+  const bool expanded = kind == "Expander" && getName() == "expanded" && isa<BoolType>(type);
   const bool checked = (isPushButton(kind) || kind == "CheckBox" || kind == "Switch" ||
                         kind == "MenuItem" || kind == "Action" || kind == "DelayButton" ||
                         kind == "GroupBox") &&
@@ -2717,7 +2781,7 @@ LogicalResult ControlLinkOp::verify() {
   const bool visible = kind == "SecondaryWindow" && getName() == "visible" && isa<BoolType>(type);
   const bool viewport = isViewportOffset(kind, getName()) && isa<LengthType>(type) &&
                         isStaticViewport(element);
-  if ((!text && !checked && !checkState && !range && !spin && !choice && !opened &&
+  if ((!text && !checked && !expanded && !checkState && !range && !spin && !choice && !opened &&
        !comboText && !calendar && !time && !color && !font && !swipeSide && !running && !visible && !viewport) ||
       !getInput().getDefiningOp<ReadOp>())
     return emitOpError(
@@ -2881,16 +2945,26 @@ LogicalResult TextCommandOp::verify() {
       callback && callback.getPure().value_or("false") == "true")
     return emitOpError("text commands are not allowed in pure callbacks");
   auto method = getMethod();
-  if ((method == "set-selection-offsets" || method == "edit-cell") &&
-      getOffsets().size() == 2)
+  auto args = getArgs();
+  if ((method == "set-selection-offsets" || method == "edit-cell" || method == "remove-text") &&
+      args.size() == 2 && isa<IntType>(args[0].getType()) && isa<IntType>(args[1].getType()))
     return success();
-  if (getOffsets().empty() &&
+  if (method == "replace-text" && args.size() == 3 &&
+      isa<IntType>(args[0].getType()) && isa<IntType>(args[1].getType()) &&
+      isa<StringType>(args[2].getType()))
+    return success();
+  if (method == "insert-text" && args.size() == 2 &&
+      isa<IntType>(args[0].getType()) && isa<StringType>(args[1].getType()))
+    return success();
+  if (method == "append-text" && args.size() == 1 && isa<StringType>(args[0].getType()))
+    return success();
+  if (args.empty() &&
       llvm::StringSwitch<bool>(method)
-          .Cases({"select-all", "clear-selection", "undo", "redo", "cut", "copy", "paste",
-                  "cancel-edit"}, true)
+          .Cases({"select-all", "select-word", "clear-selection", "undo", "redo", "cut", "copy", "paste",
+                  "cancel-edit", "clear-text"}, true)
           .Default(false))
     return success();
-  return emitOpError("requires set-selection-offsets(int, int), edit-cell(int, int), or a known command with no operands");
+  return emitOpError("requires set-selection-offsets(int, int), edit-cell(int, int), a valid text edit signature, or a known command with no operands");
 }
 
 LogicalResult ScrollCommandOp::verify() {
@@ -3473,6 +3547,12 @@ static LogicalResult verifyCallback(Operation *op, Region &body,
              (name == "failed" && arg->getString("ty") == "string"))))
         return handler.emitOpError("invalid MessageDialog result handler or signature");
     }
+    if (kind == "Expander") {
+      auto *arg = args->size() == 1 ? args->front().getAsObject() : nullptr;
+      if (handler.getName() != "expanded-changed" || !arg ||
+          arg->getString("ty") != "bool" || !arg->getString("name"))
+        return handler.emitOpError("Expander requires expanded-changed(bool)");
+    }
     if (kind == "GroupBox") {
       auto *arg = args->size() == 1 ? args->front().getAsObject() : nullptr;
       if (handler.getName() != "toggled" || !arg ||
@@ -3557,6 +3637,15 @@ static LogicalResult verifyCallback(Operation *op, Region &body,
             arg && arg->getString("ty") == type && arg->getString("name")))
         return handler.emitOpError("invalid picker event or signature");
     }
+    if (handler.getName() == "editing-finished") {
+      auto *text = args->size() == 2 ? (*args)[0].getAsObject() : nullptr;
+      auto *acceptable = args->size() == 2 ? (*args)[1].getAsObject() : nullptr;
+      if (!(kind == "TextInput" || kind == "LineEdit" || kind == "ComboBox" || multiline) ||
+          !text || text->getString("ty") != "string" || !text->getString("name") ||
+          !acceptable || acceptable->getString("ty") != "bool" ||
+          !acceptable->getString("name"))
+        return handler.emitOpError("editing-finished requires (string, bool) on a text editor");
+    }
     const bool scalarRange = kind == "Slider" || kind == "Dial" || kind == "ScrollBar";
     const bool calendar = kind == "Calendar" || kind == "MonthGrid";
     const bool search = kind == "SearchField";
@@ -3564,7 +3653,8 @@ static LogicalResult verifyCallback(Operation *op, Region &body,
     const bool indexView = kind == "TabWidget" || kind == "TabBar" || kind == "SwipeView" ||
                            kind == "PageIndicator" || usesListTemplate(kind) ||
                            kind == "StandardListView" || kind == "Tumbler" || kind == "PathView";
-    if (handler.getName() != "scrolled" && handler.getName() != "column-moved" &&
+    if (handler.getName() != "scrolled" && handler.getName() != "editing-finished" &&
+        handler.getName() != "column-moved" &&
         !((kind == "Tumbler" || kind == "PathView") && handler.getName() == "value-selected") &&
         handler.getName() != "tab-close-requested" && handler.getName() != "tab-moved" && handler.getName() != "page-moved" && handler.getName() != "row-moved" && handler.getName() != "current-cell-changed" && (scalarRange || spin ||
         (kind == "ComboBox" && handler.getName() != "value-selected") || table ||
@@ -3796,6 +3886,10 @@ LogicalResult LiteralOp::verify() {
   } else if (isa<TextWrapType>(type)) {
     valid = spelling == "word-wrap" || spelling == "no-wrap" ||
             spelling == "char-wrap";
+  } else if (isa<MouseSelectionModeType>(type)) {
+    valid = spelling == "characters" || spelling == "words" || spelling == "caret";
+  } else if (isa<InputValidityType>(type)) {
+    valid = spelling == "invalid" || spelling == "intermediate" || spelling == "acceptable";
   } else if (isa<TextHorizontalAlignmentType>(type)) {
     valid = spelling == "start" || spelling == "end" || spelling == "left" ||
             spelling == "center" || spelling == "right";
@@ -4191,6 +4285,8 @@ static bool matchesDeclaredType(Type type, llvm::StringRef declared) {
     declared = "stringlist";
   else if (declared == "[int]")
     declared = "intlist";
+  else if (declared == "[Date]")
+    declared = "datelist";
   else if (declared == "styled-text")
     declared = "styledtext";
   return spelling.consume_front("!xr.") && spelling == declared.lower();
@@ -4204,6 +4300,8 @@ static Type repeatedItemType(Type model) {
     return StringType::get(context);
   if (isa<IntListType>(model))
     return IntType::get(context);
+  if (isa<DateListType>(model))
+    return DateType::get(context);
   if (isa<TouchPointsType>(model))
     return TouchPointType::get(context);
   return model;
@@ -4344,7 +4442,8 @@ static LogicalResult verifyParameter(ParamOp param) {
              name == "cell-week-year")
       expected = IntType::get(context);
     else if (name == "cell-selected" || name == "cell-today" || name == "cell-in-month" ||
-             name == "cell-enabled")
+             name == "cell-enabled" || name == "cell-in-range" ||
+             name == "cell-range-start" || name == "cell-range-end")
       expected = BoolType::get(context);
   }
   if (!templateKind.empty()) {
@@ -4465,12 +4564,12 @@ static LogicalResult verifyCallbackAliasCycles(ComponentOp component, const Owne
 
 static bool focusTargetKind(llvm::StringRef kind) {
   return llvm::StringSwitch<bool>(kind)
-      .Cases({"FocusScope", "Loader", "TextInput", "LineEdit", "TextEdit", "TextArea", "SearchField",
+      .Cases({"FocusScope", "Loader", "TextInput", "LineEdit", "TextEdit", "TextArea", "SearchField", "StyledText",
               "Button", "ToolButton", "RoundButton", "DelayButton", "DialogButton", "StandardButton",
               "Slider", "Dial", "SpinBox", "DoubleSpinBox", "ComboBox", "Calendar", "MonthGrid", "ScrollBar",
               "CheckBox", "Switch", "RadioButton", "RadioGroup", "Tab", "TabButton", "SwipeView",
               "SwipeDelegate", "StackView", "ListView", "GridView", "StandardListView",
-              "TreeView", "TableView", "StandardTableView", "GroupBox", "PageIndicator",
+              "TreeView", "TableView", "StandardTableView", "GroupBox", "Expander", "PageIndicator",
               "Tumbler", "PathView"}, true)
       .Default(false);
 }
@@ -4611,13 +4710,15 @@ static LogicalResult verifyReferences(ComponentOp component,
         result = op->emitOpError("requires a StackView owner");
       else if (auto route = read.getRoute())
         result = verifyStackRoute(op, view, route);
-    } else if (auto read = dyn_cast<TextAcceptsOp>(op)) {
-      auto target = elementOwner(read.getOwner());
-      if (!target || !staticPropertyOwner(target) || read.getValue() != "acceptable-input" ||
+    } else if (isa<TextAcceptsOp, TextValidityOp>(op)) {
+      auto target = elementOwner(op->getAttrOfType<StringAttr>("owner").getValue());
+      auto property = isa<TextValidityOp>(op) ? "input-validity" : "acceptable-input";
+      if (!target || !staticPropertyOwner(target) ||
+          op->getAttrOfType<StringAttr>("value").getValue() != property ||
           !llvm::StringSwitch<bool>(target.getKind())
                .Cases({"TextInput", "LineEdit", "TextEdit", "TextArea", "ComboBox"}, true)
                .Default(false))
-        result = op->emitOpError("acceptable-input requires a statically addressed text editor");
+        result = op->emitOpError() << property << " requires a statically addressed text editor";
     } else if (auto read = dyn_cast<MediaReadOp>(op)) {
       auto target = elementOwner(read.getOwner());
       auto name = read.getValue();
@@ -4971,12 +5072,13 @@ static LogicalResult verifyReferences(ComponentOp component,
       if (tableEdit) {
         if (!target || !isTableView(target.getKind()) || !isStaticViewport(target))
           result = op->emitOpError("requires a statically addressed table view");
-      } else if (!target ||
-                 !llvm::StringSwitch<bool>(target.getKind())
-               .Cases({"TextInput", "LineEdit", "TextEdit", "TextArea", "SearchField", "ComboBox"}, true)
-               .Default(false) ||
-                 !isStaticViewport(target)) {
-        result = op->emitOpError("requires a statically addressed editor");
+      } else if (!target || !isStaticViewport(target) ||
+                 !(isTextEditor(target.getKind()) ||
+                   (target.getKind() == "StyledText" &&
+                    llvm::StringSwitch<bool>(method)
+                        .Cases({"select-all", "select-word", "clear-selection", "set-selection-offsets", "copy"}, true)
+                        .Default(false)))) {
+        result = op->emitOpError("requires a statically addressed editor supporting the requested command");
       }
     } else if (auto click = dyn_cast<ButtonClickOp>(op)) {
       auto target = elementOwner(click.getOwner());
@@ -5323,7 +5425,7 @@ static bool recordScalarType(llvm::StringRef type) {
       .Cases({"int", "float", "bool", "string", "styled-text", "length", "color", "brush",
               "image", "LogLevel", "ImageFit", "ImageTileMode", "ImageHorizontalAlignment", "ImageVerticalAlignment", "ImageRendering", "ButtonDisplay",
               "LayoutAlignment", "CrossAxisAlignment",
-              "Orientation", "FlickDirection", "FlickBoundsBehavior", "FlickBoundsMovement", "LayoutDirection", "FlexboxLayoutDirection", "FlexboxLayoutWrap", "DialInputMode", "ScrollBarPolicy", "ScrollSnapMode", "ScrollAlignment", "TextWrap",
+              "Orientation", "FlickDirection", "FlickBoundsBehavior", "FlickBoundsMovement", "LayoutDirection", "FlexboxLayoutDirection", "FlexboxLayoutWrap", "DialInputMode", "ScrollBarPolicy", "ScrollSnapMode", "ScrollAlignment", "TextWrap", "MouseSelectionMode", "InputValidity",
               "TextHorizontalAlignment", "TextVerticalAlignment", "TextOverflow", "InputType", "CursorShape", "ColorScheme", "FileDialogMode", "MessageLevel", "MessageButtons",
               "DialogRole", "StandardButtonKind", "SwipeSide", "DragAction", "KeyEvent", "KeyModifiers", "WheelEvent", "PointerEvent", "PointerEventKind", "PointerButton", "PointerButtons", "TouchPoint", "EventResult", "FocusReason", "DrawerEdge", "PopupPlacement", "SelectionTarget", "SelectionGesture", "Date", "Time", "Font", "CheckState"},
              true)
@@ -5704,7 +5806,7 @@ static LogicalResult verifyRecords(ModuleOp module, const Records &records,
             continue;
           auto name = *type;
           if (recordScalarType(name) || name == "[int]" || name == "[string]" ||
-              name == "TouchPoints" || name == "percent")
+              name == "[Date]" || name == "TouchPoints" || name == "percent")
             continue;
           const bool wellFormed =
               !name.consume_front("[") || name.consume_back("]");

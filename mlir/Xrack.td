@@ -52,6 +52,8 @@ def XR_ScrollBarPolicy : XR_Type<"ScrollBarPolicy", "scrollbarpolicy">;
 def XR_ScrollSnapMode : XR_Type<"ScrollSnapMode", "scrollsnapmode">;
 def XR_ScrollAlignment : XR_Type<"ScrollAlignment", "scrollalignment">;
 def XR_TextWrap : XR_Type<"TextWrap", "textwrap">;
+def XR_MouseSelectionMode : XR_Type<"MouseSelectionMode", "mouseselectionmode">;
+def XR_InputValidity : XR_Type<"InputValidity", "inputvalidity">;
 def XR_TextHorizontalAlignment : XR_Type<"TextHorizontalAlignment", "texthorizontalalignment">;
 def XR_TextVerticalAlignment : XR_Type<"TextVerticalAlignment", "textverticalalignment">;
 def XR_TextOverflow : XR_Type<"TextOverflow", "textoverflow">;
@@ -82,15 +84,16 @@ def XR_PopupPlacement : XR_Type<"PopupPlacement", "popupplacement">;
 def XR_SelectionTarget : XR_Type<"SelectionTarget", "selectiontarget">;
 def XR_SelectionGesture : XR_Type<"SelectionGesture", "selectiongesture">;
 def XR_Date : XR_Type<"Date", "date">;
+def XR_DateList : XR_Type<"DateList", "datelist">;
 def XR_Time : XR_Type<"Time", "time">;
 def XR_Font : XR_Type<"Font", "font">;
 def XR_GradientStop : XR_Type<"GradientStop", "gradientstop">;
-def XR_Value : AnyTypeOf<[XR_Int, XR_Float, XR_Bool, XR_String, XR_StyledText, XR_IntList, XR_StringList, XR_Record, XR_RecordList, XR_Length, XR_Percent, XR_Color,
+def XR_Value : AnyTypeOf<[XR_Int, XR_Float, XR_Bool, XR_String, XR_StyledText, XR_IntList, XR_DateList, XR_StringList, XR_Record, XR_RecordList, XR_Length, XR_Percent, XR_Color,
                          XR_EventResult, XR_FocusReason, XR_KeyEvent, XR_KeyModifiers, XR_WheelEvent,
                          XR_PointerEvent, XR_PointerEventKind, XR_PointerButton, XR_PointerButtons, XR_TouchPoint, XR_TouchPoints,
                          XR_Brush, XR_Image, XR_LogLevel, XR_ImageFit, XR_ImageTileMode,
                          XR_ImageHorizontalAlignment, XR_ImageVerticalAlignment, XR_ImageRendering, XR_ButtonDisplay, XR_LayoutAlignment, XR_CrossAxisAlignment,
-                         XR_Orientation, XR_FlickDirection, XR_FlickBoundsBehavior, XR_FlickBoundsMovement, XR_LayoutDirection, XR_FlexboxLayoutDirection, XR_FlexboxLayoutWrap, XR_DialInputMode, XR_ScrollBarPolicy, XR_ScrollSnapMode, XR_ScrollAlignment, XR_TextWrap, XR_TextHorizontalAlignment, XR_TextVerticalAlignment, XR_TextOverflow, XR_InputType, XR_CursorShape, XR_ColorScheme, XR_FileDialogMode, XR_MessageLevel, XR_MessageButtons, XR_CheckState, XR_DialogRole, XR_StandardButtonKind, XR_SwipeSide, XR_DragAction, XR_DrawerEdge, XR_PopupPlacement, XR_SelectionTarget, XR_SelectionGesture, XR_Date, XR_Time, XR_Font]>;
+                         XR_Orientation, XR_FlickDirection, XR_FlickBoundsBehavior, XR_FlickBoundsMovement, XR_LayoutDirection, XR_FlexboxLayoutDirection, XR_FlexboxLayoutWrap, XR_DialInputMode, XR_ScrollBarPolicy, XR_ScrollSnapMode, XR_ScrollAlignment, XR_TextWrap, XR_MouseSelectionMode, XR_InputValidity, XR_TextHorizontalAlignment, XR_TextVerticalAlignment, XR_TextOverflow, XR_InputType, XR_CursorShape, XR_ColorScheme, XR_FileDialogMode, XR_MessageLevel, XR_MessageButtons, XR_CheckState, XR_DialogRole, XR_StandardButtonKind, XR_SwipeSide, XR_DragAction, XR_DrawerEdge, XR_PopupPlacement, XR_SelectionTarget, XR_SelectionGesture, XR_Date, XR_Time, XR_Font]>;
 def XR_Stringifiable : AnyTypeOf<[XR_Int, XR_Float, XR_Bool, XR_Date, XR_Time]>;
 
 class XR_Op<string mnemonic, list<Trait> traits = []> : Op<Xrack_Dialect, mnemonic, traits>;
@@ -193,7 +196,7 @@ def XR_StateTimingOp : XR_Op<"state_timing", [ParentOneOf<["ElementOp", "Instanc
   let hasVerifier = 1;
 }
 def XR_RepeatOp : XR_Op<"repeat", [ParentOneOf<["ElementOp", "InstanceOp"]>]> {
-  let arguments = (ins AnyTypeOf<[XR_Int, XR_IntList, XR_StringList, XR_RecordList, XR_TouchPoints]>:$input, StrAttr:$name,
+  let arguments = (ins AnyTypeOf<[XR_Int, XR_IntList, XR_DateList, XR_StringList, XR_RecordList, XR_TouchPoints]>:$input, StrAttr:$name,
                        StrAttr:$item, StrAttr:$index);
 }
 def XR_ControlLinkOp : XR_Op<"control_link", [HasParent<"ElementOp">]> {
@@ -290,7 +293,7 @@ def XR_SwipeCancelOp : XR_Op<"swipe_cancel", [ParentOneOf<["CallbackOp", "Handle
   let hasVerifier = 1;
 }
 def XR_TextCommandOp : XR_Op<"text_command", [ParentOneOf<["CallbackOp", "HandlerOp"]>]> {
-  let arguments = (ins Variadic<XR_Int>:$offsets, StrAttr:$owner, StrAttr:$method);
+  let arguments = (ins Variadic<AnyTypeOf<[XR_Int, XR_String]>>:$args, StrAttr:$owner, StrAttr:$method);
   let hasVerifier = 1;
 }
 def XR_ScrollCommandOp : XR_Op<"scroll_command", [ParentOneOf<["CallbackOp", "HandlerOp"]>]> {
@@ -383,6 +386,7 @@ def XR_ParseNumberOp : XR_ExpressionOp<"parse_number",
     (ins XR_String:$input, XR_Float:$fallback), XR_Float, [MemoryEffects<[MemRead]>]>;
 def XR_ArrayOp : XR_ExpressionOp<"array", (ins Variadic<XR_String>:$items), XR_StringList, [Pure]>;
 def XR_IntArrayOp : XR_ExpressionOp<"int_array", (ins Variadic<XR_Int>:$items), XR_IntList, [Pure]>;
+def XR_DateArrayOp : XR_ExpressionOp<"date_array", (ins Variadic<XR_Date>:$items), XR_DateList, [Pure]>;
 def XR_PointerButtonsOp : XR_ExpressionOp<"pointer_buttons", (ins Variadic<XR_PointerButton>:$items), XR_PointerButtons, [Pure]>;
 def XR_RecordArrayOp : XR_ExpressionOp<"record_array", (ins Variadic<XR_Record>:$items), XR_RecordList, [Pure]>;
 def XR_MakeRecordOp : XR_ExpressionOp<"make_record", (ins Variadic<XR_Value>:$fields), XR_Record, [Pure]>;
@@ -410,7 +414,18 @@ def XR_DateAddDaysOp : XR_ExpressionOp<"date_add_days",
 def XR_DateAddMonthsOp : XR_ExpressionOp<"date_add_months",
     (ins XR_Date:$input, XR_Int:$months, XR_Date:$fallback), XR_Date, [Pure]>;
 def XR_DateWeekdayOp : XR_ExpressionOp<"date_weekday", (ins XR_Date:$input), XR_Int, [Pure]>;
+def XR_DateMonthsOp : XR_ExpressionOp<"date_months", (ins XR_Date:$from, XR_Date:$to), XR_DateList, [Pure]>;
+def XR_DateParseIsoOp : XR_ExpressionOp<"date_parse_iso", (ins XR_String:$text, XR_Date:$fallback), XR_Date, [Pure]>;
+def XR_DateIsSelectableOp : XR_ExpressionOp<"date_is_selectable",
+    (ins XR_Date:$date, XR_Date:$minimum, XR_Date:$maximum, XR_IntList:$disabledWeekdays, XR_DateList:$disabledDates),
+    XR_Bool, [MemoryEffects<[MemRead]>]>;
+def XR_DateMonthIndexOp : XR_ExpressionOp<"date_month_index",
+    (ins XR_Date:$from, XR_Date:$to, XR_Date:$date), XR_Int, [Pure]>;
 def XR_MakeTimeOp : XR_ExpressionOp<"make_time", (ins XR_Int:$hour, XR_Int:$minute, XR_Int:$second), XR_Time, [Pure]>;
+def XR_TimeParseIsoOp : XR_ExpressionOp<"time_parse_iso", (ins XR_String:$text, XR_Time:$fallback), XR_Time, [Pure]>;
+def XR_TimeIsValidIsoOp : XR_ExpressionOp<"time_is_valid_iso", (ins XR_String:$text), XR_Bool, [Pure]>;
+def XR_TimeFormatIsoOp : XR_ExpressionOp<"time_format_iso", (ins XR_Time:$time, XR_Bool:$showSeconds), XR_String, [Pure]>;
+def XR_TimeInRangeOp : XR_ExpressionOp<"time_in_range", (ins XR_Time:$time, XR_Time:$minimum, XR_Time:$maximum), XR_Bool, [Pure]>;
 def XR_TimeFieldOp : XR_ExpressionOp<"time_field", (ins XR_Time:$input), XR_Int, [Pure]> {
   let hasVerifier = 1;
 }
@@ -457,6 +472,7 @@ def XR_MediaReadOp : XR_ExpressionOp<"media_read", (ins StrAttr:$owner), AnyType
   let hasVerifier = 1;
 }
 def XR_TextAcceptsOp : XR_ExpressionOp<"text_accepts", (ins StrAttr:$owner), XR_Bool>;
+def XR_TextValidityOp : XR_ExpressionOp<"text_validity", (ins StrAttr:$owner), XR_InputValidity>;
 def XR_WindowReadOp : XR_ExpressionOp<"window_read", (ins), XR_Bool, [Pure]> {
   let hasVerifier = 1;
 }
@@ -518,7 +534,7 @@ def XR_ColorFunctionOp : XR_ExpressionOp<"color_function",
     (ins Variadic<AnyTypeOf<[XR_Int, XR_Float, XR_Color]>>:$inputs), XR_Color, [Pure]> {
   let hasVerifier = 1;
 }
-def XR_Model : AnyTypeOf<[XR_IntList, XR_StringList, XR_RecordList]>;
+def XR_Model : AnyTypeOf<[XR_IntList, XR_DateList, XR_StringList, XR_RecordList]>;
 def XR_ModelEditOp : XR_Op<"model_edit", [ParentOneOf<["CallbackOp", "HandlerOp"]>]> {
   let arguments = (ins XR_Model:$model, Variadic<XR_Value>:$args, StrAttr:$method);
   let hasVerifier = 1;
@@ -526,8 +542,8 @@ def XR_ModelEditOp : XR_Op<"model_edit", [ParentOneOf<["CallbackOp", "HandlerOp"
 def XR_ModelCountOp : XR_ExpressionOp<"model_count", (ins XR_Model:$input), XR_Int, [MemoryEffects<[MemRead]>]>;
 def XR_ModelIsEmptyOp : XR_ExpressionOp<"model_is_empty", (ins XR_Model:$input), XR_Bool, [MemoryEffects<[MemRead]>]>;
 def XR_ModelAtOp : XR_ExpressionOp<"model_at",
-    (ins XR_Model:$model, XR_Int:$index, AnyTypeOf<[XR_Int, XR_String, XR_Record]>:$fallback),
-    AnyTypeOf<[XR_Int, XR_String, XR_Record]>, [MemoryEffects<[MemRead]>, AllTypesMatch<["fallback", "result"]>]> {
+    (ins XR_Model:$model, XR_Int:$index, AnyTypeOf<[XR_Int, XR_String, XR_Date, XR_Record]>:$fallback),
+    AnyTypeOf<[XR_Int, XR_String, XR_Date, XR_Record]>, [MemoryEffects<[MemRead]>, AllTypesMatch<["fallback", "result"]>]> {
   let hasVerifier = 1;
 }
 def XR_FormatFixedOp : XR_ExpressionOp<"format_fixed",

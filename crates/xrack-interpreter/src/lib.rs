@@ -239,6 +239,7 @@ pub enum ValueType {
     String,
     StringList,
     IntList,
+    DateList,
     Record(Rc<str>),
     RecordList(Rc<str>),
     Date,
@@ -262,6 +263,8 @@ pub enum ValueType {
     FlexboxLayoutWrap,
     CrossAxisAlignment,
     TextWrap,
+    MouseSelectionMode,
+    InputValidity,
     TextHorizontalAlignment,
     TextVerticalAlignment,
     TextOverflow,
@@ -339,6 +342,7 @@ enum Expression {
     ImagePlaybackRead(Member),
     MediaRead(Member),
     TextAccepts(String),
+    TextValidity(String),
     GeometryRead(String, Option<xrack_runtime::GeometryMetric>),
     ViewportRead(String, viewport::Metric),
     ListSelectionRead(String),
@@ -399,6 +403,7 @@ enum Expression {
     },
     Array(Vec<Expr>),
     IntArray(Vec<Expr>),
+    DateArray(Vec<Expr>),
     Record {
         name: Rc<str>,
         fields: Vec<(String, Expr)>,
@@ -409,9 +414,17 @@ enum Expression {
     MakeDate([Expr; 3]),
     DateIsValid(Expr),
     DateWeekday(Expr),
+    DateMonths(Expr, Expr),
+    DateMonthIndex(Expr, Expr, Expr),
+    DateParseIso(Expr, Expr),
+    DateIsSelectable(Vec<Expr>),
     DateAddDays(Expr, Expr, Expr),
     DateAddMonths(Expr, Expr, Expr),
     MakeTime([Expr; 3]),
+    TimeParseIso(Expr, Expr),
+    TimeIsValidIso(Expr),
+    TimeFormatIso(Expr, Expr),
+    TimeInRange(Expr, Expr, Expr),
     MakeFont([Expr; 4]),
     Call(Member, Vec<Expr>, CallSite),
 }
@@ -439,7 +452,7 @@ enum Statement {
     Table(String, table::Command, Vec<Expr>),
     ModelEdit(Expr, xrack_syntax::builtins::ModelEditKind, Vec<Expr>),
     MoveNavigationItem(String, [Expr; 2]),
-    Focus(String, xrack_runtime::FocusCommandMethod, Option<[Expr; 2]>),
+    Focus(String, xrack_runtime::FocusCommandMethod, Vec<Expr>),
     ButtonClick(String, bool),
     ButtonToggle(String),
     Tree(String, xrack_runtime::TreeCommandMethod, Expr, Option<Expr>),
@@ -767,7 +780,9 @@ impl Instance {
     pub fn get_snapshot(&self, name: &str) -> Result<Value> {
         let value = self.read_public_value(name)?;
         Ok(match value {
-            Value::StringModel(_) | Value::IntModel(_) => evaluate::host_value(value),
+            Value::StringModel(_) | Value::IntModel(_) | Value::DateModel(_) => {
+                evaluate::host_value(value)
+            }
             value => evaluate::callback_value(value),
         })
     }
@@ -790,6 +805,16 @@ impl Instance {
             Value::IntModel(model) => Ok(model),
             _ => Err(Error::Evaluation(format!(
                 "property {name} is not an int list"
+            ))),
+        }
+    }
+
+    /// Get the shared date model, preserving live row identities.
+    pub fn date_model(&self, name: &str) -> Result<xrack_runtime::VecModel<xrack_runtime::Date>> {
+        match self.read_public_value(name)? {
+            Value::DateModel(model) => Ok(model),
+            _ => Err(Error::Evaluation(format!(
+                "property {name} is not a date list"
             ))),
         }
     }

@@ -451,6 +451,150 @@ export component ComboValidationDemo inherits Window {
     accepted-status := Label { x: 20px; y: 205px; text: "已提交 · " + root.last-accepted; }
 }
 
+struct DeviceChoice {
+    label: string,
+    id: int,
+}
+
+export component ComboLifecycleDemo inherits Window {
+    title: "XRack · 可编辑下拉框";
+    width: 470px; height: 288px;
+
+    in-out property <string> draft: "";
+    in-out property <string> pattern: "AA-999";
+    in-out property <int> selection: 11;
+    in-out property <bool> editing: true;
+    out property <string> trace: "";
+    out property <string> last-draft: "";
+    out property <bool> last-acceptable: false;
+    out property <int> finishes: 0;
+    out property <bool> valid: device.acceptable-input;
+
+    instruction := Label {
+        x: 20px; y: 18px; width: 430px;
+        text: "输入设备编号，例如 CD456，或从列表选择";
+    }
+    device := ComboBox {
+        x: 20px; y: 60px; width: 354px; height: 40px;
+        accessible-name: "设备编号";
+        editable: root.editing;
+        input-mask: root.pattern;
+        model: [
+            DeviceChoice { label: "AB-123", id: 11 },
+            DeviceChoice { label: "CD-456", id: 22 },
+            DeviceChoice { label: "库存归档", id: 33 },
+        ];
+        text-role: "label";
+        value-role: "id";
+        current-value <=> root.selection;
+        edit-text <=> root.draft;
+        selected(label) => { root.trace += "selected " + label + ";"; }
+        value-selected(id) => { root.trace += "value " + id + ";"; }
+        accepted(text) => { root.trace += "accept " + text + ";"; }
+        editing-finished(text, acceptable) => {
+            root.last-draft = text;
+            root.last-acceptable = acceptable;
+            root.finishes += 1;
+            root.trace += "finish " + text + (acceptable ? " valid;" : " draft;");
+        }
+    }
+    other := Button {
+        x: 20px; y: 124px; width: 142px; text: "继续下一项";
+    }
+    mode := CheckBox {
+        x: 192px; y: 124px; width: 200px;
+        text: "可编辑";
+        checked <=> root.editing;
+    }
+    result := Label {
+        x: 20px; y: 180px; width: 430px;
+        text: root.finishes == 0 ? "尚未结束编辑"
+            : (root.last-acceptable ? "通过校验 " : "待补全 ") + root.last-draft;
+    }
+    totals := Label { x: 20px; y: 222px; text: "结束编辑 " + root.finishes + " 次"; }
+}
+
+struct CatalogEntry {
+    name: string,
+    key: int,
+    available: bool,
+}
+
+export component ComboAppendDemo inherits Window {
+    title: "XRack · 新选项";
+    width: 490px; height: 334px;
+
+    in-out property <[string]> labels: ["普通", "优先"];
+    in-out property <string> label-draft: "";
+    in-out property <int> label-index: 0;
+    in-out property <bool> pin-choice: false;
+    in-out property <bool> rewrite-draft: false;
+    in-out property <bool> replace-model: false;
+    in-out property <bool> enable-new-record: true;
+
+    in-out property <[CatalogEntry]> entries: [
+        CatalogEntry { name: "设备 A", key: 1, available: true },
+        CatalogEntry { name: "设备 B", key: 2, available: true },
+    ];
+    in-out property <string> entry-draft: "";
+    in-out property <int> entry-key: 1;
+    out property <int> label-before: -9;
+    out property <int> label-after: -9;
+    out property <int> entry-before: -9;
+    out property <int> entry-after: -9;
+    out property <int> typed-selections: 0;
+
+    Label { x: 20px; y: 20px; text: "输入一个新标签，然后按 Enter"; }
+    labels-box := ComboBox {
+        x: 20px; y: 56px; width: 330px; height: 38px;
+        editable: true;
+        model: root.labels;
+        current-index <=> root.label-index;
+        edit-text <=> root.label-draft;
+        minimum-length: 2;
+        accepted(text) => {
+            root.label-before = root.label-index;
+            root.labels = root.replace-model && root.label-index < 0
+                ? ["优先", text] : root.labels;
+            Model.insert(root.labels,
+                !root.replace-model && root.label-index < 0 ? Model.count(root.labels) : -1, text);
+            root.label-index = root.pin-choice ? 0 : root.label-index;
+            root.label-draft = root.rewrite-draft ? "待确认" : root.label-draft;
+        }
+        editing-finished(text, acceptable) => { root.label-after = root.label-index; }
+    }
+    label-status := Label {
+        x: 20px; y: 105px;
+        text: "标签索引 " + root.label-index + " · " + labels-box.current-text;
+    }
+    Label { x: 20px; y: 153px; text: "输入新设备名称，提交时分配业务键"; }
+    entries-box := ComboBox {
+        x: 20px; y: 190px; width: 330px; height: 38px;
+        editable: true;
+        model: root.entries;
+        text-role: "name";
+        value-role: "key";
+        enabled-role: "available";
+        current-value <=> root.entry-key;
+        edit-text <=> root.entry-draft;
+        minimum-length: 2;
+        accepted(text) => {
+            root.entry-before = root.entry-key;
+            Model.insert(root.entries, entries-box.current-text != text ? Model.count(root.entries) : -1,
+                CatalogEntry { name: text, key: 88 + Model.count(root.entries), available: false });
+            Model.insert(root.entries,
+                root.enable-new-record && entries-box.current-text != text ? Model.count(root.entries) : -1,
+                CatalogEntry { name: text, key: 88 + Model.count(root.entries), available: true });
+        }
+        editing-finished(text, acceptable) => { root.entry-after = root.entry-key; }
+        value-selected(key) => { root.typed-selections += 1; }
+    }
+    entry-status := Label {
+        x: 20px; y: 241px;
+        text: "设备键 " + root.entry-key + " · " + entries-box.current-text;
+    }
+}
+
 export component DirectionalChoiceDemo inherits Window {
     title: "XRack · 下拉与搜索方向";
     width: 464px; height: 284px;

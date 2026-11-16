@@ -20,6 +20,9 @@ pub(crate) enum Parameter {
     Today,
     InMonth,
     Enabled,
+    InRange,
+    RangeStart,
+    RangeEnd,
 }
 
 impl Parameter {
@@ -34,6 +37,9 @@ impl Parameter {
             "cell-today" => Self::Today,
             "cell-in-month" => Self::InMonth,
             "cell-enabled" => Self::Enabled,
+            "cell-in-range" => Self::InRange,
+            "cell-range-start" => Self::RangeStart,
+            "cell-range-end" => Self::RangeEnd,
             _ => return None,
         })
     }
@@ -49,6 +55,9 @@ impl Parameter {
             Self::Today => cell.today.into(),
             Self::InMonth => cell.in_month.into(),
             Self::Enabled => cell.enabled.into(),
+            Self::InRange => cell.in_range.into(),
+            Self::RangeStart => cell.range_start.into(),
+            Self::RangeEnd => cell.range_end.into(),
         }
     }
 }
@@ -67,6 +76,29 @@ impl Instance {
         let rendered = cells.try_render(node, |cell| self.render_calendar_cell(template, cell))?;
         node.children.push(rendered);
         Ok(())
+    }
+
+    pub(crate) fn disabled_calendar_weekdays(&self, element: &Element) -> Result<u8> {
+        match self.binding_value(element, "disabled-weekdays")? {
+            Some(Value::IntModel(model)) => Ok(xrack_runtime::calendar_weekday_mask(&model)),
+            None => Ok(0),
+            _ => Err(Error::Evaluation(
+                "expected [int] for disabled-weekdays".into(),
+            )),
+        }
+    }
+
+    pub(crate) fn disabled_calendar_dates(
+        &self,
+        element: &Element,
+    ) -> Result<Vec<xrack_runtime::Date>> {
+        match self.binding_value(element, "disabled-dates")? {
+            Some(Value::DateModel(model)) => Ok(model.into_snapshot()),
+            None => Ok(Vec::new()),
+            _ => Err(Error::Evaluation(
+                "expected [Date] for disabled-dates".into(),
+            )),
+        }
     }
 
     pub(crate) fn calendar_action(
@@ -97,6 +129,9 @@ impl Instance {
                     "expected an integer for week-start".into(),
                 )),
             },
+            || self.disabled_calendar_weekdays(element),
+            || self.disabled_calendar_dates(element),
+            || Ok(self.binding_value(element, "fixed-month")? == Some(Value::Bool(true))),
         )? {
             return Ok(false);
         }

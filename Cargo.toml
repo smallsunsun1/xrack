@@ -55,5 +55,6 @@ svgtypes = "0.16.1"
 imgref = "1.12"
 rgb = "0.8"
 unicode-segmentation = "1.13"
+regex-automata = { version = "=0.4.14", default-features = false, features = ["std", "syntax", "dfa-build", "unicode"] }
 unicode-bidi = "0.3.18"
 pulldown-cmark = { version = "=0.13.6", default-features = false, features = ["html"] }

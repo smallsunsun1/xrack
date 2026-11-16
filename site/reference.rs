@@ -7,7 +7,7 @@ use xrack_ir::semantic::{
 use xrack_syntax::ast::Span;
 use xrack_syntax::builtins::{
     POSITION_CHILD_METHOD, VIEWPORT_MOVE_METHODS, media_methods, navigation_move_methods,
-    scroll_bar_methods,
+    scroll_bar_methods, text_editor_methods,
 };
 
 const TEMPLATE: &str = include_str!("reference-template.html");
@@ -186,6 +186,7 @@ fn controls() -> Result<String, Box<dyn std::error::Error>> {
         let mut methods = media_methods(kind)
             .iter()
             .chain(scroll_bar_methods(kind))
+            .chain(text_editor_methods(kind))
             .chain(viewport_methods)
             .chain(navigation_move_methods(kind))
             .chain(xrack_ir::semantic::content_viewport(kind).then_some(&POSITION_CHILD_METHOD))

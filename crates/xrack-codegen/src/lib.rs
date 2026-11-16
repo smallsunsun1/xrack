@@ -67,6 +67,7 @@ fn ty(t: &Type) -> TokenStream {
         Type::String => quote!(::std::string::String),
         Type::StyledText => quote!(::xrack_runtime::StyledText),
         Type::IntList => quote!(::xrack_runtime::VecModel<::core::primitive::i64>),
+        Type::DateList => quote!(::xrack_runtime::VecModel<::xrack_runtime::Date>),
         Type::StringList => quote!(::xrack_runtime::VecModel<::std::string::String>),
         Type::Record(name) => {
             let name = ident(name);
@@ -100,6 +101,8 @@ fn ty(t: &Type) -> TokenStream {
         Type::ScrollSnapMode => quote!(::xrack_runtime::ScrollSnapMode),
         Type::ScrollAlignment => quote!(::xrack_runtime::ScrollAlignment),
         Type::TextWrap => quote!(::xrack_runtime::TextWrap),
+        Type::MouseSelectionMode => quote!(::xrack_runtime::MouseSelectionMode),
+        Type::InputValidity => quote!(::xrack_runtime::InputValidity),
         Type::TextHorizontalAlignment => quote!(::xrack_runtime::TextHorizontalAlignment),
         Type::TextVerticalAlignment => quote!(::xrack_runtime::TextVerticalAlignment),
         Type::TextOverflow => quote!(::xrack_runtime::TextOverflow),
@@ -654,6 +657,10 @@ fn state_selector_name(owner: &str) -> Ident {
     format_ident!("__xr_state_{encoded}")
 }
 
+fn has_editing_finished(element: OperationRef<'_>) -> bool {
+    children(element, "xr.handler").any(|handler| handler.attr("name") == Ok("editing-finished"))
+}
+
 fn focus_handle(owner: &str) -> Ident {
     let encoded: String = owner.bytes().map(|byte| format!("{byte:02x}")).collect();
     format_ident!("__xr_focus_{encoded}")
@@ -1174,7 +1181,7 @@ struct Generator<'a> {
     button_animation_targets: BTreeSet<&'a str>,
     text_selection_targets: BTreeSet<&'a str>,
     text_command_targets: BTreeSet<&'a str>,
-    text_acceptance_targets: BTreeSet<&'a str>,
+    text_validation_targets: BTreeSet<(&'a str, bool)>,
     pointer_targets: BTreeSet<&'a str>,
     viewport_targets: BTreeSet<&'a str>,
     view_count_targets: BTreeSet<&'a str>,
@@ -1325,11 +1332,15 @@ impl<'a> Generator<'a> {
                     self.viewport_targets.insert(key);
                     self.scroll_observers.insert(key);
                 }
-                if children(op, "xr.handler").any(|handler| {
-                    handler
-                        .attribute("name")
-                        .is_some_and(xrack_runtime::is_focus_handler)
-                }) {
+                if has_editing_finished(op)
+                    || children(op, "xr.bind")
+                        .any(|bind| bind.attr("name") == Ok("persistent-selection"))
+                    || children(op, "xr.handler").any(|handler| {
+                        handler
+                            .attribute("name")
+                            .is_some_and(xrack_runtime::is_focus_handler)
+                    })
+                {
                     self.focus_targets.insert(key);
                 }
                 if matches!(
@@ -1443,8 +1454,9 @@ impl<'a> Generator<'a> {
                 "xr.text_selection_read" | "xr.text_command_available" => {
                     self.index_editor_state(child)?;
                 }
-                "xr.text_accepts" => {
-                    self.text_acceptance_targets.insert(child.attr("owner")?);
+                "xr.text_accepts" | "xr.text_validity" => {
+                    self.text_validation_targets
+                        .insert((child.attr("owner")?, child.name() == "xr.text_validity"));
                 }
                 "xr.view_count" => {
                     self.view_count_targets.insert(child.attr("owner")?);
@@ -1522,8 +1534,11 @@ impl<'a> Generator<'a> {
                             "xr.text_selection_read" | "xr.text_command_available" => {
                                 self.index_editor_state(effect)?;
                             }
-                            "xr.text_accepts" => {
-                                self.text_acceptance_targets.insert(effect.attr("owner")?);
+                            "xr.text_accepts" | "xr.text_validity" => {
+                                self.text_validation_targets.insert((
+                                    effect.attr("owner")?,
+                                    effect.name() == "xr.text_validity",
+                                ));
                             }
                             "xr.viewport_read"
                             | "xr.scroll_command"
@@ -1969,7 +1984,7 @@ impl<'a> Generator<'a> {
                     &[#((#names, ::xrack_runtime::TranslationValue::from(#values))),*],
                 )))
             }
-            "xr.array" | "xr.int_array" | "xr.record_array" => {
+            "xr.array" | "xr.int_array" | "xr.date_array" | "xr.record_array" => {
                 let items = (0..op.operand_count())
                     .map(arg)
                     .collect::<Result<Vec<_>, _>>()?;
@@ -2012,6 +2027,25 @@ impl<'a> Generator<'a> {
                 let date = arg(0)?;
                 quote!((#date).weekday().unwrap_or(0))
             }
+            "xr.date_months" | "xr.date_month_index" => {
+                let from = arg(0)?;
+                let to = arg(1)?;
+                if op.name() == "xr.date_months" {
+                    quote!((#from).months_through(#to))
+                } else {
+                    let date = arg(2)?;
+                    quote!((#from).month_index(#to, #date))
+                }
+            }
+            "xr.date_parse_iso" => {
+                let (text, fallback) = (arg(0)?, arg(1)?);
+                quote!(::xrack_runtime::Date::parse_iso(&#text).unwrap_or_else(|| #fallback))
+            }
+            "xr.date_is_selectable" => {
+                let (date, minimum, maximum, weekdays, dates) =
+                    (arg(0)?, arg(1)?, arg(2)?, arg(3)?, arg(4)?);
+                quote!((#date).is_selectable(#minimum, #maximum, &#weekdays, &#dates))
+            }
             "xr.date_add_days" | "xr.date_add_months" => {
                 let (date, offset, fallback) = (arg(0)?, arg(1)?, arg(2)?);
                 let method = if op.name() == "xr.date_add_days" {
@@ -2020,6 +2054,22 @@ impl<'a> Generator<'a> {
                     quote!(add_months_clamped)
                 };
                 quote!((#date).#method(#offset).unwrap_or_else(|| #fallback))
+            }
+            "xr.time_parse_iso" => {
+                let (text, fallback) = (arg(0)?, arg(1)?);
+                quote!(::xrack_runtime::Time::parse_iso(&#text).unwrap_or_else(|| #fallback))
+            }
+            "xr.time_is_valid_iso" => {
+                let text = arg(0)?;
+                quote!(::xrack_runtime::Time::parse_iso(&#text).is_some())
+            }
+            "xr.time_format_iso" => {
+                let (time, show_seconds) = (arg(0)?, arg(1)?);
+                quote!((#time).format_iso(#show_seconds))
+            }
+            "xr.time_in_range" => {
+                let (time, minimum, maximum) = (arg(0)?, arg(1)?, arg(2)?);
+                quote!((#time).in_range(#minimum, #maximum))
             }
             "xr.make_time" => {
                 let (hour, minute, second) = (arg(0)?, arg(1)?, arg(2)?);
@@ -2306,8 +2356,12 @@ impl<'a> Generator<'a> {
                 let getter = ident(value);
                 quote!(#receiver.__state.#handle.#getter())
             }
-            "xr.text_accepts" => {
-                let getter = format_ident!("__xr_text_accepts_{}", rust_key(owner(op)));
+            "xr.text_accepts" | "xr.text_validity" => {
+                let getter = format_ident!(
+                    "__xr_{}_{}",
+                    op.name().trim_start_matches("xr."),
+                    rust_key(owner(op))
+                );
                 quote!(#receiver.#getter())
             }
             "xr.media_read" => {
@@ -3054,14 +3108,28 @@ impl<'a> Generator<'a> {
                     let command = xrack_runtime::FocusCommandMethod::parse(method)
                         .ok_or("unknown focus command")?;
                     let variant = format_ident!("{command:?}");
-                    let operands = (0..statement.operand_count())
+                    let mut operands = (0..statement.operand_count())
                         .map(|index| expression(self.operand(statement, index)?))
                         .collect::<Result<Vec<_>, _>>()?;
+                    let (action, request) = if command.edits_text() {
+                        let text = if command.uses_text_operand() {
+                            operands.pop().ok_or("missing text operand")?
+                        } else {
+                            quote!(::std::string::String::new())
+                        };
+                        (
+                            quote!(::xrack_runtime::FocusCommandMethod::#variant.replacement(&[#(#operands),*], #text)),
+                            quote!(request_text_edit),
+                        )
+                    } else {
+                        (
+                            quote!(::xrack_runtime::FocusCommandMethod::#variant.action(&[#(#operands),*])),
+                            quote!(request),
+                        )
+                    };
                     statements.extend(quote! {
-                        if let ::core::option::Option::Some(__xr_action) =
-                            ::xrack_runtime::FocusCommandMethod::#variant.action(&[#(#operands),*])
-                        {
-                            self.__state.#handle.request(__xr_action);
+                        if let ::core::option::Option::Some(__xr_action) = #action {
+                            self.__state.#handle.#request(__xr_action);
                         }
                     });
                 }
@@ -5167,7 +5235,33 @@ impl<'a> Generator<'a> {
     fn time_picker_options(&self, element: OperationRef<'a>) -> Result<TokenStream, String> {
         let use_24_hours = self.binding_value_or(element, "use-24-hour-format", quote!(true))?;
         let show_seconds = self.binding_value_or(element, "show-seconds", quote!(false))?;
-        Ok(quote!(::xrack_runtime::TimePickerOptions::new(#use_24_hours, #show_seconds)))
+        let minimum =
+            self.binding_value_or(element, "minimum-time", quote!(::xrack_runtime::Time::MIN))?;
+        let maximum =
+            self.binding_value_or(element, "maximum-time", quote!(::xrack_runtime::Time::MAX))?;
+        Ok(
+            quote!(::xrack_runtime::TimePickerOptions::new(#use_24_hours, #show_seconds).with_bounds(#minimum, #maximum)),
+        )
+    }
+
+    fn disabled_calendar_weekdays(&self, element: OperationRef<'a>) -> Result<TokenStream, String> {
+        children(element, "xr.bind")
+            .find(|binding| binding.attribute("name") == Some("disabled-weekdays"))
+            .map(|binding| {
+                let model = self.visual_value(binding, &self.visuals)?;
+                Ok(quote!(::xrack_runtime::calendar_weekday_mask(&#model)))
+            })
+            .unwrap_or_else(|| Ok(quote!(0_u8)))
+    }
+
+    fn disabled_calendar_dates(&self, element: OperationRef<'a>) -> Result<TokenStream, String> {
+        children(element, "xr.bind")
+            .find(|binding| binding.attribute("name") == Some("disabled-dates"))
+            .map(|binding| {
+                let model = self.visual_value(binding, &self.visuals)?;
+                Ok(quote!((#model).into_snapshot()))
+            })
+            .unwrap_or_else(|| Ok(quote!(::std::vec::Vec::new())))
     }
 
     fn date_picker_bounds(&self, element: OperationRef<'a>) -> Result<TokenStream, String> {
@@ -5175,7 +5269,11 @@ impl<'a> Generator<'a> {
             self.binding_value_or(element, "minimum-date", quote!(::xrack_runtime::Date::MIN))?;
         let maximum =
             self.binding_value_or(element, "maximum-date", quote!(::xrack_runtime::Date::MAX))?;
-        Ok(quote!(::xrack_runtime::DateBounds::new(#minimum, #maximum)))
+        let weekdays = self.disabled_calendar_weekdays(element)?;
+        let dates = self.disabled_calendar_dates(element)?;
+        Ok(
+            quote!(::xrack_runtime::DateBounds::new(#minimum, #maximum).with_disabled_weekdays(#weekdays).with_disabled_dates(#dates)),
+        )
     }
 
     fn standard_table_model(
@@ -6625,6 +6723,29 @@ impl<'a> Generator<'a> {
         Ok(quote!(self.__state.#items.get(|| #items_input)))
     }
 
+    fn combo_state_model(
+        &self,
+        element: OperationRef<'a>,
+        record: Option<&RecordComboRef<'a>>,
+    ) -> Result<TokenStream, String> {
+        let model = if let Some(record) = record {
+            let items = self.combo_items(element, record, &self.visuals)?;
+            if matches!(element.attribute("kind"), Some("Tumbler" | "PathView")) {
+                quote!(::xrack_runtime::ComboStateModel::Tumbler(#items))
+            } else {
+                quote!(::xrack_runtime::ComboStateModel::Records(#items))
+            }
+        } else {
+            let model = self.binding_value_or(
+                element,
+                "model",
+                quote!(::xrack_runtime::VecModel::<::std::string::String>::default()),
+            )?;
+            quote!(::xrack_runtime::ComboStateModel::Strings(#model))
+        };
+        Ok(model)
+    }
+
     fn combo_state_value(
         &self,
         element: OperationRef<'a>,
@@ -6654,21 +6775,7 @@ impl<'a> Generator<'a> {
         } else {
             TokenStream::new()
         };
-        let model = if let Some(record) = record {
-            let items = self.combo_items(element, record, &self.visuals)?;
-            if matches!(element.attribute("kind"), Some("Tumbler" | "PathView")) {
-                quote!(::xrack_runtime::ComboStateModel::Tumbler(#items))
-            } else {
-                quote!(::xrack_runtime::ComboStateModel::Records(#items))
-            }
-        } else {
-            let model = self.binding_value_or(
-                element,
-                "model",
-                quote!(::xrack_runtime::VecModel::<::std::string::String>::default()),
-            )?;
-            quote!(::xrack_runtime::ComboStateModel::Strings(#model))
-        };
+        let model = self.combo_state_model(element, record)?;
         if property == "count" {
             return Ok((Type::Int, quote!((#model).count() as i64)));
         }
@@ -7472,7 +7579,7 @@ impl<'a> Generator<'a> {
         let draw = self.repeat_row(page, repeat, repeat_op, next)?;
         let describe = self.describe_repeated_navigation_page(page, repeat_op)?;
         out.extend(quote! {
-            #name.append_navigation_pages(
+            #name.append_navigation_pages_with_preview(
                 || #model,
                 |model, __xr_index| {
                     let model = &**model;
@@ -7859,9 +7966,10 @@ impl<'a> Generator<'a> {
         }
         let kind = element.attribute("kind");
         let source_scroll = self.source_scroll_targets.contains(key);
+        let mut effects = TokenStream::new();
         for timer in element_children(element).filter(|child| child.attr("kind") == Ok("Timer")) {
             let register = timer_member(element_key(timer)?, "register");
-            out.extend(quote! { #name.timers.extend(self.#register()); });
+            effects.extend(quote! { #name.timers.extend(self.#register()); });
         }
         for effect in
             element_children(element).filter(|child| child.attr("kind") == Ok("SoundEffect"))
@@ -7880,13 +7988,18 @@ impl<'a> Generator<'a> {
                     Ok::<_, String>(quote!(.with_sound_loops(#value)))
                 })
                 .transpose()?;
-            out.extend(quote! {
+            effects.extend(quote! {
                 #name.sound_effects.push(self.__state.#slot.sound_effect(#file, &#source, #volume, #muted)#loops);
             });
         }
         for dialog in element_children(element).filter(|child| native_dialog(*child)) {
             let register = native_dialog_member(element_key(dialog)?, "register");
-            out.extend(quote!(#name.native_dialogs.extend(self.#register());));
+            effects.extend(quote!(#name.native_dialogs.extend(self.#register());));
+        }
+        if kind == Some("Expander") {
+            out.extend(quote! { if !#name.expander_collapsed() { #effects } });
+        } else {
+            out.extend(effects);
         }
         if kind == Some("StandardButton") {
             out.extend(quote! {
@@ -8280,6 +8393,9 @@ impl<'a> Generator<'a> {
             RenderContent::Inline if kind.is_some_and(xrack_runtime::is_window_overlay) => {
                 out.extend(quote! { if #name.is_visible() { #content } });
             }
+            RenderContent::Inline if kind == Some("Expander") => out.extend(quote! {
+                if !#name.expander_collapsed() { #content }
+            }),
             RenderContent::Inline => out.extend(content),
             RenderContent::Active(active) => out.extend(quote! {
                 if #active && #name.boolean("visible", true) && #name.boolean("enabled", true) {
@@ -8808,6 +8924,26 @@ impl<'a> Generator<'a> {
         }))
     }
 
+    fn expander_change(
+        &self,
+        element: OperationRef<'a>,
+        input: &TokenStream,
+        requested: &TokenStream,
+    ) -> Result<TokenStream, String> {
+        let expanded = self.control_value(element, "expanded", Type::Bool)?;
+        let update = self.set_control_property(element, "expanded", &quote!(__xr_expanded))?;
+        let changed = self.typed_event(element, "expanded-changed", &quote!(__xr_expanded))?;
+        Ok(quote!({
+            if let Some(__xr_expanded) = ::xrack_runtime::prepare_expander_change(#input, #requested, || #expanded) {
+                #update
+                #changed
+                true
+            } else {
+                false
+            }
+        }))
+    }
+
     fn dispatch_arms(
         &self,
         element: OperationRef<'a>,
@@ -8892,6 +9028,17 @@ impl<'a> Generator<'a> {
                 )?;
                 local.extend(quote!((#id, "clicked") => #click,));
             }
+        } else if element.attr("kind") == Ok("Expander") {
+            let routed_click =
+                self.expander_change(element, &quote!(Some(input)), &quote!(None))?;
+            paths.extend(quote!([#(#path),*] => event == "clicked" && #routed_click,));
+            if !id.is_empty() {
+                let receiver = quote!(self);
+                let projection = TableProjection::new(ExpressionContext::new(&receiver));
+                let available = self.element_allows_editing(element, &projection)?;
+                let click = self.expander_change(element, &quote!(None), &quote!(None))?;
+                local.extend(quote!((#id, "clicked") => (#available) && #click,));
+            }
         } else if element.attr("kind") == Ok("GroupBox") {
             let routed_click =
                 self.group_box_toggle(element, &self.visuals, &quote!(Some(input)))?;
@@ -8953,6 +9100,26 @@ impl<'a> Generator<'a> {
                 let click = click(quote!(None));
                 local.extend(quote!((#id, "clicked") => #click,));
             }
+        } else if matches!(kind, "TextInput" | "LineEdit") && has_editing_finished(element) {
+            let handle = focus_handle(element_key(element)?);
+            let current = self.control_value(element, "text", Type::String)?;
+            let accepts = self.check_text_submission(element, quote!(&__xr_value))?;
+            let finished = self.typed_event_values(
+                element,
+                "editing-finished",
+                &[quote!(__xr_value), quote!(true)],
+            )?;
+            paths.extend(quote! {
+                [#(#path),*] => {
+                    if event != "accepted" { return self.__dispatch_handler(path, event); }
+                    let __xr_value = #current;
+                    if !input.available(|| #accepts) { return false; }
+                    let __xr_finished = self.__state.#handle.take_editor_changes(&__xr_value);
+                    let __xr_handled = self.__dispatch_handler(path, event);
+                    if __xr_finished { #finished }
+                    __xr_handled || __xr_finished
+                },
+            });
         } else if !local_handlers.is_empty() {
             let submission = if matches!(kind, "TextInput" | "LineEdit")
                 && children(element, "xr.handler")
@@ -9068,19 +9235,34 @@ impl<'a> Generator<'a> {
     }
 
     fn text_acceptance_expression(&self, element: OperationRef<'a>) -> Result<TokenStream, String> {
+        self.text_validation_expression(element, false)
+    }
+
+    fn text_validation_expression(
+        &self,
+        element: OperationRef<'a>,
+        detailed: bool,
+    ) -> Result<TokenStream, String> {
         if element.attr("kind")? == "ComboBox" {
             let editable = self.binding_value_or(element, "editable", quote!(false))?;
             let (_, draft) = self.combo_state_value(element, "edit-text")?;
-            let accepts = self.check_text_submission(element, quote!(&__xr_draft))?;
+            let validation = self.text_validation_call(element, quote!(&__xr_draft), detailed)?;
+            let inactive = if detailed {
+                quote!(::xrack_runtime::InputValidity::Invalid)
+            } else {
+                quote!(false)
+            };
             return Ok(quote! {
-                (#editable) && {
+                if #editable {
                     let __xr_draft: ::std::string::String = (|| { #draft })();
-                    #accepts
+                    #validation
+                } else {
+                    #inactive
                 }
             });
         }
         let text = self.control_value(element, "text", Type::String)?;
-        self.check_text_submission(element, quote!(&#text))
+        self.text_validation_call(element, quote!(&#text), detailed)
     }
 
     fn check_text_submission(
@@ -9088,14 +9270,43 @@ impl<'a> Generator<'a> {
         element: OperationRef<'a>,
         text: TokenStream,
     ) -> Result<TokenStream, String> {
+        self.text_validation_call(element, text, false)
+    }
+
+    fn text_validation_call(
+        &self,
+        element: OperationRef<'a>,
+        text: TokenStream,
+        detailed: bool,
+    ) -> Result<TokenStream, String> {
         let (mode, separator, limit) = self.text_input_constraints(element)?;
         let minimum = self.binding_value_or(element, "minimum-length", quote!(0_i64))?;
         let condition = self.binding_value_or(element, "submit-when", quote!(true))?;
         let floor = self.optional_editor_binding(element, "minimum-value")?;
         let ceiling = self.optional_editor_binding(element, "maximum-value")?;
         let decimals = self.optional_editor_binding(element, "decimals")?;
-        Ok(quote!(::xrack_runtime::text_submission_with(
-            #text, #mode, || #separator, || #limit, || #minimum,
+        let mask =
+            self.binding_value_or(element, "input-mask", quote!(::std::string::String::new()))?;
+        let pattern = self.binding_value_or(
+            element,
+            "input-pattern",
+            quote!(::std::string::String::new()),
+        )?;
+        let (function, rules) = if detailed {
+            (
+                format_ident!("text_input_validity"),
+                quote!(|| #mask, || #pattern, || #condition),
+            )
+        } else {
+            (
+                format_ident!("text_submission_with_mask"),
+                quote!(|| #mask, || ::xrack_runtime::input_pattern_accepts(&#pattern, __xr_text) && (#condition)),
+            )
+        };
+        Ok(quote!({
+            let __xr_text = #text;
+            ::xrack_runtime::#function(
+            __xr_text, #mode, || #separator, || #limit, || #minimum,
             |mode| ::xrack_runtime::NumericTextLimits {
                 minimum: #floor,
                 maximum: #ceiling,
@@ -9105,27 +9316,37 @@ impl<'a> Generator<'a> {
                     ::core::option::Option::None
                 },
             },
-            || #condition,
-        )))
+            #rules,
+        )
+        }))
     }
 
     fn live_editor_guard(&self, element: OperationRef<'a>) -> Result<TokenStream, String> {
         let kind = element.attr("kind")?;
         let (mode, separator, limit) = self.text_input_constraints(element)?;
+        let mask =
+            self.binding_value_or(element, "input-mask", quote!(::std::string::String::new()))?;
+        let pattern = self.binding_value_or(
+            element,
+            "input-pattern",
+            quote!(::std::string::String::new()),
+        )?;
+        let matches = quote! {
+            #mask == node.text("input-mask").unwrap_or_default()
+                && #pattern == node.text("input-pattern").unwrap_or_default()
+                && node.allows_text_edit_with(&text, #mode, || #separator, || #limit)
+        };
         let allowed = if kind == "ComboBox" {
             let editable = self.binding_value_or(element, "editable", quote!(false))?;
             let model_current = self.combo_model_current(element)?;
             let draft_current = self.combo_draft_current(element, &model_current)?;
             quote!(node.prepare_combo_edit(input, || #editable, || {
-                (#draft_current) && node.allows_text_edit_with(&text, #mode, || #separator, || #limit)
+                (#draft_current) && (#matches)
             }))
         } else {
             let read_only = self.binding_value_or(element, "read-only", quote!(false))?;
             let current = self.control_value(element, "text", Type::String)?;
-            quote!(node.prepare_text_edit(
-                input, || !(#read_only), || #current,
-                || node.allows_text_edit_with(&text, #mode, || #separator, || #limit),
-            ))
+            quote!(node.prepare_text_edit(input, || !(#read_only), || #current, || #matches))
         };
         Ok(quote!(if !(#allowed) { return false; }))
     }
@@ -9139,11 +9360,19 @@ impl<'a> Generator<'a> {
         if element.name() == "xr.instance" {
             return Ok(());
         }
+        let track = if has_editing_finished(element) {
+            let handle = focus_handle(element_key(element)?);
+            quote! {
+                self.__state.#handle.record_editor_edit(::xrack_runtime::text_input_value(node), &text);
+            }
+        } else {
+            TokenStream::new()
+        };
         if combo_editor(element) {
             let guard = self.live_editor_guard(element)?;
             let set = self.set_control_property(element, "edit-text", &quote!(text.clone()))?;
             let edited = self.typed_event(element, "edited", &quote!(text))?;
-            out.extend(quote!([#(#path),*] => { #guard #set #edited true },));
+            out.extend(quote!([#(#path),*] => { #guard #set #track #edited true },));
         } else if element.attr("kind") == Ok("ColorPickerPopup") {
             let popup = picker_field(element_key(element)?);
             let show_alpha = self.binding_value_or(element, "show-alpha", quote!(false))?;
@@ -9160,24 +9389,26 @@ impl<'a> Generator<'a> {
             out.extend(
                 quote!([#(#path),*] => { #guard self.#edit(::xrack_runtime::SearchInput::Edit(text)) },),
             );
-        } else if element.attr("kind").is_ok_and(is_multiline_text_input) {
+        } else if element.attr("kind").is_ok_and(is_multiline_text_input) || text_item(element) {
             let guard = self.live_editor_guard(element)?;
-            let has_handler =
-                children(element, "xr.handler").any(|handler| handler.attr("name") == Ok("edited"));
-            let value = if has_handler {
+            let multiline = element.attr("kind").is_ok_and(is_multiline_text_input);
+            let finish = has_editing_finished(element);
+            let preserve = finish
+                || multiline
+                    && children(element, "xr.handler")
+                        .any(|handler| handler.attr("name") == Ok("edited"));
+            let value = if preserve {
                 quote!(text.clone())
             } else {
                 quote!(text)
             };
             let set = self.set_control(element, &value)?;
-            let edited = self.typed_event(element, "edited", &quote!(text))?;
-            out.extend(quote!([#(#path),*] => { #guard #set #edited true },));
-        } else if text_item(element) {
-            let guard = self.live_editor_guard(element)?;
-            let set = self.set_control(element, &quote!(text))?;
-            out.extend(quote! {
-                [#(#path),*] => { #guard #set self.__dispatch_handler(path, "edited"); true },
-            });
+            let edited = if multiline {
+                self.typed_event(element, "edited", &quote!(text))?
+            } else {
+                quote! { self.__dispatch_handler(path, "edited"); }
+            };
+            out.extend(quote!([#(#path),*] => { #guard #set #track #edited true },));
         }
         for (index, child) in static_children(element) {
             path.push(index);
@@ -9277,6 +9508,45 @@ impl<'a> Generator<'a> {
                 [#(#path),*] => event.deliver(|handler, __focused, __reason| {
                     match handler { #handlers }
                 }),
+            });
+        }
+        if has_editing_finished(element) {
+            let handle = focus_handle(element_key(element)?);
+            let (available, current) = if element.attr("kind") == Ok("ComboBox") {
+                let editable = self.binding_value_or(element, "editable", quote!(false))?;
+                let (_, draft) = self.combo_state_value(element, "edit-text")?;
+                (quote!(#editable), quote!((|| { #draft })()))
+            } else {
+                (
+                    quote!(true),
+                    self.control_value(element, "text", Type::String)?,
+                )
+            };
+            let accepts = self.check_text_submission(element, quote!(&__xr_value))?;
+            let handler = self.typed_event_values(
+                element,
+                "editing-finished",
+                &[quote!(__xr_value), quote!(__xr_acceptable)],
+            )?;
+            out.extend(quote! {
+                [#(#path),*] => {
+                    if !matches!(event, ::xrack_runtime::FocusEvent::Lost(_))
+                        || !self.__state.#handle.has_editor_changes()
+                    {
+                        return false;
+                    }
+                    if !(#available) {
+                        self.__state.#handle.discard_editor_changes();
+                        return false;
+                    }
+                    let __xr_value: ::std::string::String = #current;
+                    if !self.__state.#handle.take_editor_changes(&__xr_value) {
+                        return false;
+                    }
+                    let __xr_acceptable = #accepts;
+                    #handler
+                    true
+                },
             });
         }
         for (index, child) in static_children(element) {
@@ -9382,6 +9652,10 @@ impl<'a> Generator<'a> {
             kind if xrack_runtime::is_window_overlay(kind) || picker_value(kind).is_some() => {
                 let open = self.control_value(element, "open", Type::Bool)?;
                 quote!(&& node.input_scope_available(#next, || input.can_open_drawer(node, depth == path.len()) || (#open), || false, || true, || #closed))
+            }
+            "Expander" => {
+                let expanded = self.control_value(element, "expanded", Type::Bool)?;
+                quote!(&& (depth == path.len() || (#expanded)))
             }
             "GroupBox" => {
                 let checkable =
@@ -9837,9 +10111,76 @@ impl<'a> Generator<'a> {
                 });
             }
         }
+        let (finish_state, finish) = if has_editing_finished(element) {
+            let handle = focus_handle(element_key(element)?);
+            let accepts = self.check_text_submission(element, quote!(__xr_text))?;
+            let (_, live_draft) = self.combo_state_value(element, "edit-text")?;
+            let handler = self.typed_event_values(
+                element,
+                "editing-finished",
+                &[quote!(__xr_text), quote!(__xr_acceptable)],
+            )?;
+            updates.extend(quote! {
+                ::xrack_runtime::ComboUpdate::FinishEdit { text: __xr_text, accepted } => {
+                    if __xr_edit_before.as_deref().is_some_and(|before| {
+                        self.__state.#handle.take_editor_changes(before)
+                    }) {
+                        __xr_finished = Some((__xr_text.to_owned(), accepted || #accepts));
+                    }
+                },
+            });
+            (
+                quote! {
+                    let __xr_edit_before: Option<::std::string::String> =
+                        self.__state.#handle.has_editor_changes().then(|| { #live_draft });
+                    if !input.is_current() { return false; }
+                    let mut __xr_finished = ::core::option::Option::None;
+                },
+                quote! {
+                    if applied && let Some((__xr_text, __xr_acceptable)) = __xr_finished {
+                        #handler
+                    }
+                },
+            )
+        } else {
+            (TokenStream::new(), TokenStream::new())
+        };
+        let receiver = quote!(self);
+        let projection = TableProjection::for_input(&receiver);
+        let available = self.element_allows_routed_input(element, is_root, &projection)?;
+        let editable = self.binding_value_or(element, "editable", quote!(false))?;
+        let mut adoption = TokenStream::new();
         let editor = if combo_editor(element) {
             let text = quote!(__xr_text.to_owned());
             let accepted = self.typed_event(element, "accepted", &text)?;
+            let accepted = if accepted.is_empty() || by_value && !records {
+                accepted
+            } else {
+                adoption = quote!(let __xr_can_adopt = choice.accepts_unmatched_text(););
+                let draft = self.combo_explicit_draft(element)?;
+                let (property, ty) =
+                    controlled_property(element).ok_or("missing ComboBox selection")?;
+                let current = self.control_value(element, property, ty)?;
+                let live_model = self.combo_state_model(element, record)?;
+                quote! {
+                    if __xr_can_adopt {
+                        let selection = ::xrack_runtime::resolve_combo_after_accept(
+                            __xr_text,
+                            || ((#draft).as_deref() == Some(__xr_text)).then(|| ::xrack_runtime::Value::from(#current)),
+                            || { #accepted },
+                            || (#available) && (#editable),
+                            || #live_model,
+                        );
+                        if let Some(selection) = selection
+                            && let ::xrack_runtime::Value::#variant(__xr_value) = &selection.value
+                        {
+                            #set
+                        }
+                    } else {
+                        #accepted
+                    }
+                }
+            };
             let set_text = self.set_control_property(element, "edit-text", &text)?;
             updates.extend(quote! {
                 ::xrack_runtime::ComboUpdate::SetEditText(__xr_text) => { #set_text },
@@ -9864,10 +10205,6 @@ impl<'a> Generator<'a> {
         } else {
             quote!(None)
         };
-        let receiver = quote!(self);
-        let projection = TableProjection::for_input(&receiver);
-        let available = self.element_allows_routed_input(element, is_root, &projection)?;
-        let editable = self.binding_value_or(element, "editable", quote!(false))?;
         let model_current = self.combo_model_current(element)?;
         // Model identity was already checked before resolving a submission.
         let draft_current = if combo_editor(element) {
@@ -9883,7 +10220,9 @@ impl<'a> Generator<'a> {
                 node, action, || #available, || #editable, || #model_current, || #draft_current,
             ) else { return false; };
             if !input.is_current() { return false; }
-            choice.apply(::xrack_runtime::ComboEditor::#editor, #by_value, #records, |update| {
+            #finish_state
+            #adoption
+            let applied = choice.apply(::xrack_runtime::ComboEditor::#editor, #by_value, #records, |update| {
                 match update {
                     ::xrack_runtime::ComboUpdate::Select(selection) => {
                         let ::xrack_runtime::Value::#variant(__xr_value) = &selection.value else { return false; };
@@ -9894,7 +10233,9 @@ impl<'a> Generator<'a> {
                     _ => {}
                 }
                 true
-            })
+            });
+            #finish
+            applied
         })
     }
 
@@ -9906,11 +10247,7 @@ impl<'a> Generator<'a> {
         Ok(quote!(::xrack_runtime::combo_model_is_current(node, &#model)))
     }
 
-    fn combo_draft_current(
-        &self,
-        element: OperationRef<'a>,
-        model_current: &TokenStream,
-    ) -> Result<TokenStream, String> {
+    fn combo_explicit_draft(&self, element: OperationRef<'a>) -> Result<TokenStream, String> {
         let draft = if default_combo_edit_text(element) {
             let field = control_field(element_key(element)?, "edit-text");
             quote!(self.__state.#field.explicit_value())
@@ -9918,6 +10255,15 @@ impl<'a> Generator<'a> {
             let text = self.control_value(element, "edit-text", Type::String)?;
             quote!(::core::option::Option::Some(#text))
         };
+        Ok(draft)
+    }
+
+    fn combo_draft_current(
+        &self,
+        element: OperationRef<'a>,
+        model_current: &TokenStream,
+    ) -> Result<TokenStream, String> {
+        let draft = self.combo_explicit_draft(element)?;
         let (name, ty) = controlled_property(element).ok_or("missing ComboBox selection")?;
         let selection = self.control_value(element, name, ty)?;
         Ok(quote!(node.combo_draft_is_current(#draft, || {
@@ -10002,6 +10348,16 @@ impl<'a> Generator<'a> {
             return Ok(());
         }
         match element.attr("kind")? {
+            "Expander" => {
+                let change =
+                    self.expander_change(element, &quote!(Some(input)), &quote!(Some(expanded)))?;
+                out.extend(quote! {
+                    [#(#path),*] => {
+                        let ::xrack_runtime::ControlAction::Expander(expanded) = action else { return false; };
+                        #change
+                    },
+                });
+            }
             "Switch" => out.extend(quote! {
                 [#(#path),*] => matches!(action, ::xrack_runtime::ControlAction::SetSwitch(_))
                     && self.__dispatch_path(path, "clicked", input),
@@ -10596,6 +10952,9 @@ impl<'a> Generator<'a> {
                 let date = self.control_value(element, "date", Type::Date)?;
                 let month = self.control_value(element, "display-month", Type::Date)?;
                 let week_start = self.binding_value_or(element, "week-start", quote!(1))?;
+                let weekdays = self.disabled_calendar_weekdays(element)?;
+                let dates = self.disabled_calendar_dates(element)?;
+                let fixed_month = self.binding_value_or(element, "fixed-month", quote!(false))?;
                 out.extend(quote! {
                     [#(#path),*] => {
                         use ::xrack_runtime::CalendarUpdate;
@@ -10606,7 +10965,7 @@ impl<'a> Generator<'a> {
                             "date" => #date,
                             "display-month" => #month,
                             _ => fallback,
-                        }, || #week_start) || !input.is_current() {
+                        }, || #week_start, || #weekdays, || #dates, || #fixed_month) || !input.is_current() {
                             return false;
                         }
                         ::xrack_runtime::apply_calendar_action(node, action, |update| match update {
@@ -11990,16 +12349,21 @@ impl<'a> Generator<'a> {
                 }
             });
         }
-        for &target in &self.text_acceptance_targets {
-            let getter = format_ident!("__xr_text_accepts_{}", rust_key(target));
+        for &(target, detailed) in &self.text_validation_targets {
+            let (kind, ty) = if detailed {
+                ("text_validity", quote!(::xrack_runtime::InputValidity))
+            } else {
+                ("text_accepts", quote!(::core::primitive::bool))
+            };
+            let getter = format_ident!("__xr_{}_{}", kind, rust_key(target));
             let element = self
                 .elements
                 .get(target)
                 .ok_or("unknown text editor owner")?;
-            let accepts = self.text_acceptance_expression(*element)?;
+            let validation = self.text_validation_expression(*element, detailed)?;
             methods.extend(quote! {
-                fn #getter(&self) -> bool {
-                    #accepts
+                fn #getter(&self) -> #ty {
+                    #validation
                 }
             });
         }
@@ -14104,7 +14468,7 @@ fn generate_with_resources(
             button_animation_targets: BTreeSet::new(),
             text_selection_targets: BTreeSet::new(),
             text_command_targets: BTreeSet::new(),
-            text_acceptance_targets: BTreeSet::new(),
+            text_validation_targets: BTreeSet::new(),
             pointer_targets: BTreeSet::new(),
             viewport_targets: BTreeSet::new(),
             view_count_targets: BTreeSet::new(),

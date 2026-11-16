@@ -15,6 +15,7 @@ icu_locale_core.workspace = true
 writeable.workspace = true
 unic-langid.workspace = true
 pulldown-cmark.workspace = true
+regex-automata.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 unicode-segmentation.workspace = true

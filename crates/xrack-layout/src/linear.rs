@@ -19,7 +19,9 @@ impl Axis {
                 Some(Self::Horizontal)
             }
             "VerticalLayout" | "DynamicContainer" | "VerticalBox" | "Dialog" | "Drawer"
-            | "GroupBox" | "PageHeader" | "PageFooter" | "PopupWindow" => Some(Self::Vertical),
+            | "GroupBox" | "Expander" | "PageHeader" | "PageFooter" | "PopupWindow" => {
+                Some(Self::Vertical)
+            }
             _ => None,
         }
     }
@@ -212,14 +214,25 @@ pub(crate) struct Padding {
 
 impl Padding {
     pub(crate) fn read(node: &Node) -> Self {
-        let uniform = dimension(node, "padding").unwrap_or(match node.kind {
+        let default = match node.kind {
             "ToolBar" => 6.0,
-            "GroupBox" => dimension(node, "content-padding").unwrap_or(12.0),
+            "GroupBox" | "Expander" => dimension(node, "content-padding").unwrap_or(12.0),
             "PopupWindow" => 12.0,
             "Pane" | "ControlFrame" => 12.0,
             kind if is_modal_overlay(kind) => 16.0,
             _ => 0.0,
-        });
+        };
+        Self::with_default(node, default)
+    }
+
+    pub(crate) const EDITOR_DEFAULT: f32 = 6.0;
+
+    pub(crate) fn for_editor(node: &Node) -> Self {
+        Self::with_default(node, Self::EDITOR_DEFAULT)
+    }
+
+    fn with_default(node: &Node, default: f32) -> Self {
+        let uniform = dimension(node, "padding").unwrap_or(default);
         let side = |name| dimension(node, name).unwrap_or(uniform);
         Self {
             left: side("padding-left"),
@@ -393,7 +406,11 @@ pub(crate) fn measure_with_width(
         cross.preferred += cross_extra;
         cross.max += cross_extra;
         if group_title > 0.0 {
-            let decoration = if node.group_checkable() { 31.0 } else { 0.0 };
+            let decoration = if node.group_checkable() || node.kind == "Expander" {
+                31.0
+            } else {
+                0.0
+            };
             let title_width = text
                 .measure_node(
                     node,
@@ -515,11 +532,21 @@ pub(crate) fn measure_with_width(
                 text.measure_label(node, available.width)
             }
             "Text" => text.measure_node(node, node.text("text").unwrap_or(""), available.width),
-            "TextInput" | "LineEdit" => {
-                Size::new(180.0, (text.font_size(node) * 1.4 + 12.0).max(34.0))
+            kind if is_text_input(kind) => {
+                let padding = Padding::for_editor(node).size();
+                let width = if matches!(kind, "TextInput" | "LineEdit") {
+                    168.0
+                } else {
+                    228.0
+                };
+                let line = text.font_size(node) * 1.4;
+                let height = if is_multiline_text_input(kind) {
+                    4.0 * line + padding.height
+                } else {
+                    (line + padding.height).max(34.0)
+                };
+                Size::new(width + padding.width, height)
             }
-            "SearchField" => Size::new(240.0, (text.font_size(node) * 1.4 + 12.0).max(34.0)),
-            "TextEdit" | "TextArea" => Size::new(240.0, text.font_size(node) * 5.6 + 12.0),
             "Slider" | "RangeSlider" if node.orientation() == Orientation::Vertical => {
                 Size::new(28.0, 160.0)
             }
@@ -916,7 +943,7 @@ pub(crate) fn spacing(node: &Node) -> f32 {
     dimension(node, "spacing").unwrap_or(match node.kind {
         "ToolBar" => 6.0,
         "TimePicker" | "DialogButtonBox" | "PopupWindow" => 8.0,
-        "GroupBox" => 8.0,
+        "GroupBox" | "Expander" => 8.0,
         kind if is_modal_overlay(kind) => 8.0,
         _ => 0.0,
     })
@@ -946,6 +973,9 @@ pub(crate) fn item_order(parent: &Node, child: &Node) -> i64 {
 }
 
 fn linear_child(parent: &Node, child: &Node) -> bool {
+    if parent.expander_collapsed() {
+        return false;
+    }
     participates_in_flow(child)
         || (parent.kind == "MenuBar" && child.kind == "Menu" && child.is_visible())
 }

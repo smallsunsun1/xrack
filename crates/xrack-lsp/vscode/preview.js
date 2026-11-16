@@ -291,7 +291,7 @@ const isMac = navigator.platform.startsWith('Mac');
 const sendKey = (event, pressed, text = '') => vscode.postMessage({
     type: 'key', key: event.key, pressed, text, repeat: event.repeat,
     control: event.ctrlKey, shift: event.shiftKey, alt: event.altKey, meta: event.metaKey,
-    primary: isMac ? event.metaKey : event.ctrlKey,
+    primary: isMac ? event.metaKey : event.ctrlKey, macos: isMac,
 });
 editor.addEventListener('keydown', event => {
     if (!dynamic || event.isComposing || composition !== undefined) return;

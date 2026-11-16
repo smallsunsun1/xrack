@@ -150,6 +150,7 @@ fn host_callback_arguments(args: &[Value]) -> Vec<Value> {
         .map(|arg| match arg {
             Value::StringModel(model) => Value::StringList(model.snapshot_untracked()),
             Value::IntModel(model) => Value::IntList(model.snapshot_untracked()),
+            Value::DateModel(model) => Value::DateList(model.snapshot_untracked()),
             value => value.clone(),
         })
         .collect()
@@ -1794,15 +1795,38 @@ impl Instance {
                     self.table_command(target, *command, &self.arguments(operands, args)?)?;
                 }
                 Statement::Focus(target, command, operands) => {
-                    let action = match operands {
-                        Some([first, second]) => command.action(&[
-                            self.int_argument(first, args)?,
-                            self.int_argument(second, args)?,
-                        ]),
-                        None => command.action(&[]),
+                    let (text, offsets) = if command.uses_text_operand() {
+                        let (text, offsets) = operands
+                            .split_last()
+                            .ok_or_else(|| evaluation("missing text command operand"))?;
+                        (Some(text), offsets)
+                    } else {
+                        (None, operands.as_slice())
+                    };
+                    let offsets = offsets
+                        .iter()
+                        .map(|arg| self.int_argument(arg, args))
+                        .collect::<Result<Vec<_>>>()?;
+                    let handle = self.focus_handle(target)?;
+                    if command.edits_text() {
+                        let value = if let Some(text) = text {
+                            let Value::String(value) = self.evaluate(text, args)? else {
+                                return Err(evaluation("expected text command string"));
+                            };
+                            value
+                        } else {
+                            String::new()
+                        };
+                        let replacement = command
+                            .replacement(&offsets, value)
+                            .ok_or_else(|| evaluation("invalid text edit command arguments"))?;
+                        handle.request_text_edit(replacement);
+                    } else {
+                        let action = command
+                            .action(&offsets)
+                            .ok_or_else(|| evaluation("invalid focus command arguments"))?;
+                        handle.request(action);
                     }
-                    .ok_or_else(|| evaluation("invalid focus command arguments"))?;
-                    self.focus_handle(target)?.request(action);
                 }
                 Statement::ButtonClick(target, animated) => {
                     let (owner, _) = self.element_owner(target)?;
@@ -2038,6 +2062,15 @@ impl Instance {
                 let (owner, element) = self.element_owner(target)?;
                 owner.text_acceptance(element).map(Value::Bool)
             }
+            TextValidity(target) => {
+                let (owner, element) = self.element_owner(target)?;
+                let Some(text) = owner.text_validation_draft(element)? else {
+                    return Ok(Value::InputValidity(xrack_runtime::InputValidity::Invalid));
+                };
+                owner
+                    .check_text_validity(element, &text)
+                    .map(Value::InputValidity)
+            }
             MediaRead(member) => self
                 .media_slot(&member.owner)
                 .read(&member.name)
@@ -2121,6 +2154,8 @@ impl Instance {
                     Value::StringModel(rows) => rows.len(),
                     Value::IntList(rows) => rows.len(),
                     Value::IntModel(rows) => rows.len(),
+                    Value::DateList(rows) => rows.len(),
+                    Value::DateModel(rows) => rows.len(),
                     Value::RecordList(rows) => rows.model().len(),
                     _ => return Err(evaluation("model count requires a model")),
                 };
@@ -2148,6 +2183,12 @@ impl Instance {
                         .copied()
                         .map(Value::Int),
                     Value::IntModel(rows) => rows.row_at(index).map(Value::Int),
+                    Value::DateList(rows) => usize::try_from(index)
+                        .ok()
+                        .and_then(|index| rows.get(index))
+                        .copied()
+                        .map(Value::Date),
+                    Value::DateModel(rows) => rows.row_at(index).map(Value::Date),
                     Value::RecordList(rows) => {
                         self.program().record_at(&rows, index)?.map(Value::Record)
                     }
@@ -2444,6 +2485,48 @@ impl Instance {
             DateWeekday(date) => Ok(Value::Int(
                 self.date_argument(date, args)?.weekday().unwrap_or(0),
             )),
+            DateMonths(from, to) => {
+                let from = self.date_argument(from, args)?;
+                let to = self.date_argument(to, args)?;
+                Ok(Value::DateModel(from.months_through(to)))
+            }
+            DateMonthIndex(from, to, date) => {
+                let from = self.date_argument(from, args)?;
+                let to = self.date_argument(to, args)?;
+                let date = self.date_argument(date, args)?;
+                Ok(Value::Int(from.month_index(to, date)))
+            }
+            DateParseIso(text, fallback) => {
+                let Value::String(text) = self.evaluate(text, args)? else {
+                    return Err(evaluation("date parsing requires a string"));
+                };
+                xrack_runtime::Date::parse_iso(&text).map_or_else(
+                    || self.evaluate(fallback, args),
+                    |date| Ok(Value::Date(date)),
+                )
+            }
+            DateIsSelectable(inputs) => {
+                let inputs = self
+                    .arguments(inputs, args)?
+                    .into_iter()
+                    .map(model_value)
+                    .collect::<Vec<_>>();
+                let [
+                    Value::Date(date),
+                    Value::Date(minimum),
+                    Value::Date(maximum),
+                    Value::IntModel(weekdays),
+                    Value::DateModel(dates),
+                ] = inputs.as_slice()
+                else {
+                    return Err(evaluation(
+                        "date constraints require dates and weekday and date models",
+                    ));
+                };
+                Ok(Value::Bool(
+                    date.is_selectable(*minimum, *maximum, weekdays, dates),
+                ))
+            }
             DateAddDays(date, offset, fallback) | DateAddMonths(date, offset, fallback) => {
                 let date = self.date_argument(date, args)?;
                 let offset = self.int_argument(offset, args)?;
@@ -2456,6 +2539,40 @@ impl Instance {
                     Some(date) => Ok(Value::Date(date)),
                     None => self.evaluate(fallback, args),
                 }
+            }
+            TimeParseIso(text, fallback) => {
+                let Value::String(text) = self.evaluate(text, args)? else {
+                    return Err(evaluation("time parsing requires a string"));
+                };
+                xrack_runtime::Time::parse_iso(&text).map_or_else(
+                    || self.evaluate(fallback, args),
+                    |time| Ok(Value::Time(time)),
+                )
+            }
+            TimeIsValidIso(text) => {
+                let Value::String(text) = self.evaluate(text, args)? else {
+                    return Err(evaluation("time validation requires a string"));
+                };
+                Ok(Value::Bool(xrack_runtime::Time::parse_iso(&text).is_some()))
+            }
+            TimeFormatIso(time, show_seconds) => {
+                let (Value::Time(time), Value::Bool(show_seconds)) = (
+                    self.evaluate(time, args)?,
+                    self.evaluate(show_seconds, args)?,
+                ) else {
+                    return Err(evaluation("time formatting requires a Time and a boolean"));
+                };
+                Ok(Value::String(time.format_iso(show_seconds)))
+            }
+            TimeInRange(time, minimum, maximum) => {
+                let (Value::Time(time), Value::Time(minimum), Value::Time(maximum)) = (
+                    self.evaluate(time, args)?,
+                    self.evaluate(minimum, args)?,
+                    self.evaluate(maximum, args)?,
+                ) else {
+                    return Err(evaluation("time bounds require Time values"));
+                };
+                Ok(Value::Bool(time.in_range(minimum, maximum)))
             }
             MakeTime([hour, minute, second]) => Ok(Value::Time(
                 xrack_runtime::Time {
@@ -2483,6 +2600,13 @@ impl Instance {
                     italic: *italic,
                 }))
             }
+            DateArray(items) => Ok(Value::DateModel(
+                items
+                    .iter()
+                    .map(|item| self.date_argument(item, args))
+                    .collect::<Result<Vec<_>>>()?
+                    .into(),
+            )),
             IntArray(items) => Ok(Value::IntModel(
                 items
                     .iter()
@@ -2608,8 +2732,27 @@ impl Instance {
         Ok(())
     }
 
-    fn read_combo_state(&self, member: &Member, fallback: &Value) -> Result<Value> {
+    fn combo_state_model(&self, element: &Element) -> Result<xrack_runtime::ComboStateModel> {
         use xrack_runtime::{ComboStateModel, VecModel};
+        let model = if let Some(combo) = &element.record_combo {
+            let items = self.combo_items(element, combo)?;
+            if matches!(element.visual, Visual::Builtin("Tumbler" | "PathView")) {
+                ComboStateModel::Tumbler(items)
+            } else {
+                ComboStateModel::Records(items)
+            }
+        } else {
+            ComboStateModel::Strings(match self.binding_value(element, "model")? {
+                Some(Value::StringModel(model)) => model,
+                Some(Value::StringList(items)) => VecModel::from(items),
+                None => VecModel::default(),
+                _ => return Err(evaluation("expected a string ComboBox model")),
+            })
+        };
+        Ok(model)
+    }
+
+    fn read_combo_state(&self, member: &Member, fallback: &Value) -> Result<Value> {
         let (owner, element) = self.element_owner(&member.owner)?;
         let property = member.name.as_str();
         if property == "edit-text"
@@ -2623,21 +2766,7 @@ impl Instance {
                 .control_value(element, stored)?
                 .unwrap_or_else(|| fallback.clone()));
         }
-        let model = if let Some(combo) = &element.record_combo {
-            let items = owner.combo_items(element, combo)?;
-            if matches!(element.visual, Visual::Builtin("Tumbler" | "PathView")) {
-                ComboStateModel::Tumbler(items)
-            } else {
-                ComboStateModel::Records(items)
-            }
-        } else {
-            ComboStateModel::Strings(match owner.binding_value(element, "model")? {
-                Some(Value::StringModel(model)) => model,
-                Some(Value::StringList(items)) => VecModel::from(items),
-                None => VecModel::default(),
-                _ => return Err(evaluation("expected a string ComboBox model")),
-            })
-        };
+        let model = owner.combo_state_model(element)?;
         if property == "count" {
             return Ok(Value::Int(model.count() as i64));
         }
@@ -3134,6 +3263,9 @@ impl Instance {
                 node.set_animation(name, animation);
             }
         }
+        if node.expander_collapsed() {
+            return Ok(node);
+        }
         for effect in &element.sound_effects {
             let source = match self.binding_value(effect, "source")? {
                 Some(Value::String(value)) => value,
@@ -3311,7 +3443,7 @@ impl Instance {
             && let Some(repeat) = &page.repeat
         {
             let state = self.repeat_state(page);
-            return node.try_append_navigation_pages(
+            return node.try_append_navigation_pages_with_preview(
                 || state.row_model(self, repeat),
                 |model, slot| self.describe_navigation_page(page, repeat, model, slot),
                 |model, active| {
@@ -3483,6 +3615,12 @@ impl Instance {
                     if active != Some(index) {
                         return Ok(false);
                     }
+                }
+                if scene.kind == "Expander"
+                    && !path.is_empty()
+                    && self.control_value(element, "expanded")? != Some(Value::Bool(true))
+                {
+                    return Ok(false);
                 }
                 scene.try_input_scope_available(
                     path.first().and_then(|&index| scene.child_at(index)),
@@ -3753,6 +3891,37 @@ impl Instance {
     }
 
     fn focus_input(&self, element: &Element, event: FocusEvent) -> Result<bool> {
+        if matches!(event, FocusEvent::Lost(_)) && element.handlers.contains_key("editing-finished")
+        {
+            let handle = self.focus_handle(&element.key)?;
+            if !handle.has_editor_changes() {
+                return Ok(false);
+            }
+            let value = if matches!(element.visual, Visual::Builtin("ComboBox")) {
+                if !self.visual_flag(element, "editable", false)? {
+                    handle.discard_editor_changes();
+                    return Ok(false);
+                }
+                Some(self.read_combo_state(
+                    &Member::new(&element.key, "edit-text"),
+                    &Value::String(String::new()),
+                )?)
+            } else {
+                self.control_value(element, "text")?
+            };
+            let Some(Value::String(text)) = value else {
+                return Ok(false);
+            };
+            if !handle.take_editor_changes(&text) {
+                return Ok(false);
+            }
+            let acceptable = self.check_text_submission(element, &text)?;
+            return self.handler(
+                element,
+                "editing-finished",
+                &[text.into(), acceptable.into()],
+            );
+        }
         event.try_deliver(|handler, focused, reason| {
             let reason = Value::FocusReason(reason);
             if matches!(handler, xrack_runtime::FocusHandler::Within) {
@@ -3887,6 +4056,7 @@ impl Instance {
             }
             match kind {
                 "GroupBox" => return self.toggle_group_box(element, input),
+                "Expander" => return self.change_expander(element, input, None),
                 _ if xrack_syntax::builtins::push_button(kind)
                     && element.control("checked").is_some() =>
                 {
@@ -3902,6 +4072,24 @@ impl Instance {
                 }
                 _ => {}
             }
+        }
+        if let Some(input) = input
+            && event == "accepted"
+            && matches!(kind, "TextInput" | "LineEdit")
+            && element.handlers.contains_key("editing-finished")
+        {
+            let Some(Value::String(text)) = self.control_value(element, "text")? else {
+                return Ok(false);
+            };
+            if !input.try_available(|| self.check_text_submission(element, &text))? {
+                return Ok(false);
+            }
+            let finished = self.focus_handle(&element.key)?.take_editor_changes(&text);
+            let handled = self.handler(element, event, &[])?;
+            if finished {
+                self.handler(element, "editing-finished", &[text.into(), true.into()])?;
+            }
+            return Ok(handled || finished);
         }
         if xrack_runtime::supports_untyped_dispatch(kind, event) {
             if let Some(input) = input
@@ -4445,51 +4633,129 @@ impl Instance {
         let Some(input) = input else {
             return Ok(false);
         };
+        let can_adopt = input.accepts_unmatched_text()
+            && element.handlers.contains_key("accepted")
+            && (property != "current-value" || element.record_combo.is_some());
         let by_value = property == "current-value";
         let editor = match element.control("edit-text") {
             None => ComboEditor::None,
             Some(control) if control.omit_default => ComboEditor::Default,
             Some(_) => ComboEditor::Explicit,
         };
-        input.try_apply(editor, by_value, element.record_combo.is_some(), |update| {
-            match update {
-                ComboUpdate::Select(selection) => {
-                    let value = if by_value {
-                        selection.value.clone()
-                    } else {
-                        Value::Int(selection.index as i64)
-                    };
-                    return self.update_control(element, node, property, value);
-                }
-                ComboUpdate::ClearIndex => {
-                    self.update_control(element, node, property, Value::Int(-1))?;
-                }
-                ComboUpdate::SetFreeText(text) => {
-                    self.update_control(element, node, property, Value::String(text.to_owned()))?;
-                }
-                ComboUpdate::SetEditText(text) => {
-                    self.update_control(
-                        element,
-                        node,
-                        "edit-text",
-                        Value::String(text.to_owned()),
-                    )?;
-                }
-                ComboUpdate::ResetEditText => {
-                    self.0.controls[&Member::new(&element.key, "edit-text")].reset();
-                }
-                ComboUpdate::Selected(label) => {
-                    self.handler(element, "selected", &[Value::String(label.to_owned())])?;
-                }
-                ComboUpdate::ValueSelected(value) => {
-                    self.handler(element, "value-selected", std::slice::from_ref(value))?;
-                }
-                ComboUpdate::Accepted(text) => {
-                    self.handler(element, "accepted", &[Value::String(text.to_owned())])?;
-                }
+        let finish_handle = element
+            .handlers
+            .contains_key("editing-finished")
+            .then(|| self.focus_handle(&element.key))
+            .transpose()?;
+        let before = if finish_handle
+            .as_ref()
+            .is_some_and(|handle| handle.has_editor_changes())
+        {
+            match self.read_combo_state(
+                &Member::new(&element.key, "edit-text"),
+                &Value::String(String::new()),
+            )? {
+                Value::String(text) => Some(text),
+                _ => None,
             }
-            Ok(true)
-        })
+        } else {
+            None
+        };
+        if !route.is_current() {
+            return Ok(false);
+        }
+        let mut finished = None;
+        let applied =
+            input.try_apply(editor, by_value, element.record_combo.is_some(), |update| {
+                match update {
+                    ComboUpdate::Select(selection) => {
+                        let value = if by_value {
+                            selection.value.clone()
+                        } else {
+                            Value::Int(selection.index as i64)
+                        };
+                        return self.update_control(element, node, property, value);
+                    }
+                    ComboUpdate::ClearIndex => {
+                        self.update_control(element, node, property, Value::Int(-1))?;
+                    }
+                    ComboUpdate::SetFreeText(text) => {
+                        self.update_control(
+                            element,
+                            node,
+                            property,
+                            Value::String(text.to_owned()),
+                        )?;
+                    }
+                    ComboUpdate::SetEditText(text) => {
+                        self.update_control(
+                            element,
+                            node,
+                            "edit-text",
+                            Value::String(text.to_owned()),
+                        )?;
+                    }
+                    ComboUpdate::ResetEditText => {
+                        self.0.controls[&Member::new(&element.key, "edit-text")].reset();
+                    }
+                    ComboUpdate::FinishEdit { text, accepted } => {
+                        if let Some((handle, before)) =
+                            finish_handle.as_ref().zip(before.as_deref())
+                            && handle.take_editor_changes(before)
+                        {
+                            finished = Some((
+                                text.to_owned(),
+                                accepted || self.check_text_submission(element, text)?,
+                            ));
+                        }
+                    }
+                    ComboUpdate::Selected(label) => {
+                        self.handler(element, "selected", &[Value::String(label.to_owned())])?;
+                    }
+                    ComboUpdate::ValueSelected(value) => {
+                        self.handler(element, "value-selected", std::slice::from_ref(value))?;
+                    }
+                    ComboUpdate::Accepted(text) => {
+                        if can_adopt {
+                            let selection = xrack_runtime::try_resolve_combo_after_accept(
+                                text,
+                                || {
+                                    if !matches!(self.control_value(element, "edit-text")?, Some(Value::String(draft)) if draft == text) {
+                                        return Ok(None);
+                                    }
+                                    self.control_value(element, property)
+                                },
+                                || {
+                                    self.handler(element, "accepted", &[Value::String(text.to_owned())])?;
+                                    Ok(())
+                                },
+                                || Ok(self.element_allows_routed_input(element, route)?
+                                    && self.table_flag(element, "editable", false)?),
+                                || self.combo_state_model(element),
+                            )?;
+                            if let Some(selection) = selection {
+                                let value = if by_value {
+                                    selection.value
+                                } else {
+                                    Value::Int(selection.index as i64)
+                                };
+                                self.update_control(element, node, property, value)?;
+                            }
+                        } else {
+                            self.handler(element, "accepted", &[Value::String(text.to_owned())])?;
+                        }
+                    }
+                }
+                Ok(true)
+            })?;
+        if applied && let Some((text, acceptable)) = finished {
+            self.handler(
+                element,
+                "editing-finished",
+                &[text.into(), acceptable.into()],
+            )?;
+        }
+        Ok(applied)
     }
 
     fn combo_model_current(&self, element: &Element, node: &Node) -> Result<bool> {
@@ -5367,6 +5633,9 @@ impl Instance {
             {
                 instance.combo_action(element, node, action, input)
             }
+            ControlAction::Expander(expanded) if node.kind == "Expander" => {
+                instance.change_expander(element, Some(input), Some(expanded))
+            }
             ControlAction::SetSwitch(_) if node.kind == "Switch" => {
                 instance.dispatch_element(element, "clicked", Some(node), Some(input))
             }
@@ -5461,9 +5730,16 @@ impl Instance {
     }
 
     fn text_acceptance(&self, element: &Element) -> Result<bool> {
+        let Some(text) = self.text_validation_draft(element)? else {
+            return Ok(false);
+        };
+        self.check_text_submission(element, &text)
+    }
+
+    fn text_validation_draft(&self, element: &Element) -> Result<Option<String>> {
         let value = if matches!(element.visual, Visual::Builtin("ComboBox")) {
             if !self.visual_flag(element, "editable", false)? {
-                return Ok(false);
+                return Ok(None);
             }
             Some(self.read_combo_state(
                 &Member::new(&element.key, "edit-text"),
@@ -5472,47 +5748,85 @@ impl Instance {
         } else {
             self.control_value(element, "text")?
         };
-        let text = match &value {
-            Some(Value::String(text)) => text.as_str(),
-            _ => "",
-        };
-        self.check_text_submission(element, text)
+        Ok(Some(match value {
+            Some(Value::String(text)) => text,
+            _ => String::new(),
+        }))
     }
 
-    fn check_text_submission(&self, element: &Element, text: &str) -> Result<bool> {
-        xrack_runtime::try_text_submission_with(
+    fn editor_minimum_length(&self, element: &Element) -> Result<i64> {
+        Ok(match self.binding_value(element, "minimum-length")? {
+            Some(Value::Int(limit)) => limit,
+            _ => 0,
+        })
+    }
+
+    fn editor_numeric_limits(
+        &self,
+        element: &Element,
+        mode: xrack_runtime::InputType,
+    ) -> Result<xrack_runtime::NumericTextLimits> {
+        let bound = |name| -> Result<Option<f64>> {
+            Ok(match self.binding_value(element, name)? {
+                Some(Value::Float(value)) => Some(value),
+                _ => None,
+            })
+        };
+        Ok(xrack_runtime::NumericTextLimits {
+            minimum: bound("minimum-value")?,
+            maximum: bound("maximum-value")?,
+            decimals: if mode == xrack_runtime::InputType::Decimal {
+                match self.binding_value(element, "decimals")? {
+                    Some(Value::Int(limit)) => Some(limit),
+                    _ => None,
+                }
+            } else {
+                None
+            },
+        })
+    }
+
+    fn check_text_validity(
+        &self,
+        element: &Element,
+        text: &str,
+    ) -> Result<xrack_runtime::InputValidity> {
+        xrack_runtime::try_text_input_validity(
             text,
             self.editor_input_type(element)?,
             || self.editor_decimal_separator(element),
             || self.editor_maximum_length(element),
-            || {
-                Ok(match self.binding_value(element, "minimum-length")? {
-                    Some(Value::Int(limit)) => limit,
-                    _ => 0,
-                })
-            },
-            |mode| {
-                let bound = |name| -> Result<Option<f64>> {
-                    Ok(match self.binding_value(element, name)? {
-                        Some(Value::Float(value)) => Some(value),
-                        _ => None,
-                    })
-                };
-                Ok(xrack_runtime::NumericTextLimits {
-                    minimum: bound("minimum-value")?,
-                    maximum: bound("maximum-value")?,
-                    decimals: if mode == xrack_runtime::InputType::Decimal {
-                        match self.binding_value(element, "decimals")? {
-                            Some(Value::Int(limit)) => Some(limit),
-                            _ => None,
-                        }
-                    } else {
-                        None
-                    },
-                })
-            },
+            || self.editor_minimum_length(element),
+            |mode| self.editor_numeric_limits(element, mode),
+            || self.editor_format(element, "input-mask"),
+            || self.editor_format(element, "input-pattern"),
             || self.visual_flag(element, "submit-when", true),
         )
+    }
+
+    fn check_text_submission(&self, element: &Element, text: &str) -> Result<bool> {
+        xrack_runtime::try_text_submission_with_mask(
+            text,
+            self.editor_input_type(element)?,
+            || self.editor_decimal_separator(element),
+            || self.editor_maximum_length(element),
+            || self.editor_minimum_length(element),
+            |mode| self.editor_numeric_limits(element, mode),
+            || self.editor_format(element, "input-mask"),
+            || {
+                Ok(xrack_runtime::input_pattern_accepts(
+                    &self.editor_format(element, "input-pattern")?,
+                    text,
+                ) && self.visual_flag(element, "submit-when", true)?)
+            },
+        )
+    }
+
+    fn editor_format(&self, element: &Element, name: &str) -> Result<String> {
+        Ok(match self.binding_value(element, name)? {
+            Some(Value::String(value)) => value,
+            _ => String::new(),
+        })
     }
 
     fn live_editor_allows(
@@ -5529,7 +5843,11 @@ impl Instance {
                 || {
                     if !self.combo_draft_current(element, node, || {
                         self.combo_model_current(element, node)
-                    })? {
+                    })? || self.editor_format(element, "input-mask")?
+                        != node.text("input-mask").unwrap_or_default()
+                        || self.editor_format(element, "input-pattern")?
+                            != node.text("input-pattern").unwrap_or_default()
+                    {
                         return Ok(false);
                     }
                     node.try_allows_text_edit_with(
@@ -5552,6 +5870,13 @@ impl Instance {
                 _ => Err(evaluation("expected text editor value")),
             },
             || {
+                if self.editor_format(element, "input-mask")?
+                    != node.text("input-mask").unwrap_or_default()
+                    || self.editor_format(element, "input-pattern")?
+                        != node.text("input-pattern").unwrap_or_default()
+                {
+                    return Ok(false);
+                }
                 let mode = if matches!(node.kind, "TextInput" | "LineEdit") {
                     self.editor_input_type(element)?
                 } else {
@@ -5646,6 +5971,12 @@ impl Instance {
         if !self.update_control(element, node, name, value.clone())? {
             return Ok(false);
         }
+        if element.handlers.contains_key("editing-finished")
+            && let Value::String(text) = &value
+        {
+            self.focus_handle(&element.key)?
+                .record_editor_edit(xrack_runtime::text_input_value(node), text);
+        }
         let typed = combo || xrack_runtime::is_multiline_text_input(node.kind);
         let args = std::slice::from_ref(&value);
         self.handler(element, "edited", if typed { args } else { &[] })?;
@@ -5694,6 +6025,7 @@ impl ValueType {
                 | (Self::Brush, Value::Brush(_))
                 | (Self::String, Value::String(_))
                 | (Self::IntList, Value::IntList(_) | Value::IntModel(_))
+                | (Self::DateList, Value::DateList(_) | Value::DateModel(_))
                 | (
                     Self::StringList,
                     Value::StringList(_) | Value::StringModel(_)
@@ -5722,6 +6054,8 @@ impl ValueType {
                 | (Self::FlexboxLayoutWrap, Value::FlexboxLayoutWrap(_))
                 | (Self::CrossAxisAlignment, Value::CrossAxisAlignment(_))
                 | (Self::TextWrap, Value::TextWrap(_))
+                | (Self::MouseSelectionMode, Value::MouseSelectionMode(_))
+                | (Self::InputValidity, Value::InputValidity(_))
                 | (
                     Self::TextHorizontalAlignment,
                     Value::TextHorizontalAlignment(_)
@@ -5761,6 +6095,7 @@ pub(crate) fn model_value(value: Value) -> Value {
     match value {
         Value::StringList(items) => Value::StringModel(xrack_runtime::VecModel::from(items)),
         Value::IntList(items) => Value::IntModel(items.into()),
+        Value::DateList(items) => Value::DateModel(items.into()),
         value => value,
     }
 }
@@ -5770,6 +6105,7 @@ pub(super) fn callback_value(value: Value) -> Value {
     match value {
         Value::StringModel(model) => Value::StringModel(model.into_snapshot().into()),
         Value::IntModel(model) => Value::IntModel(model.into_snapshot().into()),
+        Value::DateModel(model) => Value::DateModel(model.into_snapshot().into()),
         Value::RecordList(list) => {
             let (name, rows) = list.into_snapshot();
             Value::RecordList(RecordList::new(name, rows))
@@ -5785,6 +6121,7 @@ fn callback_parameter(value: &Value) -> Value {
     match value {
         Value::StringModel(model) => Value::StringModel(model.snapshot_untracked().into()),
         Value::IntModel(model) => Value::IntModel(model.snapshot_untracked().into()),
+        Value::DateModel(model) => Value::DateModel(model.snapshot_untracked().into()),
         Value::RecordList(list) => Value::RecordList(RecordList::new(
             list.name(),
             list.model().snapshot_untracked(),
@@ -5798,6 +6135,7 @@ pub(crate) fn host_value(value: Value) -> Value {
     match value {
         Value::StringModel(model) => Value::StringList(model.into_snapshot()),
         Value::IntModel(model) => Value::IntList(model.into_snapshot()),
+        Value::DateModel(model) => Value::DateList(model.into_snapshot()),
         value => value,
     }
 }
@@ -5816,6 +6154,10 @@ fn binary(program: &Program, operator: BinaryOperator, lhs: Value, rhs: Value) -
         let equal = match (lhs, rhs) {
             (StringModel(a), StringModel(b)) => a.values_eq_owned(b),
             (IntModel(a), IntModel(b)) => a.values_eq_owned(b),
+            (DateModel(a), DateModel(b)) => a.values_eq_owned(b),
+            (DateModel(model), DateList(items)) | (DateList(items), DateModel(model)) => {
+                model.into_snapshot() == items
+            }
             (IntModel(model), IntList(items)) | (IntList(items), IntModel(model)) => {
                 model.into_snapshot() == items
             }

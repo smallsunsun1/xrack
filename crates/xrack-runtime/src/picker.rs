@@ -145,7 +145,7 @@ impl<T: Clone> PickerSession<T> {
     }
 }
 
-pub(crate) fn append_picker_dialog(dialog: &mut Node, picker: Node) {
+pub(crate) fn append_picker_dialog(dialog: &mut Node, picker: Node, can_accept: bool) {
     let mut footer = Node::new("DialogButtonBox", None);
     for (role, property) in [
         (DialogRole::Reject, "cancel-text"),
@@ -153,6 +153,9 @@ pub(crate) fn append_picker_dialog(dialog: &mut Node, picker: Node) {
     ] {
         let mut button = Node::new("DialogButton", None);
         button.properties.insert("role", role.into());
+        if role == DialogRole::Accept && !can_accept {
+            button.properties.insert("enabled", false.into());
+        }
         if let Some(text) = dialog.text(property) {
             button.properties.insert("text", text.to_owned().into());
         }

@@ -52,6 +52,7 @@ pub fn builtin_element(name: &str) -> Option<&'static str> {
         "FileDialog",
         "FlexboxLayout",
         "EmptyState",
+        "Expander",
         "Flickable",
         "FlowLayout",
         "FocusScope",
@@ -397,12 +398,118 @@ pub const VIEW_COUNT_PROPERTIES: &[&str] = &["row-count", "source-row-count"];
 
 pub const TEXT_COMMAND_PROPERTIES: &[&str] = &["can-undo", "can-redo", "can-cut", "can-copy"];
 
+pub fn text_editor(kind: &str) -> bool {
+    text_submission_editor(kind) || kind == "SearchField"
+}
+
+pub fn text_selection_kind(kind: &str) -> bool {
+    text_editor(kind) || kind == "StyledText"
+}
+
+pub fn text_editor_methods(kind: &str) -> &'static [BuiltinSignature] {
+    const METHODS: &[BuiltinSignature] = &[
+        BuiltinSignature {
+            name: "select-all",
+            parameters: &[],
+            result: None,
+            documentation: "Selects all text in the focused editor.",
+        },
+        BuiltinSignature {
+            name: "select-word",
+            parameters: &[],
+            result: None,
+            documentation: "Selects the Unicode word segment at the caret. Password fields select the entire value.",
+        },
+        BuiltinSignature {
+            name: "clear-selection",
+            parameters: &[],
+            result: None,
+            documentation: "Collapses the selection at the caret.",
+        },
+        BuiltinSignature {
+            name: "set-selection-offsets",
+            parameters: &["anchor: int", "focus: int"],
+            result: None,
+            documentation: "Sets the anchor and caret in UTF-8 bytes, clamped to grapheme boundaries.",
+        },
+        BuiltinSignature {
+            name: "copy",
+            parameters: &[],
+            result: None,
+            documentation: "Copies selected text to the clipboard. Password fields do not copy text.",
+        },
+        BuiltinSignature {
+            name: "undo",
+            parameters: &[],
+            result: None,
+            documentation: "Undoes the last committed text edit.",
+        },
+        BuiltinSignature {
+            name: "redo",
+            parameters: &[],
+            result: None,
+            documentation: "Restores the last undone text edit.",
+        },
+        BuiltinSignature {
+            name: "cut",
+            parameters: &[],
+            result: None,
+            documentation: "Copies the selection to the clipboard and removes it from a writable field.",
+        },
+        BuiltinSignature {
+            name: "paste",
+            parameters: &[],
+            result: None,
+            documentation: "Inserts clipboard text, replacing any selection.",
+        },
+        BuiltinSignature {
+            name: "insert-text",
+            parameters: &["offset: int", "text: string"],
+            result: None,
+            documentation: "Queues an undoable insertion at a UTF-8 byte offset.",
+        },
+        BuiltinSignature {
+            name: "replace-text",
+            parameters: &["start: int", "end: int", "text: string"],
+            result: None,
+            documentation: "Queues an undoable replacement between two UTF-8 byte offsets.",
+        },
+        BuiltinSignature {
+            name: "remove-text",
+            parameters: &["start: int", "end: int"],
+            result: None,
+            documentation: "Queues an undoable removal between two UTF-8 byte offsets.",
+        },
+        BuiltinSignature {
+            name: "append-text",
+            parameters: &["text: string"],
+            result: None,
+            documentation: "Queues an undoable insertion at the end of the editor's current text.",
+        },
+        BuiltinSignature {
+            name: "clear-text",
+            parameters: &[],
+            result: None,
+            documentation: "Queues an undoable removal of all text.",
+        },
+    ];
+    if kind == "StyledText" {
+        &METHODS[..5]
+    } else if text_editor(kind) {
+        METHODS
+    } else {
+        &[]
+    }
+}
+
 /// Bindings used by a text editor's final submission status.
 pub const TEXT_SUBMISSION_INPUTS: &[&str] = &[
     "text",
     "input-type",
     "decimal-separator",
     "maximum-length",
+    "input-mask",
+    "input-pattern",
     "minimum-length",
     "minimum-value",
     "maximum-value",
@@ -418,6 +525,14 @@ pub fn text_submission_single_line(kind: &str) -> bool {
     matches!(kind, "TextInput" | "LineEdit" | "ComboBox")
 }
 
+pub fn editing_finished_editor(kind: &str) -> bool {
+    text_submission_editor(kind)
+}
+
+pub fn text_mask_editor(kind: &str) -> bool {
+    text_submission_single_line(kind)
+}
+
 /// Rules that are evaluated when checking the final value rather than rendering an editor.
 pub fn text_submission_rule(kind: &str, name: &str) -> bool {
     text_submission_editor(kind) && matches!(name, "minimum-length" | "submit-when")
@@ -425,7 +540,9 @@ pub fn text_submission_rule(kind: &str, name: &str) -> bool {
             && matches!(name, "minimum-value" | "maximum-value" | "decimals")
 }
 
-pub const NAMESPACES: &[&str] = &["Math", "Strings", "Model", "Colors", "Dates", "I18n", "Log"];
+pub const NAMESPACES: &[&str] = &[
+    "Math", "Strings", "Model", "Colors", "Dates", "Times", "I18n", "Log",
+];
 pub const LOG_LEVELS: &[&str] = &["trace", "debug", "info", "warn", "error"];
 
 #[derive(Clone, Copy)]
@@ -442,6 +559,14 @@ pub enum FunctionKind {
     DateAddDays,
     DateAddMonths,
     DateWeekday,
+    DateMonths,
+    DateMonthIndex,
+    DateParseIso,
+    DateIsSelectable,
+    TimeParseIso,
+    TimeIsValidIso,
+    TimeFormatIso,
+    TimeInRange,
     Locale,
     FormatNumber,
     ParseNumber,
@@ -1028,6 +1153,96 @@ pub const FUNCTIONS: &[Function] = &[
         parameters: &[DATE],
         result: Some("int"),
         documentation: "Returns the ISO weekday, Monday (1) through Sunday (7), or 0 for an invalid date.",
+    },
+    Function {
+        namespace: "Dates",
+        member: "parse-iso",
+        kind: FunctionKind::DateParseIso,
+        parameters: &[
+            Parameter::with_type("text: string", &Type::String),
+            DATE_FALLBACK,
+        ],
+        result: Some("Date"),
+        documentation: "Parses an ASCII YYYY-MM-DD Gregorian date. Evaluates the fallback only for invalid or incomplete input.",
+    },
+    Function {
+        namespace: "Dates",
+        member: "is-selectable",
+        kind: FunctionKind::DateIsSelectable,
+        parameters: &[
+            DATE,
+            Parameter::with_type("minimum: Date", &Type::Date),
+            Parameter::with_type("maximum: Date", &Type::Date),
+            Parameter::with_type("disabled-weekdays: [int]", &Type::IntList),
+            Parameter::with_type("disabled-dates: [Date]", &Type::DateList),
+        ],
+        result: Some("bool"),
+        documentation: "Tests the date against the same bounds, disabled weekdays, and disabled dates used by Calendar and DatePickerPopup.",
+    },
+    Function {
+        namespace: "Dates",
+        member: "months",
+        kind: FunctionKind::DateMonths,
+        parameters: &[
+            Parameter::with_type("from: Date", &Type::Date),
+            Parameter::with_type("to: Date", &Type::Date),
+        ],
+        result: Some("[Date]"),
+        documentation: "Returns the first day of each month intersecting the inclusive date range. Invalid or reversed ranges return an empty model.",
+    },
+    Function {
+        namespace: "Dates",
+        member: "month-index",
+        kind: FunctionKind::DateMonthIndex,
+        parameters: &[
+            Parameter::with_type("from: Date", &Type::Date),
+            Parameter::with_type("to: Date", &Type::Date),
+            DATE,
+        ],
+        result: Some("int"),
+        documentation: "Returns the zero-based index of the date's month in Dates.months(from, to), or -1 when the month or date is invalid.",
+    },
+    Function {
+        namespace: "Times",
+        member: "parse-iso",
+        kind: FunctionKind::TimeParseIso,
+        parameters: &[
+            Parameter::with_type("text: string", &Type::String),
+            Parameter::with_type("fallback: Time", &Type::Time),
+        ],
+        result: Some("Time"),
+        documentation: "Parses ASCII HH:mm or HH:mm:ss. Omitted seconds are zero. Invalid input evaluates the fallback.",
+    },
+    Function {
+        namespace: "Times",
+        member: "is-valid-iso",
+        kind: FunctionKind::TimeIsValidIso,
+        parameters: &[Parameter::with_type("text: string", &Type::String)],
+        result: Some("bool"),
+        documentation: "Checks that an ASCII HH:mm or HH:mm:ss string represents a time of day.",
+    },
+    Function {
+        namespace: "Times",
+        member: "format-iso",
+        kind: FunctionKind::TimeFormatIso,
+        parameters: &[
+            Parameter::with_type("time: Time", &Type::Time),
+            Parameter::with_type("show-seconds: bool", &Type::Bool),
+        ],
+        result: Some("string"),
+        documentation: "Formats a time as zero-padded HH:mm or HH:mm:ss in 24-hour notation.",
+    },
+    Function {
+        namespace: "Times",
+        member: "in-range",
+        kind: FunctionKind::TimeInRange,
+        parameters: &[
+            Parameter::with_type("time: Time", &Type::Time),
+            Parameter::with_type("minimum: Time", &Type::Time),
+            Parameter::with_type("maximum: Time", &Type::Time),
+        ],
+        result: Some("bool"),
+        documentation: "Checks the inclusive time range used by TimePickerPopup. Reversed ranges contain no times.",
     },
     Function {
         namespace: "I18n",

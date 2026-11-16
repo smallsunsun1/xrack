@@ -163,7 +163,21 @@ impl PreviewScene {
     }
 
     pub fn keyboard(&mut self, renderer: &mut Renderer, event: &KeyEvent, pressed: bool) -> bool {
-        self.flush_pointer_carets(renderer);
+        self.keyboard_for_platform(renderer, event, pressed, cfg!(target_os = "macos"))
+    }
+
+    #[doc(hidden)]
+    pub fn keyboard_for_platform(
+        &mut self,
+        renderer: &mut Renderer,
+        event: &KeyEvent,
+        pressed: bool,
+        macos: bool,
+    ) -> bool {
+        self.flush_pointer_carets(renderer, Instant::now());
+        if pressed {
+            self.input.clear_editor_click();
+        }
         let cancelled = pressed && self.input.cancel_text_composition(None);
         let _scroll = self.scroll.enter();
         let _focus = self.focus.enter();
@@ -204,7 +218,7 @@ impl PreviewScene {
         if route
             .as_ref()
             .is_some_and(|route| self.input.focused.as_ref() != Some(route.focused()))
-            || self.default_key(event, pressed, Some(&renderer.text))
+            || self.default_key(event, pressed, Some(&renderer.text), macos)
         {
             return true;
         }
@@ -215,7 +229,13 @@ impl PreviewScene {
         cancelled || tooltip || captured.is_some() || bubbled.is_some()
     }
 
-    fn default_key(&mut self, event: &KeyEvent, pressed: bool, text: Option<&TextSystem>) -> bool {
+    fn default_key(
+        &mut self,
+        event: &KeyEvent,
+        pressed: bool,
+        text: Option<&TextSystem>,
+        macos: bool,
+    ) -> bool {
         let activation = activation_key(&event.key);
         if !pressed {
             return self.selection_key(event, false)
@@ -358,6 +378,23 @@ impl PreviewScene {
             self.clipboard_edit = None;
             return true;
         }
+        if let Some(action) = EditAction::word_shortcut(&event.key, modifiers, macos)
+            && let Some((scene, layout)) = &self.frame
+            && let Some(target) = &self.input.focused
+            && scene.interactive_at_path(&target.path).is_some_and(|node| {
+                self.input.is_text_editor(node, target) || xrack_runtime::spin_editable(node)
+            })
+        {
+            if let Some(text) = text
+                && let Some((motion, selecting)) = TextAreaMotion::from_word_action(action)
+                && text.move_editor_caret(&mut self.input, scene, layout, motion, selecting)
+            {
+                self.clipboard_edit = None;
+            } else {
+                self.edit(action);
+            }
+            return true;
+        }
         let shortcut = (modifiers.control || modifiers.meta) && !modifiers.alt;
         if let Some(text) = text
             && let Some(key) = navigation_key(&event.key)
@@ -479,7 +516,7 @@ impl PreviewScene {
             "End" if !xrack_runtime::spin_editable(node) => SpinAction::Maximum,
             _ => return false,
         };
-        if !node.boolean("read-only", false) {
+        if !node.text_read_only() {
             let scene = scene.clone();
             let path = target.path.clone();
             self.apply_control(
@@ -520,6 +557,9 @@ impl PreviewScene {
             apply_scroll_bar_update(&mut self.component, scene, update);
             return true;
         }
+        if self.input.calendar_page_key(scene, layout, key) {
+            return true;
+        }
         let action = self
             .input
             .group_key(scene, layout, key)
@@ -553,12 +593,21 @@ impl PreviewScene {
             .focused
             .as_ref()
             .and_then(|target| scene.interactive_at_path(&target.path));
-        if !focused.is_some_and(|node| {
-            xrack_runtime::is_calendar_control(node.kind)
-                || xrack_runtime::is_button(node.kind)
-                || xrack_runtime::is_toggle(node.kind)
-                || matches!(node.kind, "RadioButton" | "Tab" | "TabButton")
-        }) {
+        let link = matches!(key, ActivationKey::Enter)
+            && self.input.focused.as_ref().is_some_and(|target| {
+                self.input
+                    .text_link_activation(scene, layout, target)
+                    .is_some()
+            });
+        if !link
+            && !focused.is_some_and(|node| {
+                xrack_runtime::is_calendar_control(node.kind)
+                    || xrack_runtime::is_button(node.kind)
+                    || node.kind == "Expander"
+                    || xrack_runtime::is_toggle(node.kind)
+                    || matches!(node.kind, "RadioButton" | "Tab" | "TabButton")
+            })
+        {
             return false;
         }
         if pressed {
@@ -578,7 +627,8 @@ impl PreviewScene {
                 .input
                 .dialog_button(scene, layout, &target)
                 .or_else(|| self.input.calendar_activate(scene, layout, &target))
-                .or_else(|| self.input.select_group_option(scene, layout, &target));
+                .or_else(|| self.input.select_group_option(scene, layout, &target))
+                .or_else(|| self.input.text_link_activation(scene, layout, &target));
             if let Some(ControlInput { path, action }) = input {
                 self.component.control_at(scene, &path, action);
             } else if lifecycle {
@@ -912,7 +962,7 @@ impl PreviewScene {
     }
 
     pub fn begin_text_composition(&mut self, renderer: &mut Renderer, id: u64) -> bool {
-        self.flush_pointer_carets(renderer);
+        self.flush_pointer_carets(renderer, Instant::now());
         let Some((scene, _)) = &self.frame else {
             return false;
         };
@@ -938,7 +988,7 @@ impl PreviewScene {
         };
         let (ended, commit) = self.input.finish_text_composition(scene, id);
         if commit && !text.is_empty() && !self.list_typeahead_text(text) {
-            self.edit_from(EditAction::Insert(text), EditSource::Atomic);
+            self.edit_from(EditAction::Insert(text), EditSource::Ime);
         }
         ended
     }
@@ -1294,6 +1344,7 @@ impl PreviewScene {
                 {
                     self.input.pointer_press_in_scene(scene, layout);
                     self.input.spin_press(scene, layout);
+                    let caret = caret.mouse_press(&mut self.input, Instant::now());
                     self.pointer_carets.clear();
                     self.pointer_carets.push(caret);
                     self.clipboard_edit = None;
@@ -1821,7 +1872,7 @@ impl PreviewScene {
                 if self.pointer_carets.len() == 2 {
                     self.pointer_carets.pop();
                 }
-                self.pointer_carets.push(caret);
+                self.pointer_carets.push(caret.during_drag());
                 true
             }
             Some(PointerCapture::TableReorder) => {
@@ -2242,6 +2293,7 @@ impl PreviewScene {
             },
             true,
             None,
+            cfg!(target_os = "macos"),
         );
     }
 
@@ -2352,6 +2404,11 @@ impl PreviewScene {
             if let Some(caret) =
                 PointerCaret::from_pressed(&self.input, scene, layout, point, modifiers.shift)
             {
+                let caret = if touch || replay {
+                    caret
+                } else {
+                    caret.mouse_press(&mut self.input, Instant::now())
+                };
                 self.pointer_carets.clear();
                 self.pointer_carets.push(caret);
                 self.clipboard_edit = None;
@@ -2488,8 +2545,13 @@ impl PreviewScene {
 
     #[doc(hidden)]
     pub fn advance(&mut self, renderer: &mut Renderer) {
-        let now = Instant::now();
+        self.advance_at(renderer, Instant::now());
+    }
+
+    #[doc(hidden)]
+    pub fn advance_at(&mut self, renderer: &mut Renderer, now: Instant) {
         self.sampled_at = now.duration_since(self.clock);
+        self.input.expire_password_echo(now);
         self.image_playback.advance(now);
         self.media.advance(now);
         {
@@ -2604,6 +2666,8 @@ impl PreviewScene {
             .chain(self.input.button_hold_deadline())
             .chain(self.direct_pointers.deadline())
             .chain(self.input.scroll_motion_deadline())
+            .chain(self.input.text_selection_scroll_deadline())
+            .chain(self.input.password_echo_deadline())
             .chain(self.observers.scroll_activity_deadline())
             .chain(self.input.table_touch_hold_deadline())
             .chain(self.frame.as_ref().and_then(|(scene, layout)| {
@@ -2920,7 +2984,26 @@ impl PreviewScene {
         self.renderer_needs_redraw = false;
         self.dimensions = (width, height);
         self.frame = Some((scene, layout));
-        if self.flush_pointer_carets(renderer)
+        let now = if animated {
+            self.clock + self.sampled_at
+        } else {
+            Instant::now()
+        };
+        let placed = self.flush_pointer_carets(renderer, now);
+        let scrolled = animated
+            && self.frame.as_ref().is_some_and(|(scene, layout)| {
+                PointerCaret::advance_drag_scroll(
+                    &renderer.text,
+                    &mut self.input,
+                    scene,
+                    layout,
+                    now,
+                )
+            });
+        if scrolled {
+            self.clipboard_edit = None;
+        }
+        if (placed || scrolled)
             && let Some((scene, _)) = &self.frame
         {
             self.focus_observers.sync_text_editor(&self.input, scene);
@@ -2942,14 +3025,14 @@ impl PreviewScene {
             .or_else(|| self.input.list_typeahead_ime_area(scene, layout));
     }
 
-    fn flush_pointer_carets(&mut self, renderer: &Renderer) -> bool {
+    fn flush_pointer_carets(&mut self, renderer: &Renderer, now: Instant) -> bool {
         let Some((scene, layout)) = &self.frame else {
             self.pointer_carets.clear();
             return false;
         };
         let mut placed = false;
         for caret in self.pointer_carets.drain(..) {
-            if caret.place(&renderer.text, &mut self.input, scene, layout) {
+            if caret.place_at(&renderer.text, &mut self.input, scene, layout, now) {
                 self.clipboard_edit = None;
                 placed = true;
             }
@@ -2992,7 +3075,30 @@ impl PreviewScene {
         mut frame: (Rc<Node>, LayoutNode, u32, u32),
     ) -> (Rc<Node>, LayoutNode, u32, u32) {
         for _ in 0..8 {
-            for request in self.focus.drain() {
+            for request in self.focus.drain_commands() {
+                let request = match request {
+                    xrack_runtime::QueuedFocusRequest::Focus(request) => request,
+                    xrack_runtime::QueuedFocusRequest::ReplaceText {
+                        target,
+                        replacement,
+                    } => {
+                        if let Some(target) = self.input.apply_text_replacement(
+                            &mut self.component,
+                            &frame.0,
+                            &frame.1,
+                            &target,
+                            &replacement,
+                            Instant::now(),
+                        ) {
+                            self.reveal_editor_caret |=
+                                self.input.focused.as_ref() == Some(&target);
+                            if self.component.scene_dirty() || !self.scroll.is_empty() {
+                                frame = self.settle_frame(renderer, animated);
+                            }
+                        }
+                        continue;
+                    }
+                };
                 let (command, scrolled) = self
                     .input
                     .apply_focus_request_with_scroll(&frame.0, &frame.1, request);
@@ -3007,6 +3113,7 @@ impl PreviewScene {
                     }
                 }
             }
+            self.input.sync_editor(&frame.0);
             for event in self.focus_observers.sync(
                 &self.input,
                 &frame.0,
@@ -3026,9 +3133,11 @@ impl PreviewScene {
     fn text_command(&mut self, scene: &Node, command: TextCommand) {
         match command {
             TextCommand::SelectAll
+            | TextCommand::SelectWord
             | TextCommand::ClearSelection
             | TextCommand::SetSelection { .. } => {
                 self.input.apply_text_selection(scene, command);
+                self.reveal_editor_caret = true;
             }
             TextCommand::Undo | TextCommand::Redo => {
                 self.input.replay_text_edit(
@@ -3119,6 +3228,7 @@ impl PreviewScene {
             self.input.dismiss_tooltip();
         }
         self.window_status = status;
+        self.input.set_editor_window_active(status.active);
         self.component.publish_window_status(status);
     }
 

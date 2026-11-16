@@ -3483,6 +3483,390 @@ fn combo_box_completes_effective_selection_and_editor_state() {
 }
 
 #[test]
+fn editing_finished_completion_offers_the_typed_handler() {
+    for kind in ["TextInput", "LineEdit", "TextEdit", "TextArea", "ComboBox"] {
+        let items = complete_at(&format!(
+            "component App inherits Window {{ {kind} {{ editing-f| }} }}"
+        ));
+        let handler = items
+            .iter()
+            .find(|item| item["label"] == "editing-finished")
+            .unwrap();
+        assert_eq!(handler["detail"], "event handler (string, bool)");
+    }
+    let items = complete_at("component App inherits Window { Rectangle { editing-f| } }");
+    assert!(!items.iter().any(|item| item["label"] == "editing-finished"));
+}
+
+#[test]
+fn expander_offers_the_boolean_property_and_expansion_handler() {
+    let items = complete_at("component App inherits Window { detail := Expander { expanded| } }");
+    assert!(
+        items
+            .iter()
+            .any(|item| item["label"] == "expanded" && item["detail"] == "bool")
+    );
+    assert!(items.iter().any(|item| item["label"] == "expanded-changed"));
+}
+
+#[test]
+fn time_field_helpers_and_popup_bounds_are_available_in_lsp() {
+    for (prefix, name) in [
+        ("par", "parse-iso"),
+        ("is-", "is-valid-iso"),
+        ("for", "format-iso"),
+        ("in-", "in-range"),
+    ] {
+        let items = complete_at(&format!(
+            "component App inherits Window {{ out property <bool> allowed: Times.{prefix}| }}"
+        ));
+        assert!(items.iter().any(|item| item["label"] == name), "{items:?}");
+    }
+    let items = complete_at("component App inherits Window { TimePickerPopup { maximum-t| } }");
+    assert!(
+        items
+            .iter()
+            .any(|item| item["label"] == "maximum-time" && item["detail"] == "time")
+    );
+}
+
+#[test]
+fn date_field_builtins_complete_under_dates() {
+    for (prefix, name) in [("par", "parse-iso"), ("is-s", "is-selectable")] {
+        let items = complete_at(&format!(
+            "component App inherits Window {{ out property <bool> allowed: Dates.{prefix}| }}"
+        ));
+        assert!(items.iter().any(|item| item["label"] == name), "{items:?}");
+    }
+}
+
+#[test]
+fn date_range_properties_and_day_cell_inputs_complete_with_types() {
+    let items = complete_at("component App inherits Window { MonthGrid { highlight-| } }");
+    for name in ["highlight-start", "highlight-end"] {
+        assert!(
+            items
+                .iter()
+                .any(|item| item["label"] == name && item["detail"] == "date"),
+            "{items:?}"
+        );
+    }
+    let items =
+        complete_at("component App inherits Window { MonthGrid { DayCell { visible: cell-| } } }");
+    for name in ["cell-in-range", "cell-range-start", "cell-range-end"] {
+        assert!(items.iter().any(|item| item["label"] == name), "{items:?}");
+    }
+}
+
+#[test]
+fn calendar_browsing_offers_typed_month_functions_and_grid_mode() {
+    let items =
+        complete_at("component App inherits Window { out property <[Date]> months: Dates.mon| }");
+    for name in ["months", "month-index"] {
+        assert!(items.iter().any(|item| item["label"] == name), "{items:?}");
+    }
+    let items = complete_at("component App inherits Window { MonthGrid { fixed-| } }");
+    assert!(
+        items
+            .iter()
+            .any(|item| item["label"] == "fixed-month" && item["detail"] == "bool")
+    );
+}
+
+#[test]
+fn only_date_selection_controls_offer_disabled_dates_and_weekdays() {
+    for (kind, expected) in [
+        ("Calendar", true),
+        ("MonthGrid", true),
+        ("DatePickerPopup", true),
+        ("DayOfWeekRow", false),
+        ("WeekNumberColumn", false),
+    ] {
+        let items = complete_at(&format!(
+            "component App inherits Window {{ {kind} {{ disabled-| }} }}"
+        ));
+        for (name, detail) in [
+            ("disabled-weekdays", "intlist"),
+            ("disabled-dates", "datelist"),
+        ] {
+            let item = items.iter().find(|item| item["label"] == name);
+            assert_eq!(item.is_some(), expected, "{kind}: {items:?}");
+            if let Some(item) = item {
+                assert_eq!(item["detail"], detail);
+            }
+        }
+    }
+}
+
+#[test]
+fn editor_insets_and_placeholder_colors_complete_with_correct_types() {
+    for kind in [
+        "TextInput",
+        "LineEdit",
+        "TextArea",
+        "SearchField",
+        "ComboBox",
+    ] {
+        let padded = complete_at(&format!(
+            "component App inherits Window {{ {kind} {{ padding-| }} }}"
+        ));
+        for side in ["left", "right", "top", "bottom"] {
+            let property = format!("padding-{side}");
+            assert!(
+                padded
+                    .iter()
+                    .any(|item| item["label"] == property && item["detail"] == "length"),
+                "{kind}: {padded:?}"
+            );
+        }
+        let ink = complete_at(&format!(
+            "component App inherits Window {{ {kind} {{ placeholder-text-c| }} }}"
+        ));
+        assert!(
+            ink.iter()
+                .any(|item| item["label"] == "placeholder-text-color" && item["detail"] == "color"),
+            "{kind}: {ink:?}"
+        );
+    }
+    let invalid =
+        complete_at("component App inherits Window { Rectangle { placeholder-text-c| } }");
+    assert!(
+        !invalid
+            .iter()
+            .any(|item| item["label"] == "placeholder-text-color")
+    );
+}
+
+#[test]
+fn password_presentation_is_typed_and_limited_to_single_line_editors() {
+    for (kind, available) in [
+        ("TextInput", true),
+        ("LineEdit", true),
+        ("ComboBox", true),
+        ("TextArea", false),
+        ("SearchField", false),
+        ("Rectangle", false),
+    ] {
+        let items = complete_at(&format!(
+            "component App inherits Window {{ {kind} {{ password-| }} }}"
+        ));
+        for (property, ty) in [
+            ("password-character", "string"),
+            ("password-mask-delay", "int"),
+        ] {
+            assert_eq!(
+                items
+                    .iter()
+                    .any(|item| item["label"] == property && item["detail"] == ty),
+                available,
+                "{kind} {property}: {items:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn single_line_text_editors_complete_the_string_input_mask() {
+    for (kind, available) in [
+        ("TextInput", true),
+        ("LineEdit", true),
+        ("TextArea", false),
+        ("ComboBox", true),
+    ] {
+        let items = complete_at(&format!(
+            "component App inherits Window {{ {kind} {{ input-m| }} }}"
+        ));
+        assert_eq!(
+            items
+                .iter()
+                .any(|item| item["label"] == "input-mask" && item["detail"] == "string"),
+            available,
+            "{items:?}",
+        );
+    }
+}
+
+#[test]
+fn input_validity_is_completed_as_a_read_only_enum() {
+    let property = complete_at(
+        "component App inherits Window { editor := LineEdit {} out property <InputValidity> status: editor.input-v| }",
+    );
+    assert!(property.iter().any(
+        |item| item["label"] == "input-validity" && item["detail"] == "read-only InputValidity"
+    ));
+    let values = complete_at(
+        "component App inherits Window { in property <InputValidity> status: InputValidity.| }",
+    );
+    for expected in ["invalid", "intermediate", "acceptable"] {
+        assert!(
+            values.iter().any(|item| item["label"] == expected),
+            "{values:?}"
+        );
+    }
+    let binding = complete_at("component App inherits Window { TextArea { input-v| } }");
+    assert!(!binding.iter().any(|item| item["label"] == "input-validity"));
+}
+
+#[test]
+fn pattern_validation_completes_the_binding_and_reports_bad_patterns() {
+    for kind in ["TextInput", "LineEdit", "TextArea", "TextEdit", "ComboBox"] {
+        let items = complete_at(&format!(
+            "component App inherits Window {{ {kind} {{ input-pa| }} }}"
+        ));
+        assert!(
+            items
+                .iter()
+                .any(|item| item["label"] == "input-pattern" && item["detail"] == "string"),
+            "{kind}: {items:?}"
+        );
+    }
+    let source = r#"component App inherits Window { LineEdit { input-pattern: "["; } }"#;
+    let report = analysis::analyze(URI, source, None).diagnostics;
+    assert!(report[URI].iter().any(|diagnostic| {
+        diagnostic["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("invalid input-pattern"))
+    }));
+}
+
+#[test]
+fn text_editing_commands_complete_with_typed_arguments() {
+    let prefix = "component App inherits Window { editor := LineEdit {} button := Button { clicked => { editor.";
+    let items = complete_at(&format!("{prefix}replace-t|"));
+    assert!(items.iter().any(|item| item["label"] == "replace-text"));
+    let line = format!("{prefix}replace-text(0, 3, ");
+    let signature = completion::signature_help(&line, (0, line.len()), None);
+    assert_eq!(
+        signature["signatures"][0]["label"],
+        "replace-text(start: int, end: int, text: string)"
+    );
+    let rich = complete_at(&format!("{prefix}replace-t|").replace("LineEdit", "StyledText"));
+    assert!(!rich.iter().any(|item| item["label"] == "replace-text"));
+}
+
+#[test]
+fn selection_colors_complete_as_colors_on_text_selection_controls() {
+    for (kind, supported) in [
+        ("LineEdit", true),
+        ("TextArea", true),
+        ("SearchField", true),
+        ("ComboBox", true),
+        ("StyledText", true),
+        ("Label", false),
+    ] {
+        for property in ["selection-color", "selected-text-color"] {
+            let items = complete_at(&format!(
+                "component App inherits Window {{ {kind} {{ {property}| }} }}"
+            ));
+            assert_eq!(
+                items
+                    .iter()
+                    .any(|item| item["label"] == property && item["detail"] == "color"),
+                supported,
+                "{kind}.{property}: {items:?}",
+            );
+        }
+    }
+}
+
+#[test]
+fn styled_text_completes_read_only_selection_operations() {
+    let props = complete_at("component App inherits Window { StyledText { selecta| } }");
+    assert!(
+        props
+            .iter()
+            .any(|item| item["label"] == "selectable" && item["detail"] == "bool")
+    );
+    let methods = complete_at(
+        "component App inherits Window { doc := StyledText {} button := Button { clicked => { doc.|",
+    );
+    for expected in ["select-word", "copy", "selected-text"] {
+        assert!(
+            methods.iter().any(|item| item["label"] == expected),
+            "{expected}: {methods:?}"
+        );
+    }
+    assert!(
+        !methods
+            .iter()
+            .any(|item| item["label"] == "cut" || item["label"] == "paste")
+    );
+}
+
+#[test]
+fn persistent_selection_completes_on_text_editors() {
+    for (kind, supported) in [
+        ("TextArea", true),
+        ("LineEdit", true),
+        ("ComboBox", true),
+        ("Label", false),
+    ] {
+        let choices = complete_at(&format!(
+            "component App inherits Window {{ {kind} {{ persistent-sel| }} }}"
+        ));
+        assert_eq!(
+            choices
+                .iter()
+                .any(|item| item["label"] == "persistent-selection" && item["detail"] == "bool"),
+            supported
+        );
+    }
+}
+
+#[test]
+fn editors_offer_overwrite_and_select_word_with_signature() {
+    let properties = complete_at("component Demo inherits Window { TextArea { overwr| } }");
+    assert!(
+        properties
+            .iter()
+            .any(|item| item["label"] == "overwrite-mode" && item["detail"] == "bool")
+    );
+    let other = complete_at("component Demo inherits Window { Button { overwr| } }");
+    assert!(!other.iter().any(|item| item["label"] == "overwrite-mode"));
+    let line = "component Demo inherits Window { editor := TextEdit {} Button { clicked => { editor.select-w";
+    let items = complete_at(&format!("{line}|"));
+    assert!(items.iter().any(|item| item["label"] == "select-word"));
+    let call = format!("{line}ord(");
+    let help = completion::signature_help(&call, (0, call.len()), None);
+    assert_eq!(help["signatures"][0]["label"], "select-word()");
+}
+
+#[test]
+fn text_editors_complete_mouse_selection_modes() {
+    for kind in [
+        "TextInput",
+        "LineEdit",
+        "TextEdit",
+        "TextArea",
+        "SearchField",
+        "ComboBox",
+        "Button",
+    ] {
+        let items = complete_at(&format!(
+            "component App inherits Window {{ {kind} {{ mouse-sel| }} }}"
+        ));
+        assert_eq!(
+            items
+                .iter()
+                .any(|item| item["label"] == "mouse-selection-mode"),
+            kind != "Button",
+            "{kind}: {items:?}"
+        );
+    }
+    for qualifier in ["", "MouseSelectionMode."] {
+        let variants = complete_at(&format!(
+            "component App inherits Window {{ LineEdit {{ mouse-selection-mode: {qualifier}| }} }}"
+        ));
+        for variant in ["characters", "words", "caret"] {
+            assert!(
+                variants.iter().any(|item| item["label"] == variant),
+                "{variants:?}"
+            );
+        }
+    }
+}
+
+#[test]
 fn text_submission_completes_rules_and_read_only_status() {
     let items = complete_at("component App inherits Window { entry := LineEdit { | } }");
     for property in ["minimum-length", "submit-when"] {

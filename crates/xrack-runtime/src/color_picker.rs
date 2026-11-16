@@ -240,7 +240,7 @@ impl ColorPopupState {
             }
             picker.children.push(self.color_plane(draft.hsv));
         }
-        append_picker_dialog(dialog, picker);
+        append_picker_dialog(dialog, picker, true);
         if !draft.hex_valid(show_alpha)
             && let Some(button) = dialog
                 .children

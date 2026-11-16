@@ -221,6 +221,23 @@ impl Instance {
         Ok(self.handler(element, "clicked", &[])? || next.is_some())
     }
 
+    pub(crate) fn change_expander(
+        &self,
+        element: &Element,
+        input: Option<InputRoute<'_>>,
+        requested: Option<bool>,
+    ) -> Result<bool> {
+        let Some(expanded) = xrack_runtime::try_prepare_expander_change(input, requested, || {
+            Ok::<_, Error>(self.control_value(element, "expanded")? == Some(Value::Bool(true)))
+        })?
+        else {
+            return Ok(false);
+        };
+        self.set_control_value(element, "expanded", expanded.into())?;
+        self.handler(element, "expanded-changed", &[expanded.into()])?;
+        Ok(true)
+    }
+
     pub(crate) fn toggle_group_box(
         &self,
         element: &Element,

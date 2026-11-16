@@ -180,6 +180,10 @@ pub fn decode(ty: &Type, spelling: &str) -> Result<Literal, String> {
         Type::TextWrap => {
             enumeration!(TextWrap, "word-wrap" => WordWrap, "no-wrap" => NoWrap, "char-wrap" => CharWrap)
         }
+        Type::InputValidity => enumeration!(InputValidity,
+            "invalid" => Invalid, "intermediate" => Intermediate, "acceptable" => Acceptable),
+        Type::MouseSelectionMode => enumeration!(MouseSelectionMode,
+            "characters" => Characters, "words" => Words, "caret" => Caret),
         Type::TextHorizontalAlignment => enumeration!(TextHorizontalAlignment,
             "start" => Start, "end" => End, "left" => Left, "center" => Center, "right" => Right),
         Type::TextVerticalAlignment => enumeration!(TextVerticalAlignment,
@@ -228,6 +232,7 @@ pub fn decode(ty: &Type, spelling: &str) -> Result<Literal, String> {
         | Type::Font
         | Type::StringList
         | Type::IntList
+        | Type::DateList
         | Type::PointerButtons
         | Type::StyledText
         | Type::Record(_)
