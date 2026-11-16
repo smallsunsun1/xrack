@@ -59,8 +59,8 @@ jobs:
           bazelisk-cache: true
       - name: Build and unpack the site
         run: |
-          bazel build --repo_env=CARGO_BAZEL_ISOLATED=false --lockfile_mode=error //site:pages
-          bazel_bin="$(bazel info --repo_env=CARGO_BAZEL_ISOLATED=false --lockfile_mode=error bazel-bin)"
+          bazel build --repo_env=CARGO_BAZEL_ISOLATED=false --lockfile_mode=update //site:pages
+          bazel_bin="$(bazel info --repo_env=CARGO_BAZEL_ISOLATED=false --lockfile_mode=update bazel-bin)"
           unzip -q "$bazel_bin/site/xrack-pages.zip" -d "$RUNNER_TEMP/xrack-pages"
           test -s "$RUNNER_TEMP/xrack-pages/index.html"
           test -s "$RUNNER_TEMP/xrack-pages/reference.html"
