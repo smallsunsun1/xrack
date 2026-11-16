@@ -1,4 +1,5 @@
 load("@aspect_rules_lint//format:defs.bzl", "format_multirun")
+load("@rules_cc//cc:cc_library.bzl", "cc_library")
 load("@rules_python//python:defs.bzl", "py_binary", "py_library", "py_test")
 load("@rules_python//python:packaging.bzl", "py_wheel")
 load("@rules_rust_pyo3//:defs.bzl", "pyo3_extension", "rust_pyo3_toolchain")
@@ -17,6 +18,15 @@ toolchain(
     toolchain_type = "@rules_rust_pyo3//:rust_toolchain_type",
 )
 
+# A Python extension is loaded into an existing process. Link the same
+# C++ runtime used to compile MLIR so the process need not provide that ABI.
+cc_library(
+    name = "linux_cpp_runtime",
+    srcs = ["@llvm//runtimes/cxxstdlib:static_runtime_lib"],
+    linkstatic = True,
+    target_compatible_with = ["@platforms//os:linux"],
+)
+
 pyo3_extension(
     name = "native",
     srcs = glob(["src/*.rs"]),
@@ -24,6 +34,10 @@ pyo3_extension(
     edition = "2024",
     module_name = "xrack._native",
     stubs = True,
+    link_deps = select({
+        "@platforms//os:linux": [":linux_cpp_runtime"],
+        "//conditions:default": [],
+    }),
     deps = [
         "//crates/xrack-assets:xrack_assets",
         "//crates/xrack-compiler:xrack_compiler",

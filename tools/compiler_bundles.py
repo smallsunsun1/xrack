@@ -28,7 +28,7 @@ def stage_workspace(destination):
     destination.mkdir()
     for name in ("Cargo.toml", "Cargo.lock", "README.md", "LICENSE-APACHE", "LICENSE-MIT"):
         shutil.copyfile(ROOT / name, destination / name)
-    for name in ("crates", "bundles"):
+    for name in ("crates", "bundles", "bindings/python"):
         shutil.copytree(ROOT / name, destination / name)
 
 
