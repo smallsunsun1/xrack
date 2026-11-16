@@ -1,7 +1,8 @@
 use controls_ui::{
     CalendarAgendaDemo, CalendarDemo, CheckGroupDemo, CheckStateDemo, ColorDemo, ControlsDemo,
     DecimalSpinDemo, DelayDemo, FontPickerDemo, GroupBoxDemo, IndicatorsDemo, MonthGridDemo,
-    PaneFrameDemo, SnapSlidersDemo, ThemeDemo, TimeDemo, TimerDemo, TumblerDemo, WheelControlsDemo,
+    PaneFrameDemo, RecordTumblerDemo, SnapSlidersDemo, ThemeDemo, TimeDemo, TimerDemo, TumblerDemo,
+    WheelControlsDemo,
 };
 
 fn main() -> std::process::ExitCode {
@@ -59,6 +60,7 @@ fn main() -> std::process::ExitCode {
         Some("--timer") => xrack_platform_winit::run(TimerDemo::new()),
         Some("--decimal-spin") => xrack_platform_winit::run(DecimalSpinDemo::new()),
         Some("--tumbler") => xrack_platform_winit::run(TumblerDemo::new()),
+        Some("--record-tumbler") => xrack_platform_winit::run(RecordTumblerDemo::new()),
         Some("--delay") => xrack_platform_winit::run(DelayDemo::new()),
         Some("--repeat-buttons") => {
             xrack_platform_winit::run(controls_ui::RepeatButtonsDemo::new())
@@ -78,8 +80,17 @@ fn main() -> std::process::ExitCode {
             xrack_platform_winit::run(controls_ui::GroupedButtonsDemo::new())
         }
         Some("--check-group") => xrack_platform_winit::run(CheckGroupDemo::new()),
+        Some("--programmatic-click") => {
+            xrack_platform_winit::run(controls_ui::ProgrammaticButtonsDemo::new())
+        }
+        Some("--programmatic-toggle") => {
+            xrack_platform_winit::run(controls_ui::ProgrammaticToggleDemo::new())
+        }
         Some("--groups") => xrack_platform_winit::run(GroupBoxDemo::new()),
         Some("--indicators") => xrack_platform_winit::run(IndicatorsDemo::new()),
+        Some("--custom-progress") => {
+            xrack_platform_winit::run(controls_ui::CustomProgressDemo::new())
+        }
         _ => {
             let mut ui = ControlsDemo::new();
             ui.on_interval_caption(|lower, upper| format!("区间 {lower:.1} – {upper:.1}"));

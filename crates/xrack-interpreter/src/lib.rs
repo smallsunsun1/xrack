@@ -3,6 +3,8 @@
 mod action;
 mod calendar;
 mod evaluate;
+mod external_loader;
+pub use external_loader::install_external_loader;
 mod gesture;
 mod group;
 mod host;
@@ -181,6 +183,7 @@ impl Program {
     }
 
     pub fn create(&self, name: &str) -> Result<Instance> {
+        install_external_loader();
         if self.globals.contains_key(name) {
             return Err(Error::Invalid(
                 "global belongs to a component instance".into(),
@@ -271,6 +274,7 @@ pub enum ValueType {
     ImageHorizontalAlignment,
     ImageVerticalAlignment,
     ImageRendering,
+    ButtonDisplay,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -311,6 +315,7 @@ enum Expression {
     RowParam(String),
     SplitHandleParam(split::Parameter),
     ListSectionParam(xrack_runtime::ListSectionParameter),
+    ComboOptionParam(xrack_runtime::ComboOptionParameter),
     CalendarCellParam(calendar::Parameter),
     Unary(UnaryOperator, Expr),
     Binary(BinaryOperator, Expr, Expr),
@@ -346,11 +351,30 @@ enum Expression {
     TreeQuery(String, tree::Query, Expr),
     SelectionKeys(String),
     SplitSave(String),
+    LoaderMounted(String, Expr),
+    Dynamic(String, Vec<String>, Vec<Expr>),
+    LoaderExternalStatus(String, Expr),
     StackRead(String, xrack_mlir::StackRead),
     SplitResizing(String),
     TableRead(String, xrack_mlir::TableRead),
     FocusRead(String, bool),
+    ComboPopupRead(String, bool),
     ButtonPressed(String),
+    ButtonChecked(String),
+    RadioChecked {
+        target: String,
+        group: String,
+    },
+    NavigationActive {
+        target: String,
+        group: String,
+    },
+    NavigationIndex(String),
+    NavigationCount(String),
+    ToggleStateRead(Member),
+    NumericValueRead(Member),
+    ComboStateRead(Member, Value),
+    RangePositionRead(Member),
     TextSelectionRead(Member),
     TextCommandAvailable(Member),
     HoverRead(String, pointer::HoverRead),
@@ -394,6 +418,7 @@ enum Expression {
 #[derive(Clone)]
 enum Statement {
     Assign(Member, Expr),
+    Evaluate(Expr),
     Call(Member, Vec<Expr>, CallSite),
     Log {
         level: Expr,
@@ -402,11 +427,19 @@ enum Statement {
         span: xrack_syntax::ast::Span,
     },
     Scroll(String, xrack_runtime::ScrollCommandMethod, Vec<Expr>),
+    PositionChild {
+        view: String,
+        target: String,
+        alignments: [Expr; 2],
+    },
     SelectSource(String, Expr, Option<Expr>),
     SelectKey(String, Expr),
     SelectViewKeys(String, Expr),
     Table(String, table::Command, Vec<Expr>),
+    MoveNavigationItem(String, [Expr; 2]),
     Focus(String, xrack_runtime::FocusCommandMethod, Option<[Expr; 2]>),
+    ButtonClick(String, bool),
+    ButtonToggle(String),
     Tree(String, xrack_runtime::TreeCommandMethod, Expr, Option<Expr>),
     SplitRestore(String, Expr),
     SwipeCancel(String),
@@ -489,6 +522,9 @@ struct Definition {
     key_scroll_targets: BTreeSet<String>,
     focus_targets: BTreeSet<String>,
     button_press_targets: BTreeSet<String>,
+    combo_popup_targets: BTreeSet<String>,
+    range_position_targets: BTreeSet<String>,
+    button_animation_targets: BTreeSet<String>,
     text_selection_targets: BTreeSet<String>,
     text_command_targets: BTreeSet<String>,
     timer_order: Vec<String>,
@@ -513,6 +549,7 @@ struct Element {
     stack_routes: Option<Box<[String]>>,
     day_cell: Option<Box<Element>>,
     section_header: Option<Box<Element>>,
+    combo_option: Option<Box<Element>>,
     clipboard_paste: Option<table_edit::ClipboardPaste>,
     clipboard_text: Option<table::ClipboardText>,
     contains_delegate: bool,
@@ -571,6 +608,7 @@ struct RecordCombo {
 }
 
 struct Repeat {
+    loader: Option<(String, usize)>,
     model: Expr,
     item: String,
     index: Option<String>,

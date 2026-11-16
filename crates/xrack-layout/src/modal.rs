@@ -164,6 +164,9 @@ pub(crate) fn index_overlays(scene: &Node, layout: &mut LayoutNode) {
         path: &mut Vec<usize>,
         overlays: &mut OverlayIndex,
     ) {
+        if Node::SCROLL_PARTS.contains(&scene.kind) {
+            return;
+        }
         if scene.kind == "Drawer"
             && scene.boolean("visible", true)
             && layout.enabled

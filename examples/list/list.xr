@@ -206,6 +206,12 @@ export component NestedDataDemo inherits Window {
     }
 }
 
+struct DelegateMode {
+    key: int,
+    label: string,
+    shown: bool,
+}
+
 export component ItemDelegatesDemo inherits Window {
     title: "XRack · 列表委托";
     width: 644px;
@@ -214,6 +220,7 @@ export component ItemDelegatesDemo inherits Window {
 
     in-out property <int> current-action: 0;
     in-out property <int> current-mode: 0;
+    in property <bool> show-compact-mode: true;
     in-out property <[DelegateSetting]> settings: [
         DelegateSetting { label: "文档", selected: CheckState.unchecked, enabled: true },
         DelegateSetting { label: "图片", selected: CheckState.partially-checked, enabled: false },
@@ -244,8 +251,18 @@ export component ItemDelegatesDemo inherits Window {
                 Text { text: "显示模式"; }
                 modes := ListView {
                     row-height: 36px;
-                    current-index <=> root.current-mode;
-                    for label in ["详细", "紧凑", "仅文件名"] : RadioDelegate { text: label; }
+                    row-visible-field: "shown";
+                    row-key-field: "key";
+                    current-key <=> root.current-mode;
+                    for mode in [
+                        DelegateMode { key: 99, label: "旧模式", shown: false },
+                        DelegateMode { key: 0, label: "详细", shown: true },
+                        DelegateMode { key: 1, label: "紧凑", shown: root.show-compact-mode },
+                        DelegateMode { key: 2, label: "仅文件名", shown: true },
+                    ] : RadioDelegate {
+                        text: self.checked ? mode.label + " ✓" : mode.label;
+                        accessible-name: mode.label;
+                    }
                 }
             }
         }
@@ -274,7 +291,7 @@ export component ItemDelegatesDemo inherits Window {
                         checked <=> setting.enabled;
                         SwitchThumb {
                             width: 14px; height: 14px;
-                            background: setting.enabled ? #67d4cf : #c3ccd8;
+                            background: checked ? #67d4cf : #c3ccd8;
                             border-radius: 4px;
                         }
                         toggled => { root.edits += 1; }
@@ -801,6 +818,16 @@ export component StandaloneScrollDemo inherits Window {
         root.after-jump = bar.position;
     }
 
+    callback step-twice();
+    step-twice() => {
+        root.before-jump = bar.position;
+        bar.increase();
+        bar.increase();
+        root.after-jump = bar.position;
+    }
+    callback step-back();
+    step-back() => { bar.decrease(); }
+
     Rectangle {
         x: 16px; y: 16px; width: 260px; height: 196px; clip: true;
         canvas := Rectangle {
@@ -838,6 +865,227 @@ export component StandaloneScrollDemo inherits Window {
         x: 16px; y: 242px; width: 172px; height: 24px;
         checked <=> root.snap-on-release;
         text: "Snap on release";
+    }
+}
+
+export component ScrollFocusDemo inherits Window {
+    title: "XRack · Scroll to focus";
+    width: 380px; height: 224px;
+    background: #f0f3fa;
+    in-out property <bool> reveal: true;
+    in-out property <bool> rtl: false;
+    in-out property <length> outer-x: 0px;
+    in-out property <length> outer-y: 0px;
+    in-out property <length> inner-x: 0px;
+    in-out property <length> inner-y: 0px;
+
+    layout-direction: root.rtl ? LayoutDirection.right-to-left : LayoutDirection.left-to-right;
+    jump := Button {
+        x: 20px; y: 14px; width: 200px; height: 28px;
+        text: "Focus last field"; clicked => { last-field.focus(); }
+    }
+    outer := ScrollView {
+        x: 20px; y: 56px; width: 200px; height: 120px;
+        reserve-scroll-bar-space: true;
+        auto-reveal-focus: root.reveal;
+        content-width: 330px; content-height: 340px;
+        content-x <=> root.outer-x;
+        content-y <=> root.outer-y;
+        Rectangle {
+            width: 100%; height: 100%;
+            background: #263750;
+        }
+        first-field := LineEdit {
+            x: 12px; y: 10px; width: 120px; height: 24px;
+            text: "First";
+        }
+        disabled-field := LineEdit {
+            x: 70px; y: 158px; width: 116px; height: 24px;
+            text: "Unavailable"; enabled: false;
+        }
+        inner := ScrollView {
+            x: 100px; y: 220px; width: 160px; height: 90px;
+            reserve-scroll-bar-space: true;
+            auto-reveal-focus: root.reveal;
+            content-width: 240px; content-height: 220px;
+            content-x <=> root.inner-x;
+            content-y <=> root.inner-y;
+            Rectangle { width: 100%; height: 100%; background: #365472; }
+            last-field := LineEdit {
+                x: 130px; y: 150px; width: 80px; height: 24px;
+                text: "Last";
+            }
+        }
+    }
+    after := Button {
+        x: 20px; y: 190px; width: 200px; height: 24px;
+        text: "After the form";
+    }
+    locate := Button {
+        x: 236px; y: 14px; width: 132px; height: 28px;
+        text: "Center last field";
+        clicked => { outer.position-view-at-child(last-field, center, center); }
+    }
+    reveal-toggle := CheckBox {
+        x: 236px; y: 56px; width: 132px; height: 24px;
+        text: "Auto reveal"; checked <=> root.reveal;
+    }
+    direction-toggle := CheckBox {
+        x: 236px; y: 88px; width: 132px; height: 24px;
+        text: "RTL"; checked <=> root.rtl;
+    }
+    focus-readout := Label {
+        x: 236px; y: 126px; width: 134px; height: 24px;
+        text: last-field.has-focus ? "Last field" : first-field.has-focus ? "First field" : "";
+    }
+}
+
+export component ScrollGuttersDemo inherits Window {
+    title: "XRack · ScrollView gutters";
+    width: 370px; height: 200px;
+    background: #f0f3fa;
+    in-out property <bool> reserve: true;
+    in-out property <bool> rtl: false;
+    in-out property <bool> fixed-width: true;
+    in-out property <bool> overflow-y: true;
+    out property <length> viewport-width: view.visible-width;
+    out property <length> viewport-height: view.visible-height;
+    out property <length> vertical-gutter: view.effective-scroll-bar-width;
+    out property <length> horizontal-gutter: view.effective-scroll-bar-height;
+
+    layout-direction: root.rtl ? LayoutDirection.right-to-left : LayoutDirection.left-to-right;
+    Rectangle { x: 20px; y: 20px; width: 180px; height: 108px; background: #dde8f1; }
+    view := ScrollView {
+        x: 20px; y: 20px; width: 180px; height: 108px;
+        reserve-scroll-bar-space: root.reserve;
+        content-width: root.fixed-width ? 176px : 0px;
+        content-height: root.overflow-y ? 150px : 60px;
+        Rectangle {
+            width: 100%; height: 100%;
+            background: #263750;
+        }
+        HorizontalLayout {
+            y: 8px; width: 100%; height: 24px; alignment: end;
+            edge-button := Button { width: 72px; text: "At edge"; }
+        }
+        Rectangle {
+            x: 8px; y: 42px; width: 52px; height: 12px; background: #59bf94;
+        }
+    }
+
+    gutter-toggle := CheckBox {
+        x: 220px; y: 20px; width: 140px; height: 22px;
+        text: "Reserve gutters"; checked <=> root.reserve;
+    }
+    rtl-toggle := CheckBox {
+        x: 220px; y: 48px; width: 140px; height: 22px;
+        text: "RTL"; checked <=> root.rtl;
+    }
+    width-toggle := CheckBox {
+        x: 220px; y: 76px; width: 140px; height: 22px;
+        text: "Fixed content width"; checked <=> root.fixed-width;
+    }
+    height-toggle := CheckBox {
+        x: 220px; y: 104px; width: 140px; height: 22px;
+        text: "Vertical overflow"; checked <=> root.overflow-y;
+    }
+    viewport-readout := Label {
+        x: 20px; y: 144px; width: 330px; height: 20px;
+        text: "Viewport: " + Math.round(root.viewport-width / 1px) + " × " + Math.round(root.viewport-height / 1px) + " px";
+    }
+    bar-readout := Label {
+        x: 20px; y: 166px; width: 330px; height: 20px;
+        text: "Scrollbars: " + Math.round(root.vertical-gutter / 1px) + " / " + Math.round(root.horizontal-gutter / 1px) + " px";
+    }
+}
+
+export component ScrollVisualMetricsDemo inherits Window {
+    title: "XRack · Custom scroll controls";
+    width: 332px; height: 216px;
+    background: #f0f3fa;
+    in-out property <bool> rtl: false;
+    in-out property <bool> show-canvas: true;
+    in-out property <bool> fade-idle: false;
+    in-out property <length> offset: -200px;
+    in-out property <length> canvas-width: 1000px;
+    callback queued-steps();
+    queued-steps() => {
+        bar.increase();
+        bar.increase();
+        canvas.scroll-by(-20px, 0px);
+    }
+    out property <bool> bar-active: bar.active;
+    out property <bool> bar-pressed: bar.pressed;
+    out property <bool> bar-hovered: bar.hovered;
+    out property <float> thumb-position: bar.visual-position;
+    out property <float> thumb-size: bar.visual-size;
+    out property <float> indicator-position: indicator.visual-position;
+    out property <float> indicator-size: indicator.visual-size;
+    out property <float> logical-position: bar.position;
+    out property <float> logical-size: bar.size;
+
+    layout-direction: root.rtl ? LayoutDirection.right-to-left : LayoutDirection.left-to-right;
+    canvas := ScrollView {
+        x: 16px; y: 16px; width: 200px; height: 60px; visible: root.show-canvas;
+        content-width: root.canvas-width; content-height: 60px;
+        content-x <=> root.offset;
+        horizontal-scroll-bar-policy: always-off;
+        Rectangle { width: 1000px; height: 60px; background: #263750; }
+        for index in 10 : Rectangle {
+            x: index * 100px + 12px; y: 10px; width: 70px; height: 40px;
+            background: index % 2 == 0 ? #59bf94 : #72a9ee;
+        }
+    }
+    bar := ScrollBar {
+        target: canvas; orientation: horizontal;
+        x: 16px; y: 82px; width: 200px; height: 12px;
+        minimum-size: 40%; step-size: 0.1;
+        accessible-name: "Canvas scroll";
+        ScrollTrack { background: #263750; border-radius: 6px; }
+        bar-thumb := ScrollThumb {
+            background: bar.pressed ? #72a9ee : #59bf94;
+            opacity: root.fade-idle && !bar.active ? 0.0 : 1.0;
+            animate opacity { duration: 140ms; }
+            border-radius: 6px;
+            HorizontalLayout {
+                width: 100%; height: 100%;
+                alignment: center; cross-axis-alignment: center;
+                Rectangle { width: 16px; height: 4px; background: #263750; border-radius: 2px; }
+            }
+        }
+    }
+    indicator := ScrollIndicator {
+        x: 16px; y: 100px; width: 200px; height: 8px;
+        orientation: horizontal;
+        position: 20%; size: 20%; minimum-size: 30%;
+        indicator-thumb := ScrollThumb { background: #e5854f; border-radius: 4px; }
+    }
+    direction-toggle := CheckBox { text: "RTL"; x: 233px; y: 18px; width: 80px; height: 24px; checked <=> root.rtl; }
+    canvas-toggle := CheckBox { text: "Canvas"; x: 233px; y: 50px; width: 90px; height: 24px; checked <=> root.show-canvas; }
+    fade-toggle := CheckBox { text: "Fade"; x: 233px; y: 82px; width: 80px; height: 24px; checked <=> root.fade-idle; }
+    state-readout := Label {
+        x: 233px; y: 109px; width: 90px; height: 18px;
+        text: bar.pressed ? "Pressed" : bar.hovered ? "Hovered" : bar.active ? "Scrolling" : "Idle";
+    }
+    bar-readout := Label {
+        x: 16px; y: 124px; width: 300px; height: 24px;
+        text: "Bar: " + Math.round(bar.visual-position * 100) + "% + " + Math.round(bar.visual-size * 100) + "%";
+    }
+    indicator-readout := Label {
+        x: 16px; y: 148px; width: 300px; height: 24px;
+        text: "Indicator: " + Math.round(indicator.visual-position * 100) + "% + " + Math.round(indicator.visual-size * 100) + "%";
+    }
+    back := Button {
+        x: 16px; y: 180px; width: 93px; height: 26px;
+        text: "− 1 step"; clicked => { bar.decrease(); }
+    }
+    forward := Button {
+        x: 116px; y: 180px; width: 93px; height: 26px;
+        text: "+ 1 step"; clicked => { bar.increase(); }
+    }
+    queue := Button {
+        x: 216px; y: 180px; width: 100px; height: 26px;
+        text: "Batch move"; clicked => { root.queued-steps(); }
     }
 }
 

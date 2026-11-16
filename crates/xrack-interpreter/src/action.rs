@@ -7,6 +7,57 @@ pub(crate) struct Membership {
 }
 
 impl Instance {
+    pub(crate) fn read_button_checked(&self, target: &str) -> Result<bool> {
+        let (owner, button) = self.element_owner(target)?;
+        if let Some(action) = &button.action {
+            let (owner, action) = owner.element_owner(action)?;
+            let group = owner.action_group(action)?;
+            if let Some((group_owner, group, value)) =
+                group.filter(|(_, group, _)| !group.non_exclusive)
+            {
+                return Ok(owner.action_flag(action, "checkable", true)?
+                    && group_owner.action_group_value(&group.key)? == Value::String(value.into()));
+            }
+            return Ok(owner.control_value(action, "checked")? == Some(Value::Bool(true)));
+        }
+        if button
+            .button_group
+            .as_ref()
+            .is_some_and(|group| group.check_property.is_none())
+        {
+            return owner.group_option_checked(button);
+        }
+        Ok(owner.control_value(button, "checked")? == Some(Value::Bool(true)))
+    }
+
+    pub(crate) fn toggle_button(&self, target: &str) -> Result<()> {
+        let (owner, button) = self.element_owner(target)?;
+        if let Some(action) = &button.action {
+            let (owner, action) = owner.element_owner(action)?;
+            if let Some((owner, group, value)) = owner.action_group(action)?
+                && !group.non_exclusive
+            {
+                let Value::String(current) = owner.action_group_value(&group.key)? else {
+                    return Err(Error::Evaluation("invalid ActionGroup selection".into()));
+                };
+                if let Some(next) =
+                    xrack_runtime::toggled_button_group_value(&current, value.into())
+                {
+                    owner.set_control_value(group, "current-value", next.into())?;
+                }
+                return Ok(());
+            }
+            let checked = owner.control_value(action, "checked")? == Some(Value::Bool(true));
+            owner.set_control_value(action, "checked", (!checked).into())?;
+        } else if button.is_exclusive_push_option() {
+            owner.toggle_group_option(button)?;
+        } else {
+            let checked = owner.control_value(button, "checked")? == Some(Value::Bool(true));
+            owner.set_control_value(button, "checked", (!checked).into())?;
+        }
+        Ok(())
+    }
+
     pub(crate) fn action_group_value(&self, key: &str) -> Result<Value> {
         self.read(&Member::new(key, "current-value"))
     }

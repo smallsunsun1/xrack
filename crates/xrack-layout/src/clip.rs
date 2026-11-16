@@ -38,7 +38,7 @@ impl RoundedClip {
         point.x >= self.bounds.x + left && point.x <= self.bounds.x + self.bounds.width - right
     }
 
-    fn clip_rect(self, rect: Rect) -> Rect {
+    pub(crate) fn clip_rect(self, rect: Rect) -> Rect {
         let rect = self.bounds.intersect(rect);
         if rect.width <= 0.0 || rect.height <= 0.0 {
             return rect;

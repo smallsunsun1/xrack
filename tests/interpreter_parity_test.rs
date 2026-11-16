@@ -4217,6 +4217,472 @@ fn string_combo_rejects_input_from_a_changed_model_snapshot() {
 }
 
 #[test]
+fn programmatic_combo_popup_and_highlight_share_the_live_keyboard_state() {
+    use xrack_layout::{ChoiceKey, Interaction, Size};
+    use xrack_runtime::FocusRequests;
+
+    fn exercise<C: Component>(mut ui: C) {
+        let requests = FocusRequests::default();
+        let _scope = requests.enter();
+        let mut input = Interaction::default();
+        let viewport = Size::new(440.0, 282.0);
+        let prepare = |ui: &C, input: &mut Interaction| {
+            let (scene, layout) = prepare_list(ui, input, viewport);
+            input.reconcile(&scene, &layout);
+            input.apply_focus_requests(&scene, &layout, requests.drain());
+            (scene, layout)
+        };
+        let label = |ui: &C, name| {
+            ui.render()
+                .find(name)
+                .unwrap()
+                .text("text")
+                .unwrap()
+                .to_owned()
+        };
+        assert_eq!(label(&ui, "popup-state"), "弹层关闭");
+        assert!(ui.dispatch("open-choice", "clicked"));
+        let (scene, layout) = prepare(&ui, &mut input);
+        assert_eq!(label(&ui, "popup-state"), "高亮 0");
+        assert_eq!(input.focused.as_ref().unwrap().path, [0]);
+        input.choice_key(&scene, &layout, ChoiceKey::Down);
+        assert_eq!(label(&ui, "popup-state"), "高亮 1");
+        assert_eq!(label(&ui, "committed-choice"), "Alpha");
+        assert!(ui.dispatch("open-choice", "clicked"));
+        prepare(&ui, &mut input);
+        assert_eq!(label(&ui, "popup-state"), "高亮 1");
+        assert!(ui.dispatch("close-choice", "clicked"));
+        prepare(&ui, &mut input);
+        assert!(!input.choice_open());
+        assert_eq!(label(&ui, "popup-state"), "弹层关闭");
+
+        assert!(ui.dispatch("open-choice", "clicked"));
+        let (scene, layout) = prepare(&ui, &mut input);
+        input.choice_key(&scene, &layout, ChoiceKey::End);
+        let action = input
+            .choice_key(&scene, &layout, ChoiceKey::Accept)
+            .unwrap();
+        assert!(ui.control_at(&scene, &action.path, action.action));
+        assert_eq!(label(&ui, "popup-state"), "弹层关闭");
+        assert_eq!(label(&ui, "committed-choice"), "Gamma");
+        assert!(ui.dispatch("open-choice", "clicked"));
+        prepare(&ui, &mut input);
+        assert!(ui.dispatch("disable-choice", "clicked"));
+        prepare(&ui, &mut input);
+        assert_eq!(label(&ui, "popup-state"), "弹层关闭");
+        assert!(ui.dispatch("open-choice", "clicked"));
+        prepare(&ui, &mut input);
+        assert!(!input.choice_open());
+    }
+    let preview = xrack_compiler::prepare_preview(
+        include_str!("../examples/selection/selection.xr"),
+        "selection.xr",
+        Default::default(),
+    )
+    .unwrap();
+    let program = Program::from_module(&preview.module).unwrap();
+    exercise(selection_ui::ComboPopupControlDemo::new());
+    exercise(program.create("ComboPopupControlDemo").unwrap());
+}
+
+#[test]
+fn styled_combo_popup_shares_geometry_between_scrolling_and_input() {
+    use xrack_layout::{ChoiceKey, Interaction, Point, Rect, Size};
+    use xrack_runtime::ControlAction;
+
+    let preview = xrack_compiler::prepare_preview(
+        include_str!("../examples/selection/selection.xr"),
+        "selection.xr",
+        Default::default(),
+    )
+    .unwrap();
+    let program = Program::from_module(&preview.module).unwrap();
+
+    fn exercise(mut ui: impl Component, rtl: bool) {
+        if rtl {
+            assert!(ui.dispatch("flip-popup", "clicked"));
+            assert!(ui.dispatch("move-popup", "clicked"));
+        }
+        let viewport = Size::new(420.0, 304.0);
+        let mut input = Interaction::default();
+        let (scene, layout) = prepare_list(&ui, &input, viewport);
+        let path = [2];
+        let target = input.accessibility_target(&scene, &layout, &path).unwrap();
+        assert!(input.open_choice(&scene, &layout, target));
+        let menu = input.choice_menu(&scene, &layout).unwrap();
+        let (x, y) = if rtl { (8.0, 118.0) } else { (94.0, 102.0) };
+        assert_eq!(menu.bounds, Rect::new(x, y, 308.0, 112.0));
+        assert_eq!(menu.rows.as_ref(), ["Alpha", "Beta", "Gamma"]);
+        assert_eq!(
+            menu.row_bounds(0),
+            Rect::new(x + if rtl { 18.0 } else { 8.0 }, y + 8.0, 282.0, 32.0)
+        );
+        let thumb = menu.scroll_indicator().unwrap();
+        assert_eq!(thumb.x < menu.rows_bounds().x, rtl);
+        for point in [
+            Point {
+                x: x + 24.0,
+                y: y + 4.0,
+            },
+            Point {
+                x: thumb.x + thumb.width / 2.0,
+                y: thumb.y + thumb.height / 2.0,
+            },
+        ] {
+            input.pointer_move(&scene, &layout, point);
+            assert!(input.choice_press(&scene, &layout));
+            assert!(input.choice_release(&scene, &layout).is_none());
+            assert!(input.choice_open());
+        }
+        assert!(input.choice_scroll(&scene, &layout, 2));
+        assert_eq!(input.choice_menu(&scene, &layout).unwrap().first, 2);
+        assert!(
+            input
+                .choice_key(&scene, &layout, ChoiceKey::PageDown)
+                .is_none()
+        );
+        let menu = input.choice_menu(&scene, &layout).unwrap();
+        assert_eq!(menu.highlighted, Some(5));
+        assert_eq!(menu.row_bounds(2).height, 32.0);
+        assert!(menu.scroll_indicator().unwrap().y > thumb.y);
+        let row = menu.row_bounds(2);
+        input.pointer_move(
+            &scene,
+            &layout,
+            Point {
+                x: row.x + row.width * 0.5,
+                y: row.y + 16.0,
+            },
+        );
+        assert!(input.choice_press(&scene, &layout));
+        let action = input.choice_release(&scene, &layout).unwrap();
+        assert_eq!(action.action, ControlAction::Select(5));
+        assert!(ui.control_at(&scene, &action.path, action.action));
+        assert_eq!(
+            ui.render().find("popup-status").unwrap().text("text"),
+            Some("Zeta")
+        );
+    }
+    for rtl in [false, true] {
+        exercise(selection_ui::ComboPopupStyleDemo::new(), rtl);
+        exercise(program.create("ComboPopupStyleDemo").unwrap(), rtl);
+    }
+}
+
+#[test]
+fn progress_positions_follow_bound_values_states_and_inherited_direction() {
+    use xrack_layout::{Interaction, LayoutObservers, Size};
+    use xrack_runtime::{IndicatorState, indicator_state};
+
+    let preview = xrack_compiler::prepare_preview(
+        include_str!("expressions.xr"),
+        "expressions.xr",
+        Default::default(),
+    )
+    .unwrap();
+    let interpreted = Program::from_module(&preview.module)
+        .unwrap()
+        .create("ProgressRangeParity")
+        .unwrap();
+    let mut generated = expressions_ui::ProgressRangeParity::new();
+    let mut generated_observers = LayoutObservers::default();
+    let mut interpreted_observers = LayoutObservers::default();
+    for (value, maximum, narrow, rtl, position) in [
+        (380.0, 900.0, false, false, 0.35),
+        (250.0, 900.0, true, true, 0.375),
+        (1200.0, 900.0, false, true, 1.0),
+        (20.0, 80.0, false, false, 0.0),
+    ] {
+        generated.set_amount(value);
+        generated.set_upper_bound(maximum);
+        generated.set_override_bound(narrow);
+        generated.set_rtl(rtl);
+        interpreted.set("amount", Value::Float(value)).unwrap();
+        interpreted
+            .set("upper-bound", Value::Float(maximum))
+            .unwrap();
+        interpreted
+            .set("override-bound", Value::Bool(narrow))
+            .unwrap();
+        interpreted.set("rtl", Value::Bool(rtl)).unwrap();
+        let input = Interaction::default();
+        let size = Size::new(360.0, 140.0);
+        let (compiled, layout) = prepare_list(&generated, &input, size);
+        generated_observers.sync(&compiled, &layout);
+        let (scene, layout) = prepare_list(&interpreted, &input, size);
+        interpreted_observers.sync(&scene, &layout);
+        let visual = if rtl { 1.0 - position } else { position };
+        assert_eq!(generated.get_fraction(), position);
+        assert_eq!(generated.get_visual_fraction(), visual);
+        assert_eq!(interpreted.get("fraction"), Ok(Value::Float(position)));
+        assert_eq!(interpreted.get("visual-fraction"), Ok(Value::Float(visual)));
+        for scene in [compiled, scene] {
+            assert_eq!(
+                indicator_state(scene.find("meter").unwrap()),
+                Some(IndicatorState::Determinate(position))
+            );
+        }
+    }
+}
+
+#[test]
+fn editable_combo_validates_live_drafts_before_committing() {
+    use xrack_runtime::{ControlAction, InputType, text_input_value};
+
+    let preview = xrack_compiler::prepare_preview(
+        include_str!("../examples/selection/selection.xr"),
+        "selection.xr",
+        Default::default(),
+    )
+    .unwrap();
+    let interpreted = Program::from_module(&preview.module)
+        .unwrap()
+        .create("ComboValidationDemo")
+        .unwrap();
+
+    fn exercise<C: Component>(
+        mut ui: C,
+        mut permission: impl FnMut(&mut C, bool),
+        editing: impl FnOnce(&mut C, bool),
+        state: impl Fn(&C) -> (bool, String, i64, i64),
+    ) {
+        let path = [1];
+        assert_eq!(state(&ui), (true, "12,50".into(), 0, 0));
+        let scene = ui.render_shared();
+        assert_eq!(
+            scene.at_path(&path).unwrap().input_type(),
+            InputType::Decimal
+        );
+        assert!(!ui.edit_at(&scene, &path, "12.5".into()));
+        assert!(!ui.edit_at(&scene, &path, "12,345".into()));
+        assert!(ui.edit_at(&scene, &path, "9,".into()));
+        assert_eq!(state(&ui), (false, "9,".into(), 0, 0));
+        assert!(!ui.control_at(&ui.render_shared(), &path, ControlAction::AcceptComboText));
+        assert!(ui.control_at(&ui.render_shared(), &path, ControlAction::Select(2)));
+        assert_eq!(state(&ui), (false, "30,00".into(), 2, 0));
+
+        assert!(ui.edit_at(&ui.render_shared(), &path, "20,25".into()));
+        assert_eq!(state(&ui), (true, "20,25".into(), 2, 0));
+        let ready_scene = ui.render_shared();
+        permission(&mut ui, false);
+        assert!(!ui.control_at(&ready_scene, &path, ControlAction::AcceptComboText));
+        assert_eq!(state(&ui), (false, "20,25".into(), 2, 0));
+        permission(&mut ui, true);
+        assert!(ui.control_at(&ui.render_shared(), &path, ControlAction::AcceptComboText));
+        assert_eq!(state(&ui), (true, "20,25".into(), -1, 1));
+        assert_eq!(
+            text_input_value(ui.render_shared().at_path(&path).unwrap()),
+            "20,25"
+        );
+        editing(&mut ui, false);
+        assert_eq!(state(&ui), (false, "20,25".into(), -1, 1));
+        assert!(!ui.control_at(&ui.render_shared(), &path, ControlAction::AcceptComboText));
+    }
+
+    exercise(
+        selection_ui::ComboValidationDemo::new(),
+        |ui, allowed| ui.set_allow_submit(allowed),
+        |ui, editing| ui.set_editing(editing),
+        |ui| {
+            (
+                ui.get_valid(),
+                ui.get_draft(),
+                ui.get_selection(),
+                ui.get_accept_count(),
+            )
+        },
+    );
+    exercise(
+        interpreted,
+        |ui, allowed| ui.set("allow-submit", allowed.into()).unwrap(),
+        |ui, editing| ui.set("editing", editing.into()).unwrap(),
+        |ui| {
+            assert_eq!(ui.take_error(), None);
+            match (
+                ui.get("valid"),
+                ui.get("draft"),
+                ui.get("selection"),
+                ui.get("accept-count"),
+            ) {
+                (
+                    Ok(Value::Bool(valid)),
+                    Ok(Value::String(draft)),
+                    Ok(Value::Int(selected)),
+                    Ok(Value::Int(count)),
+                ) => (valid, draft, selected, count),
+                state => panic!("unexpected validation state {state:?}"),
+            }
+        },
+    );
+}
+
+#[test]
+fn combo_content_reads_selection_lazily_when_the_editor_is_inactive() {
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    let preview = xrack_compiler::prepare_preview(
+        include_str!("expressions.xr"),
+        "expressions.xr",
+        Default::default(),
+    )
+    .unwrap();
+    let mut interpreted = Program::from_module(&preview.module)
+        .unwrap()
+        .create("ComboContentParity")
+        .unwrap();
+    let mut generated = expressions_ui::ComboContentParity::new();
+    let interpreted_calls = Rc::new(Cell::new(0));
+    let generated_calls = Rc::new(Cell::new(0));
+    interpreted
+        .on("describe", {
+            let calls = interpreted_calls.clone();
+            Rc::new(move |args| {
+                calls.set(calls.get() + 1);
+                Ok(args.first().cloned())
+            })
+        })
+        .unwrap();
+    generated.on_describe({
+        let calls = generated_calls.clone();
+        move |text| {
+            calls.set(calls.get() + 1);
+            text
+        }
+    });
+
+    let check = |interpreted: &Instance,
+                 generated: &expressions_ui::ComboContentParity,
+                 editing,
+                 expected,
+                 calls| {
+        let interpreted_scene = interpreted.render_shared();
+        let generated_scene = generated.render_shared();
+        for scene in [interpreted_scene, generated_scene] {
+            let choice = scene.child_at(0).unwrap();
+            assert_eq!(xrack_runtime::combo_editable(choice), editing);
+            assert_eq!(
+                choice
+                    .combo_content()
+                    .and_then(|part| part.child_at(0))
+                    .and_then(|label| label.text("text")),
+                expected
+            );
+        }
+        assert_eq!(interpreted_calls.get(), calls);
+        assert_eq!(generated_calls.get(), calls);
+    };
+    check(&interpreted, &generated, true, None, 0);
+    interpreted.set("editing", false.into()).unwrap();
+    generated.set_editing(false);
+    check(&interpreted, &generated, false, Some("Alpha"), 1);
+    interpreted.set("selection", 1_i64.into()).unwrap();
+    generated.set_selection(1);
+    check(&interpreted, &generated, false, Some("Beta"), 2);
+    interpreted.set("editing", true.into()).unwrap();
+    generated.set_editing(true);
+    interpreted.set("selection", 0_i64.into()).unwrap();
+    generated.set_selection(0);
+    check(&interpreted, &generated, true, None, 2);
+    assert_eq!(interpreted.take_error(), None);
+}
+
+#[test]
+fn combo_state_reads_follow_the_model_before_rendering() {
+    let preview = xrack_compiler::prepare_preview(
+        include_str!("../examples/selection/selection.xr"),
+        "selection.xr",
+        Default::default(),
+    )
+    .unwrap();
+    let program = Program::from_module(&preview.module).unwrap();
+    let mut actual = program.create("RecordComboDemo").unwrap();
+    let mut generated = selection_ui::RecordComboDemo::new();
+    let check = |actual: &xrack_interpreter::Instance,
+                 generated: &selection_ui::RecordComboDemo,
+                 count,
+                 index,
+                 value,
+                 text: &str| {
+        assert_eq!(actual.get("option-count"), Ok(Value::Int(count)));
+        assert_eq!(actual.get("visible-index"), Ok(Value::Int(index)));
+        assert_eq!(actual.get("actual-code"), Ok(Value::Int(value)));
+        assert_eq!(actual.get("actual-label"), Ok(Value::String(text.into())));
+        assert_eq!(generated.get_option_count(), count);
+        assert_eq!(generated.get_visible_index(), index);
+        assert_eq!(generated.get_actual_code(), value);
+        assert_eq!(generated.get_actual_label(), text);
+    };
+
+    check(&actual, &generated, 6, 0, 200, "共享工作区");
+    let actual_model = actual.record_model("options").unwrap();
+    let code = |row: &xrack_runtime::RecordValue| match row.field("code") {
+        Some(Value::Int(code)) => *code,
+        _ => panic!("expected a workspace code"),
+    };
+    assert!(actual_model.model().sort_by(|a, b| code(a).cmp(&code(b))));
+    assert!(
+        generated
+            .model_options()
+            .sort_by(|a, b| a.code.cmp(&b.code))
+    );
+    check(&actual, &generated, 6, 1, 200, "共享工作区");
+
+    actual.set("code", Value::Int(400)).unwrap();
+    generated.set_code(400);
+    check(&actual, &generated, 6, 3, 400, "Build archive");
+    assert!(actual_model.model().remove(3).is_some());
+    assert!(generated.model_options().remove(3).is_some());
+    check(&actual, &generated, 5, -1, 400, "");
+    assert_eq!(actual.get("selected-code"), Ok(Value::Int(-1)));
+    assert_eq!(generated.get_selected_code(), -1);
+    assert_eq!(actual.take_error(), None);
+}
+
+#[test]
+fn combo_edit_state_distinguishes_empty_draft_and_selected_text() {
+    let preview = xrack_compiler::prepare_preview(
+        include_str!("../examples/selection/selection.xr"),
+        "selection.xr",
+        Default::default(),
+    )
+    .unwrap();
+    let program = Program::from_module(&preview.module).unwrap();
+    let mut actual = program.create("EditableChoiceDemo").unwrap();
+    let mut generated = selection_ui::EditableChoiceDemo::new();
+
+    assert_eq!(
+        actual.get("automatic-draft"),
+        Ok(Value::String("总部".into()))
+    );
+    assert_eq!(generated.get_automatic_draft(), "总部");
+    actual.set("active", Value::Int(1)).unwrap();
+    generated.set_active(1);
+    actual.set("draft", Value::String(String::new())).unwrap();
+    generated.set_draft(String::new());
+    for (property, received, expected) in [
+        ("actual-label", generated.get_actual_label(), "设计"),
+        ("actual-value", generated.get_actual_value(), "设计"),
+        ("actual-draft", generated.get_actual_draft(), ""),
+        ("automatic-draft", generated.get_automatic_draft(), "总部"),
+    ] {
+        assert_eq!(actual.get(property), Ok(Value::String(expected.into())));
+        assert_eq!(received, expected);
+    }
+    for ui in [&mut actual as &mut dyn Component, &mut generated] {
+        assert!(ui.edit_at(&ui.render_shared(), &[0, 3], "研".into()));
+    }
+    assert_eq!(
+        actual.get("automatic-draft"),
+        Ok(Value::String("研".into()))
+    );
+    assert_eq!(generated.get_automatic_draft(), "研");
+    assert_eq!(actual.get("active-value"), Ok(Value::String("总部".into())));
+    assert_eq!(generated.get_active_value(), "总部");
+    assert_eq!(actual.take_error(), None);
+}
+
+#[test]
 fn record_choice_matches_compiler_for_value_roles_and_disabled_rows() {
     use xrack_runtime::{
         ControlAction, choice_enabled, combo_count, combo_index, combo_label, combo_value,
@@ -8811,6 +9277,16 @@ fn custom_table_typed_paste_matches_compiled_validation_and_replay() {
     };
     let expected = generated.model_records();
     let path = [0, 1];
+    let utilization = |ui: &dyn Component| {
+        ui.list_rows(&path, 0..1)[0]
+            .child_at(4)
+            .unwrap()
+            .text("accessible-description")
+            .unwrap()
+            .to_owned()
+    };
+    assert_eq!(utilization(&interpreted), "利用率 25%");
+    assert_eq!(utilization(&generated), "利用率 25%");
     let paste = |ui: &dyn Component| {
         ui.prepare_table_paste(&ui.render_shared(), &path, 0, vec![0, 1, 2, 3, 4])
             .unwrap()
@@ -8834,6 +9310,8 @@ fn custom_table_typed_paste_matches_compiled_validation_and_replay() {
         }
     };
     compare();
+    assert_eq!(utilization(&interpreted), "利用率 75%");
+    assert_eq!(utilization(&generated), "利用率 75%");
     assert_eq!(
         actual.model().row(1).unwrap().field("units"),
         Some(&Value::Int(14))
@@ -15604,6 +16082,96 @@ fn button_pressed_tracks_physical_input_and_is_current_during_clicks_in_both_bac
 }
 
 #[test]
+fn radio_group_focus_is_reactive_and_targets_the_available_selection_in_both_backends() {
+    use selection_ui::MixedRadioOptionsDemo;
+    use std::time::Instant;
+    use xrack_layout::{FocusObservers, Interaction, NavigationKey, ShortcutOutcome, Size};
+    use xrack_runtime::{FocusRequests, radio_value};
+
+    fn exercise<C: Component>(mut ui: C, read: impl Fn(&C) -> bool, set_target: impl Fn(&mut C)) {
+        let mut input = Interaction::default();
+        let mut observers = FocusObservers::default();
+        let queue = FocusRequests::default();
+        let _context = queue.enter();
+        let size = Size::new(425.0, 435.0);
+        let (scene, layout) = prepare_list(&ui, &input, size);
+        assert!(!read(&ui));
+        assert!(ui.dispatch("focus-targets", "clicked"));
+        input.apply_focus_requests(&scene, &layout, queue.drain());
+        let focused = |input: &Interaction, scene: &Node| {
+            radio_value(
+                scene
+                    .at_path(&input.focused.as_ref().unwrap().path)
+                    .unwrap(),
+            )
+            .to_owned()
+        };
+        assert_eq!(focused(&input, &scene), "desktop");
+        observers.sync(&input, &scene, &layout, true);
+        assert!(read(&ui));
+        let next = input
+            .group_key(&scene, &layout, NavigationKey::Down)
+            .unwrap();
+        assert!(ui.control_at(&scene, &next.path, next.action));
+        assert_eq!(focused(&input, &scene), "mobile");
+        assert!(observers.sync(&input, &scene, &layout, true).is_empty());
+        assert!(read(&ui));
+        observers.sync(&input, &scene, &layout, false);
+        assert!(!read(&ui));
+        observers.sync(&input, &scene, &layout, true);
+        assert!(read(&ui));
+
+        let (scene, layout) = prepare_list(&ui, &input, size);
+        let ShortcutOutcome::Activate(activation) = input.shortcut_press(
+            &scene,
+            &layout,
+            "F3".parse().unwrap(),
+            false,
+            Instant::now(),
+        ) else {
+            panic!("expected clear-focus shortcut");
+        };
+        assert!(ui.control_at(&scene, &activation.path, activation.action));
+        input.apply_focus_requests(&scene, &layout, queue.drain());
+        observers.sync(&input, &scene, &layout, true);
+        assert!(input.focused.is_none());
+        assert!(!read(&ui));
+
+        set_target(&mut ui); // "remote" is disabled. Focus should enter on "auto".
+        let (scene, layout) = prepare_list(&ui, &input, size);
+        assert!(ui.dispatch("focus-targets", "clicked"));
+        input.apply_focus_requests(&scene, &layout, queue.drain());
+        assert_eq!(focused(&input, &scene), "auto");
+        assert_eq!(
+            scene.find("targets").unwrap().text("current-value"),
+            Some("remote")
+        );
+        observers.sync(&input, &scene, &layout, true);
+        assert!(read(&ui));
+    }
+
+    exercise(
+        MixedRadioOptionsDemo::new(),
+        MixedRadioOptionsDemo::get_group_focused,
+        |ui| ui.set_target("remote".into()),
+    );
+    let preview = xrack_compiler::prepare_preview(
+        include_str!("../examples/selection/selection.xr"),
+        "selection.xr",
+        Default::default(),
+    )
+    .unwrap();
+    exercise(
+        Program::from_module(&preview.module)
+            .unwrap()
+            .create("MixedRadioOptionsDemo")
+            .unwrap(),
+        |ui| ui.get("group-focused") == Ok(true.into()),
+        |ui| ui.set("target", Value::String("remote".into())).unwrap(),
+    );
+}
+
+#[test]
 fn mixed_radio_options_track_business_values_and_reject_stale_slots_in_both_backends() {
     use selection_ui::MixedRadioOptionsDemo;
     use xrack_layout::{Interaction, Point, Size};
@@ -15619,8 +16187,20 @@ fn mixed_radio_options_track_business_values_and_reject_stale_slots_in_both_back
         let path = [0, 0];
         let selected = |node: &Node| {
             let group = node.at_path(&path).unwrap();
-            group_index(group)
-                .map(|slot| (slot, radio_value(group.child_at(slot).unwrap()).to_owned()))
+            let choice = group_index(group);
+            for (slot, item) in group.children.iter().enumerate() {
+                if let Some(indicator) = item
+                    .children
+                    .iter()
+                    .find(|node| node.kind == "ToggleIndicator")
+                {
+                    assert_eq!(
+                        indicator.child_at(0).unwrap().text("text"),
+                        Some(if choice == Some(slot) { "●" } else { "○" })
+                    );
+                }
+            }
+            choice.map(|slot| (slot, radio_value(group.child_at(slot).unwrap()).to_owned()))
         };
         let initial = ui.render_shared();
         assert_eq!(selected(&initial), Some((2, "desktop".to_owned())));
@@ -15837,6 +16417,389 @@ fn grouped_push_buttons_use_one_selection_and_join_aggregate_checks_in_both_back
 }
 
 #[test]
+fn programmatic_toggle_updates_owning_storage_without_user_events_in_both_backends() {
+    use controls_ui::ProgrammaticToggleDemo;
+    use xrack_runtime::{CheckState, FocusRequests};
+
+    fn exercise<C: Component>(
+        mut ui: C,
+        toggle: impl Fn(&mut C),
+        pinned: impl Fn(&C) -> bool,
+        user_events: impl Fn(&C) -> i64,
+        hide_pin: impl Fn(&mut C),
+        read_checked: impl Fn(&C) -> [bool; 6],
+        show_grid_alias: impl Fn(&mut C),
+    ) {
+        let effects = FocusRequests::default();
+        let _focus = effects.enter();
+        let initial = ui.render_shared();
+        assert!(initial.find("comfy").unwrap().boolean("checked", false));
+        assert!(!initial.find("unnamed").unwrap().boolean("checked", true));
+        for expected in [true, false] {
+            toggle(&mut ui);
+            // The model state can be observed in the same turn, before drawing.
+            assert_eq!(read_checked(&ui), [expected; 6]);
+            let scene = ui.render_shared();
+            assert_eq!(
+                scene.find("mirror-label").unwrap().text("text"),
+                Some(if expected {
+                    "共享已选"
+                } else {
+                    "共享未选"
+                }),
+            );
+            for id in [
+                "pin",
+                "plain",
+                "shared-button",
+                "shared-mirror",
+                "grouped-flag",
+                "compact",
+                "grid-choice",
+                "filtered",
+            ] {
+                assert_eq!(
+                    scene.find(id).unwrap().boolean("checked", !expected),
+                    expected,
+                    "{id}"
+                );
+            }
+            assert_eq!(
+                scene.find("flag-summary").unwrap().check_state(),
+                if expected {
+                    CheckState::Checked
+                } else {
+                    CheckState::Unchecked
+                }
+            );
+            assert!(!scene.find("comfy").unwrap().boolean("checked", true));
+            assert!(!scene.find("unnamed").unwrap().boolean("checked", true));
+            assert_eq!(pinned(&ui), expected);
+            assert_eq!(user_events(&ui), 0);
+            assert!(effects.drain().is_empty());
+        }
+        hide_pin(&mut ui);
+        toggle(&mut ui);
+        assert!(pinned(&ui));
+        assert_eq!(read_checked(&ui), [true; 6]);
+        show_grid_alias(&mut ui);
+        assert_eq!(read_checked(&ui), [true, true, true, true, false, true]);
+        let scene = ui.render_shared();
+        assert!(scene.find("grid-alias").unwrap().boolean("checked", false));
+        assert!(!scene.find("grid-choice").unwrap().boolean("checked", true));
+        assert_eq!(user_events(&ui), 0);
+        assert!(ui.dispatch("plain", "clicked"));
+        assert_eq!(user_events(&ui), 1);
+        assert!(
+            ui.render_shared()
+                .find("plain")
+                .unwrap()
+                .boolean("checked", false)
+        );
+    }
+
+    exercise(
+        ProgrammaticToggleDemo::new(),
+        ProgrammaticToggleDemo::invoke_toggle_all,
+        ProgrammaticToggleDemo::get_pinned,
+        ProgrammaticToggleDemo::get_user_events,
+        |ui| {
+            ui.set_pin_enabled(false);
+            ui.set_pin_visible(false);
+        },
+        |ui| {
+            [
+                ui.get_plain_checked(),
+                ui.get_shared_mirror_checked(),
+                ui.get_grouped_flag_checked(),
+                ui.get_compact_checked(),
+                ui.get_grid_checked(),
+                ui.get_filtered_checked(),
+            ]
+        },
+        |ui| ui.set_prefer_grid_alias(true),
+    );
+    exercise(
+        interpret_controls_fixture("ProgrammaticToggleDemo"),
+        |ui| {
+            ui.invoke("toggle-all", &[]).unwrap();
+        },
+        |ui| ui.get("pinned") == Ok(true.into()),
+        |ui| {
+            let Value::Int(count) = ui.get("user-events").unwrap() else {
+                unreachable!()
+            };
+            count
+        },
+        |ui| {
+            ui.set("pin-enabled", false.into()).unwrap();
+            ui.set("pin-visible", false.into()).unwrap();
+        },
+        |ui| {
+            [
+                "plain-checked",
+                "shared-mirror-checked",
+                "grouped-flag-checked",
+                "compact-checked",
+                "grid-checked",
+                "filtered-checked",
+            ]
+            .map(|name| match ui.get(name).unwrap() {
+                Value::Bool(checked) => checked,
+                other => panic!("expected a bool from {name}, got {other:?}"),
+            })
+        },
+        |ui| ui.set("prefer-grid-alias", true.into()).unwrap(),
+    );
+}
+
+#[test]
+fn button_checked_uses_the_first_mounted_value_option_across_pages() {
+    fn exercise<C: Component>(
+        mut ui: C,
+        selected: impl Fn(&C) -> bool,
+        open: impl Fn(&mut C),
+        advance: impl Fn(&mut C, &str, Value),
+    ) {
+        let expect = |ui: &C, checked: bool| {
+            assert_eq!(selected(ui), checked);
+            let scene = ui.render_shared();
+            assert_eq!(
+                scene.find("fallback").unwrap().boolean("checked", !checked),
+                checked
+            );
+        };
+        expect(&ui, true);
+        open(&mut ui);
+        expect(&ui, true);
+        advance(&mut ui, "tab-index", Value::Int(1));
+        expect(&ui, true);
+        advance(&mut ui, "swipe-index", Value::Int(1));
+        expect(&ui, false);
+        advance(&mut ui, "allow-alias", Value::Bool(false));
+        expect(&ui, true);
+    }
+    use controls_ui::CheckedGroupPagesDemo;
+    exercise(
+        CheckedGroupPagesDemo::new(),
+        CheckedGroupPagesDemo::get_fallback_checked,
+        CheckedGroupPagesDemo::invoke_open_options,
+        |ui, name, value| match (name, value) {
+            ("tab-index", Value::Int(index)) => ui.set_tab_index(index),
+            ("swipe-index", Value::Int(index)) => ui.set_swipe_index(index),
+            ("allow-alias", Value::Bool(enabled)) => ui.set_allow_alias(enabled),
+            _ => unreachable!(),
+        },
+    );
+    exercise(
+        interpret_controls_fixture("CheckedGroupPagesDemo"),
+        |ui| ui.get("fallback-checked") == Ok(Value::Bool(true)),
+        |ui| {
+            ui.invoke("open-options", &[]).unwrap();
+        },
+        |ui, name, value| ui.set(name, value).unwrap(),
+    );
+}
+
+#[test]
+fn animated_click_restarts_release_and_cancels_unavailable_targets_in_both_backends() {
+    use controls_ui::ProgrammaticButtonsDemo;
+    use std::time::Duration;
+    use xrack_runtime::ButtonAnimations;
+
+    fn exercise<C: Component>(
+        mut ui: C,
+        read: impl Fn(&C) -> (String, bool),
+        animate: impl Fn(&mut C),
+        enable: impl Fn(&mut C, bool),
+        show: impl Fn(&mut C, bool),
+    ) {
+        let initial = ui.render_shared();
+        let handle = initial
+            .find("target")
+            .unwrap()
+            .button_press_handle
+            .clone()
+            .unwrap();
+        let mut animations = ButtonAnimations::default();
+        animations.sync([&handle]);
+        assert!(animations.deadline().is_none());
+
+        animate(&mut ui);
+        let first = animations.deadline().unwrap();
+        assert!(handle.pressed());
+        assert!(animations.take_redraw());
+        assert_eq!(read(&ui), ("press queued ".into(), false));
+        animate(&mut ui);
+        let restarted = animations.deadline().unwrap();
+        assert!(restarted >= first);
+        assert!(!animations.take_redraw());
+        assert_eq!(read(&ui), ("press queued queued ".into(), false));
+        let scene = ui.render_shared();
+        assert!(
+            animations
+                .next(&scene, restarted - Duration::from_millis(1))
+                .is_none()
+        );
+        animations
+            .next(&scene, restarted)
+            .unwrap()
+            .apply(&mut ui, &scene);
+        assert_eq!(
+            read(&ui),
+            ("press queued queued release toggle click ".into(), true)
+        );
+        assert!(!handle.pressed());
+        assert!(animations.take_redraw());
+        assert!(animations.deadline().is_none());
+
+        animate(&mut ui);
+        let due = animations.deadline().unwrap();
+        enable(&mut ui, false);
+        let disabled = ui.render_shared();
+        animations
+            .next(&disabled, due - Duration::from_millis(1))
+            .unwrap()
+            .apply(&mut ui, &disabled);
+        assert!(read(&ui).0.ends_with("press queued cancel "));
+        assert!(read(&ui).1);
+        assert!(!handle.pressed());
+
+        enable(&mut ui, true);
+        animate(&mut ui);
+        assert!(handle.pressed());
+        show(&mut ui, false);
+        animations.sync([]);
+        assert!(!handle.pressed());
+        assert!(animations.deadline().is_none());
+    }
+
+    exercise(
+        ProgrammaticButtonsDemo::new(),
+        |ui| (ui.get_events(), ui.get_checked()),
+        |ui| ui.invoke_run_animated(),
+        ProgrammaticButtonsDemo::set_allow_click,
+        ProgrammaticButtonsDemo::set_show_target,
+    );
+    exercise(
+        interpret_controls_fixture("ProgrammaticButtonsDemo"),
+        |ui| {
+            let Value::String(events) = ui.get("events").unwrap() else {
+                unreachable!()
+            };
+            (events, ui.get("checked") == Ok(true.into()))
+        },
+        |ui| {
+            ui.invoke("run-animated", &[]).unwrap();
+        },
+        |ui, value| ui.set("allow-click", value.into()).unwrap(),
+        |ui, value| ui.set("show-target", value.into()).unwrap(),
+    );
+}
+
+#[test]
+fn programmatic_click_uses_live_availability_and_lifecycle_in_both_backends() {
+    use controls_ui::ProgrammaticButtonsDemo;
+
+    fn exercise<C: Component>(
+        mut ui: C,
+        read: impl Fn(&C) -> (String, bool, i64),
+        invoke: impl Fn(&mut C, &str),
+        configure: impl Fn(&mut C, &str, bool),
+        clear_events: impl Fn(&mut C),
+    ) {
+        invoke(&mut ui, "run-click");
+        assert_eq!(
+            read(&ui),
+            ("press release toggle click done ".into(), true, 0)
+        );
+        assert!(
+            !ui.render_shared()
+                .find("target")
+                .unwrap()
+                .button_press_handle
+                .as_ref()
+                .unwrap()
+                .pressed()
+        );
+
+        let effects = xrack_runtime::FocusRequests::default();
+        let _focus = effects.enter();
+        invoke(&mut ui, "run-command");
+        assert_eq!(read(&ui).2, 1);
+        assert_eq!(effects.drain().len(), 1);
+        invoke(&mut ui, "run-choice");
+        assert!(
+            ui.render_shared()
+                .find("choice-button")
+                .unwrap()
+                .boolean("checked", false)
+        );
+
+        clear_events(&mut ui);
+        configure(&mut ui, "allow-click", false);
+        invoke(&mut ui, "run-click");
+        assert_eq!(read(&ui).0, "done ");
+
+        clear_events(&mut ui);
+        configure(&mut ui, "allow-click", true);
+        configure(&mut ui, "disable-on-press", true);
+        invoke(&mut ui, "run-click");
+        assert_eq!(read(&ui).0, "press cancel done ");
+
+        clear_events(&mut ui);
+        configure(&mut ui, "allow-click", true);
+        configure(&mut ui, "disable-on-press", false);
+        configure(&mut ui, "disable-on-release", true);
+        invoke(&mut ui, "run-click");
+        assert_eq!(read(&ui).0, "press release done ");
+        assert!(read(&ui).1);
+
+        clear_events(&mut ui);
+        configure(&mut ui, "allow-click", true);
+        configure(&mut ui, "show-target", false);
+        invoke(&mut ui, "run-click");
+        assert_eq!(read(&ui).0, "done ");
+    }
+
+    exercise(
+        ProgrammaticButtonsDemo::new(),
+        |ui| (ui.get_events(), ui.get_checked(), ui.get_command_count()),
+        |ui, callback| match callback {
+            "run-click" => ui.invoke_run_click(),
+            "run-command" => ui.invoke_run_command(),
+            "run-choice" => ui.invoke_run_choice(),
+            _ => unreachable!(),
+        },
+        |ui, name, value| match name {
+            "allow-click" => ui.set_allow_click(value),
+            "show-target" => ui.set_show_target(value),
+            "disable-on-press" => ui.set_disable_on_press(value),
+            "disable-on-release" => ui.set_disable_on_release(value),
+            _ => unreachable!(),
+        },
+        |ui| ui.set_events(String::new()),
+    );
+    exercise(
+        interpret_controls_fixture("ProgrammaticButtonsDemo"),
+        |ui| {
+            let Value::String(events) = ui.get("events").unwrap() else {
+                unreachable!()
+            };
+            let Value::Int(commands) = ui.get("command-count").unwrap() else {
+                unreachable!()
+            };
+            (events, ui.get("checked") == Ok(true.into()), commands)
+        },
+        |ui, callback| {
+            ui.invoke(callback, &[]).unwrap();
+        },
+        |ui, name, value| ui.set(name, value.into()).unwrap(),
+        |ui| ui.set("events", Value::String(String::new())).unwrap(),
+    );
+}
+
+#[test]
 fn checkable_buttons_commit_before_callbacks_and_keep_state_by_row_key() {
     use controls_ui::CheckableButtonsDemo;
     use xrack_layout::{ActivationKey, Interaction, Point, Size};
@@ -15844,6 +16807,7 @@ fn checkable_buttons_commit_before_callbacks_and_keep_state_by_row_key() {
     fn exercise<C: Component>(
         mut ui: C,
         read: impl Fn(&C) -> (bool, String, i64),
+        filter_events: impl Fn(&C) -> String,
         configure: impl Fn(&mut C, &str, bool),
         reorder: impl FnOnce(&mut C),
     ) {
@@ -15905,12 +16869,21 @@ fn checkable_buttons_commit_before_callbacks_and_keep_state_by_row_key() {
         assert!(changed.at_path(&first).unwrap().boolean("checked", false));
         assert!(!changed.at_path(&second).unwrap().boolean("checked", true));
         assert_eq!(read(&ui).2, 1);
+        assert_eq!(filter_events(&ui), "文档 on click-on ");
+        let marker = |scene: &xrack_runtime::Node, row: [usize; 4]| {
+            scene
+                .at_path(&[row.as_slice(), &[0, 0, 0]].concat())
+                .and_then(|node| node.text("text"))
+                .map(str::to_owned)
+        };
+        assert_eq!(marker(&changed, first).as_deref(), Some("●"));
+        assert_eq!(marker(&changed, second).as_deref(), Some("○"));
         reorder(&mut ui);
         assert!(!ui.dispatch_at(&scene, &first, "clicked"));
         let reordered = ui.render_shared();
         assert_eq!(
             reordered.at_path(&second).unwrap().text("text"),
-            Some("文档")
+            Some("文档 ✓")
         );
         assert!(
             reordered
@@ -15919,16 +16892,29 @@ fn checkable_buttons_commit_before_callbacks_and_keep_state_by_row_key() {
                 .boolean("checked", false)
         );
         assert!(!reordered.at_path(&first).unwrap().boolean("checked", true));
+        assert_eq!(marker(&reordered, second).as_deref(), Some("●"));
+        assert_eq!(marker(&reordered, first).as_deref(), Some("○"));
         assert_eq!(read(&ui).2, 1);
+        configure(&mut ui, "select-video", true);
+        let initialized = ui.render_shared();
+        assert_eq!(
+            initialized.at_path(&first).unwrap().text("text"),
+            Some("视频 ✓")
+        );
+        assert_eq!(marker(&initialized, first).as_deref(), Some("●"));
+        assert!(ui.dispatch_at(&initialized, &second, "clicked"));
+        assert_eq!(filter_events(&ui), "文档 on click-on 文档 off click-off ");
     }
 
     exercise(
         CheckableButtonsDemo::new(),
         |ui| (ui.get_pinned(), ui.get_events(), ui.get_filter_toggles()),
+        CheckableButtonsDemo::get_filter_events,
         |ui, name, value| match name {
             "pinned" => ui.set_pinned(value),
             "pin-checkable" => ui.set_pin_checkable(value),
             "allow-pin" => ui.set_allow_pin(value),
+            "select-video" => ui.set_select_video(value),
             _ => unreachable!(),
         },
         |ui| {
@@ -15946,6 +16932,10 @@ fn checkable_buttons_commit_before_callbacks_and_keep_state_by_row_key() {
             };
             (ui.get("pinned") == Ok(true.into()), events, toggles)
         },
+        |ui| match ui.get("filter-events").unwrap() {
+            Value::String(events) => events,
+            other => panic!("expected filter events, got {other:?}"),
+        },
         |ui, name, value| ui.set(name, value.into()).unwrap(),
         |ui| {
             assert!(
@@ -15953,6 +16943,92 @@ fn checkable_buttons_commit_before_callbacks_and_keep_state_by_row_key() {
                     .unwrap()
                     .sort_by(|left, right| right.cmp(left))
             );
+        },
+    );
+}
+
+#[test]
+fn programmatic_row_toggles_keep_local_and_linked_state_consistent() {
+    use controls_ui::CheckableButtonsDemo;
+    use xrack_layout::{Interaction, Size};
+
+    fn exercise<C: Component>(
+        mut ui: C,
+        read: impl Fn(&C) -> (String, i64, bool),
+        reorder: impl FnOnce(&mut C),
+    ) {
+        let path = |row, button| [0, 4, 0, row, button];
+        let checked = |scene: &xrack_runtime::Node, row, button| {
+            scene
+                .at_path(&path(row, button))
+                .unwrap()
+                .boolean("checked", false)
+        };
+        let (scene, layout) = prepare_list(&ui, &Interaction::default(), Size::new(440.0, 455.0));
+        for row in 0..3 {
+            for button in 0..2 {
+                let item = layout.at_path(&path(row, button)).unwrap();
+                assert!(item.visible_window_bounds(item.bounds).height > 0.0);
+            }
+        }
+        assert!(ui.dispatch_at(&scene, &path(0, 0), "clicked"));
+        assert_eq!(read(&ui), ("文档 on ".into(), 0, false));
+        let changed = ui.render_shared();
+        assert!(checked(&changed, 0, 0));
+        assert!(!checked(&changed, 1, 0));
+
+        reorder(&mut ui);
+        assert!(!ui.dispatch_at(&changed, &path(0, 0), "clicked"));
+        let reordered = ui.render_shared();
+        assert_eq!(
+            reordered.at_path(&path(1, 0)).unwrap().text("text"),
+            Some("文档 ✓")
+        );
+        assert!(!checked(&reordered, 0, 0));
+        assert!(ui.dispatch_at(&reordered, &path(1, 0), "clicked"));
+        assert_eq!(read(&ui), ("文档 on 文档 off ".into(), 0, false));
+
+        let scene = ui.render_shared();
+        assert!(ui.dispatch_at(&scene, &path(2, 1), "clicked"));
+        assert_eq!(read(&ui), ("文档 on 文档 off ".into(), 0, true));
+        let shared = ui.render_shared();
+        for row in 0..3 {
+            assert!(checked(&shared, row, 1));
+            assert!(!checked(&shared, row, 0));
+        }
+        assert!(ui.dispatch_at(&shared, &path(0, 1), "clicked"));
+        assert_eq!(read(&ui), ("文档 on 文档 off ".into(), 0, false));
+    }
+
+    exercise(
+        CheckableButtonsDemo::new(),
+        |ui| {
+            (
+                ui.get_manual_events(),
+                ui.get_manual_notifications(),
+                ui.get_shared_filter(),
+            )
+        },
+        |ui| assert!(ui.model_filters().sort_by(|left, right| right.cmp(left))),
+    );
+    exercise(
+        interpret_controls_fixture("CheckableButtonsDemo"),
+        |ui| match (
+            ui.get("manual-events"),
+            ui.get("manual-notifications"),
+            ui.get("shared-filter"),
+        ) {
+            (Ok(Value::String(events)), Ok(Value::Int(notifications)), Ok(Value::Bool(shared))) => {
+                (events, notifications, shared)
+            }
+            other => panic!("unexpected row toggle state: {other:?}"),
+        },
+        |ui| {
+            assert!(
+                ui.string_model("filters")
+                    .unwrap()
+                    .sort_by(|left, right| right.cmp(left))
+            )
         },
     );
 }
@@ -21310,6 +22386,1037 @@ fn tumbler_rejects_replaced_models_and_preserves_wrapping() {
 }
 
 #[test]
+fn model_tabs_keep_editor_state_and_track_headers_selection_and_count() {
+    use navigation_ui::ModelTabsDemo;
+    use xrack_layout::{Interaction, NavigationKey, Size};
+    use xrack_runtime::{ControlAction, group_index};
+
+    let mut actual = interpret_navigation_fixture("ModelTabsDemo");
+    let mut generated = ModelTabsDemo::new();
+    let size = Size::new(560.0, 312.0);
+
+    fn editor(ui: &impl Component, index: usize, text: &str) -> Node {
+        let scene = ui.render();
+        let tabs = scene.at_path(&[0]).unwrap();
+        assert_eq!(group_index(tabs), Some(index));
+        assert_eq!(
+            tabs.children
+                .iter()
+                .filter(|tab| !tab.children.is_empty())
+                .count(),
+            1
+        );
+        assert_eq!(scene.find("editor-title").unwrap().text("text"), Some(text));
+        scene
+    }
+
+    fn edit_switch_and_resume(ui: &mut impl Component) {
+        let scene = editor(ui, 1, "草稿 · 编辑 0 次");
+        assert_eq!(
+            scene.at_path(&[0, 2]).unwrap().text("accessible-name"),
+            Some("文档 笔记")
+        );
+        assert!(ui.dispatch_at(&scene, &[0, 1, 0, 1], "clicked"));
+        let stale = editor(ui, 1, "草稿 · 编辑 1 次");
+        assert!(ui.control_at(&stale, &[0], ControlAction::Select(2)));
+        editor(ui, 2, "笔记 · 编辑 0 次");
+        assert!(!ui.dispatch_at(&stale, &[0, 1, 0, 1], "clicked"));
+        let scene = ui.render();
+        assert!(ui.control_at(&scene, &[0], ControlAction::Select(1)));
+        editor(ui, 1, "草稿 · 编辑 1 次");
+    }
+
+    edit_switch_and_resume(&mut actual);
+    edit_switch_and_resume(&mut generated);
+
+    actual.set("mirrored", true.into()).unwrap();
+    generated.set_mirrored(true);
+    actual.set("notes-enabled", false.into()).unwrap();
+    generated.set_notes_enabled(false);
+    fn rtl_keyboard(ui: &mut impl Component, size: Size) {
+        let mut input = Interaction::default();
+        let (scene, layout) = prepare_list(ui, &input, size);
+        let (home, draft, notes) = (
+            layout.at_path(&[0, 0]).unwrap().tab_header.unwrap(),
+            layout.at_path(&[0, 1]).unwrap().tab_header.unwrap(),
+            layout.at_path(&[0, 2]).unwrap().tab_header.unwrap(),
+        );
+        assert!(home.x > draft.x && draft.x > notes.x);
+        input.focus_next(&scene, &layout, false);
+        assert!(input.is_focused(&[0, 1]));
+        let next = input
+            .group_key(&scene, &layout, NavigationKey::Left)
+            .unwrap();
+        assert_eq!(next.action, ControlAction::Select(0));
+        assert!(ui.control_at(&scene, &next.path, next.action));
+        editor(ui, 0, "概览 · 编辑 0 次");
+        assert!(ui.control_at(&ui.render(), &[0], ControlAction::Select(1)));
+    }
+    rtl_keyboard(&mut actual, size);
+    rtl_keyboard(&mut generated, size);
+
+    actual.set("notes-visible", false.into()).unwrap();
+    generated.set_notes_visible(false);
+    actual.set("side", true.into()).unwrap();
+    generated.set_side(true);
+    let actual_layout = prepare_list(&actual, &Interaction::default(), size).1;
+    let expected_layout = prepare_list(&generated, &Interaction::default(), size).1;
+    assert!(actual_layout.at_path(&[0, 2]).unwrap().tab_header.is_none());
+    assert!(
+        expected_layout
+            .at_path(&[0, 2])
+            .unwrap()
+            .tab_header
+            .is_none()
+    );
+    let selected = expected_layout.at_path(&[0, 1]).unwrap();
+    assert!(selected.tab_header.unwrap().x > selected.bounds.x);
+    assert_eq!(
+        selected.tab_header,
+        actual_layout.at_path(&[0, 1]).unwrap().tab_header
+    );
+    assert_eq!(actual.get("page-count"), Ok(3_i64.into()));
+    assert_eq!(generated.get_page_count(), 3);
+
+    let Value::RecordList(rows) = actual.get("documents").unwrap() else {
+        panic!("expected documents");
+    };
+    assert!(rows.model().remove(0).is_some());
+    assert!(generated.model_documents().remove(0).is_some());
+    editor(&actual, 0, "草稿 · 编辑 1 次");
+    editor(&generated, 0, "草稿 · 编辑 1 次");
+    assert_eq!(actual.get("page-count"), Ok(2_i64.into()));
+    assert_eq!(generated.get_page_count(), 2);
+    assert_eq!(actual.take_error(), None);
+}
+
+#[test]
+fn tab_widget_drag_and_keyboard_reorder_preserve_the_page_and_focus() {
+    use navigation_ui::ModelTabsDemo;
+    use std::time::{Duration, Instant};
+    use xrack_layout::{Interaction, NavigationKey, Point, ScrollGestureKind, Size};
+    use xrack_runtime::{ControlAction, group_index};
+
+    fn exercise(ui: &mut impl Component, kind: ScrollGestureKind) {
+        let size = Size::new(560.0, 312.0);
+        let mut input = Interaction::default();
+        let (scene, _) = prepare_list(ui, &input, size);
+        let key = scene.row_key_at(&[0, 1]).unwrap();
+        assert!(ui.dispatch_at(&scene, &[0, 1, 0, 1], "clicked"));
+        let (scene, layout) = prepare_list(ui, &input, size);
+        let edit_path = &[0, 1, 0, 1];
+        let editor = input
+            .accessibility_target(&scene, &layout, edit_path)
+            .unwrap();
+        input.focus_target(&scene, &layout, editor);
+        assert!(input.is_focused(edit_path));
+        let center = |slot| {
+            let header = layout.at_path(&[0, slot]).unwrap().tab_header.unwrap();
+            Point {
+                x: header.x + header.width / 2.0,
+                y: header.y + header.height / 2.0,
+            }
+        };
+        let now = Instant::now();
+        let (start, end) = (center(1), center(2));
+        assert!(input.begin_scroll_gesture(&scene, &layout, start, now, kind));
+        assert!(input.move_scroll_gesture(&scene, &layout, end, now + Duration::from_millis(20)));
+        assert!(
+            input
+                .tab_move_marker(&scene.children[0], &layout.children[0], &[0])
+                .is_some()
+        );
+        let release =
+            input.end_scroll_gesture(&scene, &layout, end, now + Duration::from_millis(40));
+        let action = release.control.unwrap();
+        let ControlAction::MoveTab(movement) = action.action else {
+            panic!("expected a move action")
+        };
+        assert_eq!((movement.from, movement.to), (1, 2));
+        assert!(ui.control_at(&scene, &action.path, action.action));
+
+        let (scene, layout) = prepare_list(ui, &input, size);
+        input.reconcile(&scene, &layout);
+        assert!(input.is_focused(&[0, 2, 0, 1]));
+        assert_eq!(scene.row_key_at(&[0, 2]), Some(key));
+        assert_eq!(group_index(&scene.children[0]), Some(2));
+        assert_eq!(
+            scene.find("editor-title").unwrap().text("text"),
+            Some("草稿 · 编辑 1 次")
+        );
+
+        let tab = input
+            .accessibility_target(&scene, &layout, &[0, 2])
+            .unwrap();
+        input.focus_target(&scene, &layout, tab);
+        assert!(input.is_focused(&[0, 2]));
+        let action = input
+            .tab_move_key(&scene, &layout, NavigationKey::Left)
+            .unwrap()
+            .unwrap();
+        assert!(ui.control_at(&scene, &action.path, action.action));
+        let (scene, layout) = prepare_list(ui, &input, size);
+        input.reconcile(&scene, &layout);
+        assert!(input.is_focused(&[0, 1]));
+        assert_eq!(scene.row_key_at(&[0, 1]), Some(key));
+        assert_eq!(
+            scene.find("editor-title").unwrap().text("text"),
+            Some("草稿 · 编辑 1 次")
+        );
+    }
+
+    let mut interpreted = interpret_navigation_fixture("ModelTabsDemo");
+    let mut generated = ModelTabsDemo::new();
+    exercise(&mut interpreted, ScrollGestureKind::Touch);
+    exercise(&mut generated, ScrollGestureKind::MouseControl);
+    assert_eq!(interpreted.get("tab-moves"), Ok(2_i64.into()));
+    assert_eq!(generated.get_tab_moves(), 2);
+    assert_eq!(interpreted.get("choices"), Ok(0_i64.into()));
+    assert_eq!(generated.get_choices(), 0);
+    assert_eq!(interpreted.take_error(), None);
+}
+
+#[test]
+fn repeated_swipe_pages_mount_lazily_and_keep_state_by_model_row() {
+    use navigation_ui::{ModelSwipeDemo, WorkspaceTab};
+    use std::{cell::RefCell, rc::Rc};
+    use xrack_runtime::{ControlAction, group_index};
+
+    let mut actual = interpret_navigation_fixture("ModelSwipeDemo");
+    let mut generated = ModelSwipeDemo::new();
+    let actual_reads = Rc::new(RefCell::new(Vec::<String>::new()));
+    let generated_reads = Rc::new(RefCell::new(Vec::<String>::new()));
+    actual
+        .on("content-title", {
+            let reads = actual_reads.clone();
+            Rc::new(move |args| {
+                let [Value::String(title)] = args else {
+                    panic!("expected one page title");
+                };
+                reads.borrow_mut().push(title.clone());
+                Ok(Some(title.clone().into()))
+            })
+        })
+        .unwrap();
+    generated.on_content_title({
+        let reads = generated_reads.clone();
+        move |title| {
+            reads.borrow_mut().push(title.clone());
+            title
+        }
+    });
+
+    let check = |ui: &dyn Component, index: usize, title: &str| {
+        let scene = ui.render();
+        let bar = scene.at_path(&[0]).unwrap();
+        let pages = scene.at_path(&[1]).unwrap();
+        assert_eq!(group_index(bar), Some(index));
+        assert_eq!(group_index(pages), Some(index));
+        assert_eq!(
+            pages
+                .children
+                .iter()
+                .filter(|row| !row.children.is_empty())
+                .count(),
+            1
+        );
+        assert_eq!(
+            scene.find("editor-title").unwrap().text("text"),
+            Some(title)
+        );
+        scene
+    };
+    check(&actual, 1, "草稿 · 编辑 0 次");
+    check(&generated, 1, "草稿 · 编辑 0 次");
+    assert!(
+        !actual_reads.borrow().is_empty()
+            && actual_reads.borrow().iter().all(|title| title == "草稿")
+    );
+    assert!(
+        !generated_reads.borrow().is_empty()
+            && generated_reads.borrow().iter().all(|title| title == "草稿")
+    );
+
+    for ui in [&mut actual as &mut dyn Component, &mut generated] {
+        let first = ui.render();
+        assert!(ui.dispatch_at(&first, &[1, 1, 0, 1], "clicked"));
+        check(ui, 1, "草稿 · 编辑 1 次");
+
+        assert!(ui.control_at(&ui.render(), &[1], ControlAction::Select(2)));
+        check(ui, 2, "笔记 · 编辑 0 次");
+        assert!(!ui.dispatch_at(&first, &[1, 1, 0, 1], "clicked"));
+        assert!(ui.control_at(&ui.render(), &[0], ControlAction::Select(1)));
+        check(ui, 1, "草稿 · 编辑 1 次");
+    }
+    assert!(!actual_reads.borrow().iter().any(|title| title == "概览"));
+    assert!(!generated_reads.borrow().iter().any(|title| title == "概览"));
+
+    let Value::RecordList(rows) = actual.get("documents").unwrap() else {
+        panic!("expected documents");
+    };
+    let actual_model = rows.model();
+    let model = generated.model_documents();
+    let old_actual = actual.render();
+    let old_generated = generated.render();
+    assert!(actual_model.remove(0).is_some());
+    assert!(model.remove(0).is_some());
+    check(&actual, 0, "草稿 · 编辑 1 次");
+    check(&generated, 0, "草稿 · 编辑 1 次");
+    assert!(!actual.dispatch_at(&old_actual, &[1, 1, 0, 1], "clicked"));
+    assert!(!generated.dispatch_at(&old_generated, &[1, 1, 0, 1], "clicked"));
+
+    let draft = actual_model.remove(0).unwrap();
+    assert!(model.remove(0).is_some());
+    assert!(actual.render().find("editor-title").is_none());
+    assert!(generated.render().find("editor-title").is_none());
+    assert_eq!(actual.get("page-index"), Ok((-1_i64).into()));
+    assert_eq!(generated.get_page_index(), -1);
+
+    actual_model.push(draft);
+    model.push(WorkspaceTab {
+        title: "草稿".into(),
+        id: "draft".into(),
+    });
+    check(&actual, 1, "草稿 · 编辑 0 次");
+    check(&generated, 1, "草稿 · 编辑 0 次");
+    assert_eq!(actual.get("page-changes"), Ok(1_i64.into()));
+    assert_eq!(generated.get_page_changes(), 1);
+    assert_eq!(actual.take_error(), None);
+}
+
+#[test]
+fn navigation_move_item_is_immediate_and_preserves_shared_page_instances() {
+    use navigation_ui::ModelSwipeDemo;
+    use xrack_runtime::group_index;
+
+    let mut interpreted = interpret_navigation_fixture("ModelSwipeDemo");
+    let mut generated = ModelSwipeDemo::new();
+    // The command works before a layout or a scene has been prepared.
+    interpreted
+        .invoke("move-tab", &[1_i64.into(), 2_i64.into()])
+        .unwrap();
+    generated.invoke_move_tab(1, 2);
+    assert_eq!(interpreted.get("index-after-move"), Ok(2_i64.into()));
+    assert_eq!(generated.get_index_after_move(), 2);
+    assert_eq!(interpreted.get("move-from"), Ok(1_i64.into()));
+    assert_eq!(interpreted.get("move-to"), Ok(2_i64.into()));
+    assert_eq!((generated.get_move_from(), generated.get_move_to()), (1, 2));
+    assert_eq!(interpreted.get("tab-moves"), Ok(1_i64.into()));
+    assert_eq!(generated.get_tab_moves(), 1);
+
+    let check = |ui: &dyn Component, index, edits| {
+        let scene = ui.render();
+        assert_eq!(group_index(&scene.children[0]), Some(index));
+        assert_eq!(group_index(&scene.children[1]), Some(index));
+        assert_eq!(
+            scene.find("editor-title").unwrap().text("text").unwrap(),
+            format!("草稿 · 编辑 {edits} 次")
+        );
+        scene
+    };
+    for ui in [&mut interpreted as &mut dyn Component, &mut generated] {
+        let scene = check(ui, 2, 0);
+        assert!(ui.dispatch_at(&scene, &[1, 2, 0, 1], "clicked"));
+        check(ui, 2, 1);
+    }
+
+    interpreted
+        .invoke("move-page", &[0_i64.into(), 2_i64.into()])
+        .unwrap();
+    generated.invoke_move_page(0, 2);
+    check(&interpreted, 1, 1);
+    check(&generated, 1, 1);
+    assert_eq!(interpreted.get("index-after-move"), Ok(1_i64.into()));
+    assert_eq!(generated.get_index_after_move(), 1);
+    for (from, to) in [(-1, 0), (0, 4), (1, 1)] {
+        interpreted
+            .invoke("move-page", &[from.into(), to.into()])
+            .unwrap();
+        generated.invoke_move_page(from, to);
+    }
+    check(&interpreted, 1, 1);
+    check(&generated, 1, 1);
+    assert_eq!(interpreted.get("page-moves"), Ok(1_i64.into()));
+    assert_eq!(generated.get_page_moves(), 1);
+    assert_eq!(interpreted.get("tab-moves"), Ok(1_i64.into()));
+    assert_eq!(generated.get_tab_moves(), 1);
+    assert_eq!(interpreted.get("page-changes"), Ok(0_i64.into()));
+    assert_eq!(generated.get_page_changes(), 0);
+    assert_eq!(interpreted.take_error(), None);
+}
+
+#[test]
+fn moving_tab_widget_items_remaps_a_bound_numeric_selection_before_the_event() {
+    use navigation_ui::IndexTabCommandsDemo;
+    use xrack_runtime::group_index;
+
+    let mut interpreted = interpret_navigation_fixture("IndexTabCommandsDemo");
+    let mut generated = IndexTabCommandsDemo::new();
+    for ui in [&mut interpreted as &mut dyn Component, &mut generated] {
+        let scene = ui.render();
+        assert!(ui.dispatch_at(&scene, &[0, 1, 0, 1], "clicked"));
+    }
+
+    for (from, to, current) in [(0, 2, 0), (0, 1, 1), (2, 0, 2), (1, 0, 2)] {
+        interpreted
+            .invoke("move-tab", &[from.into(), to.into()])
+            .unwrap();
+        generated.invoke_move_tab(from, to);
+        assert_eq!(interpreted.get("selected"), Ok(current.into()));
+        assert_eq!(generated.get_selected(), current);
+        assert_eq!(interpreted.get("index-after-move"), Ok(current.into()));
+        assert_eq!(generated.get_index_after_move(), current);
+        for ui in [&interpreted as &dyn Component, &generated] {
+            let scene = ui.render();
+            assert_eq!(group_index(&scene.children[0]), Some(current as usize));
+            assert_eq!(
+                scene.find("editor-title").unwrap().text("text"),
+                Some("B · 编辑 1 次")
+            );
+        }
+    }
+    assert_eq!(interpreted.get("moves"), Ok(4_i64.into()));
+    assert_eq!(generated.get_moves(), 4);
+    assert_eq!(interpreted.take_error(), None);
+}
+
+#[test]
+fn tab_drag_and_keyboard_move_the_same_model_row_in_both_engines() {
+    use navigation_ui::ModelSwipeDemo;
+    use std::time::{Duration, Instant};
+    use xrack_layout::{Interaction, NavigationKey, Point, ScrollGestureKind, Size};
+    use xrack_runtime::{ControlAction, group_index};
+
+    fn exercise(ui: &mut impl Component, kind: ScrollGestureKind) {
+        let size = Size::new(520.0, 286.0);
+        let mut input = Interaction::default();
+        let (scene, _) = prepare_list(ui, &input, size);
+        let key = scene
+            .row_key_at(&[0, 1])
+            .expect("a repeated tab has a row key");
+        assert!(ui.dispatch_at(&scene, &[1, 1, 0, 1], "clicked"));
+        let (scene, layout) = prepare_list(ui, &input, size);
+        input.focus_next(&scene, &layout, false);
+        assert_eq!(
+            input.focused.as_ref().map(|t| t.path.as_slice()),
+            Some(&[0, 1][..])
+        );
+        let center = |slot| {
+            let rect = layout.at_path(&[0, slot]).unwrap().bounds;
+            Point {
+                x: rect.x + rect.width / 2.0,
+                y: rect.y + rect.height / 2.0,
+            }
+        };
+        let (start, end) = (center(1), center(2));
+        let now = Instant::now();
+        assert!(input.begin_scroll_gesture(&scene, &layout, start, now, kind));
+        assert!(input.move_scroll_gesture(&scene, &layout, end, now + Duration::from_millis(16)));
+        assert!(
+            input
+                .tab_move_marker(&scene.children[0], &layout.children[0], &[0])
+                .is_some()
+        );
+        assert_eq!(group_index(&ui.render().children[0]), Some(1));
+        let release =
+            input.end_scroll_gesture(&scene, &layout, end, now + Duration::from_millis(20));
+        assert!(release.scrolled && !release.tap);
+        let movement = release.control.unwrap();
+        let ControlAction::MoveTab(moved) = movement.action else {
+            panic!("expected tab move");
+        };
+        assert_eq!((moved.from, moved.to), (1, 2));
+        assert!(ui.control_at(&scene, &movement.path, movement.action));
+        assert!(!ui.control_at(&scene, &movement.path, movement.action));
+
+        let (scene, layout) = prepare_list(ui, &input, size);
+        input.reconcile(&scene, &layout);
+        assert_eq!(scene.row_key_at(&[0, 2]), Some(key));
+        assert_eq!(
+            input.focused.as_ref().map(|t| t.path.as_slice()),
+            Some(&[0, 2][..])
+        );
+        assert_eq!(group_index(&scene.children[0]), Some(2));
+        assert_eq!(group_index(&scene.children[1]), Some(2));
+        assert_eq!(
+            scene.find("editor-title").unwrap().text("text"),
+            Some("草稿 · 编辑 1 次")
+        );
+        assert!(matches!(
+            input.tab_move_key(&scene, &layout, NavigationKey::Right),
+            Some(None)
+        ));
+        let keyboard = input
+            .tab_move_key(&scene, &layout, NavigationKey::Left)
+            .unwrap()
+            .unwrap();
+        assert!(ui.control_at(&scene, &keyboard.path, keyboard.action));
+        let (scene, _) = prepare_list(ui, &input, size);
+        assert_eq!(scene.row_key_at(&[0, 1]), Some(key));
+        assert_eq!(group_index(&scene.children[1]), Some(1));
+        assert_eq!(
+            scene.find("editor-title").unwrap().text("text"),
+            Some("草稿 · 编辑 1 次")
+        );
+
+        // A model replacement between press and release invalidates the pending move.
+        let (scene, layout) = prepare_list(ui, &input, size);
+        assert!(input.begin_scroll_gesture(&scene, &layout, start, now, kind));
+        assert!(input.move_scroll_gesture(&scene, &layout, end, now + Duration::from_millis(32)));
+        assert!(ui.dispatch("reorder", "clicked"));
+        let (scene, layout) = prepare_list(ui, &input, size);
+        assert!(
+            input
+                .tab_move_marker(&scene.children[0], &layout.children[0], &[0])
+                .is_none()
+        );
+        let cancelled =
+            input.end_scroll_gesture(&scene, &layout, end, now + Duration::from_millis(36));
+        assert!(cancelled.control.is_none() && !cancelled.tap);
+    }
+
+    let mut interpreted = interpret_navigation_fixture("ModelSwipeDemo");
+    let mut generated = ModelSwipeDemo::new();
+    exercise(&mut interpreted, ScrollGestureKind::Touch);
+    exercise(&mut generated, ScrollGestureKind::MouseControl);
+    assert_eq!(interpreted.get("selected"), Ok("draft".to_owned().into()));
+    assert_eq!(generated.get_selected(), "draft");
+    assert_eq!(interpreted.get("tab-moves"), Ok(2_i64.into()));
+    assert_eq!(generated.get_tab_moves(), 2);
+    assert_eq!(interpreted.get("page-changes"), Ok(0_i64.into()));
+    assert_eq!(generated.get_page_changes(), 0);
+    assert_eq!(interpreted.take_error(), None);
+}
+
+#[test]
+fn navigation_value_keeps_the_same_document_across_insert_reorder_and_close() {
+    use navigation_ui::ValueTabsDemo;
+    use xrack_runtime::{ControlAction, group_index};
+
+    fn exercise<C: Component>(ui: &mut C, read: impl Fn(&C) -> (String, i64, i64, i64)) {
+        let check = |ui: &C, value: &str, bar, page| {
+            assert_eq!(read(ui), (value.to_owned(), bar, page, page));
+            let scene = ui.render();
+            let index = |visible| usize::try_from(visible).ok();
+            assert_eq!(group_index(&scene.children[0]), index(bar));
+            assert_eq!(group_index(&scene.children[1]), index(page));
+            assert_eq!(group_index(&scene.children[2]), index(page));
+        };
+
+        check(ui, "draft", 1, 1);
+        let stale = ui.render();
+        assert!(ui.dispatch("insert", "clicked"));
+        check(ui, "draft", 2, 1);
+        assert!(!ui.control_at(&stale, &[0], ControlAction::Select(0)));
+        assert!(ui.dispatch("edit-draft", "clicked"));
+        assert!(ui.dispatch("reorder", "clicked"));
+        check(ui, "draft", 0, 1);
+
+        let draft_scene = ui.render();
+        assert!(ui.control_at(&draft_scene, &[0], ControlAction::Select(2)));
+        check(ui, "notes", 2, 2);
+        assert!(!ui.dispatch_at(&draft_scene, &[1, 1, 0], "clicked"));
+        let scene = ui.render();
+        assert!(ui.control_at(&scene, &[0], ControlAction::Select(0)));
+        check(ui, "draft", 0, 1);
+
+        assert!(ui.dispatch("close-draft", "clicked"));
+        check(ui, "home", 0, 0);
+    }
+
+    let mut actual = interpret_navigation_fixture("ValueTabsDemo");
+    let mut generated = ValueTabsDemo::new();
+    let actual_state = |ui: &Instance| {
+        let index = |name| match ui.get(name).unwrap() {
+            Value::Int(index) => index,
+            _ => panic!("expected a navigation index"),
+        };
+        let Value::String(selected) = ui.get("selected").unwrap() else {
+            panic!("expected a navigation value")
+        };
+        (
+            selected,
+            index("bar-index"),
+            index("page-index"),
+            index("static-index"),
+        )
+    };
+    exercise(&mut actual, actual_state);
+    exercise(&mut generated, |ui| {
+        (
+            ui.get_selected(),
+            ui.get_bar_index(),
+            ui.get_page_index(),
+            ui.get_static_index(),
+        )
+    });
+    assert_eq!(actual.get("last-choice"), Ok("draft".to_owned().into()));
+    assert_eq!(generated.get_last_choice(), "draft");
+    assert_eq!(actual.get("tab-choices"), Ok(2_i64.into()));
+    assert_eq!(generated.get_tab_choices(), 2);
+    assert_eq!(actual.get("page-edits"), Ok(1_i64.into()));
+    assert_eq!(generated.get_page_edits(), 1);
+
+    actual.set("selected", "notes".to_owned().into()).unwrap();
+    generated.set_selected("notes".into());
+    assert_eq!(actual_state(&actual), ("notes".into(), 1, 2, 2));
+    assert_eq!(generated.get_bar_index(), 1);
+    let Value::RecordList(documents) = actual.get("documents").unwrap() else {
+        panic!("expected the shared document model");
+    };
+    let id = |row: &xrack_runtime::RecordValue| match row.field("id") {
+        Some(Value::String(id)) => id.clone(),
+        _ => panic!("expected document id"),
+    };
+    assert!(
+        documents
+            .model()
+            .sort_by(|left, right| id(right).cmp(&id(left)))
+    );
+    assert!(
+        generated
+            .model_documents()
+            .sort_by(|left, right| right.id.cmp(&left.id))
+    );
+    assert_eq!(actual_state(&actual), ("notes".into(), 0, 2, 2));
+    assert_eq!(
+        (
+            generated.get_bar_index(),
+            generated.get_page_index(),
+            generated.get_static_index()
+        ),
+        (0, 2, 2)
+    );
+
+    actual
+        .set("selected", "unavailable".to_owned().into())
+        .unwrap();
+    generated.set_selected("unavailable".into());
+    assert_eq!(actual_state(&actual), ("unavailable".into(), -1, -1, -1));
+    assert_eq!(
+        (
+            generated.get_bar_index(),
+            generated.get_page_index(),
+            generated.get_static_index()
+        ),
+        (-1, -1, -1)
+    );
+    assert_eq!(actual.take_error(), None);
+}
+
+#[test]
+fn path_view_shares_curve_geometry_and_record_selection_across_backends() {
+    use navigation_ui::PathViewDemo;
+    use xrack_layout::{Interaction, NavigationKey, Point, Size};
+
+    let mut actual = interpret_navigation_fixture("PathViewDemo");
+    let mut generated = PathViewDemo::new();
+    let size = Size::new(640.0, 336.0);
+    let path = [0];
+    let input = Interaction::default();
+    let cards = |layout: &xrack_layout::LayoutNode| {
+        layout
+            .at_path(&path)
+            .unwrap()
+            .tumbler
+            .as_ref()
+            .unwrap()
+            .rows
+            .iter()
+            .map(|row| {
+                let (content, layout) = row.content().unwrap();
+                assert_eq!(row.bounds, layout.bounds);
+                (
+                    row.index,
+                    row.bounds,
+                    content.children[0].children[0]
+                        .text("text")
+                        .unwrap()
+                        .to_owned(),
+                    content.opacity(),
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+
+    let (_, expected_layout) = prepare_list(&generated, &input, size);
+    let (_, actual_layout) = prepare_list(&actual, &input, size);
+    let expected = cards(&expected_layout);
+    assert_eq!(cards(&actual_layout), expected);
+    assert_eq!(expected.len(), 5);
+    let selected = expected.iter().find(|row| row.0 == 2).unwrap();
+    let next = expected.iter().find(|row| row.0 == 3).unwrap();
+    assert_eq!(selected.2, "地图");
+    assert!((selected.1.x + selected.1.width * 0.5 - 320.0).abs() < 0.3);
+    assert!(selected.1.y < next.1.y);
+    assert!(selected.3 > next.3);
+
+    fn select_card(ui: &mut impl Component, size: Size, index: usize, key: NavigationKey) {
+        let mut input = Interaction::default();
+        let (scene, layout) = prepare_list(ui, &input, size);
+        let row = layout
+            .at_path(&[0])
+            .unwrap()
+            .tumbler
+            .as_ref()
+            .unwrap()
+            .rows
+            .iter()
+            .find(|row| row.index == index)
+            .unwrap();
+        input.pointer_move(
+            &scene,
+            &layout,
+            Point {
+                x: row.bounds.x + row.bounds.width * 0.5,
+                y: row.bounds.y + row.bounds.height * 0.5,
+            },
+        );
+        input.pointer_press_in_scene(&scene, &layout);
+        let clicked = input.control_part_release(&scene, &layout).unwrap();
+        assert_eq!(clicked.action, row.action());
+        assert!(ui.control_at(&scene, &clicked.path, clicked.action));
+        let (scene, layout) = prepare_list(ui, &input, size);
+        let keyboard = input.tumbler_key(&scene, &layout, key).unwrap();
+        assert!(ui.control_at(&scene, &keyboard.path, keyboard.action));
+    }
+    select_card(&mut actual, size, 3, NavigationKey::Right);
+    select_card(&mut generated, size, 3, NavigationKey::Right);
+    assert_eq!(actual.get("selected"), Ok(50_i64.into()));
+    assert_eq!(generated.get_selected(), 50);
+
+    actual.set("curved", false.into()).unwrap();
+    generated.set_curved(false);
+    actual.set("mirrored", true.into()).unwrap();
+    generated.set_mirrored(true);
+    let (_, expected_layout) = prepare_list(&generated, &input, size);
+    let (_, actual_layout) = prepare_list(&actual, &input, size);
+    let expected = cards(&expected_layout);
+    assert_eq!(cards(&actual_layout), expected);
+    let selected = expected.iter().find(|row| row.0 == 4).unwrap();
+    let next = expected.iter().find(|row| row.0 == 5).unwrap();
+    assert_eq!(selected.1.y, next.1.y);
+    assert!(next.1.x < selected.1.x);
+    select_card(&mut actual, size, 5, NavigationKey::Left);
+    select_card(&mut generated, size, 5, NavigationKey::Left);
+    assert_eq!(actual.get("last-value"), Ok(70_i64.into()));
+    assert_eq!(generated.get_last_value(), 70);
+    assert_eq!(actual.get("changes"), Ok(4_i64.into()));
+    assert_eq!(generated.get_changes(), 4);
+    assert_eq!(actual.take_error(), None);
+}
+
+#[test]
+fn tumbler_inertia_keeps_one_typed_commit_in_both_engines() {
+    use controls_ui::TumblerDemo;
+    use std::time::{Duration, Instant};
+    use xrack_layout::{Interaction, Point, ScrollGestureKind, Size};
+
+    #[derive(Debug, PartialEq, Eq)]
+    struct State(i64, i64, bool, bool, bool, bool);
+
+    fn exercise<C: Component>(ui: &mut C, state: impl Fn(&C) -> State) -> State {
+        let mut input = Interaction::default();
+        let size = Size::new(388.0, 324.0);
+        let (scene, layout) = prepare_list(ui, &input, size);
+        let path = [2];
+        let center = layout
+            .at_path(&path)
+            .unwrap()
+            .tumbler
+            .as_ref()
+            .unwrap()
+            .center;
+        let start = Point {
+            x: center.x + 20.0,
+            y: center.y + center.height * 0.5,
+        };
+        let first = Point {
+            y: start.y - 17.0,
+            ..start
+        };
+        let last = Point {
+            y: start.y - 47.0,
+            ..start
+        };
+        let now = Instant::now();
+        let time = |ms| now + Duration::from_millis(ms);
+
+        assert!(input.begin_scroll_gesture(&scene, &layout, start, now, ScrollGestureKind::Touch));
+        assert!(input.move_scroll_gesture(&scene, &layout, first, time(16)));
+        assert_eq!(state(ui), State(58, 0, true, false, true, false));
+        let (scene, layout) = prepare_list(ui, &input, size);
+        assert!(input.move_scroll_gesture(&scene, &layout, last, time(32)));
+        let release = input.end_scroll_gesture(&scene, &layout, last, time(36));
+        assert!(release.scrolled && release.control.is_none() && !release.tap);
+        assert_eq!(state(ui), State(58, 0, false, true, true, false));
+        let release_offset = input.tumbler_preview().unwrap().1;
+        assert_eq!(input.scroll_motion_deadline(), Some(time(52)));
+
+        let (scene, layout) = prepare_list(ui, &input, size);
+        let early = input.advance_tumbler_motion(&scene, &layout, time(48));
+        assert!(!early.scrolled && early.control.is_none());
+        let coast = input.advance_tumbler_motion(&scene, &layout, time(84));
+        assert!(coast.scrolled && coast.control.is_none());
+        assert!(input.tumbler_preview().unwrap().1 > release_offset);
+        assert_eq!(state(ui), State(58, 0, false, true, true, false));
+
+        let (scene, layout) = prepare_list(ui, &input, size);
+        let settled = input.advance_tumbler_motion(&scene, &layout, time(700));
+        let control = settled.control.unwrap();
+        assert_eq!(control.path, path);
+        assert!(ui.control_at(&scene, &control.path, control.action));
+        assert!(input.tumbler_preview().is_none());
+        assert!(input.scroll_motion_deadline().is_none());
+        assert!(
+            input
+                .advance_tumbler_motion(&scene, &layout, time(740))
+                .control
+                .is_none()
+        );
+        state(ui)
+    }
+
+    let mut actual = interpret_controls_fixture("TumblerDemo");
+    let mut generated = TumblerDemo::new();
+    actual.set("minute", 58_i64.into()).unwrap();
+    generated.set_minute(58);
+
+    let actual_state = exercise(&mut actual, |ui| {
+        let int = |name| match ui.get(name).unwrap() {
+            Value::Int(value) => value,
+            _ => panic!("expected int"),
+        };
+        let flag = |name| ui.get(name).unwrap() == Value::Bool(true);
+        State(
+            int("minute"),
+            int("changes"),
+            flag("dragging"),
+            flag("flicking"),
+            flag("moving"),
+            flag("moving-on-commit"),
+        )
+    });
+    let generated_state = exercise(&mut generated, |ui| {
+        State(
+            ui.get_minute(),
+            ui.get_changes(),
+            ui.get_dragging(),
+            ui.get_flicking(),
+            ui.get_moving(),
+            ui.get_moving_on_commit(),
+        )
+    });
+    assert_eq!(actual_state, generated_state);
+    let State(index, count, dragging, flicking, moving, moving_on_commit) = actual_state;
+    assert!(
+        (0..12).contains(&index),
+        "inertia should cross the wrap edge, got {index}"
+    );
+    assert_eq!(count, 1);
+    assert!(!(dragging || flicking || moving || moving_on_commit));
+    assert_eq!(actual.take_error(), None);
+}
+
+#[test]
+fn tumbler_option_observes_only_the_records_it_draws() {
+    use controls_ui::RecordTumblerDemo;
+    use xrack_layout::{Interaction, LayoutNode, Size};
+    use xrack_runtime::Property;
+
+    let actual = interpret_controls_fixture("RecordTumblerDemo");
+    let generated = RecordTumblerDemo::new();
+    let Value::RecordList(records) = actual.get("zones").unwrap() else {
+        panic!("expected timezone records");
+    };
+    let model = records.model();
+    let generated_model = generated.model_zones();
+    let source = model.row(0).unwrap();
+    let generated_source = generated_model.row(0).unwrap();
+    for _ in 0..12 {
+        model.push(source.clone());
+        generated_model.push(generated_source.clone());
+    }
+    let actual_frame = Property::<LayoutNode>::default();
+    let generated_frame = Property::<LayoutNode>::default();
+    let size = Size::new(410.0, 294.0);
+    let input = Interaction::default();
+    let resolve_actual = || prepare_list(&actual, &input, size).1;
+    let resolve_generated = || prepare_list(&generated, &input, size).1;
+    let labels = |layout: LayoutNode| {
+        let wheel = layout.at_path(&[0]).unwrap().tumbler.as_ref().unwrap();
+        wheel
+            .rows
+            .iter()
+            .map(|row| {
+                let (node, layout) = row.content().unwrap();
+                assert_eq!(layout.bounds, row.bounds);
+                (
+                    row.index,
+                    node.children[0].children[0]
+                        .text("text")
+                        .unwrap()
+                        .to_owned(),
+                    node.children[0].children[1]
+                        .text("text")
+                        .unwrap()
+                        .to_owned(),
+                    node.opacity(),
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+    let expected = labels(generated_frame.get(resolve_generated));
+    assert_eq!(labels(actual_frame.get(resolve_actual)), expected);
+    assert_eq!(expected.len(), 3);
+    assert!(
+        expected
+            .iter()
+            .any(|(index, _, code, opacity)| *index == 2 && code == "CST" && *opacity == 1.0)
+    );
+    let write_code = |index, code: &str| {
+        let record = model
+            .row(index)
+            .unwrap()
+            .with_field(&["abbreviation".into()], code.to_owned().into())
+            .unwrap();
+        assert!(model.set_row(index, record));
+        let mut row = generated_model.row(index).unwrap();
+        row.abbreviation = code.into();
+        assert!(generated_model.set_row(index, row));
+    };
+    write_code(10, "OFFSCREEN");
+    assert!(!actual_frame.is_dirty());
+    assert!(!generated_frame.is_dirty());
+
+    write_code(2, "UTC+8");
+    assert!(actual_frame.is_dirty());
+    assert!(generated_frame.is_dirty());
+    let expected = labels(generated_frame.get(resolve_generated));
+    assert_eq!(labels(actual_frame.get(resolve_actual)), expected);
+    assert!(
+        expected
+            .iter()
+            .any(|(index, _, code, _)| *index == 2 && code == "UTC+8")
+    );
+    assert_eq!(actual.take_error(), None);
+}
+
+#[test]
+fn record_tumbler_keeps_business_value_across_model_edits() {
+    use controls_ui::RecordTumblerDemo;
+    use xrack_runtime::Tumbler;
+
+    let mut actual = interpret_controls_fixture("RecordTumblerDemo");
+    let mut generated = RecordTumblerDemo::new();
+    let path = [0];
+    let wheel_state = |ui: &dyn Component| {
+        let scene = ui.render();
+        let wheel = Tumbler::from_node(scene.at_path(&path).unwrap());
+        (
+            wheel.count(),
+            wheel.selected(),
+            wheel.selected().and_then(|row| wheel.label(row)),
+        )
+    };
+    let check = |actual: &xrack_interpreter::Instance,
+                 generated: &RecordTumblerDemo,
+                 count: i64,
+                 index: i64,
+                 text: &str,
+                 offset: i64| {
+        assert_eq!(actual.get("position"), Ok(index.into()));
+        assert_eq!(actual.get("total"), Ok(count.into()));
+        assert_eq!(actual.get("city"), Ok(text.to_owned().into()));
+        assert_eq!(actual.get("committed"), Ok(offset.into()));
+        assert_eq!(generated.get_position(), index);
+        assert_eq!(generated.get_total(), count);
+        assert_eq!(generated.get_city(), text);
+        assert_eq!(generated.get_committed(), offset);
+        let state = (
+            count as usize,
+            usize::try_from(index).ok(),
+            (index >= 0).then(|| text.to_owned()),
+        );
+        assert_eq!(wheel_state(actual), state);
+        assert_eq!(wheel_state(generated), state);
+    };
+
+    check(&actual, &generated, 3, 2, "上海", 480);
+    let stale = actual.render();
+    let generated_stale = generated.render();
+    let target = |scene: &Node, index| {
+        Tumbler::from_node(scene.at_path(&path).unwrap())
+            .select(index)
+            .unwrap()
+    };
+    let stale_action = target(&stale, 0);
+    let generated_stale_action = target(&generated_stale, 0);
+    let Value::RecordList(records) = actual.get("zones").unwrap() else {
+        panic!("expected timezone records");
+    };
+    let model = records.model();
+    let generated_model = generated.model_zones();
+    let value = |row: &xrack_runtime::RecordValue| match row.field("offset") {
+        Some(Value::Int(value)) => *value,
+        _ => panic!("expected an offset"),
+    };
+    assert!(model.sort_by(|left, right| value(right).cmp(&value(left))));
+    assert!(generated_model.sort_by(|left, right| right.offset.cmp(&left.offset)));
+    assert!(!actual.control_at(&stale, &path, stale_action));
+    assert!(!generated.control_at(&generated_stale, &path, generated_stale_action));
+    check(&actual, &generated, 3, 0, "上海", 480);
+
+    let renamed = model
+        .row(0)
+        .unwrap()
+        .with_field(&["label".into()], "上海市".to_owned().into())
+        .unwrap();
+    assert!(model.set_row(0, renamed));
+    let mut renamed = generated_model.row(0).unwrap();
+    renamed.label = "上海市".into();
+    assert!(generated_model.set_row(0, renamed));
+    check(&actual, &generated, 3, 0, "上海市", 480);
+
+    assert_eq!(actual.get("commits"), Ok(0_i64.into()));
+    assert_eq!(generated.get_commits(), 0);
+    for ui in [&mut actual as &mut dyn Component, &mut generated] {
+        let scene = ui.render();
+        assert!(ui.control_at(&scene, &path, target(&scene, 1)));
+    }
+    check(&actual, &generated, 3, 1, "协调世界时", 0);
+    for (name, expected) in [
+        ("commits", generated.get_commits()),
+        ("reported-offset", generated.get_reported_offset()),
+        ("reported-index", generated.get_reported_index()),
+        ("observed-offset", generated.get_observed_offset()),
+    ] {
+        assert_eq!(actual.get(name), Ok(expected.into()));
+    }
+    assert_eq!(generated.get_commits(), 1);
+    assert_eq!(generated.get_reported_index(), 1);
+    assert_eq!(generated.get_reported_offset(), 0);
+    assert_eq!(generated.get_observed_offset(), 0);
+
+    assert!(model.remove(1).is_some());
+    assert!(generated_model.remove(1).is_some());
+    check(&actual, &generated, 2, 0, "上海市", 0);
+    for ui in [&mut actual as &mut dyn Component, &mut generated] {
+        let scene = ui.render();
+        assert!(ui.control_at(&scene, &path, target(&scene, 0)));
+        let scene = ui.render();
+        assert!(!ui.control_at(&scene, &path, target(&scene, 0)));
+    }
+    check(&actual, &generated, 2, 0, "上海市", 480);
+    for _ in 0..2 {
+        assert!(model.remove(0).is_some());
+        assert!(generated_model.remove(0).is_some());
+    }
+    check(&actual, &generated, 0, -1, "", 480);
+    assert_eq!(actual.take_error(), None);
+}
+
+#[test]
 fn tumbler_checks_live_count_and_availability_before_selecting() {
     use expressions_ui::TumblerSelectionParity;
     use std::{cell::Cell, rc::Rc};
@@ -21964,6 +24071,18 @@ fn navigation_pages_are_lazy_and_preserve_nested_component_state() {
     let mut actual = interpret_navigation_fixture("NavigationDemo");
     let mut expected = NavigationDemo::new();
     assert_same_scene(&actual.render(), &expected.render());
+    assert_eq!(actual.get("settings-active"), Ok(false.into()));
+    assert!(!expected.get_settings_active());
+    actual.set("page", 1_i64.into()).unwrap();
+    expected.set_page(1);
+    assert_eq!(actual.get("settings-active"), Ok(true.into()));
+    assert!(expected.get_settings_active());
+    actual.set("page", 2_i64.into()).unwrap();
+    expected.set_page(2);
+    assert_eq!(actual.get("settings-active"), Ok(false.into()));
+    assert!(!expected.get_settings_active());
+    actual.set("page", 0_i64.into()).unwrap();
+    expected.set_page(0);
     let tabs = [3, 0];
     let counter = [3, 0, 0, 0, 1];
     let swipe = [7, 0];
@@ -21981,6 +24100,16 @@ fn navigation_pages_are_lazy_and_preserve_nested_component_state() {
         assert!(ui.control_at(&scene, &swipe, ControlAction::Select(1)));
         assert!(ui.render().at_path(&[7, 0, 0]).unwrap().children.is_empty());
     }
+    actual.set("show-middle", false.into()).unwrap();
+    expected.set_show_middle(false);
+    assert_eq!(actual.get("first-swipe-active"), Ok(true.into()));
+    assert!(expected.get_first_swipe_active());
+    assert_eq!(actual.get("middle-swipe-active"), Ok(false.into()));
+    assert!(!expected.get_middle_swipe_active());
+    actual.set("show-middle", true.into()).unwrap();
+    expected.set_show_middle(true);
+    assert_eq!(actual.get("middle-swipe-active"), Ok(true.into()));
+    assert!(expected.get_middle_swipe_active());
     actual.set("show-middle", false.into()).unwrap();
     expected.set_show_middle(false);
     assert_same_scene(&actual.render(), &expected.render());
@@ -22129,6 +24258,12 @@ fn tab_bar_repeats_options_and_shares_selection_with_swipe_view() {
 
     let mut actual = interpret_navigation_fixture("TabBarDemo");
     let mut expected = TabBarDemo::new();
+    actual.set("page", 2_i64.into()).unwrap();
+    expected.set_page(2);
+    assert_eq!(actual.get("overview-selected"), Ok(true.into()));
+    assert!(expected.get_overview_selected());
+    actual.set("page", 0_i64.into()).unwrap();
+    expected.set_page(0);
     assert_same_scene(&actual.render(), &expected.render());
     for ui in [&mut actual as &mut dyn Component, &mut expected] {
         assert!(!ui.control_at(&ui.render(), &[1], ControlAction::Select(1)));
@@ -22483,6 +24618,64 @@ fn repeated_tab_options_use_one_model_per_render_and_input() {
 }
 
 #[test]
+fn toggle_indicator_content_reads_the_live_checkbox_and_switch_state() {
+    use slots_ui::ToggleIndicatorDemo;
+    use xrack_runtime::CheckState;
+
+    fn exercise<C: Component>(mut ui: C, read: impl Fn(&C) -> (CheckState, bool, bool)) {
+        assert_eq!(read(&ui), (CheckState::Unchecked, false, false));
+        for state in [
+            CheckState::PartiallyChecked,
+            CheckState::Checked,
+            CheckState::Unchecked,
+        ] {
+            assert!(ui.dispatch("master", "clicked"));
+            assert_eq!(read(&ui), (state, state == CheckState::Checked, false));
+            let scene = ui.render_shared();
+            assert_eq!(scene.find("master").unwrap().check_state(), state);
+        }
+        assert!(ui.dispatch("online", "clicked"));
+        assert_eq!(read(&ui), (CheckState::Unchecked, false, true));
+        assert!(
+            ui.render_shared()
+                .find("online")
+                .unwrap()
+                .boolean("checked", false)
+        );
+    }
+
+    exercise(ToggleIndicatorDemo::new(), |ui| {
+        (
+            ui.get_observed_state(),
+            ui.get_observed_checked(),
+            ui.get_observed_network(),
+        )
+    });
+    let preview = xrack_compiler::prepare_preview(
+        include_str!("../examples/slots/slots.xr"),
+        "examples/slots/slots.xr",
+        Default::default(),
+    )
+    .unwrap();
+    let ui = Program::from_module(&preview.module)
+        .unwrap()
+        .create("ToggleIndicatorDemo")
+        .unwrap();
+    exercise(ui, |ui| {
+        match (
+            ui.get("observed-state"),
+            ui.get("observed-checked"),
+            ui.get("observed-network"),
+        ) {
+            (Ok(Value::CheckState(state)), Ok(Value::Bool(checked)), Ok(Value::Bool(network))) => {
+                (state, checked, network)
+            }
+            values => panic!("unexpected state values: {values:?}"),
+        }
+    });
+}
+
+#[test]
 fn virtual_check_delegates_dispatch_after_committing_the_row() {
     use expressions_ui::ToggleDelegateEvents;
     use std::rc::Rc;
@@ -22564,6 +24757,72 @@ fn virtual_check_delegates_dispatch_after_committing_the_row() {
     assert_eq!(actual.get("trace"), Ok(Value::Int(1315613)));
     assert_eq!(generated.get_trace(), 1315613);
     assert_eq!(actual.take_error(), None);
+}
+
+#[test]
+fn toggle_delegate_state_is_rechecked_if_a_callback_removes_the_row() {
+    use expressions_ui::ToggleDelegateEvents;
+    use std::rc::Rc;
+    use xrack_layout::{Interaction, Size};
+
+    let preview = xrack_compiler::prepare_preview(
+        include_str!("expressions.xr"),
+        "expressions.xr",
+        Default::default(),
+    )
+    .unwrap();
+    let mut interpreted = Program::from_module(&preview.module)
+        .unwrap()
+        .create("ToggleDelegateEvents")
+        .unwrap();
+    let mut compiled = ToggleDelegateEvents::new();
+    let rows = interpreted.record_model("rows").unwrap().model().clone();
+    rows.push(
+        rows.row(0)
+            .unwrap()
+            .with_field(&["enabled".into()], Value::Bool(true))
+            .unwrap(),
+    );
+    interpreted
+        .on(
+            "before-observe",
+            Rc::new(move |_| {
+                assert!(rows.remove(0).is_some());
+                Ok(None)
+            }),
+        )
+        .unwrap();
+    let rows = compiled.model_rows();
+    let mut next = rows.row(0).unwrap();
+    next.enabled = true;
+    rows.push(next);
+    compiled.on_before_observe(move || {
+        assert!(rows.remove(0).is_some());
+    });
+    let input = Interaction::default();
+    let size = Size::new(240.0, 180.0);
+    let (interpreted_scene, _) = prepare_list(&interpreted, &input, size);
+    let (compiled_scene, _) = prepare_list(&compiled, &input, size);
+    for (ui, scene) in [
+        (&mut interpreted as &mut dyn Component, interpreted_scene),
+        (&mut compiled, compiled_scene),
+    ] {
+        assert!(ui.dispatch_at(&scene, &[0, 0, 0], "clicked"));
+    }
+    assert_eq!(compiled.get_trace(), 24);
+    assert_eq!(interpreted.get("trace"), Ok(Value::Int(24)));
+    assert!(compiled.model_rows().row(0).unwrap().enabled);
+    assert_eq!(
+        interpreted
+            .record_model("rows")
+            .unwrap()
+            .model()
+            .row(0)
+            .unwrap()
+            .field("enabled"),
+        Some(&Value::Bool(true))
+    );
+    assert_eq!(interpreted.take_error(), None);
 }
 
 #[test]
@@ -22845,6 +25104,16 @@ fn item_delegates_share_selection_and_preserve_record_fields() {
     let (scene, _) = prepare_list(&actual, &input, size);
     let (expected_scene, _) = prepare_list(&expected, &input, size);
     assert_same_scene(&scene, &expected_scene);
+    let radio_label = |scene: &Node, index| {
+        scene
+            .at_path(&[0, 0, 1, 1, index, 0])
+            .unwrap()
+            .text("text")
+            .unwrap()
+            .to_owned()
+    };
+    assert_eq!(radio_label(&scene, 0), "详细 ✓");
+    assert_eq!(radio_label(&scene, 1), "紧凑");
     for (ui, scene) in [
         (&mut actual as &mut dyn Component, scene),
         (&mut expected, expected_scene),
@@ -22867,10 +25136,25 @@ fn item_delegates_share_selection_and_preserve_record_fields() {
         Some(&Value::CheckState(CheckState::PartiallyChecked))
     );
     assert_eq!(actual.get("edits").unwrap(), Value::Int(1));
+    assert_eq!(
+        radio_label(&prepare_list(&actual, &input, size).0, 1),
+        "紧凑 ✓"
+    );
     assert_same_scene(
         &prepare_list(&actual, &input, size).0,
         &prepare_list(&expected, &input, size).0,
     );
+    for shown in [false, true] {
+        actual.set("show-compact-mode", shown.into()).unwrap();
+        expected.set_show_compact_mode(shown);
+        let scene = prepare_list(&actual, &input, size).0;
+        assert_same_scene(&scene, &prepare_list(&expected, &input, size).0);
+        assert_eq!(
+            radio_label(&scene, 1),
+            if shown { "紧凑 ✓" } else { "仅文件名" }
+        );
+        assert_eq!(actual.get("current-mode").unwrap(), Value::Int(1));
+    }
     assert_eq!(actual.take_error(), None);
 }
 
@@ -29106,11 +31390,12 @@ fn horizontal_sliders_inherit_the_layout_direction_in_both_backends() {
         exercise(
             controls_ui::DirectionalSlidersDemo::new(),
             |ui| {
+                assert!(ui.get_callback_values_current());
                 [
-                    ui.get_level(),
-                    ui.get_lower(),
-                    ui.get_upper(),
-                    ui.get_vertical_value(),
+                    ui.get_shown_level(),
+                    ui.get_shown_lower(),
+                    ui.get_shown_upper(),
+                    ui.get_shown_vertical(),
                 ]
             },
             rtl,
@@ -29118,7 +31403,14 @@ fn horizontal_sliders_inherit_the_layout_direction_in_both_backends() {
         exercise(
             interpret_controls_fixture("DirectionalSlidersDemo"),
             |ui| {
-                let values = ["level", "lower", "upper", "vertical-value"].map(|name| {
+                assert_eq!(ui.get("callback-values-current"), Ok(Value::Bool(true)));
+                let values = [
+                    "shown-level",
+                    "shown-lower",
+                    "shown-upper",
+                    "shown-vertical",
+                ]
+                .map(|name| {
                     let Value::Float(value) = ui.get(name).unwrap() else {
                         panic!("expected numeric {name}");
                     };
@@ -29652,13 +31944,21 @@ fn rtl_choice_controls_share_button_hits_and_popup_anchor_in_both_backends() {
         let (scene, frame) = prepare_list(&ui, &input, size);
         let path = [1, 0];
         let item = frame.at_path(&path).unwrap();
-        let combo = ComboGeometry::for_layout(item);
+        let node = scene.at_path(&path).unwrap();
+        let combo = ComboGeometry::for_control(node, item.bounds, item.layout_direction);
         assert_eq!(combo.trigger.x < combo.entry.x, rtl);
+        assert_eq!(combo.trigger.width, 56.0);
+        let artwork = item.child_at(0).unwrap().bounds;
+        assert_eq!((artwork.width, artwork.height), (44.0, 24.0));
+        assert_eq!(center(artwork), center(combo.trigger));
         press(&mut input, &scene, &frame, center(combo.entry));
         let target = input.pointer_release_target().unwrap();
         assert!(!input.open_choice_at_pointer(&scene, &frame, target));
-        press(&mut input, &scene, &frame, center(combo.trigger));
+        let mut point = center(artwork);
+        point.x += if rtl { 6.0 } else { -6.0 };
+        press(&mut input, &scene, &frame, point);
         let target = input.pointer_release_target().unwrap();
+        assert_eq!(target.path, path);
         assert!(input.open_choice_at_pointer(&scene, &frame, target));
         input.dismiss_choice();
 
@@ -30369,4 +32669,401 @@ fn mirrored_table_retains_column_identity_through_scroll_resize_move_and_edit() 
             rtl,
         );
     }
+}
+
+#[test]
+fn scroll_visual_metrics_follow_mounted_thumbs_in_both_engines() {
+    use xrack_layout::{Interaction, LayoutObservers, Size};
+    use xrack_runtime::Length;
+    let interpreted = interpret_list_fixture("ScrollVisualMetricsDemo");
+    let mut generated = list_ui::ScrollVisualMetricsDemo::new();
+    let mut generated_observers = LayoutObservers::default();
+    let mut interpreted_observers = LayoutObservers::default();
+
+    assert_eq!(generated.get_thumb_size(), 0.0);
+    assert_eq!(interpreted.get("thumb-size"), Ok(0.0.into()));
+    for (rtl, visible, offset, bar_position, bar_size, indicator_position) in [
+        (false, true, -200.0, 0.15, 0.4, 0.175),
+        (true, true, -200.0, 0.45, 0.4, 0.525),
+        (true, true, -800.0, 0.0, 0.4, 0.525),
+        (true, false, -800.0, 0.0, 0.0, 0.525),
+        (false, true, 0.0, 0.0, 0.4, 0.175),
+    ] {
+        generated.set_rtl(rtl);
+        generated.set_show_canvas(visible);
+        generated.set_offset(Length(offset));
+        interpreted.set("rtl", rtl.into()).unwrap();
+        interpreted.set("show-canvas", visible.into()).unwrap();
+        interpreted.set("offset", Length(offset).into()).unwrap();
+
+        let interaction = Interaction::default();
+        let size = Size::new(332.0, 180.0);
+        let (scene, layout) = prepare_list(&generated, &interaction, size);
+        generated_observers.sync(&scene, &layout);
+        let (scene, layout) = prepare_list(&interpreted, &interaction, size);
+        interpreted_observers.sync(&scene, &layout);
+
+        for (name, aot, expected) in [
+            (
+                "thumb-position",
+                generated.get_thumb_position(),
+                bar_position,
+            ),
+            ("thumb-size", generated.get_thumb_size(), bar_size),
+            (
+                "indicator-position",
+                generated.get_indicator_position(),
+                indicator_position,
+            ),
+            ("indicator-size", generated.get_indicator_size(), 0.3),
+        ] {
+            assert!(
+                (aot - expected).abs() < 0.0001,
+                "{name}: {aot} != {expected}"
+            );
+            assert_eq!(interpreted.get(name), Ok(aot.into()));
+        }
+        assert_eq!(
+            interpreted.get("logical-position"),
+            Ok(generated.get_logical_position().into())
+        );
+        assert_eq!(
+            interpreted.get("logical-size"),
+            Ok(generated.get_logical_size().into())
+        );
+    }
+    generated_observers.clear();
+    interpreted_observers.clear();
+    assert_eq!(generated.get_thumb_size(), 0.0);
+    assert_eq!(generated.get_indicator_size(), 0.0);
+    assert_eq!(interpreted.get("thumb-size"), Ok(0.0.into()));
+    assert_eq!(interpreted.get("indicator-size"), Ok(0.0.into()));
+}
+
+#[test]
+fn replacement_scroll_artwork_keeps_mouse_touch_and_keyboard_on_the_control() {
+    use xrack_layout::{NavigationKey, Size};
+    use xrack_runtime::Length;
+
+    fn exercise<C: Component>(component: C, read_offset: impl Fn(&C) -> Length) {
+        let mut ui = ui_driver::UiDriver::new(component, FixedText, Size::new(332.0, 180.0));
+        let first = ui.scroll_bar("bar").unwrap();
+        assert_eq!(first.thumb, xrack_layout::Rect::new(46.0, 82.0, 80.0, 12.0));
+        assert!(ui.drag_scroll_bar("bar", 0.5, false));
+        assert!((ui.scroll_bar("bar").unwrap().scroll.offset - 400.0).abs() < 0.001);
+        assert!(ui.drag_scroll_bar("bar", 0.25, true));
+        assert!((ui.scroll_bar("bar").unwrap().scroll.offset - 200.0).abs() < 0.001);
+        for _ in 0..5 {
+            if ui.focused() == Some("bar") {
+                break;
+            }
+            ui.tab();
+        }
+        assert_eq!(ui.focused(), Some("bar"));
+        assert_eq!(ui.scroll_bar_key(NavigationKey::End), Some(true));
+        assert_eq!(ui.scroll_bar("bar").unwrap().scroll.offset, 800.0);
+        assert_eq!(read_offset(ui.component()), Length(-800.0));
+    }
+
+    // Both engines go through the same interaction dispatch and bound viewport.
+    exercise(list_ui::ScrollVisualMetricsDemo::new(), |ui| {
+        ui.get_offset()
+    });
+    exercise(interpret_list_fixture("ScrollVisualMetricsDemo"), |ui| {
+        let Value::Length(offset) = ui.get("offset").unwrap() else {
+            panic!("expected bound horizontal offset");
+        };
+        offset
+    });
+}
+
+#[test]
+fn scroll_activity_is_visible_during_touch_and_mouse_capture_in_both_engines() {
+    use xrack_layout::Size;
+
+    fn exercise<C: Component>(component: C, state: impl Fn(&C) -> (bool, bool, bool)) {
+        let mut ui = ui_driver::UiDriver::new(component, FixedText, Size::new(332.0, 180.0));
+        assert_eq!(state(ui.component()), (false, false, false));
+        assert!(ui.drag_scroll_bar_with("bar", 0.55, false, |ui| {
+            let (active, pressed, _) = state(ui.component());
+            assert!(active && pressed);
+            true
+        }));
+        ui.update(|_| {});
+        assert!(!state(ui.component()).1);
+        assert!(ui.drag_scroll_bar_with("bar", 0.25, true, |ui| {
+            assert_eq!(state(ui.component()), (true, true, false));
+            true
+        }));
+        ui.update(|_| {});
+        assert_eq!(state(ui.component()), (true, false, false));
+    }
+
+    exercise(list_ui::ScrollVisualMetricsDemo::new(), |ui| {
+        (
+            ui.get_bar_active(),
+            ui.get_bar_pressed(),
+            ui.get_bar_hovered(),
+        )
+    });
+    exercise(interpret_list_fixture("ScrollVisualMetricsDemo"), |ui| {
+        let read = |name| ui.get(name).unwrap() == Value::Bool(true);
+        (read("bar-active"), read("bar-pressed"), read("bar-hovered"))
+    });
+}
+
+#[test]
+fn standalone_scroll_steps_write_back_synchronously_in_both_engines() {
+    let interpreted = interpret_list_fixture("StandaloneScrollDemo");
+    let mut aot = list_ui::StandaloneScrollDemo::new();
+    aot.set_interactive(false);
+    interpreted.set("interactive", false.into()).unwrap();
+    aot.invoke_step_twice();
+    interpreted.invoke("step-twice", &[]).unwrap();
+    assert_eq!(
+        (
+            aot.get_before_jump(),
+            aot.get_after_jump(),
+            aot.get_offset()
+        ),
+        (0.0, 0.25, 0.25)
+    );
+    assert_eq!(interpreted.get("before-jump"), Ok(0.0.into()));
+    assert_eq!(interpreted.get("after-jump"), Ok(0.25.into()));
+    assert_eq!(interpreted.get("offset"), Ok(0.25.into()));
+
+    aot.set_offset(0.7);
+    interpreted.set("offset", 0.7.into()).unwrap();
+    aot.invoke_step_twice();
+    interpreted.invoke("step-twice", &[]).unwrap();
+    assert_eq!(aot.get_after_jump(), 0.75);
+    assert_eq!(interpreted.get("after-jump"), Ok(0.75.into()));
+    aot.invoke_step_back();
+    interpreted.invoke("step-back", &[]).unwrap();
+    assert_eq!(aot.get_offset(), 0.625);
+    assert_eq!(interpreted.get("offset"), Ok(0.625.into()));
+    assert_eq!(aot.get_changes(), 0);
+    assert_eq!(interpreted.get("changes"), Ok(0_i64.into()));
+}
+
+#[test]
+fn attached_scroll_steps_resolve_against_the_new_layout_and_logical_axis() {
+    use xrack_layout::Size;
+    use xrack_runtime::Length;
+
+    let size = Size::new(332.0, 216.0);
+    let mut aot =
+        ui_driver::UiDriver::new(list_ui::ScrollVisualMetricsDemo::new(), FixedText, size);
+    let mut interpreted = ui_driver::UiDriver::new(
+        interpret_list_fixture("ScrollVisualMetricsDemo"),
+        FixedText,
+        size,
+    );
+    aot.update(|ui| {
+        ui.set_rtl(true);
+        ui.invoke_queued_steps();
+        assert_eq!(ui.get_offset(), Length(-200.0));
+        ui.set_canvas_width(Length(1600.0));
+    });
+    interpreted.update(|ui| {
+        ui.set("rtl", true.into()).unwrap();
+        ui.invoke("queued-steps", &[]).unwrap();
+        assert_eq!(ui.get("offset"), Ok(Length(-200.0).into()));
+        ui.set("canvas-width", Length(1600.0).into()).unwrap();
+    });
+    assert_eq!(aot.component().get_offset(), Length(-500.0));
+    assert_eq!(
+        interpreted.component().get("offset"),
+        Ok(Length(-500.0).into())
+    );
+    aot.click("back");
+    interpreted.click("back");
+    assert_eq!(aot.component().get_offset(), Length(-340.0));
+    assert_eq!(
+        interpreted.component().get("offset"),
+        Ok(Length(-340.0).into())
+    );
+    aot.update(|ui| {
+        ui.set_show_canvas(false);
+        ui.invoke_queued_steps();
+    });
+    interpreted.update(|ui| {
+        ui.set("show-canvas", false.into()).unwrap();
+        ui.invoke("queued-steps", &[]).unwrap();
+    });
+    assert_eq!(aot.component().get_offset(), Length(-340.0));
+    assert_eq!(
+        interpreted.component().get("offset"),
+        Ok(Length(-340.0).into())
+    );
+}
+
+#[test]
+fn scroll_view_gutters_report_the_same_live_viewport_in_both_engines() {
+    use xrack_layout::Size;
+    use xrack_runtime::Length;
+    let size = Size::new(370.0, 200.0);
+    let mut generated =
+        ui_driver::UiDriver::new(list_ui::ScrollGuttersDemo::new(), FixedText, size);
+    let mut interpreted =
+        ui_driver::UiDriver::new(interpret_list_fixture("ScrollGuttersDemo"), FixedText, size);
+    for (reserve, fixed, overflow, rtl, expected) in [
+        (true, true, true, false, [170.0, 98.0, 10.0, 10.0]),
+        (true, true, true, true, [170.0, 98.0, 10.0, 10.0]),
+        (true, false, true, true, [170.0, 108.0, 10.0, 0.0]),
+        (false, true, true, false, [180.0, 108.0, 10.0, 0.0]),
+        (true, true, false, false, [180.0, 108.0, 0.0, 0.0]),
+    ] {
+        generated.update(|ui| {
+            ui.set_reserve(reserve);
+            ui.set_fixed_width(fixed);
+            ui.set_overflow_y(overflow);
+            ui.set_rtl(rtl);
+        });
+        interpreted.update(|ui| {
+            for (name, value) in [
+                ("reserve", reserve),
+                ("fixed-width", fixed),
+                ("overflow-y", overflow),
+                ("rtl", rtl),
+            ] {
+                ui.set(name, value.into()).unwrap();
+            }
+        });
+        let aot = generated.component();
+        for ((name, value), expected) in [
+            ("viewport-width", aot.get_viewport_width()),
+            ("viewport-height", aot.get_viewport_height()),
+            ("vertical-gutter", aot.get_vertical_gutter()),
+            ("horizontal-gutter", aot.get_horizontal_gutter()),
+        ]
+        .into_iter()
+        .zip(expected)
+        {
+            assert_eq!(value, Length(expected), "{name}");
+            assert_eq!(
+                interpreted.component().get(name),
+                Ok(value.into()),
+                "{name}"
+            );
+        }
+    }
+}
+
+#[test]
+fn tab_focus_reveals_nested_scroll_views_and_writes_both_linked_axes() {
+    use xrack_layout::Size;
+    use xrack_runtime::Length;
+
+    fn exercise<C: Component>(ui: C, offsets: impl Fn(&C) -> [Length; 4]) {
+        let mut driver = ui_driver::UiDriver::new(ui, FixedText, Size::new(380.0, 224.0));
+        for target in ["jump", "first-field", "last-field"] {
+            driver.tab();
+            assert_eq!(driver.focused(), Some(target));
+        }
+        assert_eq!(
+            offsets(driver.component()),
+            [Length(-60.0), Length(-190.0), Length(-60.0), Length(-94.0)]
+        );
+        driver.tab();
+        assert_eq!(driver.focused(), Some("after"));
+        driver.tab_with_direction(true);
+        assert_eq!(driver.focused(), Some("last-field"));
+        driver.tab_with_direction(true);
+        assert_eq!(driver.focused(), Some("first-field"));
+        assert_eq!(
+            offsets(driver.component()),
+            [Length(-12.0), Length(-10.0), Length(-60.0), Length(-94.0)]
+        );
+    }
+    exercise(list_ui::ScrollFocusDemo::new(), |ui| {
+        [
+            ui.get_outer_x(),
+            ui.get_outer_y(),
+            ui.get_inner_x(),
+            ui.get_inner_y(),
+        ]
+    });
+    exercise(interpret_list_fixture("ScrollFocusDemo"), |ui| {
+        ["outer-x", "outer-y", "inner-x", "inner-y"].map(|property| {
+            let Value::Length(value) = ui.get(property).unwrap() else {
+                panic!("expected length");
+            };
+            value
+        })
+    });
+}
+
+#[test]
+fn programmatic_focus_reveals_a_field_before_delivery_and_can_be_disabled() {
+    use xrack_layout::{Interaction, Size};
+    use xrack_runtime::FocusRequests;
+
+    fn exercise<C: Component>(mut ui: C, configure: impl Fn(&mut C, bool), enabled: bool) {
+        configure(&mut ui, enabled);
+        let queue = FocusRequests::default();
+        let _scope = queue.enter();
+        let mut input = Interaction::default();
+        let size = Size::new(380.0, 224.0);
+        let (scene, frame) = prepare_list(&ui, &input, size);
+        assert!(ui.dispatch("jump", "clicked"));
+        let request = queue.drain().pop().expect("field focus request");
+        let (_, scrolled) = input.apply_focus_request_with_scroll(&scene, &frame, request);
+        assert_eq!(scrolled, enabled);
+        let (scene, frame) = prepare_list(&ui, &input, size);
+        input.reconcile(&scene, &frame);
+        assert_eq!(
+            input
+                .focused
+                .as_ref()
+                .and_then(xrack_layout::Target::element_id),
+            enabled.then_some("last-field")
+        );
+    }
+    for enabled in [true, false] {
+        exercise(
+            list_ui::ScrollFocusDemo::new(),
+            |ui, enabled| ui.set_reveal(enabled),
+            enabled,
+        );
+        exercise(
+            interpret_list_fixture("ScrollFocusDemo"),
+            |ui, enabled| {
+                ui.set("reveal", enabled.into()).unwrap();
+            },
+            enabled,
+        );
+    }
+}
+
+#[test]
+fn explicit_child_positioning_centers_nested_content_in_both_engines() {
+    use xrack_layout::Size;
+    use xrack_runtime::Length;
+    let size = Size::new(380.0, 224.0);
+    let mut aot = ui_driver::UiDriver::new(list_ui::ScrollFocusDemo::new(), FixedText, size);
+    let mut interpreted =
+        ui_driver::UiDriver::new(interpret_list_fixture("ScrollFocusDemo"), FixedText, size);
+    aot.update(|ui| ui.set_reveal(false));
+    interpreted.update(|ui| ui.set("reveal", false.into()).unwrap());
+    aot.click("locate");
+    interpreted.click("locate");
+    for ((name, actual), expected) in [
+        ("outer-x", aot.component().get_outer_x()),
+        ("outer-y", aot.component().get_outer_y()),
+        ("inner-x", aot.component().get_inner_x()),
+        ("inner-y", aot.component().get_inner_y()),
+    ]
+    .into_iter()
+    .zip([-115.0, -230.0, -60.0, -94.0])
+    {
+        assert_eq!(actual, Length(expected), "{name}");
+        assert_eq!(
+            interpreted.component().get(name),
+            Ok(actual.into()),
+            "{name}"
+        );
+    }
+    assert_eq!(aot.focused(), Some("locate"));
+    assert_eq!(interpreted.focused(), Some("locate"));
 }

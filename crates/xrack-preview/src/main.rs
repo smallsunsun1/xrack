@@ -295,9 +295,12 @@ fn inspect_nodes(
     let mut elements = Vec::new();
     let mut remaining = vec![(scene, layout, Vec::new())];
     while let Some((node, layout, path)) = remaining.pop() {
-        if !layout.visible {
+        let Some(bounds) = layout
+            .tab_header
+            .or_else(|| layout.visible.then_some(layout.bounds))
+        else {
             continue;
-        }
+        };
         if elements.len() == 512 {
             return Inspection {
                 elements,
@@ -305,7 +308,7 @@ fn inspect_nodes(
                 properties: Vec::new(),
             };
         }
-        let rect = layout.visible_window_bounds(layout.bounds);
+        let rect = layout.visible_window_bounds(bounds);
         elements.push(InspectedElement {
             kind: node.kind,
             id: node.element_id().map(str::to_owned),
@@ -315,7 +318,7 @@ fn inspect_nodes(
             label: (!node.is_password())
                 .then(|| {
                     node.text("accessible-name")
-                        .or_else(|| node.text("text"))
+                        .or_else(|| node.text(if node.kind == "Tab" { "title" } else { "text" }))
                         .map(|text| text.chars().take(160).collect())
                 })
                 .flatten(),

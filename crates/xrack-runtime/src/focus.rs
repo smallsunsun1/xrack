@@ -1,14 +1,52 @@
-use crate::Property;
-use std::{cell::RefCell, fmt, ops::Range, rc::Rc};
+use crate::{Component, InputRoute, Node, Property, RoutedEvent};
+use std::{
+    cell::{Cell, RefCell},
+    fmt,
+    ops::Range,
+    rc::Rc,
+    time::{Duration, Instant},
+};
 
 /// Identity of a focus target in one component instance.
 #[derive(Clone, Default)]
 pub struct FocusHandle(Rc<FocusSignals>);
 
-/// Reactive physical press state for one observed push button.
+/// Reactive press state for one observed push button.
 #[derive(Clone, Default)]
 #[doc(hidden)]
-pub struct ButtonPressHandle(Rc<Property<bool>>);
+pub struct ButtonPressHandle(Rc<ButtonPressState>);
+
+#[derive(Default)]
+struct ButtonPressState {
+    pressed: Property<bool>,
+    physical: Cell<bool>,
+    synthetic: Cell<bool>,
+    clicking: Cell<bool>,
+    animation: Option<Box<Cell<Option<Instant>>>>,
+}
+
+struct ButtonClick<'a>(&'a ButtonPressState);
+
+impl ButtonClick<'_> {
+    fn release(&self) {
+        self.0.synthetic.set(false);
+        self.0.pressed.set_if_changed(self.0.physical.get());
+    }
+}
+
+impl Drop for ButtonClick<'_> {
+    fn drop(&mut self) {
+        if self
+            .0
+            .animation
+            .as_ref()
+            .is_none_or(|deadline| deadline.get().is_none())
+        {
+            self.release();
+        }
+        self.0.clicking.set(false);
+    }
+}
 
 impl fmt::Debug for ButtonPressHandle {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -23,12 +61,255 @@ impl PartialEq for ButtonPressHandle {
 }
 
 impl ButtonPressHandle {
+    pub fn animated() -> Self {
+        Self(Rc::new(ButtonPressState {
+            animation: Some(Box::default()),
+            ..ButtonPressState::default()
+        }))
+    }
+
     pub fn pressed(&self) -> bool {
-        self.0.get(|| false)
+        self.0.pressed.get(|| false)
     }
 
     pub fn publish(&self, pressed: bool) {
-        self.0.set_if_changed(pressed);
+        self.0.physical.set(pressed);
+        self.0
+            .pressed
+            .set_if_changed(pressed || self.0.synthetic.get());
+    }
+
+    pub fn is_synthetic_pressed(&self) -> bool {
+        self.0.synthetic.get()
+    }
+
+    pub fn supports_animation(&self) -> bool {
+        self.0.animation.is_some()
+    }
+
+    fn deadline(&self) -> Option<Instant> {
+        self.0.animation.as_ref()?.get()
+    }
+
+    pub fn cancel_animation(&self) -> bool {
+        if self
+            .0
+            .animation
+            .as_ref()
+            .and_then(|deadline| deadline.take())
+            .is_none()
+        {
+            return false;
+        }
+        self.0.synthetic.set(false);
+        self.0.pressed.set_if_changed(self.0.physical.get());
+        true
+    }
+
+    /// Activate a mounted button using the component's ordinary input route.
+    pub fn try_click<E>(
+        &self,
+        render: impl FnMut() -> Rc<Node>,
+        route: impl FnMut(&Node, &[usize], InputRoute<'_>) -> Result<bool, E>,
+    ) -> Result<(), E> {
+        self.try_click_with_delay(render, route, None)
+    }
+
+    /// Press now and let the window scheduler deliver the release.
+    pub fn try_animate_click<E>(
+        &self,
+        render: impl FnMut() -> Rc<Node>,
+        route: impl FnMut(&Node, &[usize], InputRoute<'_>) -> Result<bool, E>,
+    ) -> Result<(), E> {
+        let Some(deadline) = self.0.animation.as_deref() else {
+            return Ok(());
+        };
+        self.try_click_with_delay(render, route, Some(deadline))
+    }
+
+    fn try_click_with_delay<E>(
+        &self,
+        mut render: impl FnMut() -> Rc<Node>,
+        mut route: impl FnMut(&Node, &[usize], InputRoute<'_>) -> Result<bool, E>,
+        deadline: Option<&Cell<Option<Instant>>>,
+    ) -> Result<(), E> {
+        if self.0.clicking.get() || self.0.physical.get() {
+            return Ok(());
+        }
+        let next_deadline = || Some(Instant::now() + Duration::from_millis(100));
+        if self.deadline().is_some() {
+            if let Some(deadline) = deadline {
+                let scene = render();
+                if self
+                    .path_in(&scene)
+                    .is_some_and(|path| self.is_available(&scene, &path))
+                {
+                    deadline.set(next_deadline());
+                }
+            }
+            return Ok(());
+        }
+        // Retain the guard through clicked(), even after the press has been released.
+        self.0.clicking.set(true);
+        let click = ButtonClick(&self.0);
+        let scene = render();
+        let Some(path) = self.path_in(&scene) else {
+            return Ok(());
+        };
+        let Some(node) = scene.interactive_at_path(&path) else {
+            return Ok(());
+        };
+        self.0.synthetic.set(true);
+        self.0.pressed.set_if_changed(true);
+        if node.boolean("focus-on-click", true)
+            && let Some(handle) = &node.focus_handle
+        {
+            handle.request(FocusAction::Focus);
+        }
+        let mut send = |scene: &Node, event| {
+            if !scene
+                .at_path(&path)
+                .is_some_and(|node| node.button_press_handle.as_ref() == Some(self))
+            {
+                return Ok(false);
+            }
+            RoutedEvent::Dispatch(event)
+                .with_input(scene, &path, |input| route(scene, &path, input))
+                .unwrap_or(Ok(false))
+        };
+        send(&scene, "pressed")?;
+        if let Some(deadline) = deadline {
+            let scene = render();
+            if self.is_available(&scene, &path) {
+                deadline.set(next_deadline());
+            } else {
+                click.release();
+                send(&scene, "canceled")?;
+            }
+            return Ok(());
+        }
+        click.release();
+        let scene = render();
+        if !self.is_available(&scene, &path) {
+            send(&scene, "canceled")?;
+        } else {
+            send(&scene, "released")?;
+            send(&render(), "clicked")?;
+        }
+        Ok(())
+    }
+
+    fn is_available(&self, scene: &Node, path: &[usize]) -> bool {
+        scene
+            .interactive_at_path(path)
+            .is_some_and(|node| node.button_press_handle.as_ref() == Some(self))
+    }
+
+    fn path_in(&self, scene: &Node) -> Option<Vec<usize>> {
+        fn find(node: &Node, handle: &ButtonPressHandle, path: &mut Vec<usize>) -> bool {
+            if node.button_press_handle.as_ref() == Some(handle) {
+                return true;
+            }
+            for (index, child) in node.children.iter().enumerate() {
+                path.push(index);
+                if find(child, handle, path) {
+                    return true;
+                }
+                path.pop();
+            }
+            false
+        }
+        let mut path = Vec::new();
+        find(scene, self, &mut path).then_some(path)
+    }
+}
+
+/// Mounted buttons with animated activations, owned by the window scheduler.
+#[doc(hidden)]
+#[derive(Default)]
+pub struct ButtonAnimations(Vec<(ButtonPressHandle, bool)>);
+
+impl ButtonAnimations {
+    pub fn sync<'a>(&mut self, handles: impl IntoIterator<Item = &'a ButtonPressHandle>) {
+        let next: Vec<_> = handles
+            .into_iter()
+            .map(|handle| {
+                let was_pressed = self
+                    .0
+                    .iter()
+                    .find(|entry| &entry.0 == handle)
+                    .is_some_and(|entry| entry.1);
+                (handle.clone(), was_pressed)
+            })
+            .collect();
+        for (old, _) in &self.0 {
+            if !next.iter().any(|entry| &entry.0 == old) {
+                old.cancel_animation();
+            }
+        }
+        self.0 = next;
+    }
+
+    pub fn deadline(&self) -> Option<Instant> {
+        self.0.iter().filter_map(|entry| entry.0.deadline()).min()
+    }
+
+    pub fn take_redraw(&mut self) -> bool {
+        let mut changed = false;
+        for (handle, previous) in &mut self.0 {
+            changed |= std::mem::replace(previous, handle.is_synthetic_pressed()) != *previous;
+        }
+        changed
+    }
+
+    pub fn next(&self, scene: &Node, now: Instant) -> Option<ButtonAnimationDelivery> {
+        for (handle, _) in &self.0 {
+            let Some(deadline) = handle.deadline() else {
+                continue;
+            };
+            let Some(path) = handle.path_in(scene) else {
+                handle.cancel_animation();
+                continue;
+            };
+            let release = handle.is_available(scene, &path);
+            if !release || now >= deadline {
+                handle.cancel_animation();
+                return Some(ButtonAnimationDelivery {
+                    handle: handle.clone(),
+                    path,
+                    release,
+                });
+            }
+        }
+        None
+    }
+}
+
+impl Drop for ButtonAnimations {
+    fn drop(&mut self) {
+        for (handle, _) in &self.0 {
+            handle.cancel_animation();
+        }
+    }
+}
+
+#[doc(hidden)]
+pub struct ButtonAnimationDelivery {
+    handle: ButtonPressHandle,
+    path: Vec<usize>,
+    release: bool,
+}
+
+impl ButtonAnimationDelivery {
+    pub fn apply(self, ui: &mut impl Component, scene: &Node) {
+        self.handle.0.clicking.set(true);
+        let _click = ButtonClick(&self.handle.0);
+        if self.release {
+            RoutedEvent::Dispatch("released").deliver_input(ui, scene, &self.path);
+            RoutedEvent::Dispatch("clicked").deliver_input(ui, scene, &self.path);
+        } else {
+            RoutedEvent::Dispatch("canceled").deliver_input(ui, scene, &self.path);
+        }
     }
 }
 
@@ -80,6 +361,8 @@ impl PartialEq for FocusHandle {
 pub enum FocusAction {
     Focus,
     Clear,
+    OpenChoice,
+    CloseChoice,
     Text(TextCommand),
     EditTableCell { row: i64, column: i64 },
     CancelTableEdit,
@@ -104,6 +387,8 @@ pub enum TextCommand {
 pub enum FocusCommandMethod {
     Focus,
     Clear,
+    OpenChoice,
+    CloseChoice,
     SelectAll,
     ClearSelection,
     SetSelection,
@@ -121,6 +406,8 @@ impl FocusCommandMethod {
         Some(match name {
             "focus" => Self::Focus,
             "clear" => Self::Clear,
+            "open-popup" => Self::OpenChoice,
+            "close-popup" => Self::CloseChoice,
             "select-all" => Self::SelectAll,
             "clear-selection" => Self::ClearSelection,
             "set-selection-offsets" => Self::SetSelection,
@@ -139,6 +426,8 @@ impl FocusCommandMethod {
         let text = match (self, operands) {
             (Self::Focus, []) => return Some(FocusAction::Focus),
             (Self::Clear, []) => return Some(FocusAction::Clear),
+            (Self::OpenChoice, []) => return Some(FocusAction::OpenChoice),
+            (Self::CloseChoice, []) => return Some(FocusAction::CloseChoice),
             (Self::SelectAll, []) => TextCommand::SelectAll,
             (Self::ClearSelection, []) => TextCommand::ClearSelection,
             (Self::SetSelection, &[anchor, focus]) => TextCommand::SetSelection { anchor, focus },

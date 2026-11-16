@@ -211,6 +211,7 @@ fn kind(op: Op<'_>, ty: &Type) -> Result<ValueType> {
         Type::ImageHorizontalAlignment => ValueType::ImageHorizontalAlignment,
         Type::ImageVerticalAlignment => ValueType::ImageVerticalAlignment,
         Type::ImageRendering => ValueType::ImageRendering,
+        Type::ButtonDisplay => ValueType::ButtonDisplay,
         _ => return Err(unsupported(op, &format!("type {}", ty.name()))),
     })
 }
@@ -283,12 +284,16 @@ struct Loader<'m> {
     key_scroll_targets: BTreeSet<String>,
     focus_targets: BTreeSet<String>,
     button_press_targets: BTreeSet<String>,
+    combo_popup_targets: BTreeSet<String>,
+    range_position_targets: BTreeSet<String>,
+    button_animation_targets: BTreeSet<String>,
     text_selection_targets: BTreeSet<String>,
     text_command_targets: BTreeSet<String>,
     row_parameters: Vec<(String, Option<String>)>,
     in_split_handle: bool,
     in_day_cell: bool,
     in_section_header: bool,
+    in_combo_option: bool,
     timer_order: Vec<String>,
     action_keys: BTreeSet<String>,
     native_dialog_keys: BTreeSet<String>,
@@ -376,6 +381,9 @@ impl<'m> Loader<'m> {
             key_scroll_targets: loader.key_scroll_targets,
             focus_targets: loader.focus_targets,
             button_press_targets: loader.button_press_targets,
+            combo_popup_targets: loader.combo_popup_targets,
+            range_position_targets: loader.range_position_targets,
+            button_animation_targets: loader.button_animation_targets,
             text_selection_targets: loader.text_selection_targets,
             text_command_targets: loader.text_command_targets,
             timer_order: loader.timer_order,
@@ -433,6 +441,7 @@ impl<'m> Loader<'m> {
                     member(statement, "name")?,
                     expression(self, 0)?,
                 )),
+                "xr.evaluate" => body.push(Statement::Evaluate(expression(self, 0)?)),
                 "xr.invoke" => {
                     let arguments = (0..statement.operand_count())
                         .map(|index| expression(self, index))
@@ -451,6 +460,17 @@ impl<'m> Loader<'m> {
                         span: statement.span(),
                     });
                 }
+                "xr.position_child" => {
+                    let view = attribute(statement, "owner")?.to_owned();
+                    self.viewport_targets.insert(view.clone());
+                    let target = attribute(statement, "target")?.to_owned();
+                    self.geometry_targets.insert(target.clone());
+                    body.push(Statement::PositionChild {
+                        view,
+                        target,
+                        alignments: [expression(self, 0)?, expression(self, 1)?],
+                    });
+                }
                 "xr.scroll_command" | "xr.cancel_flick" | "xr.return_to_bounds" => {
                     let target = attribute(statement, "owner")?.to_owned();
                     let method = match statement.name() {
@@ -463,7 +483,9 @@ impl<'m> Loader<'m> {
                     let arguments = (0..statement.operand_count())
                         .map(|index| expression(self, index))
                         .collect::<Result<_>>()?;
-                    self.viewport_targets.insert(target.clone());
+                    if command.bar_step().is_none() {
+                        self.viewport_targets.insert(target.clone());
+                    }
                     if command.uses_source_row() {
                         self.source_scroll_targets.insert(target.clone());
                     }
@@ -486,6 +508,12 @@ impl<'m> Loader<'m> {
                             .transpose()?;
                         body.push(Statement::SelectSource(target, argument, column));
                     }
+                }
+                "xr.move_navigation_item" => {
+                    body.push(Statement::MoveNavigationItem(
+                        attribute(statement, "owner")?.into(),
+                        [expression(self, 0)?, expression(self, 1)?],
+                    ));
                 }
                 "xr.set_row_height"
                 | "xr.move_column"
@@ -524,6 +552,21 @@ impl<'m> Loader<'m> {
                     };
                     self.focus_targets.insert(owner.into());
                     body.push(Statement::Focus(owner.into(), command, arguments));
+                }
+                "xr.button_click" => {
+                    let owner = attribute(statement, "owner")?;
+                    self.focus_targets.insert(owner.into());
+                    self.button_press_targets.insert(owner.into());
+                    let animated = statement.attribute("animated") == Some("true");
+                    if animated {
+                        self.button_animation_targets.insert(owner.into());
+                    }
+                    body.push(Statement::ButtonClick(owner.into(), animated));
+                }
+                "xr.button_toggle" => {
+                    body.push(Statement::ButtonToggle(
+                        attribute(statement, "owner")?.into(),
+                    ));
                 }
                 "xr.tree_command" => {
                     let method = attribute(statement, "method")?;
@@ -669,6 +712,7 @@ impl<'m> Loader<'m> {
                     return Err(unsupported(child, "repeat model"));
                 }
                 Ok(Repeat {
+                    loader: None,
                     model: self.expression(repeat.model, &[])?,
                     item: repeat.item.to_owned(),
                     index: repeat.index.map(str::to_owned),
@@ -704,14 +748,20 @@ impl<'m> Loader<'m> {
         let in_split_handle = self.in_split_handle;
         let in_day_cell = self.in_day_cell;
         let in_section_header = self.in_section_header;
+        let in_combo_option = self.in_combo_option;
         self.in_split_handle |= op.attribute("kind") == Some("SplitHandle");
         self.in_day_cell |= op.attribute("kind") == Some("DayCell");
         self.in_section_header |= op.attribute("kind") == Some("SectionHeader");
+        self.in_combo_option |= matches!(
+            op.attribute("kind"),
+            Some("ComboOption" | "TumblerOption" | "PathViewOption")
+        );
         let result = self.element_body(op, repeat, table_cell);
         self.visual_scope = previous_scope;
         self.in_split_handle = in_split_handle;
         self.in_day_cell = in_day_cell;
         self.in_section_header = in_section_header;
+        self.in_combo_option = in_combo_option;
         if nested {
             self.row_parameters.pop();
         }
@@ -934,6 +984,7 @@ impl<'m> Loader<'m> {
         let mut secondary_windows = Vec::new();
         let mut split_handle = None;
         let mut section_header = None;
+        let mut combo_option = None;
         let mut day_cell = None;
         for child in op.children() {
             match child.name() {
@@ -967,6 +1018,14 @@ impl<'m> Loader<'m> {
                 "xr.element" if child.attribute("kind") == Some("SectionHeader") => {
                     section_header = Some(Box::new(self.element(child)?));
                 }
+                "xr.element"
+                    if matches!(
+                        child.attribute("kind"),
+                        Some("ComboOption" | "TumblerOption" | "PathViewOption")
+                    ) =>
+                {
+                    combo_option = Some(Box::new(self.element(child)?));
+                }
                 "xr.element" if child.attribute("kind") == Some("Timer") => {
                     timers.push(self.element(child)?)
                 }
@@ -992,8 +1051,16 @@ impl<'m> Loader<'m> {
                 "xr.element" if child.attribute("kind") == Some("SecondaryWindow") => {
                     secondary_windows.push(self.element(child)?);
                 }
-                "xr.element" | "xr.instance" => children
-                    .push(self.load_element(child, op.attribute("kind") == Some("TableRow"))?),
+                "xr.element" | "xr.instance" => {
+                    let mut element =
+                        self.load_element(child, op.attribute("kind") == Some("TableRow"))?;
+                    if op.attribute("kind") == Some("Loader")
+                        && let Some(repeat) = &mut element.repeat
+                    {
+                        repeat.loader = Some((key.into(), children.len()));
+                    }
+                    children.push(element);
+                }
                 "xr.action_ref" => action = Some(attribute(child, "owner")?.into()),
                 "xr.radio_group_ref" | "xr.check_group_ref" => {
                     button_group = Some(group::Membership {
@@ -1217,6 +1284,7 @@ impl<'m> Loader<'m> {
             stack_routes,
             day_cell,
             section_header,
+            combo_option,
             clipboard_paste,
             clipboard_text,
             contains_delegate: is_instance
@@ -1528,10 +1596,49 @@ impl<'m> Loader<'m> {
                 self.focus_targets.insert(owner.into());
                 Expression::FocusRead(owner.into(), spelling()? == "focus-within")
             }
+            "xr.combo_popup_read" => {
+                let owner = attribute(op, "owner")?;
+                self.combo_popup_targets.insert(owner.into());
+                Expression::ComboPopupRead(owner.into(), spelling()? == "popup-open")
+            }
             "xr.button_pressed" => {
                 let owner = attribute(op, "owner")?;
                 self.button_press_targets.insert(owner.into());
                 Expression::ButtonPressed(owner.into())
+            }
+            "xr.button_checked" => Expression::ButtonChecked(attribute(op, "owner")?.into()),
+            "xr.radio_checked" => Expression::RadioChecked {
+                target: attribute(op, "owner")?.into(),
+                group: spelling()?.into(),
+            },
+            "xr.navigation_count" => Expression::NavigationCount(attribute(op, "owner")?.into()),
+            "xr.navigation_index" => Expression::NavigationIndex(attribute(op, "owner")?.into()),
+            "xr.navigation_active" => Expression::NavigationActive {
+                target: attribute(op, "owner")?.into(),
+                group: spelling()?.into(),
+            },
+            "xr.toggle_state_read" => Expression::ToggleStateRead(member(op, "value")?),
+            "xr.numeric_value_read" => Expression::NumericValueRead(member(op, "value")?),
+            "xr.combo_state_read" => {
+                let fallback = default_value(&self.records, &value_kind(op, value)?)
+                    .map_err(|error| invalid(op, error))?;
+                Expression::ComboStateRead(member(op, "value")?, fallback)
+            }
+            "xr.range_position_read" => {
+                let member = member(op, "value")?;
+                self.range_position_targets.insert(member.owner.clone());
+                Expression::RangePositionRead(member)
+            }
+            "xr.dynamic_action" | "xr.dynamic_read" => Expression::Dynamic(
+                attribute(op, "owner")?.into(),
+                attribute(op, "value")?.split(':').map(str::to_owned).collect(),
+                (0..op.operand_count()).map(|index| argument(self, index)).collect::<Result<_>>()?,
+            ),
+            "xr.loader_external_status" => {
+                Expression::LoaderExternalStatus(attribute(op, "owner")?.into(), argument(self, 0)?)
+            }
+            "xr.loader_mounted" => {
+                Expression::LoaderMounted(attribute(op, "owner")?.into(), argument(self, 0)?)
             }
             "xr.stack_read" => Expression::StackRead(
                 attribute(op, "owner")?.into(),
@@ -1578,7 +1685,16 @@ impl<'m> Loader<'m> {
                         .map_err(|error| invalid(op, error))?,
                 )
             }
-            "xr.scroll_control_read" => Expression::ScrollControlRead(member(op, "value")?),
+            "xr.scroll_control_read" => {
+                let member = member(op, "value")?;
+                if matches!(
+                    member.name.as_str(),
+                    "visual-position" | "visual-size" | "active" | "pressed" | "hovered"
+                ) {
+                    self.geometry_targets.insert(member.owner.clone());
+                }
+                Expression::ScrollControlRead(member)
+            }
             "xr.image_url" => {
                 let url = spelling()?;
                 let image = if url.is_empty() {
@@ -1633,6 +1749,10 @@ impl<'m> Loader<'m> {
                     && let Some(parameter) = runtime::ListSectionParameter::parse(name)
                 {
                     Expression::ListSectionParam(parameter)
+                } else if self.in_combo_option
+                    && let Some(parameter) = runtime::ComboOptionParameter::parse(name)
+                {
+                    Expression::ComboOptionParam(parameter)
                 } else {
                     return Err(invalid(op, format_args!("unknown parameter {name}")));
                 }
@@ -1946,6 +2066,7 @@ fn runtime_default(kind: &ValueType) -> Option<Value> {
         ImageHorizontalAlignment,
         ImageVerticalAlignment,
         ImageRendering,
+        ButtonDisplay,
     ))
 }
 
@@ -1999,6 +2120,7 @@ const PROPERTIES: &[&str] = &[
     "padding-bottom",
     "visible",
     "source",
+    "source-url",
     "autoplay",
     "muted",
     "playback-rate",
@@ -2084,6 +2206,7 @@ const PROPERTIES: &[&str] = &[
     "spacing-vertical",
     "flex-direction",
     "flex-wrap",
+    "flick-deceleration",
     "layout-order",
     "max-lines",
     "row-height",
@@ -2092,6 +2215,7 @@ const PROPERTIES: &[&str] = &[
     "typeahead-enabled",
     "header-height",
     "row-header-width",
+    "reorderable",
     "row-header-text",
     "current-row",
     "current-key",
@@ -2157,6 +2281,9 @@ const PROPERTIES: &[&str] = &[
     "accept-text",
     "cancel-text",
     "visible-item-count",
+    "path",
+    "item-width",
+    "item-height",
     "count",
     "input-mode",
     "start-angle",
@@ -2165,6 +2292,7 @@ const PROPERTIES: &[&str] = &[
     "decimal-separator",
     "live",
     "wheel-enabled",
+    "scroll-indicator",
     "cursor-shape",
     "blocking",
     "accepted-buttons",
@@ -2196,6 +2324,8 @@ const PROPERTIES: &[&str] = &[
     "content-width",
     "content-height",
     "mouse-drag-pan-enabled",
+    "reserve-scroll-bar-space",
+    "auto-reveal-focus",
     "handle-swipe-left",
     "handle-swipe-right",
     "handle-swipe-up",
@@ -2243,11 +2373,14 @@ const PROPERTIES: &[&str] = &[
     "exclusive",
     "checkable",
     "icon-only",
+    "display",
+    "colorize-icon",
     "radius",
     "content-padding",
     "role",
     "kind",
     "primary",
+    "flat",
     "edge",
     "drag-margin",
     "sequences",

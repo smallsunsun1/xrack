@@ -1,7 +1,7 @@
 use crate::*;
 use xrack_runtime::{
-    GeometryHandle, GeometryMetric, Length, Orientation, Property, ScrollCommandMethod,
-    ViewportHandle,
+    GeometryHandle, GeometryMetric, Length, Orientation, Property, ScrollAction, ScrollBarRange,
+    ScrollBarStep, ScrollCommandMethod, ViewportHandle,
 };
 
 #[derive(Clone)]
@@ -24,6 +24,8 @@ pub(crate) enum Metric {
     ContentY,
     VisibleWidth,
     VisibleHeight,
+    EffectiveScrollBarWidth,
+    EffectiveScrollBarHeight,
     Dragging,
     Flicking,
     Moving,
@@ -39,6 +41,8 @@ impl Metric {
             "content-y" => Self::ContentY,
             "visible-width" => Self::VisibleWidth,
             "visible-height" => Self::VisibleHeight,
+            "effective-scroll-bar-width" => Self::EffectiveScrollBarWidth,
+            "effective-scroll-bar-height" => Self::EffectiveScrollBarHeight,
             "dragging" => Self::Dragging,
             "flicking" => Self::Flicking,
             "moving" => Self::Moving,
@@ -55,6 +59,8 @@ impl Metric {
             Self::ContentY => handle.content_y().into(),
             Self::VisibleWidth => handle.visible_width().into(),
             Self::VisibleHeight => handle.visible_height().into(),
+            Self::EffectiveScrollBarWidth => handle.effective_scroll_bar_width().into(),
+            Self::EffectiveScrollBarHeight => handle.effective_scroll_bar_height().into(),
             Self::Dragging => handle.dragging().into(),
             Self::Flicking => handle.flicking().into(),
             Self::Moving => handle.moving().into(),
@@ -87,7 +93,9 @@ impl Handles {
                 let notify = element.handlers.contains_key("scrolled")
                     || element.handlers.contains_key("flicked");
                 let handle = match element.visual {
-                    Visual::Builtin("Flickable") => ViewportHandle::for_flickable(notify),
+                    Visual::Builtin("Flickable" | "Tumbler" | "PathView") => {
+                        ViewportHandle::for_flickable(notify)
+                    }
                     _ if notify => ViewportHandle::with_scroll_notifications(),
                     _ => ViewportHandle::default(),
                 };
@@ -150,14 +158,33 @@ impl Element {
 
 impl Instance {
     pub(crate) fn geometry_read(&self, key: &str, metric: Option<GeometryMetric>) -> Result<Value> {
+        self.geometry_value(key, |handle| match metric {
+            Some(metric) => handle.read(metric).into(),
+            None => handle.ready().into(),
+        })
+    }
+
+    pub(crate) fn observed_scroll_metric(&self, key: &str, metric: &str) -> Result<Value> {
+        self.geometry_value(key, |handle| match metric {
+            "visual-position" => handle.scroll_visual_position().into(),
+            "visual-size" => handle.scroll_visual_size().into(),
+            "active" => handle.scroll_active().into(),
+            "pressed" => handle.scroll_pressed().into(),
+            "hovered" => handle.scroll_hovered().into(),
+            _ => unreachable!("verified scroll metric"),
+        })
+    }
+
+    fn geometry_value<T>(
+        &self,
+        key: &str,
+        read: impl FnOnce(&xrack_runtime::GeometryHandle) -> T,
+    ) -> Result<T> {
         if let Some(handle) = self.0.layout.geometry.get(key) {
-            return Ok(match metric {
-                Some(metric) => handle.read(metric).into(),
-                None => handle.ready().into(),
-            });
+            return Ok(read(handle));
         }
         if let Some(owner) = self.row_owner() {
-            return owner.geometry_read(key, metric);
+            return owner.geometry_value(key, read);
         }
         Err(Error::Invalid(format!("unknown geometry target {key}")))
     }
@@ -188,17 +215,73 @@ impl Instance {
         Ok(())
     }
 
+    pub(crate) fn position_child(
+        &self,
+        view: &str,
+        target: &str,
+        horizontal: xrack_runtime::ScrollAlignment,
+        vertical: xrack_runtime::ScrollAlignment,
+    ) -> Result<()> {
+        let target = self.geometry_value(target, GeometryHandle::scroll_target_id)?;
+        self.viewport(view)?.request(ScrollAction::ToChild {
+            target,
+            horizontal,
+            vertical,
+        });
+        Ok(())
+    }
+
     pub(crate) fn scroll_command(
         &self,
         target: &str,
         method: ScrollCommandMethod,
         operands: &[Value],
     ) -> Result<()> {
+        if let Some(direction) = method.bar_step() {
+            return self.scroll_bar_step(target, direction);
+        }
         let command = method
             .command(operands)
             .ok_or_else(|| Error::Invalid("invalid scroll command operands".into()))?;
         if let Some(action) = command.try_resolve(|index| self.source_key(target, index))? {
             self.viewport(target)?.request(action);
+        }
+        Ok(())
+    }
+
+    fn scroll_bar_step(&self, key: &str, direction: ScrollBarStep) -> Result<()> {
+        let bar = self
+            .definition()
+            .root
+            .find_key(key)
+            .ok_or_else(|| Error::Invalid(format!("unknown scroll bar {key}")))?;
+        let binding = |name| -> Result<Option<f64>> {
+            Ok(match self.binding_value(bar, name)? {
+                Some(Value::Float(value)) => Some(value),
+                _ => None,
+            })
+        };
+        if let Some(target) = &bar.scroll_target {
+            let axis = match self.binding_value(bar, "orientation")? {
+                Some(Value::Orientation(axis)) => axis,
+                _ => Orientation::Vertical,
+            };
+            self.viewport(target)?.request(ScrollAction::StepBar {
+                axis,
+                step_size: binding("step-size")?,
+                direction,
+            });
+        } else {
+            let position = match self.control_value(bar, "position")? {
+                Some(Value::Float(value)) => value,
+                _ => 0.0,
+            };
+            let size = binding("size")?.unwrap_or(ScrollBarRange::DEFAULT_SIZE);
+            let step = binding("step-size")?.unwrap_or(ScrollBarRange::DEFAULT_STEP);
+            if let Some(value) = ScrollBarRange::new(position, size, step).apply(direction.action())
+            {
+                self.set_control_value(bar, "position", value.into())?;
+            }
         }
         Ok(())
     }

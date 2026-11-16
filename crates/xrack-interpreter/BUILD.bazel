@@ -1,7 +1,9 @@
 load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
 
 _DEPS = [
+    "//crates/xrack-ir:xrack_ir",
     "//crates/xrack-mlir:xrack_mlir",
+    "//crates/xrack-parser:xrack_parser",
     "//crates/xrack-resources:xrack_resources",
     "//crates/xrack-runtime:xrack_runtime",
     "//crates/xrack-syntax:xrack_syntax",
@@ -34,12 +36,10 @@ rust_test(
     name = "interpreter_test",
     size = "small",
     crate = ":xrack_interpreter",
-    deps = ["//crates/xrack-parser:xrack_parser"],
 )
 
 rust_test(
     name = "live_inspect_test",
     size = "small",
     crate = ":xrack_interpreter_live",
-    deps = ["//crates/xrack-parser:xrack_parser"],
 )

@@ -72,7 +72,10 @@ export component RecordTableDemo inherits Window {
                 TableCell { text <=> row.owner; read-only: root.lock-owner; background: index % 2 == 0 ? #263750 : #223249; }
                 SpinBox { value <=> row.units; minimum: 0; maximum: 999; }
                 CheckBox { checked <=> row.available; }
-                Slider { value <=> row.load; minimum: 0; maximum: 1; step: 0.05; }
+                Slider {
+                    value <=> row.load; minimum: 0; maximum: 1; step: 0.05;
+                    accessible-description: "利用率 " + (self.value * 100) + "%";
+                }
             }
         }
         if root.editing-tools : HorizontalLayout {

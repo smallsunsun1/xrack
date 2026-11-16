@@ -56,6 +56,7 @@ pub struct CallbackRef {
 pub enum Statement {
     Assignment(Assignment),
     Invoke(CallbackCall),
+    Evaluate { evaluate: Expr },
     Log {
         level: Expr,
         message: Expr,
@@ -73,12 +74,18 @@ pub enum Statement {
     CheckGroupCommand(CheckGroupCommand),
     SecondaryWindowCommand(SecondaryWindowCommand),
     FocusCommand(FocusCommand),
+    ButtonClick(ButtonClick),
+    ButtonToggle {
+        toggle_button_owner: String,
+        span: Span,
+    },
     SwipeCancel {
         swipe_owner: String,
         span: Span,
     },
     TextCommand(TextCommand),
     ScrollCommand(ScrollCommand),
+    PositionChild(PositionChild),
     SourceSelection(SourceSelection),
     TreeCommand(TreeCommand),
     RestoreSplit(RestoreSplit),
@@ -99,6 +106,17 @@ pub enum Statement {
     },
     MoveColumn(MoveTableItem),
     MoveRow(MoveTableItem),
+    ModelEdit {
+        method: String,
+        model: Expr,
+        arguments: Vec<Expr>,
+        span: Span,
+    },
+    MoveNavigationItem {
+        owner: String,
+        positions: [Expr; 2],
+        span: Span,
+    },
     SetRowHeight(SetRowHeight),
 }
 
@@ -148,6 +166,14 @@ pub struct TreeCommand {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct PositionChild {
+    pub child_viewport: String,
+    pub child: String,
+    pub alignments: [Expr; 2],
+    pub span: Span,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ScrollCommand {
     pub viewport: String,
     pub method: String,
@@ -166,7 +192,15 @@ pub struct SourceSelection {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct FocusCommand {
     pub focus_owner: String,
-    pub clear: bool,
+    pub action: String,
+    pub span: Span,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ButtonClick {
+    pub button_owner: String,
+    #[serde(default)]
+    pub animated: bool,
     pub span: Span,
 }
 

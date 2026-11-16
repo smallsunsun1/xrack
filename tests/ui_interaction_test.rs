@@ -5192,6 +5192,179 @@ fn tumbler_accumulates_wheel_pixels_and_commits_once_when_the_drag_snaps() {
 }
 
 #[test]
+fn tumbler_flick_can_be_tuned_disabled_or_interrupted() {
+    use xrack_layout::ScrollGestureKind;
+
+    let prepare = |ui: &TumblerDemo, input: &Interaction| {
+        prepare_scene_with_input(
+            ui,
+            ui.render_shared(),
+            Size::new(388.0, 324.0),
+            &mut FixedText,
+            input,
+        )
+    };
+    let begin = |ui: &TumblerDemo, input: &mut Interaction, now: Instant| {
+        let (scene, layout) = prepare(ui, input);
+        let center = layout
+            .at_path(&[2])
+            .unwrap()
+            .tumbler
+            .as_ref()
+            .unwrap()
+            .center;
+        let point = Point {
+            x: center.x + 16.0,
+            y: center.y + 14.0,
+        };
+        let moved = |distance| Point {
+            y: point.y - distance,
+            ..point
+        };
+        assert!(input.begin_scroll_gesture(&scene, &layout, point, now, ScrollGestureKind::Touch));
+        assert!(input.move_scroll_gesture(
+            &scene,
+            &layout,
+            moved(17.0),
+            now + Duration::from_millis(16)
+        ));
+        assert!(input.move_scroll_gesture(
+            &scene,
+            &layout,
+            moved(47.0),
+            now + Duration::from_millis(32)
+        ));
+        let end = input.end_scroll_gesture(
+            &scene,
+            &layout,
+            moved(47.0),
+            now + Duration::from_millis(36),
+        );
+        (scene, end.control, moved(47.0))
+    };
+
+    let mut landed = Vec::new();
+    for deceleration in [0.0, 8000.0, 1600.0] {
+        let mut ui = TumblerDemo::new();
+        ui.set_deceleration(deceleration);
+        ui.set_cycle(false);
+        let now = Instant::now();
+        let mut input = Interaction::default();
+        let (scene, immediate, _) = begin(&ui, &mut input, now);
+        let control = if deceleration == 0.0 {
+            assert!(!ui.get_moving());
+            immediate.unwrap()
+        } else {
+            assert!(immediate.is_none() && ui.get_flicking());
+            let (scene, layout) = prepare(&ui, &input);
+            input
+                .advance_tumbler_motion(&scene, &layout, now + Duration::from_millis(700))
+                .control
+                .unwrap()
+        };
+        assert!(ui.control_at(&scene, &control.path, control.action));
+        assert_eq!(ui.get_changes(), 1);
+        landed.push(ui.get_minute());
+    }
+    assert!(landed[0] < landed[1] && landed[1] < landed[2], "{landed:?}");
+
+    for interrupt_with_touch in [false, true] {
+        let mut ui = TumblerDemo::new();
+        let now = Instant::now();
+        let mut input = Interaction::default();
+        let (_, immediate, point) = begin(&ui, &mut input, now);
+        assert!(immediate.is_none() && ui.get_moving());
+        if interrupt_with_touch {
+            let (scene, layout) = prepare(&ui, &input);
+            assert!(input.begin_scroll_gesture(
+                &scene,
+                &layout,
+                point,
+                now + Duration::from_millis(60),
+                ScrollGestureKind::Touch
+            ));
+        } else {
+            ui.set_minute_enabled(false);
+        }
+        let (scene, layout) = prepare(&ui, &input);
+        input.reconcile(&scene, &layout);
+        let settled =
+            input.advance_tumbler_motion(&scene, &layout, now + Duration::from_millis(700));
+        assert!(settled.control.is_none());
+        assert!(!ui.get_moving());
+        assert_eq!(ui.get_minute(), 30);
+        assert_eq!(ui.get_changes(), 0);
+    }
+}
+
+#[test]
+fn record_tumbler_cancels_a_drag_if_the_projected_row_changes() {
+    use controls_ui::RecordTumblerDemo;
+    use xrack_layout::ScrollGestureKind;
+
+    let mut ui = RecordTumblerDemo::new();
+    let mut input = Interaction::default();
+    let prepare = |ui: &RecordTumblerDemo, input: &Interaction| {
+        prepare_scene_with_input(
+            ui,
+            ui.render_shared(),
+            Size::new(410.0, 294.0),
+            &mut FixedText,
+            input,
+        )
+    };
+    let path = [0];
+    let (scene, layout) = prepare(&ui, &input);
+    let wheel = layout.at_path(&path).unwrap().tumbler.as_ref().unwrap();
+    let point = Point {
+        x: wheel.center.x + 12.0,
+        y: wheel.center.y + 12.0,
+    };
+    let moved = Point {
+        y: point.y + 54.0,
+        ..point
+    };
+    let now = Instant::now();
+    assert!(input.begin_scroll_gesture(&scene, &layout, point, now, ScrollGestureKind::Touch));
+    assert!(input.move_scroll_gesture(&scene, &layout, moved, now + Duration::from_millis(30)));
+    let stale = wheel
+        .rows
+        .iter()
+        .find(|row| row.index == 1)
+        .unwrap()
+        .action();
+
+    let model = ui.model_zones();
+    let mut row = model.row(1).unwrap();
+    row.label = "更名后的时区".into();
+    row.offset = 60;
+    assert!(model.set_row(1, row));
+
+    let (updated, layout) = prepare(&ui, &input);
+    let release =
+        input.end_scroll_gesture(&updated, &layout, moved, now + Duration::from_millis(40));
+    assert!(release.control.is_none());
+    assert!(!ui.control_at(&scene, &path, stale));
+    assert_eq!(ui.get_offset(), 480);
+    assert_eq!(ui.get_commits(), 0);
+
+    let row = layout
+        .at_path(&path)
+        .unwrap()
+        .tumbler
+        .as_ref()
+        .unwrap()
+        .rows
+        .iter()
+        .find(|row| row.index == 1)
+        .unwrap();
+    assert_eq!(row.label, "更名后的时区");
+    assert!(ui.control_at(&updated, &path, row.action()));
+    assert_eq!(ui.get_offset(), 60);
+    assert_eq!(ui.get_reported_offset(), 60);
+}
+
+#[test]
 fn tumbler_discards_a_drag_and_row_click_from_an_old_model_order() {
     use xrack_layout::ScrollGestureKind;
 

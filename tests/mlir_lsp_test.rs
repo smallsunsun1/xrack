@@ -16,9 +16,9 @@ component Host inherits Window {
     in-out property <int> count: 1;
     out property <int> observed: item.count + root.count;
     item := Child { count: root.count; }
-    field := LineEdit {}
+    view := ScrollView { field := LineEdit {} }
     button := Button {
-        clicked => { item.bump(); root.count += 1; field.focus(); }
+        clicked => { item.bump(); root.count += 1; field.focus(); view.position-view-at-child(field, center, contain); }
     }
 }"#;
 
@@ -145,6 +145,7 @@ fn generated_mlir_supports_scoped_navigation_and_live_module_diagnostics() {
         let instance_decl = position(&text, "\"xr.instance\"", "id = \"item\"");
         let element_decl = position(&text, "\"xr.element\"", "id = \"field\"");
         let focus_target = position(&text, "\"xr.focus_command\"", "target = \"field\"");
+        let child_target = position(&text, "\"xr.position_child\"", "target = \"field\"");
         let component_decl = position(&text, "\"xr.component\"", "sym_name = \"Child\"");
         let invalid = text.replacen("component = @Child", "component = @Missing", 1);
         assert_ne!(invalid, text);
@@ -162,6 +163,7 @@ fn generated_mlir_supports_scoped_navigation_and_live_module_diagnostics() {
             at("textDocument/references", 4, &instance_decl, false),
             at("textDocument/references", 5, &callback_decl, true),
             at("textDocument/definition", 8, &focus_target, false),
+            at("textDocument/definition", 10, &child_target, false),
             at("textDocument/references", 9, &component_decl, false),
             message(
                 "textDocument/documentSymbol",
@@ -189,6 +191,7 @@ fn generated_mlir_supports_scoped_navigation_and_live_module_diagnostics() {
             (3, &callback_decl),
             (7, &invalid_decl),
             (8, &element_decl),
+            (10, &element_decl),
         ] {
             assert_start(&result(id)[0], &location(declaration));
             assert!(

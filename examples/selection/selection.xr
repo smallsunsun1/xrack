@@ -98,6 +98,11 @@ export component RecordComboDemo inherits Window {
     ];
     in-out property <int> code: 200;
     in-out property <bool> editable: false;
+    in property <color> option-fill: #20314a;
+    out property <int> option-count: choice.count;
+    out property <int> visible-index: choice.current-index;
+    out property <int> actual-code: choice.current-value;
+    out property <string> actual-label: choice.current-text;
     out property <int> selected-code: -1;
     out property <string> selected-label: "";
     out property <string> accepted-text: "";
@@ -115,6 +120,37 @@ export component RecordComboDemo inherits Window {
         current-value <=> root.code;
         editable: root.editable;
         auto-complete: true;
+        ComboContent {
+            background: #2b4659; border-radius: 4px;
+            HorizontalLayout {
+                width: 100%; height: 100%; padding: 6px; spacing: 8px;
+                Rectangle {
+                    width: 56px; border-radius: 4px; background: #467689;
+                    Label {
+                        width: 100%; height: 100%;
+                        text: "#" + choice.current-value;
+                        color: #ffffff; horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                }
+                selected-caption := Label {
+                    text: choice.current-text; color: #f1f7ff;
+                    vertical-alignment: center;
+                }
+            }
+        }
+        ComboOption {
+            background: !option-enabled ? #433746
+                : option-highlighted ? #246a79
+                : option-selected ? #294c65
+                : option-data.notes == "紧急" ? #9b4d42 : root.option-fill;
+            Label {
+                x: 10px; width: 94%; height: 100%;
+                text: (option-index + 1) + " · " + option-text + " · " + option-data.notes;
+                vertical-alignment: center;
+                color: option-enabled ? #f2f9ff : #a7a0ab;
+            }
+        }
         selected(label) => { root.selected-label = label; }
         value-selected(value) => { root.selected-code = value; }
         accepted(text) => { root.accepted-text = text; }
@@ -130,9 +166,91 @@ export component RecordComboDemo inherits Window {
         text: "切换 Build archive";
         clicked => { root.toggle-archive(); }
     }
-    Text { x: 20px; y: 182px; text: "当前编号 · " + root.code; }
+    current-choice := Text {
+        x: 20px; y: 182px;
+        text: "当前项 · " + root.actual-code + " · " + root.actual-label;
+    }
     Text { x: 20px; y: 213px; text: "已选择编号 · " + root.selected-code; }
     Text { x: 20px; y: 246px; text: "已提交文本 · " + root.accepted-text; }
+}
+
+export component ComboPopupStyleDemo inherits Window {
+    title: "XRack · 下拉弹层";
+    width: 420px; height: 304px;
+    in-out property <bool> rtl: false;
+    in-out property <bool> near-edge: false;
+    out property <int> selection: 0;
+
+    flip-popup := Button {
+        x: 24px; y: 14px; width: 164px; height: 32px;
+        text: root.rtl ? "切到从左到右" : "切到从右到左";
+        clicked => { root.rtl = !root.rtl; }
+    }
+    move-popup := Button {
+        x: 212px; y: 14px; width: 184px; height: 32px;
+        text: root.near-edge ? "向下展开" : "移到窗口底部";
+        clicked => { root.near-edge = !root.near-edge; }
+    }
+    popup-choice := ComboBox {
+        x: 94px; y: root.near-edge ? 230px : 64px;
+        width: 222px; height: 38px;
+        layout-direction: root.rtl ? LayoutDirection.right-to-left : LayoutDirection.left-to-right;
+        current-index <=> root.selection;
+        model: ["Alpha", "Beta", "Gamma", "Delta", "Epsilon", "Zeta", "Eta", "Theta", "Iota", "Kappa"];
+        ComboPopup {
+            width: 308px; max-height: 120px;
+            row-height: 32px; padding: 8px;
+            background: #263953; border-color: #de9f53;
+            border-width: 2px; border-radius: 9px;
+            scroll-indicator: true;
+        }
+    }
+    popup-status := Label { x: 94px; y: 276px; text: popup-choice.current-text; }
+}
+
+export component ComboPopupControlDemo inherits Window {
+    title: "XRack · 程序控制下拉弹层";
+    width: 440px; height: 282px;
+    in-out property <bool> available: true;
+    in-out property <bool> auto-dismiss: false;
+    out property <bool> expanded: choice.popup-open;
+    out property <int> highlight: choice.highlighted-index;
+
+    choice := ComboBox {
+        x: 20px; y: 70px; width: 212px; height: 38px;
+        enabled: root.available;
+        model: ["Alpha", "Beta", "Gamma"];
+    }
+    open-choice := Button {
+        x: 20px; y: 18px; width: 116px; height: 34px;
+        text: "打开弹层";
+        clicked => { choice.open-popup(); }
+    }
+    close-choice := Button {
+        x: 150px; y: 18px; width: 118px; height: 34px;
+        text: "关闭弹层";
+        clicked => { choice.close-popup(); }
+    }
+    disable-choice := Button {
+        x: 282px; y: 18px; width: 124px; height: 34px;
+        text: root.available ? "禁用" : "启用";
+        clicked => { root.available = !root.available; }
+    }
+    popup-state := Label {
+        x: 250px; y: 79px;
+        text: root.expanded ? "高亮 " + root.highlight : "弹层关闭";
+    }
+    auto-dismiss-choice := CheckBox {
+        x: 250px; y: 157px; text: "打开后自动关闭";
+        checked <=> root.auto-dismiss;
+    }
+    auto-dismiss-timer := Timer {
+        interval: 650;
+        running: root.auto-dismiss && root.expanded;
+        repeat: true;
+        triggered => { choice.close-popup(); }
+    }
+    committed-choice := Label { x: 250px; y: 114px; text: choice.current-text; }
 }
 
 export component GroupedRadiosDemo inherits Window {
@@ -200,7 +318,7 @@ export struct TargetPreset {
 
 export component MixedRadioOptionsDemo inherits Window {
     title: "XRack · 动态单选组";
-    width: 425px; height: 360px;
+    width: 425px; height: 435px;
     in-out property <string> target: "desktop";
     in-out property <bool> show-custom: true;
     in property <[string]> platforms: ["desktop", "mobile"];
@@ -210,15 +328,22 @@ export component MixedRadioOptionsDemo inherits Window {
     ];
     out property <int> selections: 0;
     out property <string> last-selection: "";
+    out property <bool> group-focused: targets.has-focus;
 
     VerticalLayout {
         padding: 18px; spacing: 8px;
         targets := RadioGroup {
-            accessible-name: "目标平台";
+            title: "目标平台";
             current-value <=> root.target;
             RadioButton { text: "自动"; value: "auto"; }
             if root.show-custom: RadioButton { text: "自定义"; value: "custom"; }
-            for platform in root.platforms: RadioButton { text: platform; value: platform; }
+            for platform in root.platforms: RadioButton {
+                text: platform; value: platform;
+                ToggleIndicator {
+                    width: 20px; height: 20px;
+                    Text { text: checked ? "●" : "○"; }
+                }
+            }
             for preset in root.presets: RadioButton {
                 text: preset.label; value: preset.code; enabled: preset.available;
             }
@@ -226,6 +351,12 @@ export component MixedRadioOptionsDemo inherits Window {
             selected(value) => { root.last-selection = value; root.selections += 1; }
         }
         show := CheckBox { text: "显示自定义选项"; checked <=> root.show-custom; }
+        HorizontalLayout {
+            spacing: 8px;
+            focus-targets := Button { text: "聚焦选项"; clicked => { targets.focus(); } }
+            clear-targets := Shortcut { sequence: "F3"; activated => { targets.clear-focus(); } }
+            focus-status := Label { text: root.group-focused ? "选项组已聚焦" : "选项组未聚焦"; }
+        }
         target-status := Label { text: root.target + " · 用户选择 " + root.selections + " 次"; }
     }
 }
@@ -235,6 +366,10 @@ export component EditableChoiceDemo inherits Window {
     in-out property <int> active: 0;
     in-out property <string> active-value: "总部";
     in-out property <string> draft: "总部";
+    out property <string> actual-label: linked.current-text;
+    out property <string> actual-value: linked.current-value;
+    out property <string> actual-draft: linked.edit-text;
+    out property <string> automatic-draft: automatic.edit-text;
     out property <string> last-accepted: "";
     out property <int> edits: 0;
     out property <int> accepts: 0;
@@ -262,7 +397,10 @@ export component EditableChoiceDemo inherits Window {
             selected(value) => { root.selections += 1; }
             accepted(value) => { root.last-accepted = value; root.accepts += 1; }
         }
-        Text { text: "跟随已选项，也可单独编辑"; color: #a7b6ce; }
+        edit-status := Text {
+            text: "选中 · " + root.actual-label + "　草稿 · " + root.actual-draft;
+            color: #a7b6ce;
+        }
         automatic := ComboBox {
             editable: true;
             auto-complete: true;
@@ -273,6 +411,44 @@ export component EditableChoiceDemo inherits Window {
         }
         Text { text: "最近提交 · " + root.last-accepted; color: #acc0db; }
     }
+}
+
+export component ComboValidationDemo inherits Window {
+    title: "XRack · 下拉框输入校验";
+    width: 432px; height: 252px;
+    in-out property <string> draft: "12,50";
+    in-out property <int> selection: 0;
+    in-out property <bool> editing: true;
+    in-out property <bool> allow-submit: true;
+    out property <bool> valid: amount.acceptable-input;
+    out property <int> accept-count: 0;
+    out property <string> last-accepted: "";
+
+    Label { x: 20px; y: 16px; text: "输入 10 到 25 之间的金额"; font-size: 22px; }
+    amount := ComboBox {
+        x: 20px; y: 60px; width: 360px; height: 40px;
+        editable: root.editing;
+        model: ["12,50", "18,25", "30,00"];
+        current-index <=> root.selection;
+        edit-text <=> root.draft;
+        input-type: InputType.decimal;
+        decimal-separator: ",";
+        minimum-value: 10.0; maximum-value: 25.0;
+        minimum-length: 2; maximum-length: 5; decimals: 2;
+        submit-when: root.allow-submit;
+        accepted(text) => { root.last-accepted = text; root.accept-count += 1; }
+    }
+    permit := CheckBox {
+        x: 20px; y: 117px; text: "允许提交"; checked <=> root.allow-submit;
+    }
+    edit-mode := CheckBox {
+        x: 176px; y: 117px; text: "可编辑"; checked <=> root.editing;
+    }
+    validation-status := Label {
+        x: 20px; y: 165px;
+        text: root.valid ? "金额有效 · Enter 提交" : "当前草稿不能提交";
+    }
+    accepted-status := Label { x: 20px; y: 205px; text: "已提交 · " + root.last-accepted; }
 }
 
 export component DirectionalChoiceDemo inherits Window {
@@ -301,6 +477,15 @@ export component DirectionalChoiceDemo inherits Window {
             editable: true; auto-complete: true;
             model: ["Alpha", "Beta", "שלום", "עולם"];
             edit-text <=> root.draft;
+            ComboIndicator {
+                width: 44px; height: 24px;
+                background: #437599; border-radius: 5px;
+                Label {
+                    text: "⌄"; width: 44px; height: 24px;
+                    horizontal-alignment: center; vertical-alignment: center;
+                    color: #ffffff;
+                }
+            }
         }
         compact := ComboBox {
             x: 306px; y: 0px; width: 68px; height: 36px;

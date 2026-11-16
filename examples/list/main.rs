@@ -1,8 +1,9 @@
 use list_ui::{
     AnchoredListDemo, DirectionalScrollDemo, DirectoryItem, GridDemo, ItemDelegatesDemo,
     KeyNavigationDemo, LinkedScrollDemo, ListDemo, ListSelectionTransferDemo, ListVisibilityDemo,
-    MultiSelectDemo, NestedDataDemo, NestedListsDemo, ScrollBarsDemo, ScrollPositionDemo,
-    SectionedListDemo, StandaloneScrollDemo, StandardListDemo, TypeaheadDemo, ViewCountsDemo,
+    MultiSelectDemo, NestedDataDemo, NestedListsDemo, ScrollBarsDemo, ScrollFocusDemo,
+    ScrollGuttersDemo, ScrollPositionDemo, ScrollVisualMetricsDemo, SectionedListDemo,
+    StandaloneScrollDemo, StandardListDemo, TypeaheadDemo, ViewCountsDemo,
 };
 
 fn records() -> Vec<DirectoryItem> {
@@ -18,6 +19,11 @@ fn main() -> std::process::ExitCode {
     let result = match std::env::args().nth(1).as_deref() {
         Some("--position") => xrack_platform_winit::run(ScrollPositionDemo::new()),
         Some("--linked") => xrack_platform_winit::run(LinkedScrollDemo::new()),
+        Some("--scroll-visual-metrics") => {
+            xrack_platform_winit::run(ScrollVisualMetricsDemo::new())
+        }
+        Some("--scroll-focus") => xrack_platform_winit::run(ScrollFocusDemo::new()),
+        Some("--scroll-gutters") => xrack_platform_winit::run(ScrollGuttersDemo::new()),
         Some("--scroll-bars") => xrack_platform_winit::run(ScrollBarsDemo::new()),
         Some("--rtl-scroll") => xrack_platform_winit::run(DirectionalScrollDemo::new()),
         Some("--sections") => xrack_platform_winit::run(SectionedListDemo::new()),

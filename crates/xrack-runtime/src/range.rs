@@ -1,4 +1,65 @@
-use crate::{Node, Value};
+use crate::{LayoutDirection, Node, Orientation, Property, Value};
+use std::{fmt, rc::Rc};
+
+/// Transient thumb input and the resolved layout direction for a range control.
+#[doc(hidden)]
+#[derive(Clone, Default)]
+pub struct RangePositionHandle(Rc<RangePositionState>);
+
+#[derive(Default)]
+struct RangePositionState {
+    preview: Property<Option<(usize, f64)>>,
+    direction: Property<LayoutDirection>,
+}
+
+impl PartialEq for RangePositionHandle {
+    fn eq(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl fmt::Debug for RangePositionHandle {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("RangePositionHandle")
+            .finish_non_exhaustive()
+    }
+}
+
+impl RangePositionHandle {
+    pub fn publish_preview(&self, preview: Option<(usize, f64)>) {
+        self.0.preview.set_if_changed(preview);
+    }
+
+    pub fn publish_direction(&self, direction: LayoutDirection) {
+        self.0.direction.set_if_changed(direction);
+    }
+
+    pub fn slider_position(&self, range: SliderRange, live: bool) -> f64 {
+        if !live && let Some((_, fraction)) = self.0.preview.get(|| None) {
+            return range.preview_fraction(fraction);
+        }
+        range.fraction()
+    }
+
+    pub fn interval_position(&self, range: SliderInterval, live: bool, handle: usize) -> f64 {
+        let fractions = if !live && let Some((index, fraction)) = self.0.preview.get(|| None) {
+            range.preview_fractions(index, fraction)
+        } else {
+            range.fractions()
+        };
+        fractions[handle]
+    }
+
+    pub fn visual_position(&self, position: f64, orientation: Orientation) -> f64 {
+        if orientation == Orientation::Vertical
+            || self.0.direction.get(LayoutDirection::default) == LayoutDirection::RightToLeft
+        {
+            1.0 - position
+        } else {
+            position
+        }
+    }
+}
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum DialInputMode {
@@ -268,18 +329,40 @@ pub struct SliderRange {
 
 impl SliderRange {
     pub fn from_node(node: &Node) -> Self {
-        let min = node.number("minimum").unwrap_or(0.0);
-        let max = node.number("maximum").unwrap_or(100.0).max(min);
-        Self {
-            min,
-            max,
-            value: node.number("value").unwrap_or(0.0).clamp(min, max),
-            step: node.number("step").unwrap_or(1.0).max(0.0),
-            wrap: node.kind == "Dial" && node.boolean("wrap", false),
-            snap: match node.properties.get("snap-mode") {
+        Self::new(
+            node.number("minimum").unwrap_or(0.0),
+            node.number("maximum").unwrap_or(100.0),
+            node.number("value").unwrap_or(0.0),
+            node.number("step").unwrap_or(1.0),
+            node.kind == "Dial" && node.boolean("wrap", false),
+            match node.properties.get("snap-mode") {
                 Some(Value::ScrollSnapMode(mode)) => *mode,
                 _ => ScrollSnapMode::None,
             },
+        )
+    }
+
+    #[doc(hidden)]
+    pub fn new(
+        min: f64,
+        max: f64,
+        value: f64,
+        step: f64,
+        wrap: bool,
+        snap: ScrollSnapMode,
+    ) -> Self {
+        let min = if min.is_finite() { min } else { 0.0 };
+        let max = if max.is_finite() { max } else { 100.0 };
+        let value = if value.is_finite() { value } else { 0.0 };
+        let step = if step.is_finite() { step } else { 1.0 };
+        let max = max.max(min);
+        Self {
+            min,
+            max,
+            value: value.clamp(min, max),
+            step: step.max(0.0),
+            wrap,
+            snap,
         }
     }
 
@@ -393,6 +476,49 @@ pub fn progress_value(node: &Node) -> f64 {
     node.number("progress").unwrap_or(0.0).clamp(0.0, 1.0)
 }
 
+/// Numeric bounds and the clamped business value of a progress bar.
+#[doc(hidden)]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ProgressRange {
+    pub minimum: f64,
+    pub maximum: f64,
+    pub value: f64,
+}
+
+impl ProgressRange {
+    pub fn new(minimum: f64, maximum: f64, value: f64) -> Self {
+        let minimum = if minimum.is_finite() { minimum } else { 0.0 };
+        let maximum = if maximum.is_finite() { maximum } else { 1.0 }.max(minimum);
+        let value = if value.is_finite() { value } else { 0.0 }.clamp(minimum, maximum);
+        Self {
+            minimum,
+            maximum,
+            value,
+        }
+    }
+
+    pub fn from_node(node: &Node) -> Self {
+        Self::new(
+            node.number("minimum").unwrap_or(0.0),
+            node.number("maximum").unwrap_or(1.0),
+            node.number("progress").unwrap_or(0.0),
+        )
+    }
+
+    pub fn position(self) -> f64 {
+        let span = self.maximum - self.minimum;
+        if span == 0.0 {
+            return 0.0;
+        }
+        if span.is_finite() {
+            (self.value - self.minimum) / span
+        } else {
+            // Halve before subtracting when finite opposite bounds overflow.
+            (self.value * 0.5 - self.minimum * 0.5) / (self.maximum * 0.5 - self.minimum * 0.5)
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ScrollBarRange {
     pub position: f64,
@@ -485,7 +611,10 @@ pub fn indicator_state(node: &Node) -> Option<IndicatorState> {
         "Spinner" | "ProgressIndicator" if node.boolean("indeterminate", false) => {
             IndicatorState::Indeterminate
         }
-        "Spinner" | "ProgressIndicator" => IndicatorState::Determinate(progress_value(node)),
+        "ProgressIndicator" => {
+            IndicatorState::Determinate(ProgressRange::from_node(node).position())
+        }
+        "Spinner" => IndicatorState::Determinate(progress_value(node)),
         _ => return None,
     })
 }
@@ -582,6 +711,14 @@ impl SliderInterval {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn progress_range_stays_finite_for_extreme_and_collapsed_bounds() {
+        assert_eq!(ProgressRange::new(-f64::MAX, f64::MAX, 0.0).position(), 0.5);
+        assert_eq!(ProgressRange::new(100.0, 90.0, 120.0).position(), 0.0);
+        assert_eq!(ProgressRange::new(100.0, 900.0, f64::NAN).value, 100.0);
+        assert_eq!(ProgressRange::new(100.0, 900.0, 1100.0).value, 900.0);
+    }
 
     #[test]
     fn batched_steps_keep_remaining_detents_after_wrap() {

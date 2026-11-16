@@ -26,7 +26,7 @@ fn editor_part(node: &Node, layout: &LayoutNode) -> Option<Rect> {
     if is_spin_box(node.kind) {
         Some(SpinGeometry::for_layout(layout, node).text)
     } else if combo_editable(node) {
-        Some(ComboGeometry::for_layout(layout).entry)
+        Some(ComboGeometry::for_control(node, layout.bounds, layout.layout_direction).entry)
     } else if node.kind == "SearchField" {
         Some(SearchGeometry::for_layout(layout).entry)
     } else {

@@ -1,6 +1,32 @@
 use crate::{Point, Rect, Size};
 use std::f64::consts::{PI, TAU};
-use xrack_runtime::{DialInputMode, LayoutDirection, Node, Orientation};
+use xrack_runtime::{DialInputMode, IndicatorState, LayoutDirection, Node, Orientation};
+
+/// Geometry for the default or replacement horizontal progress artwork.
+#[doc(hidden)]
+pub fn progress_fill_bounds(
+    track: Rect,
+    direction: LayoutDirection,
+    state: IndicatorState,
+    phase: Option<f32>,
+) -> Rect {
+    let (fraction, position) = match state {
+        IndicatorState::Hidden => (0.0, 0.0),
+        IndicatorState::Determinate(progress) => (progress as f32, 0.0),
+        IndicatorState::Indeterminate => (
+            0.27,
+            phase.map_or(0.5, |phase| 1.0 - (2.0 * phase.clamp(0.0, 1.0) - 1.0).abs()),
+        ),
+    };
+    let width = track.width * fraction;
+    let fill = Rect::new(
+        track.x + (track.width - width) * position,
+        track.y,
+        width,
+        track.height,
+    );
+    crate::place_in_direction(fill, track, direction)
+}
 
 /// Shared geometry for the saturation and brightness color field.
 pub struct ColorPlaneGeometry {

@@ -1,12 +1,15 @@
-use crate::{LayoutNode, Point, Rect, Target, input::valid, place_in_direction};
+use crate::{
+    LayoutNode, Point, Rect, Size, Target, TextMeasurer, input::valid, place_in_direction,
+};
 use std::borrow::Cow;
 use std::time::{Duration, Instant};
 use unicode_bidi::BidiInfo;
 use unicode_segmentation::UnicodeSegmentation;
 use xrack_runtime::{
-    ChoiceIdentity, LayoutDirection, Node, RowKey, choice_enabled, choice_identity, combo_count,
-    combo_editable, combo_find_enabled_label, combo_index, combo_label, combo_labels,
-    combo_row_index, combo_row_key, combo_text, search_suggestion, search_suggestions,
+    ChoiceIdentity, ComboOptionInput, ComboPopupHandle, LayoutDirection, Node, RowKey,
+    choice_enabled, choice_identity, combo_count, combo_editable, combo_find_enabled_label,
+    combo_index, combo_label, combo_labels, combo_row_index, combo_row_key, combo_text,
+    search_suggestion, search_suggestions,
 };
 
 const ROW_HEIGHT: f32 = 28.0;
@@ -50,7 +53,7 @@ pub(crate) fn completion_value<'a>(node: &'a Node, draft: &str) -> Option<Cow<'a
 
 #[cfg(test)]
 mod tests {
-    use super::completion_value;
+    use super::{LayoutDirection, Node, Rect, completion_value, geometry};
 
     #[test]
     fn completion_skips_partial_graphemes_and_single_line_control_characters() {
@@ -63,6 +66,52 @@ mod tests {
         node.properties
             .insert("model", vec!["editor".into(), "e".into()].into());
         assert_eq!(completion_value(&node, "e"), None);
+    }
+
+    #[test]
+    fn popup_reduces_padding_in_tight_space_before_overlapping_the_anchor() {
+        let mut combo = Node::new("ComboBox", None);
+        combo
+            .properties
+            .insert("model", vec!["one".to_owned(); 10].into());
+        let mut style = Node::new("ComboPopup", None);
+        for (name, value) in [
+            ("max-height", 120.0),
+            ("row-height", 32.0),
+            ("padding", 8.0),
+        ] {
+            style
+                .properties
+                .insert(name, xrack_runtime::Length(value).into());
+        }
+        combo.children.push(style);
+        let popup = geometry(
+            &combo,
+            Rect::new(10.0, 10.0, 100.0, 35.0),
+            Rect::new(0.0, 0.0, 180.0, 80.0),
+            LayoutDirection::LeftToRight,
+        )
+        .unwrap();
+        assert_eq!(popup.bounds, Rect::new(10.0, 45.0, 100.0, 35.0));
+        assert_eq!(popup.visible, 1);
+        assert_eq!(popup.rows.height, 32.0);
+
+        let style = &mut combo.children[0];
+        style
+            .properties
+            .insert("width", xrack_runtime::Percent(1.25).into());
+        style
+            .properties
+            .insert("max-height", xrack_runtime::Percent(0.5).into());
+        let popup = geometry(
+            &combo,
+            Rect::new(10.0, 10.0, 100.0, 20.0),
+            Rect::new(0.0, 0.0, 180.0, 80.0),
+            LayoutDirection::LeftToRight,
+        )
+        .unwrap();
+        assert_eq!(popup.bounds, Rect::new(10.0, 30.0, 125.0, 40.0));
+        assert_eq!(popup.rows.height, 32.0);
     }
 }
 
@@ -173,16 +222,81 @@ pub struct ComboGeometry {
 }
 
 impl ComboGeometry {
+    const TRIGGER_WIDTH: f32 = 28.0;
+    const LABEL_INSET: f32 = 8.0;
+
     pub fn new(bounds: Rect) -> Self {
         Self::with_layout_direction(bounds, LayoutDirection::LeftToRight)
     }
 
+    /// Default arrow geometry. For a control with replacement artwork, use `for_control`.
     pub fn for_layout(layout: &LayoutNode) -> Self {
         Self::with_layout_direction(layout.bounds, layout.layout_direction)
     }
 
     pub fn with_layout_direction(bounds: Rect, direction: LayoutDirection) -> Self {
-        let trigger = bounds.width.min(28.0);
+        Self::with_indicator(bounds, direction, None)
+    }
+
+    /// Measure the replacement artwork against the same bounds used by painting and input.
+    pub fn for_control(node: &Node, bounds: Rect, direction: LayoutDirection) -> Self {
+        let indicator = node
+            .control_part("ComboIndicator")
+            .map(Self::indicator_size);
+        Self::with_indicator(bounds, direction, indicator)
+    }
+
+    fn indicator_size(indicator: &Node) -> Size {
+        Size::new(
+            indicator.length("width").unwrap_or(16.0).max(0.0),
+            indicator.length("height").unwrap_or(16.0).max(0.0),
+        )
+    }
+
+    pub(crate) fn preferred_size(
+        node: &Node,
+        available: Size,
+        text: &mut impl TextMeasurer,
+    ) -> Size {
+        let indicator = node
+            .control_part("ComboIndicator")
+            .map(Self::indicator_size);
+        let trigger = Self::trigger_width(indicator);
+        let content = node.combo_content().map_or_else(Size::default, |content| {
+            let available = Size::new(
+                (available.width - trigger - Self::LABEL_INSET).max(0.0),
+                available.height,
+            );
+            crate::linear::measure_replacement_content(content, available, text)
+        });
+        Size::new(
+            trigger + 128.0_f32.max(content.width + Self::LABEL_INSET),
+            (text.font_size(node) * 1.4 + 10.0)
+                .max(34.0)
+                .max(indicator.map_or(0.0, |size| size.height + 8.0))
+                .max(content.height),
+        )
+    }
+
+    /// The inset used by the selected label and replacement content.
+    #[doc(hidden)]
+    pub fn label_bounds(&self, direction: LayoutDirection) -> Rect {
+        let entry = self.entry;
+        let inset = entry.width.min(Self::LABEL_INSET);
+        let x = if direction == LayoutDirection::RightToLeft {
+            entry.x
+        } else {
+            entry.x + inset
+        };
+        Rect::new(x, entry.y, entry.width - inset, entry.height)
+    }
+
+    fn trigger_width(indicator: Option<Size>) -> f32 {
+        Self::TRIGGER_WIDTH.max(indicator.map_or(0.0, |size| size.width + 12.0))
+    }
+
+    fn with_indicator(bounds: Rect, direction: LayoutDirection, indicator: Option<Size>) -> Self {
+        let trigger = bounds.width.min(Self::trigger_width(indicator));
         let entry = bounds.width - trigger;
         let mirror = |rect| place_in_direction(rect, bounds, direction);
         Self {
@@ -194,6 +308,18 @@ impl ComboGeometry {
                 bounds.height,
             )),
         }
+    }
+
+    pub(crate) fn indicator_bounds(&self, part: &Node) -> Rect {
+        let size = Self::indicator_size(part);
+        let width = size.width.min(self.trigger.width);
+        let height = size.height.min(self.trigger.height);
+        Rect::new(
+            self.trigger.x + (self.trigger.width - width) * 0.5,
+            self.trigger.y + (self.trigger.height - height) * 0.5,
+            width,
+            height,
+        )
     }
 }
 
@@ -208,44 +334,175 @@ pub struct ChoiceMenu<'a> {
 }
 
 impl ChoiceMenu<'_> {
+    #[doc(hidden)]
+    pub fn popup_style(&self) -> Option<&Node> {
+        popup_style(self.control)
+    }
+
+    pub fn rows_bounds(&self) -> Rect {
+        let metrics = PopupMetrics::new(self.popup_style());
+        metrics.rows(
+            self.bounds,
+            choice_count(self.control) > self.rows.len(),
+            self.layout_direction,
+        )
+    }
+
+    pub fn scroll_indicator(&self) -> Option<Rect> {
+        let metrics = PopupMetrics::new(self.popup_style());
+        let total = choice_count(self.control);
+        let visible = self.rows.len();
+        if !metrics.scroll_indicator || visible == 0 || visible >= total {
+            return None;
+        }
+        let inner = metrics.interior(self.bounds);
+        let gutter = PopupMetrics::gutter(inner.width);
+        let width = (gutter * 0.5).min(4.0);
+        let height = (inner.height * visible as f32 / total as f32)
+            .max(10.0)
+            .min(inner.height);
+        let offset = self.first as f32 / (total - visible) as f32;
+        let x = inner.x + inner.width - (gutter + width) * 0.5;
+        let thumb = Rect::new(x, inner.y + (inner.height - height) * offset, width, height);
+        Some(place_in_direction(thumb, inner, self.layout_direction))
+    }
+
+    #[doc(hidden)]
+    pub fn option_input(&self, offset: usize) -> Option<ComboOptionInput> {
+        let text = self.rows.get(offset)?.clone();
+        let index = self.first + offset;
+        Some(ComboOptionInput::new(
+            self.control,
+            index,
+            text,
+            self.selected == Some(index),
+            self.highlighted == Some(index),
+        ))
+    }
+
     pub fn row_enabled(&self, offset: usize) -> bool {
         offset < self.rows.len() && choice_enabled(self.control, self.first + offset)
     }
 
     pub fn row_bounds(&self, offset: usize) -> Rect {
-        let height = self.bounds.height / self.rows.len() as f32;
+        let rows = self.rows_bounds();
+        let height = rows.height / self.rows.len() as f32;
+        Rect::new(rows.x, rows.y + height * offset as f32, rows.width, height)
+    }
+}
+
+fn popup_style(node: &Node) -> Option<&Node> {
+    (node.kind == "ComboBox")
+        .then(|| node.control_part("ComboPopup"))
+        .flatten()
+}
+
+struct PopupMetrics {
+    row_height: f32,
+    padding: f32,
+    scroll_indicator: bool,
+}
+
+impl PopupMetrics {
+    fn new(style: Option<&Node>) -> Self {
+        let positive = |name| {
+            style
+                .and_then(|style| style.length(name))
+                .filter(|&value| value > 0.0)
+        };
+        let row_height = positive("row-height").unwrap_or(ROW_HEIGHT).max(1.0);
+        let padding = positive("padding").unwrap_or(0.0);
+        Self {
+            row_height,
+            padding,
+            scroll_indicator: style.is_some_and(|style| style.boolean("scroll-indicator", false)),
+        }
+    }
+
+    fn vertical_padding(&self, height: f32) -> f32 {
+        self.padding.min((height - self.row_height).max(0.0) * 0.5)
+    }
+
+    fn interior(&self, bounds: Rect) -> Rect {
+        let x = self.padding.min((bounds.width - 1.0).max(0.0) * 0.5);
+        let y = self.vertical_padding(bounds.height);
         Rect::new(
-            self.bounds.x,
-            self.bounds.y + height * offset as f32,
-            self.bounds.width,
-            height,
+            bounds.x + x,
+            bounds.y + y,
+            bounds.width - 2.0 * x,
+            bounds.height - 2.0 * y,
+        )
+    }
+
+    fn gutter(width: f32) -> f32 {
+        (width * 0.25).min(10.0)
+    }
+
+    fn rows(&self, bounds: Rect, scrolling: bool, direction: LayoutDirection) -> Rect {
+        let inner = self.interior(bounds);
+        let width = if self.scroll_indicator && scrolling {
+            inner.width - Self::gutter(inner.width)
+        } else {
+            inner.width
+        };
+        place_in_direction(
+            Rect::new(inner.x, inner.y, width, inner.height),
+            inner,
+            direction,
         )
     }
 }
 
 pub(crate) struct ChoiceGeometry {
     bounds: Rect,
+    rows: Rect,
     visible: usize,
     direction: LayoutDirection,
 }
 
+impl ChoiceGeometry {
+    fn row_at(&self, point: Point) -> Option<usize> {
+        if !self.rows.contains(point) {
+            return None;
+        }
+        let offset = ((point.y - self.rows.y) / self.rows.height * self.visible as f32) as usize;
+        (offset < self.visible).then_some(offset)
+    }
+}
+
 fn geometry(
+    node: &Node,
     anchor: Rect,
     viewport: Rect,
-    len: usize,
     direction: LayoutDirection,
 ) -> Option<ChoiceGeometry> {
+    let len = choice_count(node);
     if len == 0 || viewport.width <= 0.0 || viewport.height <= 0.0 {
         return None;
     }
     let below = (viewport.y + viewport.height - anchor.y - anchor.height).max(0.0);
     let above = (anchor.y - viewport.y).max(0.0);
-    let desired = ROW_HEIGHT * len.min(MAX_ROWS) as f32;
+    let style = popup_style(node);
+    let metrics = PopupMetrics::new(style);
+    let dimension = |name, reference| {
+        style
+            .and_then(|style| style.relative_length(name, reference))
+            .filter(|&value| value > 0.0)
+    };
+    let limit = dimension("max-height", viewport.height)
+        .unwrap_or(metrics.row_height * MAX_ROWS as f32 + 2.0 * metrics.padding)
+        .min(viewport.height);
+    let desired =
+        (metrics.row_height * len as f32 + 2.0 * metrics.vertical_padding(limit)).min(limit);
     let down = below >= desired || below >= above;
     let space = if down { below } else { above };
-    let visible = ((space / ROW_HEIGHT) as usize).clamp(1, len.min(MAX_ROWS));
-    let height = (visible as f32 * ROW_HEIGHT).min(viewport.height);
-    let width = anchor.width.max(96.0).min(viewport.width);
+    let available = space.min(limit).max(metrics.row_height.min(limit));
+    let padding = 2.0 * metrics.vertical_padding(available);
+    let visible = (((available - padding) / metrics.row_height) as usize).clamp(1, len);
+    let height = (visible as f32 * metrics.row_height + padding).min(available);
+    let width = dimension("width", anchor.width)
+        .unwrap_or_else(|| anchor.width.max(96.0))
+        .min(viewport.width);
     let x = if direction == LayoutDirection::RightToLeft {
         anchor.x + anchor.width - width
     } else {
@@ -258,8 +515,10 @@ fn geometry(
         anchor.y - height
     };
     let y = y.clamp(viewport.y, viewport.y + viewport.height - height);
+    let bounds = Rect::new(x, y, width, height);
     Some(ChoiceGeometry {
-        bounds: Rect::new(x, y, width, height),
+        bounds,
+        rows: metrics.rows(bounds, len > visible, direction),
         visible,
         direction,
     })
@@ -274,9 +533,16 @@ pub(crate) struct ChoicePopup {
     highlighted_row: Option<RowKey>,
     first: usize,
     press: Option<(usize, ChoiceIdentity)>,
+    handle: Option<ComboPopupHandle>,
 }
 
 impl ChoicePopup {
+    pub(crate) fn artwork_dirty(&self, scene: &Node, layout: &LayoutNode) -> bool {
+        self.node(scene, layout)
+            .and_then(|node| node.combo_option_renderer.as_ref())
+            .is_some_and(|renderer| renderer.artwork_dirty())
+    }
+
     pub fn open(target: Target, scene: &Node, layout: &LayoutNode) -> Option<Self> {
         let kind = scene.at_path(&target.path)?.kind;
         if !matches!(kind, "ComboBox" | "SearchField") {
@@ -290,6 +556,7 @@ impl ChoicePopup {
             highlighted_row: None,
             first: 0,
             press: None,
+            handle: None,
         };
         let node = popup.node(scene, layout)?;
         if node.kind == "SearchField" {
@@ -312,13 +579,36 @@ impl ChoicePopup {
         popup.reconcile(scene, layout).then_some(popup)
     }
 
+    pub(crate) fn mounted(&mut self, scene: &Node) {
+        if let Some(node) = scene.at_path(&self.target.path) {
+            self.handle = node.combo_popup_handle.clone();
+            self.publish(node);
+        }
+    }
+
+    pub(crate) fn closed(self) {
+        if let Some(handle) = self.handle {
+            handle.publish(false, None);
+        }
+    }
+
+    fn publish(&self, node: &Node) {
+        if let Some(handle) = &self.handle {
+            handle.publish(true, self.highlighted(node));
+        }
+    }
+
     fn node<'a>(&self, scene: &'a Node, layout: &LayoutNode) -> Option<&'a Node> {
         if !valid(&self.target, scene, layout) {
             return None;
         }
-        scene
-            .at_path(&self.target.path)
-            .filter(|node| node.kind == self.kind)
+        scene.at_path(&self.target.path).filter(|node| {
+            node.kind == self.kind
+                && self
+                    .handle
+                    .as_ref()
+                    .is_none_or(|handle| node.combo_popup_handle.as_ref() == Some(handle))
+        })
     }
 
     fn resolve<'a>(
@@ -331,12 +621,7 @@ impl ChoicePopup {
         let anchor = item.window_bounds(item.bounds);
         Some((
             node,
-            geometry(
-                anchor,
-                layout.bounds,
-                choice_count(node),
-                item.layout_direction,
-            )?,
+            geometry(node, anchor, layout.bounds, item.layout_direction)?,
         ))
     }
 
@@ -375,6 +660,7 @@ impl ChoicePopup {
                 self.first = highlight + 1 - geo.visible;
             }
         }
+        self.publish(node);
         true
     }
 
@@ -401,6 +687,7 @@ impl ChoicePopup {
             self.highlighted_row = combo_row_key(node, index);
             self.highlight = Some(index);
         }
+        self.publish(node);
     }
 
     fn pick<'a>(
@@ -410,12 +697,9 @@ impl ChoicePopup {
         point: Point,
     ) -> Option<(&'a Node, usize)> {
         let (node, geo) = self.resolve(scene, layout)?;
-        if !geo.bounds.contains(point) {
-            return None;
-        }
-        let offset = ((point.y - geo.bounds.y) / geo.bounds.height * geo.visible as f32) as usize;
+        let offset = geo.row_at(point)?;
         let first = self.first.min(choice_count(node) - geo.visible);
-        (offset < geo.visible).then_some((node, first + offset))
+        Some((node, first + offset))
     }
 
     pub fn hover(&mut self, scene: &Node, layout: &LayoutNode, point: Point) -> bool {
@@ -432,14 +716,17 @@ impl ChoicePopup {
 
     pub fn press(&mut self, scene: &Node, layout: &LayoutNode, point: Point) -> bool {
         self.press = None;
-        let Some((node, index)) = self.pick(scene, layout, point) else {
+        let Some((node, geo)) = self.resolve(scene, layout) else {
             return false;
         };
-        if choice_enabled(node, index) {
-            self.highlight(node, index);
-            self.press = choice_identity(node, index).map(|identity| (index, identity));
+        if let Some(offset) = geo.row_at(point) {
+            let index = self.first.min(choice_count(node) - geo.visible) + offset;
+            if choice_enabled(node, index) {
+                self.highlight(node, index);
+                self.press = choice_identity(node, index).map(|identity| (index, identity));
+            }
         }
-        true
+        geo.bounds.contains(point)
     }
 
     pub fn release(&mut self, scene: &Node, layout: &LayoutNode, point: Point) -> Option<usize> {
@@ -506,6 +793,7 @@ impl ChoicePopup {
             }
         }
         self.press = None;
+        self.publish(node);
     }
 }
 

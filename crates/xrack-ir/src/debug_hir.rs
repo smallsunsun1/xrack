@@ -6,6 +6,8 @@ use crate::{
 use xrack_syntax::ast::{Diagnostic, Document};
 
 pub fn analyze(doc: &Document) -> Result<ir::Module, Vec<Diagnostic>> {
+    let doc = crate::declare_handles(doc);
+    let doc = doc.as_ref();
     let mut components = Vec::new();
     for_each_component(doc, |syntax, members| {
         let mut properties = Vec::new();

@@ -2,11 +2,20 @@ use selection_ui::{EditableChoiceDemo, GroupedRadiosDemo, RecordComboDemo, Selec
 
 fn main() -> std::process::ExitCode {
     let result = match std::env::args().nth(1).as_deref() {
+        Some("--popup-control") => {
+            xrack_platform_winit::run(selection_ui::ComboPopupControlDemo::new())
+        }
+        Some("--popup-style") => {
+            xrack_platform_winit::run(selection_ui::ComboPopupStyleDemo::new())
+        }
         Some("--radio-groups") => xrack_platform_winit::run(GroupedRadiosDemo::new()),
         Some("--mixed-radio-options") => {
             xrack_platform_winit::run(selection_ui::MixedRadioOptionsDemo::new())
         }
         Some("--editable-combo") => xrack_platform_winit::run(EditableChoiceDemo::new()),
+        Some("--validated-combo") => {
+            xrack_platform_winit::run(selection_ui::ComboValidationDemo::new())
+        }
         Some("--rtl-choice") => {
             xrack_platform_winit::run(selection_ui::DirectionalChoiceDemo::new())
         }

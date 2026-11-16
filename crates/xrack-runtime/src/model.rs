@@ -401,6 +401,23 @@ impl<T> VecModel<T> {
         order
     }
 
+    /// Move a row to its final index without changing its key or lifetime.
+    pub fn move_row(&self, from: usize, to: usize) -> bool {
+        if from == to || from.max(to) >= self.len() {
+            return false;
+        }
+        {
+            let mut rows = self.0.rows.borrow_mut();
+            if from < to {
+                rows[from..=to].rotate_left(1);
+            } else {
+                rows[to..=from].rotate_right(1);
+            }
+        }
+        self.structure_changed(from.min(to), false);
+        true
+    }
+
     /// Stably reorder rows, retaining their keys and delegate lifetimes.
     pub fn sort_by(&self, compare: impl FnMut(&T, &T) -> Comparison) -> bool {
         let order = self.sorted_indices_untracked(usize::MAX, compare);
@@ -623,6 +640,29 @@ mod tests {
     use super::*;
     use crate::Property;
     use std::cell::Cell;
+
+    #[test]
+    fn moving_rows_keeps_keys_and_invalidates_shifted_index_reads() {
+        let model = VecModel::from(vec!['a', 'b', 'c', 'd']);
+        let key = model.row_key(1).unwrap();
+        let lifetime = model.row_lifetime(key);
+        let second = Property::default();
+        let last = Property::default();
+        assert_eq!(second.get(|| model.row(1)), Some('b'));
+        assert_eq!(last.get(|| model.row(3)), Some('d'));
+        let before = model.contents_stamp();
+        assert!(!model.move_row(1, 1));
+        assert!(!model.move_row(1, 4));
+        assert_eq!(before, model.contents_stamp());
+        assert!(model.move_row(1, 3));
+        assert_eq!(model.snapshot(), ['a', 'c', 'd', 'b']);
+        assert_eq!(model.row_key(3), Some(key));
+        assert!(lifetime.is_live(key, model.structure_stamp().0, 4));
+        assert_eq!(second.get(|| model.row(1)), Some('c'));
+        assert_eq!(last.get(|| model.row(3)), Some('b'));
+        assert!(model.move_row(3, 1));
+        assert_eq!(model.row_key(1), Some(key));
+    }
 
     #[test]
     fn sorting_retains_stable_keys_and_invalidates_only_affected_reads() {

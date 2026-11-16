@@ -375,6 +375,7 @@ pub enum ControlAction {
     Calendar(crate::CalendarAction),
     Select(usize),
     ActivateRadioOption,
+    MoveTab(TabMove),
     PickTumbler {
         index: usize,
         row: crate::RowKey,
@@ -1327,17 +1328,149 @@ pub fn page_indicator_index(node: &Node) -> Option<usize> {
 }
 
 /// Resolve an eligible option without giving each option independent selection state.
+fn navigation_item_kind(kind: &str) -> Option<&'static str> {
+    match kind {
+        "TabWidget" => Some("Tab"),
+        "TabBar" => Some("TabButton"),
+        "SwipeView" => Some("SwipePage"),
+        _ => None,
+    }
+}
+
+fn group_item_available(item: &Node, expected: &str) -> bool {
+    item.kind == expected && item.boolean("visible", true) && item.boolean("enabled", true)
+}
+
 pub fn group_item(node: &Node, index: usize) -> Option<&Node> {
-    let expected = match node.kind {
-        "RadioGroup" => "RadioButton",
-        "TabWidget" => "Tab",
-        "TabBar" => "TabButton",
-        "SwipeView" => "SwipePage",
-        _ => return None,
+    let expected = if node.kind == "RadioGroup" {
+        "RadioButton"
+    } else {
+        navigation_item_kind(node.kind)?
     };
-    node.children.get(index).filter(|item| {
-        item.kind == expected && item.boolean("visible", true) && item.boolean("enabled", true)
-    })
+    node.children
+        .get(index)
+        .filter(|item| group_item_available(item, expected))
+}
+
+fn navigation_index(
+    kind: &str,
+    requested: Option<&str>,
+    index: Option<i64>,
+    items: &[Node],
+) -> Option<usize> {
+    let expected = navigation_item_kind(kind)?;
+    let eligible = |item: &Node| group_item_available(item, expected);
+    if let Some(value) = requested {
+        return resolve_navigation_value(
+            value,
+            items
+                .iter()
+                .map(|item| eligible(item).then(|| item.text("value")).flatten()),
+        );
+    }
+    if kind == "TabWidget" {
+        let slot = usize::try_from(index.unwrap_or(0)).ok()?;
+        return items.get(slot).filter(|item| eligible(item)).map(|_| slot);
+    }
+    resolve_swipe_index(index, items.iter().map(eligible))
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TabMove {
+    pub from: usize,
+    pub to: usize,
+    source: crate::RowKey,
+    destination: crate::RowKey,
+    stamp: (u64, u64),
+}
+
+#[doc(hidden)]
+pub fn moved_navigation_index(from: usize, to: usize, index: i64) -> i64 {
+    let Ok(slot) = usize::try_from(index) else {
+        return index;
+    };
+    if slot == from {
+        to as i64
+    } else if from < slot && slot <= to {
+        index - 1
+    } else if to <= slot && slot < from {
+        index + 1
+    } else {
+        index
+    }
+}
+
+impl TabMove {
+    pub fn moved_index(self, index: i64) -> i64 {
+        moved_navigation_index(self.from, self.to, index)
+    }
+
+    #[doc(hidden)]
+    pub fn matches_model(self, model: &impl ListModel) -> bool {
+        self.stamp == model.contents_stamp()
+            && model.key_at(self.from) == Some(self.source)
+            && model.key_at(self.to) == Some(self.destination)
+    }
+}
+
+impl Node {
+    #[doc(hidden)]
+    pub fn tab_move(&self, from: usize, to: usize) -> Option<TabMove> {
+        if !matches!(self.kind, "TabBar" | "TabWidget")
+            || !self.boolean("reorderable", false)
+            || from == to
+        {
+            return None;
+        }
+        Some(TabMove {
+            from,
+            to,
+            source: group_item(self, from)?.row_key?,
+            destination: group_item(self, to)?.row_key?,
+            stamp: self.standard_list_stamp?,
+        })
+    }
+}
+
+#[doc(hidden)]
+pub fn try_prepare_tab_move<E>(
+    node: &Node,
+    movement: TabMove,
+    input: crate::InputRoute<'_>,
+    model: &impl ListModel,
+    enabled: impl FnOnce() -> Result<bool, E>,
+    mut available: impl FnMut(usize) -> Result<bool, E>,
+) -> Result<bool, E> {
+    if node.tab_move(movement.from, movement.to) != Some(movement) {
+        return Ok(false);
+    }
+    Ok(input.try_available(|| {
+        Ok(enabled()?
+            && movement.matches_model(model)
+            && available(movement.from)?
+            && available(movement.to)?)
+    })? && input.is_current()
+        && movement.matches_model(model))
+}
+
+#[doc(hidden)]
+pub fn prepare_tab_move<M: ListModel>(
+    node: &Node,
+    movement: TabMove,
+    input: crate::InputRoute<'_>,
+    model: &Rc<M>,
+    enabled: impl FnOnce() -> bool,
+    mut option: impl FnMut(&Rc<M>, usize, bool) -> Option<String>,
+) -> bool {
+    try_prepare_tab_move(
+        node,
+        movement,
+        input,
+        model.as_ref(),
+        || Ok::<_, std::convert::Infallible>(enabled()),
+        |index| Ok(option(model, index, false).is_some()),
+    )
+    .unwrap_or_else(|error| match error {})
 }
 
 /// Resolve a selectable option that is distinct from the scene's selected option.
@@ -1443,7 +1576,9 @@ pub fn try_prepare_group_selection_with_model<M, E>(
     let Some(shown) = group_item(node, index) else {
         return Ok(None);
     };
-    let radio = node.kind == "RadioGroup";
+    let by_navigation_value = matches!(node.kind, "TabBar" | "TabWidget" | "SwipeView")
+        && node.text("current-value").is_some();
+    let read_value = node.kind == "RadioGroup" || by_navigation_value;
     let mut sample = None;
     if !route.checks_availability() {
         sample = model()?;
@@ -1457,11 +1592,19 @@ pub fn try_prepare_group_selection_with_model<M, E>(
         return Ok(None);
     };
     let mut option = |slot, label| option(&sample, slot, label);
-    let Some(label) = option(index, radio)? else {
+    let Some(label) = option(index, read_value)? else {
         return Ok(None);
     };
-    if !route.is_current() || (radio && label != crate::radio_value(shown)) {
+    if !route.is_current() || (read_value && label != crate::radio_value(shown)) {
         return Ok(None);
+    }
+    if by_navigation_value {
+        // A value addresses the first eligible option carrying it.
+        for preceding in 0..index {
+            if option(preceding, true)?.as_ref() == Some(&label) || !route.is_current() {
+                return Ok(None);
+            }
+        }
     }
     let current = current()?;
     if !route.is_current() {
@@ -1579,6 +1722,76 @@ impl Node {
         .unwrap_or_else(|error| match error {});
     }
 
+    /// Project navigation metadata for every page and mount only the selected row.
+    #[doc(hidden)]
+    pub fn try_append_navigation_pages<M: ListModel, E>(
+        &mut self,
+        source: impl FnOnce() -> Result<Rc<M>, E>,
+        mut describe: impl FnMut(&Rc<M>, usize) -> Result<Node, E>,
+        mount: impl FnOnce(&Rc<M>, Option<usize>) -> Result<Vec<Node>, E>,
+    ) -> Result<(), E> {
+        let requested = self.text("current-value").map(str::to_owned);
+        let index = self.int("current-index");
+        let visible = self.is_visible();
+        let kind = self.kind;
+        let mut stamp = None;
+        let pages = crate::try_render_rows_from_source(
+            || {
+                let model = source()?;
+                stamp = Some(model.contents_stamp());
+                Ok(model)
+            },
+            |model| {
+                let stamp = model.contents_stamp();
+                let mut pages = crate::list::try_render_stable_rows(
+                    model.as_ref(),
+                    model.structure_stamp(),
+                    0..model.row_count().min(4096),
+                    |slot| {
+                        let mut page = describe(&model, slot)?;
+                        page.set_row_key(Some(model.row_key(slot)));
+                        Ok(page)
+                    },
+                )?;
+                let active = visible
+                    .then(|| navigation_index(kind, requested.as_deref(), index, &pages))
+                    .flatten();
+                let mounted = mount(&model, active)?;
+                if model.contents_stamp() != stamp {
+                    return Ok(Vec::new());
+                }
+                if let Some(slot) = active {
+                    let Some(page) = mounted.into_iter().next() else {
+                        return Ok(Vec::new());
+                    };
+                    if page.row_key != pages[slot].row_key {
+                        return Ok(Vec::new());
+                    }
+                    pages[slot] = page;
+                }
+                Ok(pages)
+            },
+        )?;
+        self.standard_list_stamp = stamp;
+        self.children.extend(pages);
+        Ok(())
+    }
+
+    #[doc(hidden)]
+    pub fn append_navigation_pages<M: ListModel>(
+        &mut self,
+        source: impl FnOnce() -> Rc<M>,
+        mut describe: impl FnMut(&Rc<M>, usize) -> Node,
+        mount: impl FnOnce(&Rc<M>, Option<usize>) -> Vec<Node>,
+    ) {
+        self.try_append_navigation_pages(
+            || Ok::<_, std::convert::Infallible>(source()),
+            |model, slot| Ok(describe(model, slot)),
+            |model, slot| Ok(mount(model, slot)),
+        )
+        .unwrap_or_else(|error| match error {})
+    }
+
     #[doc(hidden)]
     pub fn snapshot_group_options(&mut self, model: &impl ListModel) {
         self.standard_list_stamp = Some(model.contents_stamp());
@@ -1591,23 +1804,24 @@ impl Node {
 }
 
 pub fn group_index(node: &Node) -> Option<usize> {
-    if matches!(node.kind, "SwipeView" | "TabBar") {
-        return resolve_swipe_index(
+    if navigation_item_kind(node.kind).is_some() {
+        return navigation_index(
+            node.kind,
+            node.text("current-value"),
             node.int("current-index"),
-            (0..node.children.len()).map(|index| group_item(node, index).is_some()),
+            &node.children,
         );
     }
-    if node.kind == "RadioGroup"
-        && let Some(value) = node.text("current-value")
-    {
-        return node.children.iter().enumerate().find_map(|(index, _)| {
-            group_item(node, index)
-                .filter(|item| crate::radio_value(item) == value)
-                .map(|_| index)
+    if node.kind == "RadioGroup" {
+        let mut selection = node.text("current-value").map_or_else(
+            || crate::ButtonGroupSelection::Index(node.int("current-index").unwrap_or(-1)),
+            |value| crate::ButtonGroupSelection::Value(value.to_owned()),
+        );
+        return selection.select_radio_option(node.children.len(), |index, label| {
+            group_item(node, index).map(|item| if label { crate::radio_value(item) } else { "" })
         });
     }
-    let default = if node.kind == "RadioGroup" { -1 } else { 0 };
-    let index = usize::try_from(node.int("current-index").unwrap_or(default)).ok()?;
+    let index = usize::try_from(node.int("current-index").unwrap_or(0)).ok()?;
     group_item(node, index).map(|_| index)
 }
 
@@ -1624,6 +1838,32 @@ impl Node {
         let index = group_index(self)?;
         Some(mount(index, &mut self.children[index]))
     }
+}
+
+/// Find the first eligible option addressed by a navigation value.
+#[doc(hidden)]
+pub fn resolve_navigation_value<V: AsRef<str>>(
+    requested: &str,
+    options: impl IntoIterator<Item = Option<V>>,
+) -> Option<usize> {
+    try_resolve_navigation_value(
+        requested,
+        options.into_iter().map(Ok::<_, std::convert::Infallible>),
+    )
+    .unwrap_or_else(|error| match error {})
+}
+
+#[doc(hidden)]
+pub fn try_resolve_navigation_value<V: AsRef<str>, E>(
+    requested: &str,
+    options: impl IntoIterator<Item = Result<Option<V>, E>>,
+) -> Result<Option<usize>, E> {
+    for (index, option) in options.into_iter().enumerate() {
+        if option?.is_some_and(|value| value.as_ref() == requested) {
+            return Ok(Some(index));
+        }
+    }
+    Ok(None)
 }
 
 /// Preserve declared page indexes while falling back to the first available page.

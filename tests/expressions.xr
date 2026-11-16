@@ -405,6 +405,42 @@ export component MountedPageInputParity inherits Window {
     }
 }
 
+export component ProgressRangeParity inherits Window {
+    in-out property <float> amount: 380.0;
+    in-out property <float> upper-bound: 900.0;
+    in-out property <bool> rtl: false;
+    in-out property <bool> override-bound: false;
+    out property <float> fraction: meter.position;
+    out property <float> visual-fraction: meter.visual-position;
+
+    Rectangle {
+        width: 320px; height: 48px;
+        layout-direction: root.rtl ? LayoutDirection.right-to-left : LayoutDirection.left-to-right;
+        meter := ProgressIndicator {
+            width: 300px; height: 20px;
+            minimum: 100.0; maximum: root.upper-bound; progress: root.amount;
+            ProgressFill { background: #53af9b; }
+            states [
+                narrow when root.override-bound: { maximum: 500.0; }
+            ]
+        }
+    }
+}
+
+export component ComboContentParity inherits Window {
+    in-out property <bool> editing: true;
+    in-out property <int> selection: 0;
+    pure callback describe(string) -> string;
+    choice := ComboBox {
+        model: ["Alpha", "Beta"];
+        current-index <=> root.selection;
+        editable: root.editing;
+        ComboContent {
+            Label { text: root.describe(choice.current-text); }
+        }
+    }
+}
+
 export component NavigationSelectionParity inherits Window {
     in-out property <bool> allowed: true;
     in-out property <bool> shown: true;
@@ -1529,6 +1565,7 @@ export component ToggleDelegateEvents inherits Window {
     in-out property <[ToggleDelegateRow]> rows: root.initial-rows();
     out property <int> trace: 0;
     in-out property <bool> three-states: true;
+    callback before-observe();
     pure callback read-three-states() -> bool;
     read-three-states => { root.three-states }
     pure callback initial-rows() -> [ToggleDelegateRow];
@@ -1541,11 +1578,14 @@ export component ToggleDelegateEvents inherits Window {
     checks := ListView {
         x: 0px; y: 0px; width: 200px; height: 72px; row-height: 32px;
         for row in root.rows : CheckDelegate {
-            text: "Checked";
+            text: self.checked ? "Checked" : "Unchecked";
             checked <=> row.enabled;
-            toggled => { root.trace = root.trace * 10 + (row.enabled ? 1 : 2); }
+            toggled => {
+                root.before-observe();
+                root.trace = root.trace * 10 + (self.checked ? 1 : 2);
+            }
             check-state-changed(state) => {
-                root.trace = root.trace * 10 + (state == CheckState.checked ? 3 : 4);
+                root.trace = root.trace * 10 + (state == CheckState.checked && self.check-state == state ? 3 : 4);
             }
         }
     }
@@ -1553,11 +1593,11 @@ export component ToggleDelegateEvents inherits Window {
         row-visible-field: "shown";
         x: 0px; y: 80px; width: 200px; height: 72px; row-height: 32px;
         for row in root.rows : CheckDelegate {
-            text: "Tristate";
+            text: self.check-state == CheckState.partially-checked ? "Mixed" : "Tristate";
             tristate: root.read-three-states();
             check-state <=> row.state;
             toggled => {
-                root.trace = root.trace * 10 + (row.state == CheckState.partially-checked ? 5 : 7);
+                root.trace = root.trace * 10 + (self.check-state == CheckState.partially-checked && !self.checked ? 5 : 7);
             }
             check-state-changed(state) => {
                 root.trace = root.trace * 10 + (state == CheckState.partially-checked ? 6 : 8);

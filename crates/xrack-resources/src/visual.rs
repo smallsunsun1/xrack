@@ -146,7 +146,9 @@ pub fn scene_element(kind: &str) -> (&str, bool) {
         "ApplicationWindow" => ("Window", true),
         "StandardTableView" => ("TableView", false),
         "StandardButton" => ("Button", false),
-        "DayCell" | "SplitHandle" => ("Rectangle", false),
+        "DayCell" | "SplitHandle" | "ComboOption" | "TumblerOption" | "PathViewOption" => {
+            ("Rectangle", false)
+        }
         kind if picker_value(kind).is_some() => ("Dialog", false),
         kind => (kind, false),
     }
@@ -232,13 +234,15 @@ pub fn controlled_property(element: OperationRef<'_>) -> Option<(&'static str, T
         Some(("current-row", Type::Int))
     } else if element.attr("kind") == Ok("TreeView") || keyed_list(element) {
         Some(("current-key", Type::Int))
-    } else if matches!(element.attr("kind"), Ok("PageIndicator" | "Tumbler")) {
+    } else if element.attr("kind") == Ok("PageIndicator") {
         Some(("current-index", Type::Int))
     } else if matches!(element.attr("kind"), Ok("Calendar" | "MonthGrid")) {
         Some(("date", Type::Date))
     } else if matches!(
         element.attr("kind"),
         Ok("ComboBox"
+            | "Tumbler"
+            | "PathView"
             | "RadioGroup"
             | "ButtonGroup"
             | "TabWidget"

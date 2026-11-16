@@ -379,6 +379,7 @@ struct Application<C> {
     transition_epoch: Instant,
     animation_wake: Option<Instant>,
     timers: TimerQueue,
+    button_animations: xrack_runtime::ButtonAnimations,
     image_playback: ImagePlaybackQueue,
     media: xrack_runtime::MediaQueue,
     native_dialogs: NativeDialogQueue,
@@ -387,6 +388,9 @@ struct Application<C> {
     input: Interaction,
     scale_rotate: scale_rotate::Gestures,
     focus_requests: FocusRequests,
+    loader_events_scene: std::rc::Weak<Node>,
+    loader_frame_scene: std::rc::Weak<Node>,
+    loader_redraw: bool,
     focus_observers: FocusObservers,
     hover_observers: HoverObservers,
     hover_pointer: Option<PhysicalPosition<f64>>,
@@ -421,6 +425,7 @@ impl<C: Component> Application<C> {
             transition_epoch: Instant::now(),
             animation_wake: None,
             timers: TimerQueue::default(),
+            button_animations: xrack_runtime::ButtonAnimations::default(),
             image_playback: ImagePlaybackQueue::default(),
             media: xrack_runtime::MediaQueue::default(),
             native_dialogs: NativeDialogQueue::default(),
@@ -429,6 +434,9 @@ impl<C: Component> Application<C> {
             input: Interaction::default(),
             scale_rotate: scale_rotate::Gestures::default(),
             focus_requests: FocusRequests::default(),
+            loader_events_scene: std::rc::Weak::new(),
+            loader_frame_scene: std::rc::Weak::new(),
+            loader_redraw: false,
             focus_observers: FocusObservers::default(),
             hover_observers: HoverObservers::default(),
             hover_pointer: None,
@@ -692,7 +700,9 @@ impl<C: Component> Application<C> {
                             xrack_layout::CalendarGeometry::for_layout(node, item)
                                 .action_bounds(action)
                         }
-                        ControlAction::PickTumbler { .. } if node.kind == "Tumbler" => {
+                        ControlAction::PickTumbler { .. }
+                            if matches!(node.kind, "Tumbler" | "PathView") =>
+                        {
                             item.tumbler.as_ref().and_then(|wheel| {
                                 wheel
                                     .rows
@@ -936,7 +946,9 @@ impl<C: Component> Application<C> {
                         },
                     });
                 }
-                AccessibleAction::Increment | AccessibleAction::Decrement if kind == "Tumbler" => {
+                AccessibleAction::Increment | AccessibleAction::Decrement
+                    if matches!(kind, "Tumbler" | "PathView") =>
+                {
                     let wheel = xrack_runtime::Tumbler::from_node(node);
                     let delta = if request.action == AccessibleAction::Increment {
                         1
@@ -1211,7 +1223,9 @@ impl<C: Component> Application<C> {
             return false;
         };
         let entry = match node.kind {
-            "ComboBox" => ComboGeometry::for_layout(item).entry,
+            "ComboBox" => {
+                ComboGeometry::for_control(node, item.bounds, item.layout_direction).entry
+            }
             "SearchField" => xrack_layout::SearchGeometry::for_layout(item).entry,
             _ => SpinGeometry::for_layout(item, node).text,
         };
@@ -1439,6 +1453,14 @@ impl<C: Component> Application<C> {
     }
 
     fn refresh_dependencies(&mut self) {
+        if let Some(state) = &self.state
+            && self
+                .layout
+                .as_ref()
+                .is_some_and(|layout| self.input.choice_artwork_dirty(&self.scene, layout))
+        {
+            state.window.request_redraw();
+        }
         if self.component.scene_dirty()
             || self.input.has_pending_swipe_events()
             || !self.focus_requests.is_empty()
@@ -1596,6 +1618,12 @@ impl<C: Component> Application<C> {
                     y: point.y,
                 }
             });
+        self.viewport_observers.sync_scroll_activity(
+            &self.scene,
+            layout,
+            &self.input,
+            Instant::now(),
+        );
         let events = self
             .hover_observers
             .sync(&self.input, &self.scene, layout, pointer);
@@ -1614,6 +1642,15 @@ impl<C: Component> Application<C> {
 
     fn refresh_editor(&mut self, follow_caret: bool) {
         self.flush_swipe_events(None);
+        if self.layout.is_some()
+            && self.loader_events_scene.as_ptr() != Rc::as_ptr(&self.scene)
+        {
+            let _focus = self.focus_requests.enter();
+            let _scroll = self.scroll_requests.enter();
+            if xrack_runtime::dispatch_loader_events(&mut self.component, &self.scene) {
+                self.loader_events_scene = Rc::downgrade(&self.scene);
+            }
+        }
         // Capture the result of input before applying queued programmatic moves.
         let scrolled = self.layout.as_ref().map_or_else(Vec::new, |layout| {
             self.input.take_scroll_events(&self.scene, layout)
@@ -1698,7 +1735,13 @@ impl<C: Component> Application<C> {
             let was_editing = focused
                 .as_ref()
                 .is_some_and(|target| self.input.table_cell_editing(&target.path));
-            let command = self.input.apply_focus_request(&self.scene, layout, request);
+            let (command, scrolled) =
+                self.input
+                    .apply_focus_request_with_scroll(&self.scene, layout, request);
+            if scrolled {
+                self.sync_base_scene();
+                self.prepare_frame(self.transition_epoch.elapsed());
+            }
             let editing = self
                 .input
                 .focused
@@ -3301,6 +3344,21 @@ impl<C: Component> Application<C> {
         let Some(key) = navigation_key_value(&event.logical_key) else {
             return false;
         };
+        let modifiers = self.input_modifiers();
+        if event.state == ElementState::Pressed
+            && modifiers.primary
+            && modifiers.shift
+            && !modifiers.alt
+            && let Some(action) = self
+                .layout
+                .as_ref()
+                .and_then(|layout| self.input.tab_move_key(&self.scene, layout, key))
+        {
+            if let Some(action) = action {
+                self.apply_control(action);
+            }
+            return true;
+        }
         if event.state == ElementState::Pressed
             && self.modifiers.alt_key()
             && !self.modifiers.shift_key()
@@ -3936,7 +3994,8 @@ impl<C: Component> Application<C> {
             _ => false,
         };
         self.scroll_contact = None;
-        let preview = self.input.tumbler_preview().is_some()
+        let preview = self.input.tab_move_active()
+            || self.input.tumbler_preview().is_some()
             || self.input.has_switch_preview()
             || self.input.has_swipe_preview()
             || self.input.has_overscroll();
@@ -3944,7 +4003,7 @@ impl<C: Component> Application<C> {
         self.input.cancel_scroll_gesture();
         if self.input.has_pending_swipe_events() {
             self.refresh_after_update(false);
-        } else if preview {
+        } else if preview || self.component.scene_dirty() {
             self.relayout_after_scroll();
         } else if (table_drag || range_capture || split_capture)
             && let Some(state) = &self.state
@@ -4306,6 +4365,7 @@ impl<C: Component> Application<C> {
                 WindowEffects::collect(&self.scene, layout)
             });
         self.timers.sync(now, effects.timers);
+        self.button_animations.sync(effects.button_animations);
         self.native_dialogs.sync(&effects.dialogs);
         self.image_playback.sync(now, effects.playback);
         self.media.sync(effects.media);
@@ -4451,13 +4511,36 @@ impl<C: Component> Application<C> {
     }
 
     fn redraw(&mut self) -> Result<(), String> {
+        let loader_redraw = std::mem::take(&mut self.loader_redraw);
+        if loader_redraw
+            || self.component.scene_dirty()
+            || self
+                .state
+                .as_ref()
+                .is_some_and(|state| state.frame.slider_preview_changed(&self.input))
+        {
+            self.refresh_dependencies();
+        }
+        // Mounting can invalidate bindings that read Loader.status in the same scene.
+        if loader_redraw && self.component.scene_dirty() {
+            self.refresh_dependencies();
+        }
         let now = Instant::now();
         self.tick_button_holds(now);
         self.tick_table_touch_hold(now);
         self.tick_pointer_hold(now);
         let animating = self.transition.running(Duration::ZERO);
         let elapsed = self.transition_epoch.elapsed();
-        if self.layout.as_ref().is_some_and(|layout| {
+        let tumbler = self
+            .layout
+            .as_ref()
+            .map_or_else(Default::default, |layout| {
+                self.input.advance_tumbler_motion(&self.scene, layout, now)
+            });
+        if let Some(control) = tumbler.control {
+            self.apply_control(control);
+        }
+        let scrolled = self.layout.as_ref().is_some_and(|layout| {
             self.input.advance_scroll_motion(&self.scene, layout, now)
                 || self
                     .input
@@ -4466,7 +4549,8 @@ impl<C: Component> Application<C> {
                 || self
                     .input
                     .advance_table_drag_selection(&self.scene, layout, now)
-        }) {
+        });
+        if scrolled || tumbler.scrolled {
             self.relayout_after_scroll();
         } else if animating
             || self.layout.is_none()
@@ -4551,6 +4635,13 @@ impl<C: Component> Application<C> {
         }
         state.window.pre_present_notify();
         state.renderer.queue.present(frame);
+        if self.loader_frame_scene.as_ptr() != Rc::as_ptr(&self.scene) {
+            self.loader_frame_scene = Rc::downgrade(&self.scene);
+            if xrack_runtime::finish_loader_frame(&self.scene) {
+                self.loader_redraw = true;
+                state.window.request_redraw();
+            }
+        }
         let completion = state.renderer.take_painted_combo_completion();
         self.input
             .set_painted_combo_completion(completion.filter(|_| state.window.has_focus()));
@@ -4692,6 +4783,7 @@ impl<C: Component> HostedWindow for Application<C> {
             self.dispatch_scale_rotate(&scene, event);
         }
         self.focus_requests.drain();
+        self.input.dismiss_choice();
         self.focus_observers.clear();
         self.hover_observers.clear();
         self.hover_pointer = None;
@@ -4712,6 +4804,7 @@ impl<C: Component> HostedWindow for Application<C> {
         self.input.clear_file_drag();
         self.layout = None;
         self.timers = TimerQueue::default();
+        self.button_animations.sync([]);
         self.image_playback.sync(Instant::now(), []);
         self.media.sync([]);
         self.native_dialogs.sync(&[]);
@@ -4727,8 +4820,24 @@ impl<C: Component> HostedWindow for Application<C> {
             self.component
                 .publish_window_status(state.sample_window_status());
         }
+        if self
+            .viewport_observers
+            .scroll_activity_deadline()
+            .is_some_and(|wake| now >= wake)
+            && let Some(layout) = &self.layout
+        {
+            self.viewport_observers
+                .sync_scroll_activity(&self.scene, layout, &self.input, now);
+        }
         self.refresh_dependencies();
         self.tick_button_holds(now);
+        for _ in 0..64 {
+            let Some(delivery) = self.button_animations.next(&self.scene, now) else {
+                break;
+            };
+            delivery.apply(&mut self.component, &self.scene);
+            self.refresh_after_update(true);
+        }
         self.tick_table_touch_hold(now);
         self.tick_pointer_hold(now);
         self.tick_timers(now);
@@ -4747,6 +4856,11 @@ impl<C: Component> HostedWindow for Application<C> {
         self.present_native_dialog();
         self.publish_focus();
         self.update_accessibility();
+        if self.button_animations.take_redraw()
+            && let Some(state) = &self.state
+        {
+            state.window.request_redraw();
+        }
         let deadline = if let Some(state) = &self.state
             && state.window.has_focus()
             && let Some(layout) = &self.layout
@@ -4793,9 +4907,11 @@ impl<C: Component> HostedWindow for Application<C> {
             (self.state.is_some() && self.component.has_window_commands()).then_some(now),
             self.animation_wake,
             scroll_wake,
+            self.viewport_observers.scroll_activity_deadline(),
             self.input.table_touch_hold_deadline(),
             self.input.delay_deadline(),
             self.input.button_hold_deadline(),
+            self.button_animations.deadline(),
             self.pointer_capture
                 .as_ref()
                 .and_then(|capture| capture.sequence.press_and_hold_deadline()),

@@ -19,8 +19,9 @@ use crate::{
     split::axis_point,
     swipe_delegate::SwipeDrag,
     swipe_gesture::{SwipeDelivery, SwipePhase, SwipeTarget, has_swipe_directions},
+    tab_move::TabDrag,
     tooltip::{self, Source as TooltipSource, TooltipState},
-    tumbler::{TumblerDrag, TumblerWheel},
+    tumbler::{TumblerDrag, TumblerFlick, TumblerWheel},
     view_cells::ViewCells,
     viewport::{MotionOwners, MotionState, UserScrollChange, record_motion, record_motion_owner},
 };
@@ -526,6 +527,8 @@ struct ScrollBarPress {
     viewport: Option<xrack_runtime::ViewportHandle>,
     reversed: bool,
     grab: Option<f32>,
+    touch: bool,
+    cancelled: bool,
     start: Point,
     last: Point,
     dragged: bool,
@@ -561,6 +564,7 @@ struct ScrollGesture {
     drawer: Option<DrawerSwipe>,
     pages: Vec<PageSwipe>,
     tumbler: Option<TumblerDrag>,
+    tab_move: Option<TabDrag>,
     switch: Option<SwitchDrag>,
     swipe_delegate: Option<SwipeDrag>,
     swipe: Option<SwipeRoute>,
@@ -878,6 +882,7 @@ pub struct Interaction {
     scroll_gesture: Option<ScrollGesture>,
     swipe_events: Vec<SwipeDelivery>,
     tumbler_wheel: Option<TumblerWheel>,
+    tumbler_flick: Option<TumblerFlick>,
     wheel_steps: Option<WheelSteps>,
     scroll_fling: Option<ScrollFling>,
     viewport_motion: MotionState,
@@ -895,6 +900,7 @@ pub struct Interaction {
     slider_offset: f64,
     slider_anchor: Option<f64>,
     slider_fraction: Option<f64>,
+    range_position_handle: Option<xrack_runtime::RangePositionHandle>,
     dial_pointer: Option<Point>,
     touch_range: bool,
     spin_pressed: Option<SpinAction>,
@@ -981,13 +987,14 @@ pub(crate) fn focusable(node: &Node) -> bool {
     if kind == "PageIndicator" {
         return node.boolean("interactive", false) && page_indicator_count(node) != 0;
     }
-    if kind == "Tumbler" {
+    if matches!(kind, "Tumbler" | "PathView") {
         return Tumbler::from_node(node).selected().is_some();
     }
     matches!(
         kind,
         "Button"
             | "FocusScope"
+            | "Loader"
             | "ToolButton"
             | "RoundButton"
             | "DelayButton"
@@ -1106,7 +1113,7 @@ enum ScrollSelection {
 impl ScrollSelection {
     fn new(node: &Node, columns: usize, direction: LayoutDirection) -> Self {
         let selection = scroll_selection(node);
-        if node.kind == "TabBar" {
+        if matches!(node.kind, "TabBar" | "TabWidget") {
             let orientation = node.orientation();
             let direction = if orientation == Orientation::Horizontal {
                 direction
@@ -1121,7 +1128,7 @@ impl ScrollSelection {
 }
 
 pub(crate) fn scroll_selection(node: &Node) -> Option<usize> {
-    if node.kind == "TabBar" {
+    if matches!(node.kind, "TabBar" | "TabWidget") {
         group_index(node)
     } else {
         let index = usize::try_from(ListMetrics::selection(node)?).ok()?;
@@ -1496,7 +1503,9 @@ pub(crate) fn moved_row_target(
     let key = target.row_key?;
     if key.has_view_scope() {
         fn find(node: &Node, target: &Target, path: &mut Vec<usize>) -> Option<Target> {
-            if node.kind == "ListRow" && node.routing_row_key() == target.row_key {
+            if matches!(node.kind, "ListRow" | "TabButton" | "Tab")
+                && node.routing_row_key() == target.row_key
+            {
                 let suffix = target.path.get(path.len()..)?;
                 let mut moved = target.clone();
                 moved.path = path.iter().copied().chain(suffix.iter().copied()).collect();
@@ -1518,9 +1527,21 @@ pub(crate) fn moved_row_target(
         let Some(node) = scene.at_path(&target.path[..depth]) else {
             continue;
         };
+        if node.kind == "DynamicContainer" {
+            let (slot, _) = node.materialized_children().find(|(_, child)| child.dynamic_mount_key() == Some(key))?;
+            let mut moved = target.clone();
+            moved.path[depth] = slot;
+            return valid(&moved, scene, layout).then_some(moved);
+        }
         if !matches!(
             node.kind,
-            "ListView" | "GridView" | "StandardListView" | "TableView" | "TreeView"
+            "ListView"
+                | "GridView"
+                | "StandardListView"
+                | "TableView"
+                | "TreeView"
+                | "TabBar"
+                | "TabWidget"
         ) {
             continue;
         }
@@ -1535,14 +1556,22 @@ pub(crate) fn moved_row_target(
     None
 }
 
-pub(crate) fn eligible(node: &Node, layout: &LayoutNode) -> bool {
+fn focus_hitbox(node: &Node, layout: &LayoutNode) -> Option<Rect> {
+    if node.kind == "PathView"
+        && layout
+            .tumbler
+            .as_ref()
+            .is_none_or(|view| view.rows.is_empty())
+    {
+        return None;
+    }
     if node.kind == "ScrollBar"
         && (!node.boolean("interactive", true)
             || !layout
                 .scroll_control_geometry(node)
                 .is_some_and(ScrollBarGeometry::scrollable))
     {
-        return false;
+        return None;
     }
     let hitbox = if node.kind == "Tab" {
         layout.tab_header
@@ -1553,12 +1582,37 @@ pub(crate) fn eligible(node: &Node, layout: &LayoutNode) -> bool {
     } else {
         None
     };
-    layout.enabled
-        && interactive(node)
-        && hitbox.is_some_and(|bounds| {
-            let clipped = layout.clip_rect(bounds);
-            clipped.width > 0.0 && clipped.height > 0.0
-        })
+    (layout.enabled && interactive(node))
+        .then_some(hitbox)
+        .flatten()
+}
+
+pub(crate) fn eligible(node: &Node, layout: &LayoutNode) -> bool {
+    focus_hitbox(node, layout).is_some_and(|bounds| {
+        let clipped = layout.clip_rect(bounds);
+        clipped.width > 0.0 && clipped.height > 0.0
+    })
+}
+
+pub(crate) fn focus_reachable(
+    target: &Target,
+    scene: &Node,
+    layout: &LayoutNode,
+    allow_reveal: bool,
+) -> bool {
+    valid(target, scene, layout)
+        || allow_reveal
+            && target.text_link.is_none()
+            && target
+                .node_in(scene)
+                .zip(layout.at_path(&target.path))
+                .is_some_and(|(node, item)| {
+                    target.focusable == focusable(node)
+                        && focus_hitbox(node, item).is_some_and(|rect| {
+                            crate::viewport::plan_focus_scroll(scene, layout, &target.path, rect)
+                                .is_some_and(|plan| !plan.is_empty())
+                        })
+                })
 }
 
 fn scroll_target_visible(item: &LayoutNode) -> bool {
@@ -1591,15 +1645,17 @@ fn group_targets(
     node: &Node,
     layout: &LayoutNode,
     path: &[usize],
+    include_clipped: bool,
 ) -> impl Iterator<Item = (usize, Target)> {
-    let scrollable_tabs = node.kind == "TabBar" && scroll_target_visible(layout);
+    let scrollable_tabs =
+        matches!(node.kind, "TabBar" | "TabWidget") && scroll_target_visible(layout);
     node.children
         .iter()
         .zip(&layout.children)
         .enumerate()
         .filter_map(move |(index, (child, item))| {
-            let usable = if scrollable_tabs {
-                item.visible && item.enabled && item.bounds.width > 0.0 && item.bounds.height > 0.0
+            let usable = if include_clipped || scrollable_tabs {
+                focus_hitbox(child, item).is_some_and(|rect| rect.width > 0.0 && rect.height > 0.0)
             } else {
                 eligible(child, item)
             };
@@ -1614,8 +1670,27 @@ fn group_targets(
 
 fn group_focus(node: &Node, layout: &LayoutNode, path: &[usize]) -> Option<Target> {
     let selected = group_index(node);
-    group_targets(node, layout, path)
+    group_targets(node, layout, path, false)
         .min_by_key(|(index, _)| Some(*index) != selected)
+        .map(|(_, target)| target)
+}
+
+pub(crate) fn radio_group_focus(
+    scene: &Node,
+    layout: &LayoutNode,
+    path: &[usize],
+    allow_reveal: bool,
+) -> Option<Target> {
+    let group = scene
+        .at_path(path)
+        .filter(|node| node.kind == "RadioGroup")?;
+    let item = layout.at_path(path)?;
+    group_targets(group, item, path, allow_reveal)
+        .filter_map(|(index, mut target)| {
+            target.row_key = scene.row_key_at(&target.path);
+            focus_reachable(&target, scene, layout, allow_reveal).then_some((index, target))
+        })
+        .min_by_key(|(index, _)| Some(*index) != group_index(group))
         .map(|(_, target)| target)
 }
 
@@ -1641,7 +1716,24 @@ fn attached_radio_tab_stop(scene: &Node, path: &[usize], targets: &[Target]) -> 
 }
 
 pub(crate) fn focus_targets(scene: &Node, layout: &LayoutNode, scope: &[usize]) -> Vec<Target> {
-    fn collect(node: &Node, layout: &LayoutNode, path: &mut Vec<usize>, out: &mut Vec<Target>) {
+    focus_targets_with_reveal(scene, layout, scope, false)
+}
+
+pub(crate) fn focus_targets_with_reveal(
+    scene: &Node,
+    layout: &LayoutNode,
+    scope: &[usize],
+    allow_reveal: bool,
+) -> Vec<Target> {
+    fn collect(
+        root: (&Node, &LayoutNode),
+        node: &Node,
+        layout: &LayoutNode,
+        path: &mut Vec<usize>,
+        out: &mut Vec<Target>,
+        allow_reveal: bool,
+        clipped_candidates: bool,
+    ) {
         if !layout.visible
             || !layout.enabled
             || node.kind == "CalendarCells"
@@ -1650,23 +1742,47 @@ pub(crate) fn focus_targets(scene: &Node, layout: &LayoutNode, scope: &[usize]) 
             return;
         }
         let clip = layout.clip_rect(layout.bounds);
-        if !layout.allows_overflow() && (clip.width <= 0.0 || clip.height <= 0.0) {
+        if !clipped_candidates
+            && !layout.allows_overflow()
+            && (clip.width <= 0.0 || clip.height <= 0.0)
+        {
             return;
         }
+        let candidate = |path: &[usize], node: &Node, item: &LayoutNode| {
+            let target = Target::from_node(path.to_vec(), node, true, root.0.row_key_at(path));
+            if !clipped_candidates {
+                return Some(target);
+            }
+            (eligible(node, item) || focus_reachable(&target, root.0, root.1, true))
+                .then_some(target)
+        };
         let before_children = out.len();
         if matches!(node.kind, "TabWidget" | "TabBar" | "RadioGroup") {
-            if let Some(target) = group_focus(node, layout, path) {
+            if clipped_candidates
+                && !(matches!(node.kind, "TabBar" | "TabWidget") && scroll_target_visible(layout))
+            {
+                let selected = group_index(node);
+                if let Some((_, target)) = group_targets(node, layout, path, true)
+                    .filter_map(|(index, mut target)| {
+                        target.row_key = root.0.row_key_at(&target.path);
+                        focus_reachable(&target, root.0, root.1, true).then_some((index, target))
+                    })
+                    .min_by_key(|(index, _)| Some(*index) != selected)
+                {
+                    out.push(target);
+                }
+            } else if let Some(target) = group_focus(node, layout, path) {
                 out.push(target);
             }
             if node.kind != "TabWidget" {
                 return;
             }
-        } else if !matches!(node.kind, "Tab" | "TreeCell" | "FocusScope")
+        } else if !matches!(node.kind, "Tab" | "TreeCell" | "FocusScope" | "Loader")
             && !is_window_overlay(node.kind)
             && focusable(node)
-            && (node.kind != "GroupBox" || eligible(node, layout))
+            && (node.kind != "GroupBox" || clipped_candidates || eligible(node, layout))
         {
-            out.push(Target::from_node(path.clone(), node, true, None));
+            out.extend(candidate(path, node, layout));
         }
         if node.kind == "SplitHandle" {
             return;
@@ -1679,12 +1795,14 @@ pub(crate) fn focus_targets(scene: &Node, layout: &LayoutNode, scope: &[usize]) 
                     .filter_map(|index| Target::for_text_link(node, path, index)),
             );
         }
+        let reveal_children =
+            clipped_candidates || allow_reveal && crate::viewport::reveals_focus(node, layout);
         let mut visit = |index: usize| {
             if let Some((child, item)) = node.child_at(index).zip(layout.child_at(index))
                 && !is_window_overlay(child.kind)
             {
                 path.push(index);
-                collect(child, item, path, out);
+                collect(root, child, item, path, out, allow_reveal, reveal_children);
                 path.pop();
             }
         };
@@ -1701,12 +1819,27 @@ pub(crate) fn focus_targets(scene: &Node, layout: &LayoutNode, scope: &[usize]) 
             && out.len() == before_children
             && node.boolean("focus-on-tab-navigation", true)
         {
-            out.push(Target::from_node(path.clone(), node, true, None));
+            out.extend(candidate(path, node, layout));
         }
     }
     let mut targets = Vec::new();
     if let Some((node, item)) = scene.at_path(scope).zip(layout.at_path(scope)) {
-        collect(node, item, &mut scope.to_vec(), &mut targets);
+        let clipped_candidates = allow_reveal
+            && (0..scope.len())
+                .rev()
+                .map(|depth| &scope[..depth])
+                .map_while(|path| scene.at_path(path).zip(layout.at_path(path)))
+                .take_while(|(node, _)| !is_window_overlay(node.kind))
+                .any(|(node, item)| crate::viewport::reveals_focus(node, item));
+        collect(
+            (scene, layout),
+            node,
+            item,
+            &mut scope.to_vec(),
+            &mut targets,
+            allow_reveal,
+            clipped_candidates,
+        );
         if targets.is_empty() && is_window_overlay(node.kind) && eligible(node, item) {
             targets.push(Target::from_node(scope.to_vec(), node, true, None));
         }
@@ -2112,6 +2245,7 @@ impl Interaction {
                             | "TableCell"
                             | "TreeCell"
                             | "Tumbler"
+                            | "PathView"
                             | "SwipeDelegate"
                     )
             }),
@@ -2367,7 +2501,7 @@ impl Interaction {
             self.spin_draft = None;
             self.table_edit = None;
             self.last_table_click = None;
-            self.choice = None;
+            Self::clear_choice(&mut self.choice);
             self.search_query = None;
             self.choice_typeahead = Typeahead::default();
             self.reset_list_typeahead();
@@ -3253,36 +3387,72 @@ impl Interaction {
         true
     }
 
+    pub(crate) fn scroll_viewport_by(
+        &mut self,
+        path: &[usize],
+        item: &LayoutNode,
+        axis: Orientation,
+        delta: f64,
+    ) -> bool {
+        delta.is_finite()
+            && delta != 0.0
+            && self.update_viewport_offset(path, item, axis, |previous| f64::from(previous) + delta)
+    }
+
     pub(crate) fn set_viewport_offset(
         &mut self,
         path: &[usize],
         item: &LayoutNode,
-        orientation: Orientation,
+        axis: Orientation,
         offset: f64,
     ) -> bool {
-        if !offset.is_finite() {
-            return false;
-        }
-        let Some(scroll) = item.scroll_on(orientation) else {
+        offset.is_finite() && self.update_viewport_offset(path, item, axis, |_| offset)
+    }
+
+    pub(crate) fn current_viewport_offset(
+        &self,
+        path: &[usize],
+        item: &LayoutNode,
+        axis: Orientation,
+    ) -> Option<f32> {
+        let scroll = item.scroll_on(axis)?;
+        let offsets = match axis {
+            Orientation::Horizontal => &self.horizontal_scroll_offsets,
+            Orientation::Vertical => &self.scroll_offsets,
+        };
+        Some(
+            item.bound_offset(axis)
+                .or_else(|| pending_scroll_offset(item, offsets, path, axis))
+                .unwrap_or(scroll.offset)
+                .clamp(0.0, scroll.max_offset),
+        )
+    }
+
+    fn update_viewport_offset(
+        &mut self,
+        path: &[usize],
+        item: &LayoutNode,
+        axis: Orientation,
+        next: impl FnOnce(f32) -> f64,
+    ) -> bool {
+        let Some(scroll) = item.scroll_on(axis) else {
             return false;
         };
         let had_overscroll = self.overscroll.has_offset();
         self.cancel_scroll_gesture();
-        let offsets = match orientation {
+        let previous = self
+            .current_viewport_offset(path, item, axis)
+            .unwrap_or(scroll.offset);
+        let offsets = match axis {
             Orientation::Horizontal => &mut self.horizontal_scroll_offsets,
             Orientation::Vertical => &mut self.scroll_offsets,
         };
-        let previous = item
-            .bound_offset(orientation)
-            .or_else(|| pending_scroll_offset(item, offsets, path, orientation))
-            .unwrap_or(scroll.offset)
-            .clamp(0.0, scroll.max_offset);
-        let next = offset.clamp(0.0, f64::from(scroll.max_offset)) as f32;
+        let next = next(previous).clamp(0.0, f64::from(scroll.max_offset)) as f32;
         if next == previous {
             return had_overscroll;
         }
-        store_scroll_offset(item, offsets, path, orientation, next);
-        item.write_bound_offset(orientation, next);
+        store_scroll_offset(item, offsets, path, axis, next);
+        item.write_bound_offset(axis, next);
         true
     }
 
@@ -3324,7 +3494,7 @@ impl Interaction {
         layout: &LayoutNode,
     ) -> Option<ScrollBarUpdate> {
         let target = self.hovered_scroll_bar.clone()?;
-        self.press_scroll_bar(scene, layout, target, self.pointer?)
+        self.press_scroll_bar(scene, layout, target, self.pointer?, false)
     }
 
     fn press_scroll_bar(
@@ -3333,6 +3503,7 @@ impl Interaction {
         layout: &LayoutNode,
         target: ScrollTarget,
         point: Point,
+        touch: bool,
     ) -> Option<ScrollBarUpdate> {
         if self.menu_open() || self.choice_open() {
             return None;
@@ -3372,6 +3543,8 @@ impl Interaction {
             viewport: node.scroll_target.clone(),
             reversed: bar.reversed(),
             grab,
+            touch,
+            cancelled: false,
             start,
             last: start,
             dragged: false,
@@ -3424,19 +3597,19 @@ impl Interaction {
         point: Point,
         released: bool,
     ) -> ScrollBarUpdate {
-        let Some(grab) = press.grab else {
+        let Some(grab) = press.grab.filter(|_| !press.cancelled) else {
             return ScrollBarUpdate::Unchanged;
         };
         let target = &press.target;
         let Some(node) = press.node(scene) else {
-            press.grab = None;
+            press.cancelled = true;
             return ScrollBarUpdate::Unchanged;
         };
         let Some(bar) = self
             .scroll_bar_for_target(scene, layout, target)
             .filter(|bar| bar.reversed() == press.reversed)
         else {
-            press.grab = None;
+            press.cancelled = true;
             return ScrollBarUpdate::Unchanged;
         };
         let mode = match node.properties.get("snap-mode") {
@@ -3567,7 +3740,7 @@ impl Interaction {
         let Hit::ScrollBar(target) = self.hit_at(scene, layout, point) else {
             return None;
         };
-        let moved = self.press_scroll_bar(scene, layout, target.clone(), point)?;
+        let moved = self.press_scroll_bar(scene, layout, target.clone(), point, true)?;
         self.pointer = Some(point);
         self.hovered_scroll_bar = Some(target);
         Some(moved)
@@ -3605,14 +3778,39 @@ impl Interaction {
         Some(update)
     }
 
+    pub(crate) fn scroll_bar_interaction(
+        &self,
+        scene: &Node,
+        layout: &LayoutNode,
+        path: &[usize],
+        axis: Orientation,
+    ) -> (bool, bool) {
+        let matches = |target: &ScrollTarget| target.path == path && target.orientation == axis;
+        let pressed = self.scroll_bar_press.as_ref().is_some_and(|press| {
+            !press.cancelled
+                && matches(&press.target)
+                && press.node(scene).is_some()
+                && self
+                    .scroll_bar_for_target(scene, layout, &press.target)
+                    .is_some_and(|bar| bar.reversed() == press.reversed)
+        });
+        let hovered = !self
+            .scroll_bar_press
+            .as_ref()
+            .is_some_and(|press| press.touch)
+            && self.hovered_scroll_bar.as_ref().is_some_and(|target| {
+                matches(target) && self.scroll_bar_for_target(scene, layout, target).is_some()
+            });
+        (pressed, hovered)
+    }
+
     pub fn scroll_bar_highlighted(&self, path: &[usize], orientation: Orientation) -> bool {
         let matches =
             |target: &ScrollTarget| target.path == path && target.orientation == orientation;
         self.hovered_scroll_bar.as_ref().is_some_and(matches)
-            || self
-                .scroll_bar_press
-                .as_ref()
-                .is_some_and(|press| press.grab.is_some() && matches(&press.target))
+            || self.scroll_bar_press.as_ref().is_some_and(|press| {
+                !press.cancelled && press.grab.is_some() && matches(&press.target)
+            })
     }
 
     fn scroll_axis(
@@ -3672,7 +3870,7 @@ impl Interaction {
             }
             layout
                 .map_from_window(point)
-                .is_some_and(|local| layout.bounds.contains(local))
+                .is_some_and(|local| layout.tab_viewport().contains(local))
                 && accepts(path, layout)
         }
 
@@ -3710,11 +3908,15 @@ impl Interaction {
         };
         let mut elastic_owner = None;
         // Only the portion the inner viewport could not consume reaches its ancestors.
-        for depth in (scope_len..=path.len()).rev() {
+        let last_depth = path.len();
+        for depth in (scope_len..=last_depth).rev() {
             let path = &path[..depth];
             let Some(item) = layout.at_path(path) else {
                 continue;
             };
+            if item.tab_strip.is_some() && depth != last_depth {
+                continue;
+            }
             if let ScrollInput::Pan { device, .. } = &input
                 && (!item.visible || !item.enabled || !item.accepts_pan(orientation, *device))
             {
@@ -3871,6 +4073,7 @@ impl Interaction {
             drawer: None,
             pages: Vec::new(),
             tumbler: None,
+            tab_move: None,
             switch: None,
             swipe_delegate: None,
             swipe: None,
@@ -3895,8 +4098,11 @@ impl Interaction {
         now: Instant,
         kind: ScrollGestureKind,
     ) -> bool {
-        let interrupted =
-            self.scroll_fling.take().is_some() || self.overscroll.deadline().is_some();
+        let tumbler_interrupted = self.interrupt_tumbler_flick();
+        let interrupted = tumbler_interrupted
+            || self.scroll_fling.is_some()
+            || self.overscroll.deadline().is_some();
+        self.scroll_fling = None;
         if interrupted {
             self.viewport_motion.clear();
         }
@@ -3928,7 +4134,7 @@ impl Interaction {
                 .at_path(&target.path)
                 .zip(layout.at_path(&target.path))
                 .and_then(|(node, item)| {
-                    (node.kind == "Tumbler").then_some(())?;
+                    matches!(node.kind, "Tumbler" | "PathView").then_some(())?;
                     TumblerDrag::new(target.clone(), node, item, item.map_from_window(point)?)
                 }),
             _ => None,
@@ -3936,6 +4142,18 @@ impl Interaction {
         if kind == ScrollGestureKind::MouseTumbler && tumbler.is_none() {
             return false;
         }
+        let tab_move = match &hit {
+            Hit::Target(target)
+                if popup == (false, false)
+                    && matches!(
+                        kind,
+                        ScrollGestureKind::Touch | ScrollGestureKind::MouseControl
+                    ) =>
+            {
+                TabDrag::new(target, scene, layout, point)
+            }
+            _ => None,
+        };
         let switch = match &hit {
             Hit::Target(target)
                 if popup == (false, false)
@@ -3967,6 +4185,7 @@ impl Interaction {
         let swipe = (!popup.0
             && !popup.1
             && tumbler.is_none()
+            && tab_move.is_none()
             && swipe_delegate.is_none()
             && matches!(
                 kind,
@@ -3976,6 +4195,7 @@ impl Interaction {
         .flatten();
         if kind == ScrollGestureKind::MouseControl
             && tumbler.is_none()
+            && tab_move.is_none()
             && switch.is_none()
             && swipe_delegate.is_none()
             && swipe.is_none()
@@ -4022,6 +4242,7 @@ impl Interaction {
             && drawer.is_none()
             && pages.is_empty()
             && tumbler.is_none()
+            && tab_move.is_none()
             && swipe_delegate.is_none()
             && axes.iter().all(Option::is_none)
         {
@@ -4065,6 +4286,7 @@ impl Interaction {
         let overscroll = if drawer.is_none()
             && pages.is_empty()
             && tumbler.is_none()
+            && tab_move.is_none()
             && switch.is_none()
             && swipe_delegate.is_none()
             && swipe.is_none()
@@ -4102,6 +4324,7 @@ impl Interaction {
             drawer,
             pages,
             tumbler,
+            tab_move,
             switch,
             swipe_delegate,
             swipe,
@@ -4429,8 +4652,10 @@ impl Interaction {
                 .extend(gesture.swipe.take().and_then(SwipeRoute::cancel));
             self.cancel_touch_delay();
             self.cancel_touch_button_hold();
+            let tumbler_cleared = gesture.tumbler.is_some_and(|mut drag| drag.cancel());
             return cleared
-                || gesture.tumbler.is_some_and(|drag| drag.offset != 0.0)
+                || tumbler_cleared
+                || (gesture.motion.dragging && gesture.tab_move.is_some())
                 || gesture.switch.is_some_and(|drag| drag.position.is_some())
                 || gesture
                     .swipe_delegate
@@ -4503,12 +4728,17 @@ impl Interaction {
             if gesture.delay_touch {
                 self.cancel_touch_delay();
             }
+            if let Some(drag) = &mut gesture.tab_move {
+                if was_dragging || drag.accepts_direction(scene, layout, point) {
+                    return drag.update(scene, layout, point, now);
+                }
+                gesture.tab_move = None;
+            }
             if let Some(drag) = &mut gesture.tumbler {
                 if let Some(local) = layout
                     .at_path(&drag.target.path)
                     .and_then(|item| item.map_from_window(point))
-                    && (was_dragging
-                        || (local.y - drag.start.y).abs() > (local.x - drag.start.x).abs())
+                    && (was_dragging || drag.accepts_direction(local))
                 {
                     return drag.update(scene, layout, local);
                 }
@@ -4675,20 +4905,46 @@ impl Interaction {
                 control: None,
             };
         }
-        if let Some(drag) = gesture.tumbler {
-            let had_preview = drag.offset != 0.0;
-            let target = drag.target.clone();
-            let control = if gesture.motion.dragging {
-                drag.finish(scene, layout)
-            } else {
-                None
+        if let Some(drag) = gesture.tab_move {
+            let control = gesture
+                .motion
+                .dragging
+                .then(|| drag.finish(scene, layout))
+                .flatten();
+            return ScrollGestureEnd {
+                tap,
+                scrolled: scrolled || gesture.motion.dragging,
+                control,
             };
+        }
+        if let Some(mut drag) = gesture.tumbler {
+            if !gesture.motion.dragging {
+                return ScrollGestureEnd {
+                    tap,
+                    scrolled,
+                    control: None,
+                };
+            }
+            let target = drag.target.clone();
+            let velocity = gesture.motion.measured_release_velocity(now);
+            match drag.settle(scene, layout, velocity, now) {
+                Ok(flick) => {
+                    self.set_focus(Some(target));
+                    self.tumbler_flick = Some(flick);
+                    return ScrollGestureEnd {
+                        scrolled: true,
+                        ..ScrollGestureEnd::default()
+                    };
+                }
+                Err(fallback) => drag = fallback,
+            }
+            let control = drag.finish(scene, layout);
             if control.is_some() {
                 self.set_focus(Some(target));
             }
             return ScrollGestureEnd {
                 tap,
-                scrolled: scrolled || had_preview,
+                scrolled: true,
                 control,
             };
         }
@@ -4785,7 +5041,45 @@ impl Interaction {
         now: Instant,
     ) -> bool {
         let rebounded = self.overscroll.advance(now);
-        self.advance_flick(scene, layout, now) || rebounded
+        let tab_scroll = self.advance_tab_drag_scroll(scene, layout, now);
+        self.advance_flick(scene, layout, now) || rebounded || tab_scroll
+    }
+
+    fn advance_tab_drag_scroll(&mut self, scene: &Node, layout: &LayoutNode, now: Instant) -> bool {
+        let Some(drag) = self
+            .scroll_gesture
+            .as_mut()
+            .and_then(|gesture| gesture.tab_move.as_mut())
+        else {
+            return false;
+        };
+        if !drag.wake.is_some_and(|deadline| deadline <= now) {
+            return false;
+        }
+        let Some((axis, offset)) = drag.scroll_target(scene, layout) else {
+            drag.wake = None;
+            return false;
+        };
+        drag.wake = Some(now + SCROLL_FRAME_INTERVAL);
+        let offsets = match axis {
+            Orientation::Horizontal => &mut self.horizontal_scroll_offsets,
+            Orientation::Vertical => &mut self.scroll_offsets,
+        };
+        offsets.insert(drag.path().to_vec(), offset);
+        true
+    }
+
+    pub fn tab_move_active(&self) -> bool {
+        self.scroll_gesture
+            .as_ref()
+            .is_some_and(|gesture| gesture.motion.dragging && gesture.tab_move.is_some())
+    }
+
+    pub fn tab_move_marker(&self, bar: &Node, item: &LayoutNode, path: &[usize]) -> Option<Rect> {
+        let gesture = self.scroll_gesture.as_ref()?;
+        let drag = gesture.tab_move.as_ref()?;
+        (gesture.motion.dragging && drag.path() == path).then_some(())?;
+        drag.marker(bar, item)
     }
 
     fn advance_flick(&mut self, scene: &Node, layout: &LayoutNode, now: Instant) -> bool {
@@ -4831,8 +5125,66 @@ impl Interaction {
         moved.into_iter().any(AxisMotion::changed)
     }
 
+    fn interrupt_tumbler_flick(&mut self) -> bool {
+        self.tumbler_flick
+            .as_mut()
+            .is_some_and(TumblerFlick::interrupt)
+    }
+
+    fn tumbler_flick_is_current(
+        &self,
+        flick: &TumblerFlick,
+        scene: &Node,
+        layout: &LayoutNode,
+    ) -> bool {
+        !self.menu_open()
+            && !self.choice_open()
+            && self
+                .active_dialog(layout)
+                .is_none_or(|scope| flick.drag.target.path.starts_with(scope))
+            && flick.drag.is_current(scene, layout)
+    }
+
+    pub fn advance_tumbler_motion(
+        &mut self,
+        scene: &Node,
+        layout: &LayoutNode,
+        now: Instant,
+    ) -> ScrollGestureEnd {
+        let Some(mut flick) = self.tumbler_flick.take() else {
+            return ScrollGestureEnd::default();
+        };
+        if !flick.active() || !self.tumbler_flick_is_current(&flick, scene, layout) {
+            flick.interrupt();
+            return ScrollGestureEnd {
+                scrolled: true,
+                ..ScrollGestureEnd::default()
+            };
+        }
+        if now < flick.wake {
+            self.tumbler_flick = Some(flick);
+            return ScrollGestureEnd::default();
+        }
+        let control = if flick.advance(now) {
+            flick.drag.finish(scene, layout)
+        } else {
+            self.tumbler_flick = Some(flick);
+            None
+        };
+        ScrollGestureEnd {
+            scrolled: true,
+            control,
+            tap: false,
+        }
+    }
+
     pub fn scroll_motion_active(&self) -> bool {
-        self.scroll_fling.is_some() || self.overscroll.deadline().is_some()
+        self.scroll_fling.is_some()
+            || self.overscroll.deadline().is_some()
+            || self
+                .tumbler_flick
+                .as_ref()
+                .is_some_and(TumblerFlick::active)
     }
 
     pub fn scroll_motion_deadline(&self) -> Option<Instant> {
@@ -4841,11 +5193,29 @@ impl Interaction {
             .map(|fling| fling.motion.deadline())
             .into_iter()
             .chain(self.overscroll.deadline())
+            .chain(self.tumbler_flick.as_ref().map(|flick| flick.wake))
+            .chain(
+                self.scroll_gesture
+                    .as_ref()
+                    .and_then(|gesture| gesture.tab_move.as_ref()?.wake),
+            )
             .min()
     }
 
+    fn tumbler_drag(&self) -> Option<&TumblerDrag> {
+        self.scroll_gesture
+            .as_ref()
+            .and_then(|gesture| gesture.tumbler.as_ref())
+            .or_else(|| {
+                self.tumbler_flick
+                    .as_ref()
+                    .filter(|flick| flick.active())
+                    .map(|flick| &flick.drag)
+            })
+    }
+
     pub fn tumbler_preview(&self) -> Option<(&[usize], f32)> {
-        let drag = self.scroll_gesture.as_ref()?.tumbler.as_ref()?;
+        let drag = self.tumbler_drag()?;
         (drag.offset != 0.0).then_some((&drag.target.path, drag.offset))
     }
 
@@ -4902,9 +5272,7 @@ impl Interaction {
     }
 
     pub(crate) fn tumbler_offset(&self, wheel: &Tumbler<'_>, path: &[usize]) -> f32 {
-        self.scroll_gesture
-            .as_ref()
-            .and_then(|gesture| gesture.tumbler.as_ref())
+        self.tumbler_drag()
             .map_or(0.0, |drag| drag.offset_for(wheel, path))
     }
 
@@ -4919,16 +5287,19 @@ impl Interaction {
         if let Some(target) = target
             && let Some(node) = scene
                 .at_path(&target.path)
-                .filter(|node| node.kind == "Tumbler")
+                .filter(|node| matches!(node.kind, "Tumbler" | "PathView"))
             && let Some(wheel) = layout
                 .at_path(&target.path)
                 .and_then(|item| item.tumbler.as_ref())
         {
+            if delta.is_finite() && delta != 0.0 {
+                self.interrupt_tumbler_flick();
+            }
             return crate::tumbler::scroll(
                 &mut self.tumbler_wheel,
                 &target,
                 &Tumbler::from_node(node),
-                wheel.center.height,
+                wheel.step_size(),
                 delta,
                 lines,
             );
@@ -5066,7 +5437,7 @@ impl Interaction {
     }
 
     pub fn tumbler_key(
-        &self,
+        &mut self,
         scene: &Node,
         layout: &LayoutNode,
         key: NavigationKey,
@@ -5077,9 +5448,20 @@ impl Interaction {
         }
         let node = scene
             .at_path(&target.path)
-            .filter(|node| node.kind == "Tumbler")?;
+            .filter(|node| matches!(node.kind, "Tumbler" | "PathView"))?;
         let wheel = Tumbler::from_node(node);
+        let (axis, reversed) = layout
+            .at_path(&target.path)?
+            .tumbler
+            .as_ref()?
+            .navigation_axis();
         let index = match key {
+            NavigationKey::Left if axis == Orientation::Horizontal => {
+                wheel.step(if reversed { 1 } else { -1 })?
+            }
+            NavigationKey::Right if axis == Orientation::Horizontal => {
+                wheel.step(if reversed { -1 } else { 1 })?
+            }
             NavigationKey::Up => wheel.step(-1)?,
             NavigationKey::Down => wheel.step(1)?,
             NavigationKey::Home => 0,
@@ -5088,14 +5470,26 @@ impl Interaction {
             NavigationKey::PageDown => wheel.step(wheel.visible() as i64)?,
             _ => return None,
         };
-        Some(ControlInput {
+        let input = ControlInput {
             path: target.path.clone(),
             action: wheel.select(index)?,
-        })
+        };
+        self.interrupt_tumbler_flick();
+        Some(input)
     }
 
     pub fn cancel_scroll_gesture(&mut self) {
         self.finish_button_contact(ButtonContactSource::Gesture, false);
+        if let Some(drag) = self
+            .scroll_gesture
+            .as_mut()
+            .and_then(|gesture| gesture.tumbler.as_mut())
+        {
+            drag.cancel();
+        }
+        if let Some(mut flick) = self.tumbler_flick.take() {
+            flick.interrupt();
+        }
         self.swipe_events.extend(
             self.scroll_gesture
                 .take()
@@ -5918,7 +6312,7 @@ impl Interaction {
         let (next, record) = Record::new(edit, before, after);
         if node.kind == "SearchField" {
             self.search_query = (!next.is_empty()).then(|| next.clone());
-            self.choice = None;
+            Self::clear_choice(&mut self.choice);
         }
         if let Some(draft) = draft {
             draft.history.observe(&draft.draft);
@@ -6062,7 +6456,7 @@ impl Interaction {
             .restore_selection(&next, selection);
         if node.kind == "SearchField" {
             self.search_query = (!next.is_empty()).then(|| next.clone());
-            self.choice = None;
+            Self::clear_choice(&mut self.choice);
         }
         history.commit_replay(next, redo);
         self.painted_combo_completion = None;
@@ -6166,6 +6560,7 @@ impl Interaction {
             .as_ref()
             .filter(|target| target.path == path && target.matches_node(node))?;
         if !combo_editable(node)
+            || node.is_password()
             || !node.boolean("auto-complete", false)
             || self.choice_open()
             || self.menu_open()
@@ -6261,11 +6656,13 @@ impl Interaction {
         {
             return false;
         }
-        let Some(popup) = ChoicePopup::open(target.clone(), scene, layout) else {
+        let Some(mut popup) = ChoicePopup::open(target.clone(), scene, layout) else {
             return false;
         };
         self.set_focus(Some(target));
         self.cancel_shortcut_sequence();
+        Self::clear_choice(&mut self.choice);
+        popup.mounted(scene);
         self.choice = Some(popup);
         self.choice_typeahead = Typeahead::default();
         self.pressed = None;
@@ -6283,17 +6680,18 @@ impl Interaction {
         target: Target,
     ) -> bool {
         let origin = self.press_origin.take();
-        if scene
+        let Some(node) = scene
             .at_path(&target.path)
-            .is_none_or(|node| node.kind != "ComboBox")
-        {
+            .filter(|node| node.kind == "ComboBox")
+        else {
             return false;
-        }
-        if scene.at_path(&target.path).is_some_and(combo_editable) {
+        };
+        if combo_editable(node) {
             let Some(item) = layout.at_path(&target.path) else {
                 return false;
             };
-            let trigger = ComboGeometry::for_layout(item).trigger;
+            let trigger =
+                ComboGeometry::for_control(node, item.bounds, item.layout_direction).trigger;
             if !origin.zip(self.pointer).is_some_and(|(start, end)| {
                 [start, end].into_iter().all(|point| {
                     item.map_from_window(point)
@@ -6316,10 +6714,23 @@ impl Interaction {
             .is_some_and(|popup| popup.target.path == path)
     }
 
+    #[doc(hidden)]
+    pub fn choice_artwork_dirty(&self, scene: &Node, layout: &LayoutNode) -> bool {
+        self.choice
+            .as_ref()
+            .is_some_and(|popup| popup.artwork_dirty(scene, layout))
+    }
+
     pub fn dismiss_choice(&mut self) {
-        self.choice = None;
+        Self::clear_choice(&mut self.choice);
         self.search_query = None;
         self.choice_typeahead = Typeahead::default();
+    }
+
+    fn clear_choice(choice: &mut Option<ChoicePopup>) {
+        if let Some(popup) = choice.take() {
+            popup.closed();
+        }
     }
 
     fn reconcile_search_choice(&mut self, scene: &Node, layout: &LayoutNode) {
@@ -6900,6 +7311,7 @@ impl Interaction {
         self.slider_offset = 0.0;
         self.slider_anchor = None;
         self.slider_fraction = None;
+        self.clear_range_preview();
         self.dial_pointer = None;
         self.spin_pressed = None;
         let focus = self.hovered.clone().and_then(|mut target| {
@@ -7223,6 +7635,21 @@ impl Interaction {
         let live = node.boolean("live", true);
         if !live || SliderRange::from_node(node).snap_mode() == ScrollSnapMode::OnRelease {
             self.slider_fraction = Some(fraction);
+            if self.range_position_handle.as_ref() != node.range_position_handle.as_ref() {
+                self.clear_range_preview();
+                self.range_position_handle = node.range_position_handle.clone();
+            }
+            if let Some(handle) = &self.range_position_handle {
+                let index = if node.kind == "RangeSlider" {
+                    path.last().copied().unwrap_or_default()
+                } else {
+                    0
+                };
+                handle.publish_preview(Some((index, fraction)));
+            }
+        } else {
+            self.slider_fraction = None;
+            self.clear_range_preview();
         }
         live.then_some(RangeInput {
             path,
@@ -7248,6 +7675,7 @@ impl Interaction {
 
     pub fn slider_release(&mut self, scene: &Node, layout: &LayoutNode) -> Option<RangeInput> {
         let fraction = self.slider_fraction.take();
+        self.clear_range_preview();
         slider_target(self.pressed.as_ref()?, scene, layout)?;
         self.slider_offset = 0.0;
         self.slider_anchor = None;
@@ -7257,6 +7685,12 @@ impl Interaction {
             path,
             action: fraction.map_or(RangeAction::Release, RangeAction::CommitFraction),
         })
+    }
+
+    fn clear_range_preview(&mut self) {
+        if let Some(handle) = self.range_position_handle.take() {
+            handle.publish_preview(None);
+        }
     }
 
     pub fn slider_key(
@@ -8394,6 +8828,43 @@ impl Interaction {
         Some(action)
     }
 
+    /// An outer `Some` consumes the shortcut even at the first or last movable tab.
+    pub fn tab_move_key(
+        &self,
+        scene: &Node,
+        layout: &LayoutNode,
+        key: NavigationKey,
+    ) -> Option<Option<ControlInput>> {
+        let focused = self.focused.as_ref()?;
+        let (&from, path) = focused.path.split_last()?;
+        let bar = scene.at_path(path)?;
+        let item = layout.at_path(path)?;
+        if !matches!(bar.kind, "TabBar" | "TabWidget")
+            || !bar.boolean("reorderable", false)
+            || !valid(focused, scene, layout)
+        {
+            return None;
+        }
+        let (previous, following) = navigation_axis(
+            bar.orientation() == Orientation::Vertical,
+            item.layout_direction,
+        );
+        let available = |slot| group_item(bar, slot).is_some();
+        let to = if key == previous {
+            (0..from).rev().find(|&slot| available(slot))
+        } else if key == following {
+            (from + 1..bar.children.len()).find(|&slot| available(slot))
+        } else {
+            return None;
+        };
+        Some(to.and_then(|to| {
+            Some(ControlInput {
+                path: path.to_vec(),
+                action: ControlAction::MoveTab(bar.tab_move(from, to)?),
+            })
+        }))
+    }
+
     pub fn group_key(
         &mut self,
         scene: &Node,
@@ -8447,7 +8918,7 @@ impl Interaction {
                 group.orientation() == Orientation::Vertical
             };
         let group_layout = layout.at_path(path)?;
-        let choices: Vec<_> = group_targets(group, group_layout, path).collect();
+        let choices: Vec<_> = group_targets(group, group_layout, path, false).collect();
         let position = choices.iter().position(|(index, _)| *index == current)?;
         let len = choices.len();
         let (previous, next) = navigation_axis(vertical, group_layout.layout_direction);
@@ -8477,19 +8948,19 @@ impl Interaction {
         path: &[usize],
         index: usize,
     ) -> bool {
-        if group.kind != "TabBar" {
+        if !matches!(group.kind, "TabBar" | "TabWidget") {
             return false;
         }
         let orientation = group.orientation();
         let Some(scroll) = item.scroll_on(orientation) else {
             return false;
         };
-        let Some(tab) = item.children.get(index) else {
+        let Some(header) = item.tab_item_rect(index) else {
             return false;
         };
         let offset = crate::selection::tab_reveal_offset(
-            item.bounds,
-            tab.bounds,
+            item.tab_viewport(),
+            header,
             orientation,
             item.layout_direction,
             scroll.offset,
@@ -9767,6 +10238,19 @@ impl Interaction {
         if let Some(drag) = self
             .scroll_gesture
             .as_mut()
+            .and_then(|gesture| gesture.tumbler.as_mut())
+            && !drag.is_current(scene, layout)
+        {
+            drag.cancel();
+        }
+        if self.tumbler_flick.as_ref().is_some_and(|flick| {
+            flick.active() && !self.tumbler_flick_is_current(flick, scene, layout)
+        }) {
+            self.interrupt_tumbler_flick();
+        }
+        if let Some(drag) = self
+            .scroll_gesture
+            .as_mut()
             .and_then(|gesture| gesture.switch.as_mut())
             && !drag.is_current(scene, layout)
         {
@@ -9799,13 +10283,13 @@ impl Interaction {
                 && scene.row_key_at(&key.path) == key.row
         });
         if self.scroll_bar_press.as_ref().is_some_and(|press| {
-            press.grab.is_some()
+            !press.cancelled
                 && (press.node(scene).is_none()
                     || self
                         .scroll_bar_for_target(scene, layout, &press.target)
                         .is_none_or(|bar| bar.reversed() != press.reversed))
         }) {
-            self.scroll_bar_press.as_mut().unwrap().grab = None;
+            self.scroll_bar_press.as_mut().unwrap().cancelled = true;
         }
         if self.split_drag.as_ref().is_some_and(|drag| {
             !split_target(&drag.target, scene, layout).is_some_and(|(path, geometry, handle)| {
@@ -9884,8 +10368,10 @@ impl Interaction {
             .chain(self.horizontal_scroll_offsets.keys())
             .filter_map(|path| {
                 let view = scene.at_path(path).filter(|node| {
-                    matches!(node.kind, "TabBar" | "StandardListView" | "GridView")
-                        || node.kind == "TableView" && node.boolean("follow-current", false)
+                    matches!(
+                        node.kind,
+                        "TabBar" | "TabWidget" | "StandardListView" | "GridView"
+                    ) || node.kind == "TableView" && node.boolean("follow-current", false)
                 })?;
                 let item = layout.at_path(path)?;
                 let cells = ViewCells::new(view, item.bounds.width);
@@ -9996,7 +10482,7 @@ impl Interaction {
             .as_mut()
             .is_some_and(|popup| !popup.reconcile(scene, layout))
         {
-            self.choice = None;
+            Self::clear_choice(&mut self.choice);
         }
         self.reconcile_search_choice(scene, layout);
         self.reconcile_text_menu(scene, layout);
@@ -10029,6 +10515,15 @@ impl Interaction {
             } else {
                 self.set_split_hover(None);
             }
+        }
+        if let Some(handle) = &self.range_position_handle
+            && self.pressed.as_ref().and_then(|target| {
+                let (_, node) = slider_target(target, scene, layout)?;
+                node.range_position_handle.as_ref()
+            }) != Some(handle)
+        {
+            self.slider_fraction = None;
+            self.clear_range_preview();
         }
         self.publish_button_presses(scene, layout);
     }
@@ -10151,7 +10646,7 @@ impl Interaction {
             .or_else(|| self.active_dialog(layout))
             .unwrap_or_default();
         let boundary = scope.len();
-        let mut targets = focus_targets(scene, layout, scope);
+        let mut targets = focus_targets_with_reveal(scene, layout, scope, true);
         self.key_pressed = None;
         if targets.is_empty() {
             self.set_focus_with_reason(None, xrack_runtime::FocusReason::TabNavigation);
@@ -10195,7 +10690,15 @@ impl Interaction {
         let next = targets.swap_remove(index);
         let next = self
             .scope_focus
-            .entered_scope(scene, layout, self.focused.as_ref(), &next, boundary, true)
+            .entered_scope(
+                scene,
+                layout,
+                self.focused.as_ref(),
+                &next,
+                boundary,
+                true,
+                true,
+            )
             .map_or(next, |scope| {
                 self.scope_focus.choose(scene, layout, scope, reverse, true)
             });
@@ -10205,6 +10708,7 @@ impl Interaction {
                 .zip(layout.at_path(path))
                 .is_some_and(|(group, item)| self.reveal_tab(group, item, path, index))
         });
+        let revealed = self.reveal_focus_target(scene, layout, &next) || revealed;
         self.set_focus_with_reason(Some(next), xrack_runtime::FocusReason::TabNavigation);
         self.remember_focus_scope(scene, layout);
         revealed
@@ -10337,19 +10841,49 @@ impl Interaction {
         layout: &LayoutNode,
         target: Target,
         reason: xrack_runtime::FocusReason,
-    ) {
-        if !valid(&target, scene, layout)
+    ) -> bool {
+        let reveal = reason == xrack_runtime::FocusReason::Programmatic;
+        let target = if target
+            .node_in(scene)
+            .is_some_and(|node| node.kind == "RadioGroup")
+        {
+            let Some(target) = radio_group_focus(scene, layout, &target.path, reveal) else {
+                return false;
+            };
+            target
+        } else {
+            target
+        };
+        if !focus_reachable(&target, scene, layout, reveal)
             || self
                 .active_dialog(layout)
                 .is_some_and(|modal| !target.path.starts_with(modal))
         {
-            return;
+            return false;
         }
         self.remember_focus_scope(scene, layout);
-        let target = self.scope_focus.choose(scene, layout, target, false, false);
+        let target = self
+            .scope_focus
+            .choose_with_reveal(scene, layout, target, false, false, reveal);
+        let scrolled = reveal && self.reveal_focus_target(scene, layout, &target);
         self.tooltip.focus_source();
         self.set_focus_with_reason(Some(target), reason);
         self.remember_focus_scope(scene, layout);
+        scrolled
+    }
+
+    fn reveal_focus_target(&mut self, scene: &Node, layout: &LayoutNode, target: &Target) -> bool {
+        if target.text_link.is_some() {
+            return false;
+        }
+        let Some(rect) = scene
+            .at_path(&target.path)
+            .zip(layout.at_path(&target.path))
+            .and_then(|(node, item)| focus_hitbox(node, item))
+        else {
+            return false;
+        };
+        self.reveal_focus_in_viewports(scene, layout, &target.path, rect)
     }
 
     pub fn apply_focus_requests(
@@ -10372,58 +10906,92 @@ impl Interaction {
         layout: &LayoutNode,
         request: xrack_runtime::FocusRequest,
     ) -> Option<TextCommand> {
-        let modal = self.active_dialog(layout).unwrap_or_default();
-        let target = crate::focus_scope::handle_target(scene, layout, modal, &request.target)?;
-        match request.action {
-            xrack_runtime::FocusAction::Focus => self.focus_target_with_reason(
-                scene,
-                layout,
-                target,
-                xrack_runtime::FocusReason::Programmatic,
-            ),
-            xrack_runtime::FocusAction::Clear => {
-                let scope = scene
-                    .at_path(&target.path)
-                    .is_some_and(|node| node.kind == "FocusScope");
-                if self.focused.as_ref().is_some_and(|focused| {
-                    *focused == target || scope && focused.path.starts_with(&target.path)
-                }) {
-                    self.remember_focus_scope(scene, layout);
-                    self.set_focus_with_reason(None, xrack_runtime::FocusReason::Programmatic);
+        self.apply_focus_request_with_scroll(scene, layout, request)
+            .0
+    }
+
+    #[doc(hidden)]
+    pub fn apply_focus_request_with_scroll(
+        &mut self,
+        scene: &Node,
+        layout: &LayoutNode,
+        request: xrack_runtime::FocusRequest,
+    ) -> (Option<TextCommand>, bool) {
+        let mut scrolled = false;
+        let command = (|| {
+            let modal = self.active_dialog(layout).unwrap_or_default();
+            let reveal = matches!(request.action, xrack_runtime::FocusAction::Focus);
+            let target =
+                crate::focus_scope::handle_target(scene, layout, modal, &request.target, reveal)?;
+            match request.action {
+                xrack_runtime::FocusAction::Focus => {
+                    scrolled = self.focus_target_with_reason(
+                        scene,
+                        layout,
+                        target,
+                        xrack_runtime::FocusReason::Programmatic,
+                    );
+                }
+                xrack_runtime::FocusAction::Clear => {
+                    let scope = scene
+                        .at_path(&target.path)
+                        .is_some_and(|node| matches!(node.kind, "FocusScope" | "Loader" | "RadioGroup"));
+                    if self.focused.as_ref().is_some_and(|focused| {
+                        *focused == target || scope && focused.path.starts_with(&target.path)
+                    }) {
+                        self.remember_focus_scope(scene, layout);
+                        self.set_focus_with_reason(None, xrack_runtime::FocusReason::Programmatic);
+                    }
+                }
+                xrack_runtime::FocusAction::OpenChoice => {
+                    if scene
+                        .at_path(&target.path)
+                        .is_some_and(|node| node.kind == "ComboBox")
+                        && !self.choice_is_open_for(&target.path)
+                        && self.open_choice(scene, layout, target)
+                    {
+                        self.dismiss_menu();
+                    }
+                }
+                xrack_runtime::FocusAction::CloseChoice => {
+                    if self.choice_is_open_for(&target.path) {
+                        self.dismiss_choice();
+                    }
+                }
+                xrack_runtime::FocusAction::Text(command) => {
+                    let node = scene.interactive_at_path(&target.path)?;
+                    if self.focused.as_ref() != Some(&target)
+                        || !(is_text_input(node.kind) || combo_editable(node))
+                        || self.editor.as_ref().is_some_and(TextEdit::is_composing)
+                    {
+                        return None;
+                    }
+                    self.sync_editor(scene);
+                    return Some(command);
+                }
+                xrack_runtime::FocusAction::EditTableCell { row, column } => {
+                    let row = usize::try_from(row).ok()?;
+                    let column = usize::try_from(column).ok()?;
+                    let cell = table_cell_target(scene, layout, &target.path, row, column)?;
+                    self.begin_cell_edit(
+                        scene,
+                        layout,
+                        cell,
+                        xrack_runtime::FocusReason::Programmatic,
+                    );
+                }
+                xrack_runtime::FocusAction::CancelTableEdit => {
+                    if self.table_edit.as_ref().is_some_and(|edit| {
+                        table_cell_row(scene, &edit.target.path)
+                            .is_some_and(|(table, _)| table == target.path)
+                    }) {
+                        self.cancel_table_edit();
+                    }
                 }
             }
-            xrack_runtime::FocusAction::Text(command) => {
-                let node = scene.interactive_at_path(&target.path)?;
-                if self.focused.as_ref() != Some(&target)
-                    || !(is_text_input(node.kind) || combo_editable(node))
-                    || self.editor.as_ref().is_some_and(TextEdit::is_composing)
-                {
-                    return None;
-                }
-                self.sync_editor(scene);
-                return Some(command);
-            }
-            xrack_runtime::FocusAction::EditTableCell { row, column } => {
-                let row = usize::try_from(row).ok()?;
-                let column = usize::try_from(column).ok()?;
-                let cell = table_cell_target(scene, layout, &target.path, row, column)?;
-                self.begin_cell_edit(
-                    scene,
-                    layout,
-                    cell,
-                    xrack_runtime::FocusReason::Programmatic,
-                );
-            }
-            xrack_runtime::FocusAction::CancelTableEdit => {
-                if self.table_edit.as_ref().is_some_and(|edit| {
-                    table_cell_row(scene, &edit.target.path)
-                        .is_some_and(|(table, _)| table == target.path)
-                }) {
-                    self.cancel_table_edit();
-                }
-            }
-        }
-        None
+            None
+        })();
+        (command, scrolled)
     }
 
     pub fn apply_text_selection(&mut self, scene: &Node, command: TextCommand) {
@@ -10569,6 +11137,7 @@ impl Interaction {
         self.slider_offset = 0.0;
         self.slider_anchor = None;
         self.slider_fraction = None;
+        self.clear_range_preview();
         self.dial_pointer = None;
         self.spin_pressed = None;
         self.key_pressed = None;
@@ -10634,6 +11203,16 @@ impl Interaction {
             return;
         };
         self.finish_button_contact(source, false);
+        if handle.cancel_animation() {
+            self.button_press_events.push((
+                ButtonContact {
+                    source,
+                    target: target.clone(),
+                    handle: handle.clone(),
+                },
+                "canceled",
+            ));
+        }
         self.button_press_events.push((
             ButtonContact {
                 source,

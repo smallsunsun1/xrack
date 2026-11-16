@@ -139,7 +139,7 @@ void Document::index(Block &block, const AsmParserState &state,
     auto *target = owner(stringAttr(op, "owner"));
     if (target != component.getOperation())
       addUse(op, "owner", target);
-    if (isa<FocusTargetOp, FocusCommandOp, ScrollTargetOp>(op))
+    if (isa<FocusTargetOp, FocusCommandOp, ScrollTargetOp, PositionChildOp>(op))
       addUse(op, "target", owner(stringAttr(op, "target")));
     if (auto fill = dyn_cast<SplitFillOp>(op)) {
       auto &panes = cast<ElementOp>(op->getParentOp()).getBody().front();
@@ -152,6 +152,8 @@ void Document::index(Block &block, const AsmParserState &state,
     }
     if (isa<ActionGroupRefOp, RadioGroupRefOp, CheckGroupRefOp>(op))
       addUse(op, "group", owner(stringAttr(op, "group")));
+    if (isa<RadioCheckedOp, NavigationActiveOp>(op))
+      addUse(op, "value", owner(stringAttr(op, "value")));
 
     if (isa<ReadOp, AssignOp, CallOp, InvokeOp>(op)) {
       if (!op->getAttr("owner"))

@@ -58,8 +58,12 @@ struct SceneAnalysis {
         return;
       auto kind = element.getKind();
       auto name = binding.getName();
+      bool ordinaryButton = kind == "Button" || kind == "ToolButton" ||
+                            kind == "RoundButton" || kind == "DelayButton";
       if ((kind == "Rectangle" && name == "background") ||
-          (kind == "Text" && name == "color"))
+          (kind == "Text" && name == "color") ||
+          (ordinaryButton && (name == "primary" || name == "flat")) ||
+          ((kind == "DialogButton" || kind == "StandardButton") && name == "flat"))
         paintOnly.insert(binding);
     });
     module->walk([&](ElementOp element) {
@@ -320,8 +324,8 @@ struct PrecompileStaticPaths
     getOperation()->walk([&](BindOp binding) {
       clearMarker(binding, name);
       auto element = dyn_cast_or_null<ElementOp>(binding->getParentOp());
-      if (element && element.getKind() == "Path" &&
-          binding.getName() == "commands" &&
+      if (element && ((element.getKind() == "Path" && binding.getName() == "commands") ||
+                      (element.getKind() == "PathView" && binding.getName() == "path")) &&
           isa<StringType>(binding.getInput().getType()) &&
           binding.getInput().getDefiningOp<LiteralOp>())
         binding->setDiscardableAttr(name, marker);

@@ -151,7 +151,7 @@ pub(crate) fn project_text(
     let scroll = input.text_scroll(path);
     let size = text_system.map_or_else(|| font_size(node), |system| system.font_size(node));
     let rect = if combo_editable(node) {
-        ComboGeometry::with_layout_direction(rect, direction.unwrap_or_default()).entry
+        ComboGeometry::for_control(node, rect, direction.unwrap_or_default()).entry
     } else if node.kind == "SearchField" {
         xrack_layout::SearchGeometry::with_layout_direction(rect, direction.unwrap_or_default())
             .entry

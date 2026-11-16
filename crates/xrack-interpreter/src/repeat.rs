@@ -15,6 +15,17 @@ pub(crate) enum Model {
     Touches(xrack_runtime::TouchPoints),
 }
 
+impl Model {
+    pub(crate) fn move_row(&self, from: usize, to: usize) -> bool {
+        match self {
+            Self::Integers(rows) => rows.move_row(from, to),
+            Self::Strings(rows) => rows.move_row(from, to),
+            Self::Records(rows) => rows.model().move_row(from, to),
+            Self::Count(_) | Self::Touches(_) => false,
+        }
+    }
+}
+
 impl ListModel for Model {
     type Item = Value;
 
@@ -208,19 +219,7 @@ impl RepeatState {
             .repeat
             .as_ref()
             .ok_or_else(|| Error::Invalid("missing repeated template".into()))?;
-        let allocate = |context| {
-            owner.allocate_row(
-                template,
-                RowScope {
-                    owner: Rc::downgrade(&owner.0),
-                    root_key: template.key.clone(),
-                    item: repeat.item.clone(),
-                    index: repeat.index.clone(),
-                    context,
-                    sampled: false,
-                },
-            )
-        };
+        let allocate = |context| Self::allocate_row(owner, template, repeat, context);
         if !repeat.uses_row_identity {
             let column_window = matches!(template.visual, Visual::Builtin("TableRow"))
                 .then(|| self.display_rows.column_window(columns));
@@ -263,6 +262,41 @@ impl RepeatState {
                 }
             },
         )
+    }
+
+    fn allocate_row(
+        owner: &Instance,
+        template: &Element,
+        repeat: &Repeat,
+        context: xrack_runtime::RowContext<Value>,
+    ) -> Result<Instance> {
+        owner.allocate_row(
+            template,
+            RowScope {
+                owner: Rc::downgrade(&owner.0),
+                root_key: template.key.clone(),
+                item: repeat.item.clone(),
+                index: repeat.index.clone(),
+                context,
+                sampled: false,
+            },
+        )
+    }
+
+    pub(crate) fn prepare_loader(&self, owner: &Instance, template: &Element) -> Result<()> {
+        let repeat = template
+            .repeat
+            .as_ref()
+            .ok_or_else(|| Error::Invalid("missing Loader candidate".into()))?;
+        let model = self.row_model(owner, repeat)?;
+        self.rows.try_render_resolved_indices(
+            model.as_ref(),
+            0..1,
+            None,
+            |context| Self::allocate_row(owner, template, repeat, context),
+            |_, _, _, _, _| Ok(Node::hidden()),
+        )?;
+        Ok(())
     }
 
     pub fn row(

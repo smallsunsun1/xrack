@@ -5,9 +5,23 @@ pub use xrack_interpreter as interpreter;
 pub use xrack_layout as layout;
 pub use xrack_platform_winit as platform;
 pub use xrack_platform_winit::{
-    Desktop, DesktopTray, DesktopWindow, LocalTask, SpawnLocalError, TaskCancelled, run,
-    run_desktop, spawn_local,
+    Desktop, DesktopTray, DesktopWindow, LocalTask, SpawnLocalError, TaskCancelled, spawn_local,
 };
+#[cfg(not(feature = "interpreter"))]
+pub use xrack_platform_winit::{run, run_desktop};
+
+#[cfg(feature = "interpreter")]
+pub fn run<C: xrack_runtime::Component + 'static>(component: C) -> Result<(), String> {
+    xrack_interpreter::install_external_loader();
+    xrack_platform_winit::run(component)
+}
+
+#[cfg(feature = "interpreter")]
+pub fn run_desktop(setup: impl FnOnce(&Desktop) -> Result<(), String>) -> Result<(), String> {
+    xrack_interpreter::install_external_loader();
+    xrack_platform_winit::run_desktop(setup)
+}
+
 pub use xrack_renderer_femtovg as renderer;
 pub use xrack_runtime as runtime;
 pub use xrack_runtime::*;

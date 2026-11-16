@@ -14,6 +14,7 @@ rust_test(
         "//conditions:default": [],
     }),
     data = [
+        "//examples/controls:controls.xr",
         "//examples/form:form.xr",
         "//examples/form:widgets.xr",
         "//examples/layout:bundled_sources",
@@ -123,6 +124,49 @@ rust_test(
         "//crates/xrack-layout:xrack_layout",
         "//crates/xrack-runtime:xrack_runtime",
         "//examples/slots:slots_ui",
+    ],
+)
+
+xr_ui_library(
+    name = "loader_ui",
+    src = "loader.xr",
+)
+
+rust_test(
+    name = "loader_test",
+    size = "small",
+    srcs = [
+        "loader_test.rs",
+        "ui_driver.rs",
+    ],
+    compile_data = ["loader.xr"],
+    edition = "2024",
+    deps = [
+        ":loader_ui",
+        "//crates/xrack-compiler:xrack_compiler",
+        "//crates/xrack-interpreter:xrack_interpreter",
+        "//crates/xrack-layout:xrack_layout",
+        "//crates/xrack-runtime:xrack_runtime",
+    ],
+)
+
+xr_ui_library(
+    name = "dynamic_children_ui",
+    src = "dynamic_children.xr",
+)
+
+rust_test(
+    name = "dynamic_children_test",
+    size = "small",
+    srcs = ["dynamic_children_test.rs", "ui_driver.rs"],
+    compile_data = ["dynamic_children.xr"],
+    edition = "2024",
+    deps = [
+        ":dynamic_children_ui",
+        "//crates/xrack-compiler:xrack_compiler",
+        "//crates/xrack-interpreter:xrack_interpreter",
+        "//crates/xrack-layout:xrack_layout",
+        "//crates/xrack-runtime:xrack_runtime",
     ],
 )
 

@@ -10,6 +10,10 @@ fn main() -> std::process::ExitCode {
         }
         Some("--action-groups") => xrack_platform_winit::run(ActionGroupDemo::new()),
         Some("--round-tools") => xrack_platform_winit::run(RoundToolbarDemo::new()),
+        Some("--button-display") => xrack_platform_winit::run(menu_ui::ButtonDisplayDemo::new()),
+        Some("--button-appearance") => {
+            xrack_platform_winit::run(menu_ui::ButtonAppearanceDemo::new())
+        }
         _ => xrack_platform_winit::run(MenuDemo::new()),
     };
     match result {

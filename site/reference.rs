@@ -1,7 +1,14 @@
 use pulldown_cmark::{CowStr, Event, Options, Parser, Tag, html};
 use std::{collections::BTreeSet, fmt::Write};
-use xrack_ir::semantic::{builtin_event, builtin_property, event_parameters, event_return_type};
+use xrack_ir::semantic::{
+    builtin_event, builtin_property, combo_state_property, event_parameters, event_return_type,
+    media_object_read_type, visual_template_inputs,
+};
 use xrack_syntax::ast::Span;
+use xrack_syntax::builtins::{
+    POSITION_CHILD_METHOD, VIEWPORT_MOVE_METHODS, media_methods, navigation_move_methods,
+    scroll_bar_methods,
+};
 
 const TEMPLATE: &str = include_str!("reference-template.html");
 const ELEMENT_SOURCE: &str = include_str!("../crates/xrack-syntax/src/builtins.rs");
@@ -79,19 +86,63 @@ fn controls() -> Result<String, Box<dyn std::error::Error>> {
         )?;
         let mut fields = properties
             .iter()
-            .filter_map(|property| builtin_property(kind, property).map(|ty| (*property, ty)))
+            .filter_map(|&property| {
+                builtin_property(kind, property)
+                    .or_else(|| media_object_read_type(kind, property))
+                    .or_else(|| combo_state_property(kind, property))
+                    .map(|ty| (property, ty))
+            })
             .peekable();
         if fields.peek().is_some() {
             rendered.push_str("<h3>属性</h3><table><thead><tr><th scope=\"col\">名称</th><th scope=\"col\">类型</th></tr></thead><tbody>");
             for (property, ty) in fields {
                 writeln!(
                     rendered,
-                    "<tr><td><code>{}</code></td><td><code>{}</code></td></tr>",
+                    "<tr><td><code>{}</code>{}</td><td><code>{}</code></td></tr>",
                     escape(property),
-                    escape(&ty.name())
+                    if media_object_read_type(kind, property).is_some()
+                        || property == "acceptable-input"
+                        || xrack_ir::semantic::scroll_view_bar_metric(kind, property)
+                        || xrack_ir::semantic::scroll_visual_property(kind, property)
+                        || xrack_ir::semantic::scroll_state_property(kind, property)
+                        || xrack_ir::semantic::flick_motion_property(kind, property).is_some()
+                        || xrack_ir::semantic::range_position_property(kind, property)
+                        || xrack_ir::semantic::combo_popup_property(kind, property).is_some()
+                        || property == "count" && xrack_syntax::builtins::navigation_group(kind)
+                        || kind == "ComboBox" && matches!(property, "count" | "current-text")
+                        || matches!(kind, "Tumbler" | "PathView") && property == "current-text"
+                    {
+                        "（只读）"
+                    } else {
+                        ""
+                    },
+                    if matches!(kind, "ComboBox" | "Tumbler" | "PathView")
+                        && property == "current-value"
+                    {
+                        "由 value-role 决定".into()
+                    } else if matches!(kind, "Tumbler" | "PathView") && property == "model" {
+                        "[string] 或记录列表".into()
+                    } else {
+                        escape(&ty.name())
+                    }
                 )?;
             }
             rendered.push_str("</tbody></table>");
+        }
+        if let Some(parameters) = visual_template_inputs(kind) {
+            rendered.push_str("<h3>模板参数</h3><ul>");
+            for (name, ty) in parameters {
+                write!(
+                    rendered,
+                    "<li><code>{}</code> · {}</li>",
+                    escape(name),
+                    escape(&ty.name())
+                )?;
+            }
+            if matches!(kind, "ComboOption" | "TumblerOption" | "PathViewOption") {
+                rendered.push_str("<li><code>option-data</code> · 由模型项类型决定</li>");
+            }
+            rendered.push_str("</ul>");
         }
         let mut callbacks = events
             .iter()
@@ -117,6 +168,29 @@ fn controls() -> Result<String, Box<dyn std::error::Error>> {
                     escape(event),
                     escape(&args),
                     escape(&result)
+                )?;
+            }
+            rendered.push_str("</ul>");
+        }
+        let viewport_methods = if xrack_ir::semantic::viewport_kind(kind) {
+            VIEWPORT_MOVE_METHODS
+        } else {
+            &[]
+        };
+        let mut methods = media_methods(kind)
+            .iter()
+            .chain(scroll_bar_methods(kind))
+            .chain(viewport_methods)
+            .chain(navigation_move_methods(kind))
+            .chain(xrack_ir::semantic::content_viewport(kind).then_some(&POSITION_CHILD_METHOD))
+            .peekable();
+        if methods.peek().is_some() {
+            rendered.push_str("<h3>方法</h3><ul>");
+            for method in methods {
+                writeln!(
+                    rendered,
+                    "<li><code>{}</code></li>",
+                    escape(&method.signature())
                 )?;
             }
             rendered.push_str("</ul>");

@@ -388,10 +388,12 @@ impl Loader<'_> {
 }
 
 fn rewrite_record_type(ty: &mut ast::Type, names: &BTreeMap<String, String>) {
-    if let ast::Type::Record(name) | ast::Type::RecordList(name) = ty
-        && let Some(symbol) = names.get(name.as_ref())
-    {
-        *name = symbol.as_str().into();
+    if let ast::Type::Record(name) | ast::Type::RecordList(name) = ty {
+        if let Some(symbol) = names.get(name.as_ref()) {
+            *name = symbol.as_str().into();
+        } else if let Some(symbol) = name.strip_suffix("Handle").and_then(|base| names.get(base)) {
+            *name = crate::dynamic::handle_type(symbol).into();
+        }
     }
 }
 

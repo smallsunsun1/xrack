@@ -6,6 +6,12 @@
 
 `ScrollView`、列表、虚拟网格、树和表格在内容溢出时显示可拖动的纵向滚动条。`ScrollView` 和表格也提供横向滚动条。拖动滑块定位，点击轨道按视口大小翻页。滚动条覆盖在内容边缘并共享滚轮的滚动位置，表头与表身继续同步。可通过 `vertical-scroll-bar-policy` 和 `horizontal-scroll-bar-policy` 设置各滚动轴的 `as-needed`、`always-on` 或 `always-off`。拖动滚动条保留当前焦点，虚拟视图继续只创建视口内的行。
 
+在 `ScrollView` 上设置 `reserve-scroll-bar-space: true;` 可为内建滚动条预留空间。视口、内容裁剪、翻页距离和附着滚动条都使用扣除预留区后的矩形。布局一起判断两个轴的策略，并在某一轴占用空间后重新测量另一个轴。默认采用覆盖式滚动条。只读的 `effective-scroll-bar-width` 和 `effective-scroll-bar-height` 分别报告纵向与横向内建滚动条的厚度，未显示时为零。开启预留空间时，`visible-width` 和 `visible-height` 报告扣除预留区后的视口尺寸。运行 `bazel run //examples/list:list -- --scroll-gutters`，可切换预留区、RTL 和固定内容宽度。
+
+使用 Tab、Shift+Tab 或控件的 `.focus()` 进入 `ScrollView` 中的控件时，容器会自动把目标滚入可见区域。嵌套视口从内到外处理，扣除滚动条预留空间，并沿逻辑方向写回滚动绑定。可用 `auto-reveal-focus: false;` 关闭当前视口的自动滚动。低层 `Flickable` 可用 `auto-reveal-focus: true;` 启用。运行 `bazel run //examples/list:list -- --scroll-focus`，可用 Tab 或 **Focus last field** 定位嵌套视口中的输入框。
+
+`ScrollView` 和 `Flickable` 可在回调中调用 `view.position-view-at-child(field, ScrollAlignment.contain, ScrollAlignment.center)`。首个参数是同一组件里已声明的后代 ID，两个对齐参数各自沿逻辑轴解释。命令在布局更新后定位，先揭示嵌套视口中的目标，再对齐指定视口。可和 `scroll-to()` 或 `scroll-by()` 在同一回调里按顺序组合，并通过滚动绑定观察结果。运行 `--scroll-focus` 示例的 **Center last field** 可单独定位输入框。
+
 RTL 下，内建纵向滚动条放在左侧，`ScrollView` 和 `Flickable` 的横向起点在右侧。内建和附着的横向滑块也从右向左移动。物理方向的滚轮、拖动和无障碍动作仍按屏幕坐标操作，嵌套的 LTR 视口也可在同一次手势中接收剩余位移。运行 `bazel run //examples/list:list -- --rtl-scroll`，可切换方向并对照画布、滚动条和网格。
 
 `ScrollBar { target: canvas; orientation: horizontal; }` 和 `ScrollIndicator { target: canvas; }` 可以在视口外独立布局，`target` 引用同组件中的视口 ID。方向默认为纵向，`policy` 默认为 `as-needed`，也可设为 `always-on` 或 `always-off`。滚动条支持鼠标、触摸、Tab 焦点、方向键、PageUp/PageDown、Home/End 和原生无障碍操作。指示器只绘制滑块，指针事件可以穿过它。内建滚动条、外置滚动条和指示器共享视口偏移，用户移动外置滚动条时照常写回 `content-x/y` 绑定并触发 `scrolled()`。运行 `bazel run //examples/list:list -- --scroll-bars` 体验。
@@ -14,7 +20,17 @@ RTL 下，内建纵向滚动条放在左侧，`ScrollView` 和 `Flickable` 的�
 
 省略 `target` 即可使用独立滚动控件。`size` 是可见部分占总内容的比例，取值为 `0..1`，`position` 的有效范围为 `0..1-size`。用 `position <=> root.offset` 接收滚动条输入，或者在表达式中读取 `bar.position` 和 `bar.size` 来移动自定义内容或驱动指示器。`size` 改变时，有效位置会重新夹紧，原绑定值会保留。用户移动滑块时会写回位置并触发 `changed(position)`。`step-size` 控制方向键和无障碍增减的步长，默认 `0.1`。两种模式都支持 `minimum-size` 设置最小滑块比例，滚动条可用 `interactive: false` 切换为被动显示。运行 `bazel run //examples/list:list -- --standalone-scroll` 体验。
 
+两种模式的 `ScrollBar` 和 `ScrollIndicator` 都提供只读的 `visual-position` 和 `visual-size`。它们分别是滑块的物理起点和长度，占实际轨道的比例，包含 `minimum-size` 及默认的最小像素尺寸。横排 RTL 从左侧量起，因此逻辑滚动起点对应轨道右端。尚未布局、显示策略隐藏滑块或附着视口被隐藏时，这两个读数均为零。可把它们绑定到固定尺寸的读数标签或其他绘制属性。运行 `bazel run //examples/list:list -- --scroll-visual-metrics`，拖动滚动条并切换 RTL 可对比附着滚动条与独立指示器。
+
+在 `ScrollBar` 或 `ScrollIndicator` 内可分别声明一个 `ScrollTrack` 和一个 `ScrollThumb`。框架按实际轨道和滑块矩形摆放、裁剪部件，内部可以放文本、路径和其他绘制子项。部件根的边界由父控件分配，子项仍可用百分比和普通布局。只替换其中一个部件时，另一部分沿用默认外观。鼠标、触摸、键盘和辅助技术继续操作父控件。用 `--scroll-visual-metrics` 示例拖动自定义滑块并切换 RTL，可看到外观、读数和命中位置一起移动。
+
+`ScrollBar` 的只读 `pressed` 和 `hovered` 反映当前滑块或轨道的按压与鼠标悬停。触摸按压会更新 `pressed` 和 `active`。`ScrollBar` 和 `ScrollIndicator` 的只读 `active` 在捕获按压、悬停或对应轴的实际滚动偏移变化时亮起。偏移停止变化后再保留 180 毫秒，滚轮、键盘和程序定位都遵循这条规则。隐藏、禁用或没有可滚动范围时会清除状态。将 `ScrollThumb.opacity` 配合 `animate opacity` 绑定到这些状态可以实现按压反馈和淡出。运行 `--scroll-visual-metrics` 并勾选 **Fade** 试用。
+
 两种滚动条都支持 `snap-mode: ScrollSnapMode.always` 和 `ScrollSnapMode.on-release`，默认值是 `none`。设置正的 `step-size` 后，滑块拖动按可移动行程的比例吸附，起点和终点始终可达。附着式滚动条的方向键和无障碍增减会把显式 `step-size` 换算为总内容长度的比例，省略时仍以 28 逻辑像素为步长。轨道点击保留翻页行为，滚轮和程序定位继续使用视口偏移。取消拖动时保留已经提交的位置。可在 `--standalone-scroll` 示例中勾选 **Snap on release** 体验。
+
+`ScrollBar.increase()` 和 `decrease()` 按 `step-size` 向逻辑末端或起点移动一步。独立滚动条立即更新 `position` 及双向绑定，默认步长是总内容比例的 0.1。附着滚动条在布局更新后移动目标视口，默认步长为 28 逻辑像素，显式步长使用总内容比例。RTL 下逻辑方向沿内容阅读方向。程序可操作 `interactive: false` 的滚动条，通过绑定观察变化。
+
+视口的 `scroll-by(dx, dy)` 接收带符号的逻辑像素增量，正值朝对应轴的末端移动。它和 `scroll-to`、附着滚动条步进按回调里的调用顺序执行，每次使用此前已提交的位置并限制到可滚动范围。程序命令通过绑定发布位置，`changed(position)` 和 `scrolled()` 留给鼠标、键盘等直接输入。运行 `--scroll-visual-metrics` 示例，切换 RTL 并试用两个步进按钮和 **Batch move**。
 
 `ScrollView` 根据直接子项的位置和布局尺寸计算内容范围。`content-width` 和 `content-height` 可以用长度或视口百分比指定最小内容尺寸。子项的百分比尺寸以显式内容尺寸或视口为基准。`viewport-height` 仍可用于既有的最小内容高度绑定。`Shift` 加滚轮可横向滚动，嵌套视图会将各轴剩余滚动量交给外层。运行 `bazel run //examples/layout:layout` 可体验二维画布。
 
@@ -88,11 +104,11 @@ RTL 下，内建纵向滚动条放在左侧，`ScrollView` 和 `Flickable` 的�
 
 `ApplicationWindow` 是可直接运行的窗口根元素，沿用 `Window` 的主题、标题、尺寸和关闭回调。直接声明的 `MenuBar`、`PageHeader` 和 `PageFooter` 各最多一个，依次放在窗口顶部、菜单栏下方和底部。正文位于剩余区域，`padding` 及四边覆盖只作用于正文。`available-width/height` 发布实际正文尺寸，正文子项可用百分比填满。正文滚动时，菜单栏、页眉和页脚保持固定，弹层仍以窗口为范围。Tab 和无障碍按菜单栏、页眉、正文、页脚遍历。运行 `bazel run //examples/navigation:navigation -- --application-window` 可试用。
 
-`SwipeView` 的直接子元素为静态 `SwipePage`。用 `current-index <=> root.page;` 双向绑定声明顺序中的页索引，通过 `orientation` 选择横向或纵向。可用触摸、中键拖动或聚焦后按方向键切页，Home 和 End 跳到首尾可用页。手势在松手时切页，页内同轴滚动优先，滚到边界后下一次滑动可以切页。`interactive: false;` 暂停手势和键盘切页，应用仍可写入页索引。
+`SwipeView` 可以直接声明多个 `SwipePage`，也可以用一个 `for … : SwipePage` 从模型生成页面。用 `current-index <=> root.page;` 双向绑定页索引，或者给页面声明 `value`，再用 `current-value` 与标签栏共用业务标识。重复页面只创建当前页内的组件，已访问页面的局部状态随模型行保留。
 
-隐藏或禁用的页面在导航中跳过。索引不可用时显示首个可用页，用户切页后才写入新索引并触发 `changed(index)`。只有当前页的内容参与场景求值，页面里的组件状态会保留。运行 `bazel run //examples/navigation:navigation` 可体验。
+通过 `orientation` 选择横向或纵向。可用触摸、中键拖动或聚焦后按方向键切页，Home 和 End 跳到首尾可用页。手势在松手时切页，页内同轴滚动优先，滚到边界后下一次滑动可以切页。`interactive: false;` 暂停手势和键盘切页，应用仍可更新选择。导航跳过隐藏或禁用的页面。按索引选择时，索引不可用会显示首个可用页。按值选择时，未匹配到可用页会保留值并显示空页。用户切页会写回选择并触发 `changed(index)`。运行 `bazel run //examples/navigation:navigation -- --model-swipe` 可体验。
 
-`PageIndicator` 用 `count` 和 `current-index` 表示页数与当前页。它可以独立使用，也可以和 `SwipeView` 双向绑定到同一个页索引。设置 `interactive: true;` 后可点击点位，或聚焦后用方向键和 Home / End 切页，用户切页触发 `changed(index)`。`orientation` 控制横排或竖排，`dot-size`、`spacing`、`color` 和 `current-color` 控制外观。空间不足时，点位围绕当前页显示一段连续索引，最多绘制 64 个点，两端缩小的点提示还有页。点击仍使用点位对应的原始页索引。
+`PageIndicator` 用 `count` 和 `current-index` 表示页数与当前页。可以直接绑定 `SwipeView.count` 或 `TabWidget.count`，也可以和索引选择模式的 `SwipeView` 双向绑定到同一个页索引。设置 `interactive: true;` 后可点击点位，或聚焦后用方向键和 Home / End 切页，用户切页触发 `changed(index)`。`orientation` 控制横排或竖排，`dot-size`、`spacing`、`color` 和 `current-color` 控制外观。空间不足时，点位围绕当前页显示一段连续索引，最多绘制 64 个点，两端缩小的点提示还有页。点击仍使用点位对应的原始页索引。
 
 ## 列表、树和重复组件
 

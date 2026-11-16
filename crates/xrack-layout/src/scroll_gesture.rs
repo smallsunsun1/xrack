@@ -34,6 +34,7 @@ pub(crate) struct DragMotion {
     point: Point,
     updated: Instant,
     velocity: Point,
+    samples: u8,
     pub(crate) dragging: bool,
 }
 
@@ -43,6 +44,7 @@ impl DragMotion {
             point,
             updated: now,
             velocity: Point::default(),
+            samples: 0,
             dragging: false,
         }
     }
@@ -74,6 +76,7 @@ impl DragMotion {
             };
             self.velocity.x = smooth(self.velocity.x, delta.x);
             self.velocity.y = smooth(self.velocity.y, delta.y);
+            self.samples = self.samples.saturating_add(1);
         }
         self.point = point;
         self.updated = now;
@@ -88,14 +91,22 @@ impl DragMotion {
         }
     }
 
+    fn recent_velocity(&self, now: Instant) -> Option<Point> {
+        (self.dragging && now.saturating_duration_since(self.updated) <= Duration::from_millis(85))
+            .then_some(self.velocity)
+    }
+
+    pub(crate) fn measured_release_velocity(&self, now: Instant) -> Option<Point> {
+        // Use at least two motion samples to distinguish a flick from one coalesced move.
+        (self.samples >= 2).then_some(())?;
+        self.recent_velocity(now)
+    }
+
     pub(crate) fn finish(self, now: Instant, axes: [bool; 2]) -> Option<FlingMotion> {
-        if !self.dragging || now.saturating_duration_since(self.updated) > Duration::from_millis(85)
-        {
-            return None;
-        }
+        let measured = self.recent_velocity(now)?;
         let velocity = Point {
-            x: if axes[0] { self.velocity.x } else { 0.0 },
-            y: if axes[1] { self.velocity.y } else { 0.0 },
+            x: if axes[0] { measured.x } else { 0.0 },
+            y: if axes[1] { measured.y } else { 0.0 },
         };
         let mut motion = FlingMotion {
             velocity,

@@ -20,6 +20,7 @@ pub struct UiDriver<C, T> {
     viewport: Size,
     scroll_requests: ScrollRequests,
     viewport_observers: ViewportObservers,
+    focus_requests: xrack_runtime::FocusRequests,
 }
 
 impl<C: Component, T: TextMeasurer> UiDriver<C, T> {
@@ -35,7 +36,8 @@ impl<C: Component, T: TextMeasurer> UiDriver<C, T> {
         input.reconcile(&scene, &layout);
         let mut viewport_observers = ViewportObservers::default();
         viewport_observers.sync(&scene, &layout);
-        Self {
+        viewport_observers.sync_scroll_activity(&scene, &layout, &input, std::time::Instant::now());
+        let mut driver = Self {
             component,
             text,
             input,
@@ -44,7 +46,20 @@ impl<C: Component, T: TextMeasurer> UiDriver<C, T> {
             viewport,
             scroll_requests: ScrollRequests::default(),
             viewport_observers,
+            focus_requests: xrack_runtime::FocusRequests::default(),
+        };
+        driver.dispatch_loader_events();
+        if driver.component.scene_dirty() {
+            driver.prepare();
         }
+        driver
+    }
+
+    fn dispatch_loader_events(&mut self) {
+        let _focus = self.focus_requests.enter();
+        xrack_runtime::dispatch_loader_events(&mut self.component, &self.scene);
+        self.input
+            .apply_focus_requests(&self.scene, &self.layout, self.focus_requests.drain());
     }
 
     fn prepare(&mut self) {
@@ -61,6 +76,7 @@ impl<C: Component, T: TextMeasurer> UiDriver<C, T> {
     fn refresh(&mut self) {
         let _scroll = self.scroll_requests.enter();
         self.prepare();
+        self.dispatch_loader_events();
         let scrolled = self.input.take_scroll_events(&self.scene, &self.layout);
         if self
             .input
@@ -69,12 +85,27 @@ impl<C: Component, T: TextMeasurer> UiDriver<C, T> {
             self.prepare();
         }
         self.viewport_observers.sync(&self.scene, &self.layout);
+        self.viewport_observers.sync_scroll_activity(
+            &self.scene,
+            &self.layout,
+            &self.input,
+            std::time::Instant::now(),
+        );
         for event in scrolled {
             event.apply(&mut self.component, &self.scene);
         }
         if self.component.scene_dirty() {
             self.prepare();
         }
+    }
+
+    pub fn finish_loader_frame(&mut self) -> bool {
+        if !xrack_runtime::finish_loader_frame(&self.scene) {
+            return false;
+        }
+        self.refresh();
+        self.dispatch_loader_events();
+        true
     }
 
     pub fn update(&mut self, update: impl FnOnce(&mut C)) {
@@ -263,7 +294,7 @@ impl<C: Component, T: TextMeasurer> UiDriver<C, T> {
         &self.input
     }
 
-    fn path(&self, id: &str) -> Vec<usize> {
+    pub(crate) fn path(&self, id: &str) -> Vec<usize> {
         fn locate(node: &Node, id: &str, path: &mut Vec<usize>, found: &mut Option<Vec<usize>>) {
             if node.element_id() == Some(id) {
                 assert!(
@@ -280,6 +311,14 @@ impl<C: Component, T: TextMeasurer> UiDriver<C, T> {
         let mut found = None;
         locate(&self.scene, id, &mut Vec::new(), &mut found);
         found.unwrap_or_else(|| panic!("unknown UI target {id:?}"))
+    }
+
+    pub fn bounds(&self, id: &str) -> xrack_layout::Rect {
+        self.layout.at_path(&self.path(id)).unwrap().bounds
+    }
+
+    pub fn layout_at(&self, path: &[usize]) -> Option<&LayoutNode> {
+        self.layout.at_path(path)
     }
 
     pub fn node(&self, id: &str) -> &Node {

@@ -4399,6 +4399,7 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.21",
+ "xrack-ir",
  "xrack-mlir",
  "xrack-parser",
  "xrack-resources",
@@ -4422,6 +4423,7 @@ version = "0.6.0"
 dependencies = [
  "unicode-bidi",
  "unicode-segmentation",
+ "xrack-assets",
  "xrack-runtime",
 ]
 

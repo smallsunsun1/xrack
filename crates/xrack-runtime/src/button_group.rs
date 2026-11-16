@@ -73,6 +73,67 @@ impl ButtonGroupSelection {
             Self::Value(current) => current == value,
         }
     }
+
+    /// Search one declaration's slots, preserving their position even when
+    /// a slot is hidden. Index selection only reads the requested option.
+    #[doc(hidden)]
+    pub fn try_select_radio_option<E, Label: AsRef<str>>(
+        &mut self,
+        count: usize,
+        mut option: impl FnMut(usize, bool) -> Result<Option<Label>, E>,
+    ) -> Result<Option<usize>, E> {
+        match self {
+            Self::Index(remaining) => {
+                let Some(index) = usize::try_from(*remaining).ok() else {
+                    return Ok(None);
+                };
+                if index >= count {
+                    *remaining -= count as i64;
+                    return Ok(None);
+                }
+                *remaining = -1;
+                Ok(option(index, false)?.map(|_| index))
+            }
+            Self::Value(value) => {
+                for index in 0..count {
+                    if option(index, true)?.is_some_and(|label| label.as_ref() == value.as_str()) {
+                        return Ok(Some(index));
+                    }
+                }
+                Ok(None)
+            }
+        }
+    }
+
+    #[doc(hidden)]
+    pub fn select_radio_option<Label: AsRef<str>>(
+        &mut self,
+        count: usize,
+        mut option: impl FnMut(usize, bool) -> Option<Label>,
+    ) -> Option<usize> {
+        self.try_select_radio_option(count, |index, label| {
+            Ok::<_, std::convert::Infallible>(option(index, label))
+        })
+        .unwrap_or_else(|never| match never {})
+    }
+}
+
+#[doc(hidden)]
+pub fn toggled_button_group_index(current: i64, option: usize) -> i64 {
+    let option = option as i64;
+    if current == option { -1 } else { option }
+}
+
+#[doc(hidden)]
+pub fn toggled_button_group_value(current: &str, option: String) -> Option<String> {
+    if option.is_empty() {
+        return None;
+    }
+    Some(if current == option {
+        String::new()
+    } else {
+        option
+    })
 }
 
 /// Sample the group in scene construction order.
@@ -134,7 +195,11 @@ pub fn try_prepare_button_group_option<E>(
     if !input.is_current() || value != radio_value(node) {
         return Ok(None);
     }
-    let unchanged = current()?.matches(member.index, &value);
+    let current = current()?;
+    if matches!(&current, ButtonGroupSelection::Value(_)) && value.is_empty() {
+        return Ok(None);
+    }
+    let unchanged = current.matches(member.index, &value);
     Ok(input
         .is_current()
         .then_some((member.index, value, !unchanged)))
@@ -304,12 +369,14 @@ fn bind_group(
         Some(ButtonGroupSelection::Index(index)) => usize::try_from(index)
             .ok()
             .filter(|&index| index < paths.len()),
-        Some(ButtonGroupSelection::Value(value)) => paths.iter().position(|path| {
-            scene.at_path(path).is_some_and(|node| {
-                (node.kind == "RadioButton" || push_button(node)) && radio_value(node) == value
+        Some(ButtonGroupSelection::Value(value)) if !value.is_empty() => {
+            paths.iter().position(|path| {
+                scene.at_path(path).is_some_and(|node| {
+                    (node.kind == "RadioButton" || push_button(node)) && radio_value(node) == value
+                })
             })
-        }),
-        None => None,
+        }
+        Some(ButtonGroupSelection::Value(_)) | None => None,
     };
     let group = Rc::new(ButtonGroup {
         key,

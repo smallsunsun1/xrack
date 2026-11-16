@@ -114,11 +114,17 @@ fn collect_path(
     has_plan: &impl Fn(&str) -> bool,
     paths: &mut BTreeMap<String, EmbeddedPath>,
 ) -> Result<(), String> {
-    if op.name() != "xr.element" || op.attr("kind")? != "Path" {
+    if op.name() != "xr.element" {
         return Ok(());
     }
+    let kind = op.attr("kind")?;
+    let property = match kind {
+        "Path" => "commands",
+        "PathView" => "path",
+        _ => return Ok(()),
+    };
     for binding in op.children() {
-        if binding.name() != "xr.bind" || binding.attr("name")? != "commands" {
+        if binding.name() != "xr.bind" || binding.attr("name")? != property {
             continue;
         }
         let Some(literal) = binding
@@ -138,7 +144,7 @@ fn collect_path(
             let span = binding.span();
             let source = binding.source_file().unwrap_or(filename);
             format!(
-                "{source}:{}:{}: invalid Path commands: {error}",
+                "{source}:{}:{}: invalid {kind} {property}: {error}",
                 span.line, span.column
             )
         })?;

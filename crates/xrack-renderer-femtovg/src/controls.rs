@@ -1,5 +1,5 @@
 use crate::{
-    TextSystem, color,
+    TextSystem, brush_paint, color,
     image::Images,
     theme::{Palette, PaletteRole as Role},
 };
@@ -225,16 +225,14 @@ pub(crate) fn page_indicator(
     }
 }
 
-pub(crate) fn tumbler(
+pub(crate) fn tumbler_background(
     canvas: &mut Canvas<WGPURenderer>,
-    text: &TextSystem,
     theme: Palette,
-    node: &Node,
     wheel: &xrack_layout::TumblerGeometry,
     enabled: bool,
-) -> Result<(), String> {
+) {
     if wheel.rows.is_empty() {
-        return Ok(());
+        return;
     }
     fill(
         canvas,
@@ -246,39 +244,48 @@ pub(crate) fn tumbler(
             theme.disabled
         },
     );
-    for row in &wheel.rows {
-        let size = text
-            .font_size(node)
-            .min((row.bounds.height * 0.64).max(1.0));
-        let mut tint = color(if enabled {
-            let foreground = if row.displacement.abs() < 0.5 {
-                theme.on_accent(theme.text)
-            } else {
-                theme.text
-            };
-            node.color("color").unwrap_or(foreground)
+}
+
+pub(crate) fn tumbler_row(
+    canvas: &mut Canvas<WGPURenderer>,
+    text: &TextSystem,
+    theme: Palette,
+    node: &Node,
+    row: &xrack_layout::TumblerRow,
+    enabled: bool,
+) -> Result<(), String> {
+    let size = text
+        .font_size(node)
+        .min((row.bounds.height * 0.64).max(1.0));
+    let mut tint = color(if enabled {
+        let foreground = if row.displacement.abs() < 0.5 {
+            theme.on_accent(theme.text)
         } else {
-            theme.disabled_text
-        });
-        tint.a *= (1.0 - 0.22 * row.displacement.abs()).max(0.38);
-        let paint = text.paint_node_at_size(node, size, tint, true);
-        canvas.save();
-        canvas.intersect_scissor(
-            row.bounds.x + 4.0,
-            row.bounds.y,
-            (row.bounds.width - 8.0).max(0.0),
-            row.bounds.height,
-        );
-        let result = canvas.fill_text(
-            row.bounds.x + row.bounds.width * 0.5,
-            row.bounds.y + ((row.bounds.height - size * 1.4) * 0.5).max(0.0),
-            &row.label,
-            &paint,
-        );
-        canvas.restore();
-        result.map_err(|error| format!("tumbler label drawing failed: {error}"))?;
-    }
-    Ok(())
+            theme.text
+        };
+        node.color("color").unwrap_or(foreground)
+    } else {
+        theme.disabled_text
+    });
+    tint.a *= (1.0 - 0.22 * row.displacement.abs()).max(0.38);
+    let paint = text.paint_node_at_size(node, size, tint, true);
+    canvas.save();
+    canvas.intersect_scissor(
+        row.bounds.x + 4.0,
+        row.bounds.y,
+        (row.bounds.width - 8.0).max(0.0),
+        row.bounds.height,
+    );
+    let result = canvas.fill_text(
+        row.bounds.x + row.bounds.width * 0.5,
+        row.bounds.y + ((row.bounds.height - size * 1.4) * 0.5).max(0.0),
+        &row.label,
+        &paint,
+    );
+    canvas.restore();
+    result
+        .map(|_| ())
+        .map_err(|error| format!("tumbler label drawing failed: {error}"))
 }
 
 pub(crate) fn split_handle(
@@ -412,7 +419,14 @@ pub(crate) fn menu_panel(
                 .clamp(1.0, (rect.height / 1.4).max(1.0));
             let paint = text.paint_node_at_size(row.node, size, color(tint), false);
             if let Some(image) = &row.icon {
-                images.draw_icon(canvas, image, panel.icon_bounds(slot), scale, row.enabled)?;
+                images.draw_icon(
+                    canvas,
+                    image,
+                    panel.icon_bounds(slot),
+                    scale,
+                    row.enabled,
+                    None,
+                )?;
             }
             let label_start = panel.label_offset();
             let trailing = rect.width - 12.0;
@@ -830,26 +844,21 @@ pub(crate) fn combo(
     } else {
         theme.disabled_text
     };
-    let geometry = ComboGeometry::for_layout(layout);
-    let trigger = geometry.trigger;
-    let bounds = layout.bounds;
-    chevron(
-        canvas,
-        trigger.x + trigger.width * 0.5,
-        bounds.y + bounds.height * 0.5,
-        4.0,
-        open,
-        foreground,
-    );
-    if !combo_editable(node) {
-        let entry = geometry.entry;
-        let rtl = layout.layout_direction == LayoutDirection::RightToLeft;
-        let label = Rect::new(
-            entry.x + if rtl { 0.0 } else { 8.0 },
-            entry.y,
-            (entry.width - 8.0).max(0.0),
-            entry.height,
+    let geometry = ComboGeometry::for_control(node, layout.bounds, layout.layout_direction);
+    if node.control_part("ComboIndicator").is_none() {
+        let trigger = geometry.trigger;
+        chevron(
+            canvas,
+            trigger.x + trigger.width * 0.5,
+            trigger.y + trigger.height * 0.5,
+            4.0,
+            open,
+            foreground,
         );
+    }
+    if !combo_editable(node) && node.combo_content().is_none() {
+        let label = geometry.label_bounds(layout.layout_direction);
+        let rtl = layout.layout_direction == LayoutDirection::RightToLeft;
         let size = text.font_size(node);
         let mut paint = text.paint_node_at_size(node, size, color(foreground), false);
         let x = if rtl {
@@ -863,63 +872,112 @@ pub(crate) fn combo(
     Ok(geometry)
 }
 
-pub(crate) fn menu(
+fn choice_radius(menu: &ChoiceMenu<'_>) -> f32 {
+    menu.popup_style()
+        .and_then(|style| style.length("border-radius"))
+        .unwrap_or(6.0)
+        .clamp(0.0, menu.bounds.width.min(menu.bounds.height) * 0.5)
+}
+
+pub(crate) fn choice_surface(
+    canvas: &mut Canvas<WGPURenderer>,
+    menu: &ChoiceMenu<'_>,
+    theme: Palette,
+) -> Path {
+    let bounds = menu.bounds;
+    let mut path = Path::new();
+    path.rounded_rect(
+        bounds.x,
+        bounds.y,
+        bounds.width,
+        bounds.height,
+        choice_radius(menu),
+    );
+    let paint = menu
+        .popup_style()
+        .and_then(|style| brush_paint(style, "background", bounds, 0.0))
+        .unwrap_or_else(|| Paint::color(color(theme.role(Role::Surface))));
+    canvas.fill_path(&path, &paint);
+    path
+}
+
+pub(crate) fn choice_border(
+    canvas: &mut Canvas<WGPURenderer>,
+    menu: &ChoiceMenu<'_>,
+    theme: Palette,
+) {
+    let Some(style) = menu.popup_style() else {
+        return;
+    };
+    let width = style
+        .length("border-width")
+        .unwrap_or(0.0)
+        .clamp(0.0, menu.bounds.width.min(menu.bounds.height) * 0.5);
+    if width == 0.0 {
+        return;
+    }
+    let bounds = menu.bounds.inset(width * 0.5);
+    let mut path = Path::new();
+    path.rounded_rect(
+        bounds.x,
+        bounds.y,
+        bounds.width,
+        bounds.height,
+        (choice_radius(menu) - width * 0.5).max(0.0),
+    );
+    let mut paint = brush_paint(style, "border-color", menu.bounds, 0.0)
+        .unwrap_or_else(|| Paint::color(color(theme.role(Role::SelectionOutline))));
+    paint.set_line_width(width);
+    canvas.stroke_path(&path, &paint);
+}
+
+pub(crate) fn choice_indicator(canvas: &mut Canvas<WGPURenderer>, bounds: Rect, theme: Palette) {
+    fill(canvas, bounds, bounds.width * 0.5, theme.disabled_text);
+}
+
+pub(crate) fn choice_row(
     canvas: &mut Canvas<WGPURenderer>,
     text: &TextSystem,
     theme: Palette,
-    menu: ChoiceMenu<'_>,
+    menu: &ChoiceMenu<'_>,
+    offset: usize,
 ) -> Result<(), String> {
-    fill(canvas, menu.bounds, 6.0, theme.role(Role::Surface));
-    canvas.save();
-    canvas.scissor(
-        menu.bounds.x,
-        menu.bounds.y,
-        menu.bounds.width,
-        menu.bounds.height,
-    );
-    let result = (|| {
-        for (offset, label) in menu.rows.iter().enumerate() {
-            let row = menu.row_bounds(offset);
-            let index = menu.first + offset;
-            if Some(index) == menu.highlighted {
-                fill(
-                    canvas,
-                    row.inset(2.0),
-                    4.0,
-                    theme.role(Role::SelectedSurface),
-                );
-            } else if menu.selected == Some(index) {
-                fill(
-                    canvas,
-                    row.inset(2.0),
-                    4.0,
-                    theme.role(Role::InactiveSelection),
-                );
-            }
-            let size = menu
-                .control
-                .font_size()
-                .or_else(|| text.default_font_size())
-                .unwrap_or(14.0)
-                .clamp(1.0, (row.height / 1.4).max(1.0));
-            let foreground = if menu.row_enabled(offset) {
-                theme.text
-            } else {
-                theme.disabled_text
-            };
-            let mut paint = text.paint_node_at_size(menu.control, size, color(foreground), false);
-            let x = if menu.layout_direction == LayoutDirection::RightToLeft {
-                paint.set_text_align(Align::Right);
-                row.x + row.width - 10.0
-            } else {
-                row.x + 10.0
-            };
-            draw_label(canvas, row, label, size, x, &paint)?;
-        }
-        Ok(())
-    })();
-    canvas.restore();
-    result
+    let row = menu.row_bounds(offset);
+    let index = menu.first + offset;
+    if Some(index) == menu.highlighted {
+        fill(
+            canvas,
+            row.inset(2.0),
+            4.0,
+            theme.role(Role::SelectedSurface),
+        );
+    } else if menu.selected == Some(index) {
+        fill(
+            canvas,
+            row.inset(2.0),
+            4.0,
+            theme.role(Role::InactiveSelection),
+        );
+    }
+    let size = menu
+        .control
+        .font_size()
+        .or_else(|| text.default_font_size())
+        .unwrap_or(14.0)
+        .clamp(1.0, (row.height / 1.4).max(1.0));
+    let foreground = if menu.row_enabled(offset) {
+        theme.text
+    } else {
+        theme.disabled_text
+    };
+    let mut paint = text.paint_node_at_size(menu.control, size, color(foreground), false);
+    let x = if menu.layout_direction == LayoutDirection::RightToLeft {
+        paint.set_text_align(Align::Right);
+        row.x + row.width - 10.0
+    } else {
+        row.x + 10.0
+    };
+    draw_label(canvas, row, &menu.rows[offset], size, x, &paint)
 }
 
 pub(crate) fn label(
@@ -1052,9 +1110,10 @@ pub(crate) fn radio_indicator(
 pub(crate) fn group_title(
     canvas: &mut Canvas<WGPURenderer>,
     text: &TextSystem,
-    theme: Palette,
     node: &Node,
     bounds: Rect,
+    tint: Color,
+    direction: LayoutDirection,
 ) -> Result<(), String> {
     let left = node
         .length("padding-left")
@@ -1066,20 +1125,25 @@ pub(crate) fn group_title(
         .or_else(|| node.length("padding"))
         .unwrap_or(0.0)
         .max(0.0);
+    let right = node
+        .length("padding-right")
+        .or_else(|| node.length("padding"))
+        .unwrap_or(0.0)
+        .max(0.0);
     let size = text.font_size(node);
-    label(
+    leading_label(
         canvas,
         text,
         node,
         Rect::new(
             bounds.x + left,
             bounds.y + top,
-            (bounds.width - left).max(0.0),
-            size * 1.4,
+            (bounds.width - left - right).max(0.0),
+            (bounds.height - top).clamp(0.0, size * 1.4),
         ),
         node.text("title").unwrap_or(""),
-        size,
-        theme.text,
+        tint,
+        direction,
     )
 }
 

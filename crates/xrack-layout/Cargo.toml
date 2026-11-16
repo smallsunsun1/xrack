@@ -8,6 +8,7 @@ repository.workspace = true
 description = "Layout, hit testing, and input routing for XRack UI"
 
 [dependencies]
+xrack-assets.workspace = true
 xrack-runtime.workspace = true
 unicode-segmentation.workspace = true
 unicode-bidi.workspace = true

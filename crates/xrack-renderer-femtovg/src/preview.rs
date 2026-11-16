@@ -89,11 +89,13 @@ pub struct PreviewScene {
     image_playback: ImagePlaybackQueue,
     media: xrack_runtime::MediaQueue,
     timers: TimerQueue,
+    button_animations: xrack_runtime::ButtonAnimations,
     dialogs: NativeDialogQueue,
     window_closed: bool,
     window_selected: bool,
     window_status: xrack_runtime::WindowStatus,
     renderer_needs_redraw: bool,
+    loader_redraw: bool,
     pointer_capture: Option<PointerCapture>,
     last_button_click: Option<ButtonClick<bool>>,
     pending_button_double_click: Option<ButtonClick<bool>>,
@@ -140,11 +142,13 @@ impl PreviewScene {
             image_playback: ImagePlaybackQueue::default(),
             media: xrack_runtime::MediaQueue::default(),
             timers: TimerQueue::default(),
+            button_animations: xrack_runtime::ButtonAnimations::default(),
             dialogs: NativeDialogQueue::default(),
             window_closed: false,
             window_selected: true,
             window_status,
             renderer_needs_redraw: false,
+            loader_redraw: false,
             pointer_capture: None,
             last_button_click: None,
             pending_button_double_click: None,
@@ -361,6 +365,18 @@ impl PreviewScene {
             && let Some(ControlInput { path, action }) = self.input.stack_back(scene, layout)
         {
             self.component.control_at(scene, &path, action);
+            return true;
+        }
+        if modifiers.primary
+            && modifiers.shift
+            && !modifiers.alt
+            && let Some(key) = navigation_key(&event.key)
+            && let Some((scene, layout)) = &self.frame
+            && let Some(action) = self.input.tab_move_key(scene, layout, key)
+        {
+            if let Some(ControlInput { path, action }) = action {
+                self.component.control_at(scene, &path, action);
+            }
             return true;
         }
         if modifiers.alt
@@ -584,6 +600,7 @@ impl PreviewScene {
                             | "Calendar"
                             | "MonthGrid"
                             | "Tumbler"
+                            | "PathView"
                             | "RadioButton"
                             | "Tab"
                             | "TabButton"
@@ -2528,6 +2545,7 @@ impl PreviewScene {
         snapshot.write_png(&mut self.png)?;
         self.input
             .set_painted_combo_completion(renderer.take_painted_combo_completion());
+        self.loader_redraw |= xrack_runtime::finish_loader_frame(&scene);
         self.frame = Some((scene, snapshot.layout));
         Ok(&self.png)
     }
@@ -2565,11 +2583,18 @@ impl PreviewScene {
             .chain(self.image_playback.deadline())
             .chain(self.media.deadline(now))
             .chain(self.timers.deadline())
+            .chain(self.button_animations.deadline())
             .chain(self.input.tooltip_deadline())
             .chain(self.input.button_hold_deadline())
             .chain(self.direct_pointers.deadline())
             .chain(self.input.scroll_motion_deadline())
+            .chain(self.observers.scroll_activity_deadline())
             .chain(self.input.table_touch_hold_deadline())
+            .chain(self.frame.as_ref().and_then(|(scene, layout)| {
+                self.input
+                    .choice_artwork_dirty(scene, layout)
+                    .then_some(now)
+            }))
             .chain(self.frame.as_ref().and_then(|(scene, layout)| {
                 self.input.table_drag_selection_deadline(scene, layout)
             }))
@@ -2586,7 +2611,7 @@ impl PreviewScene {
             .chain(self.input.has_pending_swipe_events().then_some(now))
             .chain(hold)
             .chain(
-                (self.renderer_needs_redraw || self.stack_transitions.is_active())
+                (self.renderer_needs_redraw || self.loader_redraw || self.stack_transitions.is_active())
                     .then_some(now + Duration::from_millis(16)),
             )
             .min()
@@ -2654,9 +2679,25 @@ impl PreviewScene {
                 self.input.reconcile(&scene, &layout);
             }
             self.observers.sync(&scene, &layout);
+            self.observers.sync_scroll_activity(
+                &scene,
+                &layout,
+                &self.input,
+                self.clock + self.sampled_at,
+            );
+            xrack_runtime::dispatch_loader_events(&mut self.component, &scene);
             let mut changed = self.apply_window_commands();
             changed |= animated && self.sync_window_effects(&scene, &layout);
             if animated {
+                if let Some(delivery) = self
+                    .button_animations
+                    .next(&scene, self.clock + self.sampled_at)
+                {
+                    let _focus = self.focus.enter();
+                    let _scroll = self.scroll.enter();
+                    delivery.apply(&mut self.component, &scene);
+                    changed = true;
+                }
                 self.input.reconcile_swipe(&scene, &layout);
                 for event in self.input.take_swipe_events() {
                     let target = if event.matches(&scene) {
@@ -2705,6 +2746,7 @@ impl PreviewScene {
     }
 
     fn prepare_snapshot(&mut self, renderer: &mut Renderer, animated: bool) {
+        self.loader_redraw = false;
         let _scroll = self.scroll.enter();
         let _focus = self.focus.enter();
         let (mut scene, mut layout, mut width, mut height) = self.settle_frame(renderer, animated);
@@ -2764,7 +2806,11 @@ impl PreviewScene {
             {
                 (scene, layout, width, height) = self.settle_frame(renderer, animated);
             }
-            if self.input.advance_scroll_motion(&scene, &layout, now) {
+            let tumbler = self.input.advance_tumbler_motion(&scene, &layout, now);
+            if let Some(action) = tumbler.control {
+                self.apply_control(&scene, action);
+            }
+            if self.input.advance_scroll_motion(&scene, &layout, now) || tumbler.scrolled {
                 (scene, layout, width, height) = self.settle_frame(renderer, animated);
             }
             if let Some(ControlInput { path, action }) =
@@ -2804,13 +2850,19 @@ impl PreviewScene {
                     (scene, layout, width, height) = self.prepare_frame(renderer, animated);
                     self.input.reconcile(&scene, &layout);
                     self.observers.sync(&scene, &layout);
+                    self.observers.sync_scroll_activity(
+                        &scene,
+                        &layout,
+                        &self.input,
+                        self.clock + self.sampled_at,
+                    );
                     if animated {
                         self.sync_window_effects(&scene, &layout);
                     }
                 }
                 self.input.begin_table_edit_target(&scene, &layout, &target);
-            } else {
-                self.input.focus_next(&scene, &layout, backward);
+            } else if self.input.focus_next(&scene, &layout, backward) {
+                (scene, layout, width, height) = self.settle_frame(renderer, animated);
             }
         }
         let (mut scene, mut layout, mut width, mut height) =
@@ -2835,6 +2887,7 @@ impl PreviewScene {
             self.window_closed = self.component.close_requested();
             self.component.take_window_close_request();
             if self.window_closed {
+                self.input.dismiss_choice();
                 self.dialogs.close();
             } else {
                 let frame = self.settle_frame(renderer, animated);
@@ -2918,7 +2971,13 @@ impl PreviewScene {
     ) -> (Rc<Node>, LayoutNode, u32, u32) {
         for _ in 0..8 {
             for request in self.focus.drain() {
-                if let Some(command) = self.input.apply_focus_request(&frame.0, &frame.1, request) {
+                let (command, scrolled) = self
+                    .input
+                    .apply_focus_request_with_scroll(&frame.0, &frame.1, request);
+                if scrolled {
+                    frame = self.settle_frame(renderer, animated);
+                }
+                if let Some(command) = command {
                     self.input.sync_editor(&frame.0);
                     self.text_command(&frame.0, command);
                     if self.component.scene_dirty() || !self.scroll.is_empty() {
@@ -3106,6 +3165,7 @@ impl PreviewScene {
     fn sync_window_effects(&mut self, scene: &Node, layout: &LayoutNode) -> bool {
         let effects = WindowEffects::collect(scene, layout);
         self.timers.sync(Instant::now(), effects.timers);
+        self.button_animations.sync(effects.button_animations);
         self.dialogs.sync(&effects.dialogs);
         let media_changed = self.media.sync(effects.media);
         self.image_playback
@@ -3118,6 +3178,7 @@ impl Drop for PreviewScene {
     fn drop(&mut self) {
         self.cancel_pointer();
         self.hover_observers.clear();
+        self.observers.clear();
         self.component.take_window_close_request();
         self.component.take_window_commands();
         self.dialogs.close();

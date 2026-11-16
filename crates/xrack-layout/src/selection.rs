@@ -28,14 +28,19 @@ pub(crate) fn tab_bar(
     let extent = axis.extent(size);
     let cross_extent = axis.other().extent(size);
     let spacing = node.length("spacing").unwrap_or(0.0).max(0.0);
-    let sizes: Vec<_> = node
+    let widget = node.kind == "TabWidget";
+    let mut sizes: Vec<_> = node
         .children
         .iter()
         .map(|tab| {
             if !tab.is_visible() {
                 return None;
             }
-            let explicit = tab.relative_length(size_property, extent);
+            let explicit = if widget {
+                (axis == Axis::Vertical).then_some(36.0)
+            } else {
+                tab.relative_length(size_property, extent)
+            };
             let size = explicit.unwrap_or_else(|| {
                 if let Some(content) = tab.control_part("ButtonContent") {
                     let padding = 2.0 * ButtonContent::new(tab).padding;
@@ -53,7 +58,9 @@ pub(crate) fn tab_bar(
                 }
                 match axis {
                     Axis::Horizontal => {
-                        let label = tab.text("text").unwrap_or("");
+                        let label = tab
+                            .text(if widget { "title" } else { "text" })
+                            .unwrap_or("");
                         let font_size = text
                             .default_font_size()
                             .unwrap_or(TAB_LABEL_SIZE)
@@ -66,7 +73,16 @@ pub(crate) fn tab_bar(
             (size > 0.0).then_some((size, explicit.is_none()))
         })
         .collect();
-    let gap_count = sizes.iter().flatten().count().saturating_sub(1);
+    let count = sizes.iter().flatten().count();
+    let gap_count = count.saturating_sub(1);
+    if widget && axis == Axis::Horizontal && count != 0 {
+        let equal = ((extent - gap_count as f32 * spacing) / count as f32).max(0.0);
+        if sizes.iter().flatten().all(|&(minimum, _)| minimum <= equal) {
+            for (size, flexible) in sizes.iter_mut().flatten() {
+                (*size, *flexible) = (equal, false);
+            }
+        }
+    }
     let minimum =
         sizes.iter().flatten().map(|(size, _)| *size).sum::<f32>() + gap_count as f32 * spacing;
     let flexible = sizes
@@ -155,10 +171,8 @@ pub(crate) fn radio_title_height(node: &Node, size: f32) -> f32 {
 }
 
 pub(crate) struct TabGeometry {
-    bar: Rect,
+    pub(crate) bar: Rect,
     pub(crate) content: Rect,
-    orientation: Orientation,
-    direction: LayoutDirection,
 }
 
 impl TabGeometry {
@@ -192,33 +206,6 @@ impl TabGeometry {
         Self {
             bar: place_in_direction(bar, bounds, direction),
             content: place_in_direction(content, bounds, direction),
-            orientation,
-            direction,
-        }
-    }
-
-    pub(crate) fn header(&self, index: usize, count: usize) -> Rect {
-        let count = count.max(1) as f32;
-        match self.orientation {
-            Orientation::Horizontal => {
-                let width = self.bar.width / count;
-                let rect = Rect::new(
-                    self.bar.x + width * index as f32,
-                    self.bar.y,
-                    width,
-                    self.bar.height,
-                );
-                place_in_direction(rect, self.bar, self.direction)
-            }
-            Orientation::Vertical => {
-                let height = (self.bar.height / count).min(36.0);
-                Rect::new(
-                    self.bar.x,
-                    self.bar.y + height * index as f32,
-                    self.bar.width,
-                    height,
-                )
-            }
         }
     }
 }

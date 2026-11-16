@@ -4,6 +4,7 @@ from typing import TypeAlias
 
 from ._native import (
     Brush,
+    ButtonDisplay,
     CheckState,
     Color,
     ColorScheme,
@@ -69,6 +70,7 @@ from ._native import (
 
 __all__ = [
     "Brush",
+    "ButtonDisplay",
     "CheckState",
     "Color",
     "ColorScheme",
@@ -164,6 +166,7 @@ Value: TypeAlias = (
     | ImageFit
     | ImageHorizontalAlignment
     | ImageRendering
+    | ButtonDisplay
     | ImageTileMode
     | ImageVerticalAlignment
     | InputType

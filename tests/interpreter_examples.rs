@@ -291,14 +291,19 @@ fn all_example_exports_match_generated_scenes_layout_and_input_routes() {
             CalendarDemo,
             DecimalSpinDemo,
             TumblerDemo,
+            RecordTumblerDemo,
             DelayDemo,
             RepeatButtonsDemo,
             CheckableButtonsDemo,
+            CheckedGroupPagesDemo,
             GroupedButtonsDemo,
+            ProgrammaticButtonsDemo,
+            ProgrammaticToggleDemo,
             CheckStateDemo,
             CheckGroupDemo,
             GroupBoxDemo,
             IndicatorsDemo,
+            CustomProgressDemo,
             TimeDemo,
             ColorDemo,
             FontPickerDemo,
@@ -402,6 +407,9 @@ fn all_example_exports_match_generated_scenes_layout_and_input_routes() {
             ListSelectionTransferDemo,
             StandaloneScrollDemo,
             ScrollPositionDemo,
+            ScrollVisualMetricsDemo,
+            ScrollGuttersDemo,
+            ScrollFocusDemo,
             LinkedScrollDemo,
             AnchoredListDemo,
             StandardListDemo,
@@ -422,7 +430,14 @@ fn all_example_exports_match_generated_scenes_layout_and_input_routes() {
     check!(
         "menu/menu.xr",
         menu_ui,
-        [MenuDemo, RoundToolbarDemo, ActionGroupDemo, ShortcutDemo]
+        [
+            MenuDemo,
+            RoundToolbarDemo,
+            ButtonDisplayDemo,
+            ButtonAppearanceDemo,
+            ActionGroupDemo,
+            ShortcutDemo
+        ]
     );
     check!(
         "navigation/navigation.xr",
@@ -433,6 +448,11 @@ fn all_example_exports_match_generated_scenes_layout_and_input_routes() {
             StackGuardDemo,
             TabBarDemo,
             DirectionalTabsDemo,
+            PathViewDemo,
+            ValueTabsDemo,
+            ModelSwipeDemo,
+            ModelTabsDemo,
+            IndexTabCommandsDemo,
             ApplicationWindowDemo,
             PageDemo
         ]
@@ -445,9 +465,12 @@ fn all_example_exports_match_generated_scenes_layout_and_input_routes() {
         [
             SelectionDemo,
             RecordComboDemo,
+            ComboPopupStyleDemo,
+            ComboPopupControlDemo,
             GroupedRadiosDemo,
             MixedRadioOptionsDemo,
             EditableChoiceDemo,
+            ComboValidationDemo,
             DirectionalChoiceDemo
         ]
     );

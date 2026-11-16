@@ -11,13 +11,13 @@ description = "XRack interpreter support"
 serde = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
 thiserror.workspace = true
+xrack-ir.workspace = true
 xrack-mlir.workspace = true
+xrack-parser.workspace = true
 xrack-runtime.workspace = true
 xrack-syntax.workspace = true
 xrack-resources.workspace = true
 
-[dev-dependencies]
-xrack-parser.workspace = true
 
 [features]
 bundled = ["xrack-mlir/bundled"]

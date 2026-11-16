@@ -207,6 +207,8 @@ pub fn decode(ty: &Type, spelling: &str) -> Result<Literal, String> {
             "top" => Top, "center" => Center, "bottom" => Bottom),
         Type::ImageRendering => enumeration!(ImageRendering,
             "smooth" => Smooth, "pixelated" => Pixelated),
+        Type::ButtonDisplay => enumeration!(ButtonDisplay,
+            "icon-only" => IconOnly, "text-only" => TextOnly, "text-beside-icon" => TextBesideIcon, "text-under-icon" => TextUnderIcon),
         Type::KeyEvent
         | Type::KeyModifiers
         | Type::WheelEvent

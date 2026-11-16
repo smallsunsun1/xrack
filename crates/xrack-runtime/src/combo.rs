@@ -1,7 +1,218 @@
-use crate::{ChangeSignal, ControlAction, InputRoute, Node, RowKey, Value, VecModel};
-use std::{borrow::Cow, cell::Cell, fmt, ops::Range, rc::Rc};
+use crate::{ChangeSignal, ControlAction, InputRoute, Node, Property, RowKey, Value, VecModel};
+use std::{
+    any::Any,
+    borrow::Cow,
+    cell::{Cell, RefCell},
+    fmt,
+    ops::Range,
+    rc::Rc,
+};
+
+#[derive(Clone, Default)]
+#[doc(hidden)]
+pub struct ComboPopupHandle(Rc<ComboPopupState>);
+
+#[derive(Default)]
+struct ComboPopupState {
+    open: Property<bool>,
+    highlighted: Property<i64>,
+}
+
+impl ComboPopupHandle {
+    pub fn popup_open(&self) -> bool {
+        self.0.open.get(|| false)
+    }
+
+    pub fn highlighted_index(&self) -> i64 {
+        self.0.highlighted.get(|| -1)
+    }
+
+    pub fn publish(&self, open: bool, highlighted: Option<usize>) {
+        self.0.open.set_if_changed(open);
+        self.0
+            .highlighted
+            .set_if_changed(highlighted.map_or(-1, |index| index as i64));
+    }
+}
+
+impl PartialEq for ComboPopupHandle {
+    fn eq(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl fmt::Debug for ComboPopupHandle {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ComboPopupHandle")
+            .finish_non_exhaustive()
+    }
+}
+
+#[doc(hidden)]
+pub struct ComboOptionInput {
+    pub text: String,
+    pub index: i64,
+    pub enabled: bool,
+    pub selected: bool,
+    pub highlighted: bool,
+    pub displacement: f64,
+    pub progress: f64,
+    numeric: bool,
+    record_rows: Option<Rc<dyn Rows>>,
+}
+
+impl ComboOptionInput {
+    pub fn new(node: &Node, index: usize, text: String, selected: bool, highlighted: bool) -> Self {
+        Self {
+            text,
+            index: index as i64,
+            enabled: choice_enabled(node, index),
+            selected,
+            highlighted,
+            displacement: 0.0,
+            progress: 0.5,
+            numeric: false,
+            record_rows: model(node).map(|model| model.items.rows.clone()),
+        }
+    }
+
+    pub(crate) fn for_tumbler(
+        index: usize,
+        text: String,
+        selected: bool,
+        enabled: bool,
+        displacement: f64,
+        numeric: bool,
+        records: Option<&ComboItems>,
+    ) -> Self {
+        Self {
+            index: index as i64,
+            text,
+            selected,
+            enabled,
+            highlighted: false,
+            displacement,
+            progress: 0.5,
+            numeric,
+            record_rows: records.map(|items| items.rows.clone()),
+        }
+    }
+
+    /// Fetch the row in its original representation and observe this row's changes.
+    pub fn record_data<T: Clone + 'static>(&self) -> Option<T> {
+        let rows = self.record_rows.as_ref()?;
+        let model = rows.source().downcast_ref::<VecModel<T>>()?;
+        model.row(self.index as usize)
+    }
+}
+
+#[derive(Clone, Copy)]
+#[doc(hidden)]
+pub enum ComboOptionParameter {
+    Data,
+    Text,
+    Index,
+    Enabled,
+    Selected,
+    Highlighted,
+    Displacement,
+    Progress,
+}
+
+impl ComboOptionParameter {
+    pub fn parse(name: &str) -> Option<Self> {
+        Some(match name {
+            "option-data" => Self::Data,
+            "option-text" => Self::Text,
+            "option-index" => Self::Index,
+            "option-enabled" => Self::Enabled,
+            "option-selected" => Self::Selected,
+            "option-highlighted" => Self::Highlighted,
+            "option-displacement" => Self::Displacement,
+            "option-progress" => Self::Progress,
+            _ => return None,
+        })
+    }
+
+    pub fn read(self, input: &ComboOptionInput) -> Value {
+        match self {
+            Self::Data if input.numeric => input.index.into(),
+            Self::Data => input
+                .record_data::<crate::RecordValue>()
+                .map_or_else(|| input.text.clone().into(), Value::Record),
+            Self::Text => input.text.clone().into(),
+            Self::Index => input.index.into(),
+            Self::Enabled => input.enabled.into(),
+            Self::Selected => input.selected.into(),
+            Self::Highlighted => input.highlighted.into(),
+            Self::Displacement => input.displacement.into(),
+            Self::Progress => input.progress.into(),
+        }
+    }
+}
+
+type RenderOption = dyn Fn(ComboOptionInput) -> Option<Node>;
+
+struct OptionArtwork {
+    render: Box<RenderOption>,
+    reads: RefCell<Option<Property<()>>>,
+}
+
+/// Produces artwork for a visible choice option.
+#[derive(Clone)]
+#[doc(hidden)]
+pub struct ComboOptionRenderer(Rc<OptionArtwork>);
+
+impl ComboOptionRenderer {
+    pub fn new(render: impl Fn(ComboOptionInput) -> Option<Node> + 'static) -> Self {
+        Self(Rc::new(OptionArtwork {
+            render: Box::new(render),
+            reads: RefCell::default(),
+        }))
+    }
+
+    pub fn render(&self, input: ComboOptionInput) -> Option<Node> {
+        (self.0.render)(input)
+    }
+
+    pub fn render_visible(
+        &self,
+        inputs: impl Iterator<Item = ComboOptionInput>,
+    ) -> Vec<Option<Node>> {
+        let reads = Property::default();
+        let mut options = Vec::new();
+        reads.get(|| options = inputs.map(self.0.render.as_ref()).collect());
+        // Keep the observed dependencies alive between frames.
+        self.0.reads.replace(Some(reads));
+        options
+    }
+
+    pub fn artwork_dirty(&self) -> bool {
+        self.0
+            .reads
+            .borrow()
+            .as_ref()
+            .is_some_and(Property::is_dirty)
+    }
+}
+
+impl PartialEq for ComboOptionRenderer {
+    fn eq(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl fmt::Debug for ComboOptionRenderer {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ComboOptionRenderer")
+            .finish_non_exhaustive()
+    }
+}
 
 trait Rows {
+    fn source(&self) -> &dyn Any;
     fn structure(&self) -> (u64, u64);
     fn len(&self) -> usize;
     fn label(&self, index: usize) -> Option<String>;
@@ -29,7 +240,11 @@ struct RecordRows<T> {
     enabled: Rc<EnabledProjection<T>>,
 }
 
-impl<T> Rows for RecordRows<T> {
+impl<T: 'static> Rows for RecordRows<T> {
+    fn source(&self) -> &dyn Any {
+        &self.model
+    }
+
     fn structure(&self) -> (u64, u64) {
         self.model.structure_stamp()
     }
@@ -71,7 +286,7 @@ impl<T> Rows for RecordRows<T> {
     }
 }
 
-/// A typed record projection shared by snapshots of a ComboBox.
+/// A typed record projection shared by snapshots of choice controls.
 #[doc(hidden)]
 #[derive(Clone)]
 pub struct ComboItems {
@@ -129,10 +344,7 @@ impl ComboItems {
     pub fn snapshot(&self, index: i64, value: Option<&Value>) -> ComboModel {
         self.changes.track();
         let structure = self.rows.structure();
-        let index = match value {
-            Some(value) => self.rows.find_value(value),
-            None => usize::try_from(index).ok(),
-        };
+        let index = self.selected_index(index, value);
         let selected = index.and_then(|index| Some((index, self.rows.label(index)?)));
         ComboModel {
             items: self.clone(),
@@ -140,6 +352,47 @@ impl ComboItems {
             revision: self.revision.get(),
             selected,
         }
+    }
+
+    pub fn count(&self) -> usize {
+        self.rows.len()
+    }
+
+    pub(crate) fn stamp(&self) -> ((u64, u64), u64) {
+        self.changes.track();
+        (self.rows.structure(), self.revision.get())
+    }
+
+    pub(crate) fn same_projection(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.rows, &other.rows)
+    }
+
+    pub(crate) fn row_key(&self, index: usize) -> Option<RowKey> {
+        self.rows.key(index)
+    }
+
+    pub fn selected_index(&self, index: i64, value: Option<&Value>) -> Option<usize> {
+        if let Some(value) = value {
+            self.changes.track();
+            self.rows.structure();
+            self.rows.find_value(value)
+        } else {
+            usize::try_from(index)
+                .ok()
+                .filter(|&index| index < self.rows.len())
+        }
+    }
+
+    pub(crate) fn selected_text(&self, index: usize) -> Option<String> {
+        self.changes.track();
+        self.rows.structure();
+        self.rows.label(index)
+    }
+
+    pub(crate) fn selected_value(&self, index: usize) -> Option<Value> {
+        self.changes.track();
+        self.rows.structure();
+        self.rows.value(index)
     }
 
     /// Use the selection already read for the scene when projecting record options.
@@ -196,6 +449,64 @@ pub fn combo_index(node: &Node) -> Option<usize> {
     } else {
         let index = usize::try_from(node.int("current-index").unwrap_or(0)).ok()?;
         (index < model.len()).then_some(index)
+    }
+}
+
+fn string_combo_index(model: &VecModel<String>, index: i64, value: Option<&str>) -> Option<usize> {
+    if let Some(value) = value {
+        model.contents_stamp();
+        model.position_untracked(0..model.len(), |item| item == value)
+    } else {
+        usize::try_from(index)
+            .ok()
+            .filter(|&index| index < model.len())
+    }
+}
+
+/// Live model access for declarative reads that do not require a rendered node.
+#[doc(hidden)]
+pub enum ComboStateModel {
+    Strings(VecModel<String>),
+    Records(ComboItems),
+    Tumbler(ComboItems),
+}
+
+impl ComboStateModel {
+    pub fn count(&self) -> usize {
+        match self {
+            Self::Strings(model) => model.len(),
+            Self::Records(model) => model.count(),
+            Self::Tumbler(model) => model.wheel_count(),
+        }
+    }
+
+    pub fn selected_index(&self, index: i64, value: Option<&Value>) -> Option<usize> {
+        match self {
+            Self::Strings(model) => {
+                let value = match value {
+                    Some(Value::String(text)) => Some(text.as_str()),
+                    None => None,
+                    _ => return None,
+                };
+                string_combo_index(model, index, value)
+            }
+            Self::Records(model) => model.selected_index(index, value),
+            Self::Tumbler(model) => model.wheel_index(index, value),
+        }
+    }
+
+    pub fn text_at(&self, index: usize) -> Option<String> {
+        match self {
+            Self::Strings(model) => model.row(index),
+            Self::Records(model) | Self::Tumbler(model) => model.selected_text(index),
+        }
+    }
+
+    pub fn value_at(&self, index: usize) -> Option<Value> {
+        match self {
+            Self::Strings(model) => model.row(index).map(Value::String),
+            Self::Records(model) | Self::Tumbler(model) => model.selected_value(index),
+        }
     }
 }
 

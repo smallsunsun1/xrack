@@ -4,19 +4,31 @@ use crate::{
 };
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use xrack_ir::semantic::{
-    animation_target_error, builtin_event, builtin_property, control_binding_conflict,
-    dependency_cycle, event_parameters, event_return_type, is_builtin, is_reserved_identifier,
-    qualify_global_dependency, relative_size, rust_name, state_property, visual_state_target,
+    LOADER_ASYNC, LOADER_REPEAT_ITEM, LOADER_SELECTED, LOADER_SOURCE, animation_target_error, builtin_event,
+    builtin_property, control_binding_conflict, dependency_cycle, event_parameters,
+    event_return_type, is_builtin, is_reserved_identifier, qualify_global_dependency, relative_size,
+    rust_name, state_property, visual_state_target,
 };
 use xrack_syntax::ast::{Parameter, Type};
 
 /// Check element interfaces against the same rules used to lower XR source.
 pub(crate) fn verify_element_interfaces(module: &Module) -> Result<(), String> {
-    fn verify(op: OperationRef<'_>, root: bool) -> Result<(), String> {
+    fn verify(op: OperationRef<'_>, root: bool, loader_candidate: bool) -> Result<(), String> {
         let mut members = BTreeSet::new();
         for child in op.children() {
             if matches!(child.name(), "xr.property" | "xr.callback") {
-                let name = declaration_name(child, "name")?;
+                let name = child.attr("name")?;
+                let name = if matches!(name, LOADER_SELECTED | LOADER_SOURCE | LOADER_ASYNC)
+                    && child.name() == "xr.property"
+                    && child.attribute("visibility") == Some("private")
+                    && (op.attribute("kind") == Some("Loader")
+                        || op.name() == "xr.component"
+                            && op.children().any(|item| item.attribute("kind") == Some("Loader")))
+                {
+                    name.to_owned()
+                } else {
+                    declaration_name(child, "name")?
+                };
                 if !members.insert(name) {
                     return Err(at(child, "duplicate member after normalizing its name"));
                 }
@@ -65,7 +77,11 @@ pub(crate) fn verify_element_interfaces(module: &Module) -> Result<(), String> {
         let mut repeated = false;
         for child in op.children() {
             match child.name() {
-                "xr.element" | "xr.instance" => verify(child, op.name() == "xr.component")?,
+                "xr.element" | "xr.instance" => verify(
+                    child,
+                    op.name() == "xr.component",
+                    child.name() == "xr.instance" && op.attribute("kind") == Some("Loader"),
+                )?,
                 "xr.callback" => {
                     verify_parameters(child)?;
                 }
@@ -73,7 +89,7 @@ pub(crate) fn verify_element_interfaces(module: &Module) -> Result<(), String> {
                     if std::mem::replace(&mut repeated, true) {
                         return Err(at(child, "element has more than one repeat"));
                     }
-                    verify_repeat(child)?;
+                    verify_repeat(child, loader_candidate)?;
                 }
                 _ => {}
             }
@@ -81,10 +97,12 @@ pub(crate) fn verify_element_interfaces(module: &Module) -> Result<(), String> {
         Ok(())
     }
 
-    fn verify_repeat(op: OperationRef<'_>) -> Result<(), String> {
+    fn verify_repeat(op: OperationRef<'_>, loader_candidate: bool) -> Result<(), String> {
         let repeat = RepeatRef::from_operation(op).map_err(|error| at(op, &error))?;
         let item = rust_name(repeat.item);
-        if !source_identifier(repeat.item) || is_reserved_identifier(&item) {
+        let reserved = is_reserved_identifier(&item)
+            && !(loader_candidate && repeat.item == LOADER_REPEAT_ITEM);
+        if !source_identifier(repeat.item) || reserved {
             return Err(at(
                 op,
                 &format!("invalid repeat item name `{}`", repeat.item),
@@ -132,9 +150,18 @@ pub(crate) fn verify_element_interfaces(module: &Module) -> Result<(), String> {
             .map_err(|error| at(op, &error))?;
         // Record roles and their concrete value types are verified natively.
         let record_role = operand == 0
-            && (kind == "ComboBox" && record_combo && name == "current-value"
+            && (matches!(kind, "ComboBox" | "Tumbler" | "PathView")
+                && record_combo
+                && name == "current-value"
                 || name == "model"
-                    && matches!(kind, "ComboBox" | "StandardListView" | "StandardTableView")
+                    && matches!(
+                        kind,
+                        "ComboBox"
+                            | "Tumbler"
+                            | "PathView"
+                            | "StandardListView"
+                            | "StandardTableView"
+                    )
                     && matches!(actual, Type::RecordList(_)));
         if actual == expected
             || actual == Type::Percent && relative_size(kind, name, &expected)
@@ -174,7 +201,10 @@ pub(crate) fn verify_element_interfaces(module: &Module) -> Result<(), String> {
             return Err(at(handler, &format!("unknown event `{kind}.{name}`")));
         }
         let params = verify_parameters(handler)?;
-        if (kind, name) != ("ComboBox", "value-selected") {
+        if !matches!(
+            (kind, name),
+            ("ComboBox" | "Tumbler" | "PathView", "value-selected")
+        ) {
             let expected = event_parameters(kind, name, None, handler.span())
                 .map_err(|error| at(handler, &error.message))?;
             if !params.iter().map(|param| &param.ty).eq(expected) {
@@ -217,7 +247,7 @@ pub(crate) fn verify_element_interfaces(module: &Module) -> Result<(), String> {
             return Err(at(op, "duplicate symbol after normalizing its name"));
         }
         if op.name() == "xr.component" {
-            verify(op, false)?;
+            verify(op, false, false)?;
         }
     }
     verify_property_and_callback_dependencies(module)
@@ -284,11 +314,55 @@ fn collect_dependencies<'m>(
             ]
             .map(|name| qualify(owner, name)),
         ),
-        "xr.text_accepts" => dependencies.extend(
-            xrack_syntax::builtins::TEXT_SUBMISSION_INPUTS
-                .iter()
-                .map(|name| qualify(owner, &format!("@control:{name}"))),
-        ),
+        "xr.combo_state_read" => {
+            let input = match op.attr("value")? {
+                "count" => "@control:model",
+                "current-value" => "@combo-value",
+                "edit-text" => "@combo-draft",
+                _ => "@combo-selection",
+            };
+            dependencies.push(qualify(owner, input));
+        }
+        "xr.scroll_control_read"
+            if matches!(op.attr("value")?, "visual-position" | "visual-size") =>
+        {
+            dependencies.extend(
+                ["size", "minimum-size", "policy"]
+                    .map(|name| qualify(owner, &format!("@control:{name}"))),
+            );
+            if op.attr("value")? == "visual-position" {
+                dependencies.push(qualify(owner, "@control:position"));
+            }
+        }
+        "xr.scroll_control_read"
+            if matches!(op.attr("value")?, "active" | "pressed" | "hovered") =>
+        {
+            dependencies.extend(
+                ["size", "policy", "interactive", "enabled"]
+                    .map(|name| qualify(owner, &format!("@control:{name}"))),
+            );
+            if op.attr("value")? == "active" {
+                dependencies.push(qualify(owner, "@control:position"));
+            }
+        }
+        "xr.range_position_read" => {
+            dependencies.push(qualify(owner, "@progress-position"));
+            if op.attr("value")? == "visual-position" {
+                dependencies.push(qualify(owner, "@control:layout-direction"));
+            }
+        }
+        "xr.text_accepts" => {
+            dependencies.extend(
+                xrack_syntax::builtins::TEXT_SUBMISSION_INPUTS
+                    .iter()
+                    .chain(&["editable"])
+                    .map(|name| qualify(owner, &format!("@control:{name}"))),
+            );
+            dependencies.push(qualify(owner, "@combo-draft"));
+        }
+        "xr.navigation_index" => dependencies.push(qualify(owner, "@navigation-choice")),
+        "xr.navigation_count" => dependencies.push(qualify(owner, "@navigation-count")),
+        "xr.navigation_active" => dependencies.push(qualify(owner, "@navigation-active")),
         "xr.control_read" => {
             dependencies.push(qualify(owner, &format!("@control:{}", op.attr("value")?)))
         }
@@ -498,6 +572,116 @@ impl<'m> ComponentDependencies<'m> {
                 .edges
                 .insert(qualify(owner, "@view-rows"), (scope, rows));
         }
+        if matches!(
+            scope.attribute("kind"),
+            Some("ComboBox" | "Tumbler" | "PathView")
+        ) {
+            let has_control = |name| {
+                scope.children().any(|binding| {
+                    matches!(binding.name(), "xr.bind" | "xr.control_link")
+                        && binding.attribute("name") == Some(name)
+                })
+            };
+            let by_value = has_control("current-value");
+            let selection = qualify(owner, "@combo-selection");
+            let value = qualify(owner, "@control:current-value");
+            let source = if by_value {
+                value.clone()
+            } else {
+                qualify(owner, "@control:current-index")
+            };
+            bindings.edges.insert(
+                selection.clone(),
+                (scope, vec![qualify(owner, "@control:model"), source]),
+            );
+            let value_source = if by_value { value } else { selection.clone() };
+            bindings
+                .edges
+                .insert(qualify(owner, "@combo-value"), (scope, vec![value_source]));
+            let draft_source = if has_control("edit-text") {
+                qualify(owner, "@control:edit-text")
+            } else {
+                selection
+            };
+            bindings
+                .edges
+                .insert(qualify(owner, "@combo-draft"), (scope, vec![draft_source]));
+        }
+        if scope
+            .attribute("kind")
+            .is_some_and(xrack_syntax::builtins::navigation_group)
+        {
+            let mut inputs = Vec::new();
+            for option in scene_children(scope) {
+                for member in option
+                    .children()
+                    .filter(|member| member.name() == "xr.repeat")
+                {
+                    inputs.extend(member_dependencies(member, &qualify)?);
+                }
+            }
+            bindings
+                .edges
+                .insert(qualify(owner, "@navigation-count"), (scope, inputs));
+        }
+        if scope
+            .attribute("kind")
+            .is_some_and(xrack_syntax::builtins::navigation_group)
+            && scope.children().any(|binding| {
+                matches!(binding.name(), "xr.bind" | "xr.control_link")
+                    && binding.attribute("name") == Some("current-value")
+            })
+        {
+            let choice = qualify(owner, "@navigation-choice");
+            let mut inputs = vec![
+                qualify(owner, "@control:current-value"),
+                qualify(owner, "@control:visible"),
+            ];
+            for option in scene_children(scope).filter(|option| {
+                option
+                    .attribute("kind")
+                    .is_some_and(xrack_syntax::builtins::navigation_option)
+            }) {
+                let Some(key) = option
+                    .attribute("key")
+                    .or_else(|| option.attribute("id"))
+                    .filter(|key| !key.is_empty())
+                else {
+                    continue;
+                };
+                inputs.extend(
+                    ["value", "enabled", "visible"]
+                        .map(|property| qualify(key, &format!("@control:{property}"))),
+                );
+                for member in option
+                    .children()
+                    .filter(|child| matches!(child.name(), "xr.repeat" | "xr.show_if"))
+                {
+                    inputs.extend(member_dependencies(member, &qualify)?);
+                }
+                bindings.edges.insert(
+                    qualify(key, "@navigation-active"),
+                    (option, vec![choice.clone()]),
+                );
+            }
+            bindings.edges.insert(choice, (scope, inputs));
+        }
+        if scope.attribute("kind") == Some("ProgressIndicator") {
+            let mut inputs = ["minimum", "maximum", "progress"]
+                .map(|name| qualify(owner, &format!("@control:{name}")))
+                .to_vec();
+            for member in scope
+                .children()
+                .filter(|member| member.name() == "xr.state_set")
+            {
+                if matches!(member.attr("name")?, "minimum" | "maximum" | "progress") {
+                    inputs.extend(member_dependencies(member, &qualify)?);
+                }
+            }
+            bindings
+                .edges
+                .insert(qualify(owner, "@progress-position"), (scope, inputs));
+        }
         for member in scope.children() {
             match member.name() {
                 "xr.element" | "xr.instance" => {
@@ -636,6 +820,9 @@ pub fn scene_children(op: OperationRef<'_>) -> impl Iterator<Item = OperationRef
                         | "DayCell"
                         | "SplitHandle"
                         | "SectionHeader"
+                        | "ComboOption"
+                        | "TumblerOption"
+                        | "PathViewOption"
                         | "FileDialog"
                         | "MessageDialog"
                 )
@@ -651,15 +838,19 @@ pub fn has_button_check_state(element: OperationRef<'_>) -> bool {
         && !element
             .children()
             .any(|child| child.name() == "xr.radio_group_ref")
-        && element.children().any(|child| {
-            child.name() == "xr.check_group_ref"
-                || matches!(child.name(), "xr.bind" | "xr.control_link")
-                    && matches!(child.attribute("name"), Some("checked" | "checkable"))
-        })
+        && (element.attribute("toggle_storage") == Some("true")
+            || element.children().any(|child| {
+                child.name() == "xr.check_group_ref"
+                    || matches!(child.name(), "xr.bind" | "xr.control_link")
+                        && matches!(child.attribute("name"), Some("checked" | "checkable"))
+            }))
 }
 
 /// Determine whether a repeated scene needs state that follows model row keys.
 pub fn repeat_uses_row_identity(template: OperationRef<'_>, use_visual_plan: bool) -> bool {
+    if matches!(template.attribute("kind"), Some("SwipePage" | "Tab")) {
+        return true;
+    }
     if use_visual_plan
         && (template.attribute("xr.static_subtree") == Some("true")
             || template.children().any(|op| {

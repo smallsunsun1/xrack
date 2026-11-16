@@ -1,6 +1,9 @@
 use crate::{
     LayoutNode, Target,
-    input::{eligible, focus_targets, focusable, moved_row_target, valid},
+    input::{
+        eligible, focus_reachable, focus_targets_with_reveal, focusable, moved_row_target,
+        radio_group_focus, valid,
+    },
 };
 use xrack_runtime::{FocusHandle, Node, is_window_overlay};
 
@@ -10,10 +13,29 @@ pub(crate) struct FocusHistory {
 }
 
 pub(crate) fn target_at(scene: &Node, layout: &LayoutNode, path: &[usize]) -> Option<Target> {
+    target_at_with_reveal(scene, layout, path, false)
+}
+
+fn target_at_with_reveal(
+    scene: &Node,
+    layout: &LayoutNode,
+    path: &[usize],
+    reveal: bool,
+) -> Option<Target> {
     let node = scene.interactive_at_path(path)?;
     let item = layout.at_path(path)?;
-    (focusable(node) && eligible(node, item))
-        .then(|| Target::from_node(path.to_vec(), node, true, scene.row_key_at(path)))
+    let direct = focusable(node);
+    let target = Target::from_node(path.to_vec(), node, direct, scene.row_key_at(path));
+    let available = if node.kind == "RadioGroup" {
+        let clip = item.clip_rect(item.bounds);
+        item.visible
+            && item.enabled
+            && (clip.width > 0.0 && clip.height > 0.0
+                || reveal && radio_group_focus(scene, layout, path, true).is_some())
+    } else {
+        direct && (eligible(node, item) || focus_reachable(&target, scene, layout, reveal))
+    };
+    available.then_some(target)
 }
 
 pub(crate) fn handle_target(
@@ -21,6 +43,7 @@ pub(crate) fn handle_target(
     layout: &LayoutNode,
     scope: &[usize],
     handle: &FocusHandle,
+    reveal: bool,
 ) -> Option<Target> {
     fn find(node: &Node, item: &LayoutNode, handle: &FocusHandle, path: &mut Vec<usize>) -> bool {
         if !item.visible || !item.enabled {
@@ -45,7 +68,7 @@ pub(crate) fn handle_target(
         handle,
         &mut path,
     )
-    .then(|| target_at(scene, layout, &path))
+    .then(|| target_at_with_reveal(scene, layout, &path, reveal))
     .flatten()
 }
 
@@ -57,7 +80,7 @@ impl FocusHistory {
         for depth in 0..focused.path.len() {
             let path = &focused.path[..depth];
             if !scene.at_path(path).is_some_and(|node| {
-                node.kind == "FocusScope" && node.boolean("restore-focus", true)
+                matches!(node.kind, "FocusScope" | "Loader") && node.boolean("restore-focus", true)
             }) {
                 continue;
             }
@@ -95,7 +118,7 @@ impl FocusHistory {
                 *scope = moved;
             }
             if !scene.at_path(&scope.path).is_some_and(|node| {
-                node.kind == "FocusScope" && node.boolean("restore-focus", true)
+                matches!(node.kind, "FocusScope" | "Loader") && node.boolean("restore-focus", true)
             }) {
                 return false;
             }
@@ -117,27 +140,44 @@ impl FocusHistory {
         reverse: bool,
         tab: bool,
     ) -> Target {
+        self.choose_with_reveal(scene, layout, scope, reverse, tab, tab)
+    }
+
+    pub fn choose_with_reveal(
+        &self,
+        scene: &Node,
+        layout: &LayoutNode,
+        scope: Target,
+        reverse: bool,
+        tab: bool,
+        reveal: bool,
+    ) -> Target {
         let Some(node) = scene
             .at_path(&scope.path)
-            .filter(|node| node.kind == "FocusScope")
+            .filter(|node| matches!(node.kind, "FocusScope" | "Loader"))
         else {
             return scope;
         };
-        let candidates = focus_targets(scene, layout, &scope.path);
+        let candidates = focus_targets_with_reveal(scene, layout, &scope.path, reveal);
         let permitted = |target: &Target| !tab || candidates.contains(target);
         if node.boolean("restore-focus", true)
             && let Some((_, leaf)) = self.entries.iter().find(|(entry, _)| *entry == scope)
-            && valid(leaf, scene, layout)
+            && focus_reachable(leaf, scene, layout, reveal)
             && permitted(leaf)
         {
             return leaf.clone();
         }
         if let Some(handle) = &node.initial_focus
-            && let Some(target) = handle_target(scene, layout, &scope.path, handle)
+            && let Some(target) = handle_target(scene, layout, &scope.path, handle, reveal)
             && target.path.len() > scope.path.len()
         {
-            let target = self.choose(scene, layout, target, reverse, tab);
-            if permitted(&target) {
+            let target = match scene.at_path(&target.path) {
+                Some(group) if group.kind == "RadioGroup" => {
+                    radio_group_focus(scene, layout, &target.path, reveal)
+                }
+                _ => Some(self.choose_with_reveal(scene, layout, target, reverse, tab, reveal)),
+            };
+            if let Some(target) = target.filter(permitted) {
                 return target;
             }
         }
@@ -154,8 +194,9 @@ impl FocusHistory {
                 &candidate,
                 scope.path.len() + 1,
                 tab,
+                reveal,
             ) {
-                return self.choose(scene, layout, child, reverse, tab);
+                return self.choose_with_reveal(scene, layout, child, reverse, tab, reveal);
             }
             return candidate;
         }
@@ -170,6 +211,7 @@ impl FocusHistory {
         next: &Target,
         boundary: usize,
         tab: bool,
+        reveal: bool,
     ) -> Option<Target> {
         (boundary..next.path.len()).find_map(|depth| {
             let path = &next.path[..depth];
@@ -177,10 +219,12 @@ impl FocusHistory {
                 return None;
             }
             let node = scene.at_path(path)?;
-            if node.kind != "FocusScope" || tab && !node.boolean("focus-on-tab-navigation", true) {
+            if !matches!(node.kind, "FocusScope" | "Loader")
+                || tab && !node.boolean("focus-on-tab-navigation", true)
+            {
                 return None;
             }
-            target_at(scene, layout, path)
+            target_at_with_reveal(scene, layout, path, reveal)
         })
     }
 }

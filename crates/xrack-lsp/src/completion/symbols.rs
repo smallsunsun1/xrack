@@ -547,6 +547,7 @@ impl<'a, 'w> Symbols<'a, 'w> {
             index.imported_members = workspace.interfaces(&imports, &mut modules);
         }
         index.infer_repeat_items();
+        index.infer_choice_roles(tokens);
         index.infer_handler_parameters(&code);
         let elements = index
             .scopes
@@ -895,21 +896,71 @@ impl<'a, 'w> Symbols<'a, 'w> {
         if call
             && catalog::media_methods(kind)
                 .iter()
+                .chain(catalog::navigation_move_methods(kind))
+                .chain(catalog::viewport_move_methods(kind))
+                .chain(catalog::child_position_methods(kind))
+                .chain(catalog::scroll_bar_methods(kind))
                 .chain(catalog::row_key_methods(kind))
                 .chain(catalog::batch_selection_methods(kind))
                 .chain(catalog::row_selection_methods(kind))
                 .chain(catalog::tree_selection_methods(kind))
+                .chain(catalog::dynamic_methods(kind))
+                .chain(catalog::focus_methods(kind))
+                .chain(self.index.button_methods(owner, kind))
                 .any(|method| method.name == name)
         {
             return Some(Symbol::builtin(Kind::Function, None));
         }
-        if let Some(ty) = (xrack_ir::semantic::view_count_property(kind, name)
-            || xrack_ir::semantic::list_selection_property(kind, name))
-        .then_some(Type::Int)
+        if let Some(ty) = xrack_ir::semantic::combo_state_property(kind, name) {
+            let ty = if name == "current-value" {
+                self.index.choice_value_type(owner)
+            } else {
+                Some(ty)
+            };
+            let mut symbol = Symbol::builtin(Kind::Property, ty);
+            symbol.modifiers |= READONLY;
+            return Some(symbol);
+        }
+        if name == "count" && xrack_parser::builtins::navigation_group(kind)
+            || name == "current-index" && self.index.value_navigation.contains(&owner)
+        {
+            let mut symbol = Symbol::builtin(Kind::Property, Some(Type::Int));
+            symbol.modifiers |= READONLY;
+            return Some(symbol);
+        }
+        if let Some(ty) = xrack_ir::semantic::flick_motion_property(kind, name) {
+            let mut symbol = Symbol::builtin(Kind::Property, Some(ty));
+            symbol.modifiers |= READONLY;
+            return Some(symbol);
+        }
+        if let Some(ty) = (xrack_ir::semantic::focus_property(kind, name)
+            || xrack_ir::semantic::scroll_state_property(kind, name))
+        .then_some(Type::Bool)
+        .or_else(|| {
+            (xrack_ir::semantic::button_checked_property(kind, name)
+                || xrack_ir::semantic::radio_checked_property(kind, name)
+                || xrack_ir::semantic::navigation_active_property(kind, name))
+            .then_some(Type::Bool)
+        })
+        .or_else(|| xrack_ir::semantic::scroll_view_bar_metric(kind, name).then_some(Type::Length))
+        .or_else(|| xrack_ir::semantic::toggle_state_property(kind, name))
+        .or_else(|| xrack_ir::semantic::numeric_control_property(kind, name))
+        .or_else(|| xrack_ir::semantic::combo_popup_property(kind, name))
+        .or_else(|| {
+            (xrack_ir::semantic::range_position_property(kind, name)
+                || xrack_ir::semantic::scroll_visual_property(kind, name))
+            .then_some(Type::Float)
+        })
+        .or_else(|| {
+            (xrack_ir::semantic::view_count_property(kind, name)
+                || xrack_ir::semantic::list_selection_property(kind, name))
+            .then_some(Type::Int)
+        })
         .or_else(|| xrack_ir::semantic::table_selection_property(kind, name))
         .or_else(|| xrack_ir::semantic::text_selection_property(kind, name))
         .or_else(|| xrack_ir::semantic::text_command_property(kind, name).then_some(Type::Bool))
         .or_else(|| xrack_ir::semantic::media_object_read_type(kind, name))
+        .or_else(|| (kind == "Loader" && name == "status").then_some(Type::String))
         .or_else(|| {
             (builtins::text_submission_editor(kind) && name == "acceptable-input")
                 .then_some(Type::Bool)
@@ -991,10 +1042,17 @@ impl<'a, 'w> Symbols<'a, 'w> {
                 };
                 if let Some(method) = catalog::media_methods(kind)
                     .iter()
+                    .chain(catalog::navigation_move_methods(kind))
+                    .chain(catalog::viewport_move_methods(kind))
+                    .chain(catalog::child_position_methods(kind))
+                    .chain(catalog::scroll_bar_methods(kind))
                     .chain(catalog::row_key_methods(kind))
                     .chain(catalog::batch_selection_methods(kind))
                     .chain(catalog::row_selection_methods(kind))
                     .chain(catalog::tree_selection_methods(kind))
+                    .chain(catalog::dynamic_methods(kind))
+                .chain(catalog::focus_methods(kind))
+                    .chain(self.index.button_methods(owner, kind))
                     .find(|method| method.name == self.text(i))
                 {
                     return Some((
@@ -1091,6 +1149,25 @@ impl<'a, 'w> Symbols<'a, 'w> {
             {
                 return Some(symbol);
             }
+        }
+        if !call
+            && word == "option-data"
+            && let Some((ty, file)) = self.index.combo_option_data(scope)
+        {
+            let mut symbol = Symbol::builtin(Kind::Parameter, ty);
+            symbol.modifiers |= READONLY;
+            symbol.type_file = file;
+            return Some(symbol);
+        }
+        if !call
+            && let Some((_, ty)) = self
+                .index
+                .template_inputs(scope)
+                .and_then(|inputs| inputs.into_iter().find(|(name, _)| *name == word))
+        {
+            let mut symbol = Symbol::builtin(Kind::Parameter, Some(ty));
+            symbol.modifiers |= READONLY;
+            return Some(symbol);
         }
         if let Some(symbol) = self.index.ancestors(scope).find_map(|owner| {
             self.index

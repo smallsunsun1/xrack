@@ -758,6 +758,7 @@ bridge_values! {
         WheelEvent => WheelEvent,
     }
     enums {
+        ButtonDisplay { IconOnly, TextOnly, TextBesideIcon, TextUnderIcon },
         CheckState { Unchecked, PartiallyChecked, Checked },
         ColorScheme { System, Light, Dark },
         CrossAxisAlignment { Auto, Stretch, Start, End, Center },

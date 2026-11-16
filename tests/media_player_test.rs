@@ -633,12 +633,13 @@ fn sound_effect_preloads_and_plays_from_button_and_shortcut_in_both_backends() {
 
     fn exercise<C: Component>(
         ui: &mut C,
-        state: impl Fn(&C) -> (bool, bool, String),
+        state: impl Fn(&C) -> (bool, bool, String, i64),
         set_source: impl Fn(&mut C, &str),
+        set_loop_count: impl Fn(&mut C, i64),
     ) {
         let mut queue = MediaQueue::default();
         let mut input = Interaction::default();
-        let size = Size::new(400.0, 220.0);
+        let size = Size::new(400.0, 310.0);
         let wait = |queue: &mut MediaQueue, ui: &C, expected_playing, expected_error| {
             let deadline = Instant::now() + Duration::from_secs(5);
             loop {
@@ -653,15 +654,17 @@ fn sound_effect_preloads_and_plays_from_button_and_shortcut_in_both_backends() {
                 queue.sync(effects.media);
                 let now = Instant::now();
                 queue.advance(now);
-                let (ready, playing, error) = state(ui);
+                let (ready, playing, error, remaining) = state(ui);
                 if expected_error {
                     if !error.is_empty() {
                         assert!(error.contains("requires a local WAV file"), "{error}");
                         assert!(!ready && !playing);
-                        return;
+                        assert_eq!(remaining, 0);
+                        return 0;
                     }
                 } else if ready && playing == expected_playing {
-                    return;
+                    assert_eq!(playing, remaining != 0);
+                    return remaining;
                 } else {
                     assert!(error.is_empty(), "{error}");
                 }
@@ -669,15 +672,29 @@ fn sound_effect_preloads_and_plays_from_button_and_shortcut_in_both_backends() {
                 thread::sleep(Duration::from_millis(5));
             }
         };
+        let shortcut = |input: &mut Interaction, ui: &mut C, key: &str| {
+            let scene = ui.render_shared();
+            let laid_out = layout(&scene, size, &mut Text);
+            let ShortcutOutcome::Activate(event) = input.shortcut_press(
+                &scene,
+                &laid_out,
+                key.parse().unwrap(),
+                false,
+                Instant::now(),
+            ) else {
+                panic!("{key} shortcut was not routed");
+            };
+            assert!(ui.control_at(&scene, &event.path, event.action));
+        };
 
-        // Deliver play before the host publishes the first sample from the session.
+        // Stop cancels a play queued before the host publishes its first sample.
         let scene = ui.render_shared();
         let laid_out = layout(&scene, size, &mut Text);
         queue.sync(WindowEffects::collect(&scene, &laid_out).media);
-        assert_eq!(state(ui), (false, false, String::new()));
+        assert_eq!(state(ui), (false, false, String::new(), 0));
         assert!(ui.dispatch("confirm", "clicked"));
-        wait(&mut queue, ui, true, false);
-        wait(&mut queue, ui, false, false);
+        assert!(ui.dispatch("cancel", "clicked"));
+        assert_eq!(wait(&mut queue, ui, false, false), 0);
 
         let scene = ui.render_shared();
         let laid_out = layout(&scene, size, &mut Text);
@@ -705,19 +722,13 @@ fn sound_effect_preloads_and_plays_from_button_and_shortcut_in_both_backends() {
         wait(&mut queue, ui, true, false);
         wait(&mut queue, ui, false, false);
 
-        let scene = ui.render_shared();
-        let laid_out = layout(&scene, size, &mut Text);
-        let ShortcutOutcome::Activate(event) = input.shortcut_press(
-            &scene,
-            &laid_out,
-            "F2".parse().unwrap(),
-            false,
-            Instant::now(),
-        ) else {
-            panic!("F2 shortcut was not routed");
-        };
-        assert!(ui.control_at(&scene, &event.path, event.action));
-        wait(&mut queue, ui, true, false);
+        set_loop_count(ui, -1);
+        shortcut(&mut input, ui, "F2");
+        assert_eq!(wait(&mut queue, ui, true, false), -1);
+        set_loop_count(ui, 3);
+        assert_eq!(wait(&mut queue, ui, true, false), 3);
+        shortcut(&mut input, ui, "F3");
+        assert_eq!(wait(&mut queue, ui, false, false), 0);
 
         set_source(ui, "sound_effect.xr");
         wait(&mut queue, ui, false, true);
@@ -727,7 +738,7 @@ fn sound_effect_preloads_and_plays_from_button_and_shortcut_in_both_backends() {
         wait(&mut queue, ui, false, false);
 
         queue.sync([]);
-        assert_eq!(state(ui), (false, false, String::new()));
+        assert_eq!(state(ui), (false, false, String::new(), 0));
     }
 
     xrack_media::install();
@@ -739,9 +750,11 @@ fn sound_effect_preloads_and_plays_from_button_and_shortcut_in_both_backends() {
                 ui.get_sound_ready(),
                 ui.get_sound_playing(),
                 ui.get_sound_error(),
+                ui.get_loops_remaining(),
             )
         },
         |ui, path| ui.set_sound_source(path.into()),
+        |ui, count| ui.set_loop_count(count),
     );
 
     let source = include_str!("../examples/sound_effect/sound_effect.xr");
@@ -755,12 +768,17 @@ fn sound_effect_preloads_and_plays_from_button_and_shortcut_in_both_backends() {
             let Value::String(error) = ui.get("sound-error").unwrap() else {
                 panic!("sound-error was not a string");
             };
+            let Value::Int(remaining) = ui.get("loops-remaining").unwrap() else {
+                panic!("loops-remaining was not an int");
+            };
             (
                 ui.get("sound-ready") == Ok(Value::Bool(true)),
                 ui.get("sound-playing") == Ok(Value::Bool(true)),
                 error,
+                remaining,
             )
         },
         |ui, path| ui.set("sound-source", Value::String(path.into())).unwrap(),
+        |ui, count| ui.set("loop-count", Value::Int(count)).unwrap(),
     );
 }

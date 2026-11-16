@@ -58,7 +58,8 @@ Operation *visualScope(Operation *binding) {
   for (auto *op = parent; op; op = op->getParentOp()) {
     if (auto element = dyn_cast<ElementOp>(op);
         element && (element.getKind() == "DayCell" || element.getKind() == "SplitHandle" ||
-                    element.getKind() == "SectionHeader"))
+                    element.getKind() == "SectionHeader" || element.getKind() == "TumblerOption" ||
+                    element.getKind() == "PathViewOption"))
       return nullptr; // The runtime caches each template instance separately.
     if (isa<ComponentOp>(op))
       return op;

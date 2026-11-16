@@ -31,6 +31,10 @@ pub fn builtin_element(name: &str) -> Option<&'static str> {
         "CheckBox",
         "ColorPickerPopup",
         "ComboBox",
+        "ComboContent",
+        "ComboIndicator",
+        "ComboOption",
+        "ComboPopup",
         "ContextMenuArea",
         "ControlFrame",
         "DatePickerPopup",
@@ -62,6 +66,7 @@ pub fn builtin_element(name: &str) -> Option<&'static str> {
         "Label",
         "LineEdit",
         "ListView",
+        "Loader",
         "MediaPlayer",
         "SoundEffect",
         "Menu",
@@ -76,8 +81,12 @@ pub fn builtin_element(name: &str) -> Option<&'static str> {
         "PageIndicator",
         "Pane",
         "Path",
+        "PathView",
+        "PathViewOption",
         "PopupWindow",
+        "ProgressFill",
         "ProgressIndicator",
+        "ProgressTrack",
         "RadioButton",
         "RadioGroup",
         "RangeLowerHandle",
@@ -89,6 +98,8 @@ pub fn builtin_element(name: &str) -> Option<&'static str> {
         "ScaleRotateGestureHandler",
         "ScrollBar",
         "ScrollIndicator",
+        "ScrollTrack",
+        "ScrollThumb",
         "ScrollView",
         "SearchField",
         "SecondaryWindow",
@@ -144,7 +155,9 @@ pub fn builtin_element(name: &str) -> Option<&'static str> {
         "TreeRow",
         "TreeView",
         "Tumbler",
+        "TumblerOption",
         "VerticalBox",
+        "DynamicContainer",
         "VerticalLayout",
         "WeekNumberColumn",
         "WheelHandler",
@@ -152,6 +165,169 @@ pub fn builtin_element(name: &str) -> Option<&'static str> {
         "WindowMoveArea",
     )
 }
+
+pub fn navigation_group(kind: &str) -> bool {
+    matches!(kind, "TabBar" | "TabWidget" | "SwipeView")
+}
+
+pub fn navigation_option(kind: &str) -> bool {
+    matches!(kind, "TabButton" | "Tab" | "SwipePage")
+}
+
+pub struct BuiltinSignature {
+    pub name: &'static str,
+    pub parameters: &'static [&'static str],
+    pub result: Option<&'static str>,
+    pub documentation: &'static str,
+}
+
+impl BuiltinSignature {
+    pub fn signature(&self) -> String {
+        let mut label = format!("{}({})", self.name, self.parameters.join(", "));
+        if let Some(result) = self.result {
+            label.push_str(" -> ");
+            label.push_str(result);
+        }
+        label
+    }
+}
+
+pub const DYNAMIC_CONTAINER_METHODS: &[BuiltinSignature] = &[
+    BuiltinSignature { name: "mount", parameters: &["component initializer"], result: Some("component handle"), documentation: "Creates a typed component and appends it to this container." },
+    BuiltinSignature { name: "mount-async", parameters: &["component initializer"], result: Some("component handle"), documentation: "Queues component construction and returns a pending handle." },
+    BuiltinSignature { name: "mount-url", parameters: &["source: string"], result: Some("ExternalComponentHandle"), documentation: "Loads a component file or URL into this container." },
+    BuiltinSignature { name: "status", parameters: &["handle"], result: Some("string"), documentation: "Returns null, loading, ready, or error for this handle." },
+    BuiltinSignature { name: "is-mounted", parameters: &["handle"], result: Some("bool"), documentation: "Checks whether the original component is ready in this container." },
+    BuiltinSignature { name: "get", parameters: &["handle", "property: string", "fallback"], result: Some("property type"), documentation: "Reads a public property while the handle is mounted." },
+    BuiltinSignature { name: "set", parameters: &["handle", "property: string", "value"], result: Some("bool"), documentation: "Writes a public input on the mounted component." },
+    BuiltinSignature { name: "call", parameters: &["handle", "callback: string", "arguments..."], result: Some("callback result"), documentation: "Invokes the mounted component; a returning callback also takes a fallback before its arguments." },
+    BuiltinSignature { name: "remove", parameters: &["handle"], result: Some("bool"), documentation: "Unmounts the child and invalidates its handle." },
+    BuiltinSignature { name: "move", parameters: &["handle", "index: int"], result: Some("bool"), documentation: "Moves the child to a zero-based index and retains its state." },
+];
+
+/// Public commands accepted by each media object.
+pub fn scroll_bar_methods(kind: &str) -> &'static [BuiltinSignature] {
+    if kind != "ScrollBar" {
+        return &[];
+    }
+    &[
+        BuiltinSignature {
+            name: "increase",
+            parameters: &[],
+            result: None,
+            documentation: "Moves toward the logical end by one configured step.",
+        },
+        BuiltinSignature {
+            name: "decrease",
+            parameters: &[],
+            result: None,
+            documentation: "Moves toward the logical start by one configured step.",
+        },
+    ]
+}
+
+pub const VIEWPORT_MOVE_METHODS: &[BuiltinSignature] = &[
+    BuiltinSignature {
+        name: "scroll-to",
+        parameters: &["x: length", "y: length"],
+        result: None,
+        documentation: "Moves to a logical position on each axis after layout.",
+    },
+    BuiltinSignature {
+        name: "scroll-by",
+        parameters: &["dx: length", "dy: length"],
+        result: None,
+        documentation: "Moves by a signed logical distance on each axis. Multiple requests apply in order after layout.",
+    },
+];
+
+pub const MOVE_NAVIGATION_ITEM: BuiltinSignature = BuiltinSignature {
+    name: "move-item",
+    parameters: &["from: int", "to: int"],
+    result: None,
+    documentation: "Moves the original row in the writable navigation model. Indices are zero-based. Selection follows the moved records.",
+};
+
+pub fn navigation_move_methods(kind: &str) -> &'static [BuiltinSignature] {
+    if navigation_move_event(kind).is_some() {
+        &[MOVE_NAVIGATION_ITEM]
+    } else {
+        &[]
+    }
+}
+
+pub fn navigation_move_event(kind: &str) -> Option<&'static str> {
+    match kind {
+        "TabBar" | "TabWidget" => Some("tab-moved"),
+        "SwipeView" => Some("page-moved"),
+        _ => None,
+    }
+}
+
+pub const POSITION_CHILD_METHOD: BuiltinSignature = BuiltinSignature {
+    name: "position-view-at-child",
+    parameters: &[
+        "child: element",
+        "horizontal: ScrollAlignment",
+        "vertical: ScrollAlignment",
+    ],
+    result: None,
+    documentation: "Positions the view at a named descendant after layout. The two alignments use logical directions.",
+};
+
+pub fn media_methods(kind: &str) -> &'static [BuiltinSignature] {
+    match kind {
+        "MediaPlayer" => MEDIA_METHODS,
+        "SoundEffect" => &[
+            BuiltinSignature {
+                name: "play",
+                parameters: &[],
+                result: None,
+                documentation: "Plays the WAV from the start for the configured number of loops, starting when preload is ready.",
+            },
+            BuiltinSignature {
+                name: "stop",
+                parameters: &[],
+                result: None,
+                documentation: "Stops the current playback or cancels a play requested during preload.",
+            },
+        ],
+        _ => &[],
+    }
+}
+
+const MEDIA_METHODS: &[BuiltinSignature] = &[
+    BuiltinSignature {
+        name: "go-live",
+        parameters: &[],
+        result: None,
+        documentation: "Jumps to the current HLS live edge and starts playback.",
+    },
+    BuiltinSignature {
+        name: "stop",
+        parameters: &[],
+        result: None,
+        documentation: "Stops playback and rewinds seekable media.",
+    },
+    BuiltinSignature {
+        name: "play",
+        parameters: &[],
+        result: None,
+        documentation: "Starts or resumes playback. After the end, starts again from the beginning.",
+    },
+    BuiltinSignature {
+        name: "pause",
+        parameters: &[],
+        result: None,
+        documentation: "Pauses audio and video at the current playback position.",
+    },
+    BuiltinSignature {
+        name: "seek",
+        parameters: &["position: float"],
+        result: None,
+        documentation: "Seeks to a position in seconds and preserves whether playback was paused.",
+    },
+];
 
 pub const TEXT_SELECTION_PROPERTIES: &[&str] = &[
     "cursor-offset",
@@ -178,13 +354,17 @@ pub const TEXT_SUBMISSION_INPUTS: &[&str] = &[
 ];
 
 pub fn text_submission_editor(kind: &str) -> bool {
-    matches!(kind, "TextInput" | "LineEdit" | "TextEdit" | "TextArea")
+    text_submission_single_line(kind) || matches!(kind, "TextEdit" | "TextArea")
+}
+
+pub fn text_submission_single_line(kind: &str) -> bool {
+    matches!(kind, "TextInput" | "LineEdit" | "ComboBox")
 }
 
 /// Rules that are evaluated when checking the final value rather than rendering an editor.
 pub fn text_submission_rule(kind: &str, name: &str) -> bool {
     text_submission_editor(kind) && matches!(name, "minimum-length" | "submit-when")
-        || matches!(kind, "TextInput" | "LineEdit")
+        || text_submission_single_line(kind)
             && matches!(name, "minimum-value" | "maximum-value" | "decimals")
 }
 
@@ -199,6 +379,7 @@ pub enum FunctionKind {
     ModelCount,
     ModelIsEmpty,
     ModelAt,
+    ModelEdit(ModelEditKind),
     Color(ColorFunction),
     DateIsValid,
     DateAddDays,
@@ -228,6 +409,15 @@ macro_rules! operations {
         }
     };
 }
+
+operations!(ModelEditKind {
+    Append => "append",
+    Insert => "insert",
+    Set => "set",
+    Remove => "remove",
+    Move => "move",
+    Clear => "clear",
+});
 
 operations!(MathFunction {
     Min => "min", Max => "max", Clamp => "clamp", Abs => "abs",
@@ -352,6 +542,24 @@ const DATE_FALLBACK: Parameter = Parameter::with_type("fallback: Date", &Type::D
 const TEXT: Parameter = Parameter::with_type("text: string", &Type::String);
 const NUMBER: Parameter = Parameter::with_type("value: float", &Type::Float);
 const MODEL: Parameter = Parameter::new("model: [int] | [string] | [Record]");
+const WRITABLE_MODEL: Parameter = Parameter::new("model: writable [Row]");
+const MODEL_ROW: Parameter = Parameter::new("value: Row");
+const MODEL_INDEX: Parameter = Parameter::with_type("index: int", &Type::Int);
+
+const fn model_edit(
+    edit: ModelEditKind,
+    parameters: &'static [Parameter],
+    documentation: &'static str,
+) -> Function {
+    Function {
+        namespace: "Model",
+        member: edit.name(),
+        kind: FunctionKind::ModelEdit(edit),
+        parameters,
+        result: None,
+        documentation,
+    }
+}
 const OPACITY: Parameter = Parameter::with_type("alpha: float", &Type::Float);
 const RGB: &[Parameter] = &[
     Parameter::with_type("red: int", &Type::Int),
@@ -666,6 +874,40 @@ pub const FUNCTIONS: &[Function] = &[
         result: Some("Row"),
         documentation: "Reads a zero-based row. Evaluates the fallback only if the row does not exist.",
     },
+    model_edit(
+        ModelEditKind::Append,
+        &[WRITABLE_MODEL, MODEL_ROW],
+        "Appends one typed row to a writable model. Existing rows keep their identities.",
+    ),
+    model_edit(
+        ModelEditKind::Insert,
+        &[WRITABLE_MODEL, MODEL_INDEX, MODEL_ROW],
+        "Inserts a typed row before a zero-based index. The model length is a valid insertion index.",
+    ),
+    model_edit(
+        ModelEditKind::Set,
+        &[WRITABLE_MODEL, MODEL_INDEX, MODEL_ROW],
+        "Replaces one row's data and keeps its identity.",
+    ),
+    model_edit(
+        ModelEditKind::Remove,
+        &[WRITABLE_MODEL, MODEL_INDEX],
+        "Removes one row at a zero-based index. Other rows keep their identities.",
+    ),
+    model_edit(
+        ModelEditKind::Move,
+        &[
+            WRITABLE_MODEL,
+            Parameter::with_type("from: int", &Type::Int),
+            Parameter::with_type("to: int", &Type::Int),
+        ],
+        "Moves one row to its final index while preserving its identity.",
+    ),
+    model_edit(
+        ModelEditKind::Clear,
+        &[WRITABLE_MODEL],
+        "Removes all rows from the existing model in one operation.",
+    ),
     color(
         ColorFunction::Rgb,
         RGB,

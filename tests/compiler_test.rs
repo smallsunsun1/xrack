@@ -123,6 +123,412 @@ fn push_button_pressed_is_a_typed_read_only_state_property() {
 }
 
 #[test]
+fn checked_reads_verify_owners_and_reject_binding_cycles() {
+    let source = r#"
+        export component App inherits Window {
+            out property <bool> selected: target.checked;
+            target := Button { checked: true; }
+        }
+    "#;
+    let compiled = compile(source, "checked.xr").unwrap();
+    assert!(compiled.mlir.contains("\"xr.button_checked\""));
+    assert!(
+        mlir::Module::parse(
+            &compiled
+                .mlir
+                .replace("kind = \"Button\"", "kind = \"Label\"")
+        )
+        .is_err()
+    );
+    let assignment = source.replace("checked: true;", "clicked => { target.checked = false; }");
+    assert!(
+        compile(&assignment, "checked.xr")
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("read-only")
+    );
+    for declarations in [
+        "target := Button { checked: !target.checked; }",
+        "shared := Action { checked: target.checked; } target := Button { action: shared; }",
+        "group := ActionGroup { current-value: target.checked ? \"x\" : \"\"; item := Action { value: \"x\"; } } target := Button { action: item; }",
+        "group := ButtonGroup { current-index: target.checked ? 0 : -1; } target := Button { group: group; }",
+        "group := ButtonGroup { current-value: \"x\"; } target := Button { group: group; text: target.checked ? \"x\" : \"\"; }",
+    ] {
+        let invalid = source.replace("target := Button { checked: true; }", declarations);
+        let error = compile(&invalid, "checked.xr").err().unwrap().to_string();
+        assert!(error.contains("cyclic"), "{error}");
+    }
+    let stable_value = source.replace(
+        "target := Button { checked: true; }",
+        "group := ButtonGroup { current-value: \"x\"; } target := Button { group: group; value: \"x\"; text: target.checked ? \"Selected\" : \"Idle\"; }",
+    );
+    compile(&stable_value, "checked.xr").unwrap();
+}
+
+#[test]
+fn range_position_read_types_directions_and_cycle_checks_match_the_control() {
+    let source = r#"
+        export component App inherits Window {
+            out property <float> rate: knob.position + slider.visual-position + pair.lower-position + pair.upper-visual-position;
+            knob := Dial {}
+            slider := Slider { value: 10; }
+            pair := RangeSlider {}
+        }
+    "#;
+    let compiled = compile(source, "range-position.xr").unwrap();
+    assert_eq!(
+        compiled.mlir.matches("\"xr.range_position_read\"").count(),
+        4
+    );
+    let invalid = compiled
+        .mlir
+        .replace("value = \"upper-visual-position\"", "value = \"position\"");
+    let error = mlir::Module::parse(&invalid).err().unwrap();
+    assert!(error.contains("supported range position"), "{error}");
+    let cycle = source.replace(
+        "value: 10;",
+        "value: 10; layout-direction: self.visual-position < 0.5 ? LayoutDirection.left-to-right : LayoutDirection.right-to-left;",
+    );
+    let error = compile(&cycle, "range-position.xr")
+        .err()
+        .unwrap()
+        .to_string();
+    assert!(error.contains("cyclic"), "{error}");
+    let state_cycle = source.replace(
+        "slider := Slider { value: 10; }",
+        "Rectangle { states [ mirror when slider.visual-position < 0.5: { layout-direction: LayoutDirection.right-to-left; } ] slider := Slider { value: 10; } }",
+    );
+    let error = compile(&state_cycle, "range-position.xr")
+        .err()
+        .unwrap()
+        .to_string();
+    assert!(error.contains("cyclic"), "{error}");
+    let depends_on_position = source.replace("value: 10;", "value: 10; step: self.position + 1;");
+    compile(&depends_on_position, "range-position.xr").unwrap();
+    let delayed = depends_on_position.replace("value: 10;", "value: 10; live: false;");
+    let error = compile(&delayed, "range-position.xr")
+        .err()
+        .unwrap()
+        .to_string();
+    assert!(error.contains("cyclic"), "{error}");
+}
+
+#[test]
+fn numeric_control_values_are_typed_reads_and_preserve_writable_aliases() {
+    let source = r#"
+        export component App inherits Window {
+            in-out property <float> slider-alias <=> slider.value;
+            out property <float> meter: slider.value + dial.value + range.lower-value + range.upper-value + decimal.value;
+            out property <int> count: integer.value;
+            slider := Slider { value: 3; }
+            dial := Dial {}
+            range := RangeSlider {}
+            decimal := DoubleSpinBox {}
+            integer := SpinBox {}
+        }
+    "#;
+    let compiled = compile(source, "numeric-state.xr").unwrap();
+    assert!(compiled.mlir.contains("\"xr.control_read\""));
+    assert_eq!(
+        compiled.mlir.matches("\"xr.numeric_value_read\"").count(),
+        6
+    );
+    let invalid = compiled
+        .mlir
+        .replace("value = \"upper-value\"", "value = \"value\"");
+    let error = mlir::Module::parse(&invalid).err().unwrap();
+    assert!(error.contains("numeric control value"), "{error}");
+    let cycle = source.replace("value: 3;", "value: self.value + 1;");
+    let error = compile(&cycle, "numeric-state.xr")
+        .err()
+        .unwrap()
+        .to_string();
+    assert!(error.contains("cyclic"), "{error}");
+}
+
+#[test]
+fn navigation_active_reads_verify_the_parent_and_reject_eligibility_cycles() {
+    let source = r#"
+        export component App inherits Window {
+            out property <bool> state: option.checked && page.active && slide.active;
+            bar := TabBar {
+                option := TabButton { text: self.checked ? "Selected" : "Overview"; }
+            }
+            tabs := TabWidget { page := Tab { title: "Page"; } }
+            view := SwipeView { slide := SwipePage {} }
+        }
+    "#;
+    let compiled = compile(source, "navigation-active.xr").unwrap();
+    for group in ["bar", "tabs", "view"] {
+        assert!(compiled.mlir.lines().any(|line| {
+            line.contains("\"xr.navigation_active\"")
+                && line.contains(&format!("value = \"{group}\""))
+        }));
+    }
+    let invalid = compiled.mlir.replace("value = \"bar\"", "value = \"view\"");
+    assert_ne!(invalid, compiled.mlir);
+    let error = mlir::Module::parse(&invalid).err().unwrap();
+    assert!(error.contains("owning selection control"), "{error}");
+    let cycle = source.replace(
+        "text: self.checked ?",
+        "enabled: !self.checked; text: self.checked ?",
+    );
+    let error = compile(&cycle, "navigation-active.xr")
+        .err()
+        .unwrap()
+        .to_string();
+    assert!(error.contains("cyclic"), "{error}");
+}
+
+#[test]
+fn radio_checked_reads_verify_the_selection_owner_and_reject_cycles() {
+    let source = r#"
+        export component App inherits Window {
+            out property <bool> picked: item.checked && distributed.checked;
+            options := RadioGroup {
+                current-value: "a";
+                item := RadioButton { value: "a"; text: self.checked ? "yes" : "no"; }
+            }
+            external := ButtonGroup { current-value: "a"; }
+            distributed := RadioButton { value: "a"; group: external; }
+        }
+    "#;
+    let compiled = compile(source, "radio-checked.xr").unwrap();
+    assert!(compiled.mlir.contains("\"xr.radio_checked\""));
+    assert!(compiled.mlir.contains("\"xr.button_checked\""));
+    let invalid = compiled
+        .mlir
+        .replace("value = \"options\"", "value = \"external\"");
+    assert_ne!(invalid, compiled.mlir);
+    let error = mlir::Module::parse(&invalid).err().unwrap();
+    assert!(error.contains("owning selection control"), "{error}");
+    let cycle = source.replace("value: \"a\"; text:", "text:");
+    let error = compile(&cycle, "radio-checked.xr")
+        .err()
+        .unwrap()
+        .to_string();
+    assert!(error.contains("cyclic"), "{error}");
+}
+
+#[test]
+fn toggle_state_reads_validate_types_and_cannot_feed_their_own_storage() {
+    let source = r#"
+        export component App inherits Window {
+            out property <CheckState> state: choice.check-state;
+            out property <bool> checked: choice.checked && network.checked;
+            choice := CheckBox { check-state: CheckState.partially-checked; }
+            network := Switch { checked: true; }
+        }
+    "#;
+    let compiled = compile(source, "toggle-state.xr").unwrap();
+    assert_eq!(compiled.mlir.matches("\"xr.toggle_state_read\"").count(), 3);
+    let invalid = compiled
+        .mlir
+        .replace("value = \"check-state\"", "value = \"checked\"");
+    assert!(mlir::Module::parse(&invalid).is_err());
+    let cycle = source.replace(
+        "check-state: CheckState.partially-checked",
+        "check-state: self.checked ? CheckState.checked : CheckState.unchecked",
+    );
+    let error = compile(&cycle, "toggle-state.xr")
+        .err()
+        .unwrap()
+        .to_string();
+    assert!(error.contains("cyclic"), "{error}");
+    let invalid = source.replace("choice.check-state", "network.check-state");
+    assert!(compile(&invalid, "toggle-state.xr").is_err());
+}
+
+#[test]
+fn repeated_button_checked_is_verified_after_the_row_is_bound() {
+    let source = r#"
+        export component App inherits Window {
+            for i in 3: Button {
+                checkable: true;
+                checked: i == 1;
+                text: self.checked ? "on" : "off";
+            }
+        }
+    "#;
+    let compiled = compile(source, "row-checked.xr").unwrap();
+    assert!(compiled.mlir.contains("\"xr.button_checked\""));
+    let read = compiled
+        .mlir
+        .lines()
+        .find(|line| line.contains("\"xr.button_checked\""))
+        .unwrap();
+    let repeat = compiled
+        .mlir
+        .lines()
+        .find(|line| line.contains("\"xr.repeat\""))
+        .unwrap();
+    let invalid = compiled
+        .mlir
+        .replace(&format!("{read}\n"), "")
+        .replace(repeat, &format!("{read}\n{repeat}"));
+    let error = mlir::Module::parse(&invalid).err().unwrap();
+    assert!(error.contains("row scope"), "{error}");
+}
+
+#[test]
+fn repeated_button_toggle_uses_its_row_and_verifies_the_effect_target() {
+    let source = r#"
+        export component App inherits Window {
+            for i in 2: Button {
+                checkable: false;
+                clicked => { self.toggle(); }
+            }
+            for j in 2: RoundButton {
+                checkable: false;
+                clicked => { self.toggle(); }
+            }
+        }
+    "#;
+    let compiled = compile(source, "row-toggle.xr").unwrap();
+    let toggles: Vec<_> = compiled
+        .mlir
+        .lines()
+        .filter(|line| line.contains("\"xr.button_toggle\""))
+        .collect();
+    let [first, second] = toggles.as_slice() else {
+        panic!("expected two row-local toggles");
+    };
+    assert_eq!(
+        compiled.mlir.matches("toggle_storage = \"true\"").count(),
+        2
+    );
+    let wrong_row = compiled.mlir.replacen(*first, second, 1);
+    let error = mlir::Module::parse(&wrong_row).err().unwrap();
+    assert!(error.contains("row scope"), "{error}");
+    let invalid = source.replace("self.toggle()", "self.click()");
+    let error = compile(&invalid, "row-toggle.xr")
+        .err()
+        .unwrap()
+        .to_string();
+    assert!(error.contains("statically addressed"), "{error}");
+}
+
+#[test]
+fn programmatic_toggle_marks_only_its_own_storage_and_rejects_invalid_owners() {
+    let source = r#"
+        export component App inherits Window {
+            callback run();
+            target := ToolButton {}
+            ignored := ToolButton {}
+            run => { target.toggle(); }
+        }
+    "#;
+    let compiled = compile(source, "button-toggle.xr").unwrap();
+    assert!(compiled.mlir.contains("\"xr.button_toggle\""));
+    assert_eq!(
+        compiled.mlir.matches("toggle_storage = \"true\"").count(),
+        1
+    );
+    let invalid = compiled
+        .mlir
+        .replace("toggle_storage = \"true\"", "toggle_storage = \"false\"");
+    assert!(mlir::Module::parse(&invalid).is_err());
+    let missing = compiled.mlir.replace(", toggle_storage = \"true\"", "");
+    assert_ne!(missing, compiled.mlir);
+    assert!(mlir::Module::parse(&missing).is_err());
+    for (from, to) in [
+        ("target.toggle()", "target.toggle(1)"),
+        ("callback run();", "pure callback run();"),
+        ("target := ToolButton", "target := Rectangle"),
+    ] {
+        assert!(compile(&source.replace(from, to), "button-toggle.xr").is_err());
+    }
+}
+
+#[test]
+fn programmatic_button_click_is_a_verified_effect() {
+    let source = r#"
+        export component App inherits Window {
+            callback run();
+            target := ToolButton {}
+            run => { target.click(); }
+        }
+    "#;
+    let compiled = compile(source, "button-click.xr").unwrap();
+    assert!(compiled.mlir.contains("\"xr.button_click\""));
+    let animated = compile(
+        &source.replace("target.click()", "target.animate-click()"),
+        "button-click.xr",
+    )
+    .unwrap();
+    assert!(animated.mlir.contains("animated = \"true\""));
+    for (from, to) in [
+        ("target.click()", "target.click(1)"),
+        ("target.click()", "target.animate-click(1)"),
+        ("callback run();", "pure callback run();"),
+        ("target := ToolButton", "target := Rectangle"),
+    ] {
+        assert!(compile(&source.replace(from, to), "button-click.xr").is_err());
+    }
+}
+
+#[test]
+fn button_appearance_bindings_have_paint_effects_and_accept_visual_states() {
+    let source = r#"
+        export component App inherits Window {
+            in property <bool> prominent: true;
+            pick := Button {
+                primary: root.prominent;
+                flat: false;
+                states [ quiet when !root.prominent: { flat: true; } ]
+            }
+            Dialog { DialogButton { primary: root.prominent; flat: true; } }
+        }
+    "#;
+    let compiled = compile(source, "button-appearance.xr").unwrap();
+    for property in ["primary", "flat"] {
+        assert!(compiled.mlir.lines().any(|line| {
+            line.contains(&format!("name = \"{property}\""))
+                && line.contains("xr.update_effect = \"paint\"")
+        }));
+    }
+    assert!(compiled.mlir.contains("\"xr.state_set\""));
+    assert!(
+        compile(
+            &source.replace("primary: root.prominent", "primary: 12"),
+            "button-appearance.xr"
+        )
+        .is_err()
+    );
+    assert!(
+        compile(
+            "component App inherits Window { Rectangle { flat: true; } }",
+            "button-appearance.xr"
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn button_display_and_replaceable_content_are_verified() {
+    let source = r#"
+        export component App inherits Window {
+            in property <ButtonDisplay> mode: ButtonDisplay.text-under-icon;
+            Button { display: root.mode; colorize-icon: true; spacing: 3px; }
+            ToolButton { ButtonContent { Text { text: "Tool"; } } }
+            RoundButton { ButtonContent { Text { text: "Round"; } } }
+            DelayButton { ButtonContent { Text { text: "Delay"; } } }
+        }
+    "#;
+    let compilation = compile(source, "button-display.xr").unwrap();
+    assert!(compilation.mlir.contains("!xr.buttondisplay"));
+    assert!(compilation.mlir.contains("text-under-icon"));
+    assert!(
+        compile(
+            &source.replace("display: root.mode", "display: true"),
+            "button-display.xr"
+        )
+        .is_err()
+    );
+}
+
+#[test]
 fn push_button_groups_validate_membership_and_state_ownership() {
     let source = r#"
         export component App inherits Window {
@@ -3688,6 +4094,721 @@ fn combo_roles_and_business_value_types_are_verified() {
 }
 
 #[test]
+fn tab_widget_repeats_pages_and_exposes_a_read_only_count() {
+    let source = r#"
+        component Editor inherits Rectangle { in property <string> title; Text { text: root.title; } }
+        export component App inherits Window {
+            in-out property <int> selected: 1;
+            out property <int> total: tabs.count;
+            tabs := TabWidget {
+                current-index <=> root.selected;
+                for title in ["one", "two"] : Tab {
+                    title: title;
+                    Editor { title: title; }
+                }
+            }
+        }
+    "#;
+    let compiled = compile(source, "model_tabs.xr").unwrap();
+    assert!(compiled.mlir.contains("xr.navigation_count"));
+    assert!(
+        compiled
+            .rust
+            .to_string()
+            .contains("append_navigation_pages")
+    );
+    let invalid = source.replace("current-index <=> root.selected;", "count: 3;");
+    assert!(
+        compile(&invalid, "model_tabs.xr")
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("read-only")
+    );
+    let mixed = source.replace(
+        "current-index <=> root.selected;",
+        "current-index: 0; Tab {}",
+    );
+    assert!(
+        compile(&mixed, "model_tabs.xr")
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("only option")
+    );
+    let cyclic = source
+        .replace(r#"["one", "two"]"#, "root.total")
+        .replace("title: title;", r#"title: "Tab " + title;"#);
+    assert!(
+        compile(&cyclic, "model_tabs.xr")
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("cycl")
+    );
+}
+
+#[test]
+fn navigation_move_commands_verify_owners_writability_and_effects() {
+    let source = r#"
+        export component App inherits Window {
+            in-out property <[string]> labels: ["a", "b"];
+            callback move(int, int);
+            move(from, to) => { tabs.move-item(from, to); }
+            tabs := TabWidget {
+                reorderable: true;
+                for label in root.labels : Tab { title: label; }
+            }
+        }
+    "#;
+    let compiled = compile(source, "move_navigation_item.xr").unwrap();
+    assert!(compiled.mlir.contains("xr.move_navigation_item"));
+    assert!(compiled.rust.to_string().contains("move_row"));
+
+    for (old, new, message) in [
+        ("in-out property", "in property", "read-only"),
+        ("root.labels :", r#"["a", "b"] :"#, "writable list property"),
+        ("callback move", "pure callback move", "pure callback"),
+        (
+            "move-item(from, to)",
+            "move-item(from)",
+            "two int arguments",
+        ),
+        (
+            "move-item(from, to)",
+            r#"move-item(from, "last")"#,
+            "expected int",
+        ),
+    ] {
+        let error = compile(&source.replace(old, new), "move_navigation_item.xr")
+            .err()
+            .unwrap()
+            .to_string();
+        assert!(error.contains(message), "{error}");
+    }
+
+    let raw = lower(source, "move_navigation_item.xr");
+    let readonly = raw.replace(r#"visibility = "in-out""#, r#"visibility = "in""#);
+    assert!(mlir::process(&readonly).unwrap_err().contains("read-only"));
+    let (before, after) = raw.split_once(r#""xr.move_navigation_item""#).unwrap();
+    let invalid_owner = format!(
+        r#"{before}"xr.move_navigation_item"{}"#,
+        after.replacen(r#"owner = "tabs""#, r#"owner = "root""#, 1)
+    );
+    assert_ne!(invalid_owner, raw);
+    assert!(
+        mlir::process(&invalid_owner)
+            .unwrap_err()
+            .contains("writable list model")
+    );
+}
+
+#[test]
+fn reorderable_tabs_require_a_writable_list_and_typed_move_event() {
+    let source = r#"
+        export component App inherits Window {
+            in-out property <[string]> entries: ["a", "b"];
+            out property <int> last-move: 0;
+            tabs := TabBar {
+                reorderable: true;
+                for entry in root.entries : TabButton { text: entry; }
+                tab-moved(from, to) => { root.last-move = from * 10 + to; }
+            }
+        }
+    "#;
+    let compiled = compile(source, "reorderable_tabs.xr").unwrap();
+    assert!(
+        compiled
+            .rust
+            .to_string()
+            .contains("ControlAction :: MoveTab")
+    );
+    for (old, new, message) in [
+        ("in-out property", "in property", "read-only"),
+        (
+            "root.entries :",
+            r#"["a", "b"] :"#,
+            "writable list property",
+        ),
+        ("reorderable: true;", "reorderable: 4;", "bool"),
+        (
+            "tab-moved(from, to)",
+            "tab-moved(from)",
+            "two int parameters",
+        ),
+    ] {
+        let error = compile(&source.replace(old, new), "reorderable_tabs.xr")
+            .err()
+            .unwrap()
+            .to_string();
+        assert!(error.contains(message), "{error}");
+    }
+
+    let raw = lower(source, "reorderable_tabs.xr");
+    let readonly = raw.replace(r#"visibility = "in-out""#, r#"visibility = "in""#);
+    assert_ne!(readonly, raw);
+    assert!(mlir::process(&readonly).unwrap_err().contains("read-only"));
+}
+
+#[test]
+fn navigation_value_checks_keys_conflicts_and_derived_index_reads() {
+    let source = r#"
+        export component App inherits Window {
+            in-out property <string> selection: "draft";
+            out property <int> index: bar.current-index;
+            bar := TabBar {
+                current-value <=> root.selection;
+                TabButton { text: "Draft"; value: "draft"; }
+            }
+        }
+    "#;
+    let compiled = compile(source, "value_tabs.xr").unwrap();
+    assert!(compiled.mlir.contains("xr.navigation_index"));
+    for (before, after, message) in [
+        (r#"value: "draft";"#, "", "requires value"),
+        (
+            "current-value <=> root.selection;",
+            "current-value <=> root.selection; current-index: 0;",
+            "either current-index or current-value",
+        ),
+        (r#"value: "draft";"#, "value: 42;", "string"),
+        (
+            r#"value: "draft";"#,
+            r#"value: "doc" + bar.current-index;"#,
+            "cycl",
+        ),
+    ] {
+        let error = compile(&source.replace(before, after), "value_tabs.xr")
+            .err()
+            .unwrap()
+            .to_string();
+        assert!(error.contains(message), "{error}");
+    }
+    let raw = lower(source, "value_tabs.xr");
+    let invalid = raw.replace(r#"value = "current-index""#, r#"value = "current-value""#);
+    assert!(
+        mlir::process(&invalid)
+            .unwrap_err()
+            .contains("requires current-index")
+    );
+}
+
+#[test]
+fn path_view_compiles_svg_commands_and_typed_position() {
+    let source = r#"
+        export component App inherits Window {
+            PathView {
+                path: "M 0 0.5 Q 0.5 0 1 0.5";
+                count: 20;
+                item-width: 42px;
+                item-height: 34px;
+                orientation: horizontal;
+                PathViewOption {
+                    opacity: option-progress;
+                    Text { text: "Item " + (option-data + 1); }
+                }
+            }
+        }
+    "#;
+    let compiled = compile(source, "path_view.xr").unwrap();
+    assert!(compiled.mlir.contains("xr.precompiled_path"));
+    assert!(compiled.rust.to_string().contains("set_precompiled_path"));
+    let bad_path = source.replace("M 0 0.5 Q 0.5 0 1 0.5", "not a path");
+    let error = compile(&bad_path, "path_view.xr")
+        .err()
+        .unwrap()
+        .to_string();
+    assert!(error.contains("invalid PathView path"), "{error}");
+    let raw = lower(source, "path_view.xr");
+    let wrong_type = raw.replace("option-progress", "option-index");
+    assert!(
+        mlir::process(&wrong_type)
+            .unwrap_err()
+            .contains("PathViewOption parameter or type")
+    );
+    let wrong_parent = source.replace("PathView {", "Tumbler {");
+    assert!(compile(&wrong_parent, "path_view.xr").is_err());
+}
+
+#[test]
+fn tumbler_flick_properties_are_float_and_read_only_motion() {
+    let source = r#"
+        export component App inherits Window {
+            out property <bool> moving: wheel.moving;
+            out property <bool> dragging: wheel.dragging;
+            out property <bool> flicking: wheel.flicking;
+            wheel := Tumbler { count: 60; flick-deceleration: 1600; }
+        }
+    "#;
+    let compiled = compile(source, "tumbler_motion.xr").unwrap();
+    assert!(compiled.mlir.contains("xr.flick_motion_read"));
+    let conflict = source.replace("count: 60;", "count: 60; moving: true;");
+    let error = compile(&conflict, "tumbler_motion.xr")
+        .err()
+        .unwrap()
+        .to_string();
+    assert!(error.contains("read-only"), "{error}");
+    let raw = lower(source, "tumbler_motion.xr");
+    let error = mlir::process(&raw.replace(r#"value = "flicking""#, r#"value = "rebounding""#))
+        .unwrap_err();
+    assert!(
+        error.contains("motion property on a statically addressed Tumbler"),
+        "{error}"
+    );
+}
+
+#[test]
+fn tumbler_option_templates_are_typed_and_confined_to_wheels() {
+    let source = r#"
+        export component App inherits Window {
+            Tumbler {
+                count: 80;
+                TumblerOption {
+                    opacity: Math.abs(option-displacement);
+                    Text { text: option-data % 12 + " o'clock"; }
+                }
+            }
+        }
+    "#;
+    let compiled = compile(source, "tumbler_option.xr").unwrap();
+    assert!(compiled.rust.to_string().contains("ComboOptionRenderer"));
+    let raw = lower(source, "tumbler_option.xr");
+    assert!(
+        mlir::process(&raw.replace("option-displacement", "option-index"))
+            .unwrap_err()
+            .contains("invalid TumblerOption parameter or type")
+    );
+    for (from, to, message) in [
+        (
+            "Tumbler {",
+            "Rectangle {",
+            "requires a static child of Tumbler",
+        ),
+        (
+            "TumblerOption {",
+            "named := TumblerOption {",
+            "templates are anonymous",
+        ),
+        (
+            "TumblerOption {",
+            "TumblerOption {} TumblerOption {",
+            "at most one TumblerOption",
+        ),
+        (
+            "TumblerOption {",
+            "if true: TumblerOption {",
+            "requires a static child of Tumbler",
+        ),
+        (
+            "Text { text: option-data % 12 + \" o'clock\"; }",
+            "Button {}",
+            "accepts visual elements",
+        ),
+    ] {
+        let error = compile(&source.replace(from, to), "tumbler_option.xr")
+            .err()
+            .unwrap()
+            .to_string();
+        assert!(error.contains(message), "{error}");
+    }
+
+    let strings = source
+        .replace("count: 80;", r#"model: ["A", "B"];"#)
+        .replace("option-data % 12", "option-data");
+    compile(&strings, "tumbler_option.xr").unwrap();
+}
+
+#[test]
+fn tumbler_record_roles_and_selection_type_are_checked() {
+    let source = r#"
+        struct OptionRow { title: string, key: int }
+        export component App inherits Window {
+            in-out property <[OptionRow]> rows: [OptionRow { title: "One", key: 1 }];
+            in-out property <int> selection: 1;
+            out property <string> label: choice.current-text;
+            choice := Tumbler {
+                model: root.rows;
+                text-role: "title";
+                value-role: "key";
+                current-value <=> root.selection;
+                value-selected(value) => { root.selection = value; }
+            }
+        }
+    "#;
+    let compiled = compile(source, "tumbler_roles.xr").unwrap();
+    assert!(compiled.mlir.contains("xr.combo_state_read"));
+    assert!(compiled.rust.to_string().contains("populate_tumbler"));
+    let indexed = source.replace(
+        "current-value <=> root.selection;",
+        "current-index: self.count - 1;",
+    );
+    compile(&indexed, "tumbler_roles.xr").unwrap();
+    let raw = lower(source, "tumbler_roles.xr");
+    let bad_role = raw.replace(r#"value = "\22key\22""#, r#"value = "\22title\22""#);
+    assert!(
+        mlir::process(&bad_role)
+            .unwrap_err()
+            .contains("Tumbler current-value requires string")
+    );
+    for (original, replacement, message) in [
+        (
+            r#"text-role: "title";"#,
+            r#"text-role: "key";"#,
+            "requires a string field",
+        ),
+        (
+            "current-value <=> root.selection;",
+            r#"current-value: "wrong";"#,
+            "int",
+        ),
+        (
+            "current-value <=> root.selection;",
+            "current-value <=> root.selection; current-index: 0;",
+            "either current-index or current-value",
+        ),
+        (
+            r#"text-role: "title";"#,
+            r#"text-role: "title"; current-text: "wrong";"#,
+            "read-only",
+        ),
+    ] {
+        let error = compile(&source.replace(original, replacement), "tumbler_roles.xr")
+            .err()
+            .unwrap()
+            .to_string();
+        assert!(error.contains(message), "{error}");
+    }
+    let invalid = r#"export component App inherits Window {
+        Tumbler { count: 3; current-value: "two"; }
+    }"#;
+    assert!(compile(invalid, "tumbler_roles.xr").is_err());
+}
+
+#[test]
+fn combo_popup_commands_and_state_are_checked_in_source_and_mlir() {
+    let source = r#"
+        export component App inherits Window {
+            out property <bool> showing: choice.popup-open;
+            out property <int> active-option: choice.highlighted-index;
+            choice := ComboBox { model: ["Alpha"]; }
+            trigger := Button { clicked => { choice.open-popup(); choice.close-popup(); } }
+        }
+    "#;
+    let compiled = compile(source, "combo_popup_commands.xr").unwrap();
+    assert!(compiled.mlir.contains("xr.combo_popup_read"));
+    assert!(compiled.mlir.contains("action = \"open-popup\""));
+    assert!(compiled.mlir.contains("action = \"close-popup\""));
+    for (from, to, expected) in [
+        (
+            "choice.open-popup()",
+            "choice.open-popup(1)",
+            "takes no arguments",
+        ),
+        (
+            "model: [\"Alpha\"];",
+            "model: [\"Alpha\"]; highlighted-index: 0;",
+            "read-only",
+        ),
+    ] {
+        let error = compile(&source.replace(from, to), "combo_popup_commands.xr")
+            .err()
+            .unwrap();
+        assert!(error.contains(expected), "{error}");
+    }
+    let bad_target = compiled
+        .mlir
+        .replace("target = \"choice\"", "target = \"trigger\"");
+    assert_ne!(bad_target, compiled.mlir);
+    assert!(
+        mlir::process(&bad_target)
+            .unwrap_err()
+            .contains("popup commands require a ComboBox target")
+    );
+    let bad_type = compiled
+        .mlir
+        .replace("value = \"highlighted-index\"", "value = \"popup-open\"");
+    assert!(
+        mlir::process(&bad_type)
+            .unwrap_err()
+            .contains("ComboBox popup state property of matching type")
+    );
+}
+
+#[test]
+fn combo_popup_checks_its_dimensions_and_rejects_nested_elements() {
+    let source = r#"
+        export component App inherits Window {
+            ComboBox {
+                ComboPopup { width: 208px; row-height: 32px; scroll-indicator: true; }
+            }
+        }
+    "#;
+    let compiled = compile(source, "combo_popup.xr").unwrap();
+    assert!(compiled.mlir.contains("kind = \"ComboPopup\""));
+    assert!(
+        compile(
+            &source.replace("width: 208px", "width: 125%; max-height: 60%"),
+            "combo_popup.xr"
+        )
+        .is_ok()
+    );
+    for (from, to, expected) in [
+        (
+            "ComboBox {",
+            "Rectangle {",
+            "requires a static child of ComboBox",
+        ),
+        (
+            "ComboPopup {",
+            "ComboPopup {} ComboPopup {",
+            "at most one ComboPopup",
+        ),
+        (
+            "ComboPopup {",
+            "ComboPopup { Rectangle {} ",
+            "only one-way property bindings",
+        ),
+        ("row-height: 32px", "row-height: \"32px\"", "type mismatch"),
+    ] {
+        let error = compile(&source.replace(from, to), "combo_popup.xr")
+            .err()
+            .unwrap();
+        assert!(error.contains(expected), "{error}");
+    }
+    let invalid = compiled
+        .mlir
+        .replace("name = \"row-height\"", "name = \"x\"");
+    assert!(
+        mlir::process(&invalid)
+            .unwrap_err()
+            .contains("invalid ComboPopup property or type")
+    );
+}
+
+#[test]
+fn combo_content_is_a_single_static_child() {
+    let source = r#"
+        export component App inherits Window {
+            choice := ComboBox {
+                model: ["Alpha", "Beta"];
+                ComboContent { Label { text: choice.current-text; } }
+            }
+        }
+    "#;
+    let compiled = compile(source, "combo_content.xr").unwrap();
+    assert!(compiled.mlir.contains("kind = \"ComboContent\""));
+    assert!(compiled.rust.to_string().contains("combo_editable"));
+    for (from, to, expected) in [
+        (
+            "ComboBox {",
+            "Rectangle {",
+            "requires a static child of ComboBox",
+        ),
+        (
+            "ComboContent {",
+            "if true : ComboContent {",
+            "requires a static child of ComboBox",
+        ),
+        (
+            "ComboContent {",
+            "ComboContent {} ComboContent {",
+            "at most one ComboContent",
+        ),
+    ] {
+        let changed = source.replace(from, to);
+        let error = compile(&changed, "combo_content.xr").err().unwrap();
+        assert!(error.contains(expected), "{error}");
+    }
+    let invalid_ir = compiled
+        .mlir
+        .replace("kind = \"ComboBox\"", "kind = \"Rectangle\"");
+    assert!(
+        mlir::process(&invalid_ir)
+            .unwrap_err()
+            .contains("requires a static child of ComboBox")
+    );
+}
+
+#[test]
+fn combo_option_data_preserves_the_model_item_type() {
+    let source = r#"
+        struct Detail { online: bool }
+        struct Entry { title: string, detail: Detail }
+        export component App inherits Window {
+            in property <[Entry]> choices;
+            ComboBox {
+                model: root.choices;
+                text-role: "title";
+                ComboOption {
+                    background: option-data.detail.online ? #ffffff : #000000;
+                    Label { text: option-data.title; }
+                }
+            }
+            ComboBox {
+                model: ["Alpha", "Beta"];
+                ComboOption { Label { text: option-data; } }
+            }
+        }
+    "#;
+    let compiled = compile(source, "combo_data.xr").unwrap();
+    assert!(compiled.mlir.contains("value = \"option-data\""));
+    assert!(compiled.rust.to_string().contains("record_data"));
+    assert!(
+        compile(
+            &source.replace("option-data.title", "option-data.missing"),
+            "combo_data.xr"
+        )
+        .is_err()
+    );
+    assert!(
+        compile(
+            &source.replace(
+                "Label { text: option-data; }",
+                "Label { text: option-data.title; }"
+            ),
+            "combo_data.xr"
+        )
+        .is_err()
+    );
+    let wrong_types = compiled
+        .mlir
+        .replace("value = \"option-data\"", "value = \"option-text\"");
+    let error = mlir::process(&wrong_types).unwrap_err();
+    assert!(
+        error.contains("invalid ComboOption parameter or type"),
+        "{error}"
+    );
+}
+
+#[test]
+fn combo_option_templates_are_visual_and_use_typed_row_inputs() {
+    let source = r#"
+        export component App inherits Window {
+            ComboBox {
+                model: ["Alpha", "Beta"];
+                ComboOption {
+                    background: option-highlighted ? #ffffff : #000000;
+                    Label { text: (option-index + 1) + " " + option-text; }
+                }
+            }
+        }
+    "#;
+    let compiled = compile(source, "combo_option.xr").unwrap();
+    assert!(compiled.mlir.contains("kind = \"ComboOption\""));
+    assert!(compiled.rust.to_string().contains("ComboOptionRenderer"));
+    for (from, to, expected) in [
+        (
+            "ComboBox {",
+            "Rectangle {",
+            "requires a static child of ComboBox",
+        ),
+        (
+            "ComboOption {",
+            "row := ComboOption {",
+            "templates are anonymous",
+        ),
+        (
+            "ComboOption {",
+            "ComboOption {} ComboOption {",
+            "at most one ComboOption",
+        ),
+        (
+            "Label {",
+            "Button {",
+            "visual elements and read-only bindings",
+        ),
+    ] {
+        let changed = source.replace(from, to);
+        let error = compile(&changed, "combo_option.xr").err().unwrap();
+        assert!(error.contains(expected), "{error}");
+    }
+    let bad_parameter = compiled
+        .mlir
+        .replace("value = \"option-text\"", "value = \"option-enabled\"");
+    assert_ne!(compiled.mlir, bad_parameter);
+    let error = mlir::process(&bad_parameter).unwrap_err();
+    assert!(
+        error.contains("invalid ComboOption parameter or type"),
+        "{error}"
+    );
+}
+
+#[test]
+fn combo_indicator_is_a_single_static_child_of_a_combo_box() {
+    let source = r#"
+        export component App inherits Window {
+            ComboBox {
+                ComboIndicator {
+                    width: 44px; height: 24px;
+                    Rectangle { background: #437599; }
+                }
+            }
+        }
+    "#;
+    let raw = lower(source, "combo_indicator.xr");
+    assert!(raw.contains("kind = \"ComboIndicator\""));
+    let message = "ComboIndicator requires a static child of ComboBox";
+    for misplaced in [
+        source.replace("ComboBox {", "Rectangle {"),
+        source.replace("ComboIndicator {", "if true : ComboIndicator {"),
+    ] {
+        let error = compile(&misplaced, "combo_indicator.xr").err().unwrap();
+        assert!(error.contains(message), "{error}");
+    }
+    let duplicate = source.replace("ComboBox {", "ComboBox { ComboIndicator {}");
+    assert!(
+        compile(&duplicate, "combo_indicator.xr")
+            .err()
+            .unwrap()
+            .contains("at most one ComboIndicator")
+    );
+    let invalid_ir = raw.replace("kind = \"ComboBox\"", "kind = \"Rectangle\"");
+    assert!(
+        mlir::process(&invalid_ir)
+            .unwrap_err()
+            .contains("requires a static child of ComboBox")
+    );
+}
+
+#[test]
+fn combo_state_read_types_and_dependencies_are_verified() {
+    let source = r#"
+        struct OptionRow { title: string, code: int }
+        export component App inherits Window {
+            in property <[OptionRow]> options: [OptionRow { title: "First", code: 42 }];
+            out property <int> picked: choice.current-value;
+            out property <string> label: choice.current-text;
+            out property <int> size: choice.count;
+            choice := ComboBox {
+                model: root.options;
+                text-role: "title";
+                value-role: "code";
+            }
+        }
+    "#;
+    let compiled = compile(source, "combo_state.xr").unwrap();
+    assert!(compiled.mlir.contains("xr.combo_state_read"));
+    let wrong_type = compiled
+        .mlir
+        .replace("value = \"current-value\"", "value = \"current-text\"");
+    assert_ne!(wrong_type, compiled.mlir);
+    let error = mlir::Module::parse(&wrong_type).err().unwrap();
+    assert!(
+        error.contains("ComboBox state property of matching type"),
+        "{error}"
+    );
+
+    for condition in ["self.count > 0", "self.current-value > 0"] {
+        let cycle = source.replace(
+            "model: root.options",
+            &format!("model: {condition} ? root.options : root.options"),
+        );
+        let error = compile(&cycle, "combo_cycle.xr").err().unwrap();
+        assert!(error.contains("cycl"), "{error}");
+    }
+}
+
+#[test]
 fn secondary_windows_require_a_window_component_and_typed_visibility() {
     let source = r#"
         component Content inherits Window { title: "Inspector"; }
@@ -4170,6 +5291,93 @@ fn standard_list_uses_a_verified_record_text_field() {
         "export component App inherits Window { StandardListView { model: [\"one\", \"two\"]; } }",
         "strings.xr"
     ).is_ok());
+}
+
+#[test]
+fn progress_range_positions_are_typed_read_only_and_acyclic() {
+    let source = r#"
+        export component App inherits Window {
+            out property <float> fraction: meter.position;
+            out property <float> visual: meter.visual-position;
+            meter := ProgressIndicator { minimum: 100; maximum: 900; progress: 380; }
+        }
+    "#;
+    let compiled = compile(source, "progress_range.xr").unwrap();
+    assert!(compiled.mlir.contains("xr.range_position_read"));
+    assert!(compiled.rust.to_string().contains("ProgressRange"));
+    for (from, to, expected) in [
+        ("minimum: 100", "minimum: true", "type mismatch"),
+        ("minimum: 100", "position: 0.5", "read-only"),
+        ("progress: 380", "progress: root.fraction", "cyclic"),
+    ] {
+        let error = compile(&source.replace(from, to), "progress_range.xr")
+            .err()
+            .unwrap();
+        assert!(error.contains(expected), "{error}");
+    }
+    let bad_position = compiled
+        .mlir
+        .replace("value = \"visual-position\"", "value = \"upper-position\"");
+    assert!(
+        mlir::process(&bad_position)
+            .unwrap_err()
+            .contains("requires a supported range position")
+    );
+}
+
+#[test]
+fn progress_artwork_parts_are_unique_static_children_of_the_indicator() {
+    let source = r#"
+        export component App inherits Window {
+            ProgressIndicator {
+                progress: 40%;
+                ProgressTrack { background: #273b55; }
+                ProgressFill { Rectangle { background: #53af9b; } }
+            }
+        }
+    "#;
+    let compiled = compile(source, "progress_parts.xr").unwrap();
+    assert!(compiled.mlir.contains("kind = \"ProgressTrack\""));
+    assert!(compiled.mlir.contains("kind = \"ProgressFill\""));
+    for (from, to, expected) in [
+        (
+            "ProgressIndicator {",
+            "Rectangle {",
+            "requires a static child of ProgressIndicator",
+        ),
+        (
+            "ProgressFill {",
+            "ProgressFill {} ProgressFill {",
+            "at most one ProgressFill",
+        ),
+        (
+            "ProgressFill {",
+            "if true : ProgressFill {",
+            "requires a static child of ProgressIndicator",
+        ),
+    ] {
+        let error = compile(&source.replace(from, to), "progress_parts.xr")
+            .err()
+            .unwrap();
+        assert!(error.contains(expected), "{error}");
+    }
+    let invalid = compiled
+        .mlir
+        .replace("kind = \"ProgressIndicator\"", "kind = \"Rectangle\"");
+    assert!(
+        mlir::process(&invalid)
+            .unwrap_err()
+            .contains("requires a static child of ProgressIndicator")
+    );
+    let feedback = source
+        .replace("progress: 40%", "progress: fill-art.layout-width / 100px")
+        .replace("ProgressFill {", "fill-art := ProgressFill {");
+    assert!(
+        compile(&feedback, "progress_parts.xr")
+            .err()
+            .unwrap()
+            .contains("layout feedback")
+    );
 }
 
 #[test]
@@ -6349,7 +7557,7 @@ fn swipe_view_verifies_static_pages_and_its_index_link() {
         compile(&repeat, "swipe.xr")
             .err()
             .unwrap()
-            .contains("static SwipePage children")
+            .contains("a repeated SwipePage must be the only option")
     );
     let invalid_event = raw.replace("name = \"changed\"", "name = \"released\"");
     assert!(
@@ -6357,6 +7565,38 @@ fn swipe_view_verifies_static_pages_and_its_index_link() {
             .unwrap_err()
             .contains("one int parameter")
     );
+}
+
+#[test]
+fn swipe_view_accepts_one_repeated_page_with_component_content() {
+    let source = r#"
+        component Editor inherits Rectangle {
+            in property <string> title;
+            Label { text: root.title; }
+        }
+        export component App inherits Window {
+            view := SwipeView {
+                current-value: "two";
+                for title in ["one", "two"] : SwipePage {
+                    value: title;
+                    Editor { title: title; }
+                }
+            }
+        }
+    "#;
+    let compiled = compile(source, "model_pages.xr").unwrap();
+    assert!(compiled.mlir.contains("xr.repeat"));
+    assert!(
+        compiled
+            .rust
+            .to_string()
+            .contains("append_navigation_pages")
+    );
+    let invalid = source.replace(
+        "Editor { title: title; }",
+        "editor := Editor { title: title; }",
+    );
+    assert!(compile(&invalid, "model_pages.xr").is_err());
 }
 
 #[test]
@@ -6726,6 +7966,29 @@ fn selection_groups_enforce_child_structure() {
         let error = compile(&source, "groups.xr").err().unwrap();
         assert!(error.contains(expected), "{error}");
     }
+}
+
+#[test]
+fn radio_group_has_focus_lowers_to_descendant_focus_and_allows_focus_commands() {
+    let source = r#"
+        export component App inherits Window {
+            out property <bool> selecting: options.has-focus;
+            FocusScope {
+                initial-focus: options;
+                options := RadioGroup { title: "Options"; RadioButton { text: "One"; } }
+                enter := Button { clicked => { options.focus(); } }
+                leave := Button { clicked => { options.clear-focus(); } }
+            }
+        }
+    "#;
+    let compiled = compile(source, "radio-focus.xr").unwrap();
+    assert!(compiled.mlir.contains("\"xr.focus_read\""));
+    assert!(compiled.mlir.contains("value = \"focus-within\""));
+    assert!(compiled.mlir.contains("\"xr.focus_target\""));
+    assert!(compiled.mlir.contains("action = \"clear\""));
+
+    let invalid_binding = source.replace("title: \"Options\";", "has-focus: true;");
+    assert!(compile(&invalid_binding, "radio-focus.xr").is_err());
 }
 
 #[test]
@@ -8384,22 +9647,29 @@ fn editor_preview_compiles_open_buffers_and_reports_import_dependencies() {
 }
 
 #[test]
-fn sound_effect_accepts_only_nonvisual_bindings_and_play() {
+fn sound_effect_verifies_nonvisual_bindings_and_playback_commands() {
     let source = r#"
         export component App inherits Window {
             out property <bool> loaded: chime.ready;
-            chime := SoundEffect { source: "click.wav"; volume: 0.5; }
+            out property <int> remaining: chime.loops-remaining;
+            chime := SoundEffect { source: "click.wav"; volume: 0.5; loops: 2; }
             confirm := Button { clicked => { chime.play(); } }
+            cancel := Button { clicked => { chime.stop(); } }
         }
     "#;
     let compiled = compile(source, "sound-effect.xr").unwrap();
     assert!(compiled.mlir.contains("\"xr.media_command\""));
     assert!(compiled.mlir.contains("\"xr.media_read\""));
+    assert!(compiled.mlir.contains("method = \"stop\""));
+    assert!(compiled.mlir.contains("value = \"loops-remaining\""));
     for (from, to) in [
         ("volume: 0.5", "width: 10px"),
         ("volume: 0.5", "ready: true"),
+        ("loops: 2", "loops: true"),
+        ("loops: 2", "loops-remaining: 1"),
         ("chime.play()", "chime.seek(0)"),
         ("chime.play()", "chime.play(1)"),
+        ("chime.stop()", "chime.stop(1)"),
     ] {
         assert!(
             compile(&source.replace(from, to), "sound-effect.xr").is_err(),
@@ -8413,6 +9683,47 @@ fn sound_effect_accepts_only_nonvisual_bindings_and_play() {
     assert_ne!(compiled.mlir, invalid);
     let error = mlir::Module::parse(&invalid).err().unwrap();
     assert!(error.contains("supporting this command"), "{error}");
+}
+
+#[test]
+fn combo_submission_rules_are_typed_and_follow_the_draft() {
+    let source = r#"
+        export component App inherits Window {
+            in-out property <string> draft: "12,50";
+            out property <bool> ready: amount.acceptable-input;
+            amount := ComboBox {
+                editable: true;
+                input-type: InputType.decimal;
+                decimal-separator: ",";
+                minimum-value: 10.0; maximum-value: 25.0;
+                minimum-length: 2; maximum-length: 5; decimals: 2;
+                edit-text <=> root.draft;
+            }
+        }
+    "#;
+    let compiled = compile(source, "combo_submission.xr").unwrap();
+    assert!(compiled.mlir.contains("xr.text_accepts"));
+    let conditional_model = source.replace(
+        "edit-text <=> root.draft;",
+        "edit-text <=> root.draft; model: root.ready ? [\"12,50\"] : [\"20,25\"];",
+    );
+    assert!(compile(&conditional_model, "combo_submission.xr").is_ok());
+    for (from, to, expected) in [
+        ("minimum-length: 2", "minimum-length: true", "type mismatch"),
+        ("minimum-length: 2", "acceptable-input: true", "read-only"),
+        ("minimum-length: 2", "submit-when: root.ready", "cyclic"),
+    ] {
+        let error = compile(&source.replace(from, to), "combo_submission.xr")
+            .err()
+            .unwrap();
+        assert!(error.contains(expected), "{error}");
+    }
+    let text_cycle = source.replace(
+        "edit-text <=> root.draft",
+        "edit-text: root.ready ? \"yes\" : \"no\"",
+    );
+    let error = compile(&text_cycle, "combo_submission.xr").err().unwrap();
+    assert!(error.contains("cyclic"), "{error}");
 }
 
 #[test]
@@ -8740,4 +10051,248 @@ fn editor_horizontal_alignment_is_typed_through_mlir() {
         )
         .is_err()
     );
+}
+
+#[test]
+fn scroll_visual_metrics_are_read_only_layout_outputs() {
+    let source = r#"
+        export component App inherits Window {
+            out property <float> start: bar.visual-position;
+            out property <float> extent: bar.visual-size;
+            bar := ScrollBar { width: 120px; minimum-size: 0.2; }
+        }
+    "#;
+    let compiled = compile(source, "thumb-geometry.xr").unwrap();
+    assert_eq!(
+        compiled.mlir.matches("\"xr.scroll_control_read\"").count(),
+        2
+    );
+    for (field, expected) in [
+        ("visual-size: 0.2", "read-only"),
+        ("height: root.extent * 50px", "layout feedback"),
+        ("minimum-size: root.extent", "cyclic property binding"),
+    ] {
+        let invalid = source.replace("minimum-size: 0.2", field);
+        let error = compile(&invalid, "thumb-geometry.xr").err().unwrap();
+        assert!(error.contains(expected), "{field}: {error}");
+    }
+}
+
+#[test]
+fn scroll_artwork_requires_static_unique_parts_owned_by_scroll_controls() {
+    let source = r#"
+        export component App inherits Window {
+            ScrollBar {
+                minimum-size: 0.2;
+                ScrollTrack { background: #203040; }
+                ScrollThumb { Rectangle { width: 50%; background: #506070; } }
+            }
+            ScrollIndicator { ScrollThumb { background: #708090; } }
+        }
+    "#;
+    let valid = compile(source, "scroll-artwork.xr").unwrap();
+    assert!(valid.mlir.contains("kind = \"ScrollTrack\""));
+    assert!(valid.mlir.contains("kind = \"ScrollThumb\""));
+    for (from, to, expected) in [
+        ("ScrollBar {", "Rectangle {", "static child of ScrollBar"),
+        ("ScrollTrack {", "if true : ScrollTrack {", "static child"),
+        (
+            "ScrollTrack {",
+            "ScrollTrack {} ScrollTrack {",
+            "at most one ScrollTrack",
+        ),
+        (
+            "ScrollTrack {",
+            "ScrollTrack { width: 10px;",
+            "unknown property",
+        ),
+        (
+            "ScrollTrack {",
+            "Label {",
+            "only accepts ScrollTrack and ScrollThumb",
+        ),
+    ] {
+        let invalid = source.replacen(from, to, 1);
+        let error = compile(&invalid, "scroll-artwork.xr").err().unwrap();
+        assert!(error.contains(expected), "{from} -> {to}: {error}");
+    }
+}
+
+#[test]
+fn scroll_activity_is_typed_read_only_and_cannot_feed_layout() {
+    let source = r#"
+        export component App inherits Window {
+            out property <bool> moving: bar.active;
+            out property <bool> down: bar.pressed;
+            out property <bool> over: bar.hovered;
+            out property <bool> indicator-live: indicator.active;
+            bar := ScrollBar { width: 120px; height: 12px; }
+            indicator := ScrollIndicator {}
+        }
+    "#;
+    let compiled = compile(source, "scroll-activity.xr").unwrap();
+    assert_eq!(
+        compiled.mlir.matches("\"xr.scroll_control_read\"").count(),
+        4
+    );
+    for (from, to, expected) in [
+        ("height: 12px;", "active: true;", "read-only"),
+        ("height: 12px;", "visible: root.moving;", "layout feedback"),
+        (
+            "height: 12px;",
+            "policy: root.moving ? always-on : always-off;",
+            "cyclic property binding",
+        ),
+        ("indicator.active", "indicator.pressed", "pressed"),
+    ] {
+        let bad = source.replace(from, to);
+        let error = compile(&bad, "scroll-activity.xr").err().unwrap();
+        assert!(error.contains(expected), "{to}: {error}");
+    }
+}
+
+#[test]
+fn relative_scroll_commands_check_receivers_and_operands() {
+    let source = r#"
+        export component App inherits Window {
+            callback move();
+            move() => {
+                bar.increase();
+                bar.decrease();
+                view.scroll-by(-12px, 36px);
+            }
+            bar := ScrollBar {}
+            view := ScrollView {}
+        }
+    "#;
+    let compiled = compile(source, "relative-scroll.xr").unwrap();
+    for method in ["increase", "decrease", "scroll-by"] {
+        assert!(compiled.mlir.contains(&format!("method = \"{method}\"")));
+    }
+    for (from, to, expected) in [
+        ("bar.increase()", "bar.increase(3)", "takes no arguments"),
+        ("-12px, 36px", "true, 36px", "expected length"),
+        ("callback move()", "pure callback move()", "pure callback"),
+        ("bar := ScrollBar", "bar := ScrollIndicator", "increase"),
+    ] {
+        let invalid = source.replace(from, to);
+        let error = compile(&invalid, "relative-scroll.xr").err().unwrap();
+        assert!(error.contains(expected), "{to}: {error}");
+    }
+    let raw = lower(source, "relative-scroll.xr");
+    let original = raw
+        .lines()
+        .find(|line| line.contains("method = \"increase\""))
+        .unwrap();
+    let redirected = raw.replace(
+        original,
+        &original.replace("owner = \"bar\"", "owner = \"view\""),
+    );
+    let error = xrack_compiler::mlir::process(&redirected).unwrap_err();
+    assert!(error.contains("statically addressed ScrollBar"), "{error}");
+}
+
+#[test]
+fn scroll_view_gutters_have_typed_read_only_geometry_and_reject_feedback() {
+    let source = r#"
+        export component App inherits Window {
+            out property <length> bar-width: view.effective-scroll-bar-width;
+            out property <length> bar-height: view.effective-scroll-bar-height;
+            view := ScrollView { reserve-scroll-bar-space: true; width: 180px; }
+        }
+    "#;
+    let valid = compile(source, "scroll-gutters.xr").unwrap();
+    assert_eq!(valid.mlir.matches("\"xr.viewport_read\"").count(), 2);
+    for (from, to, diagnostic) in [
+        (
+            "reserve-scroll-bar-space: true",
+            "reserve-scroll-bar-space: 10px",
+            "expected bool",
+        ),
+        (
+            "width: 180px",
+            "effective-scroll-bar-width: 8px",
+            "read-only",
+        ),
+        ("width: 180px", "height: root.bar-width", "layout feedback"),
+        (
+            "reserve-scroll-bar-space: true",
+            "reserve-scroll-bar-space: root.bar-height > 0px",
+            "layout feedback",
+        ),
+    ] {
+        let bad = source.replace(from, to);
+        let error = compile(&bad, "scroll-gutters.xr").err().unwrap();
+        assert!(error.contains(diagnostic), "{to}: {error}");
+    }
+}
+
+#[test]
+fn focus_reveal_is_a_boolean_on_content_viewports() {
+    let source = r#"
+        export component Main inherits Window {
+            ScrollView { auto-reveal-focus: false; }
+            Flickable { auto-reveal-focus: true; }
+        }
+    "#;
+    let compiled = compile(source, "focus-reveal.xr").unwrap();
+    assert_eq!(
+        compiled
+            .mlir
+            .matches("name = \"auto-reveal-focus\"")
+            .count(),
+        2
+    );
+    let invalid = source.replace("true;", "42px;");
+    let error = compile(&invalid, "focus-reveal.xr").err().unwrap();
+    assert!(error.contains("expected bool"), "{error}");
+}
+
+#[test]
+fn child_positioning_checks_the_target_and_both_alignment_types() {
+    let source = r#"
+        component Card inherits Rectangle { width: 40px; height: 30px; }
+        export component App inherits Window {
+            callback jump();
+            jump() => { view.position-view-at-child(card, center, contain); }
+            view := ScrollView {
+                Rectangle { card := Card {} }
+            }
+            elsewhere := Card {}
+        }
+    "#;
+    let compiled = compile(source, "position-child.xr").unwrap();
+    assert!(compiled.mlir.contains("\"xr.position_child\""));
+    assert!(compiled.mlir.contains("target = \"card\""));
+    for (from, to, message) in [
+        (
+            "card, center",
+            "elsewhere, center",
+            "descendant in the viewport",
+        ),
+        ("card, center", "\"card\", center", "named descendant"),
+        ("center, contain", "2, contain", "expected scrollalignment"),
+        ("callback jump()", "pure callback jump()", "pure callback"),
+        (
+            "Rectangle { card",
+            "PopupWindow { card",
+            "descendant in the viewport",
+        ),
+    ] {
+        let error = compile(&source.replace(from, to), "position-child.xr")
+            .err()
+            .unwrap();
+        assert!(error.contains(message), "{to}: {error}");
+    }
+    let raw = lower(source, "position-child.xr");
+    let op = raw
+        .lines()
+        .find(|line| line.contains("\"xr.position_child\""))
+        .unwrap();
+    let invalid = raw.replace(
+        op,
+        &op.replace("target = \"card\"", "target = \"elsewhere\""),
+    );
+    let error = xrack_compiler::mlir::process(&invalid).unwrap_err();
+    assert!(error.contains("descendant in the viewport"), "{error}");
 }

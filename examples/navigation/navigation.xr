@@ -29,6 +29,9 @@ export component NavigationDemo inherits Window {
     out property <int> swipe-changes: 0;
     out property <int> indicator-changes: 0;
     out property <string> profile-label: "均衡";
+    out property <bool> settings-active: settings.active;
+    out property <bool> first-swipe-active: swipe-first.active;
+    out property <bool> middle-swipe-active: swipe-middle.active;
     pure callback visit-page(int) -> string;
     visit-page(index) => { index == 0 ? "切换标签页后，计数仍会保留" : "只有当前页内容参与求值" }
     pure callback visit-swipe-page(int) -> string;
@@ -101,12 +104,12 @@ export component NavigationDemo inherits Window {
             orientation: root.vertical-swipes ? Orientation.vertical : Orientation.horizontal;
             interactive: root.swipe-interactive;
             changed(index) => { root.swipe-changes += 1; }
-            SwipePage {
+            swipe-first := SwipePage {
                 swipe-counter := CounterPanel {}
                 Text { x: 235px; y: 20px; text: root.visit-swipe-page(0); color: #acc0db; }
                 Text { x: 235px; y: 57px; text: "Tab 聚焦，方向键或 Home / End 切换"; font-size: 14px; color: #acc0db; }
             }
-            SwipePage {
+            swipe-middle := SwipePage {
                 visible: root.show-middle;
                 Text { x: 16px; y: 12px; text: root.visit-swipe-page(1); color: #acc0db; }
                 ScrollView {
@@ -349,6 +352,7 @@ export component TabBarDemo inherits Window {
     in-out property <int> filter: 0;
     in-out property <[string]> filters: ["全部", "最近更新", "收藏"];
     out property <int> changes: 0;
+    out property <bool> overview-selected: overview-tab.checked;
 
     title: "XRack · 独立标签栏";
     width: 536px; height: 318px;
@@ -568,5 +572,379 @@ export component DirectionalTabsDemo inherits Window {
     status := Text {
         x: 20px; y: 232px;
         text: "页码 " + root.page + " · 设置 " + root.detail;
+    }
+}
+
+export struct GalleryEntry {
+    title: string,
+    id: int,
+    tint: color,
+}
+
+export component PathViewDemo inherits Window {
+    title: "XRack · 曲线路径浏览";
+    width: 640px;
+    height: 336px;
+    background: #111c2a;
+
+    in-out property <[GalleryEntry]> entries: [
+        GalleryEntry { title: "概览", id: 10, tint: #5a7bd9 },
+        GalleryEntry { title: "采集", id: 20, tint: #308c91 },
+        GalleryEntry { title: "地图", id: 30, tint: #7d62ba },
+        GalleryEntry { title: "数据", id: 40, tint: #367daf },
+        GalleryEntry { title: "回放", id: 50, tint: #a45e78 },
+        GalleryEntry { title: "收藏", id: 60, tint: #936840 },
+        GalleryEntry { title: "设置", id: 70, tint: #476d85 },
+    ];
+    in-out property <int> selected: 30;
+    in-out property <bool> curved: true;
+    in-out property <bool> mirrored: false;
+    in-out property <bool> gallery-enabled: true;
+    out property <int> selected-index: gallery.current-index;
+    out property <bool> moving: gallery.moving;
+    out property <int> changes: 0;
+    out property <int> last-value: 0;
+
+    gallery := PathView {
+        x: 26px; y: 32px; width: 588px; height: 214px;
+        model: root.entries;
+        text-role: "title";
+        value-role: "id";
+        current-value <=> root.selected;
+        accessible-name: "资料分类";
+        enabled: root.gallery-enabled;
+        item-width: 118px;
+        item-height: 96px;
+        visible-item-count: 5;
+        wrap: true;
+        layout-direction: root.mirrored ? LayoutDirection.right-to-left : LayoutDirection.left-to-right;
+        path: root.curved ? "M 0 0.86 Q 0.5 -0.46 1 0.86" : "M 0 0.5 L 1 0.5";
+        PathViewOption {
+            background: option-data.tint;
+            border-radius: 9px;
+            opacity: option-enabled ? Math.max(0.52, 1.0 - Math.abs(option-progress - 0.5)) : 0.38;
+            VerticalLayout {
+                width: 100%; height: 100%; padding: 12px;
+                Text { text: option-text; color: #ffffff; font-size: 20px; }
+                Text { text: option-selected ? "当前选项" : "#" + option-data.id; color: #edf3ff; }
+            }
+        }
+        value-selected(value) => {
+            root.changes += 1;
+            root.last-value = value;
+        }
+    }
+
+    caption := Text {
+        x: 28px; y: 259px;
+        text: gallery.current-text + " · ID " + root.selected;
+        color: #edf3ff;
+    }
+    straighten := Button {
+        x: 28px; y: 290px; width: 148px;
+        text: root.curved ? "切换直线" : "切换曲线";
+        clicked => { root.curved = !root.curved; }
+    }
+    mirror := CheckBox {
+        x: 191px; y: 290px;
+        text: "从右向左";
+        checked <=> root.mirrored;
+    }
+}
+
+export struct WorkspaceTab {
+    title: string,
+    id: string,
+}
+
+export component ValueTabsDemo inherits Window {
+    title: "XRack · 动态标签";
+    width: 620px; height: 320px;
+    background: #192639;
+
+    in-out property <[WorkspaceTab]> documents: [
+        WorkspaceTab { title: "概览", id: "home" },
+        WorkspaceTab { title: "草稿", id: "draft" },
+    ];
+    in-out property <string> selected: "draft";
+    in-out property <bool> draft-open: true;
+    in-out property <bool> notes-open: false;
+    out property <int> bar-index: bar.current-index;
+    out property <int> page-index: pages.current-index;
+    out property <int> static-index: summary.current-index;
+    out property <bool> draft-active: draft-page.active;
+    out property <int> page-edits: 0;
+    out property <int> tab-choices: 0;
+    out property <string> last-choice: "";
+    out property <int> last-tab-index: -1;
+
+    bar := TabBar {
+        x: 18px; y: 16px; width: 584px; height: 46px;
+        current-value <=> root.selected;
+        for item in root.documents : TabButton {
+            text: item.title;
+            value: item.id;
+        }
+        changed(index) => {
+            root.tab-choices += 1;
+            root.last-choice = root.selected;
+            root.last-tab-index = index;
+        }
+    }
+    pages := SwipeView {
+        x: 18px; y: 76px; width: 328px; height: 116px;
+        current-value <=> root.selected;
+        home-page := SwipePage {
+            value: "home";
+            Text { x: 12px; y: 14px; text: "概览文档"; color: #e4eeff; }
+        }
+        draft-page := SwipePage {
+            value: "draft";
+            visible: root.draft-open;
+            edit-draft := Button {
+                x: 12px; y: 14px; width: 148px;
+                text: "编辑草稿 " + root.page-edits;
+                clicked => { root.page-edits += 1; }
+            }
+        }
+        notes-page := SwipePage {
+            value: "notes";
+            visible: root.notes-open;
+            Text { x: 12px; y: 14px; text: "笔记文档"; color: #e4eeff; }
+        }
+    }
+    summary := TabWidget {
+        x: 360px; y: 76px; width: 242px; height: 116px;
+        current-value <=> root.selected;
+        Tab { title: "概览"; value: "home"; Text { text: "概览状态"; color: #e4eeff; } }
+        Tab { title: "草稿"; value: "draft"; visible: root.draft-open; Text { text: "草稿状态"; color: #e4eeff; } }
+        Tab { title: "笔记"; value: "notes"; visible: root.notes-open; Text { text: "笔记状态"; color: #e4eeff; } }
+    }
+    status := Text {
+        x: 18px; y: 206px;
+        text: "当前 " + root.selected + " · 标签 " + root.bar-index + " · 内容页 " + root.page-index;
+        color: #e4eeff;
+    }
+    insert := Button {
+        x: 18px; y: 250px; width: 162px;
+        text: "在前面插入笔记";
+        enabled: !root.notes-open && root.draft-open;
+        clicked => {
+            root.notes-open = true;
+            root.documents = [
+                WorkspaceTab { title: "笔记", id: "notes" },
+                WorkspaceTab { title: "概览", id: "home" },
+                WorkspaceTab { title: "草稿", id: "draft" },
+            ];
+        }
+    }
+    reorder := Button {
+        x: 199px; y: 250px; width: 140px;
+        text: "草稿移到前面";
+        enabled: root.notes-open && root.draft-open;
+        clicked => {
+            root.documents = [
+                WorkspaceTab { title: "草稿", id: "draft" },
+                WorkspaceTab { title: "概览", id: "home" },
+                WorkspaceTab { title: "笔记", id: "notes" },
+            ];
+        }
+    }
+    close-draft := Button {
+        x: 358px; y: 250px; width: 128px;
+        text: "关闭草稿";
+        enabled: root.draft-open;
+        clicked => {
+            root.draft-open = false;
+            root.documents = root.notes-open ? [
+                WorkspaceTab { title: "概览", id: "home" },
+                WorkspaceTab { title: "笔记", id: "notes" },
+            ] : [WorkspaceTab { title: "概览", id: "home" }];
+            root.selected = root.selected == "draft" ? "home" : root.selected;
+        }
+    }
+}
+
+component WorkspaceEditor inherits Rectangle {
+    in property <string> title;
+    private property <int> edits: 0;
+    background: #24364d;
+
+    editor-title := Text {
+        x: 18px; y: 20px; text: root.title + " · 编辑 " + root.edits + " 次";
+        color: #e4eeff; font-size: 20px;
+    }
+    edit := Button {
+        x: 18px; y: 65px; width: 116px; text: "编辑本页";
+        clicked => { root.edits += 1; }
+    }
+}
+
+export component ModelSwipeDemo inherits Window {
+    title: "XRack · 模型驱动的文档";
+    width: 520px; height: 286px;
+    background: #192639;
+
+    in-out property <[WorkspaceTab]> documents: [
+        WorkspaceTab { title: "概览", id: "home" },
+        WorkspaceTab { title: "草稿", id: "draft" },
+        WorkspaceTab { title: "笔记", id: "notes" },
+    ];
+    in-out property <string> selected: "draft";
+    out property <int> page-index: pages.current-index;
+    out property <int> bar-index: bar.current-index;
+    out property <int> page-changes: 0;
+    out property <int> tab-moves: 0;
+    out property <int> page-moves: 0;
+    out property <int> move-from: -1;
+    out property <int> move-to: -1;
+    out property <int> index-after-move: -1;
+    callback move-tab(int, int);
+    callback move-page(int, int);
+    move-tab(from, to) => { bar.move-item(from, to); }
+    move-page(from, to) => { pages.move-item(from, to); }
+    pure callback content-title(string) -> string;
+    content-title(title) => { title }
+
+    bar := TabBar {
+        x: 16px; y: 14px; width: 488px; height: 44px;
+        current-value <=> root.selected;
+        reorderable: true;
+        tab-moved(from, to) => {
+            root.tab-moves += 1;
+            root.move-from = from;
+            root.move-to = to;
+            root.index-after-move = bar.current-index;
+        }
+        for doc in root.documents : TabButton { text: doc.title; value: doc.id; }
+    }
+    pages := SwipeView {
+        x: 16px; y: 70px; width: 488px; height: 128px;
+        current-value <=> root.selected;
+        for doc in root.documents : SwipePage {
+            value: doc.id;
+            WorkspaceEditor { title: root.content-title(doc.title); }
+        }
+        changed(index) => { root.page-changes += 1; }
+        page-moved(from, to) => {
+            root.page-moves += 1;
+            root.move-from = from;
+            root.move-to = to;
+            root.index-after-move = pages.current-index;
+        }
+    }
+    status := Text {
+        x: 16px; y: 209px;
+        text: root.selected + " · 标签 " + root.bar-index + " · 页面 " + root.page-index;
+        color: #e4eeff;
+    }
+    move-to-front := Button {
+        x: 190px; y: 240px; width: 154px; text: "把当前标签移到开头";
+        enabled: bar.current-index > 0;
+        clicked => { bar.move-item(bar.current-index, 0); }
+    }
+    reorder := Button {
+        x: 16px; y: 240px; width: 162px; text: "用新顺序替换模型";
+        clicked => {
+            root.documents = [
+                WorkspaceTab { title: "笔记", id: "notes" },
+                WorkspaceTab { title: "概览", id: "home" },
+                WorkspaceTab { title: "草稿", id: "draft" },
+            ];
+        }
+    }
+}
+
+export component ModelTabsDemo inherits Window {
+    title: "XRack · 模型驱动的内建标签页";
+    width: 560px; height: 312px;
+    background: #192639;
+
+    in-out property <[WorkspaceTab]> documents: [
+        WorkspaceTab { title: "概览", id: "home" },
+        WorkspaceTab { title: "草稿", id: "draft" },
+        WorkspaceTab { title: "笔记", id: "notes" },
+    ];
+    in-out property <string> selected: "draft";
+    in-out property <bool> side: false;
+    in-out property <bool> compact: false;
+    in-out property <bool> mirrored: false;
+    in-out property <bool> notes-enabled: true;
+    in-out property <bool> notes-visible: true;
+    out property <int> page-index: tabs.current-index;
+    out property <int> page-count: tabs.count;
+    out property <int> choices: 0;
+    out property <int> tab-moves: 0;
+
+    tabs := TabWidget {
+        x: 16px; y: 14px; width: root.compact ? 126px : 528px; height: 202px;
+        current-value <=> root.selected;
+        reorderable: true;
+        orientation: root.side ? vertical : horizontal;
+        layout-direction: root.mirrored ? right-to-left : left-to-right;
+        for doc in root.documents : Tab {
+            value: doc.id;
+            title: doc.title;
+            accessible-name: "文档 " + doc.title;
+            visible: doc.id != "notes" || root.notes-visible;
+            enabled: doc.id != "notes" || root.notes-enabled;
+            WorkspaceEditor { width: 100%; height: 100%; title: doc.title; }
+        }
+        changed(index) => { root.choices += 1; }
+        tab-moved(from, to) => { root.tab-moves += 1; }
+    }
+    tab-position := PageIndicator {
+        x: 16px; y: 225px; width: 112px; height: 23px;
+        count: tabs.count;
+        current-index: tabs.current-index;
+    }
+    status := Text {
+        x: 147px; y: 225px;
+        text: root.selected + " · 索引 " + root.page-index + " · " + root.page-count + " 页";
+        color: #e4eeff;
+    }
+    compact-tabs := CheckBox {
+        x: 398px; y: 225px; width: 144px; text: "窄标签栏";
+        checked <=> root.compact;
+    }
+    sidebar := CheckBox {
+        x: 16px; y: 260px; width: 120px; text: "侧边栏";
+        checked <=> root.side;
+    }
+    mirror-tabs := CheckBox {
+        x: 154px; y: 260px; width: 142px; text: "从右向左";
+        checked <=> root.mirrored;
+    }
+    remove-notes := Button {
+        x: 314px; y: 260px; width: 178px; text: "关闭笔记";
+        clicked => {
+            root.documents = [
+                WorkspaceTab { title: "概览", id: "home" },
+                WorkspaceTab { title: "草稿", id: "draft" },
+            ];
+            root.selected = root.selected == "notes" ? "draft" : root.selected;
+        }
+    }
+}
+
+export component IndexTabCommandsDemo inherits Window {
+    in-out property <[string]> labels: ["A", "B", "C"];
+    in-out property <int> selected: 1;
+    out property <int> index-after-move: -1;
+    out property <int> moves: 0;
+    callback move-tab(int, int);
+    move-tab(from, to) => { tabs.move-item(from, to); }
+    tabs := TabWidget {
+        current-index <=> root.selected;
+        for label in root.labels : Tab {
+            title: label;
+            enabled: label != "A";
+            visible: label != "C";
+            WorkspaceEditor { title: label; }
+        }
+        tab-moved(from, to) => {
+            root.moves += 1;
+            root.index-after-move = root.selected;
+        }
     }
 }

@@ -1,5 +1,9 @@
 use crate::{Module, ffi, module::string_ref};
-use std::{borrow::Cow, collections::BTreeMap, ptr};
+use std::{
+    borrow::Cow,
+    collections::{BTreeMap, BTreeSet},
+    ptr,
+};
 use xrack_ir::{
     self as ir,
     semantic::{LoweredMember, for_each_component},
@@ -242,6 +246,10 @@ impl Builder<'_> {
                     &[("owner", &s.target.owner)],
                     s.span,
                 )?,
+                ir::Statement::Evaluate { evaluate } => {
+                    let input = self.expr(evaluate)?;
+                    self.emit("evaluate", evaluate.span, &[input], &[], &[])?;
+                }
                 ir::Statement::Invoke(call) => {
                     let operands = self.operands(&call.args)?;
                     let attrs = self.strings(&[("owner", &call.owner), ("name", &call.name)]);
@@ -306,9 +314,23 @@ impl Builder<'_> {
                 ir::Statement::FocusCommand(command) => {
                     let attrs = self.strings(&[
                         ("target", &command.focus_owner),
-                        ("action", if command.clear { "clear" } else { "focus" }),
+                        ("action", &command.action),
                     ]);
                     self.emit("focus_command", command.span, &[], &[], &attrs)?;
+                }
+                ir::Statement::ButtonClick(command) => {
+                    let mut attrs = self.strings(&[("owner", &command.button_owner)]);
+                    if command.animated {
+                        attrs.extend(self.strings(&[("animated", "true")]));
+                    }
+                    self.emit("button_click", command.span, &[], &[], &attrs)?;
+                }
+                ir::Statement::ButtonToggle {
+                    toggle_button_owner,
+                    span,
+                } => {
+                    let attrs = self.strings(&[("owner", toggle_button_owner)]);
+                    self.emit("button_toggle", *span, &[], &[], &attrs)?;
                 }
                 ir::Statement::SwipeCancel { swipe_owner, span } => {
                     self.emit(
@@ -371,6 +393,14 @@ impl Builder<'_> {
                         self.strings(&[("owner", &command.viewport), ("method", &command.method)]);
                     self.emit("scroll_command", command.span, &operands, &[], &attrs)?;
                 }
+                ir::Statement::PositionChild(command) => {
+                    let operands = self.operands(&command.alignments)?;
+                    let attrs = self.strings(&[
+                        ("owner", &command.child_viewport),
+                        ("target", &command.child),
+                    ]);
+                    self.emit("position_child", command.span, &operands, &[], &attrs)?;
+                }
                 ir::Statement::SourceSelection(command) => {
                     let operands = self.operands(&command.args)?;
                     let attrs = self
@@ -411,6 +441,21 @@ impl Builder<'_> {
                     let attrs = self.strings(&[("owner", &command.table_owner)]);
                     self.emit("move_row", command.span, &operands, &[], &attrs)?;
                 }
+                ir::Statement::ModelEdit { method, model, arguments, span } => {
+                    let mut operands = vec![self.expression(model)?];
+                    operands.extend(self.operands(arguments)?);
+                    let attrs = self.strings(&[("method", method)]);
+                    self.emit("model_edit", *span, &operands, &[], &attrs)?;
+                }
+                ir::Statement::MoveNavigationItem {
+                    owner,
+                    positions,
+                    span,
+                } => {
+                    let operands = self.operands(positions)?;
+                    let attrs = self.strings(&[("owner", owner)]);
+                    self.emit("move_navigation_item", *span, &operands, &[], &attrs)?;
+                }
                 ir::Statement::SetRowHeight(command) => {
                     let operands = self.operands(&command.arguments)?;
                     let attrs = self.strings(&[("owner", &command.row_height_owner)]);
@@ -438,6 +483,23 @@ impl Builder<'_> {
             attrs.extend(self.strings(&[("global", "true")]));
         }
         self.open("component", component.span, &attrs)?;
+        let toggle_targets: BTreeSet<_> = members
+            .iter()
+            .filter_map(|member| match member {
+                LoweredMember::Callback(callback)
+                | LoweredMember::Handler(callback)
+                | LoweredMember::InstanceHandler(callback) => Some(&callback.body),
+                _ => None,
+            })
+            .flatten()
+            .filter_map(|statement| match statement {
+                ir::Statement::ButtonToggle {
+                    toggle_button_owner,
+                    ..
+                } => Some(toggle_button_owner.clone()),
+                _ => None,
+            })
+            .collect();
         for member in members {
             match member {
                 LoweredMember::Property(p) => {
@@ -476,6 +538,9 @@ impl Builder<'_> {
                         "instance"
                     } else {
                         attrs.extend(self.strings(&[("kind", kind)]));
+                        if toggle_targets.contains(&key) {
+                            attrs.extend(self.strings(&[("toggle_storage", "true")]));
+                        }
                         if let Some(delegate) = delegate {
                             attrs.extend(self.strings(&[("delegate", delegate)]));
                         }
@@ -632,6 +697,8 @@ impl Builder<'_> {
 
 /// Build an in-memory XR module before native verification or optimization.
 pub fn lower_module(doc: &Document, filename: &str) -> Result<Module, Vec<Diagnostic>> {
+    let doc = xrack_ir::declare_handles(doc);
+    let doc = doc.as_ref();
     let mut module = Module::empty();
     let (context, body) = module.builder_handles();
     let mut builder = Builder {

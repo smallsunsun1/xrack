@@ -42,11 +42,16 @@ pub(crate) struct State {
     name: String,
     row: Option<RowScope>,
     repeats: RefCell<BTreeMap<String, Rc<RepeatState>>>,
+    loaders: RefCell<BTreeMap<String, Rc<xrack_runtime::LoaderSlot>>>,
+    external_loaders: RefCell<BTreeMap<String, Rc<xrack_runtime::ExternalLoader>>>,
+    dynamic_children: RefCell<BTreeMap<String, Rc<xrack_runtime::DynamicChildren>>>,
     splits: RefCell<BTreeMap<String, Rc<xrack_runtime::SplitState>>>,
     stacks: RefCell<BTreeMap<String, Rc<xrack_runtime::StackState>>>,
     timers: BTreeMap<String, xrack_runtime::TimerSlot>,
     focus: BTreeMap<String, xrack_runtime::FocusHandle>,
     button_presses: BTreeMap<String, xrack_runtime::ButtonPressHandle>,
+    combo_popups: BTreeMap<String, xrack_runtime::ComboPopupHandle>,
+    range_positions: BTreeMap<String, xrack_runtime::RangePositionHandle>,
     hover: RefCell<BTreeMap<String, xrack_runtime::HoverHandle>>,
     gestures: gesture::Handles,
     pointers: RefCell<BTreeMap<String, xrack_runtime::PointerHandle>>,
@@ -57,6 +62,8 @@ pub(crate) struct State {
     split_input: Cell<Option<xrack_runtime::SplitHandleInput>>,
     calendar_input: Cell<Option<xrack_runtime::CalendarCell>>,
     section_input: RefCell<Option<xrack_runtime::ListSectionInput>>,
+    combo_option_input: RefCell<Option<xrack_runtime::ComboOptionInput>>,
+    combo_option_renderers: RefCell<BTreeMap<String, xrack_runtime::ComboOptionRenderer>>,
     calendars: RefCell<BTreeMap<String, Rc<calendar::State>>>,
     pickers: RefCell<BTreeMap<String, Rc<picker::State>>>,
     locale: xrack_runtime::LocaleBinding,
@@ -76,6 +83,8 @@ pub(crate) struct State {
     scene: Property<Rc<Node>>,
     pub(crate) error: Rc<Cell<Option<Error>>>,
     pub(crate) check_groups: RefCell<BTreeMap<String, Rc<Property<xrack_runtime::CheckState>>>>,
+    pub(crate) radio_choices: RefCell<BTreeMap<String, Rc<Property<Option<(usize, usize)>>>>>,
+    pub(crate) navigation_choices: RefCell<BTreeMap<String, Rc<Property<Option<usize>>>>>,
 }
 
 #[derive(Default)]
@@ -123,6 +132,12 @@ type InstanceInputs = BTreeMap<Vec<Member>, BoundInput>;
 type CallbackBinding = Rc<dyn Fn(&[Value]) -> Result<Option<Value>>>;
 type InstanceCallbacks = BTreeMap<Vec<Member>, CallbackBinding>;
 type ActionFlagCache = BTreeMap<Member, Rc<Property<Option<Value>>>>;
+
+fn dynamic_handle(component: &str, id: i64) -> Value {
+    Value::Record(xrack_runtime::RecordValue::new(
+        format!("{component}Handle"), BTreeMap::from([("id".into(), Value::Int(id))]),
+    ))
+}
 
 fn evaluation(message: impl Into<String>) -> Error {
     Error::Evaluation(message.into())
@@ -255,6 +270,9 @@ impl Program {
                 name: name.into(),
                 row,
                 repeats: RefCell::default(),
+                loaders: RefCell::default(),
+                external_loaders: RefCell::default(),
+                dynamic_children: RefCell::default(),
                 splits: RefCell::default(),
                 stacks: RefCell::default(),
                 timers: definition
@@ -264,12 +282,30 @@ impl Program {
                     .cloned()
                     .map(|key| (key, Default::default()))
                     .collect(),
-                button_presses: definition
-                    .button_press_targets
+                range_positions: definition
+                    .range_position_targets
                     .iter()
                     .filter(|key| keys.contains(key.as_str()))
                     .cloned()
                     .map(|key| (key, Default::default()))
+                    .collect(),
+                button_presses: definition
+                    .button_press_targets
+                    .iter()
+                    .filter(|key| keys.contains(key.as_str()))
+                    .map(|key| {
+                        let handle = if definition.button_animation_targets.contains(key) {
+                            xrack_runtime::ButtonPressHandle::animated()
+                        } else {
+                            Default::default()
+                        };
+                        (key.clone(), handle)
+                    })
+                    .collect(),
+                combo_popups: definition
+                    .combo_popup_targets
+                    .iter()
+                    .map(|target| (target.clone(), xrack_runtime::ComboPopupHandle::default()))
                     .collect(),
                 focus: definition
                     .focus_targets
@@ -305,6 +341,8 @@ impl Program {
                 split_input: Cell::default(),
                 calendar_input: Cell::default(),
                 section_input: RefCell::default(),
+                combo_option_input: RefCell::default(),
+                combo_option_renderers: RefCell::default(),
                 calendars: RefCell::default(),
                 pickers: RefCell::default(),
                 locale,
@@ -339,6 +377,8 @@ impl Program {
                 table_columns: OnceCell::new(),
                 scene: Property::default(),
                 check_groups: RefCell::default(),
+                radio_choices: RefCell::default(),
+                navigation_choices: RefCell::default(),
                 error,
             }),
             None,
@@ -350,16 +390,53 @@ impl Program {
                 });
             }
         }
+        let build = xrack_runtime::LoaderBuild::current();
+        let pending_children = build
+            .as_ref()
+            .map(|_| Rc::<RefCell<BTreeMap<String, Instance>>>::default());
         let mut children = BTreeMap::new();
         stack.push(name.into());
-        let result = root.allocate_children(
-            self,
-            &instance,
-            &mut forwarded,
-            &mut callbacks,
-            &mut children,
-            stack,
-        );
+        let sampling_navigation_page = instance.0.row.as_ref().is_some_and(|row| row.sampled)
+            && matches!(root.visual, Visual::Builtin("SwipePage" | "Tab"));
+        let result = if sampling_navigation_page {
+            Ok(())
+        } else {
+            root.visit_child_allocations(
+                &instance,
+                &mut forwarded,
+                &mut callbacks,
+                &mut |key, component, incoming, handlers| {
+                    let parent = Rc::downgrade(&instance.0);
+                    if let (Some(build), Some(pending)) = (&build, &pending_children) {
+                        let program = self.clone();
+                        let key = key.to_owned();
+                        let component = component.to_owned();
+                        let pending = pending.clone();
+                        let mut stack = stack.clone();
+                        build.enqueue(move || {
+                            if parent.strong_count() != 0 {
+                                let child = program
+                                    .allocate(
+                                        &component,
+                                        Some(parent),
+                                        incoming,
+                                        handlers,
+                                        &mut stack,
+                                    )
+                                    .map_err(|error| error.to_string())?;
+                                pending.borrow_mut().insert(key, child);
+                            }
+                            Ok(())
+                        });
+                    } else {
+                        let child =
+                            self.allocate(component, Some(parent), incoming, handlers, stack)?;
+                        children.insert(key.to_owned(), child);
+                    }
+                    Ok(())
+                },
+            )
+        };
         stack.pop();
         result?;
         if let Some((path, _)) = forwarded.first_key_value() {
@@ -369,7 +446,17 @@ impl Program {
                 member.owner, member.name
             )));
         }
-        assert!(instance.0.children.set(children).is_ok());
+        if let (Some(build), Some(pending)) = (build, pending_children) {
+            let parent = Rc::downgrade(&instance.0);
+            build.complete(move || {
+                if let Some(parent) = parent.upgrade() {
+                    assert!(parent.children.set(pending.take()).is_ok());
+                }
+                Ok(())
+            });
+        } else {
+            assert!(instance.0.children.set(children).is_ok());
+        }
         for (mut path, callback) in callbacks {
             let member = path
                 .pop()
@@ -423,14 +510,12 @@ impl Element {
         }
     }
 
-    fn allocate_children(
+    fn visit_child_allocations(
         &self,
-        program: &Program,
         parent: &Instance,
         forwarded: &mut InstanceInputs,
         callbacks: &mut InstanceCallbacks,
-        children: &mut BTreeMap<String, Instance>,
-        stack: &mut Vec<String>,
+        allocate: &mut impl FnMut(&str, &str, InstanceInputs, InstanceCallbacks) -> Result<()>,
     ) -> Result<()> {
         if let Visual::Instance { component, inputs } = &self.visual {
             let incoming = self.child_inputs(parent, inputs, forwarded);
@@ -445,17 +530,10 @@ impl Element {
                 path.remove(0);
                 handlers.insert(path, callback);
             }
-            let child = program.allocate(
-                component,
-                Some(Rc::downgrade(&parent.0)),
-                incoming,
-                handlers,
-                stack,
-            )?;
-            children.insert(self.key.clone(), child);
+            allocate(&self.key, component, incoming, handlers)?;
         }
         for element in self.owned_children().filter(|child| child.repeat.is_none()) {
-            element.allocate_children(program, parent, forwarded, callbacks, children, stack)?;
+            element.visit_child_allocations(parent, forwarded, callbacks, allocate)?;
         }
         Ok(())
     }
@@ -570,6 +648,130 @@ impl Instance {
             Some(row),
             &mut Vec::new(),
         )
+    }
+
+    /// Get the current declared candidate of a Loader in this component.
+    pub fn loader_item(&self, id: &str) -> Option<xrack_runtime::LoaderItem<Self>> {
+        fn find<'a>(element: &'a Element, id: &str) -> Option<&'a Element> {
+            if matches!(element.visual, Visual::Builtin("Loader"))
+                && (element.id.as_ref() == id || element.key == "root" && id == "root")
+            {
+                return Some(element);
+            }
+            element.children.iter().filter(|child| child.repeat.is_none()).find_map(|child| find(child, id))
+        }
+        let loader = find(&self.definition().root, id)?;
+        if let Some(slot) = self.0.external_loaders.borrow().get(&loader.key) {
+            return slot.item();
+        }
+        let slot = self.0.loaders.borrow().get(&loader.key)?.clone();
+        for candidate in &loader.children {
+            let Some(repeat) = candidate.repeat.as_ref() else { continue };
+            let Some((_, index)) = repeat.loader else { continue };
+            let Some(state) = slot.get::<RepeatState>(index) else { continue };
+            let key = xrack_runtime::ListModel::row_key(&1i64, 0);
+            let row = self.capture_result(state.row(self, repeat, 0, key, false)).flatten()?;
+            return slot.item(index, row.children().get(&candidate.key)?.as_weak());
+        }
+        None
+    }
+
+    fn dynamic_children(&self, owner: &str) -> Rc<xrack_runtime::DynamicChildren> {
+        self.0.dynamic_children.borrow_mut().entry(owner.into()).or_default().clone()
+    }
+
+    fn dynamic_expression(&self, owner: &str, names: &[String], values: &[Expr], args: &[Value]) -> Result<Value> {
+        let [verb, component, members @ ..] = names else {
+            return Err(evaluation("invalid dynamic component operation"));
+        };
+        let children = self.dynamic_children(owner);
+        let arg = |index| values.get(index).ok_or_else(|| evaluation("missing dynamic argument"))
+            .and_then(|value| self.evaluate(value, args));
+        if verb == "mount-url" {
+            let Value::String(source) = arg(0)? else { return Err(evaluation("expected component URL")); };
+            let id = children.mount_url(source);
+            return Ok(dynamic_handle("ExternalComponent", id));
+        }
+        if matches!(verb.as_str(), "mount" | "mount-async") {
+            let initial = values.iter().map(|value| self.evaluate(value, args)).collect::<Result<Vec<_>>>()?;
+            let members = members.to_vec();
+            let target = component.clone();
+            let program = self.0.program.clone();
+            let parent = Rc::downgrade(&self.0);
+            let create = move || {
+                let incoming = members.iter().zip(initial).map(|(member, value)| {
+                    let input = BoundInput::default();
+                    input.set_if_changed_by(Ok(value), |_, _| false);
+                    (vec![Member::root(member)], input)
+                }).collect();
+                let item = program.allocate(
+                    &target, Some(parent), incoming, BTreeMap::new(), &mut Vec::new(),
+                )?;
+                let weak = item.as_weak();
+                Ok::<_, Error>((item, weak))
+            };
+            let id = if verb == "mount-async" {
+                children.prepare(move || {
+                    let (item, weak) = create().map_err(|error| error.to_string())?;
+                    Ok(xrack_runtime::LoadedExternal::new(item, weak))
+                })
+            } else {
+                let (item, weak) = create()?;
+                children.mount(item, weak)
+            };
+            return Ok(dynamic_handle(component, id));
+        }
+        let Value::Record(handle) = arg(0)? else { return Err(evaluation("expected a component handle")); };
+        let Some(Value::Int(id)) = handle.field("id") else { return Err(evaluation("invalid component handle")); };
+        let id = *id;
+        let item = || children.get::<Self>(id).filter(|child| child.0.name == *component);
+        match (verb.as_str(), members) {
+            ("is-mounted", []) => Ok(Value::Bool(children.contains(id))),
+            ("status", []) => Ok(Value::String(children.status(id).into())),
+            ("remove", []) => Ok(Value::Bool(children.remove(id))),
+            ("move", []) => {
+                let Value::Int(index) = arg(1)? else { return Err(evaluation("expected index")); };
+                Ok(Value::Bool(children.move_to(id, index)))
+            }
+            ("get", [member]) => match item() {
+                Some(ui) => ui.get(member),
+                None => arg(1),
+            },
+            ("set", [member]) => {
+                let Some(ui) = item() else { return Ok(Value::Bool(false)) };
+                ui.set(member, arg(1)?)?;
+                Ok(Value::Bool(true))
+            }
+            ("call" | "call-value", [member]) => {
+                let has_value = verb == "call-value";
+                let Some(ui) = item() else {
+                    return if has_value { arg(1) } else { Ok(Value::Bool(false)) };
+                };
+                let first = if has_value { 2 } else { 1 };
+                let arguments = (first..values.len()).map(arg).collect::<Result<Vec<_>>>()?;
+                let value = ui.invoke(member, &arguments)?;
+                if has_value {
+                    value.ok_or_else(|| evaluation("dynamic callback returned no value"))
+                } else {
+                    Ok(Value::Bool(true))
+                }
+            }
+            _ => Err(evaluation("invalid dynamic component operation")),
+        }
+    }
+
+    fn external_loader(&self, owner: &str) -> Rc<xrack_runtime::ExternalLoader> {
+        self.0.external_loaders.borrow_mut().entry(owner.into()).or_default().clone()
+    }
+
+    fn loader_slot(&self, owner: &str) -> Rc<xrack_runtime::LoaderSlot> {
+        let mut loaders = self.0.loaders.borrow_mut();
+        if let Some(slot) = loaders.get(owner) {
+            return slot.clone();
+        }
+        let slot = Rc::default();
+        loaders.insert(owner.into(), Rc::clone(&slot));
+        slot
     }
 
     pub(crate) fn repeat_state(&self, template: &Element) -> Rc<RepeatState> {
@@ -998,7 +1200,7 @@ impl Instance {
         }
     }
 
-    fn choose_state(&self, index: usize) -> Result<i64> {
+    pub(crate) fn choose_state(&self, index: usize) -> Result<i64> {
         for (case, condition) in self.definition().selectors[index]
             .conditions
             .iter()
@@ -1446,6 +1648,7 @@ impl Instance {
                 Statement::Assign(target, expression) => {
                     self.write(target, self.evaluate(expression, args)?)?;
                 }
+                Statement::Evaluate(value) => { self.evaluate(value, args)?; }
                 Statement::Call(target, arguments, site) => {
                     self.call_with_operands(target, arguments, args, site)?;
                 }
@@ -1473,6 +1676,22 @@ impl Instance {
                 Statement::Scroll(target, command, arguments) => {
                     self.scroll_command(target, *command, &self.arguments(arguments, args)?)?;
                 }
+                Statement::PositionChild {
+                    view,
+                    target,
+                    alignments,
+                } => {
+                    let alignment = |expression| match self.evaluate(expression, args)? {
+                        Value::ScrollAlignment(alignment) => Ok(alignment),
+                        _ => Err(evaluation("invalid child positioning alignment")),
+                    };
+                    self.position_child(
+                        view,
+                        target,
+                        alignment(&alignments[0])?,
+                        alignment(&alignments[1])?,
+                    )?;
+                }
                 Statement::SelectKey(target, key) => {
                     let key = self.int_argument(key, args)?;
                     self.select_view_key(target, key)?;
@@ -1488,6 +1707,16 @@ impl Instance {
                         .transpose()?;
                     self.select_source(target, index, column)?;
                 }
+                Statement::MoveNavigationItem(target, [from, to]) => {
+                    let from = self.int_argument(from, args)?;
+                    let to = self.int_argument(to, args)?;
+                    if let (Ok(from), Ok(to)) = (usize::try_from(from), usize::try_from(to)) {
+                        let (owner, element) = self.element_owner(target)?;
+                        if let Some(model) = owner.group_option_model(element)? {
+                            owner.commit_navigation_move(element, &model, from, to, || true)?;
+                        }
+                    }
+                }
                 Statement::Table(target, command, operands) => {
                     self.table_command(target, *command, &self.arguments(operands, args)?)?;
                 }
@@ -1502,6 +1731,24 @@ impl Instance {
                     .ok_or_else(|| evaluation("invalid focus command arguments"))?;
                     self.focus_handle(target)?.request(action);
                 }
+                Statement::ButtonClick(target, animated) => {
+                    let (owner, _) = self.element_owner(target)?;
+                    let handle = owner
+                        .0
+                        .button_presses
+                        .get(target)
+                        .ok_or_else(|| evaluation("missing button activation handle"))?;
+                    let render = || owner.render_shared();
+                    let route = |scene: &Node, path: &[usize], input: InputRoute<'_>| {
+                        owner.dispatch_routed(scene, path, input)
+                    };
+                    if *animated {
+                        handle.try_animate_click(render, route)?;
+                    } else {
+                        handle.try_click(render, route)?;
+                    }
+                }
+                Statement::ButtonToggle(target) => self.toggle_button(target)?,
                 Statement::Tree(target, command, key, depth) => {
                     let key = self.int_argument(key, args)?;
                     let depth = depth
@@ -1656,6 +1903,16 @@ impl Instance {
             Read(member) => self.read(member),
             GeometryRead(target, metric) => self.geometry_read(target, *metric),
             ViewportRead(target, metric) => Ok(metric.read(&self.viewport(target)?)),
+            Dynamic(target, names, values) => self.dynamic_expression(target, names, values, args),
+            LoaderExternalStatus(target, source) => {
+                let Value::String(source) = self.evaluate(source, args)? else {
+                    return Err(evaluation("expected Loader source URL"));
+                };
+                Ok(Value::String(self.external_loader(target).status(&source)))
+            }
+            LoaderMounted(target, selection) => Ok(Value::Bool(
+                self.loader_slot(target).is_mounted(self.int_argument(selection, args)?),
+            )),
             StackRead(target, read) => Ok(crate::stack::read(
                 self.stack_snapshot_by_key(target)?.as_ref(),
                 read,
@@ -1744,6 +2001,13 @@ impl Instance {
                 .as_ref()
                 .map(|input| parameter.read(input))
                 .ok_or_else(|| evaluation("section parameter outside a SectionHeader")),
+            ComboOptionParam(parameter) => self
+                .0
+                .combo_option_input
+                .borrow()
+                .as_ref()
+                .map(|input| parameter.read(input))
+                .ok_or_else(|| evaluation("option parameter outside a choice template")),
             Unary(operator, operand) => {
                 let value = self.evaluate(operand, args)?;
                 match (operator, value) {
@@ -2011,6 +2275,73 @@ impl Instance {
                     handle.has_focus()
                 }))
             }
+            ComboPopupRead(target, open) => {
+                let handle = self
+                    .0
+                    .combo_popups
+                    .get(target)
+                    .ok_or_else(|| evaluation("missing ComboBox popup target"))?;
+                Ok(if *open {
+                    Value::Bool(handle.popup_open())
+                } else {
+                    Value::Int(handle.highlighted_index())
+                })
+            }
+            ButtonChecked(target) => self.read_button_checked(target).map(Value::Bool),
+            RadioChecked { target, group } => self.radio_checked(target, group).map(Value::Bool),
+            NavigationActive { target, group } => {
+                self.navigation_active(target, group).map(Value::Bool)
+            }
+            NavigationCount(group) => {
+                let (owner, group) = self.element_owner(group)?;
+                let count = if let Some(page) = group.children.first()
+                    && let Some(repeat) = &page.repeat
+                {
+                    if repeat.empty {
+                        0
+                    } else {
+                        owner
+                            .repeat_state(page)
+                            .row_model(&owner, repeat)?
+                            .row_count()
+                            .min(4096)
+                    }
+                } else {
+                    group.children.len()
+                };
+                Ok(Value::Int(count as i64))
+            }
+            NavigationIndex(group) => {
+                let (owner, group) = self.element_owner(group)?;
+                Ok(Value::Int(
+                    owner
+                        .navigation_choice(group)?
+                        .map_or(-1, |index| index as i64),
+                ))
+            }
+            ToggleStateRead(member) => {
+                let (owner, control) = self.element_owner(&member.owner)?;
+                let state = owner.toggle_check_state(control)?;
+                Ok(if member.name == "checked" {
+                    Value::Bool(state == xrack_runtime::CheckState::Checked)
+                } else {
+                    Value::CheckState(state)
+                })
+            }
+            NumericValueRead(member) => {
+                let (owner, control) = self.element_owner(&member.owner)?;
+                Ok(owner
+                    .control_value(control, &member.name)?
+                    .unwrap_or_else(|| {
+                        if matches!(control.visual, Visual::Builtin("SpinBox")) {
+                            Value::Int(0)
+                        } else {
+                            Value::Float(0.0)
+                        }
+                    }))
+            }
+            RangePositionRead(member) => self.read_range_position(member).map(Value::Float),
+            ComboStateRead(member, fallback) => self.read_combo_state(member, fallback),
             ButtonPressed(target) => {
                 let (owner, element) = self.element_owner(target)?;
                 let handle = owner
@@ -2155,7 +2486,11 @@ impl Instance {
         Ok(model)
     }
 
-    fn render_combo(&self, element: &Element, combo: &RecordCombo, node: &mut Node) -> Result<()> {
+    pub(crate) fn combo_items(
+        &self,
+        element: &Element,
+        combo: &RecordCombo,
+    ) -> Result<xrack_runtime::ComboItems> {
         let cache = self
             .0
             .combo_items
@@ -2163,7 +2498,7 @@ impl Instance {
             .entry(element.key.clone())
             .or_default()
             .clone();
-        let items = cache.try_get(|| {
+        cache.try_get(|| {
             let model = self.record_combo_model(combo)?.model().clone();
             let label = combo.label.clone();
             let value = combo.value.clone();
@@ -2186,9 +2521,73 @@ impl Instance {
                         .is_none_or(|path| record.field_path(path) == Some(&Value::Bool(true)))
                 },
             ))
-        })?;
-        items.populate_scene(node);
+        })
+    }
+
+    fn render_combo(&self, element: &Element, combo: &RecordCombo, node: &mut Node) -> Result<()> {
+        let items = self.combo_items(element, combo)?;
+        if matches!(node.kind, "Tumbler" | "PathView") {
+            items.populate_tumbler(node);
+        } else {
+            items.populate_scene(node);
+        }
         Ok(())
+    }
+
+    fn read_combo_state(&self, member: &Member, fallback: &Value) -> Result<Value> {
+        use xrack_runtime::{ComboStateModel, VecModel};
+        let (owner, element) = self.element_owner(&member.owner)?;
+        let property = member.name.as_str();
+        if property == "edit-text"
+            && let Some(draft) = owner.control_value(element, "edit-text")?
+        {
+            return Ok(draft);
+        }
+        let stored = element.selection_property();
+        if property == "current-value" && stored == "current-value" {
+            return Ok(owner
+                .control_value(element, stored)?
+                .unwrap_or_else(|| fallback.clone()));
+        }
+        let model = if let Some(combo) = &element.record_combo {
+            let items = owner.combo_items(element, combo)?;
+            if matches!(element.visual, Visual::Builtin("Tumbler" | "PathView")) {
+                ComboStateModel::Tumbler(items)
+            } else {
+                ComboStateModel::Records(items)
+            }
+        } else {
+            ComboStateModel::Strings(match owner.binding_value(element, "model")? {
+                Some(Value::StringModel(model)) => model,
+                Some(Value::StringList(items)) => VecModel::from(items),
+                None => VecModel::default(),
+                _ => return Err(evaluation("expected a string ComboBox model")),
+            })
+        };
+        if property == "count" {
+            return Ok(Value::Int(model.count() as i64));
+        }
+        let selection = owner.control_value(element, stored)?;
+        let index = if stored == "current-value" {
+            model.selected_index(0, selection.as_ref())
+        } else {
+            let raw = match selection {
+                Some(Value::Int(index)) => index,
+                _ => 0,
+            };
+            model.selected_index(raw, None)
+        };
+        Ok(match property {
+            "current-index" => Value::Int(index.map_or(-1, |index| index as i64)),
+            "current-value" => index
+                .and_then(|index| model.value_at(index))
+                .unwrap_or_else(|| fallback.clone()),
+            _ => Value::String(
+                index
+                    .and_then(|index| model.text_at(index))
+                    .unwrap_or_default(),
+            ),
+        })
     }
 
     fn animation(&self, spec: &AnimationSpec) -> Result<Option<Animation>> {
@@ -2311,7 +2710,9 @@ impl Instance {
             .or_insert_with(|| {
                 Rc::new(match element.visual {
                     Visual::Builtin("MonthGrid") => calendar::State::Cells(Default::default()),
-                    Visual::Builtin("Tumbler") => calendar::State::Tumbler(Default::default()),
+                    Visual::Builtin("Tumbler" | "PathView") => {
+                        calendar::State::Tumbler(Default::default())
+                    }
                     _ => unreachable!("calendar control"),
                 })
             })
@@ -2373,6 +2774,21 @@ impl Instance {
                     repeat.positioned,
                 ));
             }
+            if let Some((owner, candidate)) = &repeat.loader {
+                let slot = self.loader_slot(owner);
+                let mode = self.int_argument(&repeat.model, &[])?;
+                if mode <= 0 {
+                    slot.clear(*candidate);
+                    return Ok(Node::hidden());
+                }
+                return slot.try_render::<RepeatState, _>(
+                    *candidate,
+                    mode == 2,
+                    |state| state.prepare_loader(self, element),
+                    |state| Ok(xrack_runtime::loader_candidate_scene(state.render(self, element, 0..1)?)),
+                    evaluation,
+                );
+            }
             let children = self.repeat_state(element).render(self, element, 0..4096)?;
             return Ok(xrack_runtime::repeat_scene(children, repeat.positioned));
         }
@@ -2409,10 +2825,18 @@ impl Instance {
                 node.application_window = application_window;
                 node
             }
-            Visual::Instance { .. } => self.children()[&element.key]
-                .render_scene()?
-                .as_ref()
-                .clone(),
+            Visual::Instance { .. } => {
+                let child = &self.children()[&element.key];
+                let mut node = child.render_scene()?.as_ref().clone();
+                if element
+                    .repeat
+                    .as_ref()
+                    .is_some_and(|repeat| repeat.item == "_")
+                {
+                    node.set_loader_mount(child.0.binding_lifetime.loader_mount().clone());
+                }
+                node
+            }
         };
         node.set_owned_id((!element.id.is_empty()).then(|| element.id.clone()));
         let selection = element
@@ -2450,6 +2874,12 @@ impl Instance {
         if let Some(handle) = self.0.button_presses.get(&element.key) {
             node.button_press_handle = Some(handle.clone());
         }
+        if let Some(handle) = self.0.combo_popups.get(&element.key) {
+            node.combo_popup_handle = Some(handle.clone());
+        }
+        if let Some(handle) = self.0.range_positions.get(&element.key) {
+            node.range_position_handle = Some(handle.clone());
+        }
         if let Some(target) = &element.initial_focus {
             node.initial_focus = Some(self.focus_handle(target)?);
         }
@@ -2475,7 +2905,7 @@ impl Instance {
             {
                 continue;
             }
-            if node.kind == "Tumbler" && name == "model" {
+            if matches!(node.kind, "Tumbler" | "PathView") && name == "model" {
                 if let Some(items) = self.tumbler_items(element)? {
                     node.set_tumbler_items(items);
                 }
@@ -2530,6 +2960,28 @@ impl Instance {
         }
         if let Some(combo) = &element.record_combo {
             self.render_combo(element, combo, &mut node)?;
+        }
+        if element.combo_option.is_some() {
+            let renderer = self
+                .0
+                .combo_option_renderers
+                .borrow_mut()
+                .entry(element.key.clone())
+                .or_insert_with(|| {
+                    let owner = Rc::downgrade(&self.0);
+                    let key = element.key.clone();
+                    xrack_runtime::ComboOptionRenderer::new(move |input| {
+                        let owner = owner.upgrade().map(Instance::from_state)?;
+                        let combo = owner.definition().root.find_key(&key)?;
+                        let template = combo.combo_option.as_deref()?;
+                        let previous = owner.0.combo_option_input.replace(Some(input));
+                        let result = owner.render_element(template);
+                        owner.0.combo_option_input.replace(previous);
+                        owner.capture_result(result)
+                    })
+                })
+                .clone();
+            node.combo_option_renderer = Some(renderer);
         }
         for (&name, cases) in &element.state_bindings {
             let selected = self.rendered_state(cases[0].selector)?;
@@ -2612,10 +3064,15 @@ impl Instance {
                 _ => 1.0,
             };
             let muted = self.binding_value(effect, "muted")? == Some(Value::Bool(true));
+            let loops = match self.binding_value(effect, "loops")? {
+                Some(Value::Int(value)) => value,
+                _ => 1,
+            };
             let file = effect.media_source_file.as_deref().unwrap_or_default();
             node.sound_effects.push(
                 self.media_slot(&effect.key)
-                    .sound_effect(file, &source, volume, muted),
+                    .sound_effect(file, &source, volume, muted)
+                    .with_sound_loops(loops),
             );
         }
         for timer in &element.timers {
@@ -2682,7 +3139,12 @@ impl Instance {
         }
         let eligible_page = !matches!(node.kind, "Tab" | "SwipePage" | "StackPage")
             || node.boolean("visible", true) && node.boolean("enabled", true);
-        if include_children && eligible_page && !element.children.is_empty() {
+        if include_children
+            && eligible_page
+            && (!element.children.is_empty()
+                || node.kind == "DynamicContainer"
+                || node.kind == "Loader" && node.text("source-url").is_some())
+        {
             node.children.clear();
             self.render_children(element, &mut node)?;
         } else if matches!(element.visual, Visual::Builtin("RangeSlider")) {
@@ -2728,8 +3190,30 @@ impl Instance {
     }
 
     fn render_children(&self, element: &Element, node: &mut Node) -> Result<()> {
+        if node.kind == "DynamicContainer" {
+            node.children.extend(self.dynamic_children(&element.key).render());
+        }
+        if node.kind == "Loader"
+            && let Some(source) = node.text("source-url")
+        {
+            let child = self.external_loader(&element.key).render(source);
+            node.children.push(child);
+        }
         if matches!(element.visual, Visual::Builtin("RangeSlider")) {
             node.add_range_thumbs();
+        }
+        if matches!(node.kind, "SwipeView" | "TabWidget")
+            && let Some(page) = element.children.first()
+            && let Some(repeat) = &page.repeat
+        {
+            let state = self.repeat_state(page);
+            return node.try_append_navigation_pages(
+                || state.row_model(self, repeat),
+                |model, slot| self.describe_navigation_page(page, repeat, model, slot),
+                |model, active| {
+                    state.render_indices(self, page, model, active.into_iter(), &Default::default())
+                },
+            );
         }
         if node.kind == "SwipeView" {
             return self.render_swipe_pages(element, node);
@@ -2748,6 +3232,9 @@ impl Instance {
                         .iter()
                         .position(|page| page.id.as_ref() == route)
                 }),
+            "TabWidget" if node.text("current-value").is_some() => {
+                self.navigation_choice(element)?
+            }
             "TabWidget" => usize::try_from(node.int("current-index").unwrap_or(0)).ok(),
             _ => None,
         };
@@ -2769,8 +3256,13 @@ impl Instance {
                 continue;
             }
             let page = matches!(node.kind, "TabWidget" | "StackView");
-            let child_node =
-                self.render_element_with_content(child, !page || Some(index) == active)?;
+            let child_node = if matches!(child.visual, Visual::Builtin("ComboContent"))
+                && xrack_runtime::combo_editable(node)
+            {
+                Node::hidden()
+            } else {
+                self.render_element_with_content(child, !page || Some(index) == active)?
+            };
             if options && child.repeat.is_some() {
                 node.children.extend(child_node.children.iter().cloned());
             } else {
@@ -2811,10 +3303,15 @@ impl Instance {
             let Some(key) = node.row_key else {
                 return Ok(None);
             };
-            let Some(row) =
+            let state = if let Some((owner, candidate)) = &repeat.loader {
+                let Some(state) = self.loader_slot(owner).get::<RepeatState>(*candidate) else {
+                    return Ok(None);
+                };
+                state
+            } else {
                 self.repeat_state(element)
-                    .row(self, repeat, index, key, route.follow_row)?
-            else {
+            };
+            let Some(row) = state.row(self, repeat, index, key, route.follow_row)? else {
                 return Ok(None);
             };
             return row.locate(program, element, node, tail, route);
@@ -2861,14 +3358,10 @@ impl Instance {
                     && (scene.kind != "TabWidget" || !tail.is_empty())
                 {
                     let active = match scene.kind {
-                        "TabWidget" => usize::try_from(self.current_index(element)?).ok(),
-                        "SwipeView" => xrack_runtime::try_resolve_swipe_index(
-                            Some(self.current_index(element)?),
-                            element
-                                .children
-                                .iter()
-                                .map(|page| self.input_element_available(page, false)),
-                        )?,
+                        "TabWidget" if element.selection_property() != "current-value" => {
+                            usize::try_from(self.current_index(element)?).ok()
+                        }
+                        "TabWidget" | "SwipeView" => self.navigation_choice(element)?,
                         "StackView" => self
                             .stack_snapshot_for(element)?
                             .current()
@@ -2917,6 +3410,14 @@ impl Instance {
             let Some(child) = self.children().get(&element.key) else {
                 return Ok(None);
             };
+            if element
+                .repeat
+                .as_ref()
+                .is_some_and(|repeat| repeat.item == "_")
+                && scene.loader_mount.as_ref() != Some(child.0.binding_lifetime.loader_mount())
+            {
+                return Ok(None);
+            }
             return child.locate(
                 program,
                 &program.definition(component)?.root,
@@ -2997,6 +3498,20 @@ impl Instance {
                 model.track_item(source);
             }
             return row.locate(program, template, child, tail, route);
+        }
+        if matches!(scene.kind, "SwipeView" | "TabWidget")
+            && let Some(template) = element.children.first()
+            && let Some(repeat) = &template.repeat
+        {
+            let Some(key) = node.row_key else {
+                return Ok(None);
+            };
+            let state = self.repeat_state(template);
+            let model = state.row_model(self, repeat)?;
+            let Some(row) = state.resolved_row(repeat, &model, index, key, false) else {
+                return Ok(None);
+            };
+            return row.locate(program, template, node, tail, route);
         }
         let Some(child) = index
             .checked_sub(element.synthetic_child_count())
@@ -3170,6 +3685,19 @@ impl Instance {
         Ok(false)
     }
 
+    fn dispatch_routed(&self, scene: &Node, path: &[usize], input: InputRoute<'_>) -> Result<bool> {
+        let RoutedEvent::Dispatch(event) = input.event() else {
+            return Ok(false);
+        };
+        let Some((instance, element, input)) = self.input_route_target(scene, path, input)? else {
+            return Ok(false);
+        };
+        if !input.is_current() {
+            return Ok(false);
+        }
+        instance.dispatch_element(element, event, scene.at_path(path), Some(input))
+    }
+
     fn dispatch_named(&self, id: &str, event: &str) -> Result<bool> {
         if let Some((key, id)) = id.split_once('/') {
             return match self.children().get(key) {
@@ -3277,6 +3805,154 @@ impl Instance {
         Ok(false)
     }
 
+    fn read_range_position(&self, member: &Member) -> Result<f64> {
+        use xrack_runtime::{Orientation, ScrollSnapMode, SliderInterval, SliderRange};
+        let (owner, element) = self.element_owner(&member.owner)?;
+        let handle = &owner.0.range_positions[&element.key];
+        if matches!(element.visual, Visual::Builtin("ProgressIndicator")) {
+            let number = |name, fallback| -> Result<f64> {
+                let case = if let Some(cases) = element.state_bindings.get(name) {
+                    let selected = owner.rendered_state(cases[0].selector)?;
+                    cases.iter().find(|case| case.index == selected)
+                } else {
+                    None
+                };
+                let value = match case {
+                    Some(case) => Some(owner.evaluate(&case.value, &[])?),
+                    None => owner.binding_value(element, name)?,
+                };
+                Ok(match value {
+                    Some(Value::Float(number)) => number,
+                    _ => fallback,
+                })
+            };
+            let position = xrack_runtime::ProgressRange::new(
+                number("minimum", 0.0)?,
+                number("maximum", 1.0)?,
+                number("progress", 0.0)?,
+            )
+            .position();
+            return Ok(if member.name == "visual-position" {
+                handle.visual_position(position, Orientation::Horizontal)
+            } else {
+                position
+            });
+        }
+        let number = |property, fallback| -> Result<f64> {
+            Ok(match owner.binding_value(element, property)? {
+                Some(Value::Float(value)) => value,
+                _ => fallback,
+            })
+        };
+        let value = |property, fallback| -> Result<f64> {
+            Ok(match owner.control_value(element, property)? {
+                Some(Value::Float(value)) => value,
+                _ => fallback,
+            })
+        };
+        let interval = matches!(element.visual, Visual::Builtin("RangeSlider"));
+        let dial = matches!(element.visual, Visual::Builtin("Dial"));
+        let min = number("minimum", 0.0)?;
+        let max = number("maximum", 100.0)?;
+        let live = dial || owner.binding_value(element, "live")? != Some(false.into());
+        let (step, snap) = if live {
+            (1.0, ScrollSnapMode::None)
+        } else {
+            let step = number("step", 1.0)?;
+            let snap = match owner.binding_value(element, "snap-mode")? {
+                Some(Value::ScrollSnapMode(mode)) => mode,
+                _ => ScrollSnapMode::None,
+            };
+            (step, snap)
+        };
+        let committed = if interval { 0.0 } else { value("value", 0.0)? };
+        let axis = SliderRange::new(min, max, committed, step, false, snap);
+        let position = if interval {
+            let interval = SliderInterval::from_range(
+                axis,
+                value("lower-value", min)?,
+                value("upper-value", max)?,
+            );
+            handle.interval_position(
+                interval,
+                live,
+                usize::from(member.name.starts_with("upper")),
+            )
+        } else {
+            handle.slider_position(axis, live)
+        };
+        if member.name.contains("visual") {
+            let orientation = match owner.binding_value(element, "orientation")? {
+                Some(Value::Orientation(orientation)) => orientation,
+                _ => Orientation::Horizontal,
+            };
+            Ok(handle.visual_position(position, orientation))
+        } else {
+            Ok(position)
+        }
+    }
+
+    fn navigation_active(&self, target: &str, group: &str) -> Result<bool> {
+        let (item_owner, item) = self.element_owner(target)?;
+        let (owner, group) = self.element_owner(group)?;
+        let index = if item.repeat.is_some() {
+            item_owner
+                .0
+                .row
+                .as_ref()
+                .map(|row| row.context.index() as usize)
+        } else {
+            group
+                .children
+                .iter()
+                .position(|option| option.key == item.key)
+        };
+        Ok(index.is_some() && owner.navigation_choice(group)? == index)
+    }
+
+    fn radio_checked(&self, target: &str, group: &str) -> Result<bool> {
+        let (option_owner, option) = self.element_owner(target)?;
+        let (owner, group) = self.element_owner(group)?;
+        if matches!(group.visual, Visual::Builtin("RadioGroup")) {
+            let declaration = group
+                .children
+                .iter()
+                .position(|child| child.key == option.key);
+            let row = option_owner
+                .0
+                .row
+                .as_ref()
+                .map_or(0, |row| row.context.index() as usize);
+            return Ok(
+                owner.radio_choice(group)? == declaration.map(|index| (index, row))
+                    && declaration.is_some(),
+            );
+        }
+        let Some(row) = &option_owner.0.row else {
+            return Ok(false);
+        };
+        let model = owner.view_model(group)?;
+        let index = usize::try_from(owner.list_selection_index(group, &model)?).ok();
+        let selected = index
+            .and_then(|index| model.source_index(index))
+            .and_then(|index| model.source.as_deref()?.key_at(index));
+        Ok(selected == Some(row.context.key()))
+    }
+
+    fn toggle_check_state(&self, element: &Element) -> Result<xrack_runtime::CheckState> {
+        use xrack_runtime::CheckState;
+        let property = if element.has_check_state() {
+            "check-state"
+        } else {
+            "checked"
+        };
+        Ok(match self.control_value(element, property)? {
+            Some(Value::CheckState(state)) => state,
+            Some(Value::Bool(checked)) => checked.into(),
+            _ => CheckState::Unchecked,
+        })
+    }
+
     fn dispatch_toggle(
         &self,
         element: &Element,
@@ -3310,13 +3986,7 @@ impl Instance {
                     .next(check_state && node.boolean("tristate", false))
             }
         } else {
-            let current = || {
-                Ok(match self.control_value(element, name)? {
-                    Some(Value::CheckState(state)) => state,
-                    Some(Value::Bool(checked)) => checked.into(),
-                    _ => CheckState::Unchecked,
-                })
-            };
+            let current = || self.toggle_check_state(element);
             let tristate = || {
                 Ok(check_state
                     && self.binding_value(element, "tristate")? == Some(Value::Bool(true)))
@@ -3407,6 +4077,12 @@ impl Instance {
 
     fn scroll_control_read(&self, member: &Member) -> Result<Value> {
         use xrack_runtime::{Orientation, ScrollBarRange};
+        if matches!(
+            member.name.as_str(),
+            "visual-position" | "visual-size" | "active" | "pressed" | "hovered"
+        ) {
+            return self.observed_scroll_metric(&member.owner, &member.name);
+        }
         let element = self
             .definition()
             .root
@@ -3644,7 +4320,12 @@ impl Instance {
             || self.element_allows_routed_input(element, route),
             || self.table_flag(element, "editable", false),
             || self.combo_model_current(element, node),
-            || self.combo_draft_current(element, node, || Ok(true)),
+            || {
+                if !self.combo_draft_current(element, node, || Ok(true))? {
+                    return Ok(false);
+                }
+                self.check_text_submission(element, xrack_runtime::text_input_value(node))
+            },
         )?;
         if !route.is_current() {
             return Ok(false);
@@ -4074,20 +4755,8 @@ impl Component for Instance {
 
     fn route_input(&mut self, scene: &Node, path: &[usize], input: InputRoute<'_>) -> bool {
         match input.event() {
-            RoutedEvent::Dispatch(event) => {
-                let Some((instance, element, input)) = self
-                    .capture_result(self.input_route_target(scene, path, input))
-                    .flatten()
-                else {
-                    return false;
-                };
-                input.is_current()
-                    && self.handle_result(instance.dispatch_element(
-                        element,
-                        event,
-                        scene.at_path(path),
-                        Some(input),
-                    ))
+            RoutedEvent::Dispatch(_) => {
+                self.handle_result(self.dispatch_routed(scene, path, input))
             }
             RoutedEvent::Edit(text) => {
                 let Some(node) = scene.at_path(path) else {
@@ -4498,6 +5167,9 @@ impl Instance {
                 instance.handler(element, "changed", &[next])?;
                 Ok(true)
             })(),
+            ControlAction::MoveTab(movement) if matches!(node.kind, "TabBar" | "TabWidget") => {
+                instance.move_tab(element, node, movement, input)
+            }
             ControlAction::ActivateRadioOption
                 if node.kind == "RadioButton" || xrack_runtime::is_exclusive_push_option(node) =>
             {
@@ -4620,7 +5292,7 @@ impl Instance {
             {
                 instance.search_control(element, node, action, input)
             }
-            ControlAction::PickTumbler { .. } if node.kind == "Tumbler" => {
+            ControlAction::PickTumbler { .. } if matches!(node.kind, "Tumbler" | "PathView") => {
                 instance.tumbler_action(element, node, action, input)
             }
             ControlAction::Spin(action) if xrack_runtime::is_spin_box(node.kind) => {
@@ -4674,11 +5346,25 @@ impl Instance {
     }
 
     fn text_acceptance(&self, element: &Element) -> Result<bool> {
-        let value = self.control_value(element, "text")?;
+        let value = if matches!(element.visual, Visual::Builtin("ComboBox")) {
+            if !self.visual_flag(element, "editable", false)? {
+                return Ok(false);
+            }
+            Some(self.read_combo_state(
+                &Member::new(&element.key, "edit-text"),
+                &Value::String(String::new()),
+            )?)
+        } else {
+            self.control_value(element, "text")?
+        };
         let text = match &value {
             Some(Value::String(text)) => text.as_str(),
             _ => "",
         };
+        self.check_text_submission(element, text)
+    }
+
+    fn check_text_submission(&self, element: &Element, text: &str) -> Result<bool> {
         xrack_runtime::try_text_submission_with(
             text,
             self.editor_input_type(element)?,
@@ -4726,9 +5412,17 @@ impl Instance {
                 input,
                 || self.visual_flag(element, "editable", false),
                 || {
-                    self.combo_draft_current(element, node, || {
+                    if !self.combo_draft_current(element, node, || {
                         self.combo_model_current(element, node)
-                    })
+                    })? {
+                        return Ok(false);
+                    }
+                    node.try_allows_text_edit_with(
+                        text,
+                        self.editor_input_type(element)?,
+                        || self.editor_decimal_separator(element),
+                        || self.editor_maximum_length(element),
+                    )
                 },
             );
         }
@@ -4934,6 +5628,7 @@ impl ValueType {
                     Value::ImageVerticalAlignment(_)
                 )
                 | (Self::ImageRendering, Value::ImageRendering(_))
+                | (Self::ButtonDisplay, Value::ButtonDisplay(_))
         )
     }
 }

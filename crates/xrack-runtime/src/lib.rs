@@ -2,7 +2,7 @@
 
 /// Compatibility level expected by the Rust code emitted by xrackc.
 #[doc(hidden)]
-pub const CODEGEN_ABI_VERSION: u32 = 12;
+pub const CODEGEN_ABI_VERSION: u32 = 15;
 
 mod animation;
 mod arithmetic;
@@ -16,7 +16,9 @@ mod controls;
 mod delegate;
 mod double_spin;
 mod drag;
+mod dynamic_children;
 mod event_loop;
+mod external_loader;
 #[doc(hidden)]
 pub use event_loop::EventLoopRegistration;
 pub use event_loop::{EventLoopError, WeakComponent, invoke_from_event_loop};
@@ -54,6 +56,7 @@ mod range;
 mod record;
 pub use record::{RecordList, RecordRowValidator, RecordValue};
 mod list_sections;
+mod loader;
 mod repeat;
 mod row_heights;
 mod scale_rotate;
@@ -87,8 +90,8 @@ pub use button_group::{
     ButtonGroup, ButtonGroupMembership, ButtonGroupOptions, ButtonGroupSelection, RadioMembership,
     bind_button_group, bind_button_group_options, bind_check_group, bind_dynamic_button_group,
     is_exclusive_push_option, prepare_button_group_option, prepare_radio_selection, radio_value,
-    summarize_checks, try_prepare_button_group_option, try_prepare_radio_selection,
-    try_summarize_checks,
+    summarize_checks, toggled_button_group_index, toggled_button_group_value,
+    try_prepare_button_group_option, try_prepare_radio_selection, try_summarize_checks,
 };
 pub use calendar::{CalendarAction, CalendarState, Date, is_calendar_control};
 #[doc(hidden)]
@@ -109,14 +112,15 @@ pub use combo::{
 };
 #[doc(hidden)]
 pub use combo::{
-    ComboEditor, ComboInput, ComboItems, ComboModel, ComboSelection, ComboSubmission, ComboUpdate,
-    combo_model_is_current, combo_submission, combo_value, prepare_combo_input,
+    ComboEditor, ComboInput, ComboItems, ComboModel, ComboOptionInput, ComboOptionParameter,
+    ComboOptionRenderer, ComboPopupHandle, ComboSelection, ComboStateModel, ComboSubmission,
+    ComboUpdate, combo_model_is_current, combo_submission, combo_value, prepare_combo_input,
     prepare_combo_input_with_draft, prepare_combo_input_with_live_draft, try_prepare_combo_input,
     try_prepare_combo_input_with_draft, try_prepare_combo_input_with_live_draft,
 };
 pub use controls::{
     ActionKey, ControlAction, DialogCommand, DialogRole, PopupPlacement, SpinAction, SpinRange,
-    StandardButtonKind, SwipeSide, TableColumnOrder, TableHeader, TableSort, button_text,
+    StandardButtonKind, SwipeSide, TabMove, TableColumnOrder, TableHeader, TableSort, button_text,
     combo_editable, delay_millis, dialog_button_action, group_index, group_item, is_button,
     is_modal_overlay, is_pane, is_spin_box, is_window_overlay, page_indicator_count,
     page_indicator_index, resizable_table_column, resolve_swipe_index, search_suggestion,
@@ -124,8 +128,9 @@ pub use controls::{
 };
 #[doc(hidden)]
 pub use controls::{
-    DialogEvent, TableHeaderAction, prepare_swipe_side, set_overlay_open, try_prepare_swipe_side,
-    try_resolve_swipe_index, try_set_overlay_open,
+    DialogEvent, TableHeaderAction, prepare_swipe_side, resolve_navigation_value, set_overlay_open,
+    try_prepare_swipe_side, try_resolve_navigation_value, try_resolve_swipe_index,
+    try_set_overlay_open,
 };
 #[doc(hidden)]
 pub use controls::{
@@ -134,14 +139,15 @@ pub use controls::{
 };
 #[doc(hidden)]
 pub use controls::{
-    delay_button_transition_is_current, group_selection_item, prepare_action_activation,
-    prepare_action_view, prepare_group_box_toggle, prepare_group_selection,
-    prepare_group_selection_with_model, prepare_index_selection, prepare_row_toggle,
-    prepare_row_toggle_matching, prepare_source_selection, resize_table_column,
-    table_drag_available, try_delay_button_transition_is_current, try_prepare_action_activation,
-    try_prepare_action_view, try_prepare_group_box_toggle, try_prepare_group_selection,
-    try_prepare_group_selection_with_model, try_prepare_index_selection, try_prepare_row_toggle,
-    try_prepare_row_toggle_matching, try_prepare_source_selection, try_table_drag_available,
+    delay_button_transition_is_current, group_selection_item, moved_navigation_index,
+    prepare_action_activation, prepare_action_view, prepare_group_box_toggle,
+    prepare_group_selection, prepare_group_selection_with_model, prepare_index_selection,
+    prepare_row_toggle, prepare_row_toggle_matching, prepare_source_selection, prepare_tab_move,
+    resize_table_column, table_drag_available, try_delay_button_transition_is_current,
+    try_prepare_action_activation, try_prepare_action_view, try_prepare_group_box_toggle,
+    try_prepare_group_selection, try_prepare_group_selection_with_model,
+    try_prepare_index_selection, try_prepare_row_toggle, try_prepare_row_toggle_matching,
+    try_prepare_source_selection, try_prepare_tab_move, try_table_drag_available,
 };
 #[doc(hidden)]
 pub use delegate::{ComponentRepeater, RowContext};
@@ -151,6 +157,8 @@ pub use double_spin::{
 #[doc(hidden)]
 pub use drag::DragArguments;
 pub use drag::{DragAction, DragEvent, is_drag_area};
+#[doc(hidden)]
+pub use focus::{ButtonAnimationDelivery, ButtonAnimations};
 #[doc(hidden)]
 pub use focus::{ButtonPressHandle, FocusCommandMethod, FocusHandler, is_focus_handler};
 pub use focus::{
@@ -206,14 +214,24 @@ pub use pointer::{
 pub use property::ComponentLifetime;
 pub use property::{ChangeSignal, InputProperty, Property};
 pub use range::{
-    DialInputMode, IndicatorState, RangeAction, ScrollBarRange, ScrollSnapMode, SliderInterval,
-    SliderRange, indicator_state, progress_value,
+    DialInputMode, IndicatorState, ProgressRange, RangeAction, ScrollBarRange, ScrollSnapMode,
+    SliderInterval, SliderRange, indicator_state, progress_value,
 };
 #[doc(hidden)]
 pub use range::{
-    RANGE_VIEW_PROPERTIES, prepare_range_view, range_view_properties, try_prepare_range_view,
+    RANGE_VIEW_PROPERTIES, RangePositionHandle, prepare_range_view, range_view_properties,
+    try_prepare_range_view,
 };
 #[doc(hidden)]
+pub use external_loader::{ExternalComponent, ExternalLoader, ExternalSource, LoadedExternal, register_external_loader};
+#[doc(hidden)]
+pub use dynamic_children::DynamicChildren;
+pub use loader::LoaderItem;
+#[doc(hidden)]
+pub use loader::{
+    LoaderBuild, LoaderChild, LoaderFrame, LoaderMount, LoaderSlot, dispatch_loader_events,
+    finish_loader_frame, loader_candidate_scene,
+};
 pub use repeat::{Repeater, repeat_scene, static_repeat_scene};
 #[doc(hidden)]
 pub use row_heights::{RowHeightOverrides, RowHeightProjection, RowHeights};
@@ -288,7 +306,7 @@ pub use viewport::{
     ViewportMotion,
 };
 #[doc(hidden)]
-pub use viewport::{ScrollCommand, ScrollCommandMethod, SourceScroll};
+pub use viewport::{ScrollBarStep, ScrollCommand, ScrollCommandMethod, SourceScroll};
 pub use window_status::{WindowCommand, WindowStatus};
 #[doc(hidden)]
 pub use window_status::{WindowCommandMethod, WindowLifecycle, WindowMetric, WindowStatusBinding};
@@ -947,8 +965,20 @@ impl RoutedEvent<'_> {
         scene: &Node,
         path: &[usize],
     ) -> bool {
-        self.with_input(scene, path, |input| ui.route_input(scene, path, input))
-            .unwrap_or(false)
+        let original_path = path;
+        self.with_input(scene, path, |input| {
+            let mut node = scene;
+            let mut path = path;
+            while let Some((&index, tail)) = path.split_first() {
+                let Some(child) = node.child_at(index) else { return false };
+                if let Some(component) = &child.external_component {
+                    return component.with_mut(|ui| self.deliver_input(ui, child, tail)).unwrap_or(false);
+                }
+                node = child;
+                path = tail;
+            }
+            ui.route_input(scene, original_path, input)
+        }).unwrap_or(false)
     }
 
     pub fn apply(&self, ui: &mut (impl Component + ?Sized), scene: &Node, path: &[usize]) -> bool {
@@ -1279,6 +1309,15 @@ pub enum ImageRendering {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ButtonDisplay {
+    IconOnly,
+    TextOnly,
+    #[default]
+    TextBesideIcon,
+    TextUnderIcon,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum LayoutAlignment {
     #[default]
     Stretch,
@@ -1516,6 +1555,7 @@ pub enum Value {
     ImageHorizontalAlignment(ImageHorizontalAlignment),
     ImageVerticalAlignment(ImageVerticalAlignment),
     ImageRendering(ImageRendering),
+    ButtonDisplay(ButtonDisplay),
     LayoutAlignment(LayoutAlignment),
     CrossAxisAlignment(CrossAxisAlignment),
     Orientation(Orientation),
@@ -1611,6 +1651,7 @@ value_from!(ImageTileMode, ImageTileMode);
 value_from!(ImageHorizontalAlignment, ImageHorizontalAlignment);
 value_from!(ImageVerticalAlignment, ImageVerticalAlignment);
 value_from!(ImageRendering, ImageRendering);
+value_from!(ButtonDisplay, ButtonDisplay);
 value_from!(LayoutAlignment, LayoutAlignment);
 value_from!(CrossAxisAlignment, CrossAxisAlignment);
 value_from!(Orientation, Orientation);
@@ -1674,6 +1715,12 @@ enum NodeStorage {
 pub struct NodeData {
     pub kind: &'static str,
     #[doc(hidden)]
+    pub loader_mount: Option<LoaderMount>,
+    #[doc(hidden)]
+    pub loader_frame: Option<LoaderFrame>,
+    #[doc(hidden)]
+    pub external_component: Option<ExternalComponent>,
+    #[doc(hidden)]
     pub application_window: bool,
     pub id: Option<&'static str>,
     owned_id: Option<Arc<str>>,
@@ -1705,6 +1752,10 @@ pub struct NodeData {
     pub focus_handle: Option<FocusHandle>,
     #[doc(hidden)]
     pub button_press_handle: Option<ButtonPressHandle>,
+    #[doc(hidden)]
+    pub range_position_handle: Option<RangePositionHandle>,
+    #[doc(hidden)]
+    pub combo_popup_handle: Option<ComboPopupHandle>,
     #[doc(hidden)]
     pub scale_rotate_handle: Option<ScaleRotateHandle>,
     #[doc(hidden)]
@@ -1740,6 +1791,8 @@ pub struct NodeData {
     pub list_sections: Option<Arc<[ListSection]>>,
     #[doc(hidden)]
     pub list_section_renderer: Option<ListSectionRenderer>,
+    #[doc(hidden)]
+    pub combo_option_renderer: Option<ComboOptionRenderer>,
     #[doc(hidden)]
     pub list_text_search: Option<ListTextSearch>,
     /// Selection snapshot for model-backed views. Retains the generated field name.
@@ -1816,6 +1869,9 @@ impl NodeData {
         }
         compare!(
             kind,
+            loader_mount,
+            loader_frame,
+            external_component,
             table_column_window,
             application_window,
             id,
@@ -1832,6 +1888,8 @@ impl NodeData {
             state_timings,
             focus_handle,
             button_press_handle,
+            range_position_handle,
+            combo_popup_handle,
             scale_rotate_handle,
             swipe_handle,
             hover_handle,
@@ -1850,6 +1908,7 @@ impl NodeData {
             row_heights,
             list_sections,
             list_section_renderer,
+            combo_option_renderer,
             list_text_search,
             standard_list_stamp,
             table_header,
@@ -1926,6 +1985,7 @@ pub fn supports_untyped_dispatch(kind: &str, event: &str) -> bool {
                 | "StackPage"
                 | "PageIndicator"
                 | "Tumbler"
+                | "PathView"
                 | "Calendar"
                 | "MonthGrid"
                 | "TimePicker"
@@ -2042,7 +2102,12 @@ impl Node {
             animations: BTreeMap::new(),
             state_timings: None,
             focus_handle: None,
+            loader_mount: None,
+            loader_frame: None,
+            external_component: None,
             button_press_handle: None,
+            range_position_handle: None,
+            combo_popup_handle: None,
             scale_rotate_handle: None,
             swipe_handle: None,
             hover_handle: None,
@@ -2061,6 +2126,7 @@ impl Node {
             row_heights: None,
             list_sections: None,
             list_section_renderer: None,
+            combo_option_renderer: None,
             list_text_search: None,
             standard_list_stamp: None,
             table_header: None,
@@ -2209,6 +2275,8 @@ impl Node {
             ("Text", "color") => 2,
             ("Text" | "Label", "text") => 4,
             ("Image", "source") => 8,
+            (kind, "flat") if is_button(kind) || kind == "StandardButton" => 16,
+            ("Button" | "ToolButton" | "RoundButton" | "DelayButton", "primary") => 32,
             _ => 0,
         }
     }
@@ -2313,6 +2381,21 @@ impl Node {
         let data = self.data_mut();
         data.id = None;
         data.owned_id = id;
+    }
+
+    #[doc(hidden)]
+    pub(crate) fn set_external_component(&mut self, component: ExternalComponent) {
+        self.data_mut().external_component = Some(component);
+    }
+
+    #[doc(hidden)]
+    pub fn set_loader_frame(&mut self, frame: LoaderFrame) {
+        self.data_mut().loader_frame = Some(frame);
+    }
+
+    #[doc(hidden)]
+    pub fn set_loader_mount(&mut self, mount: LoaderMount) {
+        self.data_mut().loader_mount = Some(mount);
     }
 
     #[doc(hidden)]
@@ -2671,6 +2754,15 @@ impl Node {
     }
 
     #[doc(hidden)]
+    pub fn combo_content(&self) -> Option<&Self> {
+        if combo_editable(self) {
+            return None;
+        }
+        self.control_part("ComboContent")
+            .filter(|part| part.is_visible())
+    }
+
+    #[doc(hidden)]
     pub fn is_control_part(&self) -> bool {
         matches!(
             self.kind,
@@ -2678,12 +2770,43 @@ impl Node {
                 | "SliderHandle"
                 | "RangeLowerHandle"
                 | "RangeUpperHandle"
+                | "ProgressTrack"
+                | "ProgressFill"
+                | "ScrollTrack"
+                | "ScrollThumb"
                 | "ToggleIndicator"
                 | "SwitchThumb"
                 | "SpinUpIndicator"
                 | "SpinDownIndicator"
+                | "ComboContent"
+                | "ComboIndicator"
+                | "ComboPopup"
                 | "TreeDisclosure"
         )
+    }
+
+    #[doc(hidden)]
+    pub const PROGRESS_PARTS: [&str; 2] = ["ProgressTrack", "ProgressFill"];
+
+    #[doc(hidden)]
+    pub const SCROLL_PARTS: [&str; 2] = ["ScrollTrack", "ScrollThumb"];
+
+    #[doc(hidden)]
+    pub fn has_scroll_parts(&self) -> bool {
+        matches!(self.kind, "ScrollBar" | "ScrollIndicator")
+            && self
+                .children
+                .iter()
+                .any(|child| Self::SCROLL_PARTS.contains(&child.kind))
+    }
+
+    #[doc(hidden)]
+    pub fn has_progress_parts(&self) -> bool {
+        self.kind == "ProgressIndicator"
+            && self
+                .children
+                .iter()
+                .any(|child| Self::PROGRESS_PARTS.contains(&child.kind))
     }
 
     pub fn at_path(&self, path: &[usize]) -> Option<&Self> {
@@ -2804,6 +2927,7 @@ impl Node {
             ("ScaleRotateGestureHandler", "ended" | "cancelled")
                 | ("SwipeGestureHandler", "swiped" | "cancelled")
                 | ("HoverHandler", "exited")
+                | ("Loader", "loaded")
                 | ("Button" | "ToolButton" | "RoundButton", "canceled")
         )
     }
@@ -2858,17 +2982,29 @@ impl Node {
         self.row_key.map(|key| key.in_view(self.row_scope))
     }
 
-    /// Identity of the virtual row containing this scene path.
+    /// Identity of this mounted component.
+    pub fn dynamic_mount_key(&self) -> Option<RowKey> {
+        self.external_component.as_ref()?;
+        self.loader_mount.as_ref().map(|mount| mount.key)
+    }
+
+    /// Identity of the virtual row or mounted component containing this scene path.
     pub fn row_key_at(&self, path: &[usize]) -> Option<RowKey> {
         let mut node = self;
         let mut key = None;
+        let mut mount_key = self.loader_mount.as_ref().map(|mount| mount.key);
         for &index in path {
             node = node.child_at(index)?;
-            if node.kind == "ListRow" {
+            if let Some(mount) = &node.loader_mount {
+                mount_key = Some(mount.key);
+            }
+            if node.kind == "ListRow"
+                || matches!(node.kind, "TabButton" | "Tab") && node.row_key.is_some()
+            {
                 key = node.routing_row_key();
             }
         }
-        key
+        key.or(mount_key)
     }
 
     /// Find the displayed index of a source row identity. The source index is a lookup hint.

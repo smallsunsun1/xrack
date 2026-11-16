@@ -1,4 +1,4 @@
-use crate::{LayoutNode, Point, Rect, ScrollLayout};
+use crate::{LayoutContext, LayoutNode, Point, Rect, ScrollLayout, TextMeasurer};
 use std::collections::BTreeMap;
 use xrack_runtime::{LayoutDirection, Node, Orientation, ScrollBarPolicy, ScrollBarRange, Value};
 
@@ -21,7 +21,7 @@ pub(crate) struct AttachedScrollBar {
 }
 
 /// Resolve handles after laying out both the control and its viewport.
-pub(crate) fn attach(scene: &Node, layout: &mut LayoutNode) {
+pub(crate) fn attach(scene: &Node, layout: &mut LayoutNode, text: &mut impl TextMeasurer) {
     fn index<'a>(
         node: &'a Node,
         item: &LayoutNode,
@@ -54,59 +54,98 @@ pub(crate) fn attach(scene: &Node, layout: &mut LayoutNode) {
         &mut viewports,
         &mut controls,
     );
+    let window = layout.bounds;
+    let offsets = BTreeMap::new();
     for (node, path) in controls {
-        let Some(target) = node
-            .scroll_target
-            .as_ref()
-            .and_then(|handle| viewports.get(&handle.identity()))
-        else {
+        let Some((attached, enabled)) = resolve_attachment(node, &path, layout, &viewports) else {
             continue;
         };
-        if layout.overlays.as_ref().is_some_and(|overlays| {
-            overlays
-                .modal
-                .iter()
-                .any(|modal| path.starts_with(modal) != target.starts_with(modal))
-        }) {
-            continue;
-        }
-        let viewport = layout.at_path(target).expect("indexed viewport path");
-        let axis = node.orientation();
-        let Some(scroll) = viewport.scroll_on(axis) else {
-            continue;
-        };
-        if !shows_bar(control_policy(node), scroll) {
-            continue;
-        }
-        let page = viewport.scroll_viewport(axis);
-        let enabled = viewport.enabled;
-        let reversed = viewport.scroll_axis_reversed(axis);
+        let geometry = attached.geometry;
         let item = path
             .iter()
             .try_fold(&mut *layout, |item, &index| item.child_at_mut(index))
             .expect("indexed scroll control path");
-        let page = span(page, axis);
-        if page > 0.0
-            && let Some(mut geometry) = ScrollBarGeometry::new(
-                axis,
-                item.bounds,
-                page,
-                scroll,
-                minimum_size(node),
-                reversed,
-            )
-        {
-            if let Some(step) = node.number("step-size") {
-                let extent = f64::from(page) + f64::from(scroll.max_offset);
-                geometry.step = (step.clamp(0.0, 1.0) * extent).min(f64::from(f32::MAX)) as f32;
-            }
-            item.enabled &= enabled;
-            item.attached_scroll_bar = Some(Box::new(AttachedScrollBar {
-                target: target.clone(),
-                geometry,
-            }));
+        item.enabled &= enabled;
+        item.attached_scroll_bar = Some(Box::new(attached));
+        if !node.has_scroll_parts() {
+            continue;
+        }
+        let mut context = LayoutContext {
+            text,
+            layout_direction: item.direction_override,
+            offsets: &offsets,
+            input: None,
+            path,
+            row_key: node.routing_row_key(),
+            anchor: None,
+            resolved_list_scroll: None,
+            row_layouts: None,
+            ancestor_shapes: item.ancestor_shapes.clone(),
+            space: item.space.clone(),
+            viewport: window,
+        };
+        // The two visual parts are placed after resolving the viewport and use
+        // exactly the rectangles used for dragging and track paging.
+        for (index, part) in node.children.iter().enumerate() {
+            let bounds = match part.kind {
+                "ScrollTrack" => geometry.track,
+                "ScrollThumb" => geometry.thumb,
+                _ => continue,
+            };
+            context.path.push(index);
+            item.children[index] = context.place(
+                part,
+                bounds,
+                item.clip.intersect(bounds),
+                true,
+                item.enabled,
+                None,
+            );
+            context.path.pop();
         }
     }
+}
+
+fn resolve_attachment(
+    node: &Node,
+    path: &[usize],
+    layout: &LayoutNode,
+    viewports: &BTreeMap<usize, Vec<usize>>,
+) -> Option<(AttachedScrollBar, bool)> {
+    let target = viewports.get(&node.scroll_target.as_ref()?.identity())?;
+    if layout.overlays.as_ref().is_some_and(|overlays| {
+        overlays
+            .modal
+            .iter()
+            .any(|modal| path.starts_with(modal) != target.starts_with(modal))
+    }) {
+        return None;
+    }
+    let viewport = layout.at_path(target).expect("indexed viewport path");
+    let axis = node.orientation();
+    let scroll = viewport.scroll_on(axis)?;
+    let page = span(viewport.scroll_viewport(axis), axis);
+    if page <= 0.0 || !shows_bar(control_policy(node), scroll) {
+        return None;
+    }
+    let item = layout.at_path(path).expect("indexed scroll control path");
+    let mut geometry = ScrollBarGeometry::new(
+        axis,
+        item.bounds,
+        page,
+        scroll,
+        minimum_size(node),
+        viewport.scroll_axis_reversed(axis),
+    )?;
+    geometry.step =
+        ScrollBarGeometry::viewport_step(page, scroll.max_offset, node.number("step-size"));
+    Some((
+        AttachedScrollBar {
+            target: target.clone(),
+            geometry,
+        },
+        viewport.enabled,
+    ))
 }
 
 fn control_policy(node: &Node) -> ScrollBarPolicy {
@@ -129,6 +168,33 @@ fn shows_bar(policy: ScrollBarPolicy, scroll: ScrollLayout) -> bool {
     }
 }
 
+pub(crate) fn standalone_geometry(
+    node: &Node,
+    bounds: Rect,
+    direction: LayoutDirection,
+) -> Option<ScrollBarGeometry> {
+    let range = ScrollBarRange::from_node(node);
+    let scroll = ScrollLayout::new(range.position as f32, range.maximum() as f32);
+    if !shows_bar(control_policy(node), scroll) {
+        return None;
+    }
+    let orientation = node.orientation();
+    let mut geometry = ScrollBarGeometry::new(
+        orientation,
+        bounds,
+        range.size as f32,
+        scroll,
+        minimum_size(node),
+        orientation == Orientation::Horizontal && direction == LayoutDirection::RightToLeft,
+    )?;
+    geometry.step = range.step as f32;
+    Some(geometry)
+}
+
+pub(crate) fn scroll_bar_thickness(bounds: Rect) -> f32 {
+    10.0_f32.min(bounds.width * 0.25).min(bounds.height * 0.25)
+}
+
 impl LayoutNode {
     pub fn attached_scroll_geometry(&self) -> Option<ScrollBarGeometry> {
         self.attached_scroll_bar.as_ref().map(|bar| bar.geometry)
@@ -141,23 +207,7 @@ impl LayoutNode {
         if node.scroll_target.is_some() {
             return self.attached_scroll_geometry();
         }
-        let range = ScrollBarRange::from_node(node);
-        let scroll = ScrollLayout::new(range.position as f32, range.maximum() as f32);
-        if !shows_bar(control_policy(node), scroll) {
-            return None;
-        }
-        let orientation = node.orientation();
-        let mut geometry = ScrollBarGeometry::new(
-            orientation,
-            self.bounds,
-            range.size as f32,
-            scroll,
-            minimum_size(node),
-            orientation == Orientation::Horizontal
-                && self.layout_direction == LayoutDirection::RightToLeft,
-        )?;
-        geometry.step = range.step as f32;
-        Some(geometry)
+        standalone_geometry(node, self.bounds, self.layout_direction)
     }
 
     /// Bars share the viewport's offsets and do not change content or header layout.
@@ -174,12 +224,46 @@ impl LayoutNode {
             return [None; 2].into_iter().flatten();
         }
         let viewport = self.scroll_viewport(Orientation::Vertical);
+        if node.kind == "ScrollView" && node.boolean("reserve-scroll-bar-space", false) {
+            let side = (self.bounds.width - viewport.width).max(0.0);
+            let bottom = (self.bounds.height - viewport.height).max(0.0);
+            let mirrored = self.layout_direction == LayoutDirection::RightToLeft;
+            let tracks = [
+                Rect::new(
+                    viewport.x,
+                    viewport.y + viewport.height,
+                    viewport.width,
+                    bottom,
+                ),
+                Rect::new(
+                    if mirrored {
+                        self.bounds.x
+                    } else {
+                        viewport.x + viewport.width
+                    },
+                    viewport.y,
+                    side,
+                    viewport.height,
+                ),
+            ];
+            let bars = [Orientation::Horizontal, Orientation::Vertical].map(|axis| {
+                let index = usize::from(axis == Orientation::Vertical);
+                let track = tracks[index];
+                ScrollBarGeometry::new(
+                    axis,
+                    track,
+                    span(viewport, axis),
+                    self.scroll_on(axis)?,
+                    None,
+                    self.scroll_axis_reversed(axis),
+                )
+            });
+            return bars.into_iter().flatten();
+        }
         let horizontal_viewport = self.scroll_viewport(Orientation::Horizontal);
         let horizontal_visible = horizontal_viewport.intersect(self.clip).inset(2.0);
         let visible = viewport.intersect(self.clip).inset(2.0);
-        let thickness = 10.0_f32
-            .min(visible.width * 0.25)
-            .min(visible.height * 0.25);
+        let thickness = scroll_bar_thickness(visible);
         let mirrored = self.layout_direction == LayoutDirection::RightToLeft;
         let axes = [Orientation::Horizontal, Orientation::Vertical];
         let scrolls: [_; 2] = std::array::from_fn(|index| {
@@ -240,6 +324,14 @@ impl LayoutNode {
 impl ScrollBarGeometry {
     pub const STEP: f32 = 28.0;
 
+    pub(crate) fn viewport_step(page: f32, scrollable: f32, configured: Option<f64>) -> f32 {
+        let Some(step) = configured.filter(|step| step.is_finite()) else {
+            return Self::STEP;
+        };
+        let extent = f64::from(page) + f64::from(scrollable);
+        (step.clamp(0.0, 1.0) * extent).min(f64::from(f32::MAX)) as f32
+    }
+
     fn new(
         orientation: Orientation,
         track: Rect,
@@ -279,6 +371,15 @@ impl ScrollBarGeometry {
             step: Self::STEP,
             reversed,
         })
+    }
+
+    /// The thumb's start and length as fractions of the track, in physical order.
+    pub(crate) fn normalized_thumb(self) -> (f64, f64) {
+        let length = f64::from(span(self.track, self.orientation));
+        let position = f64::from(origin(self.thumb, self.orientation))
+            - f64::from(origin(self.track, self.orientation));
+        let size = (f64::from(span(self.thumb, self.orientation)) / length).clamp(0.0, 1.0);
+        ((position / length).clamp(0.0, 1.0 - size), size)
     }
 
     #[doc(hidden)]

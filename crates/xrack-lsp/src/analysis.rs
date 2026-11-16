@@ -117,6 +117,7 @@ pub(crate) fn analyze(uri: &str, text: &str, workspace: Option<&Workspace<'_>>) 
         );
         return analysis;
     };
+    let document = xrack_ir::declare_handles(&document);
     if let Err(errors) = xrack_ir::semantic::for_each_component(&document, |_, _| {}) {
         for error in errors {
             if let Some((workspace, file)) =

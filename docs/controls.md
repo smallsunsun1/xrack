@@ -91,9 +91,86 @@ Markdown 链接用 `[文案](目标)` 声明，默认显示下划线并可配置
 
 在 `StackView` 设置 `transition-duration: 220;` 可启用 220 毫秒的横向切页过渡。返回到当前路径上的祖先页面时从左侧进入，其他切页从右侧进入。离场页沿用已布局的绘制内容，栈顶状态和键盘焦点立即切换。过渡期间暂停该区域的鼠标与触摸操作，连续导航会从正在显示的页面片段开始下一次过渡。默认立即切页，时长为零或负数时也是如此。过渡期间视口几何变化会直接显示当前页。
 
+## 按需加载组件
+
+`Loader` 在运行时挂载一个已声明或已导入的组件，Rust AOT 和解释器使用相同的语义。
+
+```xr
+Loader {
+    active: root.show-panel;
+    source: root.panel;
+    asynchronous: true;
+    loaded => { self.focus(); }
+    details := Details { query: root.query; }
+    summary := Summary { }
+}
+```
+
+`active` 是 `bool`，默认 `true`。`source` 是 `string`，例如 `"details"`，对应候选声明前的名称。省略 `source` 时选择首个候选，空字符串或未知名称会卸载当前组件。指定 `source` 或声明多个候选时，每个候选都需要名称。候选名称用于选择，父组件可通过候选声明上的属性绑定与回调交换数据。
+
+可绑定的只读字符串 `status` 有四种值。`"null"` 表示未启用、来源为空或没有默认候选。`"error"` 表示非空来源找不到候选。`"loading"` 表示候选正在等待或分批构造。`"ready"` 在同步模式表示候选已解析，在延迟模式表示实例已创建。挂载完成后可通过 `loaded()` 请求焦点。
+
+`asynchronous` 默认为 `false`。设为 `true` 时，桌面和预览先呈现 Loader 的空内容，从下一帧开始在 UI 线程分批创建子组件。每个 Loader 在构造任务之间检查时间预算和任务数量。整个候选构造完成后才挂载。正在执行的单个构造任务会运行到结束。
+
+等待期间切换来源或关闭 Loader 会取消旧请求并释放已创建的部分实例。将 `asynchronous` 设为 `false`，会在下一次场景更新中完成当前候选的剩余构造。
+
+候选首次挂载时创建实例。关闭或切换后，原实例会在场景更新时卸载，再挂载会重新初始化其局部属性。需要保留的数据可放在父组件。切换时用普通的属性绑定更新候选的输入。
+
+`Loader` 在每个轴上分别采用显式尺寸或内容的自然尺寸。挂载后，子组件占用 Loader 的内容区域，`padding` 留在内容区域之外。`loaded()` 在新实例进入场景后触发一次。`self.focus()` 会把焦点交给当前内容中第一个可聚焦项。卸载后，该实例的焦点和指向旧实例的输入事件随之失效。
+
+Rust AOT 可以通过 `ui.loader_item::<Details>("area")` 取得已挂载候选的类型化句柄。解释器的 `Instance::loader_item("area")` 返回解释器实例的句柄。`upgrade()` 在原挂载仍有效时返回实例，卸载后返回 `None`。外部组件的句柄使用 `xrack::interpreter::Instance` 类型。
+
+外部来源使用 `source-url`。它接受本地 `.xr` 或 `.mlir` 路径、`file://` URL 和 HTTP(S) URL。来源文件必须导出一个可嵌入的组件。文件有多个导出时，用 `#ComponentName` 选择组件。
+
+```xr
+panel := Loader {
+    source-url: root.page-url;
+    loaded => { self.focus(); }
+}
+```
+
+外部来源始终异步读取，`status` 从 `"loading"` 转为 `"ready"` 或 `"error"`。切换来源和关闭 Loader 会丢弃过期结果。本地文件可使用相对导入，HTTP(S) 来源使用独立文件，下载需要 `curl`。Rust AOT 程序用 `xrack/interpreter` 启用外部来源支持。`xrack::run` 和 `xrack::run_desktop` 会安装解释器加载器，自定义宿主可调用 `xrack::interpreter::install_external_loader()`。
+
+## 动态组件容器
+
+`DynamicContainer` 是垂直布局容器。普通回调可在其中创建多份编译时已知的组件。组件输入按原类型检查，创建返回该组件的句柄类型，例如 `DetailsHandle`。默认初始化的句柄为空。Rust AOT 和解释器使用相同的容器生命周期。
+
+```xr
+component Details inherits VerticalLayout {
+    in-out property <string> title: "";
+    Text { text: root.title; }
+}
+
+export component App inherits Window {
+    private property <DetailsHandle> detail;
+    callback show-details();
+    show-details => {
+        root.detail = panels.mount(Details { title: "详情" });
+    }
+
+    VerticalLayout {
+        panels := DynamicContainer {}
+        open-button := Button {
+            text: "打开详情";
+            clicked => { root.show-details(); }
+        }
+    }
+}
+```
+
+`mount` 立即构造实例并返回句柄，子组件在下一次场景更新时参加布局。`mount-async` 返回等待中的句柄，构造任务分帧执行。`mounted()` 在子实例进入场景后触发。可用 `status(handle)` 区分 `"null"`、`"loading"`、`"ready"` 和 `"error"`，也可用 `is-mounted(handle)` 判断实例是否可访问。
+
+`get(handle, "property", fallback)` 读取公开属性。句柄无法访问时返回指定默认值。`set(handle, "property", value)` 写入 `in` 或 `in-out` 属性。`call(handle, "callback", args...)` 调用无返回值的回调。有返回值的回调在参数前再传一个同类型的默认值。`move(handle, index)` 使用从零开始的索引并保留实例状态。`remove(handle)` 卸载或取消实例，使原句柄失效。
+
+`mount-url(source)` 通过解释器加载外部文件或 URL，返回 `ExternalComponentHandle`。它支持查询状态、移动和移除，外部 URI 与 `Loader.source-url` 使用相同的加载入口。
+
 ## 表单与选择控件
 
 `Slider` 的 `value` 可双向绑定到 `float` 属性。鼠标拖动连续更新数值，方向键按 `step` 调整，Home 和 End 移到端点。`changed(value)` 只在交互写入新值时调用，`released(value)` 在鼠标或调节键松开后调用。`orientation: vertical;` 将最小值放在下方。`Switch` 支持 `checked` 双向绑定与 `toggled()`。`ProgressIndicator` 接收 `0..1` 或百分比进度，`indeterminate: true;` 显示运动指示条。
+
+绑定、自定义手柄和回调可以直接读取 `Slider.value`、`Dial.value`、`SpinBox.value`、`DoubleSpinBox.value`，以及 `RangeSlider.lower-value` 和 `upper-value`。这些属性读取已提交的值。使用 `live: false;` 时，拖动中的手柄位置先预览，松手后提交数值。绑定到表格或树模型字段的编辑器也可以用 `self.value` 读取当前行的值。
+
+`Slider.position`、`Dial.position` 与 `RangeSlider.lower-position`、`upper-position` 提供 0 到 1 的归一化位置。滑块使用 `live: false;` 时，位置跟随拖动预览，取消拖动后回到已提交值。手柄可用 `visual-position` 或 `lower-visual-position`、`upper-visual-position` 获取屏幕方向的位置，横向 RTL 从右到左，竖向从上到下。重复的编辑器可在各自的组件内读取位置。
 
 鼠标或触摸可以从 `Switch` 和 `SwitchDelegate` 的指示器开始横向拖动。默认滑块跟随指针，松手时越过中点才提交新值，并触发一次 `toggled()`。纵向触摸仍可滚动外层视口，取消手势会恢复当前值。RTL 下向左拖动打开。运行 `bazel run //examples/controls -- --rtl-feedback` 比较两个方向。
 
@@ -101,7 +178,13 @@ Markdown 链接用 `[文案](目标)` 声明，默认显示下划线并可配置
 
 运行 `bazel run //examples/controls:controls -- --indicators` 比较三种指示器，或运行 `bazel run //examples/async_demo:async_demo` 查看与后台任务绑定的加载状态。离屏验证可用 `Renderer::snapshot_at` 指定指示器的采样时间。
 
+`ProgressIndicator` 可分别声明一个 `ProgressTrack` 和一个 `ProgressFill`。轨道铺满控件，填充随进度伸缩并在 RTL 下从右侧开始。不定进度时，自定义填充会在轨道内移动。用父控件设置进度和尺寸，部件可以包含文字、图形或图片。辅助技术从进度条本身读取当前进度。运行 `bazel run //examples/controls -- --custom-progress` 查看示例。
+
+`ProgressIndicator` 可以用 `minimum`、`maximum` 和 `progress` 直接接收业务单位。默认范围是 0 到 1，也可在该范围使用百分比。超出范围的值会截断到端点，空区间的进度为 0。只读的 `position` 返回 0 到 1 的比例，`visual-position` 在 RTL 下返回镜像位置。无障碍数值按配置的范围报告。
+
 `CheckBox` 支持布尔 `checked`，也可使用类型化的 `check-state`。三种状态是 `CheckState.unchecked`、`CheckState.partially-checked` 和 `CheckState.checked`。设置 `tristate: true;` 后，用户交互会循环三种状态。默认交互会把部分选中切到已选中。三态模式选择 `check-state` 或 `tristate`，布尔模式使用 `checked`。
+
+自定义指示器和绑定可以直接读取 `CheckBox.checked`、`CheckBox.check-state` 或 `Switch.checked`。三态复选框只有完全选中时 `checked` 才为真，部分选中可通过 `check-state` 区分。`CheckDelegate` 和 `SwitchDelegate` 也能从当前行读取状态，回调可以观察模型字段写入后的值。
 
 `check-state: expression;` 保留单向绑定，交互通过 `check-state-changed(state)` 报告请求的状态，适合汇总子项选择。`check-state <=> root.state;` 直接写入可写属性，也可绑定表格或树行的 `CheckState` 字段。运行 `bazel run //examples/controls:controls -- --check-state` 体验全选和独立三态循环。
 
@@ -123,7 +206,50 @@ Markdown 链接用 `[文案](目标)` 声明，默认显示下划线并可配置
 
 `Tumbler` 用 `model: [string]` 显示标签，或用 `count` 生成从 0 开始的数字。选中项居中，`current-index` 可双向绑定，用户提交时触发 `changed(index)`。`visible-item-count` 取 1–15 之间的奇数，默认 5。默认在模型项多于可见项时循环，也可显式设置 `wrap`。
 
-鼠标或触摸拖动时预览，松手吸附并提交。滚轮按项移动，触控板像素滚动累积到一行后提交。方向键、Home、End 和 Page Up / Page Down 支持键盘选择。字符串模型只读取视口内的标签，模型重排或替换会使旧手势失效。运行 `bazel run //examples/controls:controls -- --tumbler` 体验小时和分钟选择。
+鼠标或触摸拖动时预览。慢速松手直接吸附，快速甩动会先按惯性滚动，再在目标行居中时提交一次。惯性期间保留已提交的值，循环模型可以跨过首尾，非循环模型在边界内吸附。再次按住、用键盘或滚轮调整、控件被禁用、模型重排或替换都会取消待提交的惯性选择。
+
+`flick-deceleration` 用逻辑像素每平方秒表示减速度，默认 `2400`，设为 `0` 可关闭惯性。只读的 `dragging`、`flicking` 和 `moving` 可用于绑定样式。滚轮按项移动，触控板像素滚动累积到一行后提交。方向键、Home、End 和 Page Up / Page Down 支持键盘选择。运行 `bazel run //examples/controls:controls -- --tumbler` 体验小时和分钟选择。
+
+记录模型可以用 `text-role` 指定显示标签，用 `value-role` 指定业务值。两项都是常量字段路径。标签字段必须为 `string`，业务字段可以是 `string`、`int`、`float`、`bool`、`Date` 或 `Time`。省略 `text-role` 时使用 `text` 字段，省略 `value-role` 时使用标签字段。
+
+```xr
+zone-wheel := Tumbler {
+    model: root.zones;
+    text-role: "label";
+    value-role: "offset";
+    current-value <=> root.offset;
+    value-selected(offset) => { root.last-offset = offset; }
+}
+```
+
+记录模型上的 `count`、`current-index` 和 `current-text` 反映滚轮显示。可以绑定 `current-index` 或 `current-value` 中的一项。按值绑定时，重排后仍选择匹配值的第一行。找不到保存的值时先显示首行，直到用户提交选择才写回业务值。空模型的索引为 `-1`，标签为空。提交先更新绑定，再依次触发 `changed(index)` 和有类型的 `value-selected(value)`。运行 `bazel run //examples/controls:controls -- --record-tumbler` 体验重排和按值选择。
+
+在 `Tumbler` 内声明一个匿名 `TumblerOption`，可为每一行定制外观。模板可读取 `option-text`、零基 `option-index`、`option-enabled`、`option-selected` 和 `option-displacement`。`option-selected` 表示已提交的选择。`option-displacement` 是行中心与滚轮中心之间的距离，以一行的高度为单位，向下为正，拖动时连续变化。
+
+`option-data` 保留原始数据类型。数字滚轮的是 `int`，字符串模型的是 `string`，记录模型可直接访问字段。布局只为与视口相交的行实例化并裁剪模板，滚轮统一处理鼠标、触摸、键盘和无障碍。时区示例用记录字段显示缩写，并用位移控制透明度。
+
+### PathView
+
+`PathView` 沿 SVG 路径按弧长排列选项，适合卡片轮播和曲线选择器。用 `path` 写单一连续路径的 SVG 指令，坐标以控件内的 `0…1` 为基准，四边留出半个卡片的空间。默认路径为横向直线。用 `item-width` 和 `item-height` 设置卡片尺寸，默认分别为 `96px` 和 `72px`。路径可动态切换。无效或零长度路径上没有可选择的卡片。
+
+```xr
+PathView {
+    model: root.entries;
+    text-role: "title";
+    value-role: "id";
+    current-value <=> root.selected;
+    path: "M 0 0.86 Q 0.5 -0.46 1 0.86";
+    item-width: 118px;
+    item-height: 96px;
+    PathViewOption {
+        background: option-data.tint;
+        opacity: 1 - Math.abs(option-progress - 0.5);
+        Text { text: option-text; }
+    }
+}
+```
+
+选择项吸附到路径长度的中点，`option-progress` 是该卡片从路径起点算起的弧长占比。`PathViewOption` 也可读取原始模型数据、标签、索引、选中状态和位移。数字、字符串与记录模型沿用滚轮的选择语义。拖动方向由 `orientation` 指定，默认横向。视图支持惯性、鼠标点击、方向键和原生无障碍选择。RTL 会镜像路径与横向导航。运行 `bazel run //examples/navigation:navigation -- --path-view` 体验曲线、直线和 RTL 切换。
 
 `Button`、`ToolButton` 和 `RoundButton` 的只读属性 `pressed` 可绑定到内容或样式。鼠标和触摸按住按钮、或聚焦后按住激活键时返回真。移出、滚动接管或松开会清除状态。正常松手产生的 `clicked()` 可以读取到已经更新的松开状态，连发回调可以读取到仍按住的状态。运行 `bazel run //examples/controls:controls -- --button-pressed` 查看实时提示。
 
@@ -137,19 +263,45 @@ Markdown 链接用 `[文案](目标)` 声明，默认显示下划线并可配置
 
 普通按钮可声明 `pressed()`、`released()` 和 `canceled()`。三种输入共用这个顺序。按下和释放事件中的 `pressed` 属性已经更新，正常点击在 `released()` 之后处理。在外面松手、失焦或滚动接管时发出 `canceled()`。长按和连发期间，按下与释放事件仍各对应一次真实手势。运行 `bazel run //examples/controls:controls -- --button-lifecycle` 查看顺序。
 
+可在有副作用的回调中调用当前组件中可静态寻址的 `Button`、`ToolButton` 或 `RoundButton` 的 `click()`。程序化点击同步发出 `pressed()` 和 `released()`，再走普通激活路径，包括勾选、互斥组和共享 `Action`。按下回调禁用按钮时发出 `canceled()`，释放回调禁用按钮时跳过激活。同一按钮的递归点击会被忽略。运行 `bazel run //examples/controls:controls -- --programmatic-click`，点击触发按钮或按 F4 查看顺序。
+
+`animate-click()` 会立即进入按下态，并由窗口在 100 毫秒后释放和激活。释放前再次调用会重启计时。等待期间禁用按钮会取消激活，卸载后清除按下态。上述示例也可按 F5 体验动画。
+
+`toggle()` 同步修改按钮、共享 `Action` 或互斥组拥有的状态。它可以修改禁用或隐藏按钮的状态，仅更新绑定和外观。互斥组在选中该项和清空选择之间切换。使用 `current-value` 的 `ButtonGroup` 以空字符串表示无选中项，选项使用非空的业务值。运行 `bazel run //examples/controls:controls -- --programmatic-toggle` 后按 F6 体验。
+
+重复按钮可在行内回调中调用 `self.toggle()`。它同步写入当前行的按钮状态或双向绑定的属性。同一个回调随即读取 `self.checked` 就能获得新值。运行 `bazel run //examples/controls:controls -- --checkable-buttons`，在下方的手动切换区体验逐行切换和共享绑定。
+
 `DelayButton` 在鼠标、触摸或键盘持续按住达到 `delay` 毫秒后设置 `checked`，并触发一次 `activated()`。默认延时 3000 毫秒。进度颜色可用 `progress-color` 设置，`checked` 可双向绑定。松手、移出、失焦或禁用会取消仍在等待的确认。已确认的按钮再次点击时复位。
 
 通过辅助技术操作时，第一次激活开始等待，提示就绪后第二次激活提交。提前再次激活或按 Escape 会取消。运行 `bazel run //examples/controls:controls -- --delay` 体验。
 
 `Button`、`ToolButton` 和 `RoundButton` 可以用 `checkable: true;` 保留选中状态。`checked` 默认为 false，可用 `checked <=> root.pinned;` 双向绑定。用户激活时先写入选中值，再发出 `toggled()` 和 `clicked()`。程序修改绑定值时只更新选中态和无障碍状态。未关联外部绑定的重复项各自保留状态，移动模型行时选中态跟随原行。绑定了 `Action` 的按钮继续使用命令的选中值。运行 `bazel run //examples/controls:controls -- --checkable-buttons`。
 
+可以在表达式中读取具名按钮的 `button.checked`，例如让 `ButtonContent` 中的文字跟随选中态。读取会跟踪实际持有状态的按钮、`Action` 或组，可在回调切换状态后立即使用。命令式修改使用 `toggle()`，或写入 `checked <=>` 所绑定的属性。重复按钮在自身绑定和回调中用 `self.checked` 读当前行，在自定义内容中可直接读 `checked`。重排时选中状态和内容一起跟随原行。给按值选择的组提供显式的 `value`，可以让文字随选中态变化，同时保留稳定的选择值。
+
 `ComboBox` 从 `[string]` 模型选择一项，可绑定 `current-index` 或 `current-value`，用户选择时触发 `selected(string)`。按值绑定取首个匹配项。弹层在窗口顶层绘制，只绘制当前可见行，支持滚轮、方向键、Home、End、PageUp、PageDown、Enter 与 Escape。点击弹层之外会关闭弹层并消费本次点击。
+
+表达式可直接读取 `choice.count`、`choice.current-index`、`choice.current-text` 和 `choice.current-value`。`count` 包含禁用项。没有匹配项时，索引为 `-1`，选中标签为空。按值绑定保留提交的业务值，即使模型暂时没有匹配项。按索引选择时，读出的业务值来自该行，无选中项时使用字段类型的默认值。重复列表内可在各自的组件中读取下拉框状态。
 
 记录模型可用 `text-role` 指定显示字段，用 `value-role` 指定业务值字段。角色由编译器校验，`current-value` 和 `value-selected` 采用该字段的类型，支持字符串、整数、浮点数、布尔值、`Date` 和 `Time`。`selected(string)` 返回显示标签。按值选择会在模型重排后查找相同业务值，弹层高亮随行标识移动。可编辑的记录下拉框按显示标签匹配，提交未匹配的自由文本时可在 `accepted(string)` 中处理。运行 `bazel run //examples/selection:selection -- --record-combo` 体验。
 
 记录下拉框可以用 `enabled-role: "access.available";` 指定布尔字段。禁用项仍显示，鼠标、键盘、补全和辅助技术会跳过它，提交时重新核对当前模型。程序可保留指向禁用项的当前值。非编辑下拉框支持按前缀定位，短时间连续输入会合成前缀，重复按同一个字符会在匹配项之间循环。弹层关闭时直接选中，打开时只移动高亮，按 Enter 才提交。
 
+给 `ComboBox` 添加一个匿名的 `ComboOption` 子项，可以为字符串模型和记录模型定制下拉选项的外观。模板使用只读的 `option-text`、`option-index`（从 0 开始）、`option-enabled`、`option-selected` 和 `option-highlighted`。每个可见选项都使用自身的数据和状态绘制，鼠标、键盘和辅助技术仍通过下拉框提交原选项。重复列表中的下拉框可把模板放在各自的组件内。运行 `bazel run //examples/selection -- --record-combo` 查看示例。
+
+模板里的 `option-data` 保留模型行的类型。字符串模型可直接显示它，记录模型可读取 `option-data.notes` 或 `option-data.access.available` 等字段。字段由编译器校验。修改一项的说明或图标会更新正在显示该项数据的弹层。
+
+`ComboContent` 是 `ComboBox` 的单个直接子项，用来替换不可编辑时的选中标签。可以用 `choice.current-text` 和 `choice.current-value` 组合文字、编号和图标。内容布局在文字区域内，并和下拉箭头一起适应 RTL。设为不可见会恢复默认标签。切换到编辑模式会暂停求值自定义内容，输入区由自带的编辑器接管。点击、键盘和无障碍仍使用 `ComboBox` 的语义。
+
+在 `ComboBox` 内声明一个 `ComboPopup`，可绑定 `width`、`max-height`、`row-height`、`padding`、`background`、`border-color`、`border-width` 和 `border-radius`。`max-height` 包含内边距，弹层根据窗口剩余空间向上或向下展开。`width` 的百分比相对于控件宽度，`max-height` 的百分比相对于窗口高度。默认行高是 28px，默认最多显示八行，默认宽度取控件宽度与 96px 中较大者。设置 `scroll-indicator: true` 后，内容溢出时会在逻辑末端显示滚动位置，滚轮和键盘仍用于浏览选项。运行 `bazel run //examples/selection -- --popup-style` 体验。
+
+回调中可调用 `choice.open-popup()` 或 `choice.close-popup()`。窗口处理请求时会检查控件的可见性、启用状态和当前模态范围。打开后可绑定只读的 `popup-open` 和 `highlighted-index`，下标从 0 开始，弹层关闭或没有高亮项时为 `-1`。高亮随键盘、鼠标或滚动更新，确认选项时才提交选择。运行 `bazel run //examples/selection -- --popup-control` 查看示例。
+
 `editable: true;` 让 `ComboBox` 的文字区域支持输入、IME、剪贴板和撤销。草稿可用 `edit-text <=> root.draft;` 双向绑定，修改时触发 `edited(string)`。点击箭头或按 F4 可打开列表，列表优先定位到与草稿精确匹配或具有相同前缀的项。关闭列表后按 Enter 提交草稿并触发 `accepted(string)`。精确匹配时更新选项，自定义文本以 `current-index: -1` 表示或写入 `current-value`。运行 `bazel run //examples/selection:selection -- --editable-combo` 体验。
+
+`choice.edit-text` 读取编辑草稿，显式清空后返回空字符串。自动编辑框尚未改动时，草稿跟随当前选中的标签。
+
+可编辑下拉框支持与单行文本编辑器相同的提交校验。可用 `minimum-length`、`maximum-length` 和 `submit-when` 设置规则，使用数字输入时还可绑定范围和小数位数。只读的 `acceptable-input` 随草稿和规则变化，进入不可编辑模式时为 false。Enter 提交前会重新校验，未完成或越界的草稿可以继续修改。显式选中模型中启用的选项会更新选择和草稿。运行 `bazel run //examples/selection -- --validated-combo` 体验。
 
 `auto-complete: true;` 可在编辑区显示模型中首个前缀匹配项的后缀。光标位于草稿末尾、没有选区且 IME 未预编辑时才显示。已有精确匹配时保留当前文字。按可见后缀所在方向的箭头键插入补全并形成一笔可撤销的编辑。按 Escape 收起提示。模型变化会使过期候选失效。按 Enter 仍提交草稿，Tab 仍切换焦点。
 
@@ -157,9 +309,15 @@ Markdown 链接用 `[文案](目标)` 声明，默认显示下划线并可配置
 
 `ComboBox` 和 `SearchField` 继承 `layout-direction`。RTL 下下拉触发器和清除按钮在左侧，搜索按钮在右侧，候选弹层和项目文字从右侧对齐。行内补全按草稿的文字方向摆放。运行 `bazel run //examples/selection -- --rtl-choice` 切换体验。
 
+在 `ComboBox` 内声明一个 `ComboIndicator { width: 44px; height: 24px; … }` 可替换下拉箭头。部件在逻辑末端居中，尺寸会为文字和输入区留出空间，RTL 时随控件镜像到左侧。部件中的图案没有独立的点击、焦点或无障碍节点。点击图案、键盘打开和无障碍激活仍由下拉框处理。推荐在图案下使用 `Label`、`Image`、`Rectangle` 或 `Path`。
+
 `accepted(string)` 报告显式提交的查询，`selected(string)` 报告选中的候选。两种操作都触发 `search-triggered(string)`。`live: true;` 也会在输入变化时触发它。`bazel run //examples/async_demo:async_demo` 演示用 Tokio 查询并在 UI 线程写回候选，示例单独维护一批候选和虚拟化的结果列表。
 
-`RadioGroup` 可混用固定的 `RadioButton`、`if` 条件项和多段 `for`。组的 `current-index` 使用展开后的顺序，隐藏的条件项保留槽位。动态选项可用 `current-value` 绑定稳定且唯一的业务值，重排和插入时保持原有选择。选项暂时隐藏时保留绑定值，重新显示后恢复选中，模型刷新本身不会触发 `selected(string)`。运行 `bazel run //examples/selection:selection -- --mixed-radio-options`。
+`RadioGroup` 可混用固定的 `RadioButton`、`if` 条件项和多段 `for`。组的 `current-index` 使用展开后的顺序，隐藏的条件项保留槽位。动态选项可用 `current-value` 绑定稳定且唯一的业务值，重排和插入时保持原有选择。选项暂时隐藏时保留绑定值，重新显示后恢复选中，模型刷新本身不会触发 `selected(string)`。
+
+`RadioButton.checked` 可用于绑定和自定义指示器，支持直接放在 `RadioGroup` 中的选项和通过 `group:` 加入的选项。在重复选项内使用 `self.checked` 读当前行。按值选择时，可以为选项声明稳定的 `value`，再用选中态修改文字。`RadioDelegate.checked` 跟随列表或网格当前显示的选中项。
+
+`title` 用于显示组标题，也可作为无障碍名称。显式的 `accessible-name` 优先。任一选项拥有键盘焦点时，组的只读 `has-focus` 为真。`focus()` 和 `FocusScope.initial-focus` 优先进入已选且可用的选项，否则进入第一个可用选项。`clear-focus()` 会清除组内焦点。运行 `bazel run //examples/selection:selection -- --mixed-radio-options`，点击「聚焦选项」后可以用方向键选择，再按 F3 清除焦点。
 
 组件根部也可声明非可视的 `ButtonGroup`，各个 `RadioButton` 用 `group: group-id;` 加入同一组，可分别放在不同的行、列或条件容器中。`current-index` 按声明顺序分配槽位，隐藏项保留槽位。`RadioButton.value` 可提供稳定的业务值，`current-value` 和 `selected(string)` 使用该值，省略时沿用 `text`。每组在 Tab 顺序中只占一站，方向键在可用选项间循环。设置组的 `enabled: false;` 停用整组，`accessible-name` 会用于无障碍分组。运行 `bazel run //examples/selection:selection -- --radio-groups` 体验。
 
@@ -167,9 +325,39 @@ Markdown 链接用 `[文案](目标)` 声明，默认显示下划线并可配置
 
 `ButtonGroup { exclusive: false; }` 可组合普通按钮、`CheckBox` 和 `Switch`。普通按钮可用 `checked <=> root.flag;` 绑定各自的选中态。全选框用 `check-state <=> options.check-state;` 绑定汇总结果，普通成员各自保留 Tab 停靠点。汇总使用声明中的所有成员，包括隐藏或禁用的选项。`options.set-check-state(CheckState.checked)` 和 `options.set-check-state(CheckState.unchecked)` 分别批量选中和清除，传入部分选中值会保留当前成员状态。批量操作通过各成员的绑定更新属性，成员的用户操作回调由各自的交互触发。运行 `bazel run //examples/controls:controls -- --grouped-buttons` 体验两种分组。
 
-`TabWidget` 接收静态 `Tab` 子元素，可双向绑定 `current-index`，并通过 `orientation` 切换顶部或侧边标签栏。非活动页面保留组件状态，只有活动页构建内容场景。方向键跳过禁用项，Tab 键把每组选项视为一个焦点停靠点。
+`TabWidget` 可以直接声明多个 `Tab`，也可以用一个 `for … : Tab` 从模型创建标签和页面。可双向绑定 `current-index`，并通过 `orientation` 切换顶部或侧边标签栏。方向键跳过隐藏和禁用项，Tab 键把每组选项视为一个焦点停靠点。
+
+模型驱动的 `Tab` 可以用 `title: doc.title` 和 `value: doc.id`。内建标签栏会读取各行标题及可用状态，页内组件在首次选中时才创建。已访问页的局部状态随模型行保留，包括在同一模型内插入、重排或切页。运行 `bazel run //examples/navigation:navigation -- --model-tabs` 试用模型标签、RTL 侧边栏和页码指示器。
+
+`TabWidget`、`TabBar` 和 `SwipeView` 的只读 `count` 提供总项数，包含隐藏或禁用项。它可直接用于 `PageIndicator.count` 或工具栏标签。模型变化会更新计数。
 
 `TabBar` 独立排列 `TabButton`，可与 `SwipeView` 双向绑定同一个 `current-index`。标签可逐项声明，也可用一个 `for` 从模型生成。横排默认按文字测量宽度，可用 `width` 固定某项。竖排使用 `height`。超出视口时可用滚动条、触摸或沿排列方向滚动浏览。方向键和 Home / End 跳过隐藏或禁用项，绑定变化后会把新的选中项滚入视口。隐藏的标签保留声明索引。运行 `bazel run //examples/navigation:navigation -- --tab-bar` 体验。
+
+在 `TabBar` 或 `TabWidget` 上为模型生成的标签设置 `reorderable: true`，即可拖动标签调整顺序。把焦点放在标签上，也可用 Ctrl + Shift + 方向键重排，macOS 上使用 Command + Shift。拖动时插入线显示落点，靠近溢出边缘会自动滚动。标签必须由一个 `for` 直接读取可写列表属性。释放鼠标或触屏后会移动模型中的原行，复用该行的页面状态，随后触发 `tab-moved(from, to)`，参数为移动前后的索引。按 Escape 可取消，拖动期间模型变化也会取消本次移动。Rust 宿主可用 `VecModel::move_row(from, to)` 移动同一个模型中的行。运行 `bazel run //examples/navigation:navigation -- --model-swipe` 体验共享模型、页面状态和标签重排。
+
+`TabWidget` 的标签尺寸会保留可读的标题宽度和可点击的行高。标题超出空间后可沿标签栏触摸滑动或滚动。横排可以用横向滚轮或 Shift + 滚轮，竖排使用上下滚动。只有标题栏滚动，页内内容的位置保持稳定。键盘选中超出视口的标签会将它滚入视野。运行 `bazel run //examples/navigation:navigation -- --model-tabs`，开启「窄标签栏」试用拖动、滚动和重排。
+
+在回调里可调用 `bar.move-item(from, to)`、`tabs.move-item(from, to)` 或 `pages.move-item(from, to)`，移动同一个可写列表中的原行。参数是零基索引，`to` 是移动完成后的位置。相同索引或越界时保持原样。命令在回调内立即生效并保留选择和页面状态。`TabBar` 和 `TabWidget` 触发 `tab-moved(from, to)`，`SwipeView` 触发 `page-moved(from, to)`。程序化移动也可以移动隐藏或禁用的行，`reorderable` 只控制手势和键盘重排。
+
+`TabBar`、`SwipeView` 和 `TabWidget` 也可以通过 `current-value <=> root.selected` 共享同一个字符串业务标识。分别给 `TabButton`、`SwipePage` 和 `Tab` 声明 `value`。标签和页面可以各有自己的展示顺序。插入或重新排列标签时，会重新计算只读的 `current-index`，业务标识和已打开的页面保持稳定。
+
+在按值模式下，各控件查找第一个可见、启用且值匹配的项。找不到时没有选中项，`current-index` 为 `-1`，保存的 `current-value` 会保留。这样关闭页面时，应用可在同一个回调里选定要转到的文档。用户点击或用键盘、手势选择时，先写回新值，再发出 `changed(index)`。运行 `bazel run //examples/navigation:navigation -- --value-tabs` 试用插入、重排和关闭标签。
+
+`SwipeView` 可以用一个 `for … : SwipePage` 从模型生成全部页面。和 `TabBar` 使用同一个模型、绑定同一个 `current-value` 后，两处的顺序和选择都随模型同步。建议把编辑器、表单等交互和局部状态封装在页内的组件中。
+
+```xr
+SwipeView {
+    current-value <=> root.selected;
+    for doc in root.documents : SwipePage {
+        value: doc.id;
+        DocumentEditor { title: doc.title; }
+    }
+}
+```
+
+首次访问一页时才创建该页内容。切到其他页后，已访问页的组件状态随模型行标识保留，因此同一个 `VecModel` 内的插入和重排会保持编辑状态。移除该行会结束其页面生命周期。用新模型替换整组数据时，`current-value` 仍能找到同业务标识的页面，局部状态按新行初始化。运行 `bazel run //examples/navigation:navigation -- --model-swipe` 体验。
+
+`TabButton.checked` 可直接驱动自定义标签内容，包括通过 `for` 创建的标签。`Tab.active` 和 `SwipePage.active` 可用于绑定或回调，表示所在控件实际使用的页面。`TabBar` 和 `SwipeView` 回退到首个可用项时，读取结果会随之变化，原来的索引绑定值仍保留。运行 `bazel run //examples/slots -- --tab-content` 查看标签内容示例。
 
 横向 `TabBar` 和 `TabWidget` 继承 `layout-direction`。RTL 下第一项在右侧，左箭头切到下一项，溢出的标签可向左浏览。竖排 `TabWidget` 的标签栏位于起始侧，RTL 时在右侧，上下键仍按从上到下的顺序导航。与标签共用索引的横向 `SwipeView` 同样支持 RTL，按左箭头或向右拖动可切到下一页。运行 `bazel run //examples/navigation -- --rtl-tabs` 切换体验。
 
@@ -254,6 +442,10 @@ SplitView {
 
 `ToolBar` 默认横向排列子项，可用 `orientation: vertical;` 改为纵排。设置 `wrap: true;` 后可随可用空间换行或换列。工具按钮支持独立的 `clicked()`，也可绑定命令以同步勾选状态。`Button` 和 `ToolButton` 可用 `icon-size` 和 `icon-only` 控制图标显示。纯图标模式在没有图标时回退到文字。`icon` 使用已声明的 PNG 或 SVG 资源。运行 `bazel run //examples/menu:menu` 可体验共享图标和工具栏换行。
 
+`Button`、`ToolButton`、`RoundButton` 和 `DelayButton` 可用 `display: ButtonDisplay.text-under-icon;` 将图标放在文字上方，也支持 `text-beside-icon`、`text-only` 和 `icon-only`。图标和文字并排时，图标位于逻辑起始侧。用 `spacing` 调整二者间距，用 `colorize-icon: true;` 让图标跟随文字颜色。显式 `display` 优先于旧的 `icon-only` 属性，纯图标模式在缺少图标时显示文字。自定义 `ButtonContent` 接管内容布局，按钮仍负责焦点和激活。运行 `bazel run //examples/menu:menu -- --button-display` 切换排列方向并体验。
+
+在按钮上显式设置 `primary: true;` 使用主题强调色，设置 `primary: false;` 使用中性表面。普通按钮省略该属性时沿用默认配色。`flat: true;` 隐去静止按钮的默认表面，悬停、按下或选中时仍显示反馈。可用显式 `background` 自定义可用按钮的填充。普通按钮的这些样式可随绑定更新，按钮大小和激活规则与样式无关。运行 `bazel run //examples/menu:menu -- --button-appearance` 查看示例。
+
 `RoundButton` 沿用按钮的文字、图标、键盘激活和 `Action` 绑定。默认半径为宽高中较短边的一半，正方形尺寸会绘制为圆形，也可用 `radius` 指定半径。绘制和指针命中共用圆角几何，透明角落会把点击交给下层。`ToolSeparator` 默认绘制竖线，可在纵向工具栏里设 `orientation: horizontal`。`stroke-width`、`padding` 和 `color` 分别控制线宽、端部留白和颜色。分隔线参与布局，点击可以穿过它。运行 `bazel run //examples/menu:menu -- --round-tools` 可试用。
 
 在控件或视觉元素内声明 `Tooltip { text: "操作说明"; }`，可在悬停或通过 Tab 聚焦后显示提示。每个元素可附加一个 `Tooltip`，内容可用纯文本或单个自定义布局。`delay` 默认 600 毫秒，`timeout` 默认持续到离开、失焦或发生输入。提示浮在窗口内，靠近边缘时会避让，点击会穿过浮层。菜单和模态作用域会限制提示显示。
@@ -305,10 +497,14 @@ confirm := Button {
 `playing` 和 `error` 为只读。加载中的 `play()` 会在音效就绪后触发一次播放。
 回调中切换 `source` 后可以直接调用 `play()`，新文件加载完成后开始播放。
 同一实例连按时从头重播，不同实例可以同时播放。
+`loops` 默认 1，0 也播放一次，-1 持续循环。播放中修改它会更新剩余次数，
+并从当前采样位置继续。只读的 `loops-remaining` 包含正在播放的这一轮，
+无限循环时为 -1。`stop()` 会停止当前音效，也可取消预加载期间排队的 `play()`。
 
 运行 `bazel run --config=media //examples/sound_effect`，也可以在 VS Code
 打开 [示例](../examples/sound_effect/sound_effect.xr) 并启动实时预览。
-点击按钮或在预览面板获得焦点后按 F2 触发音效。
+点击按钮或在聚焦的预览面板按 F2 触发音效。勾选「循环播放」可持续播放，
+点击停止按钮或按 F3 结束。
 
 ### MediaPlayer
 

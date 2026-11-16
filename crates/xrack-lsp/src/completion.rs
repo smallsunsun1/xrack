@@ -95,7 +95,17 @@ struct Scope<'a> {
 struct Index<'a> {
     scopes: Vec<Scope<'a>>,
     imports: Vec<&'a str>,
+    combo_models: BTreeMap<usize, ComboModelHint<'a>>,
+    value_navigation: BTreeSet<usize>,
+    choice_roles: BTreeMap<(usize, &'a str), String>,
     imported_members: BTreeMap<String, Vec<Member>>,
+}
+
+enum ComboModelHint<'a> {
+    Reference(Option<&'a str>, &'a str),
+    RecordLiteral(&'a str),
+    Strings,
+    Unresolved,
 }
 
 impl<'a> Index<'a> {
@@ -112,6 +122,8 @@ impl<'a> Index<'a> {
             repeat_model: vec![],
         }];
         let mut imports = Vec::new();
+        let mut combo_models = BTreeMap::new();
+        let mut value_navigation = BTreeSet::new();
         let mut current = 0;
         for (i, token) in tokens.iter().enumerate() {
             match token.text {
@@ -187,6 +199,49 @@ impl<'a> Index<'a> {
                     scopes[current].statement = i + 1;
                 }
                 ";" => scopes[current].statement = i + 1,
+                "current-value"
+                    if scopes[current].statement == i
+                        && tokens
+                            .get(i + 1)
+                            .is_some_and(|op| matches!(op.text, ":" | "<=>"))
+                        && match scopes[current].role {
+                            Role::Element { kind, .. } | Role::Component { base: kind, .. } => {
+                                builtins::navigation_group(kind)
+                            }
+                            _ => false,
+                        } =>
+                {
+                    value_navigation.insert(current);
+                }
+                "model"
+                    if scopes[current].statement == i
+                        && matches!(
+                            scopes[current].role,
+                            Role::Element {
+                                kind: "ComboBox" | "Tumbler" | "PathView",
+                                ..
+                            } | Role::Component {
+                                base: "ComboBox" | "Tumbler" | "PathView",
+                                ..
+                            }
+                        )
+                        && tokens.get(i + 1).is_some_and(|next| next.text == ":") =>
+                {
+                    let spelling =
+                        |offset: usize| tokens.get(i + offset).map_or("", |token| token.text);
+                    let hint = match (spelling(2), spelling(3), spelling(4)) {
+                        ("[", record, "{") if name(record) => ComboModelHint::RecordLiteral(record),
+                        ("[", _, _) => ComboModelHint::Strings,
+                        (owner, ".", field) if name(owner) && name(field) => {
+                            ComboModelHint::Reference(Some(owner), field)
+                        }
+                        (field, ";" | "}" | "", _) if name(field) => {
+                            ComboModelHint::Reference(None, field)
+                        }
+                        _ => ComboModelHint::Unresolved,
+                    };
+                    combo_models.insert(current, hint);
+                }
                 "property"
                     if matches!(
                         scopes[current].role,
@@ -267,6 +322,9 @@ impl<'a> Index<'a> {
         Self {
             scopes,
             imports,
+            combo_models,
+            value_navigation,
+            choice_roles: BTreeMap::new(),
             imported_members: BTreeMap::new(),
         }
     }
@@ -280,6 +338,128 @@ impl<'a> Index<'a> {
 
     fn ancestors(&self, scope: usize) -> impl Iterator<Item = usize> {
         std::iter::successors(Some(scope), |&i| (i != 0).then_some(self.scopes[i].parent))
+    }
+
+    fn template_inputs(&self, scope: usize) -> Option<Vec<(&'static str, Type)>> {
+        self.ancestors(scope).find_map(|ancestor| {
+            let Role::Element { kind, .. } = self.scopes[ancestor].role else {
+                return None;
+            };
+            xrack_ir::semantic::visual_template_inputs(kind)
+        })
+    }
+
+    fn combo_option_data(&self, scope: usize) -> Option<(Option<Type>, Option<PathBuf>)> {
+        let template = self.ancestors(scope).find(|&id| {
+            matches!(
+                self.scopes[id].role,
+                Role::Element {
+                    kind: "ComboOption" | "TumblerOption" | "PathViewOption",
+                    ..
+                }
+            )
+        })?;
+        let parent = self.scopes[template].parent;
+        if matches!(
+            self.scopes[template].role,
+            Role::Element {
+                kind: "TumblerOption" | "PathViewOption",
+                ..
+            }
+        ) && !self.combo_models.contains_key(&parent)
+        {
+            return Some((Some(Type::Int), None));
+        }
+        Some(self.choice_model_item(parent))
+    }
+
+    fn choice_model_item(&self, combo: usize) -> (Option<Type>, Option<PathBuf>) {
+        match self.combo_models.get(&combo) {
+            Some(ComboModelHint::Reference(owner, member)) => {
+                let typed = match owner {
+                    Some("root") => self
+                        .component(combo)
+                        .and_then(|id| self.typed_member(id, member)),
+                    Some("self") => self.typed_member(combo, member),
+                    Some(owner) => self
+                        .named_element(combo, owner)
+                        .and_then(|id| self.typed_member(id, member)),
+                    None => self
+                        .ancestors(combo)
+                        .find_map(|id| self.typed_member(id, member)),
+                };
+                typed.map_or((None, None), |(ty, file)| (ty.list_item(), file))
+            }
+            Some(ComboModelHint::RecordLiteral(record)) => {
+                (Some(Type::Record((*record).into())), None)
+            }
+            Some(ComboModelHint::Unresolved) => (None, None),
+            Some(ComboModelHint::Strings) | None => (Some(Type::String), None),
+        }
+    }
+
+    fn infer_choice_roles(&mut self, tokens: &'a [Token<'a>]) {
+        let tokens: Vec<_> = tokens
+            .iter()
+            .filter(|token| token.code() || token.quoted())
+            .collect();
+        for window in tokens.windows(3) {
+            let [role, colon, field] = window else {
+                continue;
+            };
+            if colon.text != ":"
+                || !field.quoted()
+                || !matches!(role.text, "text-role" | "value-role")
+            {
+                continue;
+            }
+            let owner = self.scope_at(role.range.start);
+            if !self.combo_models.contains_key(&owner) {
+                continue;
+            }
+            if let Ok(field) = serde_json::from_str(field.text) {
+                self.choice_roles.insert((owner, role.text), field);
+            }
+        }
+    }
+
+    fn choice_value_type(&self, scope: usize) -> Option<Type> {
+        let (Some(mut ty @ Type::Record(_)), _) = self.choice_model_item(scope) else {
+            return None;
+        };
+        let field = self
+            .choice_roles
+            .get(&(scope, "value-role"))
+            .or_else(|| self.choice_roles.get(&(scope, "text-role")))
+            .map_or("text", String::as_str);
+        for name in field.split('.') {
+            let Type::Record(record) = ty else {
+                return None;
+            };
+            let fields = self
+                .imported_members
+                .get(record.as_ref())
+                .map_or_else(|| self.record(&record), Vec::as_slice);
+            ty = fields
+                .iter()
+                .find(|member| member.name == name)?
+                .ty
+                .clone()?;
+        }
+        Some(ty)
+    }
+
+    fn button_methods(
+        &self,
+        owner: usize,
+        kind: &str,
+    ) -> impl Iterator<Item = &'static catalog::BuiltinFunction> {
+        let in_row = self
+            .ancestors(owner)
+            .any(|scope| !self.scopes[scope].repeat_model.is_empty());
+        catalog::button_methods(kind)
+            .iter()
+            .filter(move |method| !in_row || method.name == "toggle")
     }
 
     fn component(&self, scope: usize) -> Option<usize> {
@@ -412,6 +592,12 @@ impl<'a> Index<'a> {
                     .into_iter()
                     .find(|member| member.kind == FUNCTION && member.name == name)
                     .map(|member| (member.parameters.clone(), member.file.clone()))
+            });
+            let signature = signature.or_else(|| {
+                (name == "value-selected")
+                    .then(|| self.choice_value_type(scope.parent))
+                    .flatten()
+                    .map(|ty| (vec![ty], None))
             });
             if let Some((types, file)) = signature {
                 for (parameter, ty) in self.scopes[i].members.iter_mut().zip(types) {
@@ -703,12 +889,16 @@ impl<'a> Items<'a> {
     }
 
     fn elements(&mut self, index: &Index<'a>) {
-        self.import_kind = Some(CLASS);
         for kind in catalog::ELEMENTS.split_ascii_whitespace().filter(|kind| {
             is_builtin(kind) && xrack_ir::semantic::control_part_parents(kind).is_empty()
         }) {
             self.add(kind, CLASS, "built-in element");
         }
+        self.components(index);
+    }
+
+    fn components(&mut self, index: &Index<'a>) {
+        self.import_kind = Some(CLASS);
         for scope in &index.scopes {
             if let Role::Component { name, base, .. } = scope.role
                 && base != "global"
@@ -724,7 +914,19 @@ impl<'a> Items<'a> {
     fn types(&mut self, index: &Index<'a>) {
         self.import_kind = Some(STRUCT);
         self.words(catalog::TYPES, CLASS, "XRack type");
+        let dynamic = index.scopes.iter().any(|scope| {
+            matches!(scope.role, Role::Element { kind: "DynamicContainer", .. }
+                | Role::Component { base: "DynamicContainer", .. })
+        });
+        if dynamic {
+            self.add("ExternalComponentHandle", STRUCT, "external component handle");
+        }
         for scope in &index.scopes {
+            if dynamic && let Role::Component { name, base, .. } = scope.role
+                && base != "global"
+            {
+                self.add(&format!("{name}Handle"), STRUCT, "component handle");
+            }
             if let Role::Record { name, .. } = scope.role {
                 self.add(name, STRUCT, "record");
             }
@@ -743,6 +945,85 @@ pub(crate) fn complete(
     workspace: Option<&Workspace<'_>>,
 ) -> Vec<Value> {
     complete_with_imports(text, line, character, workspace, |_, _| Vec::new())
+}
+
+fn suggest_position_child_argument<'a>(
+    index: &Index<'a>,
+    scope: usize,
+    prior: &[&Token<'a>],
+    items: &mut Items<'a>,
+) -> bool {
+    let Some((callee, argument)) = symbols::active_calls(prior.iter().copied()).next() else {
+        return false;
+    };
+    if callee < 2
+        || prior[callee - 1].text != "."
+        || prior[callee].text != catalog::POSITION_CHILD_METHOD.name
+    {
+        return false;
+    }
+    let receiver = match prior[callee - 2].text {
+        "root" => index.component(scope),
+        "self" => index.element(scope),
+        name => index.named_element(scope, name),
+    };
+    let Some(receiver) = receiver else {
+        return false;
+    };
+    let kind = match index.scopes[receiver].role {
+        Role::Element { kind, .. } | Role::Component { base: kind, .. } => kind,
+        _ => return false,
+    };
+    if !content_viewport(kind)
+        || index.members(receiver, false).iter().any(|member| {
+            member.name == catalog::POSITION_CHILD_METHOD.name && member.kind == FUNCTION
+        })
+    {
+        return false;
+    }
+    if argument != 0 {
+        items.add("ScrollAlignment", ENUM, "expected enum");
+        return false;
+    }
+    for (candidate, data) in index.scopes.iter().enumerate() {
+        let Role::Element { id: Some(id), .. } = data.role else {
+            continue;
+        };
+        if candidate == receiver
+            || !index
+                .ancestors(candidate)
+                .any(|ancestor| ancestor == receiver)
+        {
+            continue;
+        }
+        let drawable = index
+            .ancestors(candidate)
+            .take_while(|&ancestor| ancestor != receiver)
+            .all(|ancestor| {
+                let entry = &index.scopes[ancestor];
+                entry.repeat_model.is_empty()
+                    && match entry.role {
+                        Role::Element { kind, .. } => {
+                            xrack_ir::semantic::visual_state_target(kind)
+                                && xrack_ir::semantic::control_part_parents(kind).is_empty()
+                                && !matches!(
+                                    kind,
+                                    "Tooltip"
+                                        | "Menu"
+                                        | "PopupWindow"
+                                        | "Dialog"
+                                        | "Drawer"
+                                        | "Shortcut"
+                                )
+                        }
+                        _ => true,
+                    }
+            });
+        if drawable {
+            items.add(id, VARIABLE, "viewport descendant");
+        }
+    }
+    true
 }
 
 pub(crate) fn complete_with_imports(
@@ -796,11 +1077,15 @@ pub(crate) fn complete_with_imports(
         index.imported_members = workspace.imported_members(&tokens);
     }
     index.infer_repeat_items();
+    index.infer_choice_roles(&tokens);
     index.infer_handler_parameters(&code);
     let head = &prior[prior
         .iter()
         .rposition(|t| matches!(t.text, "{" | "}" | ";"))
         .map_or(0, |i| i + 1)..];
+    if suggest_position_child_argument(&index, scope, prior, &mut items) {
+        return items.values;
+    }
     if !matches!(prior.last().map(|token| token.text), Some(".")) {
         let expected = symbols::active_calls(prior.iter().copied())
             .find_map(|(callee, active)| {
@@ -1100,13 +1385,12 @@ fn suggest<'a>(index: &Index<'a>, scope: usize, head: &[&Token<'a>], items: &mut
             .iter()
             .any(|t| matches!(t.text, ":" | "<=>" | "=" | "+=" | "-="));
     if expression {
-        let inputs = index.ancestors(scope).find_map(|ancestor| {
-            let Role::Element { kind, .. } = index.scopes[ancestor].role else {
-                return None;
-            };
-            xrack_ir::semantic::visual_template_inputs(kind)
-        });
-        if let Some(inputs) = inputs {
+        if let Some((ty, _)) = index.combo_option_data(scope) {
+            let detail =
+                ty.map_or_else(|| "ComboBox model item".into(), |ty| ty.name().into_owned());
+            items.add("option-data", VARIABLE, &detail);
+        }
+        if let Some(inputs) = index.template_inputs(scope) {
             for (name, ty) in inputs {
                 items.add(name, VARIABLE, &ty.name());
             }
@@ -1171,6 +1455,14 @@ fn suggest<'a>(index: &Index<'a>, scope: usize, head: &[&Token<'a>], items: &mut
                 || matches!(property, "content-x" | "content-y")
                     && (animation || !viewport_offset_property(kind, property))
                 || focus_property(kind, property)
+                || xrack_ir::semantic::scroll_view_bar_metric(kind, property)
+                || xrack_ir::semantic::scroll_visual_property(kind, property)
+                || xrack_ir::semantic::scroll_state_property(kind, property)
+                || xrack_ir::semantic::flick_motion_property(kind, property).is_some()
+                || property == "current-index" && index.value_navigation.contains(&scope)
+                || property == "count" && builtins::navigation_group(kind)
+                || xrack_ir::semantic::range_position_property(kind, property)
+                || xrack_ir::semantic::combo_popup_property(kind, property).is_some()
                 || view_count_property(kind, property)
                 || xrack_ir::semantic::list_selection_property(kind, property)
                 || text_command_property(kind, property)
@@ -1182,9 +1474,11 @@ fn suggest<'a>(index: &Index<'a>, scope: usize, head: &[&Token<'a>], items: &mut
                 || table_sort_property(kind, property).is_some()
                 || table_selection_property(kind, property).is_some()
                 || table_history_property(kind, property).is_some()
+                || (kind == "Loader" && property == "status")
                 || (kind == "StackView"
                     && matches!(property, "current-page" | "depth" | "can-go-back"))
                 || (kind == "StackPage" && matches!(property, "visible" | "active" | "stack-index"))
+                || matches!(kind, "Tumbler" | "PathView") && property == "current-text"
             {
                 continue;
             }
@@ -1200,10 +1494,25 @@ fn suggest<'a>(index: &Index<'a>, scope: usize, head: &[&Token<'a>], items: &mut
                         Type::Int | Type::Float | Type::Length | Type::Color | Type::Brush
                     ))
             {
-                items.add(property, PROPERTY, &ty.name());
+                let detail = match (kind, property) {
+                    ("Tumbler" | "PathView" | "ComboBox", "current-value") => {
+                        index.choice_value_type(scope).map_or_else(
+                            || "type determined by value-role".into(),
+                            |ty| ty.name().into_owned(),
+                        )
+                    }
+                    ("Tumbler" | "PathView", "model") => "[string] or [Record]".into(),
+                    _ => ty.name().into_owned(),
+                };
+                items.add(property, PROPERTY, &detail);
             }
         }
-        if kind == "SoundEffect" {
+        if kind == "Loader" && !animation {
+            items.add("loaded", FUNCTION, "event handler");
+            items.components(index);
+            return;
+        }
+        if matches!(kind, "SoundEffect" | "ComboPopup") {
             return;
         }
         if !animation {
@@ -1292,6 +1601,20 @@ fn suggest<'a>(index: &Index<'a>, scope: usize, head: &[&Token<'a>], items: &mut
                     let detail = match part {
                         "EmptyState" => "content shown when the view has no rows",
                         "SwitchThumb" => "switch thumb laid out at the current drag position",
+                        "ComboIndicator" => "dropdown artwork at the trailing edge of a ComboBox",
+                        "ComboContent" => {
+                            "replacement content for the selected value of a ComboBox"
+                        }
+                        "ComboOption" => "visual template for a visible option in a ComboBox",
+                        "TumblerOption" => "visual template for a visible row in a Tumbler",
+                        "PathViewOption" => "visual template for an item on a PathView",
+                        "ComboPopup" => {
+                            "size, appearance and scrolling indicator of a ComboBox popup"
+                        }
+                        "ProgressTrack" => "artwork laid out over the whole progress track",
+                        "ProgressFill" => "artwork resized and positioned by the current progress",
+                        "ScrollTrack" => "artwork covering the resolved scrollbar track",
+                        "ScrollThumb" => "artwork following the actual scrollbar thumb",
                         "TreeDisclosure" => "branch disclosure artwork driven by the TreeView",
                         "SectionHeader" => "visual template for each section heading in a list",
                         _ => "replacement control part",
@@ -1304,7 +1627,15 @@ fn suggest<'a>(index: &Index<'a>, scope: usize, head: &[&Token<'a>], items: &mut
                 .split_ascii_whitespace()
                 .filter(|event| builtin_event(kind, event))
             {
-                items.add(event, FUNCTION, "event handler");
+                if event == "value-selected" {
+                    let detail = index.choice_value_type(scope).map_or_else(
+                        || "event handler · value-role".into(),
+                        |ty| format!("event handler ({})", ty.name()),
+                    );
+                    items.add(event, FUNCTION, &detail);
+                } else {
+                    items.add(event, FUNCTION, "event handler");
+                }
             }
             if radio_group {
                 items.add("RadioButton", CLASS, "RadioGroup option");
@@ -1332,7 +1663,10 @@ fn expected_type(index: &Index<'_>, scope: usize, head: &[&Token<'_>], kind: &st
         Role::RecordValue(record) => index.record(record).iter().collect(),
         _ => index.members(scope, false),
     };
-    builtin_property(kind, name)
+    (name == "current-value")
+        .then(|| index.choice_value_type(scope))
+        .flatten()
+        .or_else(|| builtin_property(kind, name))
         .or_else(|| members.into_iter().find(|m| m.name == name)?.ty.clone())
 }
 
@@ -1534,9 +1868,119 @@ fn qualified<'a>(index: &Index<'a>, scope: usize, head: &[&Token<'a>], items: &m
             Role::Element { kind, .. } | Role::Component { base: kind, .. } => kind,
             _ => "",
         };
+        if kind == "Loader" {
+            items.add("status", PROPERTY, "read-only string");
+        }
+        if builtins::navigation_group(kind) {
+            items.add("count", PROPERTY, "read-only int · number of navigation items");
+        }
+        if index.value_navigation.contains(&owner) {
+            items.add(
+                "current-index",
+                PROPERTY,
+                "read-only int · index of current-value",
+            );
+        }
+        for property in [
+            "dragging",
+            "flicking",
+            "moving",
+            "rebounding",
+            "horizontal-overshoot",
+            "vertical-overshoot",
+        ] {
+            if let Some(ty) = xrack_ir::semantic::flick_motion_property(kind, property) {
+                items.add(property, PROPERTY, &format!("read-only {}", ty.name()));
+            }
+        }
         for property in ["has-focus", "focus-within", "pressed"] {
             if focus_property(kind, property) {
                 items.add(property, PROPERTY, "read-only bool");
+            }
+        }
+        for property in ["popup-open", "highlighted-index"] {
+            if let Some(ty) = xrack_ir::semantic::combo_popup_property(kind, property) {
+                items.add(property, PROPERTY, &format!("read-only {}", ty.name()));
+            }
+        }
+        if xrack_ir::semantic::button_checked_property(kind, "checked")
+            || xrack_ir::semantic::radio_checked_property(kind, "checked")
+            || xrack_ir::semantic::navigation_active_property(kind, "checked")
+        {
+            items.add("checked", PROPERTY, "effective bool · selected state");
+        }
+        if xrack_ir::semantic::navigation_active_property(kind, "active") {
+            items.add("active", PROPERTY, "read-only bool · active page");
+        }
+        for property in ["checked", "check-state"] {
+            if let Some(ty) = xrack_ir::semantic::toggle_state_property(kind, property) {
+                items.add(property, PROPERTY, &format!("effective {}", ty.name()));
+            }
+        }
+        for property in ["value", "lower-value", "upper-value"] {
+            if let Some(ty) = xrack_ir::semantic::numeric_control_property(kind, property) {
+                items.add(property, PROPERTY, &format!("committed {}", ty.name()));
+            }
+        }
+        for property in [
+            "count",
+            "current-index",
+            "current-text",
+            "current-value",
+            "edit-text",
+        ] {
+            if let Some(ty) = xrack_ir::semantic::combo_state_property(kind, property) {
+                let detail = if property == "current-value" {
+                    index.choice_value_type(owner).map_or_else(
+                        || "effective value · model value-role".into(),
+                        |ty| format!("effective {} · model value-role", ty.name()),
+                    )
+                } else {
+                    format!("effective {}", ty.name())
+                };
+                items.add(property, PROPERTY, &detail);
+            }
+        }
+        for property in ["active", "pressed", "hovered"] {
+            if xrack_ir::semantic::scroll_state_property(kind, property) {
+                items.add(property, PROPERTY, "read-only bool · scroll interaction");
+            }
+        }
+        for property in ["visual-position", "visual-size"] {
+            if xrack_ir::semantic::scroll_visual_property(kind, property) {
+                items.add(
+                    property,
+                    PROPERTY,
+                    "read-only float · normalized thumb geometry",
+                );
+            }
+        }
+        for property in [
+            "position",
+            "visual-position",
+            "lower-position",
+            "upper-position",
+            "lower-visual-position",
+            "upper-visual-position",
+        ] {
+            if xrack_ir::semantic::range_position_property(kind, property) {
+                items.add(property, PROPERTY, "read-only float · normalized position");
+            }
+        }
+        for method in catalog::dynamic_methods(kind) {
+            if matches!(method.name, "get" | "status" | "is-mounted")
+                || matches!(index.scopes[scope].role, Role::Handler)
+            {
+                items.add(method.name, FUNCTION, &method.signature());
+            }
+        }
+        if matches!(index.scopes[scope].role, Role::Handler) {
+            for method in catalog::focus_methods(kind)
+                .iter()
+                .chain(index.button_methods(owner, kind))
+                .chain(catalog::scroll_bar_methods(kind))
+            {
+                items.add(method.name, FUNCTION, &method.signature());
             }
         }
         if xrack_ir::semantic::list_selection_property(kind, "selected-view-index") {
@@ -1652,6 +2096,7 @@ fn qualified<'a>(index: &Index<'a>, scope: usize, head: &[&Token<'a>], items: &m
                 "subtitle-error",
                 "buffer-progress",
                 "bitrate",
+                "loops-remaining",
             ] {
                 if let Some(ty) = xrack_ir::semantic::media_object_read_type(kind, property) {
                     items.add(property, PROPERTY, &format!("read-only {}", ty.name()));
@@ -1660,6 +2105,9 @@ fn qualified<'a>(index: &Index<'a>, scope: usize, head: &[&Token<'a>], items: &m
             for method in media_methods {
                 items.add(method.name, FUNCTION, &method.signature());
             }
+        }
+        if kind == "Loader" {
+            items.add("status", PROPERTY, "read-only string");
         }
         if matches!(kind, "ScrollBar" | "ScrollIndicator") {
             items.words(
@@ -1744,6 +2192,11 @@ fn qualified<'a>(index: &Index<'a>, scope: usize, head: &[&Token<'a>], items: &m
                 }
             }
         }
+        if matches!(role, Role::Handler) {
+            for method in catalog::navigation_move_methods(kind) {
+                items.add(method.name, FUNCTION, &method.signature());
+            }
+        }
         if kind == "SplitView" {
             items.add("resizing", PROPERTY, "read-only bool");
             items.add("save-state", FUNCTION, "() -> string");
@@ -1767,6 +2220,13 @@ fn qualified<'a>(index: &Index<'a>, scope: usize, head: &[&Token<'a>], items: &m
         }
         if viewport_kind(kind) {
             items.words("visible-width visible-height", PROPERTY, "read-only length");
+            if kind == "ScrollView" {
+                items.words(
+                    "effective-scroll-bar-width effective-scroll-bar-height",
+                    PROPERTY,
+                    "read-only length",
+                );
+            }
             let batch = catalog::batch_selection_methods(kind);
             if !batch.is_empty() {
                 items.add("selected-keys", PROPERTY, "read-only [int]");
@@ -1780,18 +2240,6 @@ fn qualified<'a>(index: &Index<'a>, scope: usize, head: &[&Token<'a>], items: &m
                 items.add("view-index-for-source", FUNCTION, "(source: int) -> int");
                 items.add("source-index-for-view", FUNCTION, "(index: int) -> int");
             }
-            if kind == "Flickable" {
-                items.words(
-                    "dragging flicking moving rebounding",
-                    PROPERTY,
-                    "read-only bool",
-                );
-                items.words(
-                    "horizontal-overshoot vertical-overshoot",
-                    PROPERTY,
-                    "read-only length",
-                );
-            }
             for property in ["content-x", "content-y"] {
                 let description = if viewport_offset_property(kind, property) {
                     "effective length · supports two-way binding"
@@ -1801,7 +2249,12 @@ fn qualified<'a>(index: &Index<'a>, scope: usize, head: &[&Token<'a>], items: &m
                 items.add(property, PROPERTY, description);
             }
             if matches!(role, Role::Handler) {
-                items.add("scroll-to", FUNCTION, "(length, length)");
+                for method in catalog::viewport_move_methods(kind)
+                    .iter()
+                    .chain(catalog::child_position_methods(kind))
+                {
+                    items.add(method.name, FUNCTION, &method.signature());
+                }
                 if !content_viewport(kind) {
                     items.add("select-source-index", FUNCTION, "(source: int)");
                     items.add("position-view-at-index", FUNCTION, "(int, ScrollAlignment)");
@@ -1886,14 +2339,19 @@ fn qualified<'a>(index: &Index<'a>, scope: usize, head: &[&Token<'a>], items: &m
     let mut members = if let Some(owner) = owner {
         index.members(owner, false)
     } else {
-        let Some(Type::Record(record)) = index.ancestors(scope).find_map(|i| {
-            index
-                .members(i, false)
-                .into_iter()
-                .find(|m| m.name == first)?
-                .ty
-                .clone()
-        }) else {
+        let ty = if first == "option-data" {
+            index.combo_option_data(scope).and_then(|(ty, _)| ty)
+        } else {
+            index.ancestors(scope).find_map(|i| {
+                index
+                    .members(i, false)
+                    .into_iter()
+                    .find(|m| m.name == first)?
+                    .ty
+                    .clone()
+            })
+        };
+        let Some(Type::Record(record)) = ty else {
             return;
         };
         index.record(&record).iter().collect()
@@ -1921,6 +2379,42 @@ fn qualified<'a>(index: &Index<'a>, scope: usize, head: &[&Token<'a>], items: &m
 #[cfg(test)]
 mod tests {
     use super::complete;
+
+    #[test]
+    fn dynamic_container_methods_complete_in_handlers() {
+        let source = "component App inherits Window { children := DynamicContainer {} button := Button { clicked => { children.mou";
+        let entries = complete(source, 0, source.len(), None);
+        for label in ["mount", "mount-async", "mount-url"] {
+            assert!(entries.iter().any(|item| item["label"] == label), "{label}");
+        }
+    }
+
+    #[test]
+    fn loader_completes_bindings_and_declared_components() {
+        let source =
+            "component Details inherits VerticalLayout {} component App inherits Window { Lo";
+        let entries = complete(source, 0, source.len(), None);
+        assert!(entries.iter().any(|item| item["label"] == "Loader"));
+
+        let source = "component Details inherits VerticalLayout {} component App inherits Window { Loader { ";
+        let entries = complete(source, 0, source.len(), None);
+        for label in ["active", "asynchronous", "source", "source-url", "loaded", "Details"] {
+            assert!(entries.iter().any(|item| item["label"] == label), "{label}");
+        }
+        for label in ["Button", "@children", "for", "status"] {
+            assert!(
+                !entries.iter().any(|item| item["label"] == label),
+                "{label}"
+            );
+        }
+    }
+
+    #[test]
+    fn loader_status_is_available_in_bindings() {
+        let source = "component App inherits Window { area := Loader {} Text { text: area.st";
+        let entries = complete(source, 0, source.len(), None);
+        assert!(entries.iter().any(|item| item["label"] == "status"));
+    }
 
     #[test]
     fn table_command_completions_respect_the_receiver_and_effect_context() {

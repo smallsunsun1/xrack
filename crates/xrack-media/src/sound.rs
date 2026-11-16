@@ -18,7 +18,7 @@ use std::{
     },
     time::Instant,
 };
-use xrack_runtime::{MediaCommand, MediaSession, MediaState, MediaStatus};
+use xrack_runtime::{MediaCommand, MediaOptions, MediaSession, MediaState, MediaStatus};
 
 const MAX_SAMPLES: usize = 10 * RATE as usize * CHANNELS;
 
@@ -28,20 +28,31 @@ struct Voice {
     samples: Arc<[f32]>,
     cursor: usize,
     volume: f32,
+    loops_remaining: i64,
 }
 
 impl Voice {
-    fn mix(&mut self, output: &mut [f32]) {
-        let remaining = &self.samples[self.cursor..];
-        let count = remaining.len().min(output.len());
-        for (dest, &sample) in output.iter_mut().zip(&remaining[..count]) {
-            *dest += sample * self.volume;
+    fn mix(&mut self, mut output: &mut [f32]) {
+        while self.playing() && !output.is_empty() {
+            let remaining = &self.samples[self.cursor..];
+            let count = remaining.len().min(output.len());
+            let (current, rest) = output.split_at_mut(count);
+            for (dest, &sample) in current.iter_mut().zip(remaining) {
+                *dest += sample * self.volume;
+            }
+            output = rest;
+            self.cursor += count;
+            if self.cursor == self.samples.len() {
+                self.cursor = 0;
+                if self.loops_remaining > 0 {
+                    self.loops_remaining -= 1;
+                }
+            }
         }
-        self.cursor += count;
     }
 
     fn playing(&self) -> bool {
-        self.cursor < self.samples.len()
+        self.loops_remaining != 0
     }
 }
 
@@ -121,6 +132,7 @@ struct Sound {
     mixer: Rc<Mixer>,
     id: u64,
     volume: f32,
+    loops: i64,
     preload: Option<mpsc::Receiver<Samples>>,
     samples: Option<Samples>,
     play_pending: bool,
@@ -146,6 +158,7 @@ pub(super) fn open(path: &Path, volume: f64) -> Result<Box<dyn MediaSession>, St
         mixer,
         id,
         volume: volume as f32,
+        loops: 1,
         preload: Some(preload),
         samples: None,
         play_pending: false,
@@ -199,8 +212,23 @@ impl Drop for Sound {
 
 impl MediaSession for Sound {
     fn command(&mut self, command: MediaCommand) {
-        if command == MediaCommand::Play && self.state.status != MediaStatus::Failed {
-            self.play_pending = true;
+        match command {
+            MediaCommand::Play if self.state.status != MediaStatus::Failed => {
+                self.play_pending = true;
+            }
+            MediaCommand::Stop => {
+                self.play_pending = false;
+                self.mixer.voices.lock().unwrap().remove(&self.id);
+            }
+            _ => {}
+        }
+    }
+
+    fn configure(&mut self, options: &MediaOptions) {
+        self.loops = options.loops;
+        let mut voices = self.mixer.voices.lock().unwrap();
+        if let Some(voice) = voices.get_mut(&self.id).filter(|voice| voice.playing()) {
+            voice.loops_remaining = self.loops;
         }
     }
 
@@ -248,10 +276,14 @@ impl MediaSession for Sound {
                         samples: samples.clone(),
                         cursor: 0,
                         volume: self.volume,
+                        loops_remaining: self.loops,
                     },
                 );
             }
-            self.state.playing = voices.get(&self.id).is_some_and(Voice::playing);
+            self.state.loops_remaining = voices
+                .get(&self.id)
+                .map_or(0, |voice| voice.loops_remaining);
+            self.state.playing = self.state.loops_remaining != 0;
             self.state.status = if self.state.playing {
                 MediaStatus::Playing
             } else {
@@ -315,11 +347,13 @@ mod tests {
             samples: [0.5, 0.75, -0.5, 0.25].into(),
             cursor: 0,
             volume: 0.5,
+            loops_remaining: 1,
         };
         let mut notification = Voice {
             samples: [-0.5, 0.5].into(),
             cursor: 0,
             volume: 0.25,
+            loops_remaining: 1,
         };
         let mut output = [0.0; 2];
         confirmation.mix(&mut output);
@@ -331,9 +365,33 @@ mod tests {
         confirmation.mix(&mut output);
         assert_eq!(output, [-0.25, 0.125]);
         assert!(!confirmation.playing());
-        confirmation.cursor = 0;
+        confirmation.loops_remaining = 1;
         output.fill(0.0);
         confirmation.mix(&mut output);
         assert_eq!(output, [0.25, 0.375]);
+    }
+
+    #[test]
+    fn loops_fill_the_same_audio_buffer_and_end_without_a_gap() {
+        let mut voice = Voice {
+            samples: [0.25, -0.25, 0.5, -0.5].into(),
+            cursor: 0,
+            volume: 1.0,
+            loops_remaining: 2,
+        };
+        let mut first = [0.0; 6];
+        voice.mix(&mut first);
+        assert_eq!(first, [0.25, -0.25, 0.5, -0.5, 0.25, -0.25]);
+        assert_eq!(voice.loops_remaining, 1);
+        let mut last = [0.0; 4];
+        voice.mix(&mut last);
+        assert_eq!(last, [0.5, -0.5, 0.0, 0.0]);
+        assert_eq!(voice.loops_remaining, 0);
+
+        voice.loops_remaining = -1;
+        first.fill(0.0);
+        voice.mix(&mut first);
+        assert_eq!(first, [0.25, -0.25, 0.5, -0.5, 0.25, -0.25]);
+        assert_eq!(voice.loops_remaining, -1);
     }
 }

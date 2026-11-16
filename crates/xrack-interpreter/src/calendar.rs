@@ -141,6 +141,35 @@ impl Instance {
         action: ControlAction,
         input: xrack_runtime::InputRoute<'_>,
     ) -> Result<bool> {
+        if let Some(combo) = &element.record_combo {
+            if !self.element_allows_routed_input(element, input)? {
+                return Ok(false);
+            }
+            let items = self.combo_items(element, combo)?;
+            let property = element.selection_property();
+            let by_value = property == "current-value";
+            let (current, value) = if by_value {
+                (0, self.control_value(element, property)?)
+            } else {
+                (self.current_index(element)?, None)
+            };
+            let Some((index, value)) =
+                Tumbler::prepare_record_selection(node, action, items, current, value.as_ref())
+            else {
+                return Ok(false);
+            };
+            let update = if by_value {
+                value.clone()
+            } else {
+                index.into()
+            };
+            if !input.is_current() || !self.update_control(element, node, property, update)? {
+                return Ok(false);
+            }
+            self.handler(element, "changed", &[index.into()])?;
+            self.handler(element, "value-selected", &[value])?;
+            return Ok(true);
+        }
         let Some(index) = Tumbler::try_prepare_selection(
             node,
             action,

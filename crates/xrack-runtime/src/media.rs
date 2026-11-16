@@ -121,6 +121,7 @@ pub struct MediaState {
     pub subtitle_error: String,
     pub buffer_progress: f64,
     pub bitrate: i64,
+    pub loops_remaining: i64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -253,6 +254,10 @@ impl MediaSlot {
         self.state.get(MediaState::default).bitrate
     }
 
+    pub fn loops_remaining(&self) -> i64 {
+        self.state.get(MediaState::default).loops_remaining
+    }
+
     pub fn read(&self, name: &str) -> Option<Value> {
         Some(match name {
             "position" => self.position().into(),
@@ -277,6 +282,7 @@ impl MediaSlot {
             "subtitle-error" => self.subtitle_error().into(),
             "buffer-progress" => self.buffer_progress().into(),
             "bitrate" => self.bitrate().into(),
+            "loops-remaining" => self.loops_remaining().into(),
             _ => return None,
         })
     }
@@ -368,6 +374,11 @@ pub struct MediaRegistration {
 }
 
 impl MediaRegistration {
+    pub fn with_sound_loops(mut self, loops: i64) -> Self {
+        self.options.loops = if loops == -1 { -1 } else { loops.max(1) };
+        self
+    }
+
     fn open(&self, path: &Path) -> Result<Box<dyn MediaSession>, String> {
         if self.sound_effect {
             let open = SOUND_FACTORY

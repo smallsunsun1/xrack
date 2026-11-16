@@ -325,11 +325,17 @@ impl ChangeSignal {
 #[doc(hidden)]
 #[derive(Default)]
 pub struct ComponentLifetime {
+    loader_mount: OnceCell<crate::LoaderMount>,
     signal: OnceCell<ChangeSignal>,
     pub(crate) weak: crate::event_loop::WeakRegistration,
 }
 
 impl ComponentLifetime {
+    #[doc(hidden)]
+    pub fn loader_mount(&self) -> &crate::LoaderMount {
+        self.loader_mount.get_or_init(crate::LoaderMount::default)
+    }
+
     pub fn track(&self) {
         self.signal.get_or_init(ChangeSignal::default).track();
     }

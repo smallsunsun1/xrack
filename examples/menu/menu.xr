@@ -92,6 +92,84 @@ export component MenuDemo inherits Window {
     }
 }
 
+export component ButtonAppearanceDemo inherits Window {
+    title: "XRack · 按钮外观";
+    width: 440px; height: 250px;
+    background: #182331;
+    color-scheme: dark;
+    accent-color: #f2a354;
+    in-out property <bool> emphasize: true;
+    in-out property <bool> flat-save: false;
+    in-out property <bool> save-enabled: true;
+    in-out property <bool> pinned: false;
+    out property <int> activations: 0;
+
+    save := Button {
+        x: 18px; y: 20px; width: 122px; height: 46px;
+        text: "保存";
+        primary: root.emphasize;
+        flat: root.flat-save;
+        enabled: root.save-enabled;
+        clicked => { root.activations += 1; }
+    }
+    cancel := Button {
+        x: 155px; y: 20px; width: 122px; height: 46px;
+        text: "取消"; primary: false;
+        clicked => { root.activations += 1; }
+    }
+    pin := ToolButton {
+        x: 292px; y: 20px; width: 122px; height: 46px;
+        text: "固定"; primary: false; flat: true;
+        checkable: true; checked <=> root.pinned;
+        toggled => { root.activations += 1; }
+    }
+    emphasis := CheckBox { x: 18px; y: 86px; width: 130px; text: "强调保存"; checked <=> root.emphasize; }
+    flatten := CheckBox { x: 155px; y: 86px; width: 130px; text: "扁平保存"; checked <=> root.flat-save; }
+    enable-save := CheckBox { x: 292px; y: 86px; width: 130px; text: "允许保存"; checked <=> root.save-enabled; }
+    appearance-status := Label { x: 18px; y: 140px; text: "激活次数 " + root.activations; }
+}
+
+export component ButtonDisplayDemo inherits Window {
+    title: "XRack · 按钮图标布局";
+    width: 475px; height: 300px;
+    in-out property <bool> rtl: false;
+    out property <int> activations: 0;
+
+    grid := Action {
+        text: "网格";
+        icon: @image-url("assets/grid.svg");
+        activated => { root.activations += 1; }
+    }
+    VerticalLayout {
+        padding: 18px; spacing: 12px;
+        ToolBar {
+            spacing: 10px;
+            layout-direction: root.rtl ? LayoutDirection.right-to-left : LayoutDirection.left-to-right;
+            beside := ToolButton {
+                action: grid; display: ButtonDisplay.text-beside-icon;
+            }
+            stacked := ToolButton {
+                action: grid; display: ButtonDisplay.text-under-icon;
+                spacing: 5px; color: #e7a646; colorize-icon: true;
+            }
+            only-icon := RoundButton {
+                action: grid; display: ButtonDisplay.icon-only;
+                accessible-name: "图标网格";
+            }
+            only-text := Button {
+                action: grid; display: ButtonDisplay.text-only;
+            }
+            custom := ToolButton {
+                text: "自定义";
+                clicked => { root.activations += 1; }
+                ButtonContent { Text { text: "自定义"; color: #f3b787; } }
+            }
+        }
+        direction := CheckBox { text: "从右到左显示"; checked <=> root.rtl; }
+        display-status := Label { text: "激活次数 " + root.activations; }
+    }
+}
+
 export component RoundToolbarDemo inherits Window {
     title: "XRack · 圆形按钮";
     width: 480px; height: 280px;

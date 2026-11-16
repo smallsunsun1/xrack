@@ -1,6 +1,8 @@
 use crate::{Element, Error, Instance, Member, Repeat, Result, Visual};
 use std::{collections::BTreeMap, rc::Rc};
-use xrack_runtime::{ButtonGroupOptions, ButtonGroupSelection, CheckState, Node, Value};
+use xrack_runtime::{
+    ButtonGroupOptions, ButtonGroupSelection, CheckState, ListModel, Node, RowContext, Value,
+};
 
 pub(crate) struct Membership {
     pub(crate) key: String,
@@ -37,6 +39,12 @@ pub(crate) fn members(root: &Element) -> BTreeMap<String, Members> {
                 .or_default()
                 .push((path.clone(), element.key.clone()));
         }
+        if let Some(empty) = element.empty_state() {
+            path.push(0);
+            collect(empty, path, groups);
+            path.pop();
+            return;
+        }
         for (index, child) in element
             .children
             .iter()
@@ -67,6 +75,360 @@ pub(crate) fn members(root: &Element) -> BTreeMap<String, Members> {
 }
 
 impl Instance {
+    pub(crate) fn radio_choice(&self, group: &Element) -> Result<Option<(usize, usize)>> {
+        let cache = self
+            .0
+            .radio_choices
+            .borrow_mut()
+            .entry(group.key.clone())
+            .or_default()
+            .clone();
+        cache.try_get(|| {
+            let mut selection = self.group_selection(group)?;
+            for (index, option) in group.children.iter().enumerate() {
+                if matches!(selection, ButtonGroupSelection::Index(index) if index < 0) {
+                    break;
+                }
+                let read = |owner: &Instance, read_label| {
+                    if !owner.input_element_available(option, false)? {
+                        Ok(None)
+                    } else if read_label {
+                        owner.group_option_value(option).map(Some)
+                    } else {
+                        Ok(Some(String::new()))
+                    }
+                };
+                let row = if let Some(repeat) = &option.repeat {
+                    if repeat.empty {
+                        continue;
+                    }
+                    let model = self.repeat_state(option).row_model(self, repeat)?;
+                    selection.try_select_radio_option(
+                        model.row_count().min(4096),
+                        |row, label| {
+                            let projected =
+                                self.sample_group_option(option, repeat, &model, row)?;
+                            read(&projected, label)
+                        },
+                    )?
+                } else {
+                    selection.try_select_radio_option(1, |_, label| read(self, label))?
+                };
+                if let Some(row) = row {
+                    return Ok(Some((index, row)));
+                }
+            }
+            Ok(None)
+        })
+    }
+
+    fn sample_group_option(
+        &self,
+        option: &Element,
+        repeat: &Repeat,
+        model: &crate::repeat::Model,
+        row: usize,
+    ) -> Result<Self> {
+        let context = RowContext::with_sample(model.row_key(row), row, model.item(row));
+        self.allocate_row(
+            option,
+            crate::repeat::RowScope {
+                owner: Rc::downgrade(&self.0),
+                root_key: option.key.clone(),
+                item: repeat.item.clone(),
+                index: repeat.index.clone(),
+                context,
+                sampled: true,
+            },
+        )
+    }
+
+    pub(crate) fn describe_navigation_page(
+        &self,
+        page: &Element,
+        repeat: &Repeat,
+        model: &crate::repeat::Model,
+        slot: usize,
+    ) -> Result<Node> {
+        let sample = self.sample_group_option(page, repeat, model, slot)?;
+        let kind = if matches!(page.visual, Visual::Builtin("Tab")) {
+            "Tab"
+        } else {
+            "SwipePage"
+        };
+        let mut header = Node::new(kind, None);
+        header
+            .properties
+            .insert("visible", sample.visual_flag(page, "visible", true)?.into());
+        header
+            .properties
+            .insert("enabled", sample.visual_flag(page, "enabled", true)?.into());
+        for property in [
+            "title",
+            "value",
+            "accessible-name",
+            "accessible-description",
+        ] {
+            let value = if let Some(cases) = page.state_bindings.get(property) {
+                match sample.state_value(cases)? {
+                    Some(value) => Some(value),
+                    None => sample.binding_value(page, property)?,
+                }
+            } else {
+                sample.binding_value(page, property)?
+            };
+            if let Some(Value::String(value)) = value {
+                header.properties.insert(property, value.into());
+            }
+        }
+        Ok(header)
+    }
+
+    pub(crate) fn sample_navigation_option(
+        &self,
+        page: &Element,
+        repeat: &Repeat,
+        model: &crate::repeat::Model,
+        row: usize,
+        by_value: bool,
+    ) -> Result<Option<String>> {
+        let sample = self.sample_group_option(page, repeat, model, row)?;
+        sample.live_group_option(page, by_value, sample.input_element_available(page, false)?)
+    }
+
+    pub(crate) fn navigation_choice(&self, group: &Element) -> Result<Option<usize>> {
+        let cache = self
+            .0
+            .navigation_choices
+            .borrow_mut()
+            .entry(group.key.clone())
+            .or_default()
+            .clone();
+        cache.try_get(|| {
+            if matches!(group.visual, Visual::Builtin("SwipeView"))
+                && !self.visual_flag(group, "visible", true)?
+            {
+                return Ok(None);
+            }
+            if group.selection_property() == "current-value" {
+                let ButtonGroupSelection::Value(requested) = self.group_selection(group)? else {
+                    return Err(Error::Evaluation("invalid navigation value".into()));
+                };
+                if let Some(option) = group.children.first()
+                    && let Some(repeat) = &option.repeat
+                {
+                    if repeat.empty {
+                        return Ok(None);
+                    }
+                    let model = self.repeat_state(option).row_model(self, repeat)?;
+                    return xrack_runtime::try_resolve_navigation_value(
+                        &requested,
+                        (0..model.row_count().min(4096)).map(|row| {
+                            let sample = self.sample_group_option(option, repeat, &model, row)?;
+                            sample.live_group_option(
+                                option,
+                                true,
+                                sample.input_element_available(option, false)?,
+                            )
+                        }),
+                    );
+                }
+                return xrack_runtime::try_resolve_navigation_value(
+                    &requested,
+                    group.children.iter().map(|option| {
+                        self.live_group_option(
+                            option,
+                            true,
+                            self.input_element_available(option, false)?,
+                        )
+                    }),
+                );
+            }
+            let requested = self.current_index(group)?;
+            if matches!(group.visual, Visual::Builtin("TabWidget")) {
+                let Some(index) = usize::try_from(requested).ok() else {
+                    return Ok(None);
+                };
+                if let Some(tab) = group.children.first()
+                    && let Some(repeat) = &tab.repeat
+                {
+                    if repeat.empty {
+                        return Ok(None);
+                    }
+                    let model = self.repeat_state(tab).row_model(self, repeat)?;
+                    if index >= model.row_count().min(4096) {
+                        return Ok(None);
+                    }
+                    let sample = self.sample_group_option(tab, repeat, &model, index)?;
+                    return Ok(sample.input_element_available(tab, false)?.then_some(index));
+                }
+                let Some(tab) = group.children.get(index) else {
+                    return Ok(None);
+                };
+                return Ok(self.input_element_available(tab, false)?.then_some(index));
+            }
+            if let Some(option) = group.children.first()
+                && let Some(repeat) = &option.repeat
+            {
+                if repeat.empty {
+                    return Ok(None);
+                }
+                let model = self.repeat_state(option).row_model(self, repeat)?;
+                return xrack_runtime::try_resolve_swipe_index(
+                    Some(requested),
+                    (0..model.row_count().min(4096)).map(|row| {
+                        let sample = self.sample_group_option(option, repeat, &model, row)?;
+                        sample.input_element_available(option, false)
+                    }),
+                );
+            }
+            xrack_runtime::try_resolve_swipe_index(
+                Some(requested),
+                group
+                    .children
+                    .iter()
+                    .map(|option| self.input_element_available(option, false)),
+            )
+        })
+    }
+
+    pub(crate) fn group_option_checked(&self, element: &Element) -> Result<bool> {
+        let key = &element.button_group.as_ref().unwrap().key;
+        let (owner, group) = self.element_owner(key)?;
+        let definition = owner.definition();
+        let members = &definition.button_groups[key];
+        match owner.group_selection(group)? {
+            ButtonGroupSelection::Index(index) => Ok(usize::try_from(index)
+                .ok()
+                .and_then(|index| members.keys.get(index))
+                == Some(&element.key)),
+            ButtonGroupSelection::Value(value) => {
+                if value.is_empty() {
+                    return Ok(false);
+                }
+                for (candidate, path) in members.keys.iter().zip(members.paths.iter()) {
+                    if let Some(option) = owner.mounted_group_option(&definition.root, path)?
+                        && owner.group_option_value(option)? == value
+                    {
+                        return Ok(candidate == &element.key);
+                    }
+                    if candidate == &element.key {
+                        break;
+                    }
+                }
+                Ok(false)
+            }
+        }
+    }
+
+    fn mounted_group_option<'a>(
+        &self,
+        mut element: &'a Element,
+        path: &[usize],
+    ) -> Result<Option<&'a Element>> {
+        if !self.element_conditions_met(element)? {
+            return Ok(None);
+        }
+        for &index in path {
+            let child = if let Some(empty) = element.empty_state() {
+                if self.view_count(&element.key, false)? != 0 {
+                    return Ok(None);
+                }
+                empty
+            } else {
+                &element.children[index - element.synthetic_child_count()]
+            };
+            let mounted = match element.visual {
+                Visual::Builtin("TabWidget") => self.current_index(element)? == index as i64,
+                Visual::Builtin("StackView") => {
+                    self.visual_flag(element, "visible", true)?
+                        && self.stack_snapshot_for(element)?.current() == Some(child.id.as_ref())
+                }
+                Visual::Builtin("SwipeView") => {
+                    self.visual_flag(element, "visible", true)?
+                        && xrack_runtime::try_resolve_swipe_index(
+                            Some(self.current_index(element)?),
+                            element
+                                .children
+                                .iter()
+                                .map(|page| self.input_element_available(page, false)),
+                        )? == Some(index)
+                }
+                Visual::Builtin(kind) if xrack_runtime::is_window_overlay(kind) => {
+                    self.visual_flag(element, "visible", true)?
+                        && self.control_value(element, "open")? == Some(Value::Bool(true))
+                }
+                _ => true,
+            };
+            if !mounted {
+                return Ok(None);
+            }
+            element = child;
+            if !self.element_conditions_met(element)? {
+                return Ok(None);
+            }
+            if matches!(
+                element.visual,
+                Visual::Builtin("Tab" | "StackPage" | "SwipePage")
+            ) && !(self.visual_flag(element, "visible", true)?
+                && self.visual_flag(element, "enabled", true)?)
+            {
+                return Ok(None);
+            }
+        }
+        Ok(Some(element))
+    }
+
+    fn group_option_value(&self, element: &Element) -> Result<String> {
+        if let Some(Value::String(value)) = self.binding_value(element, "value")? {
+            return Ok(value);
+        }
+        if let Some(cases) = element.state_bindings.get("text") {
+            let selected = self.choose_state(cases[0].selector)?;
+            if let Some(case) = cases.iter().find(|case| case.index == selected)
+                && let Value::String(value) = self.evaluate(&case.value, &[])?
+            {
+                return Ok(value);
+            }
+        }
+        Ok(match self.binding_value(element, "text")? {
+            Some(Value::String(text)) => text,
+            _ => String::new(),
+        })
+    }
+
+    pub(crate) fn toggle_group_option(&self, element: &Element) -> Result<()> {
+        let membership = element
+            .button_group
+            .as_ref()
+            .ok_or_else(|| Error::Invalid("missing button membership".into()))?;
+        let (owner, group) = self.element_owner(&membership.key)?;
+        match owner.group_selection(group)? {
+            ButtonGroupSelection::Index(current) => {
+                let index = owner
+                    .definition()
+                    .button_groups
+                    .get(&group.key)
+                    .and_then(|members| members.keys.iter().position(|key| *key == element.key))
+                    .ok_or_else(|| Error::Invalid("missing button group option".into()))?;
+                owner.set_control_value(
+                    group,
+                    "current-index",
+                    xrack_runtime::toggled_button_group_index(current, index).into(),
+                )?;
+            }
+            ButtonGroupSelection::Value(current) => {
+                if let Some(next) = xrack_runtime::toggled_button_group_value(
+                    &current,
+                    self.live_radio_value(element)?,
+                ) {
+                    owner.set_control_value(group, "current-value", next.into())?;
+                }
+            }
+        }
+        Ok(())
+    }
+
     pub(crate) fn group_member_path(&self, element: &Element) -> Option<&[usize]> {
         let group = self
             .definition()
@@ -267,6 +629,94 @@ impl Instance {
             .map(Some)
     }
 
+    pub(crate) fn move_tab(
+        &self,
+        element: &Element,
+        node: &Node,
+        movement: xrack_runtime::TabMove,
+        input: xrack_runtime::InputRoute<'_>,
+    ) -> Result<bool> {
+        let Some(model) = self.group_option_model(element)? else {
+            return Ok(false);
+        };
+        let Some(template) = element.children.first() else {
+            return Ok(false);
+        };
+        let Some(repeat) = template.live_option_repeat() else {
+            return Ok(false);
+        };
+        if !xrack_runtime::try_prepare_tab_move(
+            node,
+            movement,
+            input,
+            &*model,
+            || {
+                Ok::<_, Error>(
+                    self.input_flag_value(element, "reorderable")?
+                        .unwrap_or(false),
+                )
+            },
+            |slot| {
+                if node.kind == "TabWidget" {
+                    return Ok(self
+                        .sample_navigation_option(template, repeat, &model, slot, false)?
+                        .is_some());
+                }
+                Ok(self
+                    .live_repeated_group_option(
+                        template,
+                        repeat,
+                        &model,
+                        slot,
+                        node.child_at(slot).and_then(|item| item.row_key),
+                        false,
+                    )?
+                    .is_some())
+            },
+        )? {
+            return Ok(false);
+        }
+        self.commit_navigation_move(element, &model, movement.from, movement.to, || {
+            input.is_current() && movement.matches_model(&*model)
+        })
+    }
+
+    pub(crate) fn commit_navigation_move(
+        &self,
+        element: &Element,
+        model: &crate::repeat::Model,
+        from: usize,
+        to: usize,
+        valid: impl FnOnce() -> bool,
+    ) -> Result<bool> {
+        if from == to || from.max(to) >= model.row_count() {
+            return Ok(false);
+        }
+        let remapped = if element.selection_property() == "current-index" {
+            let current = self.current_index(element)?;
+            let next = xrack_runtime::moved_navigation_index(from, to, current);
+            (next != current).then_some(next)
+        } else {
+            None
+        };
+        if !valid() || !model.move_row(from, to) {
+            return Ok(false);
+        }
+        if let Some(next) = remapped {
+            self.set_control_value(element, "current-index", next.into())?;
+        }
+        if let Visual::Builtin(kind) = element.visual
+            && let Some(event) = xrack_syntax::builtins::navigation_move_event(kind)
+        {
+            self.handler(
+                element,
+                event,
+                &[Value::Int(from as i64), Value::Int(to as i64)],
+            )?;
+        }
+        Ok(true)
+    }
+
     pub(crate) fn select_group(
         &self,
         element: &Element,
@@ -298,6 +748,10 @@ impl Instance {
                         let repeat = template.repeat.as_ref().ok_or_else(|| {
                             Error::Invalid("missing repeated group option".into())
                         })?;
+                        if matches!(node.kind, "SwipeView" | "TabWidget") {
+                            return self
+                                .sample_navigation_option(template, repeat, source, index, label);
+                        }
                         return self.live_repeated_group_option(
                             template,
                             repeat,

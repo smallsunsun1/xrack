@@ -18,7 +18,7 @@ impl Axis {
             "HorizontalLayout" | "HorizontalBox" | "MenuBar" | "TimePicker" | "DialogButtonBox" => {
                 Some(Self::Horizontal)
             }
-            "VerticalLayout" | "VerticalBox" | "Dialog" | "Drawer" | "GroupBox" | "PageHeader"
+            "VerticalLayout" | "DynamicContainer" | "VerticalBox" | "Dialog" | "Drawer" | "GroupBox" | "PageHeader"
             | "PageFooter" | "PopupWindow" => Some(Self::Vertical),
             _ => None,
         }
@@ -273,7 +273,8 @@ pub(crate) fn measure(node: &Node, available: Size, text: &mut impl TextMeasurer
 fn reflows_at_width(node: &Node) -> bool {
     flow::uses_flow(node)
         || crate::label::reflows_at_width(node)
-        || is_pane(node.kind) && node.children.iter().any(reflows_at_width)
+        || (is_pane(node.kind) || matches!(node.kind, "Loader" | "LoaderCandidate"))
+            && node.children.iter().any(reflows_at_width)
 }
 
 pub(crate) fn measurement_width(node: &Node, reference: Size) -> f32 {
@@ -313,14 +314,25 @@ pub(crate) fn measure_with_width(
             .map(|value| value.max(0.0))
             .unwrap_or(reference.height),
     );
-    let metrics = if let Some(axis) = Axis::for_node(node) {
+    let metrics = if matches!(node.kind, "Loader" | "LoaderCandidate") {
+        let padding = Padding::read(node);
+        let child = node.children.iter().find(|child| child.is_visible());
+        let preferred = child.map_or(Size::default(), |child| {
+            let metrics = measure(child, padding.inner_size(available), text);
+            Size::new(metrics.x.preferred, metrics.y.preferred)
+        });
+        let padding = padding.size();
+        Metrics {
+            x: AxisInfo::flexible(preferred.width + padding.width),
+            y: AxisInfo::flexible(preferred.height + padding.height),
+        }
+    } else if let Some(axis) = Axis::for_node(node) {
         let padding = Padding::read(node);
         let mut inner = padding.inner_size(available);
         let font_size = text.font_size(node);
         let group_title = crate::group_box::title_height(node, font_size);
-        let title_height = crate::selection::radio_title_height(node, font_size)
-            + crate::modal::title_height(node, font_size)
-            + group_title;
+        let radio_title = crate::selection::radio_title_height(node, font_size);
+        let title_height = radio_title + crate::modal::title_height(node, font_size) + group_title;
         inner.height = (inner.height - title_height).max(0.0);
         let mut main = AxisInfo::fixed(0.0);
         let mut cross = AxisInfo::flexible(0.0);
@@ -415,10 +427,19 @@ pub(crate) fn measure_with_width(
             main.stretch = 1.0;
             cross.stretch = 1.0;
         }
-        match axis {
+        let mut metrics = match axis {
             Axis::Horizontal => Metrics { x: main, y: cross },
             Axis::Vertical => Metrics { x: cross, y: main },
+        };
+        if radio_title > 0.0 {
+            let title_width = text
+                .measure_node(node, node.text("title").unwrap_or(""), inner.width)
+                .width
+                + padding.width;
+            metrics.x.preferred = metrics.x.preferred.max(title_width);
+            metrics.x.max = metrics.x.max.max(metrics.x.preferred);
         }
+        metrics
     } else if flow::uses_flow(node) {
         crate::flow::measure(node, available, text)
     } else if node.kind == "GridLayout" {
@@ -500,12 +521,13 @@ pub(crate) fn measure_with_width(
                         .max(stepper.height),
                 )
             }
-            "ComboBox" => Size::new(156.0, (text.font_size(node) * 1.4 + 10.0).max(34.0)),
+            "ComboBox" => crate::ComboGeometry::preferred_size(node, available, text),
             "Calendar" => Size::new(294.0, 300.0),
             "MonthGrid" => Size::new(294.0, 216.0),
             "DayOfWeekRow" => Size::new(294.0, 32.0),
             "WeekNumberColumn" => Size::new(44.0, 216.0),
             "Tumbler" => Size::new(112.0, 148.0),
+            "PathView" => Size::new(320.0, 160.0),
             "TabWidget" | "SwipeView" | "StackView" => Size::new(240.0, 136.0),
             "Page" => crate::page::preferred_size(node, available, text),
             "TabBar" if node.orientation() == Orientation::Vertical => Size::new(132.0, 144.0),
@@ -551,18 +573,16 @@ pub(crate) fn measure_with_width(
                     );
                     measure_replacement_content(content, available, text)
                 } else {
-                    let icon = button.icon.as_ref().map_or(0.0, |(_, size)| *size);
-                    let decoration = icon + button.gap();
                     let label = if button.label.is_empty() {
                         Size::default()
                     } else {
                         text.measure_node(
                             node,
                             button.label,
-                            (available.width - chrome - decoration).max(0.0),
+                            button.natural_label_width(available.width - chrome),
                         )
                     };
-                    Size::new(label.width + decoration, label.height.max(icon))
+                    button.natural_size(label)
                 };
                 let min = match node.kind {
                     "ToolButton" => Size::new(34.0, 34.0),

@@ -273,7 +273,7 @@ fn visit_presentations(
     path: &mut Vec<usize>,
     visit: &mut impl FnMut(&Node, &[usize]),
 ) {
-    if !layout.visible || !layout.enabled {
+    if !layout.visible || !layout.enabled || Node::SCROLL_PARTS.contains(&node.kind) {
         return;
     }
     if node.kind == "Shortcut" {

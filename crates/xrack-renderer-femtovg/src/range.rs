@@ -4,9 +4,7 @@ use crate::{
 };
 use femtovg::{Canvas, LineCap, Paint, Path, Solidity, renderer::WGPURenderer};
 use xrack_layout::{DialGeometry, LayoutNode, Point, Rect, ScrollBarGeometry, SliderGeometry};
-use xrack_runtime::{
-    Color, IndicatorState, LayoutDirection, Node, Orientation, SliderInterval, SliderRange,
-};
+use xrack_runtime::{Color, IndicatorState, Node, Orientation, SliderInterval, SliderRange};
 
 fn capsule(canvas: &mut Canvas<WGPURenderer>, bounds: Rect, tint: Color) {
     painted_capsule(canvas, bounds, &Paint::color(color(tint)));
@@ -27,23 +25,18 @@ fn painted_capsule(canvas: &mut Canvas<WGPURenderer>, bounds: Rect, paint: &Pain
     canvas.fill_path(&path, paint);
 }
 
-pub(crate) fn scroll_bar(
+pub(crate) fn scroll_track(canvas: &mut Canvas<WGPURenderer>, theme: Palette, track: Rect) {
+    let inset = scroll_track_inset(track);
+    capsule(canvas, track.inset(inset), theme.role(Role::ScrollTrack));
+}
+
+pub(crate) fn scroll_thumb(
     canvas: &mut Canvas<WGPURenderer>,
     theme: Palette,
     geometry: ScrollBarGeometry,
     enabled: bool,
     highlighted: bool,
-    indicator: bool,
 ) {
-    let thickness = geometry.track.width.min(geometry.track.height);
-    let inset = (thickness * 0.15).min(1.5);
-    if !indicator {
-        capsule(
-            canvas,
-            geometry.track.inset(inset),
-            theme.role(Role::ScrollTrack),
-        );
-    }
     let tint = if !enabled || !geometry.scrollable() {
         theme.disabled_text
     } else if highlighted {
@@ -51,8 +44,13 @@ pub(crate) fn scroll_bar(
     } else {
         theme.role(Role::ScrollThumb)
     };
-    let thumb_inset = inset.min(geometry.thumb.width.min(geometry.thumb.height) * 0.25);
+    let thumb_inset = scroll_track_inset(geometry.track)
+        .min(geometry.thumb.width.min(geometry.thumb.height) * 0.25);
     capsule(canvas, geometry.thumb.inset(thumb_inset), tint);
+}
+
+fn scroll_track_inset(bounds: Rect) -> f32 {
+    (bounds.width.min(bounds.height) * 0.15).min(1.5)
 }
 
 fn track(from: Point, to: Point, width: f32, orientation: Orientation) -> Rect {
@@ -244,6 +242,39 @@ pub(crate) fn dial(
     );
 }
 
+fn indicator_foreground(theme: Palette, node: &Node, enabled: bool) -> Color {
+    if enabled {
+        node.color("color").unwrap_or(theme.button)
+    } else {
+        theme.disabled
+    }
+}
+
+pub(crate) fn progress_track(
+    canvas: &mut Canvas<WGPURenderer>,
+    theme: Palette,
+    node: &Node,
+    bounds: Rect,
+) {
+    capsule(
+        canvas,
+        bounds,
+        node.color("track-color").unwrap_or(theme.role(Role::Track)),
+    );
+}
+
+pub(crate) fn progress_fill(
+    canvas: &mut Canvas<WGPURenderer>,
+    theme: Palette,
+    node: &Node,
+    bounds: Rect,
+    enabled: bool,
+) -> bool {
+    let color = indicator_foreground(theme, node, enabled);
+    capsule(canvas, bounds, color);
+    bounds.width > 0.0 && bounds.height > 0.0 && color.0 & 0xff != 0
+}
+
 pub(crate) fn indicator(
     canvas: &mut Canvas<WGPURenderer>,
     theme: Palette,
@@ -258,11 +289,13 @@ pub(crate) fn indicator(
         IndicatorState::Determinate(progress) => (progress as f32, None),
         IndicatorState::Indeterminate => (0.27, phase),
     };
-    let foreground = if layout.enabled {
-        node.color("color").unwrap_or(theme.button)
-    } else {
-        theme.disabled
-    };
+    if node.kind == "ProgressIndicator" {
+        progress_track(canvas, theme, node, bounds);
+        let fill =
+            xrack_layout::progress_fill_bounds(bounds, layout.layout_direction, state, motion);
+        return progress_fill(canvas, theme, node, fill, layout.enabled) && motion.is_some();
+    }
+    let foreground = indicator_foreground(theme, node, layout.enabled);
     let track = node
         .color("track-color")
         .unwrap_or(if node.kind == "BusyIndicator" {
@@ -270,67 +303,42 @@ pub(crate) fn indicator(
         } else {
             theme.role(Role::Track)
         });
-    if node.kind == "ProgressIndicator" {
-        capsule(canvas, bounds, track);
-        let width = bounds.width * progress;
-        let position = if state == IndicatorState::Indeterminate {
-            motion.map_or(0.5, |phase| 1.0 - (2.0 * phase - 1.0).abs())
+    let diameter = bounds.width.min(bounds.height);
+    let stroke = node
+        .length("stroke-width")
+        .unwrap_or(4.0)
+        .clamp(0.0, diameter * 0.5);
+    if stroke <= 0.0 {
+        return false;
+    }
+    let radius = (diameter - stroke) * 0.5;
+    let x = bounds.x + bounds.width * 0.5;
+    let y = bounds.y + bounds.height * 0.5;
+    let arc = |canvas: &mut Canvas<WGPURenderer>, start: f32, sweep: f32, tint: Color| {
+        let mut path = Path::new();
+        if sweep >= 1.0 {
+            path.circle(x, y, radius);
         } else {
-            0.0
-        };
-        let position = if layout.layout_direction == LayoutDirection::RightToLeft {
-            1.0 - position
-        } else {
-            position
-        };
-        capsule(
-            canvas,
-            Rect::new(
-                bounds.x + (bounds.width - width) * position,
-                bounds.y,
-                width,
-                bounds.height,
-            ),
-            foreground,
-        );
-    } else {
-        let diameter = bounds.width.min(bounds.height);
-        let stroke = node
-            .length("stroke-width")
-            .unwrap_or(4.0)
-            .clamp(0.0, diameter * 0.5);
-        if stroke <= 0.0 {
-            return false;
+            let start = (start * std::f32::consts::TAU) - std::f32::consts::FRAC_PI_2;
+            path.arc(
+                x,
+                y,
+                radius,
+                start,
+                start + sweep * std::f32::consts::TAU,
+                Solidity::Hole,
+            );
         }
-        let radius = (diameter - stroke) * 0.5;
-        let x = bounds.x + bounds.width * 0.5;
-        let y = bounds.y + bounds.height * 0.5;
-        let arc = |canvas: &mut Canvas<WGPURenderer>, start: f32, sweep: f32, tint: Color| {
-            let mut path = Path::new();
-            if sweep >= 1.0 {
-                path.circle(x, y, radius);
-            } else {
-                let start = (start * std::f32::consts::TAU) - std::f32::consts::FRAC_PI_2;
-                path.arc(
-                    x,
-                    y,
-                    radius,
-                    start,
-                    start + sweep * std::f32::consts::TAU,
-                    Solidity::Hole,
-                );
-            }
-            let mut paint = Paint::color(color(tint));
-            paint.set_line_width(stroke);
-            paint.set_line_cap(LineCap::Round);
-            canvas.stroke_path(&path, &paint);
-        };
-        if track.0 & 0xff != 0 {
-            arc(canvas, 0.0, 1.0, track);
-        }
-        if progress > 0.0 {
-            arc(canvas, motion.unwrap_or(0.0), progress, foreground);
-        }
+        let mut paint = Paint::color(color(tint));
+        paint.set_line_width(stroke);
+        paint.set_line_cap(LineCap::Round);
+        canvas.stroke_path(&path, &paint);
+    };
+    if track.0 & 0xff != 0 {
+        arc(canvas, 0.0, 1.0, track);
+    }
+    if progress > 0.0 {
+        arc(canvas, motion.unwrap_or(0.0), progress, foreground);
     }
     motion.is_some() && foreground.0 & 0xff != 0
 }

@@ -148,9 +148,10 @@ impl Images {
         bounds: Rect,
         scale: f32,
         enabled: bool,
+        tint: Option<femtovg::Color>,
     ) -> Result<(), String> {
         canvas.save();
-        if !enabled {
+        if !enabled && tint.is_none() {
             canvas.set_global_alpha(0.45);
         }
         let result = self.draw(
@@ -159,7 +160,7 @@ impl Images {
             bounds,
             scale,
             ImagePresentation::whole(image.size(), ImageFit::Contain),
-            Colorize::Original,
+            tint.map_or(Colorize::Original, Colorize::Solid),
         );
         canvas.restore();
         result

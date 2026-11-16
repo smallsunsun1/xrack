@@ -1,0 +1,58 @@
+component Details inherits VerticalLayout {
+    in-out property <string> title: "";
+    in-out property <int> hits: 0;
+    callback bump(amount: int) -> int;
+    bump(amount) => { root.hits += amount; root.hits }
+    card := Button {
+        text: root.title + ": " + root.hits;
+        clicked => { root.hits += 1; }
+    }
+}
+
+export component DynamicDemo inherits Window {
+    private property <DetailsHandle> first;
+    private property <DetailsHandle> second;
+    private property <DetailsHandle> third;
+    out property <int> first-hits: left.get(root.first, "hits", -1);
+    private property <DetailsHandle> pending;
+    private property <ExternalComponentHandle> external;
+    out property <string> pending-state: left.status(root.pending);
+    out property <string> external-state: right.status(root.external);
+    out property <int> mounted-count: 0;
+    out property <int> returned: 0;
+    out property <bool> first-mounted: left.is-mounted(root.first);
+    out property <bool> in-wrong-container: right.is-mounted(root.first);
+
+    callback populate();
+    populate => {
+        root.first = left.mount(Details { title: "First" });
+        root.second = left.mount(Details { title: "Second", hits: 4 });
+        root.third = right.mount(Details { title: "Third" });
+        root.returned = left.call(root.first, "bump", -1, 3);
+        right.set(root.third, "title", "Right");
+    }
+    callback reorder();
+    reorder => { left.move(root.second, 0); }
+    callback detach();
+    detach => { left.remove(root.first); }
+
+    callback load-later();
+    load-later => { root.pending = left.mount-async(Details { title: "Later" }); }
+    callback cancel-later();
+    cancel-later => { left.remove(root.pending); }
+    callback load-file(path: string);
+    load-file(path) => { root.external = right.mount-url(path); }
+    callback remove-file();
+    remove-file => { right.remove(root.external); }
+
+    left := DynamicContainer {
+        mounted => { root.mounted-count += 1; }
+        width: 220px;
+        height: 220px;
+    }
+    right := DynamicContainer {
+        x: 245px;
+        width: 220px;
+        height: 220px;
+    }
+}

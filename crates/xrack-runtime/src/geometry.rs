@@ -1,5 +1,13 @@
 use crate::{Length, Property};
-use std::{fmt, rc::Rc};
+use std::{
+    cell::{Cell, OnceCell},
+    fmt,
+    rc::Rc,
+};
+
+thread_local! {
+    static NEXT_SCROLL_TARGET: Cell<u64> = const { Cell::new(0) };
+}
 
 #[doc(hidden)]
 #[derive(Clone, Copy, Debug)]
@@ -36,9 +44,19 @@ impl GeometryMetric {
 }
 
 #[derive(Default)]
+struct ScrollInteraction {
+    active: Property<bool>,
+    pressed: Property<bool>,
+    hovered: Property<bool>,
+}
+
+#[derive(Default)]
 struct Geometry {
     values: [Property<Length>; 10],
     ready: Property<bool>,
+    scroll_target_id: OnceCell<u64>,
+    scroll_thumb: [Property<f64>; 2],
+    scroll_interaction: OnceCell<ScrollInteraction>,
 }
 
 /// Identity and independently tracked geometry of one mounted element.
@@ -64,6 +82,22 @@ impl GeometryHandle {
     pub fn identity(&self) -> usize {
         Rc::as_ptr(&self.0) as usize
     }
+    // A queued request can outlive the target's scene node. A fresh handle
+    // never inherits an old request even when its allocation reuses an address.
+    pub fn scroll_target_id(&self) -> u64 {
+        *self.0.scroll_target_id.get_or_init(|| {
+            NEXT_SCROLL_TARGET.with(|next| {
+                let id = next.get();
+                next.set(id.checked_add(1).expect("scroll target ID exhausted"));
+                id
+            })
+        })
+    }
+
+    pub fn matches_scroll_target(&self, id: u64) -> bool {
+        self.0.scroll_target_id.get() == Some(&id)
+    }
+
     pub fn read(&self, metric: GeometryMetric) -> Length {
         self.0.values[metric as usize].get(Length::default)
     }
@@ -99,7 +133,58 @@ impl GeometryHandle {
         self.0.ready.set_if_changed(ready);
     }
 
+    pub fn publish_scroll_thumb(&self, position: f64, size: f64) {
+        self.0.scroll_thumb[0].set_if_changed(position);
+        self.0.scroll_thumb[1].set_if_changed(size);
+    }
+
+    pub fn scroll_visual_position(&self) -> f64 {
+        self.0.scroll_thumb[0].get(|| 0.0)
+    }
+
+    pub fn scroll_visual_size(&self) -> f64 {
+        self.0.scroll_thumb[1].get(|| 0.0)
+    }
+
+    pub fn observes_scroll_interaction(&self) -> bool {
+        self.0.scroll_interaction.get().is_some()
+    }
+
+    pub fn publish_scroll_interaction(&self, active: bool, pressed: bool, hovered: bool) {
+        if let Some(state) = self.0.scroll_interaction.get() {
+            state.active.set_if_changed(active);
+            state.pressed.set_if_changed(pressed);
+            state.hovered.set_if_changed(hovered);
+        }
+    }
+
+    pub fn scroll_active(&self) -> bool {
+        self.0
+            .scroll_interaction
+            .get_or_init(Default::default)
+            .active
+            .get(|| false)
+    }
+
+    pub fn scroll_pressed(&self) -> bool {
+        self.0
+            .scroll_interaction
+            .get_or_init(Default::default)
+            .pressed
+            .get(|| false)
+    }
+
+    pub fn scroll_hovered(&self) -> bool {
+        self.0
+            .scroll_interaction
+            .get_or_init(Default::default)
+            .hovered
+            .get(|| false)
+    }
+
     pub fn clear(&self) {
+        self.publish_scroll_interaction(false, false, false);
+        self.publish_scroll_thumb(0.0, 0.0);
         self.publish([0.0; 4], [0.0; 4], false);
     }
 }

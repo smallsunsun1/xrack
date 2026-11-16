@@ -427,6 +427,12 @@ export component TumblerDemo inherits Window {
     in-out property <int> hour: 8;
     in-out property <int> minute: 30;
     in-out property <bool> cycle: true;
+    in-out property <float> deceleration: 2400;
+    in-out property <bool> minute-enabled: true;
+    out property <bool> dragging: minute-wheel.dragging;
+    out property <bool> flicking: minute-wheel.flicking;
+    out property <bool> moving: minute-wheel.moving;
+    out property <bool> moving-on-commit: false;
     out property <int> changes: 0;
 
     Text { x: 24px; y: 16px; text: "拖动或滚动选择时间"; color: #edf3ff; font-size: 22px; }
@@ -437,6 +443,7 @@ export component TumblerDemo inherits Window {
         current-index <=> root.hour;
         visible-item-count: 5;
         wrap: root.cycle;
+        flick-deceleration: root.deceleration;
         changed(index) => { root.changes += 1; }
     }
     minute-wheel := Tumbler {
@@ -446,17 +453,103 @@ export component TumblerDemo inherits Window {
         current-index <=> root.minute;
         visible-item-count: 5;
         wrap: root.cycle;
-        changed(index) => { root.changes += 1; }
+        flick-deceleration: root.deceleration;
+        enabled: root.minute-enabled;
+        changed(index) => {
+            root.changes += 1;
+            root.moving-on-commit = minute-wheel.moving;
+        }
     }
-    Text {
+    wheel-status := Text {
         x: 24px; y: 250px;
-        text: "当前索引 " + root.hour + " : " + root.minute + " · 提交 " + root.changes + " 次";
+        text: "当前索引 " + root.hour + " : " + root.minute
+            + (root.flicking ? " · 惯性滚动" : root.dragging ? " · 拖动中" : " · 提交 " + root.changes + " 次");
         color: #acc0db;
     }
     cycle-toggle := CheckBox {
         x: 24px; y: 281px; width: 158px; height: 32px;
         text: "循环滚动";
         checked <=> root.cycle;
+    }
+}
+
+export struct TimeZoneChoice {
+    label: string,
+    offset: int,
+    abbreviation: string,
+}
+
+export component RecordTumblerDemo inherits Window {
+    title: "XRack · 时区选择";
+    width: 410px; height: 294px;
+    background: #162034;
+
+    in-out property <[TimeZoneChoice]> zones: [
+        TimeZoneChoice { label: "纽约（冬令时）", offset: -300, abbreviation: "EST" },
+        TimeZoneChoice { label: "协调世界时", offset: 0, abbreviation: "UTC" },
+        TimeZoneChoice { label: "上海", offset: 480, abbreviation: "CST" },
+    ];
+    in-out property <int> offset: 480;
+    out property <int> position: zone-wheel.current-index;
+    out property <int> total: zone-wheel.count;
+    out property <string> city: zone-wheel.current-text;
+    out property <int> committed: zone-wheel.current-value;
+    out property <int> commits: 0;
+    out property <int> reported-offset: 0;
+    out property <int> observed-offset: 0;
+    out property <int> reported-index: -1;
+
+    zone-wheel := Tumbler {
+        x: 70px; y: 22px; width: 270px; height: 154px;
+        accessible-name: "时区";
+        model: root.zones;
+        text-role: "label";
+        value-role: "offset";
+        current-value <=> root.offset;
+        visible-item-count: 3;
+        TumblerOption {
+            background: option-selected ? #326898 : #243a53;
+            opacity: option-enabled ? Math.max(0.38, 1.0 - Math.abs(option-displacement) * 0.22) : 0.35;
+            HorizontalLayout {
+                width: 100%; height: 100%;
+                padding-left: 14px; padding-right: 14px;
+                Text {
+                    text: option-text;
+                    color: #f1f7ff;
+                    vertical-alignment: center;
+                }
+                Text {
+                    text: option-data.abbreviation;
+                    color: #b2d8ff;
+                    horizontal-alignment: right;
+                    vertical-alignment: center;
+                }
+            }
+        }
+        changed(index) => {
+            root.reported-index = index;
+            root.observed-offset = root.offset;
+        }
+        value-selected(value) => {
+            root.commits += 1;
+            root.reported-offset = value;
+        }
+    }
+    caption := Text {
+        x: 24px; y: 191px;
+        text: root.city + "  ·  UTC 偏移 " + root.offset + " 分钟";
+        color: #edf3ff;
+    }
+    reorder := Button {
+        x: 24px; y: 226px; width: 196px;
+        text: "把上海移到首项";
+        clicked => {
+            root.zones = [
+                TimeZoneChoice { label: "上海", offset: 480, abbreviation: "CST" },
+                TimeZoneChoice { label: "纽约（冬令时）", offset: -300, abbreviation: "EST" },
+                TimeZoneChoice { label: "协调世界时", offset: 0, abbreviation: "UTC" },
+            ];
+        }
     }
 }
 
@@ -575,15 +668,204 @@ export component RepeatButtonsDemo inherits Window {
     }
 }
 
+export component ProgrammaticButtonsDemo inherits Window {
+    title: "XRack · 程序化点击";
+    width: 466px; height: 261px;
+    in-out property <bool> allow-click: true;
+    in property <bool> show-target: true;
+    in property <bool> disable-on-press: false;
+    in property <bool> disable-on-release: false;
+    in-out property <bool> checked: false;
+    in-out property <string> events: "";
+    out property <int> command-count: 0;
+    callback run-click();
+    callback run-animated();
+    callback run-command();
+    callback run-choice();
+
+    run-click => { target.click(); root.events += "done "; }
+    run-animated => { target.animate-click(); root.events += "queued "; }
+    run-command => { linked.click(); }
+    run-choice => { choice-button.click(); }
+
+    command := Action {
+        text: "共享命令";
+        activated => { root.command-count += 1; }
+    }
+    choices := ButtonGroup { accessible-name: "互斥选项"; }
+    Shortcut { sequence: "F4"; activated => { root.run-click(); } }
+    Shortcut { sequence: "F5"; activated => { root.run-animated(); } }
+    VerticalLayout {
+        padding: 18px; spacing: 8px;
+        HorizontalLayout {
+            spacing: 8px;
+            if root.show-target: target := Button {
+                text: "切换状态"; checkable: true;
+                checked <=> root.checked;
+                enabled: root.allow-click;
+                focus-on-click: false;
+                pressed => {
+                    root.events += target.pressed ? "press " : "bad-press ";
+                    root.allow-click = root.allow-click && !root.disable-on-press;
+                }
+                released => {
+                    root.events += target.pressed ? "bad-release " : "release ";
+                    root.allow-click = root.allow-click && !root.disable-on-release;
+                }
+                canceled => { root.events += "cancel "; }
+                toggled => { root.events += "toggle "; }
+                clicked => { root.events += "click "; target.click(); }
+            }
+            linked := ToolButton { action: command; }
+            choice-button := RoundButton { text: "选项"; group: choices; }
+        }
+        trigger := Button { text: "从回调点击（F4）"; clicked => { root.run-click(); } }
+        animate-trigger := Button { text: "短按动画（F5）"; clicked => { root.run-animated(); } }
+        enabled-toggle := CheckBox { text: "允许点击"; checked <=> root.allow-click; }
+        click-status := Label { text: root.events; }
+    }
+}
+
+export component ProgrammaticToggleDemo inherits Window {
+    title: "XRack · 程序化勾选";
+    width: 560px; height: 265px;
+    in-out property <bool> pin-visible: true;
+    in-out property <bool> pin-enabled: true;
+    in-out property <bool> pinned: false;
+    in-out property <bool> shared-checked: false;
+    in-out property <int> density: 1;
+    in-out property <string> view-mode: "";
+    in-out property <string> filter-mode: "";
+    in property <bool> prefer-grid-alias: false;
+    out property <int> user-events: 0;
+    out property <bool> plain-checked: plain.checked;
+    out property <bool> shared-mirror-checked: shared-mirror.checked;
+    out property <bool> grouped-flag-checked: grouped-flag.checked;
+    out property <bool> compact-checked: compact.checked;
+    out property <bool> grid-checked: grid-choice.checked;
+    out property <bool> filtered-checked: filtered.checked;
+    callback toggle-all();
+
+    toggle-all => {
+        pin.toggle();
+        plain.toggle();
+        shared-button.toggle();
+        grouped-flag.toggle();
+        compact.toggle();
+        grid-choice.toggle();
+        filtered.toggle();
+    }
+
+    shared := Action {
+        text: "共享选项"; checkable: true; checked <=> root.shared-checked;
+        activated => { root.user-events += 1; }
+    }
+    filters := ActionGroup {
+        current-value <=> root.filter-mode;
+        activated(value) => { root.user-events += 1; }
+        filter := Action {
+            text: "筛选"; value: "active";
+            activated => { root.user-events += 1; }
+        }
+    }
+    density-options := ButtonGroup {
+        current-index <=> root.density;
+        selected(value) => { root.user-events += 1; }
+    }
+    view-options := ButtonGroup {
+        current-value <=> root.view-mode;
+        selected(value) => { root.user-events += 1; }
+    }
+    flags := ButtonGroup { exclusive: false; }
+    Shortcut { sequence: "F6"; activated => { root.toggle-all(); } }
+    VerticalLayout {
+        padding: 16px; spacing: 10px;
+        HorizontalLayout {
+            spacing: 8px;
+            pin := ToolButton {
+                text: "固定"; checkable: true; checked <=> root.pinned;
+                visible: root.pin-visible;
+                enabled: root.pin-enabled;
+                toggled => { root.user-events += 1; }
+            }
+            plain := Button { text: "普通"; clicked => { root.user-events += 1; } }
+            shared-button := Button { action: shared; }
+            shared-mirror := ToolButton {
+                action: shared;
+                text: "共享镜像";
+                ButtonContent {
+                    mirror-label := Text { text: shared-mirror.checked ? "共享已选" : "共享未选"; }
+                }
+            }
+            grouped-flag := ToolButton { text: "选项"; group: flags; }
+        }
+        HorizontalLayout {
+            spacing: 8px;
+            compact := Button { text: "紧凑"; group: density-options; }
+            comfy := Button { text: "舒适"; group: density-options; }
+            if root.prefer-grid-alias: grid-alias := Button { text: "grid"; group: view-options; }
+            grid-choice := RoundButton { text: "网格"; value: "grid"; group: view-options; }
+            unnamed := Button { text: "空值"; value: ""; group: view-options; }
+            filtered := ToolButton { action: filter; }
+        }
+        toggle-all-button := Button { text: "同步切换状态（F6）"; clicked => { root.toggle-all(); } }
+        flag-summary := CheckBox { text: "汇总"; check-state <=> flags.check-state; }
+        toggle-status := Label {
+            text: (root.pinned ? "固定" : "未固定") + " · " + root.density + " · " + root.view-mode
+                + " · " + root.filter-mode + " · 用户事件 " + root.user-events;
+        }
+    }
+}
+
+export component CheckedGroupPagesDemo inherits Window {
+    in-out property <int> tab-index: 0;
+    in-out property <int> swipe-index: 0;
+    in property <bool> allow-alias: true;
+    out property <bool> fallback-checked: fallback.checked;
+    callback open-options();
+    open-options => { navigation.push("options"); }
+
+    choices := ButtonGroup { current-value: "grid"; }
+    VerticalLayout {
+        navigation := StackView {
+            initial-page: "home";
+            home := StackPage {}
+            options := StackPage {
+                TabWidget {
+                    current-index <=> root.tab-index;
+                    Tab { title: "General"; }
+                    Tab {
+                        title: "Views";
+                        SwipeView {
+                            current-index <=> root.swipe-index;
+                            SwipePage {}
+                            SwipePage {
+                                enabled: root.allow-alias;
+                                alias-button := ToolButton { text: "Grid alias"; value: "grid"; group: choices; }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        fallback := RoundButton { text: fallback.checked ? "Selected grid" : "Grid"; value: "grid"; group: choices; }
+    }
+}
+
 export component CheckableButtonsDemo inherits Window {
     title: "XRack · 可切换按钮";
-    width: 440px; height: 245px;
+    width: 440px; height: 455px;
     in-out property <bool> pinned: false;
     in property <bool> allow-pin: true;
     in property <bool> pin-checkable: true;
     in property <[string]> filters: ["文档", "图片", "视频"];
+    in property <bool> select-video: false;
     out property <string> events: "";
     out property <int> filter-toggles: 0;
+    out property <string> filter-events: "";
+    in-out property <bool> shared-filter: false;
+    out property <string> manual-events: "";
+    out property <int> manual-notifications: 0;
 
     VerticalLayout {
         padding: 18px; spacing: 10px;
@@ -604,13 +886,48 @@ export component CheckableButtonsDemo inherits Window {
         HorizontalLayout {
             spacing: 8px;
             for label in root.filters: RoundButton {
-                text: label;
+                text: self.checked ? label + " ✓" : label;
+                accessible-name: label;
                 checkable: true;
-                toggled => { root.filter-toggles += 1; }
+                checked: label == "视频" && root.select-video;
+                ButtonContent {
+                    for label in ["●"]: Text {
+                        text: checked ? label : "○";
+                    }
+                }
+                toggled => {
+                    root.filter-toggles += 1;
+                    root.filter-events += label + (self.checked ? " on " : " off ");
+                }
+                clicked => { root.filter-events += self.checked ? "click-on " : "click-off "; }
             }
         }
         pin-status := Label {
-            text: root.events + " · 筛选切换 " + root.filter-toggles + " 次";
+            text: root.events + " · 筛选切换 " + root.filter-toggles + " 次"
+                + (root.manual-events == "" ? "" : " · " + root.manual-events);
+        }
+        HorizontalLayout {
+            spacing: 8px;
+            for label in root.filters: HorizontalLayout {
+                spacing: 4px;
+                RoundButton {
+                    text: self.checked ? label + " ✓" : label;
+                    accessible-name: "手动切换 " + label;
+                    checkable: false;
+                    toggled => { root.manual-notifications += 1; }
+                    clicked => {
+                        self.toggle();
+                        root.manual-events += label + (self.checked ? " on " : " off ");
+                    }
+                }
+                ToolButton {
+                    text: self.checked ? "共享 ✓" : "共享";
+                    checkable: false;
+                    checked <=> root.shared-filter;
+                    toggled => { root.manual-notifications += 1; }
+                    clicked => { self.toggle(); }
+                }
+            }
         }
     }
 }
@@ -838,6 +1155,51 @@ export component GroupBoxDemo inherits Window {
         text: "分组切换 " + root.group-changes + " 次";
         color: #acc0db;
     }
+}
+
+export component CustomProgressDemo inherits Window {
+    title: "XRack · 自定义进度条";
+    width: 440px; height: 252px;
+    in-out property <float> amount: 380.0;
+    in-out property <bool> rtl: false;
+    in-out property <bool> running: false;
+    in-out property <bool> animated: true;
+    out property <float> normalized: styled-progress.position;
+    out property <float> visual: styled-progress.visual-position;
+
+    Label {
+        x: 20px; y: 13px; text: "传输进度 · " + root.amount + " / 900 KiB";
+        font-size: 22px;
+    }
+    styled-progress := ProgressIndicator {
+        x: 20px; y: 56px; width: 400px; height: 29px;
+        accessible-name: "传输进度";
+        minimum: 100.0; maximum: 900.0;
+        progress: root.amount; indeterminate: root.running; animated: root.animated;
+        layout-direction: root.rtl ? LayoutDirection.right-to-left : LayoutDirection.left-to-right;
+        ProgressFill {
+            background: #53af9b; border-radius: 6px;
+            Rectangle {
+                x: 8px; y: 7px; width: 6px; height: 15px;
+                background: #e3fff7; border-radius: 2px;
+            }
+        }
+        ProgressTrack { background: #273b55; border-radius: 6px; }
+    }
+    track-only := ProgressIndicator {
+        x: 20px; y: 104px; width: 400px; height: 14px;
+        minimum: 100.0; maximum: 900.0;
+        progress: root.amount; color: #dc9957;
+        ProgressTrack { background: #30293b; border-radius: 4px; }
+    }
+    amount-slider := Slider {
+        x: 20px; y: 137px; width: 400px; height: 31px;
+        minimum: 100; maximum: 900; step: 40;
+        value <=> root.amount;
+    }
+    flip-progress := CheckBox { x: 20px; y: 190px; width: 120px; height: 34px; text: "从右到左"; checked <=> root.rtl; }
+    running-progress := CheckBox { x: 153px; y: 190px; width: 120px; height: 34px; text: "不定进度"; checked <=> root.running; }
+    animate-progress := CheckBox { x: 281px; y: 190px; width: 120px; height: 34px; text: "动画"; checked <=> root.animated; }
 }
 
 export component IndicatorsDemo inherits Window {
@@ -1297,6 +1659,11 @@ export component DirectionalSlidersDemo inherits Window {
     in-out property <float> lower: 20;
     in-out property <float> upper: 70;
     in-out property <float> vertical-value: 40;
+    out property <float> shown-level: level-slider.value;
+    out property <float> shown-lower: band-slider.lower-value;
+    out property <float> shown-upper: band-slider.upper-value;
+    out property <float> shown-vertical: vertical-slider.value;
+    out property <bool> callback-values-current: true;
 
     flip := Button {
         x: 20px; y: 18px; width: 200px; height: 32px;
@@ -1325,6 +1692,9 @@ export component DirectionalSlidersDemo inherits Window {
             live: false;
             snap-mode: ScrollSnapMode.on-release;
             wheel-enabled: true;
+            changed(lower, upper) => {
+                root.callback-values-current = lower == self.lower-value && upper == self.upper-value;
+            }
             accessible-name: "区间";
             RangeLowerHandle {
                 width: 30px; height: 20px;
@@ -1339,7 +1709,7 @@ export component DirectionalSlidersDemo inherits Window {
             value <=> root.vertical-value;
             accessible-name: "纵向数值";
         }
-        Text { x: 20px; y: 132px; text: "音量 " + root.level + " · 区间 " + root.lower + "–" + root.upper; }
+        Text { x: 20px; y: 132px; text: "音量 " + level-slider.value + " · 区间 " + band-slider.lower-value + "–" + band-slider.upper-value; }
     }
 }
 

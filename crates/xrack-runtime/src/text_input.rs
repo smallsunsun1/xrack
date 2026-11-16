@@ -168,6 +168,7 @@ impl Node {
     pub fn input_type(&self) -> InputType {
         match (self.kind, self.properties.get("input-type")) {
             ("TextInput" | "LineEdit", Some(Value::InputType(mode))) => *mode,
+            ("ComboBox", Some(Value::InputType(mode))) if combo_editable(self) => *mode,
             _ => InputType::Text,
         }
     }

@@ -447,7 +447,7 @@ impl Renderer {
             self.paint(node, item, &mut path.to_vec(), frame, false)?;
         }
         if let Some(menu) = input.choice_menu(scene, layout) {
-            controls::menu(&mut self.canvas, &self.text, theme, menu)?;
+            self.paint_choice_menu(&menu, frame)?;
         }
         for panel in input.menu_panels(scene, layout) {
             controls::menu_panel(
@@ -644,6 +644,59 @@ impl Renderer {
         result
     }
 
+    fn paint_choice_menu(
+        &mut self,
+        menu: &xrack_layout::ChoiceMenu<'_>,
+        frame: PaintFrame<'_>,
+    ) -> Result<(), String> {
+        let panel = controls::choice_surface(&mut self.canvas, menu, frame.theme);
+        let input = Interaction::default();
+        let option_frame = PaintFrame {
+            input: &input,
+            transitions: None,
+            ..frame
+        };
+        let mut artwork = menu.control.combo_option_renderer.as_ref().map(|template| {
+            template
+                .render_visible((0..menu.rows.len()).filter_map(|offset| menu.option_input(offset)))
+                .into_iter()
+        });
+        self.paint_group(menu.bounds, 1.0, |renderer| {
+            if menu.popup_style().is_some() {
+                renderer.canvas.clip_path(&panel, FillRule::NonZero);
+            }
+            for offset in 0..menu.rows.len() {
+                if let Some(node) = artwork.as_mut().and_then(Iterator::next).flatten() {
+                    let bounds = menu.row_bounds(offset);
+                    let layout = xrack_layout::layout_choice_option(
+                        &node,
+                        bounds,
+                        menu.layout_direction,
+                        menu.row_enabled(offset),
+                        &mut renderer.text,
+                    );
+                    renderer.paint_group(bounds, 1.0, |renderer| {
+                        renderer.paint(&node, &layout, &mut Vec::new(), option_frame, false)
+                    })?;
+                    continue;
+                }
+                controls::choice_row(
+                    &mut renderer.canvas,
+                    &renderer.text,
+                    frame.theme,
+                    menu,
+                    offset,
+                )?;
+            }
+            if let Some(indicator) = menu.scroll_indicator() {
+                controls::choice_indicator(&mut renderer.canvas, indicator, frame.theme);
+            }
+            Ok(())
+        })?;
+        controls::choice_border(&mut self.canvas, menu, frame.theme);
+        Ok(())
+    }
+
     fn paint_element(
         &mut self,
         node: &Node,
@@ -663,7 +716,12 @@ impl Renderer {
         if node.kind == "Menu" {
             return Ok(());
         }
-        if let Some(clip) = layout.child_clip_shape() {
+        let visible_viewport = layout.scroll_viewport(Orientation::Vertical);
+        if node.kind == "ScrollView" && visible_viewport != layout.bounds {
+            self.paint_group(visible_viewport.intersect(layout.clip), 1.0, |renderer| {
+                renderer.paint_children(node, layout, path, frame)
+            })?;
+        } else if let Some(clip) = layout.child_clip_shape() {
             let mut path_clip = Path::new();
             append_rect(&mut path_clip, clip.bounds, clip.radii);
             self.canvas.save();
@@ -735,12 +793,10 @@ impl Renderer {
         }
         if layout.allows_overflow() {
             self.paint_group(content, 1.0, |renderer| {
-                renderer.paint_chrome(node, layout, path, frame);
-                Ok(())
+                renderer.paint_chrome(node, layout, path, frame)
             })
         } else {
-            self.paint_chrome(node, layout, path, frame);
-            Ok(())
+            self.paint_chrome(node, layout, path, frame)
         }
     }
 
@@ -853,16 +909,28 @@ impl Renderer {
                     | "MonthGrid"
                     | "Tumbler"
             );
+        let use_row_surface = item_delegate
+            && (!is_button
+                || !node.properties.contains_key("primary")
+                    && !node.properties.contains_key("flat"));
         let checked = is_button
-            && (node.kind == "DelayButton" || node.boolean("checkable", false))
-            && node.boolean("checked", false);
+            && (((node.kind == "DelayButton" || node.boolean("checkable", false))
+                && node.boolean("checked", false))
+                || (item_delegate && !use_row_surface && node.boolean("highlighted", false)));
+        let hovered = (is_button || item_delegate) && input.is_hovered(path);
+        let pressed = (is_button || item_delegate)
+            && (input.is_pressed(path)
+                || node
+                    .button_press_handle
+                    .as_ref()
+                    .is_some_and(xrack_runtime::ButtonPressHandle::is_synthetic_pressed));
         let field = is_input || is_spin_box(node.kind) || node.kind == "ComboBox";
         let mut button_text_color = theme.text;
-        let background = if item_delegate {
+        let background = if use_row_surface {
             brush_paint(node, "background", bounds, 0.0).or_else(|| {
                 let role = if node.boolean("highlighted", false) || checked {
                     Some(Role::RowSelection)
-                } else if layout.enabled && (input.is_hovered(path) || input.is_pressed(path)) {
+                } else if layout.enabled && (hovered || pressed) {
                     Some(Role::RowHover)
                 } else {
                     None
@@ -880,17 +948,20 @@ impl Renderer {
             })
         } else if !layout.enabled {
             let shade = if checked { -0.2 } else { 0.0 };
-            Some(Paint::color(color(tint(theme.disabled, shade))))
+            (!node.boolean("flat", false) || checked)
+                .then(|| Paint::color(color(tint(theme.disabled, shade))))
         } else {
-            let shade = if input.is_pressed(path) {
+            let shade = if pressed {
                 -0.18
-            } else if input.is_hovered(path) {
+            } else if hovered {
                 0.12
             } else {
                 0.0
             } - if checked { 0.28 } else { 0.0 };
             brush_paint(node, "background", bounds, shade).or_else(|| {
-                let (base, foreground) = match node.standard_button_kind() {
+                let kind = node.standard_button_kind();
+                let primary = node.boolean("primary", kind.is_none());
+                let (base, foreground) = match kind {
                     Some(StandardButtonKind::Discard) => (
                         theme.role(Role::Danger),
                         if theme.is_light() {
@@ -899,16 +970,14 @@ impl Renderer {
                             theme.text
                         },
                     ),
-                    Some(_) if !node.boolean("primary", false) => {
-                        (theme.role(Role::SecondaryButton), theme.text)
-                    }
+                    _ if !primary => (theme.role(Role::SecondaryButton), theme.text),
                     _ => (theme.button, theme.on_accent(theme.text)),
                 };
-                (node.kind != "ToolButton"
-                    || checked
-                    || input.is_hovered(path)
-                    || input.is_pressed(path))
-                .then(|| {
+                let flat = node.boolean(
+                    "flat",
+                    node.kind == "ToolButton" && !node.boolean("primary", false),
+                );
+                (!flat || checked || hovered || pressed).then(|| {
                     button_text_color = foreground;
                     Paint::color(color(tint(base, shade)))
                 })
@@ -1077,7 +1146,19 @@ impl Renderer {
             );
         }
         if node.kind == "RadioGroup" {
-            controls::group_title(&mut self.canvas, &self.text, theme, node, bounds)?;
+            let tint = if layout.enabled {
+                theme.text
+            } else {
+                theme.disabled_text
+            };
+            controls::group_title(
+                &mut self.canvas,
+                &self.text,
+                node,
+                bounds,
+                tint,
+                layout.layout_direction,
+            )?;
         } else if matches!(node.kind, "TabWidget" | "TabBar") {
             let selected = group_index(node);
             let standalone = node.kind == "TabBar";
@@ -1114,14 +1195,29 @@ impl Renderer {
             }
         }
         if let Some(wheel) = &layout.tumbler {
-            controls::tumbler(
-                &mut self.canvas,
-                &self.text,
-                theme,
-                node,
-                wheel,
-                layout.enabled,
-            )?;
+            if node.kind == "Tumbler" || node.combo_option_renderer.is_none() {
+                controls::tumbler_background(&mut self.canvas, theme, wheel, layout.enabled);
+            }
+            let input = Interaction::default();
+            let option_frame = PaintFrame {
+                input: &input,
+                transitions: None,
+                ..frame
+            };
+            for row in &wheel.rows {
+                if let Some((content, row_layout)) = row.content() {
+                    self.paint(content, row_layout, &mut Vec::new(), option_frame, false)?;
+                } else {
+                    controls::tumbler_row(
+                        &mut self.canvas,
+                        &self.text,
+                        theme,
+                        node,
+                        row,
+                        layout.enabled,
+                    )?;
+                }
+            }
         } else if matches!(
             node.kind,
             "Calendar" | "MonthGrid" | "DayOfWeekRow" | "WeekNumberColumn"
@@ -1181,7 +1277,9 @@ impl Renderer {
                     |index| input.page_marker_hovered(path, index),
                 );
             }
-        } else if let Some(indicator) = xrack_runtime::indicator_state(node) {
+        } else if let Some(indicator) = xrack_runtime::indicator_state(node)
+            && !node.has_progress_parts()
+        {
             let phase =
                 indicator_phase.filter(|_| layout.enabled && node.boolean("animated", true));
             self.needs_redraw |=
@@ -1350,61 +1448,65 @@ impl Renderer {
             let area = button
                 .as_ref()
                 .map_or(bounds, |button| bounds.inset(button.padding));
-            let icon = button
-                .as_ref()
-                .and_then(|button| button.icon.as_ref())
-                .map(|(image, size)| (image, size.min(area.width).min(area.height)))
-                .filter(|&(_, size)| size > 0.0);
-            let gap = button
-                .as_ref()
-                .filter(|_| icon.is_some())
-                .map_or(0.0, ButtonContent::gap);
-            let icon_width = icon.map_or(0.0, |(_, size)| size + gap);
-            let label_width = (area.width - icon_width).max(0.0);
             let centered = is_button && !item_delegate;
-            let paint = self.text.paint_node(node, color(text_color), centered);
-            let lines = self.text.lines(text, &paint, label_width);
-            let line_height = self.text.font_size(node) * 1.4;
-            let y = if is_button {
-                bounds.y + ((bounds.height - line_height * lines.len() as f32) * 0.5).max(0.0)
-            } else {
-                bounds.y
-            };
-            let mut label_left = area.x;
-            let x = if let Some((image, size)) = icon {
-                let label = lines
-                    .iter()
-                    .map(|range| self.text.advance_painted(&text[range.clone()], &paint))
-                    .fold(0.0_f32, f32::max)
-                    .min(label_width);
-                let left = if centered {
-                    area.x + (area.width - icon_width - label).max(0.0) * 0.5
-                } else {
-                    area.x
-                };
-                let rect = Rect::new(left, area.y + (area.height - size) * 0.5, size, size);
-                self.images
-                    .draw_icon(&mut self.canvas, image, rect, scale, layout.enabled)?;
-                label_left = left + icon_width;
-                label_left + if centered { label * 0.5 } else { 0.0 }
-            } else if centered {
-                area.x + area.width * 0.5
-            } else {
-                area.x
-            };
-            if icon.is_some() {
-                self.canvas.save();
-                self.canvas.intersect_scissor(
-                    label_left,
-                    bounds.y,
-                    (area.x + area.width - label_left).max(0.0),
-                    bounds.height,
-                );
+            let right_aligned = is_button
+                && !centered
+                && layout.layout_direction == xrack_runtime::LayoutDirection::RightToLeft;
+            let mut paint = self.text.paint_node(node, color(text_color), centered);
+            if right_aligned {
+                paint.set_text_align(femtovg::Align::Right);
             }
+            let line_height = self.text.font_size(node) * 1.4;
+            let label_width = button
+                .as_ref()
+                .map_or(area.width, |button| button.label_width(area, line_height));
+            let lines = self.text.lines(text, &paint, label_width);
+            let (label, clip) = if let Some(button) = button {
+                let width = if button.icon.is_some() {
+                    lines
+                        .iter()
+                        .map(|range| self.text.advance_painted(&text[range.clone()], &paint))
+                        .fold(0.0_f32, f32::max)
+                } else {
+                    label_width
+                };
+                let size = Size::new(width, line_height * lines.len() as f32);
+                let placed =
+                    button.place(area, size, line_height, centered, layout.layout_direction);
+                if let (Some((image, _)), Some(bounds)) = (button.icon.as_ref(), placed.icon) {
+                    self.images.draw_icon(
+                        &mut self.canvas,
+                        image,
+                        bounds,
+                        scale,
+                        layout.enabled,
+                        node.boolean("colorize-icon", false)
+                            .then(|| color(text_color)),
+                    )?;
+                }
+                (
+                    placed.label,
+                    placed.icon.is_some() || size.height > area.height,
+                )
+            } else {
+                (bounds, false)
+            };
+            if clip {
+                self.canvas.save();
+                self.canvas
+                    .intersect_scissor(label.x, label.y, label.width, label.height);
+            }
+            let x = if centered {
+                label.x + label.width * 0.5
+            } else if right_aligned {
+                label.x + label.width
+            } else {
+                label.x
+            };
             let result = (|| {
                 for (i, range) in lines.iter().enumerate() {
-                    let y = y + i as f32 * line_height;
-                    if y >= bounds.y + bounds.height {
+                    let y = label.y + i as f32 * line_height;
+                    if y >= label.y + label.height {
                         break;
                     }
                     self.canvas
@@ -1413,7 +1515,7 @@ impl Renderer {
                 }
                 Ok::<(), String>(())
             })();
-            if icon.is_some() {
+            if clip {
                 self.canvas.restore();
             }
             result?;
@@ -1513,6 +1615,9 @@ impl Renderer {
         {
             return self.paint_custom_range_thumbs(node, layout, path, frame);
         }
+        if node.has_progress_parts() {
+            self.paint_progress_parts(node, layout, path, frame)?;
+        }
         let PaintFrame {
             transitions,
             scale,
@@ -1564,7 +1669,10 @@ impl Renderer {
             .filter(|(index, _, _)| Some(*index) != thumb_index)
             .chain(thumb);
         for (i, node, layout) in children {
-            if is_window_overlay(node.kind) {
+            if is_window_overlay(node.kind)
+                || Node::PROGRESS_PARTS.contains(&node.kind)
+                || Node::SCROLL_PARTS.contains(&node.kind)
+            {
                 continue;
             }
             path.push(i);
@@ -1584,15 +1692,74 @@ impl Renderer {
         Ok(())
     }
 
+    fn paint_progress_parts(
+        &mut self,
+        node: &Node,
+        layout: &LayoutNode,
+        path: &mut Vec<usize>,
+        frame: PaintFrame<'_>,
+    ) -> Result<(), String> {
+        let state =
+            xrack_runtime::indicator_state(node).unwrap_or(xrack_runtime::IndicatorState::Hidden);
+        let phase = frame
+            .indicator_phase
+            .filter(|_| layout.enabled && node.boolean("animated", true));
+        let fill = xrack_layout::progress_fill_bounds(
+            layout.bounds,
+            layout.layout_direction,
+            state,
+            phase,
+        );
+        for kind in Node::PROGRESS_PARTS {
+            let moving = kind == "ProgressFill";
+            let bounds = if moving { fill } else { layout.bounds };
+            let drawn = if let Some((slot, part, item)) = layout
+                .children_in_paint_order(node)
+                .find(|(_, part, _)| part.kind == kind)
+            {
+                let clip = bounds.intersect(layout.clip);
+                path.push(slot);
+                let result = self.paint_group(clip, 1.0, |renderer| {
+                    renderer
+                        .canvas
+                        .translate(bounds.x - item.bounds.x, bounds.y - item.bounds.y);
+                    renderer.paint(part, item, path, frame, false)
+                });
+                path.pop();
+                result?;
+                part.is_visible()
+                    && part.opacity() > 0.0
+                    && bounds.width > 0.0
+                    && bounds.height > 0.0
+            } else if moving {
+                range::progress_fill(&mut self.canvas, frame.theme, node, bounds, layout.enabled)
+            } else {
+                range::progress_track(&mut self.canvas, frame.theme, node, bounds);
+                false
+            };
+            self.needs_redraw |= moving
+                && drawn
+                && phase.is_some()
+                && state == xrack_runtime::IndicatorState::Indeterminate;
+        }
+        Ok(())
+    }
+
     fn paint_chrome(
         &mut self,
         node: &Node,
         layout: &LayoutNode,
-        path: &[usize],
+        path: &mut Vec<usize>,
         frame: PaintFrame<'_>,
-    ) {
+    ) -> Result<(), String> {
         let PaintFrame { input, theme, .. } = frame;
         let bounds = layout.bounds;
+        if let Some(marker) = input.tab_move_marker(node, layout, path) {
+            let mut line = Path::new();
+            line.rect(marker.x, marker.y, marker.width, marker.height);
+            self.canvas
+                .fill_path(&line, &Paint::color(color(theme.focus)));
+        }
         if let Some((rect, _)) = layout
             .swipe_delegate
             .as_deref()
@@ -1736,18 +1903,58 @@ impl Renderer {
             self.canvas
                 .fill_path(&center, &Paint::color(color(theme.focus)));
         }
+        let custom_parts = node.has_scroll_parts();
         for bar in layout.scroll_bars(node) {
-            range::scroll_bar(
-                &mut self.canvas,
-                theme,
-                bar,
-                layout.enabled,
-                input.scroll_bar_highlighted(path, bar.orientation)
-                    || node.kind == "ScrollBar" && input.is_focused(path),
-                node.kind == "ScrollIndicator"
-                    || node.kind == "ScrollBar" && !node.boolean("interactive", true),
-            );
+            let focused = node.kind == "ScrollBar" && input.is_focused(path);
+            let indicator = node.kind == "ScrollIndicator"
+                || node.kind == "ScrollBar" && !node.boolean("interactive", true);
+            for kind in Node::SCROLL_PARTS {
+                let replacement = custom_parts
+                    .then(|| {
+                        layout
+                            .children_in_paint_order(node)
+                            .find(|(_, child, _)| child.kind == kind)
+                    })
+                    .flatten();
+                if let Some((slot, part, item)) = replacement {
+                    path.push(slot);
+                    let slot_bounds = if kind == "ScrollThumb" {
+                        bar.thumb
+                    } else {
+                        bar.track
+                    };
+                    let painted =
+                        self.paint_group(slot_bounds.intersect(layout.clip), 1.0, |renderer| {
+                            renderer.paint(part, item, path, frame, false)
+                        });
+                    path.pop();
+                    painted?;
+                } else if kind == "ScrollThumb" {
+                    range::scroll_thumb(
+                        &mut self.canvas,
+                        theme,
+                        bar,
+                        layout.enabled,
+                        input.scroll_bar_highlighted(path, bar.orientation) || focused,
+                    );
+                } else if !indicator {
+                    range::scroll_track(&mut self.canvas, theme, bar.track);
+                }
+            }
+            if focused && layout.enabled && custom_parts {
+                let bounds = bar.track.inset(1.0);
+                let mut outline = Path::new();
+                append_rect(
+                    &mut outline,
+                    bounds,
+                    [bounds.width.min(bounds.height) * 0.5; 4],
+                );
+                let mut paint = Paint::color(color(theme.focus));
+                paint.set_line_width(2.0);
+                self.canvas.stroke_path(&outline, &paint);
+            }
         }
+        Ok(())
     }
 
     /// Actual GPU rendering followed by bounded GPU→CPU readback for PNGs/tests.

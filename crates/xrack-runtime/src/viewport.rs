@@ -1,4 +1,4 @@
-use crate::{Length, ListModel, Orientation, Property, RowKey, Value};
+use crate::{Length, ListModel, Orientation, Property, RangeAction, RowKey, Value};
 use std::{
     cell::{Cell, OnceCell, RefCell},
     fmt,
@@ -22,6 +22,20 @@ pub enum ScrollAction {
     To {
         x: Length,
         y: Length,
+    },
+    By {
+        dx: Length,
+        dy: Length,
+    },
+    StepBar {
+        axis: Orientation,
+        step_size: Option<f64>,
+        direction: ScrollBarStep,
+    },
+    ToChild {
+        target: u64,
+        horizontal: ScrollAlignment,
+        vertical: ScrollAlignment,
     },
     ToIndex {
         index: i64,
@@ -60,11 +74,37 @@ pub enum ScrollAction {
     },
 }
 
+#[doc(hidden)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ScrollBarStep {
+    Increase,
+    Decrease,
+}
+
+impl ScrollBarStep {
+    pub fn action(self) -> RangeAction {
+        match self {
+            Self::Increase => RangeAction::Increase,
+            Self::Decrease => RangeAction::Decrease,
+        }
+    }
+
+    pub fn delta(self, step: f64) -> f64 {
+        match self {
+            Self::Increase => step,
+            Self::Decrease => -step,
+        }
+    }
+}
+
 /// Method names used by the XR viewport operations.
 #[derive(Clone, Copy, Debug)]
 #[doc(hidden)]
 pub enum ScrollCommandMethod {
     To,
+    By,
+    Increase,
+    Decrease,
     Index,
     Column,
     Cell,
@@ -79,6 +119,9 @@ impl ScrollCommandMethod {
     pub fn parse(name: &str) -> Option<Self> {
         Some(match name {
             "scroll-to" => Self::To,
+            "scroll-by" => Self::By,
+            "increase" => Self::Increase,
+            "decrease" => Self::Decrease,
             "position-view-at-index" | "position-view-at-row" => Self::Index,
             "position-view-at-column" => Self::Column,
             "position-view-at-cell" => Self::Cell,
@@ -89,6 +132,14 @@ impl ScrollCommandMethod {
             "return-to-bounds" => Self::ReturnToBounds,
             _ => return None,
         })
+    }
+
+    pub fn bar_step(self) -> Option<ScrollBarStep> {
+        match self {
+            Self::Increase => Some(ScrollBarStep::Increase),
+            Self::Decrease => Some(ScrollBarStep::Decrease),
+            _ => None,
+        }
     }
 
     pub fn uses_source_row(self) -> bool {
@@ -105,6 +156,7 @@ impl ScrollCommandMethod {
             (Self::CancelFlick, []) => ScrollAction::CancelFlick,
             (Self::ReturnToBounds, []) => ScrollAction::ReturnToBounds,
             (Self::To, &[Length(x), Length(y)]) => ScrollAction::To { x, y },
+            (Self::By, &[Length(dx), Length(dy)]) => ScrollAction::By { dx, dy },
             (Self::Index, &[Int(index), ScrollAlignment(alignment)]) => {
                 ScrollAction::ToIndex { index, alignment }
             }
@@ -258,6 +310,8 @@ struct ViewportProperties {
     content_y: Property<Length>,
     visible_width: Property<Length>,
     visible_height: Property<Length>,
+    effective_scroll_bar_width: Property<Length>,
+    effective_scroll_bar_height: Property<Length>,
     ranges: [ViewportRange; 2],
     horizontal: OnceCell<OffsetBinding>,
     vertical: OnceCell<OffsetBinding>,
@@ -478,6 +532,20 @@ impl ViewportHandle {
     }
     pub fn visible_height(&self) -> Length {
         self.0.visible_height.get(Length::default)
+    }
+
+    pub fn effective_scroll_bar_width(&self) -> Length {
+        self.0.effective_scroll_bar_width.get(Length::default)
+    }
+
+    pub fn effective_scroll_bar_height(&self) -> Length {
+        self.0.effective_scroll_bar_height.get(Length::default)
+    }
+
+    #[doc(hidden)]
+    pub fn publish_scroll_bar_extent(&self, width: Length, height: Length) {
+        self.0.effective_scroll_bar_width.set_if_changed(width);
+        self.0.effective_scroll_bar_height.set_if_changed(height);
     }
 
     fn range(&self, axis: Orientation) -> &ViewportRange {

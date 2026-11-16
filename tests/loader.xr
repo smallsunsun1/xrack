@@ -1,0 +1,127 @@
+export component Details inherits VerticalLayout {
+    in property <string> caption: "";
+    in-out property <int> count: 0;
+    callback incremented(int);
+    caption-label := Text { text: root.caption; }
+    search := SearchField { }
+    increment := Button {
+        text: "Count " + root.count;
+        clicked => {
+            root.count += 1;
+            root.incremented(root.count);
+        }
+    }
+}
+
+component Summary inherits VerticalLayout {
+    summary-label := Text { text: "Summary"; }
+    summary-action := Button { text: "Show results"; }
+}
+
+export component LoaderDemo inherits Window {
+    in-out property <bool> open: false;
+    in-out property <string> page: "details";
+    in-out property <string> caption: "First";
+    out property <int> clicks: 0;
+    out property <int> loads: 0;
+    out property <int> count: -1;
+    out property <string> load-state: area.status;
+    pure callback source-for(string) -> string;
+
+    area := Loader {
+        active: root.open;
+        source: root.source-for(root.page);
+        loaded => {
+            root.loads += 1;
+            self.focus();
+        }
+        details := Details {
+            caption: root.caption;
+            incremented(value) => {
+                root.clicks += 1;
+                root.count = value;
+            }
+        }
+        summary := Summary { }
+    }
+}
+
+component NaturalPanel inherits Rectangle {
+    width: 50px;
+    height: 40px;
+    outline := Rectangle { width: 100%; height: 100%; }
+}
+
+export component LoaderSizingDemo inherits Window {
+    natural := Loader { NaturalPanel {} }
+    wide := Loader {
+        x: 75px;
+        width: 160px;
+        NaturalPanel {}
+    }
+    sized := Loader {
+        x: 250px;
+        width: 160px;
+        height: 90px;
+        NaturalPanel {}
+    }
+}
+
+export component DefaultLoaderDemo inherits Window {
+    single := Loader { Summary { } }
+    multiple := Loader {
+        first := Summary { }
+        second := Details { }
+    }
+}
+
+component BudgetLeaf inherits Rectangle {}
+
+component BudgetGroup inherits VerticalLayout {
+    BudgetLeaf {}
+    BudgetLeaf {}
+    BudgetLeaf {}
+    BudgetLeaf {}
+    BudgetLeaf {}
+}
+
+component HeavyPage inherits VerticalLayout {
+    heavy-ready := Text { text: "Heavy page"; }
+    BudgetGroup {}
+    BudgetGroup {}
+    BudgetGroup {}
+    BudgetGroup {}
+    BudgetGroup {}
+}
+
+export component DeferredLoaderDemo inherits Window {
+    in-out property <bool> enabled: false;
+    in-out property <bool> defer-load: true;
+    in-out property <string> page: "details";
+    out property <string> load-state: area.status;
+    out property <int> loads: 0;
+    state-label := Text { text: root.load-state; }
+
+    area := Loader {
+        active: root.enabled;
+        source: root.page;
+        asynchronous: root.defer-load;
+        loaded => {
+            root.loads += 1;
+            self.focus();
+        }
+        details := Details { caption: "Deferred details"; }
+        summary := Summary {}
+        heavy := HeavyPage {}
+    }
+}
+
+export component ExternalLoaderDemo inherits Window {
+    in-out property <string> address: "";
+    out property <string> load-state: external.status;
+    out property <int> loads: 0;
+    external := Loader {
+        source-url: root.address;
+        loaded => { root.loads += 1; }
+    }
+}

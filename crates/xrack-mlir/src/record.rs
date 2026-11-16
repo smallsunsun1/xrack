@@ -50,7 +50,7 @@ pub fn record_role(element: OperationRef<'_>, name: &str) -> Result<Option<Strin
         .transpose()
 }
 
-/// Model binding and record roles of a verified record-backed ComboBox.
+/// Model binding and record roles of a verified record-backed choice control.
 pub struct RecordComboRef<'m> {
     pub model: OperationRef<'m>,
     pub record: Box<str>,
@@ -61,7 +61,10 @@ pub struct RecordComboRef<'m> {
 
 impl<'m> RecordComboRef<'m> {
     pub fn from_operation(element: OperationRef<'m>) -> Result<Option<Self>, String> {
-        if element.attribute("kind") != Some("ComboBox") {
+        if !matches!(
+            element.attribute("kind"),
+            Some("ComboBox" | "Tumbler" | "PathView")
+        ) {
             return Ok(None);
         }
         let Some(model) = element
@@ -72,7 +75,7 @@ impl<'m> RecordComboRef<'m> {
         };
         let Type::RecordList(record) = model
             .operand(0)
-            .ok_or("ComboBox model missing operand")?
+            .ok_or("record choice model missing operand")?
             .xr_type()?
         else {
             return Ok(None);

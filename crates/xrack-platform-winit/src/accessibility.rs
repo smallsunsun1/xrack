@@ -533,7 +533,7 @@ impl Builder<'_> {
                 .or_else(|| item.visible.then_some(item.bounds))?,
         );
         let has_bounds = rect.width > 0.0 && rect.height > 0.0;
-        if !has_bounds && !item.allows_overflow()
+        if !has_bounds && !item.allows_overflow() && !(node.kind == "Tab" && item.visible)
             || matches!(
                 node.kind,
                 "Tooltip" | "StandardListItem" | "ScrollIndicator"
@@ -595,7 +595,7 @@ impl Builder<'_> {
                     .children
                     .first()
                     .and_then(|delegate| delegate.text("accessible-name")),
-                Role::Dialog | Role::MenuItem | Role::Tab => node.text("title"),
+                Role::Dialog | Role::MenuItem | Role::RadioGroup | Role::Tab => node.text("title"),
                 Role::Cell => node.text("text"),
                 _ => None,
             })
@@ -802,23 +802,29 @@ impl Builder<'_> {
                 }
             }
             Role::ComboBox | Role::EditableComboBox => {
-                accessible.set_value(if combo_editable(node) {
-                    text_input_value(node)
-                } else {
-                    combo_text(node)
-                });
+                if !node.is_password() {
+                    accessible.set_value(if combo_editable(node) {
+                        text_input_value(node)
+                    } else {
+                        combo_text(node)
+                    });
+                }
                 accessible.set_expanded(self.input.choice_is_open_for(path));
             }
             Role::ProgressIndicator => {
-                accessible.set_min_numeric_value(0.0);
-                accessible.set_max_numeric_value(1.0);
+                let bounds = (node.kind == "ProgressIndicator")
+                    .then(|| xrack_runtime::ProgressRange::from_node(node));
+                accessible.set_min_numeric_value(bounds.map_or(0.0, |bounds| bounds.minimum));
+                accessible.set_max_numeric_value(bounds.map_or(1.0, |bounds| bounds.maximum));
                 match indicator_state(node) {
-                    Some(IndicatorState::Determinate(value)) => accessible.set_numeric_value(value),
+                    Some(IndicatorState::Determinate(value)) => {
+                        accessible.set_numeric_value(bounds.map_or(value, |bounds| bounds.value))
+                    }
                     Some(IndicatorState::Indeterminate) => accessible.set_busy(),
                     _ => {}
                 }
             }
-            Role::ListBox if node.kind == "Tumbler" => {
+            Role::ListBox if matches!(node.kind, "Tumbler" | "PathView") => {
                 if let Some(wheel) = &item.tumbler
                     && let Some(selected) = wheel
                         .rows
@@ -1494,7 +1500,11 @@ impl Builder<'_> {
                     return None;
                 }
                 let mut key = Key::element(node, &target.path, row);
-                key.kind = "TumblerOption";
+                key.kind = if node.kind == "PathView" {
+                    "PathViewOption"
+                } else {
+                    "TumblerOption"
+                };
                 key.row_option = Some(entry.key);
                 let id = self.id(key);
                 let mut option = AccessibleNode::new(Role::ListBoxOption);
@@ -1770,7 +1780,7 @@ fn role(node: &Node, view: Option<&str>) -> Role {
         "Dialog" | "Drawer" | "PopupWindow" => Role::Dialog,
         "TabWidget" | "TabBar" => Role::TabList,
         "Tab" | "TabButton" => Role::Tab,
-        "Tumbler" | "StandardListView" => Role::ListBox,
+        "Tumbler" | "PathView" | "StandardListView" => Role::ListBox,
         "ListView" | "GridView" => Role::List,
         "ScrollView" | "Flickable" => Role::ScrollView,
         "ScrollBar" => Role::ScrollBar,
@@ -1908,10 +1918,13 @@ pub(crate) fn requested_scroll(
     let viewport = item
         .table
         .as_ref()
-        .map_or(item.bounds, |table| match axis {
-            Orientation::Horizontal => table.scrollable_body(),
-            Orientation::Vertical => table.body,
-        })
+        .map_or_else(
+            || item.scroll_viewport(axis),
+            |table| match axis {
+                Orientation::Horizontal => table.scrollable_body(),
+                Orientation::Vertical => table.body,
+            },
+        )
         .intersect(item.clip);
     let step = match (data, axis) {
         (Some(ActionData::ScrollUnit(ScrollUnit::Item)), Orientation::Vertical)
@@ -2581,6 +2594,13 @@ mod tests {
         bar.properties.insert("position", 0.25_f64.into());
         bar.properties.insert("size", 0.25_f64.into());
         bar.properties.insert("step-size", 0.125_f64.into());
+        let mut thumb = Node::new("ScrollThumb", Some("bar-artwork"));
+        let mut label = Node::new("Label", None);
+        label
+            .properties
+            .insert("text", "artwork decoration".to_owned().into());
+        thumb.children.push(label);
+        bar.children.push(thumb);
         window.children.push(bar);
         let scene = Rc::new(window);
         let frame = Rc::new(layout(&scene, Size::new(200.0, 150.0), &mut Text));
@@ -2588,6 +2608,12 @@ mod tests {
         let update = Projection::default()
             .update(&scene, &frame, &input, 2.0, None)
             .unwrap();
+        assert!(
+            update
+                .nodes
+                .iter()
+                .all(|(_, node)| node.label() != Some("artwork decoration"))
+        );
         let (_, bar) = named(&update, "Position");
         assert_eq!(bar.role(), Role::ScrollBar);
         assert_eq!(bar.numeric_value(), Some(0.25));
@@ -2606,6 +2632,21 @@ mod tests {
         assert_eq!(range.apply(set), Some(0.5));
         let increment = requested_standalone_scroll(Action::Increment, None, node).unwrap();
         assert_eq!(range.apply(increment), Some(0.375));
+    }
+
+    #[test]
+    fn viewport_accessibility_page_uses_the_height_excluding_scrollbar_gutters() {
+        let mut view = Node::new("ScrollView", Some("view"));
+        length(&mut view, "content-height", 420.0);
+        view.properties
+            .insert("reserve-scroll-bar-space", true.into());
+        view.properties.insert(
+            "horizontal-scroll-bar-policy",
+            xrack_runtime::ScrollBarPolicy::AlwaysOn.into(),
+        );
+        let frame = layout(&view, Size::new(190.0, 120.0), &mut Text);
+        let offset = requested_scroll(Action::ScrollDown, None, &view, &frame, 1.0);
+        assert_eq!(offset, [None, Some(110.0)]);
     }
 
     #[test]
@@ -3975,8 +4016,24 @@ mod tests {
         let mut spinner = Node::new("Spinner", Some("ring"));
         length(&mut spinner, "x", 50.0);
         spinner.properties.insert("progress", 1.5_f64.into());
+        let mut bar = Node::new("ProgressIndicator", None);
+        length(&mut bar, "x", 102.0);
+        length(&mut bar, "width", 60.0);
+        length(&mut bar, "height", 24.0);
+        bar.properties
+            .insert("accessible-name", "Transfer".to_owned().into());
+        bar.properties.insert("minimum", 100.0_f64.into());
+        bar.properties.insert("maximum", 900.0_f64.into());
+        bar.properties.insert("progress", 380.0_f64.into());
+        let mut track = Node::new("ProgressTrack", None);
+        let mut decoration = Node::new("Label", None);
+        decoration
+            .properties
+            .insert("text", "Artwork".to_owned().into());
+        track.children.push(decoration);
+        bar.children.push(track);
         let mut root = Node::new("Window", None);
-        root.children = vec![busy, spinner];
+        root.children = vec![busy, spinner, bar];
         let scene = Rc::new(root);
         let size = Size::new(180.0, 70.0);
         let frame = Rc::new(layout(&scene, size, &mut Text));
@@ -3992,6 +4049,17 @@ mod tests {
         let (_, progress) = named(&update, "Progress");
         assert_eq!(progress.numeric_value(), Some(1.0));
         assert!(!progress.is_busy());
+        let (_, bar) = named(&update, "Transfer");
+        assert_eq!(bar.role(), Role::ProgressIndicator);
+        assert_eq!(bar.min_numeric_value(), Some(100.0));
+        assert_eq!(bar.max_numeric_value(), Some(900.0));
+        assert_eq!(bar.numeric_value(), Some(380.0));
+        assert!(
+            !update
+                .nodes
+                .iter()
+                .any(|(_, node)| node.value() == Some("Artwork"))
+        );
 
         let mut stopped = (*scene).clone();
         stopped.children[0]
@@ -4080,12 +4148,19 @@ mod tests {
         use xrack_runtime::InputType;
 
         let secret = "e\u{301}👩‍💻";
-        for revealed in [false, true] {
-            let mut field = Node::new("LineEdit", Some("passphrase"));
+        for (kind, text, role, revealed) in [
+            ("LineEdit", "text", Role::PasswordInput, false),
+            ("LineEdit", "text", Role::PasswordInput, true),
+            ("ComboBox", "edit-text", Role::EditableComboBox, false),
+        ] {
+            let mut field = Node::new(kind, Some("passphrase"));
             field
                 .properties
                 .insert("input-type", InputType::Password.into());
-            field.properties.insert("text", secret.to_owned().into());
+            field.properties.insert(text, secret.to_owned().into());
+            if kind == "ComboBox" {
+                field.properties.insert("editable", true.into());
+            }
             field.properties.insert("password-visible", revealed.into());
             let scene = Rc::new(field);
             let frame = Rc::new(layout(&scene, Size::new(240.0, 40.0), &mut Text));
@@ -4097,7 +4172,7 @@ mod tests {
             let (id, field) = update
                 .nodes
                 .iter()
-                .find(|(_, node)| node.role() == Role::PasswordInput)
+                .find(|(_, node)| node.role() == role)
                 .unwrap();
             assert!(field.value().is_none());
             assert!(field.supports_action(Action::SetTextSelection));
@@ -4119,6 +4194,47 @@ mod tests {
             assert_eq!(focus.offset, secret.len());
             assert!(tree.text_selection(*id, selection, "changed").is_none());
         }
+    }
+
+    #[test]
+    fn tab_widget_keeps_selected_page_children_when_its_header_scrolls_offscreen() {
+        let mut tabs = Node::new("TabWidget", Some("tabs"));
+        tabs.properties
+            .insert("accessible-name", "Pages".to_owned().into());
+        for index in 0..6 {
+            let mut tab = Node::new("Tab", None);
+            tab.properties
+                .insert("title", format!("Page {index}").into());
+            if index == 0 {
+                tab.children.push(button("editor", "Page editor", 0.0));
+            }
+            tabs.children.push(tab);
+        }
+        let scene = Rc::new(tabs);
+        let size = Size::new(166.0, 160.0);
+        let mut input = Interaction::default();
+        let initial = xrack_layout::layout_with_input(&scene, size, &mut Text, &input);
+        let scroll = initial.scroll_on(Orientation::Horizontal).unwrap();
+        assert!(input.accessibility_scroll_to(
+            &initial,
+            &[],
+            Orientation::Horizontal,
+            scroll.max_offset
+        ));
+        let frame = Rc::new(xrack_layout::layout_with_input(
+            &scene, size, &mut Text, &input,
+        ));
+        let header = frame.children[0].tab_header.unwrap();
+        assert_eq!(frame.children[0].visible_window_bounds(header).width, 0.0);
+        let tree = Projection::default()
+            .update(&scene, &frame, &input, 1.0, None)
+            .unwrap();
+        let (_, tabs) = named(&tree, "Pages");
+        assert_eq!(tabs.scroll_x_max(), Some(f64::from(scroll.max_offset)));
+        assert!(tabs.supports_action(Action::ScrollLeft));
+        let (_, editor) = named(&tree, "Page editor");
+        assert_eq!(editor.role(), Role::Button);
+        assert!(editor.bounds().unwrap().y0 >= 34.0);
     }
 
     #[test]
@@ -4415,6 +4531,39 @@ mod tests {
     }
 
     #[test]
+    fn radio_group_announces_its_title_and_keeps_an_explicit_accessible_name() {
+        let mut root = Node::new("Window", None);
+        let mut group = Node::new("RadioGroup", Some("options"));
+        group
+            .properties
+            .insert("title", "Rendering quality".to_owned().into());
+        let mut option = Node::new("RadioButton", None);
+        option.properties.insert("text", "High".to_owned().into());
+        group.children.push(option);
+        root.children.push(group);
+        let input = Interaction::default();
+        let mut projection = Projection::default();
+        for accessible_name in [None, Some("Graphics quality")] {
+            if let Some(name) = accessible_name {
+                root.children[0]
+                    .properties
+                    .insert("accessible-name", name.to_owned().into());
+            }
+            let scene = Rc::new(root.clone());
+            let layout = Rc::new(layout(&scene, Size::new(200.0, 130.0), &mut Text));
+            let update = projection
+                .update(&scene, &layout, &input, 1.0, None)
+                .unwrap();
+            let (_, group) = named(&update, accessible_name.unwrap_or("Rendering quality"));
+            assert_eq!(group.role(), Role::RadioGroup);
+            let (id, radio) = named(&update, "High");
+            assert!(group.children().contains(&id));
+            assert_eq!(radio.role(), Role::RadioButton);
+            assert!(radio.supports_action(Action::Click));
+        }
+    }
+
+    #[test]
     fn attached_radio_groups_publish_membership_without_reparenting_controls() {
         use xrack_runtime::{ButtonGroupSelection, bind_button_group};
 
@@ -4532,6 +4681,25 @@ mod tests {
             "model",
             Value::StringList(vec!["Alpha".into(), "Beta".into()]),
         );
+        let mut indicator = Node::new("ComboIndicator", None);
+        length(&mut indicator, "width", 44.0);
+        let mut artwork = Node::new("Label", None);
+        artwork
+            .properties
+            .insert("text", "Dropdown artwork".to_owned().into());
+        indicator.children.push(artwork);
+        combo.children.push(indicator);
+        let mut content = Node::new("ComboContent", None);
+        let mut heading = Node::new("Label", None);
+        heading
+            .properties
+            .insert("text", "Custom selection label".to_owned().into());
+        content.children.push(heading);
+        combo.children.push(content);
+        let mut style = Node::new("ComboPopup", None);
+        length(&mut style, "row-height", 36.0);
+        length(&mut style, "padding", 6.0);
+        combo.children.push(style);
         root.children.push(combo);
         let scene = Rc::new(root);
         let layout = Rc::new(layout(&scene, Size::new(240.0, 160.0), &mut Text));
@@ -4542,9 +4710,22 @@ mod tests {
         let update = tree.update(&scene, &layout, &input, 1.0, None).unwrap();
         let (_, combo) = named(&update, "Workspace");
         assert_eq!(combo.role(), Role::ComboBox);
+        assert_eq!(combo.value(), Some("Alpha"));
         assert_eq!(combo.controls().len(), 1);
+        assert!(
+            update
+                .nodes
+                .iter()
+                .all(|(_, node)| node.label() != Some("Dropdown artwork")
+                    && node.value() != Some("Custom selection label"))
+        );
         let (alpha, option) = named(&update, "Alpha");
         assert_eq!(option.role(), Role::ListBoxOption);
+        let accessible = option.bounds().unwrap();
+        assert_eq!(
+            (accessible.x0, accessible.y0, accessible.y1),
+            (6.0, 42.0, 78.0)
+        );
         assert_eq!(update.focus, alpha);
         assert!(
             matches!(tree.route(alpha), Some(Route::Choice { index: 0, value, .. }) if value == "Alpha")

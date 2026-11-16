@@ -9,6 +9,7 @@ rust_library(
     version = "0.6.0",
     visibility = ["//visibility:public"],
     deps = [
+        "//crates/xrack-assets:xrack_assets",
         "//crates/xrack-runtime:xrack_runtime",
         "@crates//:unicode-bidi",
         "@crates//:unicode-segmentation",

@@ -711,6 +711,29 @@ fn keyed_tables_offer_stable_selection_and_navigation() {
 }
 
 #[test]
+fn radio_group_completes_read_only_focus_and_commands() {
+    let read = complete_at(
+        "component App inherits Window { options := RadioGroup {} out property <bool> active: options.| }",
+    );
+    assert!(
+        read.iter()
+            .any(|item| item["label"] == "has-focus" && item["detail"] == "read-only bool")
+    );
+    assert!(!read.iter().any(|item| item["label"] == "focus"));
+    let binding = complete_at("component App inherits Window { options := RadioGroup { | } }");
+    assert!(!binding.iter().any(|item| item["label"] == "has-focus"));
+    let command = complete_at(
+        "component App inherits Window { options := RadioGroup {} action := Button { clicked => { options.| } } }",
+    );
+    for name in ["focus", "clear-focus"] {
+        assert!(command.iter().any(|item| item["label"] == name));
+    }
+    let line = "component App inherits Window { options := RadioGroup {} action := Button { clicked => { options.focus(";
+    let signature = completion::signature_help(line, (0, line.len()), None);
+    assert_eq!(signature["signatures"][0]["label"], "focus()");
+}
+
+#[test]
 fn radio_group_completes_options_in_conditional_and_repeated_declarations() {
     for prefix in ["", "if true: ", "for option in 3: ", "option := "] {
         let options = complete_at(&format!(
@@ -718,6 +741,83 @@ fn radio_group_completes_options_in_conditional_and_repeated_declarations() {
         ));
         assert!(options.iter().any(|item| item["label"] == "RadioButton"));
         assert!(!options.iter().any(|item| item["label"] == "Button"));
+    }
+}
+
+#[test]
+fn push_button_click_completes_in_callbacks_and_has_a_signature() {
+    for kind in ["Button", "ToolButton", "RoundButton"] {
+        let prefix = format!(
+            "component App inherits Window {{ target := {kind} {{}} trigger := Button {{ clicked => {{ target."
+        );
+        let items = complete_at(&format!("{prefix}| }} }} }}"));
+        for name in ["click", "animate-click", "toggle"] {
+            assert!(items.iter().any(|item| item["label"] == name));
+            let line = format!("{prefix}{name}(");
+            let signature = completion::signature_help(&line, (0, line.len()), None);
+            assert_eq!(signature["signatures"][0]["label"], format!("{name}()"));
+        }
+    }
+    let value = complete_at(
+        "component App inherits Window { target := Button {} out property <bool> result: target.| }",
+    );
+    assert!(!value.iter().any(|item| item["label"] == "click"));
+    assert!(!value.iter().any(|item| item["label"] == "toggle"));
+}
+
+#[test]
+fn button_appearance_flags_complete_for_controls_and_visual_states() {
+    for kind in [
+        "Button",
+        "ToolButton",
+        "RoundButton",
+        "DelayButton",
+        "DialogButton",
+        "StandardButton",
+    ] {
+        let members = complete_at(&format!(
+            "component App inherits Window {{ {kind} {{ | }} }}"
+        ));
+        for name in ["primary", "flat"] {
+            assert!(
+                members
+                    .iter()
+                    .any(|item| item["label"] == name && item["detail"] == "bool"),
+                "{kind}.{name}"
+            );
+        }
+    }
+    let state = complete_at(
+        "component App inherits Window { Button { states [ normal when true: { fla| } ] } }",
+    );
+    assert!(state.iter().any(|item| item["label"] == "flat"));
+}
+
+#[test]
+fn button_display_completes_members_and_enum_values() {
+    for kind in ["Button", "ToolButton", "RoundButton", "DelayButton"] {
+        let source = format!("component App inherits Window {{ {kind} {{ | }} }}");
+        let members = complete_at(&source);
+        for property in ["display", "spacing", "colorize-icon", "ButtonContent"] {
+            assert!(
+                members.iter().any(|item| item["label"] == property),
+                "{kind}.{property}"
+            );
+        }
+        let source =
+            format!("component App inherits Window {{ {kind} {{ display: ButtonDisplay.| }} }}");
+        let values = complete_at(&source);
+        for value in [
+            "icon-only",
+            "text-only",
+            "text-beside-icon",
+            "text-under-icon",
+        ] {
+            assert!(
+                values.iter().any(|item| item["label"] == value),
+                "{kind}.{value}"
+            );
+        }
     }
 }
 
@@ -820,6 +920,153 @@ fn button_pressed_completes_as_a_read_only_binding() {
 }
 
 #[test]
+fn button_checked_completes_in_an_expression_and_as_a_binding() {
+    for kind in ["Button", "RoundButton", "ToolButton"] {
+        let reads = complete_at(&format!(
+            "component App inherits Window {{ button := {kind} {{}} out property <bool> selected: button.che|"
+        ));
+        assert!(
+            reads.iter().any(|item| item["label"] == "checked"),
+            "{kind}"
+        );
+        let bindings = complete_at(&format!("component App inherits Window {{ {kind} {{ che|"));
+        assert!(
+            bindings.iter().any(|item| item["label"] == "checked"),
+            "{kind}"
+        );
+    }
+    let rows = complete_at(
+        "component App inherits Window { for label in [\"item\"]: RoundButton { checkable: true; text: self.che|",
+    );
+    assert!(
+        rows.iter().any(|item| item["label"] == "checked"),
+        "{rows:?}"
+    );
+}
+
+#[test]
+fn range_controls_complete_normalized_positional_reads() {
+    for (kind, prefix, property) in [
+        ("Slider", "visual-p", "visual-position"),
+        ("Dial", "pos", "position"),
+        ("RangeSlider", "upper-visual-p", "upper-visual-position"),
+    ] {
+        let items = complete_at(&format!(
+            "component App inherits Window {{ slider := {kind} {{}} Label {{ text: slider.{prefix}|"
+        ));
+        assert!(
+            items.iter().any(|item| item["label"] == property
+                && item["detail"] == "read-only float · normalized position"),
+            "{items:?}"
+        );
+    }
+}
+
+#[test]
+fn numeric_controls_offer_typed_committed_values() {
+    for (kind, prefix, property, ty) in [
+        ("Slider", "val", "value", "float"),
+        ("Dial", "val", "value", "float"),
+        ("SpinBox", "val", "value", "int"),
+        ("RangeSlider", "upper-v", "upper-value", "float"),
+    ] {
+        let items = complete_at(&format!(
+            "component App inherits Window {{ editor := {kind} {{}} Label {{ text: editor.{prefix}|"
+        ));
+        assert!(
+            items.iter().any(
+                |item| item["label"] == property && item["detail"] == format!("committed {ty}")
+            ),
+            "{items:?}"
+        );
+    }
+}
+
+#[test]
+fn navigation_items_complete_actual_selection_state() {
+    for (source, property) in [
+        (
+            "component App inherits Window { TabBar { for label in labels: TabButton { text: self.che|",
+            "checked",
+        ),
+        (
+            "component App inherits Window { TabWidget { page := Tab {} } Label { text: page.ac|",
+            "active",
+        ),
+        (
+            "component App inherits Window { SwipeView { page := SwipePage {} } Label { text: page.ac|",
+            "active",
+        ),
+    ] {
+        let items = complete_at(source);
+        assert!(
+            items.iter().any(|item| item["label"] == property),
+            "{source}: {items:?}"
+        );
+    }
+}
+
+#[test]
+fn radio_options_offer_checked_from_their_group_or_delegate() {
+    for source in [
+        "component App inherits Window { RadioGroup { choice := RadioButton {} } Label { text: choice.che|",
+        "component App inherits Window { RadioGroup { for name in names: RadioButton { color: self.che|",
+        "component App inherits Window { ListView { for item in rows: RadioDelegate { background: self.che|",
+    ] {
+        let items = complete_at(source);
+        assert!(
+            items.iter().any(|item| item["label"] == "checked"),
+            "{source}: {items:?}"
+        );
+    }
+}
+
+#[test]
+fn toggle_states_complete_with_their_effective_property_types() {
+    for (control, property, ty) in [
+        ("CheckBox", "check-state", "checkstate"),
+        ("CheckBox", "checked", "bool"),
+        ("Switch", "checked", "bool"),
+    ] {
+        let source = format!(
+            "component App inherits Window {{ toggle := {control} {{}} Label {{ text: toggle.che|"
+        );
+        let items = complete_at(&source);
+        assert!(
+            items.iter().any(
+                |item| item["label"] == property && item["detail"] == format!("effective {ty}")
+            ),
+            "{items:?}"
+        );
+    }
+    let rows = complete_at(
+        "component App inherits Window { ListView { for row in rows: CheckDelegate { toggled => { self.che|",
+    );
+    assert!(
+        rows.iter().any(|item| item["label"] == "check-state"),
+        "{rows:?}"
+    );
+}
+
+#[test]
+fn repeated_button_handlers_complete_toggle_and_resolve_its_signature() {
+    let text = "component App inherits Window { for item in 3: Button { checkable: false; clicked => { self.";
+    let items = complete_at(&format!("{text}|"));
+    assert!(
+        items.iter().any(|item| item["label"] == "toggle"),
+        "{items:?}"
+    );
+    assert!(
+        !items
+            .iter()
+            .any(|item| matches!(item["label"].as_str(), Some("click" | "animate-click")))
+    );
+    let call = format!("{text}toggle(");
+    let signature = completion::signature_help(&call, (0, call.len()), None);
+    assert_eq!(signature["signatures"][0]["label"], "toggle()");
+}
+
+#[test]
 fn virtual_lists_offer_multi_select_and_the_selection_event() {
     for kind in ["ListView", "GridView", "StandardListView"] {
         let items = complete_at(&format!("component App inherits Window {{ {kind} {{ |"));
@@ -886,6 +1133,452 @@ fn section_header_parameters_complete_inside_the_visual_template() {
 }
 
 #[test]
+fn repeated_tabs_offer_model_fields_and_a_read_only_count() {
+    let source = r#"
+        struct Document { id: string, label: string }
+        component App inherits Window {
+            in property <[Document]> docs;
+            tabs := TabWidget {
+                current-value: "one";
+                for doc in root.docs : Tab { value: doc.id; title: doc.label; }
+            }
+            PageIndicator { count: tabs.count; }
+        }
+    "#;
+    let analysis = analysis::analyze(URI, source, None);
+    assert!(
+        analysis.diagnostics.is_empty(),
+        "{:?}",
+        analysis.diagnostics
+    );
+    let entries = complete_at(&source.replace("doc.label", "doc.|"));
+    assert!(entries.iter().any(|item| item["label"] == "label"));
+    let count = complete_at(&source.replace("tabs.count", "tabs.cou|"));
+    assert!(count.iter().any(|item| {
+        item["label"] == "count"
+            && item["detail"]
+                .as_str()
+                .is_some_and(|detail| detail.contains("read-only int"))
+    }));
+    let bindings = complete_at("component App inherits Window { TabWidget { co| } }");
+    assert!(!bindings.iter().any(|item| item["label"] == "count"));
+}
+
+#[test]
+fn swipe_page_inherits_typed_record_completion_from_its_model() {
+    let source = r#"
+        struct Document { id: string, title: string }
+        component App inherits Window {
+            in property <[Document]> documents;
+            SwipeView {
+                current-value: "initial";
+                for document in root.documents : SwipePage {
+                    value: document.id;
+                    Label { text: document.title; }
+                }
+            }
+        }
+    "#;
+    let analysis = analysis::analyze(URI, source, None);
+    assert!(
+        analysis.diagnostics.is_empty(),
+        "{:?}",
+        analysis.diagnostics
+    );
+    let entries = complete_at(&source.replace("document.title", "document.|"));
+    assert!(entries.iter().any(|item| item["label"] == "id"));
+    assert!(entries.iter().any(|item| item["label"] == "title"));
+}
+
+#[test]
+fn model_navigation_commands_offer_typed_signatures_and_moved_events() {
+    for (kind, event) in [
+        ("TabBar", "tab-moved"),
+        ("TabWidget", "tab-moved"),
+        ("SwipeView", "page-moved"),
+    ] {
+        let start = format!(
+            "component App inherits Window {{ nav := {kind} {{}} tap := Button {{ clicked => {{ nav."
+        );
+        let call = complete_at(&format!("{start}move-i| }} }} }}"));
+        assert!(call.iter().any(|item| item["label"] == "move-item"));
+        let signature = format!("{start}move-item(0, ");
+        let hint = completion::signature_help(&signature, (0, signature.len()), None);
+        assert_eq!(
+            hint["signatures"][0]["label"],
+            "move-item(from: int, to: int)"
+        );
+        assert_eq!(hint["activeParameter"], 1);
+        let members = complete_at(&format!(
+            "component App inherits Window {{ nav := {kind} {{ {event}| }} }}"
+        ));
+        assert!(members.iter().any(|item| item["label"] == event));
+    }
+}
+
+#[test]
+fn tab_reordering_completion_and_diagnostics_use_compiler_types() {
+    let widget_property = complete_at("component App inherits Window { TabWidget { reorder| } }");
+    assert!(
+        widget_property
+            .iter()
+            .any(|item| item["label"] == "reorderable" && item["detail"] == "bool")
+    );
+    let property = complete_at("component App inherits Window { TabBar { reorder| } }");
+    assert!(
+        property
+            .iter()
+            .any(|item| item["label"] == "reorderable" && item["detail"] == "bool")
+    );
+    let event = complete_at("component App inherits Window { TabBar { tab-mov| } }");
+    assert!(event.iter().any(|item| item["label"] == "tab-moved"));
+    let valid = r#"component App inherits Window {
+        in-out property <[string]> entries: ["a", "b"];
+        out property <int> last-move: 0;
+        tabs := TabBar {
+            reorderable: true;
+            for label in root.entries: TabButton { text: label; }
+            tab-moved(from, to) => { root.last-move = from * 10 + to; }
+        }
+    }"#;
+    assert!(
+        analysis::analyze(URI, valid, None)
+            .diagnostics
+            .get(URI)
+            .is_none_or(Vec::is_empty)
+    );
+    let literal = valid.replace("root.entries:", r#"["a", "b"]:"#);
+    assert!(
+        analysis::analyze(URI, &literal, None).diagnostics[URI]
+            .iter()
+            .any(|item| {
+                item["message"]
+                    .as_str()
+                    .is_some_and(|message| message.contains("writable list property"))
+            })
+    );
+}
+
+#[test]
+fn navigation_value_completion_shows_the_derived_index() {
+    for group in ["TabBar", "TabWidget", "SwipeView"] {
+        let values = complete_at(&format!(
+            "component App inherits Window {{ {group} {{ current-v| }} }}"
+        ));
+        assert!(
+            values
+                .iter()
+                .any(|item| item["label"] == "current-value" && item["detail"] == "string"),
+            "{group}"
+        );
+        let bindings = complete_at(&format!(
+            "component App inherits Window {{ {group} {{ current-value: \"a\"; current-i| }} }}"
+        ));
+        assert!(
+            !bindings.iter().any(|item| item["label"] == "current-index"),
+            "{group}"
+        );
+        let read = complete_at(&format!(
+            "component App inherits Window {{ nav := {group} {{ current-value: \"a\"; }} Text {{ text: nav.current-i| }} }}"
+        ));
+        assert!(
+            read.iter().any(|item| item["label"] == "current-index"
+                && item["detail"]
+                    .as_str()
+                    .is_some_and(|text| text.contains("read-only"))),
+            "{group}"
+        );
+    }
+}
+
+#[test]
+fn path_view_completes_the_row_template_and_typed_progress() {
+    let source = r#"
+        struct Entry { title: string, number: int }
+        component App inherits Window {
+            in property <[Entry]> entries;
+            PathView {
+                path: "M 0 0.5 L 1 0.5";
+                model: root.entries;
+                text-role: "title";
+                item-width: 90px;
+                PathViewOption {
+                    opacity: option-progress;
+                    Text { text: option-data.title; }
+                }
+            }
+        }
+    "#;
+    assert!(analysis::analyze(URI, source, None).diagnostics.is_empty());
+    let parts = complete_at("component App inherits Window { PathView { PathViewO| } }");
+    assert!(parts.iter().any(|item| item["label"] == "PathViewOption"));
+    let progress = complete_at(&source.replace("option-progress", "option-pro|"));
+    assert!(
+        progress
+            .iter()
+            .any(|item| item["label"] == "option-progress"
+                && item["detail"].as_str().is_some_and(|s| s.contains("float")))
+    );
+    let typed = complete_at(&source.replace("option-data.title", "option-data.|"));
+    assert!(typed.iter().any(|item| item["label"] == "number"));
+}
+
+#[test]
+fn tumbler_completes_deceleration_and_read_only_motion() {
+    let bindings = complete_at("component App inherits Window { Tumbler { | } }");
+    assert!(
+        bindings
+            .iter()
+            .any(|item| item["label"] == "flick-deceleration" && item["detail"] == "float")
+    );
+    assert!(!bindings.iter().any(|item| item["label"] == "moving"));
+    let reads = complete_at(
+        "component App inherits Window { wheel := Tumbler {} Text { visible: wheel.| } }",
+    );
+    for property in ["moving", "dragging", "flicking"] {
+        assert!(
+            reads
+                .iter()
+                .any(|item| item["label"] == property && item["detail"] == "read-only bool")
+        );
+    }
+    assert!(!reads.iter().any(|item| item["label"] == "rebounding"));
+}
+
+#[test]
+fn tumbler_option_completes_record_fields_and_displacement() {
+    let source = r#"
+        struct Entry { label: string, offset: int }
+        component App inherits Window {
+            in property <[Entry]> entries;
+            Tumbler {
+                model: root.entries;
+                text-role: "label";
+                TumblerOption {
+                    opacity: Math.abs(option-displacement);
+                    Text { text: option-data.label; }
+                }
+            }
+        }
+    "#;
+    let analyzed = analysis::analyze(URI, source, None);
+    assert!(
+        analyzed.diagnostics.is_empty(),
+        "{:?}",
+        analyzed.diagnostics
+    );
+    let part = complete_at("component App inherits Window { Tumbler { TumblerO| } }");
+    assert!(part.iter().any(|item| item["label"] == "TumblerOption"));
+    let record = complete_at(&source.replace("option-data.label", "option-data.|"));
+    assert!(record.iter().any(|item| item["label"] == "offset"));
+    let displacement = complete_at(&source.replace("option-displacement", "option-dis|"));
+    assert!(displacement.iter().any(|item| {
+        item["label"] == "option-displacement"
+            && item["detail"]
+                .as_str()
+                .is_some_and(|detail| detail.contains("float"))
+    }));
+    let number = complete_at(
+        "component App inherits Window { Tumbler { count: 12; TumblerOption { Text { text: option-dat|; } } } }",
+    );
+    assert!(
+        number
+            .iter()
+            .any(|item| item["label"] == "option-data" && item["detail"] == "int")
+    );
+}
+
+#[test]
+fn tumbler_completion_uses_the_record_value_role_type() {
+    let source = r#"
+        struct Entry { label: string, key: int }
+        component App inherits Window {
+            in-out property <[Entry]> choices;
+            in-out property <int> chosen: 2;
+            wheel := Tumbler {
+                model: root.choices;
+                text-role: "label";
+                value-role: "key";
+                current-value <=> root.chosen;
+                value-selected(value) => { root.chosen = value; }
+            }
+            Text { text: wheel.current-text; }
+        }
+    "#;
+    let analyzed = analysis::analyze(URI, source, None);
+    assert!(
+        analyzed.diagnostics.is_empty(),
+        "{:?}",
+        analyzed.diagnostics
+    );
+
+    let detail = |items: &[Value], label| {
+        items
+            .iter()
+            .find(|item| item["label"] == label)
+            .map(|item| item["detail"].clone())
+    };
+    let bindings = complete_at(&source.replace("current-value <=> root.chosen;", "cur|"));
+    assert_eq!(detail(&bindings, "current-value"), Some(json!("int")));
+    assert_eq!(detail(&bindings, "current-text"), None);
+    let usage = complete_at(&source.replace("wheel.current-text", "wheel.curr|"));
+    assert_eq!(
+        detail(&usage, "current-value"),
+        Some(json!("effective int · model value-role"))
+    );
+    let handler = complete_at(&source.replace(
+        "value-selected(value) => { root.chosen = value; }",
+        "value-sel|",
+    ));
+    assert_eq!(
+        detail(&handler, "value-selected"),
+        Some(json!("event handler (int)"))
+    );
+}
+
+#[test]
+fn combo_option_data_has_model_field_completion_and_hover() {
+    let source = "struct State { online: bool } struct Entry { title: string, state: State } component App inherits Window { in property <[Entry]> choices; ComboBox { model: root.choices; text-role: \"title\"; ComboOption { Label { text: option-data.| } } } }";
+    let fields = complete_at(source);
+    assert!(
+        fields.iter().any(|item| item["label"] == "title"),
+        "{fields:?}"
+    );
+    let nested = complete_at(&source.replace("option-data.|", "option-data.state.|"));
+    assert!(
+        nested.iter().any(|item| item["label"] == "online"),
+        "{nested:?}"
+    );
+    let hover = request_at(
+        "textDocument/hover",
+        URI,
+        &source.replace("option-data.|", "option-da|ta.title;"),
+        None,
+    );
+    assert!(
+        hover["contents"]["value"]
+            .as_str()
+            .is_some_and(|text| text.contains("Entry")),
+        "{hover}"
+    );
+    let strings = complete_at(
+        "component App inherits Window { ComboBox { model: [\"Hi\"]; ComboOption { Label { text: option-da|",
+    );
+    assert!(
+        strings
+            .iter()
+            .any(|item| item["label"] == "option-data" && item["detail"] == "string"),
+        "{strings:?}"
+    );
+}
+
+#[test]
+fn combo_option_completion_and_hover_use_the_template_scope() {
+    assert!(
+        complete_at("component App inherits Window { ComboBox { ComboOpt|")
+            .iter()
+            .any(|item| item["label"] == "ComboOption")
+    );
+    let options = complete_at(
+        "component App inherits Window { ComboBox { ComboOption { Label { text: option-|",
+    );
+    for name in [
+        "option-text",
+        "option-index",
+        "option-enabled",
+        "option-selected",
+        "option-highlighted",
+    ] {
+        assert!(options.iter().any(|item| item["label"] == name), "{name}");
+    }
+    let outside = complete_at("component App inherits Window { Label { text: option-|");
+    assert!(!outside.iter().any(|item| item["label"] == "option-text"));
+    let hover = request_at(
+        "textDocument/hover",
+        URI,
+        "component App inherits Window { ComboBox { ComboOption { Label { text: option-te|xt; } } } }",
+        None,
+    );
+    assert!(
+        hover["contents"]["value"]
+            .as_str()
+            .is_some_and(|text| text.contains("string")),
+        "{hover}"
+    );
+}
+
+#[test]
+fn combo_popup_commands_and_state_complete_on_the_receiver() {
+    let methods = complete_at(
+        "component App inherits Window { choice := ComboBox {} Button { clicked => { choice.| } } }",
+    );
+    for name in [
+        "open-popup",
+        "close-popup",
+        "popup-open",
+        "highlighted-index",
+    ] {
+        assert!(
+            methods.iter().any(|item| item["label"] == name),
+            "{name}: {methods:?}"
+        );
+    }
+    let bindings = complete_at("component App inherits Window { ComboBox { highlight-| } }");
+    assert!(
+        !bindings
+            .iter()
+            .any(|item| item["label"] == "highlighted-index")
+    );
+}
+
+#[test]
+fn combo_popup_completes_only_supported_properties() {
+    assert!(
+        complete_at("component App inherits Window { ComboBox { ComboPop|")
+            .iter()
+            .any(|item| item["label"] == "ComboPopup")
+    );
+    let inside = complete_at("component App inherits Window { ComboBox { ComboPopup { |");
+    for property in ["row-height", "max-height", "padding", "scroll-indicator"] {
+        assert!(
+            inside.iter().any(|item| item["label"] == property),
+            "{property}"
+        );
+    }
+    assert!(!inside.iter().any(|item| item["label"] == "x"));
+}
+
+#[test]
+fn progress_bounds_complete_with_read_only_normalized_positions() {
+    let properties = complete_at("component App inherits Window { ProgressIndicator { | } }");
+    for name in ["minimum", "maximum", "progress"] {
+        assert!(
+            properties
+                .iter()
+                .any(|item| item["label"] == name && item["detail"] == "float"),
+            "{name}"
+        );
+    }
+    assert!(
+        !properties
+            .iter()
+            .any(|item| item["label"] == "visual-position")
+    );
+    let members = complete_at(
+        "component App inherits Window { meter := ProgressIndicator {} Label { text: meter.| } }",
+    );
+    for name in ["position", "visual-position"] {
+        assert!(
+            members.iter().any(|item| item["label"] == name
+                && item["detail"]
+                    .as_str()
+                    .is_some_and(|detail| detail.contains("read-only float"))),
+            "{name}"
+        );
+    }
+}
+
+#[test]
 fn content_slot_and_control_parts_offer_contextual_completion() {
     for (text, expected) in [
         (
@@ -899,6 +1592,14 @@ fn content_slot_and_control_parts_offer_contextual_completion() {
         (
             "component Demo inherits Window { Slider { SliderHa|",
             "SliderHandle",
+        ),
+        (
+            "component Demo inherits Window { ProgressIndicator { ProgressTr|",
+            "ProgressTrack",
+        ),
+        (
+            "component Demo inherits Window { ProgressIndicator { ProgressFi|",
+            "ProgressFill",
         ),
         (
             "component Demo inherits Window { CheckBox { ToggleInd|",
@@ -923,6 +1624,14 @@ fn content_slot_and_control_parts_offer_contextual_completion() {
         (
             "component Demo inherits Window { SpinBox { SpinUpInd|",
             "SpinUpIndicator",
+        ),
+        (
+            "component Demo inherits Window { ComboBox { ComboInd|",
+            "ComboIndicator",
+        ),
+        (
+            "component Demo inherits Window { ComboBox { ComboCon|",
+            "ComboContent",
         ),
         (
             "component Demo inherits Window { DoubleSpinBox { SpinDownInd|",
@@ -973,6 +1682,16 @@ fn content_slot_and_control_parts_offer_contextual_completion() {
         !complete_at("component Demo inherits Window { TreeView { TreeDisc|")
             .iter()
             .any(|item| item["label"] == "TreeDisclosure")
+    );
+    assert!(
+        !complete_at("component Demo inherits Window { ComboInd|")
+            .iter()
+            .any(|item| item["label"] == "ComboIndicator")
+    );
+    assert!(
+        !complete_at("component Demo inherits Window { ComboCon|")
+            .iter()
+            .any(|item| item["label"] == "ComboContent")
     );
     let invalid = "component Panel inherits VerticalLayout { @children @children }";
     assert!(
@@ -2520,7 +3239,7 @@ fn media_player_completion_and_seek_signature() {
 }
 
 #[test]
-fn sound_effect_completes_its_bindings_and_play_signature() {
+fn sound_effect_completes_its_bindings_and_playback_signatures() {
     let root = complete_at("component App inherits Window { chime := Sou| }");
     assert!(root.iter().any(|item| item["label"] == "SoundEffect"));
     for invalid in [
@@ -2536,19 +3255,26 @@ fn sound_effect_completes_its_bindings_and_play_signature() {
         );
     }
     let bindings = complete_at("component App inherits Window { chime := SoundEffect { | } }");
-    for expected in ["source", "volume", "muted"] {
+    for expected in ["source", "volume", "muted", "loops"] {
         assert!(
             bindings.iter().any(|item| item["label"] == expected),
             "{expected}: {bindings:?}"
         );
     }
-    for unavailable in ["ready", "width", "autoplay", "Button"] {
+    for unavailable in ["ready", "loops-remaining", "width", "autoplay", "Button"] {
         assert!(!bindings.iter().any(|item| item["label"] == unavailable));
     }
     let items = complete_at(
         "component App inherits Window { chime := SoundEffect {} button := Button { clicked => { chime.| } } }",
     );
-    for expected in ["play", "ready", "playing", "error"] {
+    for expected in [
+        "play",
+        "stop",
+        "ready",
+        "playing",
+        "error",
+        "loops-remaining",
+    ] {
         assert!(
             items.iter().any(|item| item["label"] == expected),
             "{expected}: {items:?}"
@@ -2558,6 +3284,60 @@ fn sound_effect_completes_its_bindings_and_play_signature() {
     let line = "component App inherits Window { chime := SoundEffect {} button := Button { clicked => { chime.play(";
     let signature = completion::signature_help(line, (0, line.len()), None);
     assert_eq!(signature["signatures"][0]["label"], "play()");
+    let line = line.replace("chime.play(", "chime.stop(");
+    let signature = completion::signature_help(&line, (0, line.len()), None);
+    assert_eq!(signature["signatures"][0]["label"], "stop()");
+}
+
+#[test]
+fn combo_box_completes_submission_rules_and_read_only_status() {
+    let items = complete_at("component App inherits Window { ComboBox { | } }");
+    for property in [
+        "input-type",
+        "minimum-length",
+        "maximum-length",
+        "submit-when",
+        "minimum-value",
+        "maximum-value",
+        "decimals",
+        "decimal-separator",
+    ] {
+        assert!(
+            items.iter().any(|item| item["label"] == property),
+            "{property}"
+        );
+    }
+    assert!(!items.iter().any(|item| item["label"] == "acceptable-input"));
+    let status = complete_at(
+        "component App inherits Window { amount := ComboBox {} Button { enabled: amount.acceptable-|",
+    );
+    assert!(
+        status
+            .iter()
+            .any(|item| item["label"] == "acceptable-input"),
+        "{status:?}"
+    );
+}
+
+#[test]
+fn combo_box_completes_effective_selection_and_editor_state() {
+    let items = complete_at(
+        "component App inherits Window { choice := ComboBox {} Text { text: choice.| } }",
+    );
+    for (name, detail) in [
+        ("count", "effective int"),
+        ("current-index", "effective int"),
+        ("current-text", "effective string"),
+        ("current-value", "effective value · model value-role"),
+        ("edit-text", "effective string"),
+    ] {
+        assert!(
+            items
+                .iter()
+                .any(|item| item["label"] == name && item["detail"] == detail),
+            "{name}: {items:?}"
+        );
+    }
 }
 
 #[test]
@@ -2735,4 +3515,180 @@ fn editors_offer_logical_and_physical_horizontal_alignment() {
             "{alignment}: {items:?}"
         );
     }
+}
+
+#[test]
+fn scroll_visual_metrics_complete_as_read_only_values() {
+    let items = complete_at(
+        "component App inherits Window { bar := ScrollIndicator {} Label { text: bar.| } }",
+    );
+    for name in ["visual-position", "visual-size"] {
+        assert!(items.iter().any(|item| {
+            item["label"] == name
+                && item["detail"]
+                    .as_str()
+                    .is_some_and(|detail| detail.contains("read-only float"))
+        }));
+    }
+    let bindings = complete_at("component App inherits Window { ScrollBar { | } }");
+    assert!(!bindings.iter().any(|item| matches!(
+        item["label"].as_str(),
+        Some("visual-size" | "visual-position")
+    )));
+}
+
+#[test]
+fn scroll_artwork_completes_only_inside_scroll_controls() {
+    for kind in ["ScrollBar", "ScrollIndicator"] {
+        let items = complete_at(&format!(
+            "component App inherits Window {{ {kind} {{ Scroll| }} }}"
+        ));
+        for element in ["ScrollTrack", "ScrollThumb"] {
+            assert!(items.iter().any(|item| item["label"] == element));
+        }
+    }
+    let unrelated = complete_at("component App inherits Window { Rectangle { Scroll| } }");
+    assert!(
+        !unrelated
+            .iter()
+            .any(|item| matches!(item["label"].as_str(), Some("ScrollTrack" | "ScrollThumb")))
+    );
+}
+
+#[test]
+fn scroll_interaction_completion_matches_the_scroll_control_kind() {
+    for (kind, expected) in [
+        ("ScrollBar", &["active", "pressed", "hovered"][..]),
+        ("ScrollIndicator", &["active"][..]),
+    ] {
+        let values = complete_at(&format!(
+            "component App inherits Window {{ bar := {kind} {{}} property <bool> state: bar.| }}"
+        ));
+        let bindings = complete_at(&format!(
+            "component App inherits Window {{ {kind} {{ | }} }}"
+        ));
+        for name in ["active", "pressed", "hovered"] {
+            assert_eq!(
+                values.iter().any(|item| item["label"] == name
+                    && item["detail"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .contains("read-only bool")),
+                expected.contains(&name),
+                "{kind}.{name}: {values:?}"
+            );
+            assert!(!bindings.iter().any(|item| item["label"] == name));
+        }
+    }
+}
+
+#[test]
+fn scroll_commands_offer_targeted_completion_and_parameters() {
+    for (kind, method, signature) in [
+        ("ScrollBar", "increase", "increase()"),
+        ("ScrollBar", "decrease", "decrease()"),
+        (
+            "ScrollView",
+            "scroll-by",
+            "scroll-by(dx: length, dy: length)",
+        ),
+    ] {
+        let prefix = format!(
+            "component App inherits Window {{ target := {kind} {{}} button := Button {{ clicked => {{ target."
+        );
+        assert!(
+            complete_at(&format!("{prefix}| }} }} }}"))
+                .iter()
+                .any(|item| item["label"] == method),
+            "{kind}.{method}"
+        );
+        let source = format!("{prefix}{method}(");
+        let help = completion::signature_help(&source, (0, source.len()), None);
+        assert_eq!(help["signatures"][0]["label"], signature);
+    }
+    let items = complete_at(
+        "component App inherits Window { target := ScrollIndicator {} button := Button { clicked => { target.| } } }",
+    );
+    assert!(!items.iter().any(|item| matches!(
+        item["label"].as_str(),
+        Some("increase" | "decrease" | "scroll-by")
+    )));
+}
+
+#[test]
+fn scroll_view_reservation_and_read_only_bar_extent_complete_in_context() {
+    let bindings = complete_at("component App inherits Window { ScrollView { | } }");
+    assert!(
+        bindings
+            .iter()
+            .any(|item| item["label"] == "reserve-scroll-bar-space" && item["detail"] == "bool")
+    );
+    let values = complete_at(
+        "component App inherits Window { view := ScrollView {} property <length> inset: view.| }",
+    );
+    for metric in ["effective-scroll-bar-width", "effective-scroll-bar-height"] {
+        assert!(
+            values
+                .iter()
+                .any(|item| item["label"] == metric && item["detail"] == "read-only length")
+        );
+        assert!(!bindings.iter().any(|item| item["label"] == metric));
+    }
+    let other = complete_at("component App inherits Window { Flickable { | } }");
+    assert!(
+        !other
+            .iter()
+            .any(|item| item["label"] == "reserve-scroll-bar-space")
+    );
+}
+
+#[test]
+fn scroll_focus_reveal_completes_on_content_viewports() {
+    for kind in ["ScrollView", "Flickable", "Rectangle"] {
+        let items = complete_at(&format!(
+            "component App inherits Window {{ {kind} {{ | }} }}"
+        ));
+        assert_eq!(
+            items
+                .iter()
+                .any(|item| item["label"] == "auto-reveal-focus" && item["detail"] == "bool"),
+            kind != "Rectangle"
+        );
+    }
+}
+
+#[test]
+fn position_child_completes_and_resolves_only_viewport_descendants() {
+    let source = r#"
+        export component App inherits Window {
+            view := ScrollView { Rectangle { item := Rectangle {} } }
+            elsewhere := Rectangle {}
+            go := Button {
+                clicked => { view.position-view-at-child(item, center, contain); }
+            }
+        }
+    "#;
+    let items = complete_at(&source.replace("item, center", "|, center"));
+    assert!(items.iter().any(|item| item["label"] == "item"));
+    assert!(
+        !items
+            .iter()
+            .any(|item| matches!(item["label"].as_str(), Some("view" | "elsewhere")))
+    );
+    let definition = request_at(
+        "textDocument/definition",
+        URI,
+        &source.replace("child(item", "child(|item"),
+        None,
+    );
+    assert_eq!(
+        definition,
+        location_at(URI, &source.replace("item :=", "|item :="), "item")
+    );
+    let hint = "component App inherits Window { view := ScrollView {} go := Button { clicked => { view.position-view-at-child(";
+    let help = completion::signature_help(hint, (0, hint.len()), None);
+    assert_eq!(
+        help["signatures"][0]["label"],
+        "position-view-at-child(child: element, horizontal: ScrollAlignment, vertical: ScrollAlignment)"
+    );
 }

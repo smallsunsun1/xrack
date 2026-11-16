@@ -14,6 +14,7 @@ use std::{
 };
 use xrack_ir::semantic::{
     day_cell_inputs, is_window, rust_name, section_header_inputs, split_handle_inputs,
+    visual_template_inputs,
 };
 use xrack_mlir::{
     AliasGraph, AliasGraphs, AnimationRef, BinaryOperator, CallbackForward, ComponentAnalysis,
@@ -86,6 +87,7 @@ fn ty(t: &Type) -> TokenStream {
         Type::ImageHorizontalAlignment => quote!(::xrack_runtime::ImageHorizontalAlignment),
         Type::ImageVerticalAlignment => quote!(::xrack_runtime::ImageVerticalAlignment),
         Type::ImageRendering => quote!(::xrack_runtime::ImageRendering),
+        Type::ButtonDisplay => quote!(::xrack_runtime::ButtonDisplay),
         Type::Orientation => quote!(::xrack_runtime::Orientation),
         Type::FlickDirection => quote!(::xrack_runtime::FlickDirection),
         Type::FlickBoundsBehavior => quote!(::xrack_runtime::FlickBoundsBehavior),
@@ -423,6 +425,18 @@ fn visual_field(value: usize) -> Ident {
     format_ident!("__visual_{value}")
 }
 
+fn dynamic_children(owner: &str) -> Ident {
+    format_ident!("__dynamic_children_{}", rust_key(owner))
+}
+
+fn external_loader_slot(owner: &str) -> Ident {
+    format_ident!("__external_loader_{}", rust_key(owner))
+}
+
+fn loader_slot(owner: &str) -> Ident {
+    format_ident!("__loader_{}", rust_key(owner))
+}
+
 fn repeat_field(index: usize) -> Ident {
     format_ident!("__repeat_{index}")
 }
@@ -441,6 +455,23 @@ fn row_height_binding(element: OperationRef<'_>) -> Option<OperationRef<'_>> {
 
 fn combo_items_field(key: &str) -> Ident {
     format_ident!("__combo_items_{}", rust_key(key))
+}
+
+fn combo_state_method(key: &str, property: &str) -> Ident {
+    format_ident!("__combo_{}_{}", rust_key(key), rust_name(property))
+}
+
+fn combo_value_variant(ty: &Type) -> Result<Ident, String> {
+    let name = match ty {
+        Type::String => "String",
+        Type::Int => "Int",
+        Type::Float => "Float",
+        Type::Bool => "Bool",
+        Type::Date => "Date",
+        Type::Time => "Time",
+        _ => return Err("unsupported ComboBox value-role type".into()),
+    };
+    Ok(format_ident!("{name}"))
 }
 
 fn table_columns(element: OperationRef<'_>) -> impl Iterator<Item = OperationRef<'_>> {
@@ -501,6 +532,65 @@ fn action_key_field(key: &str) -> Ident {
 
 fn action_render_method(key: &str) -> Ident {
     format_ident!("__render_action_{}", rust_key(key))
+}
+
+fn action_checked_method(key: &str) -> Ident {
+    format_ident!("__action_checked_{}", rust_key(key))
+}
+
+fn button_checked_method(key: &str) -> Ident {
+    format_ident!("__button_checked_{}", rust_key(key))
+}
+
+fn toggle_state_method(key: &str) -> Ident {
+    format_ident!("__toggle_state_{}", rust_key(key))
+}
+
+fn numeric_value_method(key: &str, property: &str) -> Ident {
+    format_ident!("__numeric_{}_{}", rust_key(key), rust_name(property))
+}
+
+fn range_position_handle(key: &str) -> Ident {
+    format_ident!("__range_position_handle_{}", rust_key(key))
+}
+
+fn combo_popup_handle(key: &str) -> Ident {
+    format_ident!("__combo_popup_handle_{}", rust_key(key))
+}
+
+fn range_position_method(key: &str, property: &str) -> Ident {
+    format_ident!("__range_position_{}_{}", rust_key(key), rust_name(property))
+}
+
+fn radio_choice_method(key: &str) -> Ident {
+    format_ident!("__radio_choice_{}", rust_key(key))
+}
+
+fn repeated_navigation_page(
+    view: OperationRef<'_>,
+) -> Option<(OperationRef<'_>, OperationRef<'_>)> {
+    if !matches!(view.attribute("kind"), Some("TabWidget" | "SwipeView")) {
+        return None;
+    }
+    let page = scene_children(view).next()?;
+    let repeat = children(page, "xr.repeat").next()?;
+    Some((page, repeat))
+}
+
+fn navigation_selects_by_value(element: OperationRef<'_>) -> bool {
+    element
+        .attribute("kind")
+        .is_some_and(xrack_syntax::builtins::navigation_group)
+        && controlled_property(element).is_some_and(|(name, _)| name == "current-value")
+}
+
+fn navigation_choice_method(key: &str) -> Ident {
+    format_ident!("__navigation_choice_{}", rust_key(key))
+}
+
+fn row_button_binding(key: &str, name: &str) -> Ident {
+    let encoded: String = key.bytes().map(|byte| format!("{byte:02x}")).collect();
+    format_ident!("__row_button_{name}_{encoded}")
 }
 
 fn action_activate_method(key: &str) -> Ident {
@@ -592,6 +682,13 @@ fn pointer_handle(owner: &str) -> Ident {
 fn viewport_handle(owner: &str) -> Ident {
     let encoded: String = owner.bytes().map(|byte| format!("{byte:02x}")).collect();
     format_ident!("__xr_viewport_{encoded}")
+}
+
+fn observed_scroll_read(op: OperationRef<'_>) -> bool {
+    matches!(
+        op.attribute("value"),
+        Some("visual-position" | "visual-size" | "active" | "pressed" | "hovered")
+    )
 }
 
 fn scroll_control_getter(owner: &str, property: &str) -> Ident {
@@ -727,6 +824,10 @@ fn section_header_method(key: &str) -> Ident {
     format_ident!("__section_header_{}", rust_key(key))
 }
 
+fn combo_option_method(key: &str) -> Ident {
+    format_ident!("__combo_option_{}", rust_key(key))
+}
+
 fn list_rows_method(key: &str) -> Ident {
     format_ident!("__list_rows_{}", rust_key(key))
 }
@@ -835,9 +936,12 @@ type VisualCacheKey<'a> = xrack_mlir::VisualCacheKey<ValueRef<'a>>;
 #[derive(Default)]
 struct VisualScope<'a> {
     row_index: Option<usize>,
+    combo_option: bool,
     bindings: HashMap<VisualCacheKey<'a>, usize>,
     binding_types: Vec<Type>,
     repeats: BTreeMap<&'a str, RepeatScope<'a>>,
+    loaders: BTreeSet<&'a str>,
+    external_loaders: BTreeSet<&'a str>,
     row_delegates: BTreeMap<&'a str, usize>,
     row_checks: BTreeMap<&'a str, OperationRef<'a>>,
 }
@@ -848,6 +952,7 @@ struct RepeatScope<'a> {
     delegates: Vec<(Vec<usize>, OperationRef<'a>)>,
     table: bool,
     uses_row_identity: bool,
+    loader: Option<(&'a str, usize)>,
 }
 
 impl RepeatScope<'_> {
@@ -858,6 +963,24 @@ impl RepeatScope<'_> {
     fn uses_row_identity(&self) -> bool {
         self.uses_row_identity
     }
+
+    fn storage_type(&self, component: &str) -> TokenStream {
+        let row_type = self.row.state_name(component);
+        let model_type = ty(&self.model);
+        if self.uses_row_identity() {
+            let types = self.delegates.iter().map(|(_, delegate)| {
+                let component = ident(delegate.attr("component").expect("verified component"));
+                if self.table {
+                    quote!(::std::cell::LazyCell<#component, ::std::boxed::Box<dyn FnOnce() -> #component>>)
+                } else {
+                    quote!(#component)
+                }
+            });
+            quote!(::xrack_runtime::ComponentRepeater<#model_type, #row_type, (#(#types,)*)>)
+        } else {
+            quote!(::xrack_runtime::Repeater<#model_type, #row_type>)
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -865,6 +988,9 @@ struct ExpressionContext<'a> {
     receiver: &'a TokenStream,
     repeat_parameters: bool,
     hoist_repeat_subexpressions: bool,
+    row_toggle_owner: Option<&'a str>,
+    row_context: bool,
+    combo_option: bool,
 }
 
 impl<'a> ExpressionContext<'a> {
@@ -873,6 +999,17 @@ impl<'a> ExpressionContext<'a> {
             receiver,
             repeat_parameters: false,
             hoist_repeat_subexpressions: false,
+            row_toggle_owner: None,
+            row_context: false,
+            combo_option: false,
+        }
+    }
+
+    fn row_index(self) -> TokenStream {
+        if self.row_context {
+            quote!(__context.index() as usize)
+        } else {
+            quote!(__xr_index)
         }
     }
 }
@@ -949,24 +1086,20 @@ impl<'a> VisualScope<'a> {
             let field = control_field(key, "checked");
             fields.extend(quote!(#field: ::xrack_runtime::Property<::core::primitive::bool>,));
         }
+        for &owner in &self.external_loaders {
+            let field = external_loader_slot(owner);
+            fields.extend(quote!(#field: ::xrack_runtime::ExternalLoader,));
+        }
+        for &owner in &self.loaders {
+            let field = loader_slot(owner);
+            fields.extend(quote!(#field: ::xrack_runtime::LoaderSlot,));
+        }
         for repeat in self.repeats.values() {
-            let row = &repeat.row;
-            row.declare(component, declarations);
-            let field = repeat_field(repeat.index());
-            let row_type = row.state_name(component);
-            let model_type = ty(&repeat.model);
-            if repeat.uses_row_identity() {
-                let types = repeat.delegates.iter().map(|(_, delegate)| {
-                    let component = ident(delegate.attr("component").expect("verified component"));
-                    if repeat.table {
-                        quote!(::std::cell::LazyCell<#component, ::std::boxed::Box<dyn FnOnce() -> #component>>)
-                    } else {
-                        quote!(#component)
-                    }
-                });
-                fields.extend(quote!(#field: ::xrack_runtime::ComponentRepeater<#model_type, #row_type, (#(#types,)*)>,));
-            } else {
-                fields.extend(quote!(#field: ::xrack_runtime::Repeater<#model_type, #row_type>,));
+            repeat.row.declare(component, declarations);
+            if repeat.loader.is_none() {
+                let field = repeat_field(repeat.index());
+                let storage = repeat.storage_type(component);
+                fields.extend(quote!(#field: #storage,));
             }
         }
         declarations.extend(quote! {
@@ -998,6 +1131,7 @@ struct Generator<'a> {
     row_height_views: BTreeSet<&'a str>,
     sectioned_lists: BTreeSet<&'a str>,
     section_headers: BTreeMap<&'a str, OperationRef<'a>>,
+    combo_options: BTreeMap<&'a str, OperationRef<'a>>,
     splits: Vec<&'a str>,
     trees: BTreeMap<&'a str, TreeViewRef<'a>>,
     stacks: BTreeMap<&'a str, OperationRef<'a>>,
@@ -1008,6 +1142,16 @@ struct Generator<'a> {
     native_dialogs: Vec<OperationRef<'a>>,
     focus_targets: BTreeSet<&'a str>,
     button_press_targets: BTreeSet<&'a str>,
+    button_checked_targets: BTreeSet<&'a str>,
+    toggle_state_targets: BTreeSet<&'a str>,
+    numeric_read_targets: BTreeSet<(&'a str, &'a str)>,
+    combo_state_targets: BTreeSet<(&'a str, &'a str)>,
+    combo_popup_targets: BTreeSet<&'a str>,
+    range_position_targets: BTreeMap<&'a str, BTreeSet<&'a str>>,
+    radio_read_groups: BTreeSet<&'a str>,
+    navigation_read_groups: BTreeSet<&'a str>,
+    repeated_buttons: BTreeSet<&'a str>,
+    button_animation_targets: BTreeSet<&'a str>,
     text_selection_targets: BTreeSet<&'a str>,
     text_command_targets: BTreeSet<&'a str>,
     text_acceptance_targets: BTreeSet<&'a str>,
@@ -1093,7 +1237,17 @@ impl<'a> Generator<'a> {
             }
             "xr.element" => {
                 let key = element_key(op)?;
+                if repeat.is_some()
+                    && op
+                        .attribute("kind")
+                        .is_some_and(xrack_syntax::builtins::push_button)
+                {
+                    self.repeated_buttons.insert(key);
+                }
                 self.elements.insert(key, op);
+                if navigation_selects_by_value(op) || repeated_navigation_page(op).is_some() {
+                    self.navigation_read_groups.insert(key);
+                }
                 if repeat.is_none() && op.attr("kind") == Ok("TouchArea") {
                     self.pointer_targets.insert(key);
                 }
@@ -1124,6 +1278,14 @@ impl<'a> Generator<'a> {
                     .find(|child| child.attribute("kind") == Some("SectionHeader"))
                 {
                     self.section_headers.insert(key, header);
+                }
+                if let Some(option) = children(op, "xr.element").find(|child| {
+                    matches!(
+                        child.attribute("kind"),
+                        Some("ComboOption" | "TumblerOption" | "PathViewOption")
+                    )
+                }) {
+                    self.combo_options.insert(key, option);
                 }
                 if viewport_bindings(op).next().is_some() {
                     self.viewport_targets.insert(key);
@@ -1226,6 +1388,35 @@ impl<'a> Generator<'a> {
                 "xr.button_pressed" => {
                     self.button_press_targets.insert(child.attr("owner")?);
                 }
+                "xr.button_checked" => {
+                    self.button_checked_targets.insert(child.attr("owner")?);
+                }
+                "xr.toggle_state_read" => {
+                    self.toggle_state_targets.insert(child.attr("owner")?);
+                }
+                "xr.numeric_value_read" => {
+                    self.numeric_read_targets
+                        .insert((child.attr("owner")?, child.attr("value")?));
+                }
+                "xr.combo_state_read" => {
+                    self.combo_state_targets
+                        .insert((child.attr("owner")?, child.attr("value")?));
+                }
+                "xr.combo_popup_read" => {
+                    self.combo_popup_targets.insert(child.attr("owner")?);
+                }
+                "xr.range_position_read" => {
+                    self.range_position_targets
+                        .entry(child.attr("owner")?)
+                        .or_default()
+                        .insert(child.attr("value")?);
+                }
+                "xr.radio_checked" => {
+                    self.radio_read_groups.insert(child.attr("value")?);
+                }
+                "xr.navigation_active" => {
+                    self.navigation_read_groups.insert(child.attr("value")?);
+                }
                 "xr.text_selection_read" | "xr.text_command_available" => {
                     self.index_editor_state(child)?;
                 }
@@ -1253,17 +1444,57 @@ impl<'a> Generator<'a> {
                 "xr.geometry_read" => {
                     self.geometry_targets.insert(child.attr("owner")?);
                 }
+                "xr.scroll_control_read" if observed_scroll_read(child) => {
+                    self.geometry_targets.insert(child.attr("owner")?);
+                }
                 "xr.callback" | "xr.handler" | "xr.clipboard_paste" => {
                     for effect in child.children() {
                         match effect.name() {
                             "xr.focus_command" => {
                                 self.focus_targets.insert(effect.attr("target")?);
                             }
+                            "xr.button_click" => {
+                                let owner = effect.attr("owner")?;
+                                self.focus_targets.insert(owner);
+                                self.button_press_targets.insert(owner);
+                                if effect.attribute("animated") == Some("true") {
+                                    self.button_animation_targets.insert(owner);
+                                }
+                            }
                             "xr.focus_read" | "xr.text_command" => {
                                 self.focus_targets.insert(effect.attr("owner")?);
                             }
                             "xr.button_pressed" => {
                                 self.button_press_targets.insert(effect.attr("owner")?);
+                            }
+                            "xr.button_checked" => {
+                                self.button_checked_targets.insert(effect.attr("owner")?);
+                            }
+                            "xr.toggle_state_read" => {
+                                self.toggle_state_targets.insert(effect.attr("owner")?);
+                            }
+                            "xr.numeric_value_read" => {
+                                self.numeric_read_targets
+                                    .insert((effect.attr("owner")?, effect.attr("value")?));
+                            }
+                            "xr.combo_state_read" => {
+                                self.combo_state_targets
+                                    .insert((effect.attr("owner")?, effect.attr("value")?));
+                            }
+                            "xr.combo_popup_read" => {
+                                self.combo_popup_targets.insert(effect.attr("owner")?);
+                            }
+                            "xr.range_position_read" => {
+                                self.range_position_targets
+                                    .entry(effect.attr("owner")?)
+                                    .or_default()
+                                    .insert(effect.attr("value")?);
+                            }
+                            "xr.radio_checked" => {
+                                self.radio_read_groups.insert(effect.attr("value")?);
+                            }
+                            "xr.navigation_active" => {
+                                self.navigation_read_groups.insert(effect.attr("value")?);
                             }
                             "xr.text_selection_read" | "xr.text_command_available" => {
                                 self.index_editor_state(effect)?;
@@ -1277,11 +1508,14 @@ impl<'a> Generator<'a> {
                             | "xr.cancel_flick"
                             | "xr.return_to_bounds" => {
                                 let owner = effect.attr("owner")?;
-                                self.viewport_targets.insert(owner);
+                                let method = effect
+                                    .attribute("method")
+                                    .and_then(xrack_runtime::ScrollCommandMethod::parse);
+                                if method.is_none_or(|method| method.bar_step().is_none()) {
+                                    self.viewport_targets.insert(owner);
+                                }
                                 if effect.name() == "xr.scroll_command"
-                                    && let Some(method) = effect
-                                        .attribute("method")
-                                        .and_then(xrack_runtime::ScrollCommandMethod::parse)
+                                    && let Some(method) = method
                                 {
                                     if method.uses_source_row() {
                                         self.source_scroll_targets.insert(owner);
@@ -1308,6 +1542,13 @@ impl<'a> Generator<'a> {
                                     .insert(effect.attr("owner")?);
                             }
                             "xr.geometry_read" => {
+                                self.geometry_targets.insert(effect.attr("owner")?);
+                            }
+                            "xr.position_child" => {
+                                self.viewport_targets.insert(effect.attr("owner")?);
+                                self.geometry_targets.insert(effect.attr("target")?);
+                            }
+                            "xr.scroll_control_read" if observed_scroll_read(effect) => {
                                 self.geometry_targets.insert(effect.attr("owner")?);
                             }
                             _ => {}
@@ -1359,6 +1600,7 @@ impl<'a> Generator<'a> {
         element: OperationRef<'a>,
         scope: &mut VisualScope<'a>,
         next: &mut usize,
+        loader: Option<(&'a str, usize)>,
     ) -> Result<(), String> {
         if self.static_subtree(element) || self.empty_repeat(element) {
             return Ok(());
@@ -1386,6 +1628,7 @@ impl<'a> Generator<'a> {
                     model,
                     row,
                     delegates,
+                    loader,
                     table: element.attr("kind") == Ok("TableRow"),
                     uses_row_identity: xrack_mlir::repeat_uses_row_identity(
                         element,
@@ -1411,8 +1654,17 @@ impl<'a> Generator<'a> {
         for binding in indexed_visual_bindings(element) {
             self.index_visual_binding(binding, scope)?;
         }
-        for child in scene_children(element) {
-            self.index_visual_bindings(child, scope, next)?;
+        let loader = (element.attribute("kind") == Some("Loader"))
+            .then(|| element_key(element))
+            .transpose()?;
+        if let Some(owner) = loader {
+            scope.loaders.insert(owner);
+            if children(element, "xr.bind").any(|bind| bind.attribute("name") == Some("source-url")) {
+                scope.external_loaders.insert(owner);
+            }
+        }
+        for (index, child) in scene_children(element).enumerate() {
+            self.index_visual_bindings(child, scope, next, loader.map(|owner| (owner, index)))?;
         }
         Ok(())
     }
@@ -1492,8 +1744,114 @@ impl<'a> Generator<'a> {
                 receiver,
                 repeat_parameters: scope.row_index.is_some(),
                 hoist_repeat_subexpressions: scope.row_index.is_some(),
+                row_toggle_owner: None,
+                row_context: false,
+                combo_option: scope.combo_option,
             },
         )
+    }
+
+    fn dynamic_expression(
+        &self,
+        op: OperationRef<'a>,
+        context: ExpressionContext<'_>,
+    ) -> Result<TokenStream, String> {
+        let names: Vec<_> = op.attr("value")?.split(':').collect();
+        let [verb, component, members @ ..] = names.as_slice() else {
+            return Err("invalid dynamic component operation".into());
+        };
+        let component_type = ident(component);
+        let receiver = context.receiver;
+        let slot = dynamic_children(owner(op));
+        let children = quote!(#receiver.__state.#slot);
+        let arg = |index| self.expr_in(self.operand(op, index)?, context);
+        if *verb == "mount-url" {
+            let source = arg(0)?;
+            let Type::Record(handle) = value_type(op)? else {
+                return Err("mount requires a component handle result".into());
+            };
+            let handle = ident(&handle);
+            return Ok(quote!(#handle { id: #children.mount_url(#source) }));
+        }
+        if matches!(*verb, "mount" | "mount-async") {
+            let fields = members.iter().map(|name| property_field("root", name));
+            let values = (0..members.len()).map(arg).collect::<Result<Vec<_>, _>>()?;
+            let captures: Vec<_> = (0..values.len()).map(|i| format_ident!("__xr_initial_{i}")).collect();
+            let inputs = format_ident!("__Inputs_{}", rust_name(component));
+            let globals = (!self.globals.is_empty()).then(|| quote!(__globals: __xr_globals,));
+            let locale = self.with_locale.then(|| quote!(__locale: __xr_locale,));
+            let capture_globals = (!self.globals.is_empty()).then(|| quote!(let __xr_globals = #receiver.__state.__globals.clone();));
+            let capture_locale = self.with_locale.then(|| quote!(let __xr_locale = #receiver.__state.__locale.clone();));
+            let Type::Record(handle) = value_type(op)? else {
+                return Err("mount requires a component handle result".into());
+            };
+            let handle = ident(&handle);
+            let create = quote! {
+                let __xr_item = #component_type::__new(#inputs {
+                    #(#fields: ::core::option::Option::Some({
+                        let input = ::xrack_runtime::InputProperty::default();
+                        input.set_if_changed_by(#captures, |_, _| false);
+                        input
+                    }),)*
+                    #globals #locale ..::core::default::Default::default()
+                });
+                let weak = __xr_item.as_weak();
+            };
+            let mount = if *verb == "mount-async" {
+                quote!(#children.prepare(move || {
+                    #create
+                    ::core::result::Result::Ok(::xrack_runtime::LoadedExternal::new(__xr_item, weak))
+                }))
+            } else {
+                quote!({ #create #children.mount(__xr_item, weak) })
+            };
+            return Ok(quote!({
+                #(let #captures = #values;)*
+                #capture_globals
+                #capture_locale
+                #handle { id: #mount }
+            }));
+        }
+        let handle = arg(0)?;
+        let id = quote!((#handle).id);
+        Ok(match (*verb, members) {
+            ("remove", []) => quote!(#children.remove(#id)),
+            ("move", []) => {
+                let index = arg(1)?;
+                quote!(#children.move_to(#id, #index))
+            }
+            ("is-mounted", []) => quote!(#children.contains(#id)),
+            ("status", []) => quote!(#children.status(#id).to_owned()),
+            ("get", [member]) => {
+                let getter = getter("root", member, &value_type(op)?);
+                let fallback = arg(1)?;
+                quote!(#children.get::<#component_type>(#id).map_or_else(|| #fallback, |ui| ui.#getter()))
+            }
+            ("set", [member]) => {
+                let setter = property_method("write", "root", member);
+                let value = arg(1)?;
+                quote!(#children.get::<#component_type>(#id).is_some_and(|ui| {
+                    ui.#setter(#value);
+                    true
+                }))
+            }
+            ("call" | "call-value", [member]) => {
+                let callback = callback_method("invoke_cb", "root", member);
+                let has_value = *verb == "call-value";
+                let first = if has_value { 2 } else { 1 };
+                let args = (first..op.operand_count()).map(arg).collect::<Result<Vec<_>, _>>()?;
+                if has_value {
+                    let fallback = arg(1)?;
+                    quote!(#children.get::<#component_type>(#id).map_or_else(|| #fallback, |ui| ui.#callback(#(#args),*)))
+                } else {
+                    quote!(#children.get::<#component_type>(#id).is_some_and(|ui| {
+                        ui.#callback(#(#args),*);
+                        true
+                    }))
+                }
+            }
+            _ => return Err("invalid dynamic component operation".into()),
+        })
     }
 
     fn expr_in(
@@ -1732,6 +2090,11 @@ impl<'a> Generator<'a> {
                 }
                 _ => return Err("unknown native dialog result property".into()),
             },
+            "xr.scroll_control_read" if observed_scroll_read(op) => {
+                let handle = geometry_handle(owner(op));
+                let getter = format_ident!("scroll_{}", rust_name(value));
+                quote!(#receiver.__state.#handle.#getter())
+            }
             "xr.scroll_control_read" => {
                 let getter = scroll_control_getter(owner(op), value);
                 quote!(#receiver.#getter())
@@ -1779,9 +2142,132 @@ impl<'a> Generator<'a> {
                 };
                 quote!(#receiver.__state.#handle.#getter())
             }
+            "xr.combo_popup_read" => {
+                let handle = combo_popup_handle(owner(op));
+                let getter = ident(value);
+                quote!(#receiver.__state.#handle.#getter())
+            }
             "xr.button_pressed" => {
                 let handle = button_press_handle(owner(op));
                 quote!(#receiver.__state.#handle.pressed())
+            }
+            "xr.button_checked" => {
+                let key = owner(op);
+                let method = button_checked_method(key);
+                if self.repeated_buttons.contains(key) {
+                    let button = self.elements[key];
+                    if let Some(action) = action_ref(button) {
+                        let read = action_checked_method(action);
+                        quote!(#receiver.#read(::core::option::Option::None))
+                    } else if has_button_check_state(button) {
+                        let read = row_button_binding(key, "checked");
+                        quote!(#read())
+                    } else {
+                        quote!(false)
+                    }
+                } else {
+                    quote!(#receiver.#method())
+                }
+            }
+            "xr.toggle_state_read" => {
+                let key = owner(op);
+                let target = self.elements[key];
+                let state = if context.row_toggle_owner == Some(key) {
+                    quote!(__xr_read_toggle())
+                } else if let Some(link) = children(target, "xr.row_link").next() {
+                    let field = self.expr_in(self.operand(link, 0)?, context)?;
+                    quote!(::xrack_runtime::CheckState::from(#field))
+                } else {
+                    let method = toggle_state_method(key);
+                    quote!(#receiver.#method())
+                };
+                if value == "checked" {
+                    quote!(((#state) == ::xrack_runtime::CheckState::Checked))
+                } else {
+                    state
+                }
+            }
+            "xr.numeric_value_read" => {
+                let key = owner(op);
+                let control = self.elements[key];
+                if let Some(link) =
+                    children(control, "xr.row_link").find(|link| link.attr("name") == Ok(value))
+                {
+                    self.expr_in(self.operand(link, 0)?, context)?
+                } else {
+                    let method = numeric_value_method(key, value);
+                    quote!(#receiver.#method())
+                }
+            }
+            "xr.combo_state_read" => {
+                let method = combo_state_method(owner(op), value);
+                quote!(#receiver.#method())
+            }
+            "xr.range_position_read" => {
+                let method = range_position_method(owner(op), value);
+                quote!(#receiver.#method())
+            }
+            "xr.radio_checked" => {
+                let group = self.elements[value];
+                let method = radio_choice_method(value);
+                if group.attr("kind") == Ok("RadioGroup") {
+                    let key = owner(op);
+                    let declaration = scene_children(group)
+                        .position(|child| element_key(child) == Ok(key))
+                        .ok_or("unknown radio option")?;
+                    let row = if children(self.elements[key], "xr.repeat").next().is_some() {
+                        context.row_index()
+                    } else {
+                        quote!(0usize)
+                    };
+                    quote!((#receiver.#method() == ::core::option::Option::Some((#declaration, #row))))
+                } else {
+                    let index = context.row_index();
+                    quote!((#receiver.#method() == ::core::option::Option::Some(#index)))
+                }
+            }
+            "xr.navigation_count" => {
+                let group = self.elements[owner(op)];
+                if let Some(page) = scene_children(group).next()
+                    && let Some(repeat) = children(page, "xr.repeat").next()
+                {
+                    if self.empty_repeat(page) {
+                        quote!(0_i64)
+                    } else {
+                        let model = self.expr_in(self.operand(repeat, 0)?, context)?;
+                        let source =
+                            if let Some(repeat) = self.visuals.repeats.get(element_key(page)?) {
+                                let field = repeat_field(repeat.index());
+                                let visuals = self.visuals.receiver_in(context.receiver);
+                                quote!(&*#visuals.#field.resolve_model(|| #model))
+                            } else {
+                                quote!(&(#model))
+                            };
+                        quote!(::xrack_runtime::ListModel::row_count(#source).min(4096) as ::core::primitive::i64)
+                    }
+                } else {
+                    let count = Literal::i64_suffixed(scene_children(group).count() as i64);
+                    quote!(#count)
+                }
+            }
+            "xr.navigation_index" => {
+                let method = navigation_choice_method(owner(op));
+                quote!((#receiver.#method().map_or(-1_i64, |index| index as ::core::primitive::i64)))
+            }
+            "xr.navigation_active" => {
+                let key = owner(op);
+                let item = self.elements[key];
+                let group = self.elements[value];
+                let method = navigation_choice_method(value);
+                let index = if children(item, "xr.repeat").next().is_some() {
+                    context.row_index()
+                } else {
+                    let slot = scene_children(group)
+                        .position(|child| element_key(child) == Ok(key))
+                        .ok_or("unknown navigation item")?;
+                    quote!(#slot)
+                };
+                quote!((#receiver.#method() == ::core::option::Option::Some(#index)))
             }
             "xr.text_selection_read" | "xr.text_command_available" => {
                 let handle = focus_handle(owner(op));
@@ -1827,6 +2313,17 @@ impl<'a> Generator<'a> {
                     let variant = format_ident!("{}", format!("{metric:?}"));
                     quote!(#receiver.__state.#handle.read(::xrack_runtime::GeometryMetric::#variant))
                 }
+            }
+            "xr.dynamic_action" | "xr.dynamic_read" => return self.dynamic_expression(op, context),
+            "xr.loader_external_status" => {
+                let slot = external_loader_slot(owner(op));
+                let source = arg(0)?;
+                quote!(#receiver.__state.__visuals.#slot.status(&#source))
+            }
+            "xr.loader_mounted" => {
+                let slot = loader_slot(owner(op));
+                let selection = arg(0)?;
+                quote!(#receiver.__state.__visuals.#slot.is_mounted(#selection))
             }
             "xr.stack_read" => {
                 let snapshot = stack_snapshot_method(owner(op));
@@ -1963,7 +2460,7 @@ impl<'a> Generator<'a> {
             "xr.call" => from_host(self.callback_call(op, value, context)?, &value_type(op)?),
             "xr.param" => {
                 let name = parameter_ident(value);
-                if context.repeat_parameters {
+                if context.repeat_parameters || context.combo_option && value == "option-data" {
                     quote!(#name())
                 } else {
                     from_host(quote!(#name.clone()), &value_type(op)?)
@@ -2356,28 +2853,37 @@ impl<'a> Generator<'a> {
     }
 
     fn statements(&self, handler: OperationRef<'a>) -> Result<TokenStream, String> {
+        self.statements_in(handler, ExpressionContext::new(&quote!(self)))
+    }
+
+    fn statements_in(
+        &self,
+        handler: OperationRef<'a>,
+        context: ExpressionContext<'_>,
+    ) -> Result<TokenStream, String> {
+        let expression = |op| self.expr_in(op, context);
         let mut statements = TokenStream::new();
         for statement in handler.children() {
             match statement.name() {
                 "xr.assign" => {
-                    let value = self.expr(self.operand(statement, 0)?)?;
+                    let value = expression(self.operand(statement, 0)?)?;
                     statements.extend(self.set_property(
                         owner(statement),
                         statement.attr("name")?,
                         &value,
                     ));
                 }
+                "xr.evaluate" => {
+                    let value = expression(self.operand(statement, 0)?)?;
+                    statements.extend(quote!(let _ = #value;));
+                }
                 "xr.invoke" => {
-                    let call = self.callback_call(
-                        statement,
-                        statement.attr("name")?,
-                        ExpressionContext::new(&quote!(self)),
-                    )?;
+                    let call = self.callback_call(statement, statement.attr("name")?, context)?;
                     statements.extend(quote!(let _ = #call;));
                 }
                 "xr.log" => {
-                    let level = self.expr(self.operand(statement, 0)?)?;
-                    let message = self.expr(self.operand(statement, 1)?)?;
+                    let level = expression(self.operand(statement, 0)?)?;
+                    let message = expression(self.operand(statement, 1)?)?;
                     let component = self.component_name;
                     let file = statement.source_file().unwrap_or("<MLIR>");
                     let xrack_syntax::ast::Span { line, column, .. } = statement.span();
@@ -2397,7 +2903,7 @@ impl<'a> Generator<'a> {
                     let argument = if operation == xrack_runtime::StackNavigationMethod::Pop {
                         quote!(::xrack_runtime::StackNavigationArgument::None)
                     } else {
-                        let value = self.expr(self.operand(statement, 0)?)?;
+                        let value = expression(self.operand(statement, 0)?)?;
                         if operation.uses_path() {
                             quote!(::xrack_runtime::StackNavigationArgument::Path(&(#value).snapshot()))
                         } else {
@@ -2424,7 +2930,7 @@ impl<'a> Generator<'a> {
                             let position = position
                                 .defining_operation()
                                 .ok_or("missing seek operand definition")?;
-                            let position = self.expr(position)?;
+                            let position = expression(position)?;
                             quote!(::xrack_runtime::MediaCommand::Seek(#position))
                         }
                     };
@@ -2437,6 +2943,29 @@ impl<'a> Generator<'a> {
                     let command = format_ident!("{command:?}");
                     statements
                         .extend(quote!(self.#method(::xrack_runtime::TimerCommand::#command);));
+                }
+                "xr.button_click" => {
+                    let handle = button_press_handle(statement.attr("owner")?);
+                    let method = if statement.attribute("animated") == Some("true") {
+                        quote!(try_animate_click)
+                    } else {
+                        quote!(try_click)
+                    };
+                    statements.extend(quote! {
+                        let _ = self.__state.#handle.#method(
+                            || self.__render_shared(),
+                            |scene, path, input| ::core::result::Result::Ok::<_, ::core::convert::Infallible>(
+                                self.__route_input(scene, path, input),
+                            ),
+                        );
+                    });
+                }
+                "xr.button_toggle" => {
+                    let target = *self
+                        .elements
+                        .get(statement.attr("owner")?)
+                        .ok_or("unknown button toggle target")?;
+                    statements.extend(self.toggle_button(target)?);
                 }
                 "xr.popup_command" => {
                     let method = popup_method(statement.attr("owner")?);
@@ -2456,7 +2985,7 @@ impl<'a> Generator<'a> {
                             .ok_or("unknown native window command")?;
                     let variant = format_ident!("{method:?}");
                     let enabled = if method == xrack_runtime::WindowCommandMethod::SetFullScreen {
-                        let enabled = self.expr(self.operand(statement, 0)?)?;
+                        let enabled = expression(self.operand(statement, 0)?)?;
                         quote!(::core::option::Option::Some(#enabled))
                     } else {
                         quote!(::core::option::Option::None)
@@ -2471,7 +3000,7 @@ impl<'a> Generator<'a> {
                 }
                 "xr.check_group_command" => {
                     let set = check_group_method(statement.attr("owner")?, "set");
-                    let state = self.expr(self.operand(statement, 0)?)?;
+                    let state = expression(self.operand(statement, 0)?)?;
                     statements.extend(quote!(self.#set(#state);));
                 }
                 "xr.focus_command" | "xr.text_command" => {
@@ -2485,7 +3014,7 @@ impl<'a> Generator<'a> {
                         .ok_or("unknown focus command")?;
                     let variant = format_ident!("{command:?}");
                     let operands = (0..statement.operand_count())
-                        .map(|index| self.expr(self.operand(statement, index)?))
+                        .map(|index| expression(self.operand(statement, index)?))
                         .collect::<Result<Vec<_>, _>>()?;
                     statements.extend(quote! {
                         if let ::core::option::Option::Some(__xr_action) =
@@ -2499,9 +3028,21 @@ impl<'a> Generator<'a> {
                     let handle = swipe_handle(statement.attr("owner")?);
                     statements.extend(quote!(self.__state.#handle.cancel();));
                 }
+                "xr.position_child" => {
+                    let viewport = viewport_handle(statement.attr("owner")?);
+                    let target = geometry_handle(statement.attr("target")?);
+                    let horizontal = expression(self.operand(statement, 0)?)?;
+                    let vertical = expression(self.operand(statement, 1)?)?;
+                    statements.extend(quote! {
+                        self.__state.#viewport.request(::xrack_runtime::ScrollAction::ToChild {
+                            target: self.__state.#target.scroll_target_id(),
+                            horizontal: #horizontal,
+                            vertical: #vertical,
+                        });
+                    });
+                }
                 "xr.scroll_command" | "xr.cancel_flick" | "xr.return_to_bounds" => {
                     let owner = statement.attr("owner")?;
-                    let handle = viewport_handle(owner);
                     let method = match statement.name() {
                         "xr.cancel_flick" => "cancel-flick",
                         "xr.return_to_bounds" => "return-to-bounds",
@@ -2509,9 +3050,15 @@ impl<'a> Generator<'a> {
                     };
                     let method = xrack_runtime::ScrollCommandMethod::parse(method)
                         .ok_or("unknown scroll command")?;
+                    if let Some(direction) = method.bar_step() {
+                        let bar = *self.elements.get(owner).ok_or("unknown scroll bar")?;
+                        statements.extend(self.scroll_bar_step(bar, direction)?);
+                        continue;
+                    }
+                    let handle = viewport_handle(owner);
                     let variant = format_ident!("{method:?}");
                     let operands = (0..statement.operand_count())
-                        .map(|index| self.expr(self.operand(statement, index)?))
+                        .map(|index| expression(self.operand(statement, index)?))
                         .collect::<Result<Vec<_>, _>>()?;
                     let resolve_key = if method.uses_source_row() {
                         let source = self.view_source_model(
@@ -2535,9 +3082,9 @@ impl<'a> Generator<'a> {
                     let owner = statement.attr("owner")?;
                     let operation = statement.attr("method")?;
                     let method = source_selection_method(owner);
-                    let source = self.expr(self.operand(statement, 0)?)?;
+                    let source = expression(self.operand(statement, 0)?)?;
                     let column = if operation == "select-source-cell" {
-                        let column = self.expr(self.operand(statement, 1)?)?;
+                        let column = expression(self.operand(statement, 1)?)?;
                         quote!(Some(#column))
                     } else {
                         quote!(None)
@@ -2563,6 +3110,24 @@ impl<'a> Generator<'a> {
                         statements.extend(quote!(self.#method(#source, #column);));
                     }
                 }
+                "xr.move_navigation_item" => {
+                    let key = statement.attr("owner")?;
+                    let group = *self.elements.get(key).ok_or("unknown navigation control")?;
+                    let model = self
+                        .group_option_model(group, &self.visuals)?
+                        .ok_or("missing navigation model for move-item")?;
+                    let source = expression(self.operand(statement, 0)?)?;
+                    let destination = expression(self.operand(statement, 1)?)?;
+                    let commit = self.navigation_model_move(group, quote!(true))?;
+                    statements.extend(quote! {
+                        if let (::core::result::Result::Ok(from), ::core::result::Result::Ok(to)) =
+                            (::core::primitive::usize::try_from(#source), ::core::primitive::usize::try_from(#destination))
+                        {
+                            let model = #model;
+                            let _ = #commit;
+                        }
+                    });
+                }
                 "xr.move_column" | "xr.move_row" => {
                     let owner = statement.attr("owner")?;
                     let method = if statement.name() == "xr.move_row" {
@@ -2570,8 +3135,8 @@ impl<'a> Generator<'a> {
                     } else {
                         table_move_method(owner)
                     };
-                    let from = self.expr(self.operand(statement, 0)?)?;
-                    let to = self.expr(self.operand(statement, 1)?)?;
+                    let from = expression(self.operand(statement, 0)?)?;
+                    let to = expression(self.operand(statement, 1)?)?;
                     if statement.name() == "xr.move_row" {
                         statements.extend(quote!(self.#method(#from, #to, None);));
                     } else {
@@ -2606,7 +3171,7 @@ impl<'a> Generator<'a> {
                         .ok_or("unknown table selection command")?;
                     let variant = format_ident!("{selection:?}");
                     let values = (0..statement.operand_count())
-                        .map(|index| self.expr(self.operand(statement, index)?))
+                        .map(|index| expression(self.operand(statement, index)?))
                         .collect::<Result<Vec<_>, _>>()?;
                     statements.extend(quote! {
                         if let Some(action) = ::xrack_runtime::TableSelectionMethod::#variant.action(&[#(#values),*]) {
@@ -2630,8 +3195,8 @@ impl<'a> Generator<'a> {
                             statements.extend(quote!(let _ = self.#method(None, None);))
                         }
                         "sort-by" => {
-                            let column = self.expr(self.operand(statement, 0)?)?;
-                            let descending = self.expr(self.operand(statement, 1)?)?;
+                            let column = expression(self.operand(statement, 0)?)?;
+                            let descending = expression(self.operand(statement, 1)?)?;
                             statements.extend(quote! {
                                 {
                                     if let Some(sort) = ::xrack_runtime::TableSort::from_index(#column, #descending) {
@@ -2645,18 +3210,18 @@ impl<'a> Generator<'a> {
                 }
                 "xr.split_restore" => {
                     let restore = split_restore_method(owner(statement));
-                    let state = self.expr(self.operand(statement, 0)?)?;
+                    let state = expression(self.operand(statement, 0)?)?;
                     statements.extend(quote!(let _ = self.#restore(&(#state));));
                 }
                 "xr.tree_command" => {
                     let method = tree_command_method(owner(statement));
-                    let key = self.expr(self.operand(statement, 0)?)?;
+                    let key = expression(self.operand(statement, 0)?)?;
                     let command =
                         xrack_runtime::TreeCommandMethod::parse(statement.attr("method")?)
                             .ok_or("unknown tree command")?;
                     let variant = format_ident!("{command:?}");
                     let depth = if command.requires_depth() {
-                        let depth = self.expr(self.operand(statement, 1)?)?;
+                        let depth = expression(self.operand(statement, 1)?)?;
                         quote!(::core::option::Option::Some(#depth))
                     } else {
                         quote!(::core::option::Option::None)
@@ -2671,8 +3236,8 @@ impl<'a> Generator<'a> {
                 }
                 "xr.set_row_height" => {
                     let method = table_row_height_method(statement.attr("owner")?);
-                    let row = self.expr(self.operand(statement, 0)?)?;
-                    let height = self.expr(self.operand(statement, 1)?)?;
+                    let row = expression(self.operand(statement, 0)?)?;
+                    let height = expression(self.operand(statement, 1)?)?;
                     statements.extend(quote!(self.#method(#row, #height);));
                 }
                 "xr.secondary_window_command" => {
@@ -2764,12 +3329,40 @@ impl<'a> Generator<'a> {
             let positioned = repeat_is_positioned(element);
             if repeat.uses_row_identity() {
                 let factory = self.repeat_delegate_factory(repeat, model, None)?;
-                out.extend(quote! {
-                    let #name = ::xrack_runtime::repeat_scene(
-                        #receiver.#field.render_range(|| #expression, 0..4096, #factory, #row),
-                        #positioned,
-                    );
-                });
+                let scene = if let Some((owner, candidate)) = repeat.loader {
+                    let slot = loader_slot(owner);
+                    let storage = repeat.storage_type(&rust_name(self.component_name));
+                    quote!({
+                        let __xr_slot = &#receiver.#slot;
+                        let __xr_mode = #expression;
+                        if __xr_mode > 0 {
+                            __xr_slot.render::<#storage>(
+                                #candidate,
+                                __xr_mode == 2,
+                                |__xr_repeater| {
+                                    __xr_repeater.render_range(
+                                        || 1,
+                                        0..1,
+                                        #factory,
+                                        |_, _, _, _, _| ::xrack_runtime::Node::hidden(),
+                                    );
+                                },
+                                |__xr_repeater| {
+                                    ::xrack_runtime::loader_candidate_scene(
+                                        __xr_repeater.render_range(|| 1, 0..1, #factory, #row)
+                                    )
+                                },
+                            )
+                        } else {
+                            __xr_slot.clear(#candidate);
+                            ::xrack_runtime::Node::hidden()
+                        }
+                    })
+                } else {
+                    let rows = quote!(#receiver.#field.render_range(|| #expression, 0..4096, #factory, #row));
+                    quote!(::xrack_runtime::repeat_scene(#rows, #positioned))
+                };
+                out.extend(quote!(let #name = #scene;));
                 return Ok(name);
             }
             let render = if positioned {
@@ -2860,9 +3453,15 @@ impl<'a> Generator<'a> {
         let delegate = repeat.uses_row_identity().then(|| quote!(__xr_delegates,));
         let track_columns = (repeat.table && !repeat.uses_row_identity())
             .then(|| quote!(__xr_columns_changed.track();));
+        let checked = self.row_button_reads(&repeat.row)?;
         let mut body = TokenStream::new();
         let child =
             self.render_element(element, &repeat.row, &mut body, next, RenderContent::Inline)?;
+        if parameters.item == xrack_ir::semantic::LOADER_REPEAT_ITEM {
+            body.extend(quote! {
+                #child.set_loader_mount(__xr_delegates.0.__state.__binding_lifetime.loader_mount().clone());
+            });
+        }
         if element.attr("kind") == Ok("TableRow") {
             let cells: BTreeSet<_> = repeat
                 .delegates
@@ -2881,8 +3480,40 @@ impl<'a> Generator<'a> {
             }
         }
         Ok(
-            quote!(|#delegate __xr_index, #item, #row_index #row_local| { #track_columns #index_binding #body #child }),
+            quote!(|#delegate __xr_index, #item, #row_index #row_local| { #track_columns #index_binding #checked #body #child }),
         )
+    }
+
+    fn row_button_reads(&self, scope: &VisualScope<'_>) -> Result<TokenStream, String> {
+        let mut reads = TokenStream::new();
+        for (&key, &button) in &scope.row_checks {
+            if !self.button_checked_targets.contains(key) || action_ref(button).is_some() {
+                continue;
+            }
+            let get = row_button_binding(key, "checked");
+            let value = self.control_value_in(button, "checked", Type::Bool, scope)?;
+            reads.extend(quote!(let #get = || #value;));
+        }
+        Ok(reads)
+    }
+
+    fn row_button_toggles(&self, scope: &VisualScope<'_>) -> Result<TokenStream, String> {
+        let mut toggles = TokenStream::new();
+        for (&key, &button) in &scope.row_checks {
+            if button.attribute("toggle_storage") != Some("true") || action_ref(button).is_some() {
+                continue;
+            }
+            let toggle = row_button_binding(key, "toggle");
+            let current = self.control_value_in(button, "checked", Type::Bool, scope)?;
+            let update = self.set_checked(button, scope)?;
+            toggles.extend(quote! {
+                let #toggle = || {
+                    let __xr_checked = !(#current);
+                    #update
+                };
+            });
+        }
+        Ok(toggles)
     }
 
     fn list_template<'b>(
@@ -3148,6 +3779,10 @@ impl<'a> Generator<'a> {
                     },
                 )),
             });
+        } else if let Some((page, model)) = repeated_navigation_page(element) {
+            if !self.empty_repeat(page) {
+                self.navigation_page_delegate_arms(page, model, path, delegates)?;
+            }
         } else if element.attr("kind") == Ok("StandardTableView") {
             let editors = self.standard_table_editors(element)?;
             if editors.is_empty() {
@@ -3626,16 +4261,171 @@ impl<'a> Generator<'a> {
                     continue;
                 }
                 path.push(index);
-                if children(child, "xr.repeat").next().is_some() {
-                    let slot = format_ident!("__xr_slot_{}", path.len());
-                    let prefix = path.iter().map(|index| quote!(#index)).collect::<Vec<_>>();
-                    self.repeated_check_events(child, &self.visuals, &slot, &prefix, out)?;
+                if let Some(model) = children(child, "xr.repeat").next() {
+                    if element.attribute("kind") == Some("Loader") && child.name() == "xr.instance"
+                    {
+                        self.loader_event_arm(child, model, path, delegates)?;
+                    } else {
+                        let slot = format_ident!("__xr_slot_{}", path.len());
+                        let prefix = path.iter().map(|index| quote!(#index)).collect::<Vec<_>>();
+                        self.repeated_check_events(child, &self.visuals, &slot, &prefix, out)?;
+                    }
                 } else {
                     self.delegate_event_arms(child, path, out, delegates)?;
                 }
                 path.pop();
             }
         }
+        Ok(())
+    }
+
+    fn loader_item_accessor(&self) -> Result<TokenStream, String> {
+        let mut loaders = BTreeMap::<&str, TokenStream>::new();
+        for &owner in &self.visuals.external_loaders {
+            let loader = self.elements[owner];
+            let id = loader.attr("id")?;
+            let Some(id) = xrack_mlir::host_element_id(owner, id) else {
+                continue;
+            };
+            let slot = external_loader_slot(owner);
+            loaders.entry(id).or_default().extend(quote! {
+                if let Some(item) = self.__state.__visuals.#slot.item::<T>() {
+                    return Some(item);
+                }
+            });
+        }
+        for repeat in self.visuals.repeats.values() {
+            let Some((owner, index)) = repeat.loader else {
+                continue;
+            };
+            let loader = self.elements[owner];
+            let id = loader.attr("id")?;
+            let Some(id) = xrack_mlir::host_element_id(owner, id) else {
+                continue;
+            };
+            let slot = loader_slot(owner);
+            let storage = repeat.storage_type(&rust_name(self.component_name));
+            loaders.entry(id).or_default().extend(quote! {
+                if let Some(repeater) = self.__state.__visuals.#slot.get::<#storage>(#index) {
+                    let key = ::xrack_runtime::ListModel::row_key(&1i64, 0);
+                    let item = repeater.with_event_row(|| 1, 0, key, false, |delegates| {
+                        self.__state.__visuals.#slot.item(#index, delegates.0.as_weak())?.cast::<T>()
+                    }).flatten();
+                    if item.is_some() { return item; }
+                }
+            });
+        }
+        if loaders.is_empty() {
+            return Ok(TokenStream::new());
+        }
+        let branches = loaders
+            .into_iter()
+            .map(|(id, body)| quote!(#id => { #body },));
+        Ok(quote! {
+            pub fn loader_item<T: 'static>(&self, id: &str) -> ::core::option::Option<::xrack_runtime::LoaderItem<T>> {
+                match id { #(#branches)* _ => {} }
+                None
+            }
+        })
+    }
+
+    fn navigation_page_delegate_arms(
+        &self,
+        page: OperationRef<'a>,
+        model: OperationRef<'a>,
+        path: &[usize],
+        delegates: &mut TokenStream,
+    ) -> Result<(), String> {
+        let repeat = &self.visuals.repeats[element_key(page)?];
+        let field = repeat_field(repeat.index());
+        let state = row_local(repeat.index());
+        let parameters = RepeatRef::from_operation(model)?;
+        let item = parameter_ident(parameters.item);
+        let bind_index = parameters.index.map(|name| {
+            let name = parameter_ident(name);
+            quote!(let #name = __xr_row_index;)
+        });
+        let model = self.expr(self.operand(model, 0)?)?;
+        for (delegate_slot, (delegate_path, delegate)) in repeat.delegates.iter().enumerate() {
+            let delegate_slot = Literal::usize_unsuffixed(delegate_slot);
+            let component = ident(delegate.attr("component")?);
+            let available = self.row_target_available(
+                page,
+                delegate_path,
+                &repeat.row,
+                &quote!(__xr_rest.is_empty()),
+                None,
+            )?;
+            delegates.extend(quote! {
+                [#(#path,)* slot, #(#delegate_path,)* rest @ ..] => Some((|| {
+                    let view = scene.at_path(&[#(#path),*])?;
+                    let __xr_row_node = view.child_at(*slot)?;
+                    let key = __xr_row_node.row_key?;
+                    let __xr_child = __xr_row_node.at_path(&[#(#delegate_path),*])?;
+                    let __xr_rest = rest;
+                    self.__state.__visuals.#field.with_event_row_state(
+                        || #model, *slot, key, false,
+                        |__xr_delegates, #item, __xr_row_index, #state| {
+                            #bind_index
+                            let mut __xr_visibility_overridden = false;
+                            if input.is_some_and(|__xr_input| !(#available)) {
+                                return ::core::default::Default::default();
+                            }
+                            let mut ui = #component { __state: __xr_delegates.#delegate_slot.__state.clone() };
+                            visit(&mut ui, __xr_child, rest, input.map(|input| {
+                                input.with_root_visibility_override(__xr_visibility_overridden)
+                            }))
+                        },
+                    )
+                })().unwrap_or_default()),
+            });
+        }
+        Ok(())
+    }
+
+    fn loader_event_arm(
+        &self,
+        candidate: OperationRef<'a>,
+        model: OperationRef<'a>,
+        path: &[usize],
+        delegates: &mut TokenStream,
+    ) -> Result<(), String> {
+        let repeat = self
+            .visuals
+            .repeats
+            .get(element_key(candidate)?)
+            .ok_or("Loader candidate requires a materialized repeat")?;
+        let (owner, candidate_index) = repeat.loader.ok_or("missing Loader owner")?;
+        let slot_field = loader_slot(owner);
+        let storage = repeat.storage_type(&rust_name(self.component_name));
+        let row_state = row_local(repeat.index());
+        let model = self.expr(self.operand(model, 0)?)?;
+        let component = ident(candidate.attr("component")?);
+        let available =
+            self.row_target_available(candidate, &[], &repeat.row, &quote!(rest.is_empty()), None)?;
+        delegates.extend(quote! {
+            [#(#path,)* slot, rest @ ..] => Some((|| {
+                let __xr_row_node = scene.at_path(&[#(#path,)* *slot])?;
+                let key = __xr_row_node.row_key?;
+                let repeater = self.__state.__visuals.#slot_field.get::<#storage>(#candidate_index)?;
+                if #model <= 0 {
+                    return None;
+                }
+                repeater.with_event_row_state(|| 1, *slot, key, false, |__xr_delegates, _, _, #row_state| {
+                    let mut __xr_visibility_overridden = false;
+                    if input.is_some_and(|__xr_input| !(#available)) {
+                        return ::core::default::Default::default();
+                    }
+                    let mut ui = #component { __state: __xr_delegates.0.__state.clone() };
+                    if __xr_row_node.loader_mount.as_ref() != Some(ui.__state.__binding_lifetime.loader_mount()) {
+                        return ::core::default::Default::default();
+                    }
+                    visit(&mut ui, __xr_row_node, rest, input.map(|input| {
+                        input.with_root_visibility_override(__xr_visibility_overridden)
+                    }))
+                })
+            })().unwrap_or_default()),
+        });
         Ok(())
     }
 
@@ -3694,8 +4484,12 @@ impl<'a> Generator<'a> {
         let field = repeat_field(repeat.index());
         let row_state = row_local(repeat.index());
         let receiver = scope.receiver();
+        let checked = self.row_button_reads(&repeat.row)?;
+        let toggles = self.row_button_toggles(&repeat.row)?;
         let route = quote! {
             #bind_index
+            #checked
+            #toggles
             let __xr_input = input;
             match __xr_rest { #body _ => None }
         };
@@ -3845,8 +4639,33 @@ impl<'a> Generator<'a> {
             };
             let has_toggled =
                 children(row, "xr.handler").any(|handler| handler.attr("name") == Ok("toggled"));
-            let toggled = self.typed_event_values(row, "toggled", &[])?;
-            let changed = self.typed_event(row, "check-state-changed", &quote!(__xr_state))?;
+            let key = element_key(row)?;
+            let receiver = quote!(self);
+            let context = ExpressionContext {
+                row_toggle_owner: Some(key),
+                ..ExpressionContext::new(&receiver)
+            };
+            let read = if self.toggle_state_targets.contains(key) {
+                let field_slot = repeat_field(self.visuals.repeats[key].index());
+                let source = self.expr(self.operand(repeat, 0)?)?;
+                quote! {
+                    let __xr_read_toggle = || {
+                        let model = self.__state.__visuals.#field_slot.resolve_model(|| #source);
+                        ::xrack_runtime::ListModel::event_row_index(&*model, __xr_index, __xr_key, true)
+                            .map(|index| ::xrack_runtime::CheckState::from(::xrack_runtime::ListModel::item(&*model, index) #field))
+                            .unwrap_or_default()
+                    };
+                }
+            } else {
+                TokenStream::new()
+            };
+            let toggled = self.typed_event_values_in(row, "toggled", &[], context)?;
+            let changed = self.typed_event_values_in(
+                row,
+                "check-state-changed",
+                &[quote!(__xr_state)],
+                context,
+            )?;
             quote! {
                 let __xr_change = match action {
                     ::xrack_runtime::RoutedEvent::Dispatch("clicked")
@@ -3866,6 +4685,7 @@ impl<'a> Generator<'a> {
                     _ => return ::core::option::Option::Some(false),
                 };
                 #parameters
+                #read
                 #toggled
                 if let ::core::option::Option::Some(__xr_state) = __xr_change {
                     #changed
@@ -4029,9 +4849,8 @@ impl<'a> Generator<'a> {
     ) -> Result<TokenStream, String> {
         let receiver = quote!(self);
         let projection = TableProjection::new(ExpressionContext {
-            receiver: &receiver,
             repeat_parameters: true,
-            hoist_repeat_subexpressions: false,
+            ..ExpressionContext::new(&receiver)
         });
         let flag = |node, name, default| {
             self.row_input_flag(node, name, default, scope, &projection, false)
@@ -4211,6 +5030,55 @@ impl<'a> Generator<'a> {
         }
     }
 
+    fn scroll_bar_step(
+        &self,
+        bar: OperationRef<'a>,
+        direction: xrack_runtime::ScrollBarStep,
+    ) -> Result<TokenStream, String> {
+        let direction = format_ident!("{direction:?}");
+        if let Some(target) = children(bar, "xr.scroll_target").next() {
+            let viewport = viewport_handle(target.attr("target")?);
+            let axis = self.binding_value_or(
+                bar,
+                "orientation",
+                quote!(::xrack_runtime::Orientation::Vertical),
+            )?;
+            let step = children(bar, "xr.bind")
+                .find(|binding| binding.attr("name") == Ok("step-size"))
+                .map(|binding| self.visual_value(binding, &self.visuals))
+                .transpose()?
+                .map_or_else(
+                    || quote!(::core::option::Option::None),
+                    |step| quote!(::core::option::Option::Some(#step)),
+                );
+            return Ok(quote! {
+                self.__state.#viewport.request(::xrack_runtime::ScrollAction::StepBar {
+                    axis: #axis, step_size: #step, direction: ::xrack_runtime::ScrollBarStep::#direction,
+                });
+            });
+        }
+        let position = self.control_value(bar, "position", Type::Float)?;
+        let size = self.binding_value_or(
+            bar,
+            "size",
+            quote!(::xrack_runtime::ScrollBarRange::DEFAULT_SIZE),
+        )?;
+        let step = self.binding_value_or(
+            bar,
+            "step-size",
+            quote!(::xrack_runtime::ScrollBarRange::DEFAULT_STEP),
+        )?;
+        let write = self.set_control_property(bar, "position", &quote!(__xr_value))?;
+        Ok(quote! {
+            if let ::core::option::Option::Some(__xr_value) =
+                ::xrack_runtime::ScrollBarRange::new(#position, #size, #step)
+                    .apply(::xrack_runtime::ScrollBarStep::#direction.action())
+            {
+                #write
+            }
+        })
+    }
+
     fn binding_value_or(
         &self,
         element: OperationRef<'a>,
@@ -4365,9 +5233,8 @@ impl<'a> Generator<'a> {
         });
         let receiver = quote!(self);
         let projection = TableProjection::new(ExpressionContext {
-            receiver: &receiver,
             repeat_parameters: true,
-            hoist_repeat_subexpressions: false,
+            ..ExpressionContext::new(&receiver)
         });
         let mut columns = Vec::new();
         let mut editors = TokenStream::new();
@@ -4590,9 +5457,8 @@ impl<'a> Generator<'a> {
         };
         let receiver = quote!(self);
         let projection = TableProjection::new(ExpressionContext {
-            receiver: &receiver,
             repeat_parameters: true,
-            hoist_repeat_subexpressions: false,
+            ..ExpressionContext::new(&receiver)
         });
         let expression = |binding| self.expr_in(self.operand(binding, 0)?, projection.expression);
         let row_visible = self.row_shown(row, &projection)?;
@@ -4740,9 +5606,8 @@ impl<'a> Generator<'a> {
         });
         let receiver = quote!(self);
         let projection = TableProjection::new(ExpressionContext {
-            receiver: &receiver,
             repeat_parameters: true,
-            hoist_repeat_subexpressions: false,
+            ..ExpressionContext::new(&receiver)
         });
         let row_shown = self.row_shown(row, &projection)?;
         let row_enabled = self.row_binding_or(row, "enabled", quote!(true), &projection)?;
@@ -5656,6 +6521,22 @@ impl<'a> Generator<'a> {
         node: &Ident,
         out: &mut TokenStream,
     ) -> Result<(), String> {
+        let items = self.combo_items(element, combo, scope)?;
+        let populate = if matches!(element.attribute("kind"), Some("Tumbler" | "PathView")) {
+            format_ident!("populate_tumbler")
+        } else {
+            format_ident!("populate_scene")
+        };
+        out.extend(quote!((#items).#populate(&mut #node);));
+        Ok(())
+    }
+
+    fn combo_items(
+        &self,
+        element: OperationRef<'a>,
+        combo: &RecordComboRef<'a>,
+        scope: &VisualScope<'_>,
+    ) -> Result<TokenStream, String> {
         let label = field_access(combo.label.split('.'));
         let value = field_access(combo.value.split('.'));
         let key = element_key(element)?;
@@ -5669,10 +6550,101 @@ impl<'a> Generator<'a> {
         } else {
             quote!(::xrack_runtime::ComboItems::new(#model, #project_label, #project_value))
         };
-        out.extend(quote! {
-            self.__state.#items.get(|| #items_input).populate_scene(&mut #node);
-        });
-        Ok(())
+        Ok(quote!(self.__state.#items.get(|| #items_input)))
+    }
+
+    fn combo_state_value(
+        &self,
+        element: OperationRef<'a>,
+        property: &str,
+    ) -> Result<(Type, TokenStream), String> {
+        let key = element_key(element)?;
+        let record = self.record_combos.get(key);
+        let (stored, stored_type) =
+            controlled_property(element).ok_or("missing ComboBox selection")?;
+        if property == "current-value" && stored == "current-value" {
+            let value = self.control_value(element, stored, stored_type.clone())?;
+            return Ok((stored_type, value));
+        }
+        let draft = if property == "edit-text" && combo_editor(element) {
+            if !default_combo_edit_text(element) {
+                return Ok((
+                    Type::String,
+                    self.control_value(element, "edit-text", Type::String)?,
+                ));
+            }
+            let field = control_field(key, "edit-text");
+            quote! {
+                if let ::core::option::Option::Some(text) = self.__state.#field.explicit_value() {
+                    return text;
+                }
+            }
+        } else {
+            TokenStream::new()
+        };
+        let model = if let Some(record) = record {
+            let items = self.combo_items(element, record, &self.visuals)?;
+            if matches!(element.attribute("kind"), Some("Tumbler" | "PathView")) {
+                quote!(::xrack_runtime::ComboStateModel::Tumbler(#items))
+            } else {
+                quote!(::xrack_runtime::ComboStateModel::Records(#items))
+            }
+        } else {
+            let model = self.binding_value_or(
+                element,
+                "model",
+                quote!(::xrack_runtime::VecModel::<::std::string::String>::default()),
+            )?;
+            quote!(::xrack_runtime::ComboStateModel::Strings(#model))
+        };
+        if property == "count" {
+            return Ok((Type::Int, quote!((#model).count() as i64)));
+        }
+        let value = self.control_value(element, stored, stored_type)?;
+        let selection = if stored == "current-value" {
+            quote!(__xr_model.selected_index(0, ::core::option::Option::Some(&::xrack_runtime::Value::from(#value))))
+        } else {
+            quote!(__xr_model.selected_index(#value, ::core::option::Option::None))
+        };
+        let (ty, result) = match property {
+            "current-index" => (
+                Type::Int,
+                quote!(__xr_index.map_or(-1_i64, |index| index as i64)),
+            ),
+            "current-value" => {
+                let ty = record.map_or(Ok(Type::String), |combo| {
+                    self.record_field_type(combo.record.clone(), &combo.value)
+                })?;
+                let variant = combo_value_variant(&ty)?;
+                (
+                    ty,
+                    quote! {
+                        __xr_index.and_then(|index| match __xr_model.value_at(index) {
+                            ::core::option::Option::Some(::xrack_runtime::Value::#variant(value)) =>
+                                ::core::option::Option::Some(value),
+                            _ => ::core::option::Option::None,
+                        }).unwrap_or_default()
+                    },
+                )
+            }
+            _ => (
+                Type::String,
+                quote!(
+                    __xr_index
+                        .and_then(|index| __xr_model.text_at(index))
+                        .unwrap_or_default()
+                ),
+            ),
+        };
+        Ok((
+            ty,
+            quote! {
+                #draft
+                let __xr_model = #model;
+                let __xr_index = #selection;
+                #result
+            },
+        ))
     }
 
     fn animation_timing(
@@ -5905,6 +6877,206 @@ impl<'a> Generator<'a> {
             .unwrap_or_else(|| quote!(::std::string::String::new())))
     }
 
+    fn radio_choice(&self, group: OperationRef<'a>) -> Result<TokenStream, String> {
+        let (property, ty) = controlled_property(group).ok_or("missing radio selection")?;
+        let current = self.control_value(group, property, ty)?;
+        let selection = if property == "current-value" {
+            quote!(Value)
+        } else {
+            quote!(Index)
+        };
+        let mut blocks = TokenStream::new();
+        let receiver = quote!(self);
+        for (declaration, option) in scene_children(group).enumerate() {
+            if self.empty_repeat(option) {
+                continue;
+            }
+            let repeat = children(option, "xr.repeat").next();
+            let projection = TableProjection::new(ExpressionContext {
+                repeat_parameters: repeat.is_some(),
+                ..ExpressionContext::new(&receiver)
+            });
+            let available = self.element_allows_editing(option, &projection)?;
+            let property =
+                if children(option, "xr.bind").any(|binding| binding.attr("name") == Ok("value")) {
+                    "value"
+                } else {
+                    "text"
+                };
+            let label = self.row_binding_or(
+                option,
+                property,
+                quote!(::std::string::String::new()),
+                &projection,
+            )?;
+            let selectors = self.input_selectors(&projection)?;
+            let (init, count, parameters) = if let Some(repeat) = repeat {
+                self.sampled_group_options(option, repeat)?
+            } else {
+                (TokenStream::new(), quote!(1usize), TokenStream::new())
+            };
+            blocks.extend(quote! {
+                if matches!(&selection, ::xrack_runtime::ButtonGroupSelection::Index(index) if *index < 0) {
+                    return ::core::option::Option::None;
+                }
+                {
+                    #init
+                    if let ::core::option::Option::Some(row) = selection.select_radio_option(
+                        #count, |__xr_index, read_label| {
+                            #parameters
+                            #selectors
+                            (#available).then(|| {
+                                if read_label { #label } else { ::std::string::String::new() }
+                            })
+                        },
+                    ) {
+                        return ::core::option::Option::Some((#declaration, row));
+                    }
+                }
+            });
+        }
+        Ok(quote! {
+            let mut selection = ::xrack_runtime::ButtonGroupSelection::#selection(#current);
+            #blocks
+            ::core::option::Option::None
+        })
+    }
+
+    fn sampled_group_options(
+        &self,
+        option: OperationRef<'a>,
+        repeat: OperationRef<'a>,
+    ) -> Result<(TokenStream, TokenStream, TokenStream), String> {
+        let model = match self.group_template_model(option, &self.visuals)? {
+            Some(model) => model,
+            None => {
+                let value = self.expr(self.operand(repeat, 0)?)?;
+                quote!(::std::rc::Rc::new(#value))
+            }
+        };
+        let repeat = RepeatRef::from_operation(repeat)?;
+        let item = parameter_ident(repeat.item);
+        let index = repeat.index.map(|name| {
+            let index = parameter_ident(name);
+            quote!(let #index = || __xr_index as i64;)
+        });
+        Ok((
+            quote!(let model = #model;),
+            quote!(::xrack_runtime::ListModel::row_count(&*model).min(4096)),
+            quote! {
+                let #item = || ::xrack_runtime::ListModel::item(&*model, __xr_index);
+                #index
+            },
+        ))
+    }
+
+    fn navigation_choice(&self, group: OperationRef<'a>) -> Result<TokenStream, String> {
+        let by_value = navigation_selects_by_value(group);
+        let (property, ty) = controlled_property(group).ok_or("missing navigation selection")?;
+        let current = self.control_value(group, property, ty)?;
+        let receiver = quote!(self);
+        let resolve = |options: TokenStream| {
+            if by_value {
+                quote!(::xrack_runtime::resolve_navigation_value(&requested, #options))
+            } else {
+                quote!(::xrack_runtime::resolve_swipe_index(::core::option::Option::Some(requested), #options))
+            }
+        };
+        if let Some(option) = scene_children(group).next()
+            && let Some(repeat) = children(option, "xr.repeat").next()
+        {
+            if self.empty_repeat(option) {
+                return Ok(quote!(::core::option::Option::None));
+            }
+            let (init, count, parameters) = self.sampled_group_options(option, repeat)?;
+            let projection = TableProjection::new(ExpressionContext {
+                repeat_parameters: true,
+                ..ExpressionContext::new(&receiver)
+            });
+            let available = self.element_allows_editing(option, &projection)?;
+            let selectors = self.input_selectors(&projection)?;
+            let option = if by_value {
+                let label = self.row_binding_or(
+                    option,
+                    "value",
+                    quote!(::std::string::String::new()),
+                    &projection,
+                )?;
+                quote!((#available).then(|| #label))
+            } else {
+                available
+            };
+            if group.attr("kind") == Ok("TabWidget") && !by_value {
+                return Ok(quote! {
+                    let requested = #current;
+                    #init
+                    let __xr_index = ::core::primitive::usize::try_from(requested).ok()?;
+                    if __xr_index >= #count { return ::core::option::Option::None; }
+                    #parameters
+                    #selectors
+                    (#option).then_some(__xr_index)
+                });
+            }
+            let options = resolve(quote!((0..#count).map(|__xr_index| {
+                #parameters
+                #selectors
+                #option
+            })));
+            return Ok(quote! {
+                let requested = #current;
+                #init
+                #options
+            });
+        }
+        let projection = TableProjection::new(ExpressionContext::new(&receiver));
+        let options = scene_children(group)
+            .map(|option| {
+                let available = self.element_allows_editing(option, &projection)?;
+                if by_value {
+                    let label = self.live_radio_value(option, &self.visuals)?;
+                    Ok(quote!((#available).then(|| #label)))
+                } else {
+                    Ok(available)
+                }
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        let slots = 0..options.len();
+        let count = options.len();
+        let missing = if by_value {
+            quote!(::core::option::Option::None)
+        } else {
+            quote!(false)
+        };
+        let eligible = quote!(|slot| match slot { #(#slots => #options,)* _ => #missing });
+        if group.attr("kind") == Ok("TabWidget") && !by_value {
+            return Ok(
+                quote!(::core::primitive::usize::try_from(#current).ok().filter(|index| (#eligible)(*index))),
+            );
+        }
+        let visible = if group.attr("kind") == Ok("SwipeView") {
+            self.row_binding_or(group, "visible", quote!(true), &projection)?
+        } else {
+            quote!(true)
+        };
+        let selected = resolve(quote!((0..#count).map(#eligible)));
+        Ok(quote! {
+            if !(#visible) { return ::core::option::Option::None; }
+            let requested = #current;
+            #selected
+        })
+    }
+
+    fn virtual_radio_choice(&self, view: OperationRef<'a>) -> Result<TokenStream, String> {
+        let index = self.list_selection_index(view)?;
+        let current = quote!(::core::primitive::usize::try_from(#index).ok());
+        if has_list_visibility(view) {
+            let visible = visible_list_model(element_key(view)?);
+            Ok(quote!((#current).and_then(|index| self.#visible().positions().source_index(index))))
+        } else {
+            Ok(current)
+        }
+    }
+
     fn group_option_reader(
         &self,
         element: OperationRef<'a>,
@@ -5919,6 +7091,14 @@ impl<'a> Generator<'a> {
                         if read_label { ::xrack_runtime::radio_value(item).to_owned() } else { ::std::string::String::new() }
                     })
                 });
+            }
+            if repeated_navigation_page(element).is_some() {
+                let describe = self.sample_repeated_navigation_option(template, model)?;
+                return Ok(quote!(|model, slot, read_label| {
+                    let model = &**model;
+                    let __xr_index = slot;
+                    #describe
+                }));
             }
             let option = self.repeated_group_option(template, model, radio, &quote!(slot))?;
             return Ok(quote!(|model, slot, read_label| #option));
@@ -5958,6 +7138,7 @@ impl<'a> Generator<'a> {
             self.__state.__visuals.#field.with_resolved_row_state(
                 model, #row, key,
                 |#item, __xr_row_index, #row_state| {
+                    let __xr_index = #row;
                     #bind_index
                     #option
                 },
@@ -6016,6 +7197,109 @@ impl<'a> Generator<'a> {
                 _ => ::core::option::Option::None,
             }),
         ))
+    }
+
+    fn sample_repeated_navigation_option(
+        &self,
+        page: OperationRef<'a>,
+        repeat: OperationRef<'a>,
+    ) -> Result<TokenStream, String> {
+        let (_, _, parameters) = self.sampled_group_options(page, repeat)?;
+        let component = quote!(self);
+        let projection = TableProjection::new(ExpressionContext {
+            repeat_parameters: true,
+            ..ExpressionContext::new(&component)
+        });
+        let available = self.element_allows_editing(page, &projection)?;
+        let selectors = self.input_selectors(&projection)?;
+        let value = self.row_binding_or(
+            page,
+            "value",
+            quote!(::std::string::String::new()),
+            &projection,
+        )?;
+        Ok(quote! {
+            #parameters
+            #selectors
+            (#available).then(|| if read_label { #value } else { ::std::string::String::new() })
+        })
+    }
+
+    fn describe_repeated_navigation_page(
+        &self,
+        page: OperationRef<'a>,
+        repeat: OperationRef<'a>,
+    ) -> Result<TokenStream, String> {
+        let (_, _, parameters) = self.sampled_group_options(page, repeat)?;
+        let component = quote!(self);
+        let projection = TableProjection::new(ExpressionContext {
+            repeat_parameters: true,
+            ..ExpressionContext::new(&component)
+        });
+        let visible = self.row_binding_or(page, "visible", quote!(true), &projection)?;
+        let enabled = self.row_binding_or(page, "enabled", quote!(true), &projection)?;
+        let kind = page.attr("kind")?;
+        let mut properties = TokenStream::new();
+        for property in [
+            "title",
+            "value",
+            "accessible-name",
+            "accessible-description",
+        ] {
+            let optional = |value| quote!(::core::option::Option::Some(#value));
+            let base = children(page, "xr.bind")
+                .find(|binding| binding.attribute("name") == Some(property))
+                .map(|binding| self.table_projection_value(binding, &projection).map(optional))
+                .transpose()?
+                .unwrap_or_else(|| quote!(::core::option::Option::<::std::string::String>::None));
+            let value = self.row_state_value_mapped(page, property, base, &projection, optional)?;
+            properties.extend(quote! {
+                if let ::core::option::Option::Some(value) = #value {
+                    __xr_page.properties.insert(#property, ::xrack_runtime::Value::from(value));
+                }
+            });
+        }
+        let selectors = self.input_selectors(&projection)?;
+        Ok(quote! {
+            #parameters
+            #selectors
+            let mut __xr_page = ::xrack_runtime::Node::new(#kind, ::core::option::Option::None);
+            __xr_page.properties.insert("visible", ::xrack_runtime::Value::from(#visible));
+            __xr_page.properties.insert("enabled", ::xrack_runtime::Value::from(#enabled));
+            #properties
+            __xr_page
+        })
+    }
+
+    fn append_repeated_navigation_pages(
+        &self,
+        page: OperationRef<'a>,
+        repeat_op: OperationRef<'a>,
+        scope: &VisualScope<'_>,
+        name: &Ident,
+        out: &mut TokenStream,
+        next: &mut usize,
+    ) -> Result<(), String> {
+        let repeat = &scope.repeats[element_key(page)?];
+        let field = repeat_field(repeat.index());
+        let receiver = scope.receiver();
+        let model = self
+            .group_template_model(page, scope)?
+            .ok_or("missing navigation page model")?;
+        let factory = self.repeat_delegate_factory(repeat, repeat_op, None)?;
+        let draw = self.repeat_row(page, repeat, repeat_op, next)?;
+        let describe = self.describe_repeated_navigation_page(page, repeat_op)?;
+        out.extend(quote! {
+            #name.append_navigation_pages(
+                || #model,
+                |model, __xr_index| {
+                    let model = &**model;
+                    #describe
+                },
+                |model, active| #receiver.#field.render_resolved_indices(&**model, active, None, #factory, #draw),
+            );
+        });
+        Ok(())
     }
 
     fn render_element(
@@ -6151,9 +7435,29 @@ impl<'a> Generator<'a> {
                 }).clone());
             });
         }
+        if self.combo_options.contains_key(key) {
+            let method = combo_option_method(key);
+            out.extend(quote! {
+                #name.combo_option_renderer = ::core::option::Option::Some(self.__state.#method.get_or_init(|| {
+                    let __xr_weak = ::std::rc::Rc::downgrade(&self.__state);
+                    ::xrack_runtime::ComboOptionRenderer::new(move |__xr_option| {
+                        let __state = __xr_weak.upgrade()?;
+                        ::core::option::Option::Some(Self { __state }.#method(__xr_option))
+                    })
+                }).clone());
+            });
+        }
         if self.focus_targets.contains(key) {
             let handle = focus_handle(key);
             out.extend(quote!(#name.focus_handle = Some(self.__state.#handle.clone());));
+        }
+        if self.combo_popup_targets.contains(key) {
+            let handle = combo_popup_handle(key);
+            out.extend(quote!(#name.combo_popup_handle = ::core::option::Option::Some(self.__state.#handle.clone());));
+        }
+        if self.range_position_targets.contains_key(key) {
+            let handle = range_position_handle(key);
+            out.extend(quote!(#name.range_position_handle = ::core::option::Option::Some(self.__state.#handle.clone());));
         }
         if self.button_press_targets.contains(key) {
             let handle = button_press_handle(key);
@@ -6270,7 +7574,7 @@ impl<'a> Generator<'a> {
                 continue;
             }
             let value = self.visual_value(binding, scope)?;
-            if key == "model" && element.attr("kind") == Ok("Tumbler") {
+            if key == "model" && matches!(element.attr("kind"), Ok("Tumbler" | "PathView")) {
                 out.extend(quote! {
                     #name.set_tumbler_items(::xrack_runtime::TumblerItems::new(#value));
                 });
@@ -6387,8 +7691,15 @@ impl<'a> Generator<'a> {
                 self.binding_value_or(effect, "source", quote!(::std::string::String::new()))?;
             let volume = self.binding_value_or(effect, "volume", quote!(1.0_f64))?;
             let muted = self.binding_value_or(effect, "muted", quote!(false))?;
+            let loops = children(effect, "xr.bind")
+                .find(|binding| binding.attribute("name") == Some("loops"))
+                .map(|binding| {
+                    let value = self.visual_value(binding, &self.visuals)?;
+                    Ok::<_, String>(quote!(.with_sound_loops(#value)))
+                })
+                .transpose()?;
             out.extend(quote! {
-                #name.sound_effects.push(self.__state.#slot.sound_effect(#file, &#source, #volume, #muted));
+                #name.sound_effects.push(self.__state.#slot.sound_effect(#file, &#source, #volume, #muted)#loops);
             });
         }
         for dialog in element_children(element).filter(|child| native_dialog(*child)) {
@@ -6598,6 +7909,21 @@ impl<'a> Generator<'a> {
         let mut table_cells = TokenStream::new();
         let mut table_columns = 0usize;
         for (index, child) in scene_children(element).enumerate() {
+            if matches!(kind, Some("SwipeView" | "TabWidget"))
+                && let Some(repeat) = children(child, "xr.repeat").next()
+            {
+                if !self.empty_repeat(child) {
+                    self.append_repeated_navigation_pages(
+                        child,
+                        repeat,
+                        scope,
+                        &name,
+                        &mut content,
+                        next,
+                    )?;
+                }
+                continue;
+            }
             if kind == Some("TableRow") {
                 let mut cell = TokenStream::new();
                 let child = self.render(child, scope, &mut cell, next)?;
@@ -6633,7 +7959,13 @@ impl<'a> Generator<'a> {
             }
             let child = if kind == Some("TabWidget") {
                 let index = index as i64;
-                let active = quote!(#name.int("current-index").unwrap_or(0) == #index);
+                let active = if navigation_selects_by_value(element) {
+                    let method = navigation_choice_method(element_key(element)?);
+                    let index = index as usize;
+                    quote!(self.#method() == ::core::option::Option::Some(#index))
+                } else {
+                    quote!(#name.int("current-index").unwrap_or(0) == #index)
+                };
                 self.render_element(
                     child,
                     scope,
@@ -6661,6 +7993,18 @@ impl<'a> Generator<'a> {
                     next,
                     RenderContent::Active(active),
                 )?
+            } else if child.attribute("kind") == Some("ComboContent") {
+                let mut display = TokenStream::new();
+                let child = self.render(child, scope, &mut display, next)?;
+                content.extend(quote! {
+                    let #child = if ::xrack_runtime::combo_editable(&#name) {
+                        ::xrack_runtime::Node::hidden()
+                    } else {
+                        #display
+                        #child
+                    };
+                });
+                child
             } else {
                 self.render(child, scope, &mut content, next)?
             };
@@ -6711,6 +8055,19 @@ impl<'a> Generator<'a> {
                     #name.children.push(__xr_cells);
                 }
             });
+        }
+        if kind == Some("Loader")
+            && let Some(source) = children(element, "xr.bind")
+                .find(|bind| bind.attribute("name") == Some("source-url"))
+        {
+            let source = self.visual_value(source, scope)?;
+            let slot = external_loader_slot(element_key(element)?);
+            let receiver = scope.receiver();
+            content.extend(quote!(#name.children.push(#receiver.#slot.render(&#source));));
+        }
+        if kind == Some("DynamicContainer") {
+            let slot = dynamic_children(element_key(element)?);
+            content.extend(quote!(#name.children.extend(self.__state.#slot.render());));
         }
         match render_content {
             RenderContent::Inline if kind.is_some_and(xrack_runtime::is_window_overlay) => {
@@ -6864,6 +8221,289 @@ impl<'a> Generator<'a> {
         Ok(())
     }
 
+    fn range_position(
+        &self,
+        control: OperationRef<'a>,
+        property: &str,
+    ) -> Result<TokenStream, String> {
+        let key = element_key(control)?;
+        let handle = range_position_handle(key);
+        if control.attr("kind")? == "ProgressIndicator" {
+            let receiver = quote!(self);
+            let projection = TableProjection::new(ExpressionContext::new(&receiver));
+            let number = |name, fallback| {
+                let base = self.binding_value_or(control, name, fallback)?;
+                self.row_state_value(control, name, base, &projection)
+            };
+            let minimum = number("minimum", quote!(0.0_f64))?;
+            let maximum = number("maximum", quote!(1.0_f64))?;
+            let value = number("progress", quote!(0.0_f64))?;
+            let position =
+                quote!(::xrack_runtime::ProgressRange::new(#minimum, #maximum, #value).position());
+            return Ok(if property == "visual-position" {
+                quote!(self.__state.#handle.visual_position(#position, ::xrack_runtime::Orientation::Horizontal))
+            } else {
+                position
+            });
+        }
+        let interval = control.attr("kind")? == "RangeSlider";
+        let min = self.binding_value_or(control, "minimum", quote!(0.0_f64))?;
+        let max = self.binding_value_or(control, "maximum", quote!(100.0_f64))?;
+        let live = if control.attr("kind")? == "Dial" {
+            quote!(true)
+        } else {
+            self.binding_value_or(control, "live", quote!(true))?
+        };
+        let step = self.binding_value_or(control, "step", quote!(1.0_f64))?;
+        let snap = self.binding_value_or(
+            control,
+            "snap-mode",
+            quote!(::xrack_runtime::ScrollSnapMode::None),
+        )?;
+        let committed = if interval {
+            quote!(0.0_f64)
+        } else {
+            self.control_value(control, "value", Type::Float)?
+        };
+        let position = if interval {
+            let low = self.control_value(control, "lower-value", Type::Float)?;
+            let high = self.control_value(control, "upper-value", Type::Float)?;
+            let index = usize::from(property.starts_with("upper"));
+            quote! {
+                __xr_handle.interval_position(
+                    ::xrack_runtime::SliderInterval::from_range(__xr_axis, #low, #high), __xr_live, #index)
+            }
+        } else {
+            quote!(__xr_handle.slider_position(__xr_axis, __xr_live))
+        };
+        let result = if property.contains("visual") {
+            let orientation = self.binding_value_or(
+                control,
+                "orientation",
+                quote!(::xrack_runtime::Orientation::Horizontal),
+            )?;
+            quote!(__xr_handle.visual_position(#position, #orientation))
+        } else {
+            position
+        };
+        Ok(quote! {
+            let __xr_handle = &self.__state.#handle;
+            let minimum = #min;
+            let maximum = #max;
+            let __xr_live = #live;
+            let (step, snap) = if __xr_live {
+                (1.0_f64, ::xrack_runtime::ScrollSnapMode::None)
+            } else {
+                (#step, #snap)
+            };
+            let __xr_axis = ::xrack_runtime::SliderRange::new(minimum, maximum, #committed, step, false, snap);
+            #result
+        })
+    }
+
+    fn toggle_check_state(&self, control: OperationRef<'a>) -> Result<TokenStream, String> {
+        if let Some(binding) = check_state_binding(control) {
+            return self.visual_value(binding, &self.visuals);
+        }
+        if check_state_control(control) {
+            return self.control_value(control, "check-state", Type::CheckState);
+        }
+        let checked = self.control_value(control, "checked", Type::Bool)?;
+        Ok(quote!(::xrack_runtime::CheckState::from(#checked)))
+    }
+
+    fn button_checked(&self, button: OperationRef<'a>) -> Result<TokenStream, String> {
+        if let Some(action) = action_ref(button) {
+            let checked = action_checked_method(action);
+            return Ok(quote!(self.#checked(::core::option::Option::None)));
+        }
+        let Some(group_key) = radio_group_ref(button) else {
+            return if controlled_property(button) == Some(("checked", Type::Bool)) {
+                self.control_value(button, "checked", Type::Bool)
+            } else {
+                Ok(quote!(false))
+            };
+        };
+        let group = self.elements[group_key];
+        let root = self.elements[self.root_key];
+        let groups = button_group_members(root);
+        let members = &groups[group_key];
+        let target = element_key(button)?;
+        let (property, ty) = controlled_property(group).ok_or("missing ButtonGroup selection")?;
+        let current = self.control_value(group, property, ty)?;
+        if property == "current-index" {
+            let index = members
+                .iter()
+                .position(|(_, member)| element_key(*member) == Ok(target))
+                .ok_or("missing ButtonGroup option")? as i64;
+            return Ok(quote!((#current) == #index));
+        }
+
+        let receiver = quote!(self);
+        let projection = TableProjection::new(ExpressionContext::new(&receiver));
+        let mut candidates = TokenStream::new();
+        for (path, candidate) in members {
+            let mounted = self.button_group_candidate_mounted(root, path, &projection)?;
+            let property = if children(*candidate, "xr.bind")
+                .any(|binding| binding.attr("name") == Ok("value"))
+            {
+                "value"
+            } else {
+                "text"
+            };
+            let value = self.row_binding_or(
+                *candidate,
+                property,
+                quote!(::std::string::String::new()),
+                &projection,
+            )?;
+            let matches_target = element_key(*candidate)? == target;
+            candidates.extend(quote! {
+                if (#mounted) && (#value) == __xr_current { return #matches_target; }
+            });
+            if matches_target {
+                break;
+            }
+        }
+        let selectors = self.input_selectors(&projection)?;
+        Ok(quote! {
+            let __xr_current = #current;
+            if __xr_current.is_empty() { return false; }
+            #selectors
+            #candidates
+            false
+        })
+    }
+
+    fn button_group_candidate_mounted(
+        &self,
+        root: OperationRef<'a>,
+        path: &[usize],
+        projection: &TableProjection<'_, 'a>,
+    ) -> Result<TokenStream, String> {
+        let ancestors = Self::row_path(root, path)?;
+        let mut checks = Vec::new();
+        for (depth, &element) in ancestors.iter().enumerate() {
+            let kind = element.attr("kind")?;
+            let page = matches!(kind, "Tab" | "StackPage" | "SwipePage");
+            checks.push(if page {
+                self.element_allows_editing(element, projection)?
+            } else {
+                self.row_conditions_met(element, projection)?
+            });
+            let Some(&slot) = path.get(depth) else {
+                continue;
+            };
+            if kind == "StackView" || kind == "SwipeView" || xrack_runtime::is_window_overlay(kind)
+            {
+                checks.push(self.row_binding_or(element, "visible", quote!(true), projection)?);
+            }
+            match kind {
+                "StackView" => {
+                    let snapshot = stack_snapshot_method(element_key(element)?);
+                    let route = ancestors[depth + 1].attr("id")?;
+                    checks.push(
+                        quote!(self.#snapshot().current() == ::core::option::Option::Some(#route)),
+                    );
+                }
+                "TabWidget" => {
+                    let current = self.control_value(element, "current-index", Type::Int)?;
+                    let slot = slot as i64;
+                    checks.push(quote!((#current) == #slot));
+                }
+                "SwipeView" => {
+                    let current = self.control_value(element, "current-index", Type::Int)?;
+                    let pages = static_children(element)
+                        .map(|(_, page)| self.element_allows_editing(page, projection))
+                        .collect::<Result<Vec<_>, _>>()?;
+                    let count = pages.len();
+                    let indices = 0..count;
+                    checks.push(quote! {
+                        ::xrack_runtime::resolve_swipe_index(
+                            ::core::option::Option::Some(#current),
+                            (0..#count).map(|index| match index { #(#indices => #pages,)* _ => false }),
+                        ) == ::core::option::Option::Some(#slot)
+                    });
+                }
+                _ if xrack_runtime::is_window_overlay(kind) => {
+                    checks.push(self.control_value(element, "open", Type::Bool)?);
+                }
+                _ => {}
+            }
+        }
+        Ok(quote!(#((#checks) &&)* true))
+    }
+
+    fn toggle_button(&self, button: OperationRef<'a>) -> Result<TokenStream, String> {
+        if let Some(action) = action_ref(button) {
+            let action = *self.actions.get(action).ok_or("unknown button Action")?;
+            if let Some(member) = children(action, "xr.action_group_ref").next() {
+                let group = *self
+                    .elements
+                    .get(member.attr("group")?)
+                    .ok_or("unknown ActionGroup")?;
+                if !non_exclusive_group(group) {
+                    let value = member.attr("value")?;
+                    return self
+                        .toggle_group_value(group, &quote!(::std::string::String::from(#value)));
+                }
+            }
+            let checked = self.control_value(action, "checked", Type::Bool)?;
+            return self.set_control(action, &quote!(!(#checked)));
+        }
+        if let Some(key) = radio_group_ref(button) {
+            let group = *self.elements.get(key).ok_or("unknown ButtonGroup")?;
+            let (property, ty) =
+                controlled_property(group).ok_or("missing ButtonGroup selection")?;
+            if property == "current-value" {
+                let value = self.live_radio_value(button, &self.visuals)?;
+                return self.toggle_group_value(group, &value);
+            }
+            let root = *self
+                .elements
+                .get(self.root_key)
+                .ok_or("missing component root")?;
+            let groups = button_group_members(root);
+            let button_key = element_key(button)?;
+            let index = groups
+                .get(key)
+                .and_then(|members| {
+                    members
+                        .iter()
+                        .position(|(_, member)| element_key(*member) == Ok(button_key))
+                })
+                .ok_or("missing ButtonGroup option")?;
+            let current = self.control_value(group, property, ty)?;
+            return self.set_control(
+                group,
+                &quote!(::xrack_runtime::toggled_button_group_index(#current, #index)),
+            );
+        }
+        let key = element_key(button)?;
+        if self.repeated_buttons.contains(key) {
+            let toggle = row_button_binding(key, "toggle");
+            return Ok(quote!(#toggle();));
+        }
+        let checked = self.control_value(button, "checked", Type::Bool)?;
+        self.set_control(button, &quote!(!(#checked)))
+    }
+
+    fn toggle_group_value(
+        &self,
+        group: OperationRef<'a>,
+        value: &TokenStream,
+    ) -> Result<TokenStream, String> {
+        let current = self.control_value(group, "current-value", Type::String)?;
+        let set = self.set_control(group, &quote!(__xr_next))?;
+        Ok(quote! {
+            if let ::core::option::Option::Some(__xr_next) =
+                ::xrack_runtime::toggled_button_group_value(&(#current), #value)
+            {
+                #set
+            }
+        })
+    }
+
     fn set_checked(
         &self,
         element: OperationRef<'a>,
@@ -6908,8 +8548,13 @@ impl<'a> Generator<'a> {
         };
         let current = self.control_value_in(element, "checked", Type::Bool, scope)?;
         let update = self.set_checked(element, scope)?;
-        let toggled = self.typed_event_values(element, "toggled", &[])?;
-        let clicked = self.typed_event_values(element, "clicked", &[])?;
+        let receiver = quote!(self);
+        let context = ExpressionContext {
+            repeat_parameters: scope.row_index.is_some(),
+            ..ExpressionContext::new(&receiver)
+        };
+        let toggled = self.typed_event_values_in(element, "toggled", &[], context)?;
+        let clicked = self.typed_event_values_in(element, "clicked", &[], context)?;
         let has_clicked =
             children(element, "xr.handler").any(|handler| handler.attr("name") == Ok("clicked"));
         Ok(quote!((|| {
@@ -6969,15 +8614,19 @@ impl<'a> Generator<'a> {
         }
         let id = element.attr("id")?;
         let kind = element.attr("kind")?;
+        let stores_checked = has_button_check_state(element);
         let mut local_handlers = TokenStream::new();
         for handler in children(element, "xr.handler") {
             let event = handler.attr("name")?;
             if xrack_runtime::supports_untyped_dispatch(kind, event) {
                 let statements = self.statements(handler)?;
                 handlers.extend(quote!(([#(#path),*], #event) => { #statements true },));
-                local_handlers.extend(
-                    quote!((#id, #event) => self.__dispatch_handler(&[#(#path),*], event),),
-                );
+                // The checked-state arm handles named clicks before running their handler.
+                if event != "clicked" || id.is_empty() || !stores_checked {
+                    local_handlers.extend(
+                        quote!((#id, #event) => self.__dispatch_handler(&[#(#path),*], event),),
+                    );
+                }
             }
         }
         if matches!(
@@ -7010,7 +8659,7 @@ impl<'a> Generator<'a> {
                         .unwrap_or(false)
                 },));
             }
-        } else if has_button_check_state(element) {
+        } else if stores_checked {
             let click = self.activate_checkable_button(
                 element,
                 &self.visuals,
@@ -7052,11 +8701,7 @@ impl<'a> Generator<'a> {
             };
             let projection = check_state_binding(element);
             let (current, tristate, value) = if check_state_control(element) {
-                let current = if let Some(binding) = projection {
-                    self.visual_value(binding, &self.visuals)?
-                } else {
-                    self.control_value(element, "check-state", Type::CheckState)?
-                };
+                let current = self.toggle_check_state(element)?;
                 let tristate = children(element, "xr.bind")
                     .find(|binding| binding.attr("name") == Ok("tristate"))
                     .map(|binding| self.visual_value(binding, &self.visuals))
@@ -7064,9 +8709,8 @@ impl<'a> Generator<'a> {
                     .unwrap_or_else(|| quote!(false));
                 (current, tristate, quote!(__xr_state))
             } else {
-                let checked = self.control_value(element, "checked", Type::Bool)?;
                 (
-                    quote!(::xrack_runtime::CheckState::from(#checked)),
+                    self.toggle_check_state(element)?,
                     quote!(false),
                     quote!(__xr_state == ::xrack_runtime::CheckState::Checked),
                 )
@@ -7213,7 +8857,26 @@ impl<'a> Generator<'a> {
     }
 
     fn text_acceptance_expression(&self, element: OperationRef<'a>) -> Result<TokenStream, String> {
+        if element.attr("kind")? == "ComboBox" {
+            let editable = self.binding_value_or(element, "editable", quote!(false))?;
+            let (_, draft) = self.combo_state_value(element, "edit-text")?;
+            let accepts = self.check_text_submission(element, quote!(&__xr_draft))?;
+            return Ok(quote! {
+                (#editable) && {
+                    let __xr_draft: ::std::string::String = (|| { #draft })();
+                    #accepts
+                }
+            });
+        }
         let text = self.control_value(element, "text", Type::String)?;
+        self.check_text_submission(element, quote!(&#text))
+    }
+
+    fn check_text_submission(
+        &self,
+        element: OperationRef<'a>,
+        text: TokenStream,
+    ) -> Result<TokenStream, String> {
         let (mode, separator, limit) = self.text_input_constraints(element)?;
         let minimum = self.binding_value_or(element, "minimum-length", quote!(0_i64))?;
         let condition = self.binding_value_or(element, "submit-when", quote!(true))?;
@@ -7221,7 +8884,7 @@ impl<'a> Generator<'a> {
         let ceiling = self.optional_editor_binding(element, "maximum-value")?;
         let decimals = self.optional_editor_binding(element, "decimals")?;
         Ok(quote!(::xrack_runtime::text_submission_with(
-            &#text, #mode, || #separator, || #limit, || #minimum,
+            #text, #mode, || #separator, || #limit, || #minimum,
             |mode| ::xrack_runtime::NumericTextLimits {
                 minimum: #floor,
                 maximum: #ceiling,
@@ -7237,14 +8900,16 @@ impl<'a> Generator<'a> {
 
     fn live_editor_guard(&self, element: OperationRef<'a>) -> Result<TokenStream, String> {
         let kind = element.attr("kind")?;
+        let (mode, separator, limit) = self.text_input_constraints(element)?;
         let allowed = if kind == "ComboBox" {
             let editable = self.binding_value_or(element, "editable", quote!(false))?;
             let model_current = self.combo_model_current(element)?;
             let draft_current = self.combo_draft_current(element, &model_current)?;
-            quote!(node.prepare_combo_edit(input, || #editable, || #draft_current))
+            quote!(node.prepare_combo_edit(input, || #editable, || {
+                (#draft_current) && node.allows_text_edit_with(&text, #mode, || #separator, || #limit)
+            }))
         } else {
             let read_only = self.binding_value_or(element, "read-only", quote!(false))?;
-            let (mode, separator, limit) = self.text_input_constraints(element)?;
             let current = self.control_value(element, "text", Type::String)?;
             quote!(node.prepare_text_edit(
                 input, || !(#read_only), || #current,
@@ -7326,6 +8991,21 @@ impl<'a> Generator<'a> {
         event: &str,
         values: &[TokenStream],
     ) -> Result<TokenStream, String> {
+        self.typed_event_values_in(
+            element,
+            event,
+            values,
+            ExpressionContext::new(&quote!(self)),
+        )
+    }
+
+    fn typed_event_values_in(
+        &self,
+        element: OperationRef<'a>,
+        event: &str,
+        values: &[TokenStream],
+        context: ExpressionContext<'_>,
+    ) -> Result<TokenStream, String> {
         let Some(handler) =
             children(element, "xr.handler").find(|handler| handler.attr("name") == Ok(event))
         else {
@@ -7338,7 +9018,7 @@ impl<'a> Generator<'a> {
         let names = parameters
             .iter()
             .map(|parameter| parameter_ident(&parameter.name));
-        let body = self.statements(handler)?;
+        let body = self.statements_in(handler, context)?;
         let has_result = children(handler, "xr.return").next().is_some();
         if values.is_empty() || (body.is_empty() && !has_result) {
             return Ok(body);
@@ -7501,6 +9181,18 @@ impl<'a> Generator<'a> {
             "SwipeDelegate" => {
                 let side = self.control_value(element, "open-side", Type::SwipeSide)?;
                 quote!(&& node.input_scope_available(#next, || false, || false, || true, || #side))
+            }
+            "TabWidget" | "SwipeView"
+                if navigation_selects_by_value(element)
+                    || repeated_navigation_page(element).is_some() =>
+            {
+                let method = navigation_choice_method(element_key(element)?);
+                let page = if kind == "TabWidget" {
+                    quote!(depth + 1 >= path.len())
+                } else {
+                    quote!(depth == path.len())
+                };
+                quote!(&& (#page || self.#method() == path.get(depth).copied()))
             }
             "TabWidget" => {
                 let index = self.control_value(element, "current-index", Type::Int)?;
@@ -7909,15 +9601,7 @@ impl<'a> Generator<'a> {
             Some(combo) => self.record_field_type(combo.record.clone(), &combo.value)?,
             None => Type::String,
         };
-        let variant = match ty {
-            Type::String => quote!(String),
-            Type::Int => quote!(Int),
-            Type::Float => quote!(Float),
-            Type::Bool => quote!(Bool),
-            Type::Date => quote!(Date),
-            Type::Time => quote!(Time),
-            _ => return Err("unsupported ComboBox value-role type".into()),
-        };
+        let variant = combo_value_variant(&ty)?;
         let by_value =
             controlled_property(element).is_some_and(|(name, _)| name == "current-value");
         let chosen = if by_value {
@@ -7972,7 +9656,10 @@ impl<'a> Generator<'a> {
         let model_current = self.combo_model_current(element)?;
         // Model identity was already checked before resolving a submission.
         let draft_current = if combo_editor(element) {
-            self.combo_draft_current(element, &quote!(true))?
+            let current = self.combo_draft_current(element, &quote!(true))?;
+            let accepts = self
+                .check_text_submission(element, quote!(::xrack_runtime::text_input_value(node)))?;
+            quote!((#current) && (#accepts))
         } else {
             quote!(false)
         };
@@ -8023,6 +9710,71 @@ impl<'a> Generator<'a> {
                 #name, &::xrack_runtime::Value::from(#selection),
             )
         })))
+    }
+
+    fn navigation_model_move(
+        &self,
+        group: OperationRef<'a>,
+        valid: TokenStream,
+    ) -> Result<TokenStream, String> {
+        let event = xrack_syntax::builtins::navigation_move_event(group.attr("kind")?)
+            .ok_or("missing navigation move event")?;
+        let event =
+            self.typed_event_values(group, event, &[quote!(from as i64), quote!(to as i64)])?;
+        let (current, update) = if controlled_property(group)
+            .is_some_and(|(name, _)| name == "current-index")
+        {
+            let current = self.control_value(group, "current-index", Type::Int)?;
+            let set = self.set_control(group, &quote!(__xr_next))?;
+            (
+                quote! {
+                    let __xr_previous = #current;
+                    let __xr_next = ::xrack_runtime::moved_navigation_index(from, to, __xr_previous);
+                },
+                quote! { if __xr_next != __xr_previous { #set } },
+            )
+        } else {
+            (TokenStream::new(), TokenStream::new())
+        };
+        Ok(quote! {{
+            if from == to || from.max(to) >= ::xrack_runtime::ListModel::row_count(&*model) {
+                false
+            } else {
+                #current
+                if (#valid) && model.move_row(from, to) {
+                    #update
+                    #event
+                    true
+                } else {
+                    false
+                }
+            }
+        }})
+    }
+
+    fn tab_move_arm(&self, bar: OperationRef<'a>) -> Result<TokenStream, String> {
+        let model = self
+            .group_option_model(bar, &self.visuals)?
+            .ok_or("missing reorderable tab model")?;
+        let read = self.group_option_reader(bar, false)?;
+        let receiver = quote!(self);
+        let projection = TableProjection::for_input(&receiver);
+        let enabled = self.row_binding_or(bar, "reorderable", quote!(false), &projection)?;
+        let commit = self.navigation_model_move(
+            bar,
+            quote!(input.is_current() && movement.matches_model(&*model)),
+        )?;
+        Ok(quote! {
+            if let ::xrack_runtime::ControlAction::MoveTab(movement) = action {
+                let model = #model;
+                if !::xrack_runtime::prepare_tab_move(node, movement, input, &model, || #enabled, #read)
+                {
+                    return false;
+                }
+                let (from, to) = (movement.from, movement.to);
+                return #commit;
+            }
+        })
     }
 
     fn control_arms(
@@ -8426,7 +10178,13 @@ impl<'a> Generator<'a> {
                                 })
                             },
                         );
-                    (model, self.group_option_reader(element, radio)?)
+                    (
+                        model,
+                        self.group_option_reader(
+                            element,
+                            radio || navigation_selects_by_value(element),
+                        )?,
+                    )
                 };
                 let (property, ty) =
                     controlled_property(element).ok_or("missing group selection")?;
@@ -8447,8 +10205,17 @@ impl<'a> Generator<'a> {
                 } else {
                     self.typed_event(element, "changed", &quote!(index as ::core::primitive::i64))?
                 };
+                let move_tab = if matches!(element.attribute("kind"), Some("TabBar" | "TabWidget"))
+                    && children(element, "xr.bind")
+                        .any(|bind| bind.attribute("name") == Some("reorderable"))
+                {
+                    self.tab_move_arm(element)?
+                } else {
+                    TokenStream::new()
+                };
                 out.extend(quote! {
                     [#(#path),*] => {
+                        #move_tab
                         let ::xrack_runtime::ControlAction::Select(index) = action else { return false; };
                         let ::core::option::Option::Some(__xr_label) = ::xrack_runtime::prepare_group_selection_with_model(
                             node, index, input, || #model_current,
@@ -8495,26 +10262,65 @@ impl<'a> Generator<'a> {
                     },
                 });
             }
-            "Tumbler" => {
-                let current = self.control_value(element, "current-index", Type::Int)?;
-                let set = self.set_control(element, &quote!(__xr_index))?;
-                let changed = self.typed_event(element, "changed", &quote!(__xr_index))?;
+            "Tumbler" | "PathView" => {
                 let receiver = quote!(self);
                 let projection = TableProjection::for_input(&receiver);
                 let available =
                     self.element_allows_routed_input(element, path.is_empty(), &projection)?;
-                let items = if let Some(binding) =
-                    children(element, "xr.bind").find(|binding| binding.attr("name") == Ok("model"))
-                {
-                    let model = self.visual_value(binding, &self.visuals)?;
-                    quote! {
-                        ::core::option::Option::Some(::xrack_runtime::TumblerItems::new(#model))
-                    }
+                let changed = self.typed_event(element, "changed", &quote!(__xr_index))?;
+                if let Some(combo) = self.record_combos.get(element_key(element)?) {
+                    let ty = self.record_field_type(combo.record.clone(), &combo.value)?;
+                    let variant = combo_value_variant(&ty)?;
+                    let items = self.combo_items(element, combo, &self.visuals)?;
+                    let (stored, ty) =
+                        controlled_property(element).ok_or("missing Tumbler selection")?;
+                    let current = self.control_value(element, stored, ty)?;
+                    let (index, value, chosen) = if stored == "current-value" {
+                        (
+                            quote!(0),
+                            quote!(::core::option::Option::Some(&::xrack_runtime::Value::from(#current))),
+                            quote!(__xr_value.clone()),
+                        )
+                    } else {
+                        (
+                            quote!(#current),
+                            quote!(::core::option::Option::None),
+                            quote!(__xr_index),
+                        )
+                    };
+                    let set = self.set_control(element, &chosen)?;
+                    let selected =
+                        self.typed_event(element, "value-selected", &quote!(__xr_value))?;
+                    out.extend(quote! {
+                        [#(#path),*] => {
+                            if !(#available) { return false; }
+                            let ::core::option::Option::Some((__xr_index, ::xrack_runtime::Value::#variant(__xr_value))) =
+                                ::xrack_runtime::Tumbler::prepare_record_selection(
+                                    node, action, #items, #index, #value,
+                                )
+                            else { return false; };
+                            if !input.is_current() { return false; }
+                            #set
+                            #changed
+                            #selected
+                            true
+                        },
+                    });
                 } else {
-                    quote!(::core::option::Option::None)
-                };
-                let count = self.binding_value_or(element, "count", quote!(0))?;
-                out.extend(quote! {
+                    let current = self.control_value(element, "current-index", Type::Int)?;
+                    let set = self.set_control(element, &quote!(__xr_index))?;
+                    let items = if let Some(binding) = children(element, "xr.bind")
+                        .find(|binding| binding.attr("name") == Ok("model"))
+                    {
+                        let model = self.visual_value(binding, &self.visuals)?;
+                        quote! {
+                            ::core::option::Option::Some(::xrack_runtime::TumblerItems::new(#model))
+                        }
+                    } else {
+                        quote!(::core::option::Option::None)
+                    };
+                    let count = self.binding_value_or(element, "count", quote!(0))?;
+                    out.extend(quote! {
                     [#(#path),*] => {
                         let ::core::option::Option::Some(__xr_index) = ::xrack_runtime::Tumbler::prepare_selection(
                             node, action, || #available, || #items, || #count, || #current,
@@ -8527,6 +10333,7 @@ impl<'a> Generator<'a> {
                         true
                     },
                 });
+                }
             }
             kind @ ("Calendar" | "MonthGrid") => {
                 let set_date = self.set_control_property(element, "date", &quote!(__xr_date))?;
@@ -8708,6 +10515,12 @@ impl<'a> Generator<'a> {
         table: Option<OperationRef<'a>>,
     ) -> Result<TokenStream, String> {
         let mut inputs = BTreeMap::new();
+        let receiver = quote!(__ui);
+        let expression_context = ExpressionContext {
+            repeat_parameters: repeat.is_some(),
+            row_context: repeat.is_some(),
+            ..ExpressionContext::new(&receiver)
+        };
         let (context, parameters) = if let Some(repeat) = repeat {
             let repeat = RepeatRef::from_operation(repeat)?;
             let item = parameter_ident(repeat.item);
@@ -8728,14 +10541,7 @@ impl<'a> Generator<'a> {
             let binding = input.operation;
             let name = binding.attr("name")?;
             let value = if binding.name() == "xr.bind" {
-                let expression = self.expr_in(
-                    self.operand(binding, 0)?,
-                    ExpressionContext {
-                        receiver: &quote!(__ui),
-                        repeat_parameters: repeat.is_some(),
-                        hoist_repeat_subexpressions: false,
-                    },
-                )?;
+                let expression = self.expr_in(self.operand(binding, 0)?, expression_context)?;
                 quote! {
                     ::core::option::Option::Some({
                         let __weak = __parent.clone();
@@ -8769,12 +10575,6 @@ impl<'a> Generator<'a> {
                 inputs.insert(endpoint.to_vec(), (forward.target.1, input));
             }
         }
-        let receiver = quote!(__ui);
-        let expression_context = ExpressionContext {
-            receiver: &receiver,
-            repeat_parameters: repeat.is_some(),
-            hoist_repeat_subexpressions: false,
-        };
         for input in instance_bindings
             .into_iter()
             .flat_map(|bindings| &bindings.state_inputs)
@@ -9149,7 +10949,14 @@ impl<'a> Generator<'a> {
             __scene: ::core::default::Default::default(),
             __visuals: ::core::default::Default::default(),
         };
-        let mut methods = TokenStream::new();
+        for (&owner, element) in &self.elements {
+            if element.attribute("kind") == Some("DynamicContainer") {
+                let slot = dynamic_children(owner);
+                fields.extend(quote!(#slot: ::xrack_runtime::DynamicChildren,));
+                defaults.extend(quote!(#slot: ::core::default::Default::default(),));
+            }
+        }
+        let mut methods = self.loader_item_accessor()?;
         let mut viewport_initializers = TokenStream::new();
         for (&owner, &selector) in &self.analysis.persistent_state_selectors {
             let field = state_selector_name(owner);
@@ -9205,11 +11012,159 @@ impl<'a> Generator<'a> {
                 }
             });
         }
+        for (&combo, &template) in &self.combo_options {
+            let method = combo_option_method(combo);
+            fields.extend(
+                quote!(#method: ::std::cell::OnceCell<::xrack_runtime::ComboOptionRenderer>,),
+            );
+            defaults.extend(quote!(#method: ::core::default::Default::default(),));
+            let mut body = TokenStream::new();
+            let scope = VisualScope {
+                combo_option: true,
+                ..VisualScope::default()
+            };
+            let node = self.render(template, &scope, &mut body, &mut 0)?;
+            let kind = template.attr("kind")?;
+            let inputs = visual_template_inputs(kind)
+                .ok_or("missing choice option inputs")?
+                .into_iter()
+                .map(|(name, _)| {
+                    let binding = parameter_ident(name);
+                    let field = ident(name.trim_start_matches("option-"));
+                    if name == "option-text" {
+                        quote!(let #binding = __xr_option.text.clone();)
+                    } else {
+                        quote!(let #binding = __xr_option.#field;)
+                    }
+                });
+            let option_data = parameter_ident("option-data");
+            let data = if let Some(combo) = self.record_combos.get(combo) {
+                let record = ty(&Type::Record(combo.record.clone()));
+                quote! {
+                    let __xr_record = ::std::cell::OnceCell::<#record>::new();
+                    let #option_data = || __xr_record
+                        .get_or_init(|| __xr_option.record_data::<#record>().unwrap_or_default())
+                        .clone();
+                }
+            } else if kind != "ComboOption"
+                && !children(self.elements[combo], "xr.bind")
+                    .any(|binding| binding.attribute("name") == Some("model"))
+            {
+                quote!(let #option_data = || __xr_option.index;)
+            } else {
+                quote!(let #option_data = || __xr_option.text.clone();)
+            };
+            methods.extend(quote! {
+                fn #method(&self, __xr_option: ::xrack_runtime::ComboOptionInput) -> ::xrack_runtime::Node {
+                    #(#inputs)*
+                    #data
+                    #body
+                    #node
+                }
+            });
+        }
 
         for &target in &self.button_press_targets {
             let handle = button_press_handle(target);
             fields.extend(quote!(#handle: ::xrack_runtime::ButtonPressHandle,));
+            let initial = if self.button_animation_targets.contains(target) {
+                quote!(::xrack_runtime::ButtonPressHandle::animated())
+            } else {
+                quote!(::core::default::Default::default())
+            };
+            defaults.extend(quote!(#handle: #initial,));
+        }
+        for &target in &self.button_checked_targets {
+            if self.repeated_buttons.contains(target) {
+                continue;
+            }
+            let method = button_checked_method(target);
+            let checked = self.button_checked(self.elements[target])?;
+            methods.extend(quote! {
+                fn #method(&self) -> ::core::primitive::bool { #checked }
+            });
+        }
+        for &target in &self.toggle_state_targets {
+            let control = self.elements[target];
+            if children(control, "xr.row_link").next().is_some() {
+                continue;
+            }
+            let method = toggle_state_method(target);
+            let state = self.toggle_check_state(control)?;
+            methods.extend(quote! {
+                fn #method(&self) -> ::xrack_runtime::CheckState { #state }
+            });
+        }
+        for &(target, property) in &self.numeric_read_targets {
+            let control = self.elements[target];
+            if children(control, "xr.row_link").any(|link| link.attr("name") == Ok(property)) {
+                continue;
+            }
+            let (_, value_type) = controlled_properties(control)
+                .find(|(name, _)| *name == property)
+                .ok_or("missing numeric control value")?;
+            let method = numeric_value_method(target, property);
+            let value = self.control_value(control, property, value_type.clone())?;
+            let ty = ty(&value_type);
+            methods.extend(quote! {
+                fn #method(&self) -> #ty { #value }
+            });
+        }
+        for &(target, property) in &self.combo_state_targets {
+            let method = combo_state_method(target, property);
+            let (value_type, value) = self.combo_state_value(self.elements[target], property)?;
+            let ty = ty(&value_type);
+            methods.extend(quote! {
+                fn #method(&self) -> #ty { #value }
+            });
+        }
+        for (&target, properties) in &self.range_position_targets {
+            let handle = range_position_handle(target);
+            fields.extend(quote!(#handle: ::xrack_runtime::RangePositionHandle,));
             defaults.extend(quote!(#handle: ::core::default::Default::default(),));
+            for &property in properties {
+                let method = range_position_method(target, property);
+                let position = self.range_position(self.elements[target], property)?;
+                methods.extend(quote! {
+                    fn #method(&self) -> ::core::primitive::f64 { #position }
+                });
+            }
+        }
+        for &target in &self.combo_popup_targets {
+            let handle = combo_popup_handle(target);
+            fields.extend(quote!(#handle: ::xrack_runtime::ComboPopupHandle,));
+            defaults.extend(quote!(#handle: ::core::default::Default::default(),));
+        }
+        for &key in &self.radio_read_groups {
+            let group = self.elements[key];
+            let method = radio_choice_method(key);
+            if group.attr("kind") == Ok("RadioGroup") {
+                let selected = self.radio_choice(group)?;
+                fields.extend(quote!(#method: ::xrack_runtime::Property<::core::option::Option<(usize, usize)>>,));
+                defaults.extend(quote!(#method: ::core::default::Default::default(),));
+                methods.extend(quote! {
+                    fn #method(&self) -> ::core::option::Option<(usize, usize)> {
+                        self.__state.#method.get(|| { #selected })
+                    }
+                });
+            } else {
+                let selected = self.virtual_radio_choice(group)?;
+                methods.extend(quote! {
+                    fn #method(&self) -> ::core::option::Option<usize> { #selected }
+                });
+            }
+        }
+        for &key in &self.navigation_read_groups {
+            let method = navigation_choice_method(key);
+            let selected = self.navigation_choice(self.elements[key])?;
+            fields
+                .extend(quote!(#method: ::xrack_runtime::Property<::core::option::Option<usize>>,));
+            defaults.extend(quote!(#method: ::core::default::Default::default(),));
+            methods.extend(quote! {
+                fn #method(&self) -> ::core::option::Option<usize> {
+                    self.__state.#method.get(|| { #selected })
+                }
+            });
         }
         for &target in &self.focus_targets {
             let handle = focus_handle(target);
@@ -9254,11 +11209,12 @@ impl<'a> Generator<'a> {
             let handle = viewport_handle(target);
             fields.extend(quote!(#handle: ::xrack_runtime::ViewportHandle,));
             let notify = self.scroll_observers.contains(target);
-            if self
-                .elements
-                .get(target)
-                .is_some_and(|element| element.attr("kind") == Ok("Flickable"))
-            {
+            if self.elements.get(target).is_some_and(|element| {
+                matches!(
+                    element.attr("kind"),
+                    Ok("Flickable" | "Tumbler" | "PathView")
+                )
+            }) {
                 defaults.extend(
                     quote!(#handle: ::xrack_runtime::ViewportHandle::for_flickable(#notify),),
                 );
@@ -9611,6 +11567,7 @@ impl<'a> Generator<'a> {
             fields.extend(quote!(#identity: ::xrack_runtime::ActionKey,));
             defaults.extend(quote!(#identity: ::core::default::Default::default(),));
             let render = action_render_method(key);
+            let read_checked = action_checked_method(key);
             let activate = action_activate_method(key);
             let binding = |name| -> Result<Option<TokenStream>, String> {
                 children(action, "xr.bind")
@@ -9636,28 +11593,29 @@ impl<'a> Generator<'a> {
             };
             let default_checkable = exclusive.is_some();
             let checkable = binding("checkable")?.unwrap_or_else(|| quote!(#default_checkable));
-            let (checked, activation_checked, toggle) =
-                if let Some((name, group, value)) = exclusive {
-                    let current = action_group_method(name, "current");
-                    let select =
-                        self.set_control(group, &quote!(::std::string::String::from(#value)))?;
-                    (
-                        quote!(__xr_checkable && self.#current() == #value),
-                        quote!(false),
-                        select,
-                    )
-                } else {
-                    if control_link(action, "checked").is_none() {
-                        let field = control_field(key, "checked");
-                        fields.extend(
-                            quote!(#field: ::xrack_runtime::Property<::core::primitive::bool>,),
-                        );
-                        defaults.extend(quote!(#field: ::core::default::Default::default(),));
-                    }
-                    let checked = self.control_value(action, "checked", Type::Bool)?;
-                    let toggle = self.set_control(action, &quote!(__xr_next))?;
-                    (checked.clone(), checked, toggle)
-                };
+            let (checked, activation_checked, toggle) = if let Some((name, group, value)) =
+                exclusive
+            {
+                let current = action_group_method(name, "current");
+                let select =
+                    self.set_control(group, &quote!(::std::string::String::from(#value)))?;
+                (
+                    quote!(__xr_checkable.unwrap_or_else(|| #checkable) && self.#current() == #value),
+                    quote!(false),
+                    select,
+                )
+            } else {
+                if control_link(action, "checked").is_none() {
+                    let field = control_field(key, "checked");
+                    fields.extend(
+                        quote!(#field: ::xrack_runtime::Property<::core::primitive::bool>,),
+                    );
+                    defaults.extend(quote!(#field: ::core::default::Default::default(),));
+                }
+                let checked = self.control_value(action, "checked", Type::Bool)?;
+                let toggle = self.set_control(action, &quote!(__xr_next))?;
+                (checked.clone(), checked, toggle)
+            };
             let activated = self.typed_event_values(action, "activated", &[])?;
             let group_activated = group.map(|(name, _, value)| {
                 let trigger = action_group_method(name, "activated");
@@ -9670,9 +11628,12 @@ impl<'a> Generator<'a> {
                 }
             }
             methods.extend(quote! {
+                fn #read_checked(&self, __xr_checkable: ::core::option::Option<bool>) -> bool {
+                    #checked
+                }
                 fn #render(&self, node: &mut ::xrack_runtime::Node) {
                     self.__state.#identity.present_with(
-                        node, || #checkable, || #enabled, |__xr_checkable| #checked,
+                        node, || #checkable, || #enabled, |checkable| self.#read_checked(::core::option::Option::Some(checkable)),
                     );
                     #labels
                 }
@@ -10506,14 +12467,17 @@ impl<'a> Generator<'a> {
             let component = ident(component_name);
             let child_inputs = format_ident!("__Inputs_{}", rust_name(component_name));
             let bindings = self.instance_inputs(instance, None, None)?;
-            fields.extend(quote!(#field: #component,));
+            fields.extend(quote!(#field: ::xrack_runtime::LoaderChild<#component>,));
             defaults.extend(quote! {
-                #field: #component::__new(#child_inputs {
-                    #bindings
-                    #locale
-                    #globals
-                    ..::core::default::Default::default()
-                }),
+                #field: {
+                    let __xr_child_inputs = #child_inputs {
+                        #bindings
+                        #locale
+                        #globals
+                        ..::core::default::Default::default()
+                    };
+                    ::xrack_runtime::LoaderChild::new(move || #component::__new(__xr_child_inputs))
+                },
             });
             instance_routes.extend(quote!(#key => self.__state.#field.__dispatch(id, event),));
         }
@@ -11725,7 +13689,7 @@ fn generate_with_resources(
     let with_locale = translations.is_some() || module.operations().any(uses_locale);
     let mut out = quote! {
         const _: () = assert!(
-            ::xrack_runtime::CODEGEN_ABI_VERSION == 12,
+            ::xrack_runtime::CODEGEN_ABI_VERSION == 15,
             "xrackc and xrack-runtime have incompatible code generation interfaces"
         );
     };
@@ -11868,6 +13832,7 @@ fn generate_with_resources(
             row_height_views: BTreeSet::new(),
             sectioned_lists: BTreeSet::new(),
             section_headers: BTreeMap::new(),
+            combo_options: BTreeMap::new(),
             splits: Vec::new(),
             trees: BTreeMap::new(),
             stacks: BTreeMap::new(),
@@ -11878,6 +13843,16 @@ fn generate_with_resources(
             native_dialogs: Vec::new(),
             focus_targets: BTreeSet::new(),
             button_press_targets: BTreeSet::new(),
+            button_checked_targets: BTreeSet::new(),
+            toggle_state_targets: BTreeSet::new(),
+            numeric_read_targets: BTreeSet::new(),
+            combo_state_targets: BTreeSet::new(),
+            combo_popup_targets: BTreeSet::new(),
+            range_position_targets: BTreeMap::new(),
+            radio_read_groups: BTreeSet::new(),
+            navigation_read_groups: BTreeSet::new(),
+            repeated_buttons: BTreeSet::new(),
+            button_animation_targets: BTreeSet::new(),
             text_selection_targets: BTreeSet::new(),
             text_command_targets: BTreeSet::new(),
             text_acceptance_targets: BTreeSet::new(),
@@ -11911,19 +13886,19 @@ fn generate_with_resources(
         generator.index(op, None)?;
         if let Some(root) = children(op, "xr.element").next() {
             let mut visuals = VisualScope::default();
-            generator.index_visual_bindings(root, &mut visuals, &mut 0)?;
+            generator.index_visual_bindings(root, &mut visuals, &mut 0, None)?;
             for &action in generator.actions.values() {
-                generator.index_visual_bindings(action, &mut visuals, &mut 0)?;
+                generator.index_visual_bindings(action, &mut visuals, &mut 0, None)?;
             }
             for &timer in &generator.timers {
-                generator.index_visual_bindings(timer, &mut visuals, &mut 0)?;
+                generator.index_visual_bindings(timer, &mut visuals, &mut 0, None)?;
             }
             for &effect in generator
                 .media_players
                 .iter()
                 .filter(|effect| effect.attr("kind") == Ok("SoundEffect"))
             {
-                generator.index_visual_bindings(effect, &mut visuals, &mut 0)?;
+                generator.index_visual_bindings(effect, &mut visuals, &mut 0, None)?;
             }
             for &binding in &generator.repeat_invariants {
                 generator.index_visual_binding(binding, &mut visuals)?;

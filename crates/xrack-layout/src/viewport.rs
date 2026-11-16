@@ -1,10 +1,14 @@
 use crate::{
-    Interaction, LayoutNode, Rect, ScrollLayout, scroll_gesture::PanDevice, view_cells::ViewCells,
+    Interaction, LayoutNode, Rect, ScrollBarGeometry, ScrollLayout, scroll_gesture::PanDevice,
+    view_cells::ViewCells,
 };
-use std::collections::BTreeMap;
+use std::{
+    collections::BTreeMap,
+    time::{Duration, Instant},
+};
 use xrack_runtime::{
     Component, GeometryHandle, Length, Node, Orientation, ScrollAction, ScrollAlignment,
-    ScrollRequest, ViewportHandle, ViewportMotion,
+    ScrollRequest, ViewportHandle, ViewportMotion, is_window_overlay,
 };
 
 pub(crate) type MotionOwners = Vec<(ViewportHandle, [bool; 2])>;
@@ -172,13 +176,23 @@ impl LayoutNode {
                 || self.table.as_ref().is_some_and(|table| table.mirrored()))
     }
 
-    pub(crate) fn scroll_viewport(&self, axis: Orientation) -> Rect {
-        self.table
-            .as_deref()
-            .map_or(self.bounds, |table| match axis {
+    #[doc(hidden)]
+    pub fn scroll_viewport(&self, axis: Orientation) -> Rect {
+        if let Some(strip) = self.tab_strip {
+            return strip;
+        }
+        self.table.as_deref().map_or_else(
+            || {
+                self.content_bounds
+                    .as_deref()
+                    .copied()
+                    .unwrap_or(self.bounds)
+            },
+            |table| match axis {
                 Orientation::Horizontal => table.scrollable_body(),
                 Orientation::Vertical => table.rows_area(),
-            })
+            },
+        )
     }
 
     pub(crate) fn bound_offset(&self, axis: Orientation) -> Option<f32> {
@@ -217,10 +231,19 @@ impl ScrollDelivery {
     }
 }
 
+struct ScrollActivity {
+    viewport: Option<ViewportHandle>,
+    axis: Orientation,
+    offset: f32,
+    until: Option<Instant>,
+}
+
 #[derive(Default)]
 pub struct LayoutObservers {
     present: Vec<ViewportHandle>,
     geometry: BTreeMap<usize, GeometryHandle>,
+    scroll_controls: Vec<(Vec<usize>, GeometryHandle)>,
+    scroll_activity: BTreeMap<usize, ScrollActivity>,
 }
 
 pub type ViewportObservers = LayoutObservers;
@@ -233,7 +256,12 @@ impl LayoutObservers {
             parent: Rect,
             viewports: &mut Vec<ViewportHandle>,
             geometry: &mut BTreeMap<usize, GeometryHandle>,
+            scroll_controls: &mut Vec<(Vec<usize>, GeometryHandle)>,
+            path: &mut Vec<usize>,
         ) {
+            if let Some(handle) = &node.range_position_handle {
+                handle.publish_direction(item.layout_direction);
+            }
             if let Some(handle) = &node.viewport_handle
                 && item.visible
             {
@@ -245,6 +273,17 @@ impl LayoutObservers {
                     Length(f64::from(viewport.width)),
                     Length(f64::from(viewport.height)),
                 );
+                if node.kind == "ScrollView" {
+                    let mut width = Length::default();
+                    let mut height = Length::default();
+                    for bar in item.scroll_bars(node) {
+                        match bar.orientation {
+                            Orientation::Horizontal => height = Length(f64::from(bar.track.height)),
+                            Orientation::Vertical => width = Length(f64::from(bar.track.width)),
+                        }
+                    }
+                    handle.publish_scroll_bar_extent(width, height);
+                }
                 for axis in [Orientation::Horizontal, Orientation::Vertical] {
                     let rect = item.scroll_viewport(axis);
                     let page = match axis {
@@ -274,6 +313,15 @@ impl LayoutObservers {
                 } else {
                     [0.0; 2]
                 };
+                if let Some(handle) = &node.geometry_handle
+                    && matches!(node.kind, "ScrollBar" | "ScrollIndicator")
+                {
+                    let (position, size) = item
+                        .scroll_control_geometry(node)
+                        .map_or((0.0, 0.0), |bar| bar.normalized_thumb());
+                    handle.publish_scroll_thumb(position, size);
+                    scroll_controls.push((path.clone(), handle.clone()));
+                }
                 for handle in node
                     .geometry_handle
                     .iter()
@@ -293,14 +341,33 @@ impl LayoutObservers {
                     geometry.insert(handle.identity(), handle.clone());
                 }
             }
-            for (child, layout) in node.children.iter().zip(&item.children) {
-                publish(child, layout, item.bounds, viewports, geometry);
+            for (index, child, layout) in item.children_in_scene_order(node) {
+                path.push(index);
+                publish(
+                    child,
+                    layout,
+                    item.bounds,
+                    viewports,
+                    geometry,
+                    scroll_controls,
+                    path,
+                );
+                path.pop();
             }
         }
 
         let mut next = Vec::new();
         let mut geometry = BTreeMap::new();
-        publish(scene, layout, layout.bounds, &mut next, &mut geometry);
+        self.scroll_controls.clear();
+        publish(
+            scene,
+            layout,
+            layout.bounds,
+            &mut next,
+            &mut geometry,
+            &mut self.scroll_controls,
+            &mut Vec::new(),
+        );
         for handle in self.present.drain(..) {
             if !next.contains(&handle) {
                 reset(&handle);
@@ -310,12 +377,85 @@ impl LayoutObservers {
         for (id, handle) in std::mem::take(&mut self.geometry) {
             if !geometry.contains_key(&id) {
                 handle.clear();
+                self.scroll_activity.remove(&id);
             }
         }
         self.geometry = geometry;
     }
 
+    /// Samples input against the same mounted bars used for hit testing.
+    pub fn sync_scroll_activity(
+        &mut self,
+        scene: &Node,
+        layout: &LayoutNode,
+        input: &Interaction,
+        now: Instant,
+    ) {
+        for (path, handle) in &self.scroll_controls {
+            if !handle.observes_scroll_interaction() {
+                continue;
+            }
+            let id = handle.identity();
+            let Some((node, bar)) =
+                scene
+                    .at_path(path)
+                    .zip(layout.at_path(path))
+                    .and_then(|(node, item)| {
+                        let bar = item.scroll_control_geometry(node)?;
+                        (node.geometry_handle.as_ref() == Some(handle)
+                            && item.enabled
+                            && bar.scrollable())
+                        .then_some((node, bar))
+                    })
+            else {
+                self.scroll_activity.remove(&id);
+                handle.publish_scroll_interaction(false, false, false);
+                continue;
+            };
+            let viewport = node.scroll_target.clone();
+            let axis = bar.orientation;
+            let offset = bar.scroll.offset;
+            let sample = self
+                .scroll_activity
+                .entry(id)
+                .or_insert_with(|| ScrollActivity {
+                    viewport: viewport.clone(),
+                    axis,
+                    offset,
+                    until: None,
+                });
+            if sample.viewport != viewport || sample.axis != axis {
+                *sample = ScrollActivity {
+                    viewport,
+                    axis,
+                    offset,
+                    until: None,
+                };
+            } else if sample.offset != offset {
+                sample.offset = offset;
+                sample.until = Some(now + Duration::from_millis(180));
+            } else if sample.until.is_some_and(|until| now >= until) {
+                sample.until = None;
+            }
+            let (pressed, hovered) = input.scroll_bar_interaction(scene, layout, path, axis);
+            handle.publish_scroll_interaction(
+                pressed || hovered || sample.until.is_some(),
+                pressed,
+                hovered,
+            );
+        }
+    }
+
+    pub fn scroll_activity_deadline(&self) -> Option<Instant> {
+        self.scroll_activity
+            .values()
+            .filter_map(|sample| sample.until)
+            .min()
+    }
+
     pub fn clear(&mut self) {
+        self.scroll_controls.clear();
+        self.scroll_activity.clear();
         for handle in self.present.drain(..) {
             reset(&handle);
         }
@@ -328,13 +468,17 @@ impl LayoutObservers {
 fn reset(handle: &ViewportHandle) {
     let zero = Length::default();
     handle.publish(zero, zero, zero, zero);
+    handle.publish_scroll_bar_extent(zero, zero);
     for axis in [Orientation::Horizontal, Orientation::Vertical] {
         handle.publish_scroll_range(axis, 0.0, 0.0, 0.0);
     }
 }
 
 fn viewport(item: &LayoutNode) -> Rect {
-    item.table.as_ref().map_or(item.bounds, |table| table.body)
+    item.table.as_ref().map_or_else(
+        || item.scroll_viewport(Orientation::Vertical),
+        |table| table.body,
+    )
 }
 
 fn find_path(node: &Node, handle: &ViewportHandle, path: &mut Vec<usize>) -> bool {
@@ -413,6 +557,65 @@ impl Interaction {
                     for (axis, offset) in [(Orientation::Horizontal, x), (Orientation::Vertical, y)]
                     {
                         changed |= self.set_viewport_offset(&path, item, axis, offset.0);
+                    }
+                }
+                ScrollAction::By { dx, dy } => {
+                    for (axis, delta) in
+                        [(Orientation::Horizontal, dx), (Orientation::Vertical, dy)]
+                    {
+                        changed |= self.scroll_viewport_by(&path, item, axis, delta.0);
+                    }
+                }
+                ScrollAction::StepBar {
+                    axis,
+                    step_size,
+                    direction,
+                } => {
+                    if let Some(scroll) = item.scroll_on(axis) {
+                        let viewport = item.scroll_viewport(axis);
+                        let page = match axis {
+                            Orientation::Horizontal => viewport.width,
+                            Orientation::Vertical => viewport.height,
+                        };
+                        let step =
+                            ScrollBarGeometry::viewport_step(page, scroll.max_offset, step_size);
+                        changed |= self.scroll_viewport_by(
+                            &path,
+                            item,
+                            axis,
+                            direction.delta(f64::from(step)),
+                        );
+                    }
+                }
+                ScrollAction::ToChild {
+                    target,
+                    horizontal,
+                    vertical,
+                } => {
+                    let viewport_depth = path.len();
+                    if !find_scroll_child(node, target, &mut path) || path.len() <= viewport_depth {
+                        continue;
+                    }
+                    let Some(item) = layout.at_path(&path).filter(|item| item.visible) else {
+                        continue;
+                    };
+                    let mode = RevealMode::Child {
+                        viewport_depth,
+                        horizontal,
+                        vertical,
+                    };
+                    let plan = plan_scroll(
+                        (scene, layout),
+                        &path,
+                        item.bounds,
+                        mode,
+                        |path, item, axis, layout_offset| {
+                            self.current_viewport_offset(path, item, axis)
+                                .unwrap_or(layout_offset)
+                        },
+                    );
+                    if let Some(plan) = plan {
+                        changed |= self.apply_reveal_plan(layout, &path, plan);
                     }
                 }
                 ScrollAction::ToIndex { index, alignment } => {
@@ -586,6 +789,231 @@ impl Interaction {
             alignment,
         );
         self.set_viewport_offset(path, item, axis, f64::from(offset - leading))
+    }
+}
+
+/// Content viewports can reveal items that already have a stable layout path.
+pub(crate) fn reveals_focus(node: &Node, item: &LayoutNode) -> bool {
+    matches!(node.kind, "ScrollView" | "Flickable")
+        && node.boolean("auto-reveal-focus", node.kind == "ScrollView")
+        && [Orientation::Horizontal, Orientation::Vertical]
+            .into_iter()
+            .any(|axis| {
+                item.scroll_on(axis)
+                    .is_some_and(|axis| axis.max_offset > 0.0)
+            })
+}
+
+pub(crate) struct ScrollPosition {
+    depth: usize,
+    axis: Orientation,
+    offset: f32,
+}
+
+#[derive(Clone, Copy)]
+enum RevealMode {
+    Focus,
+    Child {
+        viewport_depth: usize,
+        horizontal: ScrollAlignment,
+        vertical: ScrollAlignment,
+    },
+}
+
+fn independent_content(node: &Node) -> bool {
+    is_window_overlay(node.kind)
+        || node.is_control_part()
+        || matches!(node.kind, "Menu" | "Tooltip" | "Shortcut")
+}
+
+fn find_scroll_child(node: &Node, target: u64, path: &mut Vec<usize>) -> bool {
+    if independent_content(node) {
+        return false;
+    }
+    if node
+        .geometry_handle
+        .iter()
+        .chain(node.instance_geometry_handle.iter())
+        .any(|handle| handle.matches_scroll_target(target))
+    {
+        return true;
+    }
+    for (index, child) in node.materialized_children() {
+        path.push(index);
+        if find_scroll_child(child, target, path) {
+            return true;
+        }
+        path.pop();
+    }
+    false
+}
+
+pub(crate) fn plan_focus_scroll(
+    scene: &Node,
+    layout: &LayoutNode,
+    path: &[usize],
+    rect: Rect,
+) -> Option<Vec<ScrollPosition>> {
+    plan_scroll(
+        (scene, layout),
+        path,
+        rect,
+        RevealMode::Focus,
+        |_, _, _, offset| offset,
+    )
+}
+
+/// Resolve a complete reveal before changing any bound offsets. Each outer
+/// viewport receives the clipped rectangle produced by its inner viewport.
+fn plan_scroll(
+    (scene, layout): (&Node, &LayoutNode),
+    path: &[usize],
+    mut rect: Rect,
+    mode: RevealMode,
+    current_offset: impl Fn(&[usize], &LayoutNode, Orientation, f32) -> f32,
+) -> Option<Vec<ScrollPosition>> {
+    let focus = matches!(mode, RevealMode::Focus);
+    let scope = match mode {
+        RevealMode::Focus => 0,
+        RevealMode::Child { viewport_depth, .. } => viewport_depth,
+    };
+    let mut ancestors = Vec::with_capacity(path.len() + 1);
+    let (mut node, mut item) = (scene, layout);
+    ancestors.push((node, item));
+    for &index in path {
+        node = node.child_at(index)?;
+        item = item.child_at(index)?;
+        ancestors.push((node, item));
+    }
+    let mut plan = Vec::new();
+    for depth in (scope + 1..ancestors.len()).rev() {
+        let (child, item) = ancestors[depth];
+        if is_window_overlay(child.kind) {
+            let clipped = item.clip_rect(rect);
+            return (clipped.width > 0.0 && clipped.height > 0.0).then_some(plan);
+        }
+        rect = item.local_transform().map_rect(rect);
+        let (parent, item) = ancestors[depth - 1];
+        if !item.visible || focus && !item.enabled || parent.is_control_part() {
+            return None;
+        }
+        let content_viewport = matches!(parent.kind, "ScrollView" | "Flickable");
+        if if focus {
+            reveals_focus(parent, item)
+        } else {
+            content_viewport
+        } {
+            for axis in [Orientation::Horizontal, Orientation::Vertical] {
+                let Some(scroll) = item
+                    .scroll_on(axis)
+                    .filter(|scroll| scroll.max_offset > 0.0)
+                else {
+                    continue;
+                };
+                let viewport = item.scroll_viewport(axis);
+                let reversed = item.scroll_axis_reversed(axis);
+                let before = current_offset(&path[..depth - 1], item, axis, scroll.offset);
+                shift_rect(&mut rect, axis, reversed, before - scroll.offset);
+                let (start, length, page) = match axis {
+                    Orientation::Horizontal => (
+                        if reversed {
+                            viewport.x + viewport.width - rect.x - rect.width
+                        } else {
+                            rect.x - viewport.x
+                        },
+                        rect.width,
+                        viewport.width,
+                    ),
+                    Orientation::Vertical => (rect.y - viewport.y, rect.height, viewport.height),
+                };
+                if page <= 0.0 {
+                    return None;
+                }
+                let alignment = match mode {
+                    RevealMode::Child {
+                        horizontal,
+                        vertical,
+                        ..
+                    } if depth - 1 == scope => match axis {
+                        Orientation::Horizontal => horizontal,
+                        Orientation::Vertical => vertical,
+                    },
+                    _ => ScrollAlignment::Contain,
+                };
+                let offset = position(
+                    ScrollLayout::new(before, scroll.max_offset),
+                    before + start,
+                    length,
+                    page,
+                    alignment,
+                )
+                .clamp(0.0, scroll.max_offset);
+                if offset != before {
+                    plan.push(ScrollPosition {
+                        depth: depth - 1,
+                        axis,
+                        offset,
+                    });
+                    shift_rect(&mut rect, axis, reversed, offset - before);
+                }
+            }
+        }
+        if content_viewport || item.table.is_some() {
+            rect = rect.intersect(item.scroll_viewport(Orientation::Vertical));
+        } else if (parent.kind == "Rectangle" || xrack_runtime::is_pane(parent.kind))
+            && parent.boolean("clip", false)
+        {
+            rect = crate::RoundedClip::content_box(parent, item.bounds).clip_rect(rect);
+        } else if !item.allows_overflow() {
+            rect = rect.intersect(item.bounds);
+        }
+        if rect.width <= 0.0 || rect.height <= 0.0 {
+            return None;
+        }
+    }
+    if focus {
+        rect = layout.clip_rect(rect);
+    }
+    (rect.width > 0.0 && rect.height > 0.0).then_some(plan)
+}
+
+fn shift_rect(rect: &mut Rect, axis: Orientation, reversed: bool, delta: f32) {
+    let displacement = if reversed { delta } else { -delta };
+    match axis {
+        Orientation::Horizontal => rect.x += displacement,
+        Orientation::Vertical => rect.y += displacement,
+    }
+}
+
+impl Interaction {
+    pub(crate) fn reveal_focus_in_viewports(
+        &mut self,
+        scene: &Node,
+        layout: &LayoutNode,
+        path: &[usize],
+        rect: Rect,
+    ) -> bool {
+        let Some(plan) = plan_focus_scroll(scene, layout, path, rect) else {
+            return false;
+        };
+        self.apply_reveal_plan(layout, path, plan)
+    }
+
+    fn apply_reveal_plan(
+        &mut self,
+        layout: &LayoutNode,
+        path: &[usize],
+        plan: Vec<ScrollPosition>,
+    ) -> bool {
+        let mut changed = false;
+        for request in plan {
+            let path = &path[..request.depth];
+            if let Some(item) = layout.at_path(path) {
+                changed |=
+                    self.set_viewport_offset(path, item, request.axis, f64::from(request.offset));
+            }
+        }
+        changed
     }
 }
 
