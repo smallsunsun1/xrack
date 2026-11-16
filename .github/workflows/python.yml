@@ -2,12 +2,17 @@ name: Recover XRack 0.6.0 on PyPI
 
 on:
   workflow_dispatch:
+    inputs:
+      authorization_only:
+        description: Check PyPI Trusted Publishing without building or uploading wheels
+        type: boolean
+        default: false
 
 permissions:
   contents: read
 
 concurrency:
-  group: xrack-pypi-v0.6.0
+  group: ${{ inputs.authorization_only && 'xrack-pypi-v0.6.0-auth' || 'xrack-pypi-v0.6.0' }}
   cancel-in-progress: false
 
 env:
@@ -97,6 +102,7 @@ jobs:
           PY
 
   intel:
+    if: ${{ !inputs.authorization_only }}
     name: Build macOS Intel wheel
     needs: verify
     runs-on: macos-15-intel
@@ -144,6 +150,7 @@ jobs:
           compression-level: 0
 
   publish:
+    if: ${{ !inputs.authorization_only }}
     needs: [verify, authorize, intel]
     runs-on: ubuntu-24.04
     environment: pypi
