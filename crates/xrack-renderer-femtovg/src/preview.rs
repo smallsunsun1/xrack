@@ -2611,8 +2611,10 @@ impl PreviewScene {
             .chain(self.input.has_pending_swipe_events().then_some(now))
             .chain(hold)
             .chain(
-                (self.renderer_needs_redraw || self.loader_redraw || self.stack_transitions.is_active())
-                    .then_some(now + Duration::from_millis(16)),
+                (self.renderer_needs_redraw
+                    || self.loader_redraw
+                    || self.stack_transitions.is_active())
+                .then_some(now + Duration::from_millis(16)),
             )
             .min()
             .map(|deadline| {

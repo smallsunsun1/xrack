@@ -90,6 +90,7 @@ export component App inherits Window {
 - **Strings** 提供 `trim`、`is-empty`、`contains`、`starts-with`、`ends-with`、`replace-all`、`lowercase`、`uppercase` 和 `character-count`。字符计数按 Unicode 字素簇计算，例如 `"👩‍💻"` 算一个字符。`is-int`、`is-float` 检查修剪过的数字字符串。`Strings.to-float(input, 0.0)` 和 `Strings.to-int(input, 0)` 在解析失败时返回默认值。小数分隔符使用 `.`。
 - **Strings.format** 的模板是字符串字面量。`{}` 按顺序消费字符串、整数、浮点数、布尔值、日期或时间参数。`{{` 和 `}}` 表示字面量大括号。`Strings.format("{:.2}", value)` 输出两位小数，精度可设为 0 到 20。
 - **Model** 的 `count` 和 `is-empty` 跟踪字符串或记录模型的行数。修改已有行的内容会保留行数绑定的缓存。`Model.at(root.rows, index, fallback)` 按从零开始的索引取行，只有索引越界时才求值默认表达式。默认值类型必须和模型行一致。
+- **Model** 的 `append(model, value)`、`insert(model, index, value)`、`set(model, index, value)`、`remove(model, index)`、`move(model, from, to)` 和 `clear(model)` 可在有副作用的回调中编辑模型。第一个参数必须是可写的列表属性，行值必须匹配该属性的整数、字符串或记录类型。索引从零开始，`insert` 接受当前行数作为追加位置，`move` 的目标是行移动后的索引。无效索引会忽略。
 - **Colors** 提供 `rgb`、`rgba`、`with-alpha` 和 `mix`，例如 `Colors.rgba(30, 120, 200, 75%)`。RGB 通道限制在 0 到 255，透明度与混合系数限制在 0 到 1。`mix` 对 RGBA 四个通道做线性插值。
 - **I18n.locale()** 返回协商后的语言标识，例如 `"fr"`。调用会跟踪 UI 语言变化。有 Fluent 语言包时使用匹配语言或语言包的默认语言。没有语言包时返回应用设置的语言，尚未设置时返回 `"und"`。词条翻译使用 `@tr`。
 

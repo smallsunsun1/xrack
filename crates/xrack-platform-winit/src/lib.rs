@@ -1642,9 +1642,7 @@ impl<C: Component> Application<C> {
 
     fn refresh_editor(&mut self, follow_caret: bool) {
         self.flush_swipe_events(None);
-        if self.layout.is_some()
-            && self.loader_events_scene.as_ptr() != Rc::as_ptr(&self.scene)
-        {
+        if self.layout.is_some() && self.loader_events_scene.as_ptr() != Rc::as_ptr(&self.scene) {
             let _focus = self.focus_requests.enter();
             let _scroll = self.scroll_requests.enter();
             if xrack_runtime::dispatch_loader_events(&mut self.component, &self.scene) {

@@ -3040,7 +3040,10 @@ impl<'a> Scope<'a> {
         let loader = kind == "Loader" || instance && definitions[kind].base == "Loader";
         for p in property_members.iter().filter_map(as_property) {
             let loader_member = loader
-                && matches!(p.name.as_str(), LOADER_SELECTED | LOADER_SOURCE | LOADER_ASYNC | "status");
+                && matches!(
+                    p.name.as_str(),
+                    LOADER_SELECTED | LOADER_SOURCE | LOADER_ASYNC | "status"
+                );
             if !loader_member {
                 check_name(&p.name, p.span)?;
             }
@@ -3771,8 +3774,12 @@ impl<'a> Scope<'a> {
         if external && p.visibility == "private" {
             return fail(span, format!("property `{reference}` is private"));
         }
-        let loader_read_only = (scope.properties.contains_key(LOADER_SELECTED) || scope.properties.contains_key(LOADER_SOURCE))
-            && matches!(p.name.as_str(), "status" | LOADER_SELECTED | LOADER_SOURCE | LOADER_ASYNC);
+        let loader_read_only = (scope.properties.contains_key(LOADER_SELECTED)
+            || scope.properties.contains_key(LOADER_SOURCE))
+            && matches!(
+                p.name.as_str(),
+                "status" | LOADER_SELECTED | LOADER_SOURCE | LOADER_ASYNC
+            );
         if write
             && (loader_read_only
                 || (external && p.visibility == "out")
@@ -4096,12 +4103,19 @@ impl<'a> Scope<'a> {
             kind: ExprKind::Reference(model),
             span: model_span,
             ..
-        }) = reference else {
-            return fail(span, format!("{use_site} requires a repeated {template} over a writable list property"));
+        }) = reference
+        else {
+            return fail(
+                span,
+                format!("{use_site} requires a repeated {template} over a writable list property"),
+            );
         };
         let (_, ty) = self.property(owner, model, true, *model_span)?;
         if !matches!(ty, Type::IntList | Type::StringList | Type::RecordList(_)) {
-            return fail(*model_span, format!("{use_site} requires a writable list property"));
+            return fail(
+                *model_span,
+                format!("{use_site} requires a writable list property"),
+            );
         }
         Ok(())
     }
@@ -4742,18 +4756,38 @@ impl<'a> Scope<'a> {
     }
 
     fn dynamic_call(&self, call: &ast::Call, current: &str) -> Result<Option<ir::Expr>> {
-        let Some((receiver, method)) = call.callee.rsplit_once('.') else { return Ok(None) };
-        let Some(owner) = self.receiver(current, receiver) else { return Ok(None) };
+        let Some((receiver, method)) = call.callee.rsplit_once('.') else {
+            return Ok(None);
+        };
+        let Some(owner) = self.receiver(current, receiver) else {
+            return Ok(None);
+        };
         let target = &self.owners[owner];
-        if target.kind != "DynamicContainer" || target.callbacks.contains_key(method)
-            || !matches!(method, "mount" | "mount-async" | "mount-url" | "remove" | "move" | "is-mounted" | "status" | "get" | "set" | "call")
+        if target.kind != "DynamicContainer"
+            || target.callbacks.contains_key(method)
+            || !matches!(
+                method,
+                "mount"
+                    | "mount-async"
+                    | "mount-url"
+                    | "remove"
+                    | "move"
+                    | "is-mounted"
+                    | "status"
+                    | "get"
+                    | "set"
+                    | "call"
+            )
         {
             return Ok(None);
         }
         self.require_static_viewport(owner, call.span)?;
         let read = matches!(method, "get" | "is-mounted" | "status");
         if !read && !self.effects_allowed {
-            return fail(call.span, "dynamic component mutations require an effectful callback");
+            return fail(
+                call.span,
+                "dynamic component mutations require an effectful callback",
+            );
         }
         let Some(definitions) = self.definitions else {
             return fail(call.span, "dynamic component definitions are unavailable");
@@ -4779,22 +4813,39 @@ impl<'a> Scope<'a> {
             let Some(&component) = definitions.get(name.as_str()) else {
                 return fail(initial.span, format!("unknown component `{name}`"));
             };
-            if component.global || contains_element(
-                &component.base, &component.members, definitions, &mut BTreeSet::new(),
-                |kind| is_window(kind) || kind == "SecondaryWindow",
-            ) {
+            if component.global
+                || contains_element(
+                    &component.base,
+                    &component.members,
+                    definitions,
+                    &mut BTreeSet::new(),
+                    |kind| is_window(kind) || kind == "SecondaryWindow",
+                )
+            {
                 return fail(initial.span, "mount requires an embeddable component");
             }
             let mut fields_seen = BTreeSet::new();
             let mut names = vec![method, name.as_str()];
             for field in fields {
-                let Some(prop) = component.members.iter().filter_map(as_property)
-                    .find(|prop| prop.name == field.name && matches!(prop.visibility.as_str(), "in" | "in-out"))
+                let Some(prop) = component
+                    .members
+                    .iter()
+                    .filter_map(as_property)
+                    .find(|prop| {
+                        prop.name == field.name
+                            && matches!(prop.visibility.as_str(), "in" | "in-out")
+                    })
                 else {
-                    return fail(field.span, format!("unknown component input `{}`", field.name));
+                    return fail(
+                        field.span,
+                        format!("unknown component input `{}`", field.name),
+                    );
                 };
                 if !fields_seen.insert(field.name.as_str()) {
-                    return fail(field.span, format!("duplicate component input `{}`", field.name));
+                    return fail(
+                        field.span,
+                        format!("duplicate component input `{}`", field.name),
+                    );
                 }
                 names.push(field.name.as_str());
                 values.push(expression_as(&field.value, self, current, prop.ty.clone())?);
@@ -4809,12 +4860,18 @@ impl<'a> Scope<'a> {
             let Type::Record(handle_type) = &handle.ty else {
                 return fail(handle.span, "expected a component handle");
             };
-            let component = handle_type.strip_suffix("Handle").and_then(|name| definitions.get(name)).copied();
+            let component = handle_type
+                .strip_suffix("Handle")
+                .and_then(|name| definitions.get(name))
+                .copied();
             if component.is_none() && handle_type.as_ref() != "ExternalComponentHandle" {
                 return fail(handle.span, "expected a component handle");
             }
             values.push(handle);
-            let mut names = vec![method, component.map_or("ExternalComponent", |c| c.name.as_str())];
+            let mut names = vec![
+                method,
+                component.map_or("ExternalComponent", |c| c.name.as_str()),
+            ];
             ty = match (method, rest) {
                 ("remove" | "is-mounted", []) => Type::Bool,
                 ("status", []) => Type::String,
@@ -4824,25 +4881,42 @@ impl<'a> Scope<'a> {
                 }
                 ("get" | "set", [member, value]) => {
                     let Some(component) = component else {
-                        return fail(span, "external component properties are not statically typed");
+                        return fail(
+                            span,
+                            "external component properties are not statically typed",
+                        );
                     };
                     let member = dynamic_member_name(member)?;
-                    let Some(prop) = component.members.iter().filter_map(as_property)
-                        .find(|prop| prop.name == member && if method == "set" {
-                            matches!(prop.visibility.as_str(), "in" | "in-out")
-                        } else {
-                            prop.visibility != "private"
-                        })
+                    let Some(prop) =
+                        component
+                            .members
+                            .iter()
+                            .filter_map(as_property)
+                            .find(|prop| {
+                                prop.name == member
+                                    && if method == "set" {
+                                        matches!(prop.visibility.as_str(), "in" | "in-out")
+                                    } else {
+                                        prop.visibility != "private"
+                                    }
+                            })
                     else {
                         return fail(span, format!("unavailable component property `{member}`"));
                     };
                     names.push(prop.name.as_str());
                     values.push(expression_as(value, self, current, prop.ty.clone())?);
-                    if method == "get" { prop.ty.clone() } else { Type::Bool }
+                    if method == "get" {
+                        prop.ty.clone()
+                    } else {
+                        Type::Bool
+                    }
                 }
                 ("call", [member, args @ ..]) => {
                     let Some(component) = component else {
-                        return fail(span, "external component callbacks are not statically typed");
+                        return fail(
+                            span,
+                            "external component callbacks are not statically typed",
+                        );
                     };
                     let member = dynamic_member_name(member)?;
                     let Some(callback) = component.members.iter().find_map(|item| match item {
@@ -4859,7 +4933,9 @@ impl<'a> Scope<'a> {
                         names[0] = "call-value";
                         values.push(expression_as(fallback, self, current, result.clone())?);
                         args
-                    } else { args };
+                    } else {
+                        args
+                    };
                     if callback.alias.is_some() || args.len() != callback.parameters.len() {
                         return fail(span, "call expects the declared callback parameters");
                     }
@@ -4876,7 +4952,16 @@ impl<'a> Scope<'a> {
         Ok(Some(ir::Expr {
             value,
             owner: Some(owner.into()),
-            ..ir::Expr::operation(if read { "dynamic_read" } else { "dynamic_action" }, ty, values, span)
+            ..ir::Expr::operation(
+                if read {
+                    "dynamic_read"
+                } else {
+                    "dynamic_action"
+                },
+                ty,
+                values,
+                span,
+            )
         }))
     }
 
@@ -4888,13 +4973,21 @@ impl<'a> Scope<'a> {
         edit: builtins::ModelEditKind,
     ) -> Result<ir::Statement> {
         if !self.effects_allowed {
-            return fail(call.span, format!("{} is not allowed in a pure callback", call.callee));
+            return fail(
+                call.span,
+                format!("{} is not allowed in a pure callback", call.callee),
+            );
         }
         if call.arguments.len() != function.parameters.len() {
-            return fail(call.span, format!(
-                "{} expects {} arguments, found {}",
-                call.callee, function.parameters.len(), call.arguments.len(),
-            ));
+            return fail(
+                call.span,
+                format!(
+                    "{} expects {} arguments, found {}",
+                    call.callee,
+                    function.parameters.len(),
+                    call.arguments.len(),
+                ),
+            );
         }
         let Some((source, values)) = call.arguments.split_first() else {
             return fail(call.span, "model edit requires a writable model property");
@@ -4907,7 +5000,10 @@ impl<'a> Scope<'a> {
         }
         let (target, ty) = self.property(current, reference, true, source.span)?;
         let Some(row) = ty.list_item().filter(|_| ty != Type::TouchPoints) else {
-            return fail(source.span, "model edit requires an int, string, or record list");
+            return fail(
+                source.span,
+                "model edit requires an int, string, or record list",
+            );
         };
         use builtins::ModelEditKind::*;
         let types = match edit {
@@ -4917,7 +5013,9 @@ impl<'a> Scope<'a> {
             Move => vec![Type::Int, Type::Int],
             Clear => Vec::new(),
         };
-        let arguments = values.iter().zip(types)
+        let arguments = values
+            .iter()
+            .zip(types)
             .map(|(expr, ty)| expression_as(expr, self, current, ty))
             .collect::<Result<_>>()?;
         Ok(ir::Statement::ModelEdit {
@@ -7914,7 +8012,12 @@ fn button_appearance_control(kind: &str) -> bool {
 }
 
 pub fn state_property(kind: &str, property: &str) -> Option<Type> {
-    if kind == "Loader" && matches!(property, "active" | "source" | "source-url" | "asynchronous" | "status") {
+    if kind == "Loader"
+        && matches!(
+            property,
+            "active" | "source" | "source-url" | "asynchronous" | "status"
+        )
+    {
         return None;
     }
     let visual = layout_item_property(property).is_some()
@@ -9164,7 +9267,11 @@ fn gradient_stops(
 }
 
 fn dynamic_member_name(expr: &ast::Expr) -> Result<String> {
-    if let ExprKind::Literal { ty: Type::String, value } = &expr.kind {
+    if let ExprKind::Literal {
+        ty: Type::String,
+        value,
+    } = &expr.kind
+    {
         return serde_json::from_str(value).map_err(|error| Diagnostic {
             span: expr.span,
             message: error.to_string(),
@@ -9315,11 +9422,17 @@ fn expression(e: &ast::Expr, scope: &Scope<'_>, owner: &str) -> Result<ir::Expr>
         }
         ExprKind::Record { name, fields } => {
             if scope.records.contains_key("ExternalComponentHandle")
-                && (name == "ExternalComponentHandle" || name.strip_suffix("Handle").is_some_and(|base| {
-                    scope.definitions.is_some_and(|definitions| definitions.contains_key(base))
-                }))
+                && (name == "ExternalComponentHandle"
+                    || name.strip_suffix("Handle").is_some_and(|base| {
+                        scope
+                            .definitions
+                            .is_some_and(|definitions| definitions.contains_key(base))
+                    }))
             {
-                return fail(span, "component handles are returned by DynamicContainer mount methods");
+                return fail(
+                    span,
+                    "component handles are returned by DynamicContainer mount methods",
+                );
             }
             let builtin = match name.as_str() {
                 "Date" => Some((
@@ -9443,7 +9556,10 @@ fn expression(e: &ast::Expr, scope: &Scope<'_>, owner: &str) -> Result<ir::Expr>
                     FunctionKind::ModelCount
                     | FunctionKind::ModelIsEmpty
                     | FunctionKind::ModelAt => model_call(call, scope, owner, function),
-                    FunctionKind::ModelEdit(_) => fail(span, format!("{} requires a statement in an impure callback", call.callee)),
+                    FunctionKind::ModelEdit(_) => fail(
+                        span,
+                        format!("{} requires a statement in an impure callback", call.callee),
+                    ),
                     FunctionKind::Color(kind) => {
                         let args = builtin_arguments(call, scope, owner, function)?;
                         Ok(ir::Expr {
@@ -10926,7 +11042,9 @@ fn collect_bindings(
                                 dependencies(position, &path, &mut deps);
                             }
                         }
-                        ir::Statement::ModelEdit { model, arguments, .. } => {
+                        ir::Statement::ModelEdit {
+                            model, arguments, ..
+                        } => {
                             dependencies(model, &path, &mut deps);
                             for argument in arguments {
                                 dependencies(argument, &path, &mut deps);

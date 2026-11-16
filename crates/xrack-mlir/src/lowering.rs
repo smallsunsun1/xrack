@@ -441,8 +441,13 @@ impl Builder<'_> {
                     let attrs = self.strings(&[("owner", &command.table_owner)]);
                     self.emit("move_row", command.span, &operands, &[], &attrs)?;
                 }
-                ir::Statement::ModelEdit { method, model, arguments, span } => {
-                    let mut operands = vec![self.expression(model)?];
+                ir::Statement::ModelEdit {
+                    method,
+                    model,
+                    arguments,
+                    span,
+                } => {
+                    let mut operands = vec![self.expr(model)?];
                     operands.extend(self.operands(arguments)?);
                     let attrs = self.strings(&[("method", method)]);
                     self.emit("model_edit", *span, &operands, &[], &attrs)?;

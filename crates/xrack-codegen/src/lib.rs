@@ -1659,7 +1659,8 @@ impl<'a> Generator<'a> {
             .transpose()?;
         if let Some(owner) = loader {
             scope.loaders.insert(owner);
-            if children(element, "xr.bind").any(|bind| bind.attribute("name") == Some("source-url")) {
+            if children(element, "xr.bind").any(|bind| bind.attribute("name") == Some("source-url"))
+            {
                 scope.external_loaders.insert(owner);
             }
         }
@@ -1776,12 +1777,17 @@ impl<'a> Generator<'a> {
         if matches!(*verb, "mount" | "mount-async") {
             let fields = members.iter().map(|name| property_field("root", name));
             let values = (0..members.len()).map(arg).collect::<Result<Vec<_>, _>>()?;
-            let captures: Vec<_> = (0..values.len()).map(|i| format_ident!("__xr_initial_{i}")).collect();
+            let captures: Vec<_> = (0..values.len())
+                .map(|i| format_ident!("__xr_initial_{i}"))
+                .collect();
             let inputs = format_ident!("__Inputs_{}", rust_name(component));
             let globals = (!self.globals.is_empty()).then(|| quote!(__globals: __xr_globals,));
             let locale = self.with_locale.then(|| quote!(__locale: __xr_locale,));
-            let capture_globals = (!self.globals.is_empty()).then(|| quote!(let __xr_globals = #receiver.__state.__globals.clone();));
-            let capture_locale = self.with_locale.then(|| quote!(let __xr_locale = #receiver.__state.__locale.clone();));
+            let capture_globals = (!self.globals.is_empty())
+                .then(|| quote!(let __xr_globals = #receiver.__state.__globals.clone();));
+            let capture_locale = self
+                .with_locale
+                .then(|| quote!(let __xr_locale = #receiver.__state.__locale.clone();));
             let Type::Record(handle) = value_type(op)? else {
                 return Err("mount requires a component handle result".into());
             };
@@ -1839,7 +1845,9 @@ impl<'a> Generator<'a> {
                 let callback = callback_method("invoke_cb", "root", member);
                 let has_value = *verb == "call-value";
                 let first = if has_value { 2 } else { 1 };
-                let args = (first..op.operand_count()).map(arg).collect::<Result<Vec<_>, _>>()?;
+                let args = (first..op.operand_count())
+                    .map(arg)
+                    .collect::<Result<Vec<_>, _>>()?;
                 if has_value {
                     let fallback = arg(1)?;
                     quote!(#children.get::<#component_type>(#id).map_or_else(|| #fallback, |ui| ui.#callback(#(#args),*)))
@@ -3109,6 +3117,37 @@ impl<'a> Generator<'a> {
                     } else {
                         statements.extend(quote!(self.#method(#source, #column);));
                     }
+                }
+                "xr.model_edit" => {
+                    let method =
+                        xrack_syntax::builtins::ModelEditKind::parse(statement.attr("method")?)
+                            .ok_or("invalid model edit method")?;
+                    let variant = format_ident!(
+                        "{}",
+                        match method {
+                            xrack_syntax::builtins::ModelEditKind::Append => "Append",
+                            xrack_syntax::builtins::ModelEditKind::Insert => "Insert",
+                            xrack_syntax::builtins::ModelEditKind::Set => "Set",
+                            xrack_syntax::builtins::ModelEditKind::Remove => "Remove",
+                            xrack_syntax::builtins::ModelEditKind::Move => "Move",
+                            xrack_syntax::builtins::ModelEditKind::Clear => "Clear",
+                        }
+                    );
+                    let model = expression(self.operand(statement, 0)?)?;
+                    let arguments = (1..statement.operand_count())
+                        .map(|index| expression(self.operand(statement, index)?))
+                        .collect::<Result<Vec<_>, _>>()?;
+                    let edit = if arguments.is_empty() {
+                        quote!(::xrack_runtime::ModelEdit::#variant)
+                    } else {
+                        quote!(::xrack_runtime::ModelEdit::#variant(#(#arguments),*))
+                    };
+                    statements.extend(quote! {
+                        {
+                            let model = #model;
+                            #edit.apply(&model);
+                        }
+                    });
                 }
                 "xr.move_navigation_item" => {
                     let key = statement.attr("owner")?;
@@ -7249,7 +7288,10 @@ impl<'a> Generator<'a> {
             let optional = |value| quote!(::core::option::Option::Some(#value));
             let base = children(page, "xr.bind")
                 .find(|binding| binding.attribute("name") == Some(property))
-                .map(|binding| self.table_projection_value(binding, &projection).map(optional))
+                .map(|binding| {
+                    self.table_projection_value(binding, &projection)
+                        .map(optional)
+                })
                 .transpose()?
                 .unwrap_or_else(|| quote!(::core::option::Option::<::std::string::String>::None));
             let value = self.row_state_value_mapped(page, property, base, &projection, optional)?;

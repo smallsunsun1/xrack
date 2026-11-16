@@ -857,7 +857,7 @@ export component ModelSwipeDemo inherits Window {
 
 export component ModelTabsDemo inherits Window {
     title: "XRack · 模型驱动的内建标签页";
-    width: 560px; height: 312px;
+    width: 560px; height: 334px;
     background: #192639;
 
     in-out property <[WorkspaceTab]> documents: [
@@ -875,6 +875,17 @@ export component ModelTabsDemo inherits Window {
     out property <int> page-count: tabs.count;
     out property <int> choices: 0;
     out property <int> tab-moves: 0;
+    property <int> serial: 1;
+    property <int> fallback-index: -1;
+    property <WorkspaceTab> fallback-document: Model.at(
+        root.documents, root.fallback-index, WorkspaceTab { title: "", id: "" }
+    );
+    callback close-document(int);
+    close-document(index) => {
+        Model.remove(root.documents, index);
+        root.fallback-index = Math.min(index, Model.count(root.documents) - 1);
+        root.selected = root.fallback-document.id;
+    }
 
     tabs := TabWidget {
         x: 16px; y: 14px; width: root.compact ? 126px : 528px; height: 202px;
@@ -915,14 +926,20 @@ export component ModelTabsDemo inherits Window {
         x: 154px; y: 260px; width: 142px; text: "从右向左";
         checked <=> root.mirrored;
     }
-    remove-notes := Button {
-        x: 314px; y: 260px; width: 178px; text: "关闭笔记";
+    close-current := Button {
+        x: 314px; y: 260px; width: 178px; text: "关闭当前文档";
+        enabled: tabs.current-index >= 0;
+        clicked => { root.close-document(tabs.current-index); }
+    }
+    new-document := Button {
+        x: 16px; y: 294px; width: 142px; text: "新建文档";
         clicked => {
-            root.documents = [
-                WorkspaceTab { title: "概览", id: "home" },
-                WorkspaceTab { title: "草稿", id: "draft" },
-            ];
-            root.selected = root.selected == "notes" ? "draft" : root.selected;
+            Model.append(root.documents, WorkspaceTab {
+                title: "文档 " + root.serial,
+                id: "new-" + root.serial,
+            });
+            root.selected = "new-" + root.serial;
+            root.serial += 1;
         }
     }
 }
@@ -946,5 +963,33 @@ export component IndexTabCommandsDemo inherits Window {
             root.moves += 1;
             root.index-after-move = root.selected;
         }
+    }
+}
+
+export component ModelEditFixture inherits Window {
+    in-out property <[string]> labels: ["first", "second"];
+    in-out property <[int]> codes: [1, 2, 3];
+    out property <int> label-count: Model.count(root.labels);
+    out property <int> code-count: Model.count(root.codes);
+    out property <string> first-label: Model.at(root.labels, 0, "");
+    callback edit-models();
+    edit-models() => {
+        Model.append(root.labels, "third");
+        Model.insert(root.labels, 1, "inserted");
+        Model.set(root.labels, 0, "FIRST");
+        Model.remove(root.labels, 2);
+        Model.move(root.labels, 0, 2);
+        Model.insert(root.labels, -1, "ignored");
+        Model.move(root.labels, 2, 8);
+        Model.remove(root.labels, 3);
+        Model.set(root.codes, 1, 20);
+        Model.insert(root.codes, 3, 4);
+        Model.remove(root.codes, -1);
+        Model.move(root.codes, 3, 0);
+    }
+    callback clear-models();
+    clear-models() => {
+        Model.clear(root.labels);
+        Model.clear(root.codes);
     }
 }

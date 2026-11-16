@@ -4149,6 +4149,58 @@ fn tab_widget_repeats_pages_and_exposes_a_read_only_count() {
 }
 
 #[test]
+fn model_edits_verify_the_property_row_type_and_callback_effects() {
+    let source = r#"
+        export component App inherits Window {
+            in-out property <[int]> rows: [1, 2];
+            property <[int]> alias <=> root.rows;
+            callback change();
+            change() => { Model.append(root.alias, 3); }
+        }
+    "#;
+    let compiled = compile(source, "model_edit.xr").unwrap();
+    assert!(compiled.mlir.contains("xr.model_edit"));
+    assert!(compiled.rust.to_string().contains("ModelEdit :: Append"));
+    for (before, after, message) in [
+        (
+            "Model.append(root.alias, 3)",
+            "Model.append([1, 2], 3)",
+            "writable model property",
+        ),
+        (
+            "Model.append(root.alias, 3)",
+            r#"Model.append(root.alias, "wrong")"#,
+            "expected int",
+        ),
+        (
+            "Model.append(root.alias, 3)",
+            "Model.append(root.alias)",
+            "expects 2 arguments",
+        ),
+        ("callback change", "pure callback change", "pure callback"),
+    ] {
+        let error = compile(&source.replace(before, after), "model_edit.xr")
+            .err()
+            .unwrap()
+            .to_string();
+        assert!(error.contains(message), "{error}");
+    }
+
+    let direct = source
+        .replace("root.alias, 3", "root.rows, 3")
+        .replace("property <[int]> alias <=> root.rows;", "");
+    let raw = lower(&direct, "model_edit.xr");
+    let bad_method = raw.replace(r#"method = "append""#, r#"method = "insert""#);
+    assert!(
+        mlir::process(&bad_method)
+            .unwrap_err()
+            .contains("argument types")
+    );
+    let readonly = raw.replace(r#"visibility = "in-out""#, r#"visibility = "in""#);
+    assert!(mlir::process(&readonly).unwrap_err().contains("read-only"));
+}
+
+#[test]
 fn navigation_move_commands_verify_owners_writability_and_effects() {
     let source = r#"
         export component App inherits Window {

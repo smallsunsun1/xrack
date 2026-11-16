@@ -4,10 +4,10 @@ use crate::{
 };
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use xrack_ir::semantic::{
-    LOADER_ASYNC, LOADER_REPEAT_ITEM, LOADER_SELECTED, LOADER_SOURCE, animation_target_error, builtin_event,
-    builtin_property, control_binding_conflict, dependency_cycle, event_parameters,
-    event_return_type, is_builtin, is_reserved_identifier, qualify_global_dependency, relative_size,
-    rust_name, state_property, visual_state_target,
+    LOADER_ASYNC, LOADER_REPEAT_ITEM, LOADER_SELECTED, LOADER_SOURCE, animation_target_error,
+    builtin_event, builtin_property, control_binding_conflict, dependency_cycle, event_parameters,
+    event_return_type, is_builtin, is_reserved_identifier, qualify_global_dependency,
+    relative_size, rust_name, state_property, visual_state_target,
 };
 use xrack_syntax::ast::{Parameter, Type};
 
@@ -23,7 +23,9 @@ pub(crate) fn verify_element_interfaces(module: &Module) -> Result<(), String> {
                     && child.attribute("visibility") == Some("private")
                     && (op.attribute("kind") == Some("Loader")
                         || op.name() == "xr.component"
-                            && op.children().any(|item| item.attribute("kind") == Some("Loader")))
+                            && op
+                                .children()
+                                .any(|item| item.attribute("kind") == Some("Loader")))
                 {
                     name.to_owned()
                 } else {

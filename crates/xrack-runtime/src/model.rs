@@ -375,6 +375,19 @@ impl<T> VecModel<T> {
         Some(removed.value)
     }
 
+    /// Remove every row in a single structure update, keeping the model handle.
+    pub fn clear(&self) {
+        let removed = std::mem::take(&mut *self.0.rows.borrow_mut());
+        if removed.is_empty() {
+            return;
+        }
+        for entry in &removed {
+            self.row_changed(entry.id, None);
+        }
+        self.0.lifetimes.borrow_mut().clear();
+        self.structure_changed(0, true);
+    }
+
     pub(crate) fn sorted_indices_untracked(
         &self,
         limit: usize,
@@ -518,6 +531,61 @@ impl<T: Clone> VecModel<T> {
     }
 }
 
+/// A typed mutation of an existing model.
+#[doc(hidden)]
+pub enum ModelEdit<T> {
+    Append(T),
+    Insert(i64, T),
+    Set(i64, T),
+    Remove(i64),
+    Move(i64, i64),
+    Clear,
+}
+
+impl<T> ModelEdit<T> {
+    pub fn try_map<U, E>(self, map: impl FnOnce(T) -> Result<U, E>) -> Result<ModelEdit<U>, E> {
+        use ModelEdit::*;
+        Ok(match self {
+            Append(value) => Append(map(value)?),
+            Insert(index, value) => Insert(index, map(value)?),
+            Set(index, value) => Set(index, map(value)?),
+            Remove(index) => Remove(index),
+            Move(from, to) => Move(from, to),
+            Clear => Clear,
+        })
+    }
+}
+
+impl<T: PartialEq> ModelEdit<T> {
+    pub fn apply(self, model: &VecModel<T>) {
+        let index = |index| usize::try_from(index).ok();
+        match self {
+            Self::Append(value) => model.push(value),
+            Self::Insert(at, value) => {
+                if let Some(at) = index(at) {
+                    model.insert(at, value);
+                }
+            }
+            Self::Set(at, value) => {
+                if let Some(at) = index(at) {
+                    model.set_row(at, value);
+                }
+            }
+            Self::Remove(at) => {
+                if let Some(at) = index(at) {
+                    model.remove(at);
+                }
+            }
+            Self::Move(from, to) => {
+                if let (Some(from), Some(to)) = (index(from), index(to)) {
+                    model.move_row(from, to);
+                }
+            }
+            Self::Clear => model.clear(),
+        }
+    }
+}
+
 impl<T: PartialEq> VecModel<T> {
     /// Commit a value against the row and value observed by an editor.
     pub fn set_row_if_current(&self, index: usize, key: RowKey, expected: &T, value: T) -> bool {
@@ -640,6 +708,27 @@ mod tests {
     use super::*;
     use crate::Property;
     use std::cell::Cell;
+
+    #[test]
+    fn clear_notifies_count_and_expires_rows_without_replacing_the_model() {
+        let model = VecModel::from(vec!["first", "second"]);
+        let count = Property::default();
+        let alias = model.clone();
+        let first = model.row_key(0).unwrap();
+        let lifetime = model.row_lifetime(first);
+        let (identity, _) = model.structure_stamp();
+        assert_eq!(count.get(|| alias.len()), 2);
+        ModelEdit::Clear.apply(&model);
+        assert_eq!(count.get(|| alias.len()), 0);
+        assert_eq!(model.structure_stamp().0, identity);
+        let empty = model.edit_stamp();
+        ModelEdit::Clear.apply(&model);
+        assert_eq!(model.edit_stamp(), empty);
+        ModelEdit::Append("again").apply(&alias);
+        assert_eq!(count.get(|| model.len()), 1);
+        assert_ne!(model.row_key(0), Some(first));
+        assert!(!lifetime.is_live(first, identity, 1));
+    }
 
     #[test]
     fn moving_rows_keeps_keys_and_invalidates_shifted_index_reads() {

@@ -26,6 +26,47 @@ impl Model {
     }
 }
 
+pub(crate) fn edit_model(
+    model: Value,
+    method: xrack_syntax::builtins::ModelEditKind,
+    args: &[Value],
+) -> Result<()> {
+    use xrack_runtime::ModelEdit;
+    use xrack_syntax::builtins::ModelEditKind::*;
+    let invalid = || Error::Invalid("model edit argument type mismatch".into());
+    let edit = match (method, args) {
+        (Append, [value]) => ModelEdit::Append(value.clone()),
+        (Insert, [Value::Int(index), value]) => ModelEdit::Insert(*index, value.clone()),
+        (Set, [Value::Int(index), value]) => ModelEdit::Set(*index, value.clone()),
+        (Remove, [Value::Int(index)]) => ModelEdit::Remove(*index),
+        (Move, [Value::Int(from), Value::Int(to)]) => ModelEdit::Move(*from, *to),
+        (Clear, []) => ModelEdit::Clear,
+        _ => return Err(invalid()),
+    };
+    match model {
+        Value::IntModel(rows) => edit
+            .try_map(|value| match value {
+                Value::Int(value) => Ok(value),
+                _ => Err(invalid()),
+            })?
+            .apply(&rows),
+        Value::StringModel(rows) => edit
+            .try_map(|value| match value {
+                Value::String(value) => Ok(value),
+                _ => Err(invalid()),
+            })?
+            .apply(&rows),
+        Value::RecordList(rows) => edit
+            .try_map(|value| match value {
+                Value::Record(value) if value.name() == rows.name() => Ok(value),
+                _ => Err(invalid()),
+            })?
+            .apply(rows.model()),
+        _ => return Err(invalid()),
+    }
+    Ok(())
+}
+
 impl ListModel for Model {
     type Item = Value;
 

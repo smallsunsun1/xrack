@@ -56,7 +56,9 @@ pub struct CallbackRef {
 pub enum Statement {
     Assignment(Assignment),
     Invoke(CallbackCall),
-    Evaluate { evaluate: Expr },
+    Evaluate {
+        evaluate: Expr,
+    },
     Log {
         level: Expr,
         message: Expr,

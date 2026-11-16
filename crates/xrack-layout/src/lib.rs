@@ -2541,7 +2541,10 @@ impl<T: TextMeasurer> LayoutContext<'_, T> {
 fn absolute_width(node: &Node, info: linear::AxisInfo, available: f32) -> f32 {
     if xrack_runtime::is_button(node.kind)
         || xrack_runtime::is_pane(node.kind)
-        || matches!(node.kind, "Image" | "AnimatedImage" | "ToolSeparator" | "Loader")
+        || matches!(
+            node.kind,
+            "Image" | "AnimatedImage" | "ToolSeparator" | "Loader"
+        )
         || node.properties.contains_key("preferred-width")
     {
         info.preferred

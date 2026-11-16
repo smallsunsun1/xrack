@@ -1528,7 +1528,9 @@ pub(crate) fn moved_row_target(
             continue;
         };
         if node.kind == "DynamicContainer" {
-            let (slot, _) = node.materialized_children().find(|(_, child)| child.dynamic_mount_key() == Some(key))?;
+            let (slot, _) = node
+                .materialized_children()
+                .find(|(_, child)| child.dynamic_mount_key() == Some(key))?;
             let mut moved = target.clone();
             moved.path[depth] = slot;
             return valid(&moved, scene, layout).then_some(moved);
@@ -10933,9 +10935,9 @@ impl Interaction {
                     );
                 }
                 xrack_runtime::FocusAction::Clear => {
-                    let scope = scene
-                        .at_path(&target.path)
-                        .is_some_and(|node| matches!(node.kind, "FocusScope" | "Loader" | "RadioGroup"));
+                    let scope = scene.at_path(&target.path).is_some_and(|node| {
+                        matches!(node.kind, "FocusScope" | "Loader" | "RadioGroup")
+                    });
                     if self.focused.as_ref().is_some_and(|focused| {
                         *focused == target || scope && focused.path.starts_with(&target.path)
                     }) {

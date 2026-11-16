@@ -158,6 +158,12 @@ pub use double_spin::{
 pub use drag::DragArguments;
 pub use drag::{DragAction, DragEvent, is_drag_area};
 #[doc(hidden)]
+pub use dynamic_children::DynamicChildren;
+#[doc(hidden)]
+pub use external_loader::{
+    ExternalComponent, ExternalLoader, ExternalSource, LoadedExternal, register_external_loader,
+};
+#[doc(hidden)]
 pub use focus::{ButtonAnimationDelivery, ButtonAnimations};
 #[doc(hidden)]
 pub use focus::{ButtonPressHandle, FocusCommandMethod, FocusHandler, is_focus_handler};
@@ -193,9 +199,17 @@ pub use list_keys::ListSelectionKeys;
 pub use list_sections::{
     ListSection, ListSectionInput, ListSectionParameter, ListSectionProjection, ListSectionRenderer,
 };
+pub use loader::LoaderItem;
+#[doc(hidden)]
+pub use loader::{
+    LoaderBuild, LoaderChild, LoaderFrame, LoaderMount, LoaderSlot, dispatch_loader_events,
+    finish_loader_frame, loader_candidate_scene,
+};
 pub use localization::LocaleContext;
 #[doc(hidden)]
 pub use localization::{LocaleBinding, LocaleId, TranslationCatalog, TranslationValue};
+#[doc(hidden)]
+pub use model::ModelEdit;
 pub use model::VecModel;
 pub use native_dialog::{
     FileDialogMode, FileDialogOptions, FileDialogSelection, MessageButtons, MessageDialogOptions,
@@ -221,16 +235,6 @@ pub use range::{
 pub use range::{
     RANGE_VIEW_PROPERTIES, RangePositionHandle, prepare_range_view, range_view_properties,
     try_prepare_range_view,
-};
-#[doc(hidden)]
-pub use external_loader::{ExternalComponent, ExternalLoader, ExternalSource, LoadedExternal, register_external_loader};
-#[doc(hidden)]
-pub use dynamic_children::DynamicChildren;
-pub use loader::LoaderItem;
-#[doc(hidden)]
-pub use loader::{
-    LoaderBuild, LoaderChild, LoaderFrame, LoaderMount, LoaderSlot, dispatch_loader_events,
-    finish_loader_frame, loader_candidate_scene,
 };
 pub use repeat::{Repeater, repeat_scene, static_repeat_scene};
 #[doc(hidden)]
@@ -970,15 +974,20 @@ impl RoutedEvent<'_> {
             let mut node = scene;
             let mut path = path;
             while let Some((&index, tail)) = path.split_first() {
-                let Some(child) = node.child_at(index) else { return false };
+                let Some(child) = node.child_at(index) else {
+                    return false;
+                };
                 if let Some(component) = &child.external_component {
-                    return component.with_mut(|ui| self.deliver_input(ui, child, tail)).unwrap_or(false);
+                    return component
+                        .with_mut(|ui| self.deliver_input(ui, child, tail))
+                        .unwrap_or(false);
                 }
                 node = child;
                 path = tail;
             }
             ui.route_input(scene, original_path, input)
-        }).unwrap_or(false)
+        })
+        .unwrap_or(false)
     }
 
     pub fn apply(&self, ui: &mut (impl Component + ?Sized), scene: &Node, path: &[usize]) -> bool {

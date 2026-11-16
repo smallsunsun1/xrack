@@ -1051,7 +1051,7 @@ impl<'a, 'w> Symbols<'a, 'w> {
                     .chain(catalog::row_selection_methods(kind))
                     .chain(catalog::tree_selection_methods(kind))
                     .chain(catalog::dynamic_methods(kind))
-                .chain(catalog::focus_methods(kind))
+                    .chain(catalog::focus_methods(kind))
                     .chain(self.index.button_methods(owner, kind))
                     .find(|method| method.name == self.text(i))
                 {

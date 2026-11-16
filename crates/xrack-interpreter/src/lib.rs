@@ -436,6 +436,7 @@ enum Statement {
     SelectKey(String, Expr),
     SelectViewKeys(String, Expr),
     Table(String, table::Command, Vec<Expr>),
+    ModelEdit(Expr, xrack_syntax::builtins::ModelEditKind, Vec<Expr>),
     MoveNavigationItem(String, [Expr; 2]),
     Focus(String, xrack_runtime::FocusCommandMethod, Option<[Expr; 2]>),
     ButtonClick(String, bool),

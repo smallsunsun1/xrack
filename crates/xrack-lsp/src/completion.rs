@@ -915,14 +915,27 @@ impl<'a> Items<'a> {
         self.import_kind = Some(STRUCT);
         self.words(catalog::TYPES, CLASS, "XRack type");
         let dynamic = index.scopes.iter().any(|scope| {
-            matches!(scope.role, Role::Element { kind: "DynamicContainer", .. }
-                | Role::Component { base: "DynamicContainer", .. })
+            matches!(
+                scope.role,
+                Role::Element {
+                    kind: "DynamicContainer",
+                    ..
+                } | Role::Component {
+                    base: "DynamicContainer",
+                    ..
+                }
+            )
         });
         if dynamic {
-            self.add("ExternalComponentHandle", STRUCT, "external component handle");
+            self.add(
+                "ExternalComponentHandle",
+                STRUCT,
+                "external component handle",
+            );
         }
         for scope in &index.scopes {
-            if dynamic && let Role::Component { name, base, .. } = scope.role
+            if dynamic
+                && let Role::Component { name, base, .. } = scope.role
                 && base != "global"
             {
                 self.add(&format!("{name}Handle"), STRUCT, "component handle");
@@ -1872,7 +1885,11 @@ fn qualified<'a>(index: &Index<'a>, scope: usize, head: &[&Token<'a>], items: &m
             items.add("status", PROPERTY, "read-only string");
         }
         if builtins::navigation_group(kind) {
-            items.add("count", PROPERTY, "read-only int · number of navigation items");
+            items.add(
+                "count",
+                PROPERTY,
+                "read-only int · number of navigation items",
+            );
         }
         if index.value_navigation.contains(&owner) {
             items.add(
@@ -2398,7 +2415,14 @@ mod tests {
 
         let source = "component Details inherits VerticalLayout {} component App inherits Window { Loader { ";
         let entries = complete(source, 0, source.len(), None);
-        for label in ["active", "asynchronous", "source", "source-url", "loaded", "Details"] {
+        for label in [
+            "active",
+            "asynchronous",
+            "source",
+            "source-url",
+            "loaded",
+            "Details",
+        ] {
             assert!(entries.iter().any(|item| item["label"] == label), "{label}");
         }
         for label in ["Button", "@children", "for", "status"] {

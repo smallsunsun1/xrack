@@ -193,16 +193,66 @@ impl BuiltinSignature {
 }
 
 pub const DYNAMIC_CONTAINER_METHODS: &[BuiltinSignature] = &[
-    BuiltinSignature { name: "mount", parameters: &["component initializer"], result: Some("component handle"), documentation: "Creates a typed component and appends it to this container." },
-    BuiltinSignature { name: "mount-async", parameters: &["component initializer"], result: Some("component handle"), documentation: "Queues component construction and returns a pending handle." },
-    BuiltinSignature { name: "mount-url", parameters: &["source: string"], result: Some("ExternalComponentHandle"), documentation: "Loads a component file or URL into this container." },
-    BuiltinSignature { name: "status", parameters: &["handle"], result: Some("string"), documentation: "Returns null, loading, ready, or error for this handle." },
-    BuiltinSignature { name: "is-mounted", parameters: &["handle"], result: Some("bool"), documentation: "Checks whether the original component is ready in this container." },
-    BuiltinSignature { name: "get", parameters: &["handle", "property: string", "fallback"], result: Some("property type"), documentation: "Reads a public property while the handle is mounted." },
-    BuiltinSignature { name: "set", parameters: &["handle", "property: string", "value"], result: Some("bool"), documentation: "Writes a public input on the mounted component." },
-    BuiltinSignature { name: "call", parameters: &["handle", "callback: string", "arguments..."], result: Some("callback result"), documentation: "Invokes the mounted component; a returning callback also takes a fallback before its arguments." },
-    BuiltinSignature { name: "remove", parameters: &["handle"], result: Some("bool"), documentation: "Unmounts the child and invalidates its handle." },
-    BuiltinSignature { name: "move", parameters: &["handle", "index: int"], result: Some("bool"), documentation: "Moves the child to a zero-based index and retains its state." },
+    BuiltinSignature {
+        name: "mount",
+        parameters: &["component initializer"],
+        result: Some("component handle"),
+        documentation: "Creates a typed component and appends it to this container.",
+    },
+    BuiltinSignature {
+        name: "mount-async",
+        parameters: &["component initializer"],
+        result: Some("component handle"),
+        documentation: "Queues component construction and returns a pending handle.",
+    },
+    BuiltinSignature {
+        name: "mount-url",
+        parameters: &["source: string"],
+        result: Some("ExternalComponentHandle"),
+        documentation: "Loads a component file or URL into this container.",
+    },
+    BuiltinSignature {
+        name: "status",
+        parameters: &["handle"],
+        result: Some("string"),
+        documentation: "Returns null, loading, ready, or error for this handle.",
+    },
+    BuiltinSignature {
+        name: "is-mounted",
+        parameters: &["handle"],
+        result: Some("bool"),
+        documentation: "Checks whether the original component is ready in this container.",
+    },
+    BuiltinSignature {
+        name: "get",
+        parameters: &["handle", "property: string", "fallback"],
+        result: Some("property type"),
+        documentation: "Reads a public property while the handle is mounted.",
+    },
+    BuiltinSignature {
+        name: "set",
+        parameters: &["handle", "property: string", "value"],
+        result: Some("bool"),
+        documentation: "Writes a public input on the mounted component.",
+    },
+    BuiltinSignature {
+        name: "call",
+        parameters: &["handle", "callback: string", "arguments..."],
+        result: Some("callback result"),
+        documentation: "Invokes the mounted component; a returning callback also takes a fallback before its arguments.",
+    },
+    BuiltinSignature {
+        name: "remove",
+        parameters: &["handle"],
+        result: Some("bool"),
+        documentation: "Unmounts the child and invalidates its handle.",
+    },
+    BuiltinSignature {
+        name: "move",
+        parameters: &["handle", "index: int"],
+        result: Some("bool"),
+        documentation: "Moves the child to a zero-based index and retains its state.",
+    },
 ];
 
 /// Public commands accepted by each media object.

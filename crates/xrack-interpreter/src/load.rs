@@ -509,6 +509,15 @@ impl<'m> Loader<'m> {
                         body.push(Statement::SelectSource(target, argument, column));
                     }
                 }
+                "xr.model_edit" => {
+                    let method = attribute(statement, "method")?;
+                    let method = xrack_syntax::builtins::ModelEditKind::parse(method)
+                        .ok_or_else(|| unsupported(statement, method))?;
+                    let args = (1..statement.operand_count())
+                        .map(|index| expression(self, index))
+                        .collect::<Result<_>>()?;
+                    body.push(Statement::ModelEdit(expression(self, 0)?, method, args));
+                }
                 "xr.move_navigation_item" => {
                     body.push(Statement::MoveNavigationItem(
                         attribute(statement, "owner")?.into(),
@@ -1631,8 +1640,13 @@ impl<'m> Loader<'m> {
             }
             "xr.dynamic_action" | "xr.dynamic_read" => Expression::Dynamic(
                 attribute(op, "owner")?.into(),
-                attribute(op, "value")?.split(':').map(str::to_owned).collect(),
-                (0..op.operand_count()).map(|index| argument(self, index)).collect::<Result<_>>()?,
+                attribute(op, "value")?
+                    .split(':')
+                    .map(str::to_owned)
+                    .collect(),
+                (0..op.operand_count())
+                    .map(|index| argument(self, index))
+                    .collect::<Result<_>>()?,
             ),
             "xr.loader_external_status" => {
                 Expression::LoaderExternalStatus(attribute(op, "owner")?.into(), argument(self, 0)?)

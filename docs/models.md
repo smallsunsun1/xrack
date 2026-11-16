@@ -2,6 +2,8 @@
 
 [返回项目首页](../README.md) · [控件与布局参考](controls.md)
 
+在 `.xr` 回调中用 `Model.append(root.rows, value)`、`Model.insert`、`Model.set`、`Model.remove`、`Model.move` 和 `Model.clear` 编辑共享列表。更新或移动保留行标识，移除只结束被删行的生命周期。绑定到同一模型的视图会接收对应的内容或结构更新。运行 `bazel run //examples/navigation:navigation -- --model-tabs`，可新建和关闭文档，并切回仍开启的草稿查看原来的编辑状态。[Model API](language.md#内置函数)
+
 ## 滚动、列表和网格
 
 `ScrollView`、列表、虚拟网格、树和表格在内容溢出时显示可拖动的纵向滚动条。`ScrollView` 和表格也提供横向滚动条。拖动滑块定位，点击轨道按视口大小翻页。滚动条覆盖在内容边缘并共享滚轮的滚动位置，表头与表身继续同步。可通过 `vertical-scroll-bar-policy` 和 `horizontal-scroll-bar-policy` 设置各滚动轴的 `as-needed`、`always-on` 或 `always-off`。拖动滚动条保留当前焦点，虚拟视图继续只创建视口内的行。

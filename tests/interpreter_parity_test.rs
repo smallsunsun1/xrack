@@ -22685,6 +22685,85 @@ fn repeated_swipe_pages_mount_lazily_and_keep_state_by_model_row() {
 }
 
 #[test]
+fn dsl_model_edits_keep_shared_handles_and_invalidate_only_affected_data() {
+    use navigation_ui::ModelEditFixture;
+
+    let mut interpreted = interpret_navigation_fixture("ModelEditFixture");
+    let mut generated = ModelEditFixture::new();
+    let labels = generated.model_labels();
+    let codes = generated.model_codes();
+    let first = labels.row_key(0).unwrap();
+    let second_code = codes.row_key(1).unwrap();
+    assert_eq!(generated.get_label_count(), 2);
+    assert_eq!(interpreted.get("label-count"), Ok(2_i64.into()));
+
+    interpreted.invoke("edit-models", &[]).unwrap();
+    generated.invoke_edit_models();
+    let wanted = ["inserted", "third", "FIRST"].map(str::to_owned);
+    assert_eq!(labels.snapshot(), wanted);
+    assert_eq!(codes.snapshot(), [4, 1, 20, 3]);
+    assert_eq!(labels.row_key(2), Some(first));
+    assert_eq!(codes.row_key(2), Some(second_code));
+    assert_eq!(generated.get_label_count(), 3);
+    assert_eq!(generated.get_code_count(), 4);
+    assert_eq!(generated.get_first_label(), "inserted");
+    assert_eq!(
+        interpreted.get("labels"),
+        Ok(Value::StringList(wanted.to_vec()))
+    );
+    assert_eq!(
+        interpreted.get("codes"),
+        Ok(Value::IntList(vec![4, 1, 20, 3]))
+    );
+    assert_eq!(interpreted.get("label-count"), Ok(3_i64.into()));
+    assert_eq!(interpreted.get("code-count"), Ok(4_i64.into()));
+    assert_eq!(
+        interpreted.get("first-label"),
+        Ok("inserted".to_owned().into())
+    );
+
+    interpreted.invoke("clear-models", &[]).unwrap();
+    generated.invoke_clear_models();
+    assert!(labels.is_empty() && codes.is_empty());
+    assert_eq!(generated.get_label_count(), 0);
+    assert_eq!(generated.get_code_count(), 0);
+    assert_eq!(interpreted.get("label-count"), Ok(0_i64.into()));
+    assert_eq!(interpreted.get("code-count"), Ok(0_i64.into()));
+    assert_eq!(interpreted.get("first-label"), Ok(String::new().into()));
+    assert_eq!(interpreted.take_error(), None);
+}
+
+#[test]
+fn opening_and_closing_model_documents_keeps_surviving_editor_state() {
+    use navigation_ui::ModelTabsDemo;
+    use xrack_runtime::{ControlAction, group_index};
+    let mut interpreted = interpret_navigation_fixture("ModelTabsDemo");
+    let mut generated = ModelTabsDemo::new();
+    for ui in [&mut interpreted as &mut dyn Component, &mut generated] {
+        let draft = ui.render();
+        let key = draft.row_key_at(&[0, 1]).unwrap();
+        assert!(ui.dispatch_at(&draft, &[0, 1, 0, 1], "clicked"));
+        assert!(ui.dispatch("new-document", "clicked"));
+        let new_scene = ui.render();
+        assert_eq!(new_scene.children[0].children.len(), 4);
+        assert_eq!(group_index(&new_scene.children[0]), Some(3));
+        assert!(ui.dispatch("close-current", "clicked"));
+        let next = ui.render();
+        assert_eq!(next.children[0].children.len(), 3);
+        assert_eq!(group_index(&next.children[0]), Some(2));
+        assert!(ui.control_at(&next, &[0], ControlAction::Select(1)));
+        let restored = ui.render();
+        assert_eq!(restored.row_key_at(&[0, 1]), Some(key));
+        assert_eq!(
+            restored.find("editor-title").unwrap().text("text"),
+            Some("草稿 · 编辑 1 次")
+        );
+        assert!(!ui.dispatch_at(&new_scene, &[0, 3, 0, 1], "clicked"));
+    }
+    assert_eq!(interpreted.take_error(), None);
+}
+
+#[test]
 fn navigation_move_item_is_immediate_and_preserves_shared_page_instances() {
     use navigation_ui::ModelSwipeDemo;
     use xrack_runtime::group_index;

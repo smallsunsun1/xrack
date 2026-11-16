@@ -18,8 +18,8 @@ impl Axis {
             "HorizontalLayout" | "HorizontalBox" | "MenuBar" | "TimePicker" | "DialogButtonBox" => {
                 Some(Self::Horizontal)
             }
-            "VerticalLayout" | "DynamicContainer" | "VerticalBox" | "Dialog" | "Drawer" | "GroupBox" | "PageHeader"
-            | "PageFooter" | "PopupWindow" => Some(Self::Vertical),
+            "VerticalLayout" | "DynamicContainer" | "VerticalBox" | "Dialog" | "Drawer"
+            | "GroupBox" | "PageHeader" | "PageFooter" | "PopupWindow" => Some(Self::Vertical),
             _ => None,
         }
     }

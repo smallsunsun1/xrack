@@ -135,7 +135,8 @@ type ActionFlagCache = BTreeMap<Member, Rc<Property<Option<Value>>>>;
 
 fn dynamic_handle(component: &str, id: i64) -> Value {
     Value::Record(xrack_runtime::RecordValue::new(
-        format!("{component}Handle"), BTreeMap::from([("id".into(), Value::Int(id))]),
+        format!("{component}Handle"),
+        BTreeMap::from([("id".into(), Value::Int(id))]),
     ))
 }
 
@@ -658,7 +659,11 @@ impl Instance {
             {
                 return Some(element);
             }
-            element.children.iter().filter(|child| child.repeat.is_none()).find_map(|child| find(child, id))
+            element
+                .children
+                .iter()
+                .filter(|child| child.repeat.is_none())
+                .find_map(|child| find(child, id))
         }
         let loader = find(&self.definition().root, id)?;
         if let Some(slot) = self.0.external_loaders.borrow().get(&loader.key) {
@@ -666,46 +671,82 @@ impl Instance {
         }
         let slot = self.0.loaders.borrow().get(&loader.key)?.clone();
         for candidate in &loader.children {
-            let Some(repeat) = candidate.repeat.as_ref() else { continue };
-            let Some((_, index)) = repeat.loader else { continue };
-            let Some(state) = slot.get::<RepeatState>(index) else { continue };
+            let Some(repeat) = candidate.repeat.as_ref() else {
+                continue;
+            };
+            let Some((_, index)) = repeat.loader else {
+                continue;
+            };
+            let Some(state) = slot.get::<RepeatState>(index) else {
+                continue;
+            };
             let key = xrack_runtime::ListModel::row_key(&1i64, 0);
-            let row = self.capture_result(state.row(self, repeat, 0, key, false)).flatten()?;
+            let row = self
+                .capture_result(state.row(self, repeat, 0, key, false))
+                .flatten()?;
             return slot.item(index, row.children().get(&candidate.key)?.as_weak());
         }
         None
     }
 
     fn dynamic_children(&self, owner: &str) -> Rc<xrack_runtime::DynamicChildren> {
-        self.0.dynamic_children.borrow_mut().entry(owner.into()).or_default().clone()
+        self.0
+            .dynamic_children
+            .borrow_mut()
+            .entry(owner.into())
+            .or_default()
+            .clone()
     }
 
-    fn dynamic_expression(&self, owner: &str, names: &[String], values: &[Expr], args: &[Value]) -> Result<Value> {
+    fn dynamic_expression(
+        &self,
+        owner: &str,
+        names: &[String],
+        values: &[Expr],
+        args: &[Value],
+    ) -> Result<Value> {
         let [verb, component, members @ ..] = names else {
             return Err(evaluation("invalid dynamic component operation"));
         };
         let children = self.dynamic_children(owner);
-        let arg = |index| values.get(index).ok_or_else(|| evaluation("missing dynamic argument"))
-            .and_then(|value| self.evaluate(value, args));
+        let arg = |index| {
+            values
+                .get(index)
+                .ok_or_else(|| evaluation("missing dynamic argument"))
+                .and_then(|value| self.evaluate(value, args))
+        };
         if verb == "mount-url" {
-            let Value::String(source) = arg(0)? else { return Err(evaluation("expected component URL")); };
+            let Value::String(source) = arg(0)? else {
+                return Err(evaluation("expected component URL"));
+            };
             let id = children.mount_url(source);
             return Ok(dynamic_handle("ExternalComponent", id));
         }
         if matches!(verb.as_str(), "mount" | "mount-async") {
-            let initial = values.iter().map(|value| self.evaluate(value, args)).collect::<Result<Vec<_>>>()?;
+            let initial = values
+                .iter()
+                .map(|value| self.evaluate(value, args))
+                .collect::<Result<Vec<_>>>()?;
             let members = members.to_vec();
             let target = component.clone();
             let program = self.0.program.clone();
             let parent = Rc::downgrade(&self.0);
             let create = move || {
-                let incoming = members.iter().zip(initial).map(|(member, value)| {
-                    let input = BoundInput::default();
-                    input.set_if_changed_by(Ok(value), |_, _| false);
-                    (vec![Member::root(member)], input)
-                }).collect();
+                let incoming = members
+                    .iter()
+                    .zip(initial)
+                    .map(|(member, value)| {
+                        let input = BoundInput::default();
+                        input.set_if_changed_by(Ok(value), |_, _| false);
+                        (vec![Member::root(member)], input)
+                    })
+                    .collect();
                 let item = program.allocate(
-                    &target, Some(parent), incoming, BTreeMap::new(), &mut Vec::new(),
+                    &target,
+                    Some(parent),
+                    incoming,
+                    BTreeMap::new(),
+                    &mut Vec::new(),
                 )?;
                 let weak = item.as_weak();
                 Ok::<_, Error>((item, weak))
@@ -721,16 +762,26 @@ impl Instance {
             };
             return Ok(dynamic_handle(component, id));
         }
-        let Value::Record(handle) = arg(0)? else { return Err(evaluation("expected a component handle")); };
-        let Some(Value::Int(id)) = handle.field("id") else { return Err(evaluation("invalid component handle")); };
+        let Value::Record(handle) = arg(0)? else {
+            return Err(evaluation("expected a component handle"));
+        };
+        let Some(Value::Int(id)) = handle.field("id") else {
+            return Err(evaluation("invalid component handle"));
+        };
         let id = *id;
-        let item = || children.get::<Self>(id).filter(|child| child.0.name == *component);
+        let item = || {
+            children
+                .get::<Self>(id)
+                .filter(|child| child.0.name == *component)
+        };
         match (verb.as_str(), members) {
             ("is-mounted", []) => Ok(Value::Bool(children.contains(id))),
             ("status", []) => Ok(Value::String(children.status(id).into())),
             ("remove", []) => Ok(Value::Bool(children.remove(id))),
             ("move", []) => {
-                let Value::Int(index) = arg(1)? else { return Err(evaluation("expected index")); };
+                let Value::Int(index) = arg(1)? else {
+                    return Err(evaluation("expected index"));
+                };
                 Ok(Value::Bool(children.move_to(id, index)))
             }
             ("get", [member]) => match item() {
@@ -738,14 +789,20 @@ impl Instance {
                 None => arg(1),
             },
             ("set", [member]) => {
-                let Some(ui) = item() else { return Ok(Value::Bool(false)) };
+                let Some(ui) = item() else {
+                    return Ok(Value::Bool(false));
+                };
                 ui.set(member, arg(1)?)?;
                 Ok(Value::Bool(true))
             }
             ("call" | "call-value", [member]) => {
                 let has_value = verb == "call-value";
                 let Some(ui) = item() else {
-                    return if has_value { arg(1) } else { Ok(Value::Bool(false)) };
+                    return if has_value {
+                        arg(1)
+                    } else {
+                        Ok(Value::Bool(false))
+                    };
                 };
                 let first = if has_value { 2 } else { 1 };
                 let arguments = (first..values.len()).map(arg).collect::<Result<Vec<_>>>()?;
@@ -761,7 +818,12 @@ impl Instance {
     }
 
     fn external_loader(&self, owner: &str) -> Rc<xrack_runtime::ExternalLoader> {
-        self.0.external_loaders.borrow_mut().entry(owner.into()).or_default().clone()
+        self.0
+            .external_loaders
+            .borrow_mut()
+            .entry(owner.into())
+            .or_default()
+            .clone()
     }
 
     fn loader_slot(&self, owner: &str) -> Rc<xrack_runtime::LoaderSlot> {
@@ -1648,7 +1710,9 @@ impl Instance {
                 Statement::Assign(target, expression) => {
                     self.write(target, self.evaluate(expression, args)?)?;
                 }
-                Statement::Evaluate(value) => { self.evaluate(value, args)?; }
+                Statement::Evaluate(value) => {
+                    self.evaluate(value, args)?;
+                }
                 Statement::Call(target, arguments, site) => {
                     self.call_with_operands(target, arguments, args, site)?;
                 }
@@ -1706,6 +1770,10 @@ impl Instance {
                         .map(|column| self.int_argument(column, args))
                         .transpose()?;
                     self.select_source(target, index, column)?;
+                }
+                Statement::ModelEdit(model, method, inputs) => {
+                    let model = self.evaluate(model, args)?;
+                    repeat::edit_model(model, *method, &self.arguments(inputs, args)?)?;
                 }
                 Statement::MoveNavigationItem(target, [from, to]) => {
                     let from = self.int_argument(from, args)?;
@@ -1911,7 +1979,8 @@ impl Instance {
                 Ok(Value::String(self.external_loader(target).status(&source)))
             }
             LoaderMounted(target, selection) => Ok(Value::Bool(
-                self.loader_slot(target).is_mounted(self.int_argument(selection, args)?),
+                self.loader_slot(target)
+                    .is_mounted(self.int_argument(selection, args)?),
             )),
             StackRead(target, read) => Ok(crate::stack::read(
                 self.stack_snapshot_by_key(target)?.as_ref(),
@@ -2785,7 +2854,13 @@ impl Instance {
                     *candidate,
                     mode == 2,
                     |state| state.prepare_loader(self, element),
-                    |state| Ok(xrack_runtime::loader_candidate_scene(state.render(self, element, 0..1)?)),
+                    |state| {
+                        Ok(xrack_runtime::loader_candidate_scene(state.render(
+                            self,
+                            element,
+                            0..1,
+                        )?))
+                    },
                     evaluation,
                 );
             }
@@ -3191,7 +3266,8 @@ impl Instance {
 
     fn render_children(&self, element: &Element, node: &mut Node) -> Result<()> {
         if node.kind == "DynamicContainer" {
-            node.children.extend(self.dynamic_children(&element.key).render());
+            node.children
+                .extend(self.dynamic_children(&element.key).render());
         }
         if node.kind == "Loader"
             && let Some(source) = node.text("source-url")
